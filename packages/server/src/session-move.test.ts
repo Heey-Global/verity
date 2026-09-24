@@ -154,3 +154,56 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     await app.close();
   }
 });
+
+it('starts the server when a pending preview restart still fails', async () => {
+  for (const id of ['recovery-source', 'recovery-target']) {
+    await ctx.store.upsertProject({
+      id,
+      owner: 'local',
+      repo: id,
+      kind: 'local',
+      containerName: id,
+      state: 'active',
+    });
+  }
+  await ctx.store.createSession({
+    sessionId: 'recovery',
+    projectId: 'recovery-source',
+    worktree: '/recovery/source',
+    model: 'claude-opus-4-8',
+  });
+  const preview = await ctx.store.createDevServer({
+    projectId: 'recovery-source',
+    command: 'npm start',
+  });
+  await ctx.store.prepareSessionMove({
+    sessionId: 'recovery',
+    operationId: 'recover',
+    sourceProjectId: 'recovery-source',
+    sourceWorktree: '/recovery/source',
+    targetProjectId: 'recovery-target',
+    targetWorktree: '/recovery/target',
+    branch: 'recovery',
+    onCommits: 'block',
+  });
+  await ctx.store.commitSessionMove('recovery', 'recover', 'Moved', '{}');
+  await ctx.store.setMovePreviewRestart('recovery', 'recover', [preview.id]);
+  const app = buildServer({
+    eventStore: ctx.store,
+    bus: new InMemoryEventBus(),
+    conductor: new Conductor({ store: ctx.store }),
+    projectRuntime: {
+      startDevServer: async () => {
+        throw new Error('runtime unavailable');
+      },
+    } as unknown as ProjectRuntime,
+  });
+  try {
+    await app.ready();
+    expect(
+      (await ctx.store.getSessionMove('recovery', 'recover'))?.preview_restart_json,
+    ).not.toBeNull();
+  } finally {
+    await app.close();
+  }
+});

@@ -8951,12 +8951,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   app.addHook('onReady', async () => {
     for (const move of await deps.eventStore.listMovePreviewRestarts()) {
-      const release = await deps.previewShareManager?.beginSessionMove(
-        move.source_project_id,
-        move.session_id,
-      );
+      let release: (() => void) | undefined;
       try {
+        release = await deps.previewShareManager?.beginSessionMove(
+          move.source_project_id,
+          move.session_id,
+        );
         await recoverMovePreviews(move.session_id, move.operation_id);
+      } catch (error) {
+        app.log.warn(
+          { err: error, operationId: move.operation_id },
+          'verity: move preview restart remains pending',
+        );
       } finally {
         release?.();
       }
@@ -8990,6 +8996,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerSessionMoveRoute(app, {
     move: async (id, body) => {
+      const session = await deps.eventStore.getSession(id);
+      if (!session) throw new SessionMoveError('not_found', 'Session not found.', 404);
       const prior = await deps.eventStore.getSessionMove(id, body.operationId);
       if (
         prior &&
@@ -9011,8 +9019,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         return JSON.parse(prior.result_json) as unknown;
       }
-      const session = await deps.eventStore.getSession(id);
-      if (!session) throw new SessionMoveError('not_found', 'Session not found.', 404);
+
       if (
         session.projectId === null ||
         session.kind !== 'normal' ||

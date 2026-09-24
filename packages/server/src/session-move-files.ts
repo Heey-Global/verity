@@ -244,7 +244,10 @@ export async function transferMoveSnapshot(
       (base && !same(base, file.base) && !same(base, file.index) && !same(base, file.working))
     )
       conflicts.push(file.path);
-    if (same(base, file.working) && (same(base, file.index) || file.index === null))
+    if (
+      same(base, file.working) &&
+      (same(base, file.index) || (file.index === null && file.base === null))
+    )
       alreadyPresent.push(file.path);
   }
   if (conflicts.length)

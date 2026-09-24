@@ -118,3 +118,16 @@ it('rejects intent-to-add without converting it into a staged empty file', async
   await moveGit(source, 'add', '-N', 'intent');
   await expect(captureMoveSnapshot(source)).rejects.toMatchObject({ code: 'unsupported_index' });
 });
+
+it('preserves a staged deletion even when the original bytes remain in the worktree', async () => {
+  const source = await repo();
+  const target = await repo();
+  for (const root of [source, target]) {
+    await writeFile(join(root, 'kept'), 'original');
+    await commit(root);
+  }
+  await moveGit(source, 'rm', '--cached', 'kept');
+  await transferMoveSnapshot(await captureMoveSnapshot(source), target);
+  expect((await moveGit(target, 'ls-files', '--', 'kept')).length).toBe(0);
+  expect(await readFile(join(target, 'kept'), 'utf8')).toBe('original');
+});

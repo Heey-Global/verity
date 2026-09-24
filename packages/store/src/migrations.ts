@@ -2941,8 +2941,9 @@ const migrations: Record<string, Migration> = {
   },
   '0105_session_project_moves': {
     async up(db: Kysely<unknown>): Promise<void> {
+      // A session FK would silently drop source recovery protection when the moved session is deleted.
       await sql`create table session_moves (
-        session_id text not null references sessions(session_id) on delete cascade,
+        session_id text not null,
         operation_id text not null,
         source_project_id text not null,
         source_worktree text not null,

@@ -79,3 +79,11 @@ it('leaves the source and backend intact when the target is hidden', async () =>
   expect(await ctx.store.getSessionBackendStates('s')).toHaveLength(1);
   expect(await ctx.store.getSessionMoveNotice('s')).toBeUndefined();
 });
+
+it('keeps source recovery protection after the moved session is deleted', async () => {
+  await ctx.store.commitSessionMove('s', 'move', 'Moved', '{}');
+  await ctx.store.deleteSession('s');
+  expect(await ctx.store.getSession('s')).toBeUndefined();
+  expect(await ctx.store.listSessionWorktrees()).toContain('/a/session');
+  expect(await ctx.store.listLiveBackendSessionIds()).toContain('old');
+});
