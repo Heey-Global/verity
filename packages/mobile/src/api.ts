@@ -1393,6 +1393,19 @@ export interface BranchSwitchRequest {
   onDirty?: 'block' | 'stash' | 'commit';
 }
 
+const sessionMovedSchema = z.object({
+  projectId: z.string(),
+  worktree: z.string(),
+  branch: z.string(),
+  contextMode: z.literal('history-handoff'),
+  transferred: z.array(z.string()),
+  alreadyPresent: z.array(z.string()),
+  skipped: z.array(z.string()),
+  retainedWorktree: z.string(),
+  retainedBranch: z.string(),
+});
+export type SessionMoved = z.infer<typeof sessionMovedSchema>;
+
 const sessionRenamedSchema = z.object({
   sessionId: z.string().min(1),
   name: z.string().nullable(),
@@ -3544,6 +3557,18 @@ export class VerityClient {
 
   /** Rename a session (set its display name), or clear it by passing `null`.
    * Returns the session id + the stored (trimmed) name the server echoes back. */
+  async moveSession(
+    id: string,
+    body: { project: string; operationId: string; onCommits?: 'block' | 'leave' },
+  ): Promise<SessionMoved> {
+    const response = await this.request(`/sessions/${encodeURIComponent(id)}/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return sessionMovedSchema.parse(await response.json());
+  }
+
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',

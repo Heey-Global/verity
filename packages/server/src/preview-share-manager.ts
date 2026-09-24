@@ -395,6 +395,18 @@ export class PreviewShareManager {
     }
   }
 
+  /** Validation must not revoke a public link for a move that will be refused. */
+  async beginSessionMove(projectId: string): Promise<() => void> {
+    return await this.acquireLifecycleLocks([`project:${projectId}`]);
+  }
+
+  /** Called after transfer validation while the session move's lifecycle fence is held. */
+  async revokeSessionShares(projectId: string, sessionId: string): Promise<void> {
+    for (const server of await this.options.store.listDevServers(projectId)) {
+      if (server.previewSessionId === sessionId) await this.stopDevServer(server.id);
+    }
+  }
+
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       await this.stopProject(projectId);
@@ -419,6 +431,12 @@ export class PreviewShareManager {
       `dev-server:${devServerId}`,
     ]);
     try {
+      if (
+        (await this.options.store.listMovePreviewRestarts()).some(
+          (move) => move.source_project_id === devServer.projectId,
+        )
+      )
+        throw new Error('Retry the pending session move before changing this preview.');
       await this.stopDevServer(devServerId);
       return release;
     } catch (error) {

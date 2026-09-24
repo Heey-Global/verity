@@ -57,6 +57,17 @@ export function createPostgresSecretRevocationStore(db: Kysely<Database>): Secre
         .execute();
     },
     async isClaimsActive(claims) {
+      // A delayed approval may mint a grant after the move's transactional cleanup.
+      // Its source authority must not become valid again just because it arrived late.
+      const moved = await db
+        .selectFrom('session_moves')
+        .innerJoin('sessions', 'sessions.session_id', 'session_moves.session_id')
+        .select('sessions.project_id')
+        .where('session_moves.session_id', '=', claims.sessionId)
+        .where('session_moves.result_json', 'is not', null)
+        .executeTakeFirst();
+      if (moved && moved.project_id !== claims.projectId) return false;
+
       const rows = await db
         .selectFrom('secret_revocations')
         .select(['subject_kind', 'subject_id', 'subject_version'])

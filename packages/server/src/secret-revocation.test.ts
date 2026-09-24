@@ -111,3 +111,35 @@ describe('Postgres secret revocation store', () => {
     ).rejects.toThrow();
   });
 });
+
+it('rejects source-project grants minted after a session move', async () => {
+  for (const id of [claims.projectId, 'target'])
+    await ctx.store.upsertProject({
+      id,
+      owner: 'local',
+      repo: id,
+      kind: 'local',
+      containerName: id,
+      state: 'active',
+    });
+  await ctx.store.createSession({
+    sessionId: claims.sessionId,
+    projectId: claims.projectId,
+    worktree: '/source',
+    model: 'claude-test',
+  });
+  await ctx.store.prepareSessionMove({
+    sessionId: claims.sessionId,
+    operationId: 'move',
+    sourceProjectId: claims.projectId,
+    sourceWorktree: '/source',
+    targetProjectId: 'target',
+    targetWorktree: '/target',
+    branch: 'move',
+    onCommits: 'block',
+  });
+  await ctx.store.commitSessionMove(claims.sessionId, 'move', 'Moved', '{}');
+  const revocations = createPostgresSecretRevocationStore(ctx.db);
+  expect(await revocations.isClaimsActive(claims)).toBe(false);
+  expect(await revocations.isClaimsActive({ ...claims, projectId: 'target' })).toBe(true);
+});

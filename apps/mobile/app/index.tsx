@@ -1,3 +1,4 @@
+import { MoveSessionDialog } from '../components/MoveSessionDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
 // empty / list states. When no server is configured it falls back to a "not
@@ -343,6 +344,8 @@ function SessionList({ client }: { client: VerityClient }) {
   const repairingProjectIdsRef = useRef(new Set<string>());
   // The session whose actions sheet is open (its long-press opened the modal), or
   // null when the modal is closed.
+  const [moving, setMoving] = useState<SessionSummary | null>(null);
+  const [moveGeneration, setMoveGeneration] = useState(0);
   const [renaming, setRenaming] = useState<SessionSummary | null>(null);
 
   // Drop a stale split-pane selection: if the chosen session disappears (deleted,
@@ -716,10 +719,31 @@ function SessionList({ client }: { client: VerityClient }) {
       />
       <RenameModal
         session={renaming}
+        canMove={projects.some(
+          (project) => project.id === renaming?.projectId && project.kind === 'local',
+        )}
         onSubmit={onSubmitRename}
+        onMove={() => {
+          setMoving(renaming);
+          setRenaming(null);
+        }}
         onDelete={onDeleteRenaming}
         onCancel={() => setRenaming(null)}
       />
+      {moving && client && (
+        <MoveSessionDialog
+          sessionId={moving.sessionId}
+          client={client}
+          projects={projects
+            .filter((project) => project.kind === 'local' && project.id !== moving.projectId)
+            .map((project) => ({ id: project.id, name: project.repo }))}
+          onClose={() => setMoving(null)}
+          onMoved={() => {
+            void refresh({ silent: true });
+            if (selectedId === moving.sessionId) setMoveGeneration((value) => value + 1);
+          }}
+        />
+      )}
     </View>
   );
 
@@ -731,7 +755,7 @@ function SessionList({ client }: { client: VerityClient }) {
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
           <SessionChat
-            key={selectedId}
+            key={`${selectedId}:${moveGeneration}`}
             client={client}
             sessionId={selectedId}
             baseUrl={baseUrl}
@@ -1600,12 +1624,16 @@ function IssueRow({ issue }: { issue: IssueSummary }) {
 // display name — an empty submission clears it back to the worktree/id) or
 // delete it outright. Seeded with the current name each time it opens.
 function RenameModal({
+  canMove,
+  onMove,
   session,
   onSubmit,
   onDelete,
   onCancel,
 }: {
   session: SessionSummary | null;
+  canMove: boolean;
+  onMove: () => void;
   onSubmit: (name: string | null) => void;
   onDelete: () => void;
   onCancel: () => void;
@@ -1658,6 +1686,20 @@ function RenameModal({
             onSubmitEditing={submit}
             accessibilityLabel="Session name"
           />
+          {canMove && session?.kind !== 'agent_loop' && (
+            <Pressable
+              accessibilityRole="button"
+              disabled={session?.status === 'running'}
+              onPress={onMove}
+              style={styles.modalCancelButton}
+            >
+              <Text style={styles.modalTitle}>
+                {session?.status === 'running'
+                  ? 'Finish the current turn to move'
+                  : 'Move to project…'}
+              </Text>
+            </Pressable>
+          )}
           <View style={styles.modalActions}>
             <Pressable
               style={({ pressed }) => [

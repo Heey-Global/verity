@@ -1179,7 +1179,24 @@ interface KnowledgeMaintenanceQueueTable {
   source_document_id: string;
   due_at: Date;
 }
+interface SessionMovesTable {
+  backend_ids_json: string;
+  preview_restart_json: ColumnType<string | null, string | null | undefined, string | null>;
+  session_id: string;
+  operation_id: string;
+  source_project_id: string;
+  source_worktree: string;
+  target_project_id: string;
+  target_worktree: string;
+  branch: string;
+  on_commits: string;
+  notice: string;
+  result_json: string | null;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 export interface Database {
+  session_moves: SessionMovesTable;
   integration_accounts: IntegrationAccountsTable;
   matrix_connector_config: MatrixConnectorConfigTable;
   integration_sources: IntegrationSourcesTable;

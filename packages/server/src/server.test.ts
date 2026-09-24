@@ -9630,6 +9630,7 @@ describe('POST /sessions/:id/branch', () => {
 describe('error boundary', () => {
   it('never reflects an internal store error to the client', async () => {
     const throwing = {
+      listMovePreviewRestarts: async () => [],
       listSessions: () => Promise.reject(new Error('driver destroyed SECRET-INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
     const badApp = buildServer({ eventStore: throwing, bus: new InMemoryEventBus(), conductor });
@@ -9752,6 +9753,7 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
 
   it('sends an error frame and closes if the backlog read fails', async () => {
     const throwing = {
+      listMovePreviewRestarts: async () => [],
       getEventsAfter: () => Promise.reject(new Error('db down INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
     const badApp = buildServer({ eventStore: throwing, bus: new InMemoryEventBus(), conductor });
