@@ -28,6 +28,7 @@ type SlidesToolRequest = {
   requests?: Record<string, unknown>[];
   revisionId?: string;
   attachmentId?: string;
+  imageUrl?: string;
   asBackground?: boolean;
   x?: number;
   y?: number;
@@ -98,6 +99,38 @@ function assertImageLimits(bytes: Buffer, mediaType: string): void {
   if (dimensions.width * dimensions.height > MAX_IMAGE_PIXELS) {
     throw new Error('image exceeds 25 megapixels');
   }
+}
+
+function createImageRequest(request: SlidesToolRequest, url: string): Record<string, unknown> {
+  return request.asBackground === true
+    ? {
+        updatePageProperties: {
+          objectId: request.slideId,
+          pageProperties: {
+            pageBackgroundFill: { stretchedPictureFill: { contentUrl: url } },
+          },
+          fields: 'pageBackgroundFill',
+        },
+      }
+    : {
+        createImage: {
+          url,
+          elementProperties: {
+            pageObjectId: request.slideId,
+            size: {
+              width: { magnitude: request.width ?? 320, unit: 'PT' },
+              height: { magnitude: request.height ?? 180, unit: 'PT' },
+            },
+            transform: {
+              scaleX: 1,
+              scaleY: 1,
+              translateX: request.x ?? 40,
+              translateY: request.y ?? 40,
+              unit: 'PT',
+            },
+          },
+        },
+      };
 }
 
 async function downloadThumbnail(doFetch: typeof fetch, url: string): Promise<Buffer> {
@@ -249,24 +282,48 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       ]);
     }
     if (request.action === 'insert_image') {
-      if (request.attachmentId === undefined || request.slideId === undefined) {
-        throw new Error('insert_image requires attachmentId and slideId');
+      if (request.slideId === undefined) {
+        throw new Error('insert_image requires slideId');
       }
-      const attachmentBelongsToSession = await deps.eventStore.sessionHasAttachment(
-        input.sessionId,
-        request.attachmentId,
-      );
-      if (!attachmentBelongsToSession) {
-        throw new Error('insert_image can use only an attachment from this session');
+      if ((request.attachmentId === undefined) === (request.imageUrl === undefined)) {
+        throw new Error('insert_image requires exactly one of attachmentId or imageUrl');
       }
-      const attachment = await deps.eventStore.getAttachment(request.attachmentId);
-      if (
-        attachment === undefined ||
-        !['image/png', 'image/jpeg', 'image/gif'].includes(attachment.mediaType)
-      ) {
-        throw new Error('insert_image requires a PNG, JPEG, or GIF session attachment');
+      let publicImageUrl: string | undefined;
+      let attachment:
+        { mediaType: 'image/png' | 'image/jpeg' | 'image/gif'; bytes: Buffer } | undefined;
+      if (request.attachmentId !== undefined) {
+        const attachmentBelongsToSession = await deps.eventStore.sessionHasAttachment(
+          input.sessionId,
+          request.attachmentId,
+        );
+        if (!attachmentBelongsToSession) {
+          throw new Error('insert_image can use only an attachment from this session');
+        }
+        const stored = await deps.eventStore.getAttachment(request.attachmentId);
+        if (
+          stored === undefined ||
+          !['image/png', 'image/jpeg', 'image/gif'].includes(stored.mediaType)
+        ) {
+          throw new Error('insert_image requires a PNG, JPEG, or GIF session attachment');
+        }
+        const supportedAttachment = stored as {
+          mediaType: 'image/png' | 'image/jpeg' | 'image/gif';
+          bytes: Buffer;
+        };
+        assertImageLimits(supportedAttachment.bytes, supportedAttachment.mediaType);
+        attachment = supportedAttachment;
+      } else {
+        const url = new URL(request.imageUrl as string);
+        if (
+          !['http:', 'https:'].includes(url.protocol) ||
+          url.username !== '' ||
+          url.password !== '' ||
+          url.hash !== ''
+        ) {
+          throw new Error('insert_image imageUrl must be a public HTTP(S) URL without credentials');
+        }
+        publicImageUrl = url.href;
       }
-      assertImageLimits(attachment.bytes, attachment.mediaType);
       if (request.asBackground === true && request.revisionId === undefined) {
         throw new Error('a background image requires revisionId');
       }
@@ -277,11 +334,32 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
         throw new Error('This Google Slides edit may already have run; inspect the deck first');
       }
       await assertStillAssigned(input.sessionId, deck.assignmentId);
-      const uploaded = await drive.upload(token, {
-        name: `verity-slide-${request.attachmentId.slice(0, 12)}`,
-        mimeType: attachment.mediaType as 'image/png' | 'image/jpeg' | 'image/gif',
-        bytes: attachment.bytes,
-      });
+      const uploaded =
+        attachment === undefined
+          ? undefined
+          : await drive.upload(token, {
+              name: `verity-slide-${request.attachmentId!.slice(0, 12)}`,
+              mimeType: attachment.mediaType,
+              bytes: attachment.bytes,
+            });
+      if (uploaded === undefined) {
+        const imageRequest = createImageRequest(request, publicImageUrl as string);
+        const result = await slides.update(
+          token,
+          deck.fileId,
+          [imageRequest],
+          request.asBackground === true ? request.revisionId : undefined,
+        );
+        const revisionId = result.writeControl.requiredRevisionId;
+        await deps.eventStore.updateSessionSlideDeckRevision(
+          input.sessionId,
+          deck.assignmentId,
+          revisionId,
+        );
+        const response = { result, revisionId };
+        await deps.eventStore.completeGoogleSlideInvocation(input.invocationId, response);
+        return response;
+      }
       const cleanupId = (deps.nowId ?? randomUUID)();
       try {
         // Persist the file id before making it public. Deleting the file removes every
@@ -301,36 +379,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
         permissionId = await drive.share(token, uploaded.id);
         await deps.eventStore.setGoogleSlideImageCleanupPermission(cleanupId, permissionId);
         const url = `https://lh3.googleusercontent.com/d/${encodeURIComponent(uploaded.id)}`;
-        const imageRequest =
-          request.asBackground === true
-            ? {
-                updatePageProperties: {
-                  objectId: request.slideId,
-                  pageProperties: {
-                    pageBackgroundFill: { stretchedPictureFill: { contentUrl: url } },
-                  },
-                  fields: 'pageBackgroundFill',
-                },
-              }
-            : {
-                createImage: {
-                  url,
-                  elementProperties: {
-                    pageObjectId: request.slideId,
-                    size: {
-                      width: { magnitude: request.width ?? 320, unit: 'PT' },
-                      height: { magnitude: request.height ?? 180, unit: 'PT' },
-                    },
-                    transform: {
-                      scaleX: 1,
-                      scaleY: 1,
-                      translateX: request.x ?? 40,
-                      translateY: request.y ?? 40,
-                      unit: 'PT',
-                    },
-                  },
-                },
-              };
+        const imageRequest = createImageRequest(request, url);
         const result = await slides.update(
           token,
           deck.fileId,

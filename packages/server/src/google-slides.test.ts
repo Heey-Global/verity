@@ -41,14 +41,16 @@ describe('Google Slides client', () => {
     expect(slidesRequestsNeedRevision([{ createSlide: { insertionIndex: 2 } }])).toBe(true);
   });
 
-  it('keeps image insertion on the managed upload path', () => {
+  it('passes every structurally valid batchUpdate request through to Google', () => {
     expect(slidesRequestsAreSupported([{ insertText: { objectId: 'box', text: 'hello' } }])).toBe(
       true,
     );
     expect(
       slidesRequestsAreSupported([{ createImage: { url: 'https://example.com/a.png' } }]),
-    ).toBe(false);
+    ).toBe(true);
+    expect(slidesRequestsAreSupported([{ futureGoogleOperation: { value: true } }])).toBe(true);
     expect(slidesRequestsAreSupported([{ createShape: {}, deleteObject: {} }])).toBe(false);
+    expect(slidesRequestsAreSupported([{ insertText: null }])).toBe(false);
   });
 
   it('reads only the metadata needed to assign a deck', async () => {
@@ -90,7 +92,7 @@ describe('Google Slides client', () => {
     });
   });
 
-  it('guards fixed-range paragraph bullet changes', () => {
+  it('guards every existing-state write, including non-positional formatting', () => {
     expect(
       slidesRequestsNeedRevision([
         {
@@ -101,6 +103,15 @@ describe('Google Slides client', () => {
         },
       ]),
     ).toBe(true);
+    expect(slidesRequestsNeedRevision([{ updateShapeProperties: { objectId: 'shape-1' } }])).toBe(
+      true,
+    );
+    expect(slidesRequestsNeedRevision([{ createTable: { rows: 2, columns: 2 } }])).toBe(false);
+  });
+
+  it('guards future Google operations instead of blocking them', () => {
+    expect(slidesRequestsNeedRevision([{ futureGoogleOperation: {} }])).toBe(true);
+    expect(slidesRequestsNeedRevision([{ insertComment: { pageObjectId: 'slide-1' } }])).toBe(true);
   });
 
   it('redacts Google error bodies to a stable reason', async () => {

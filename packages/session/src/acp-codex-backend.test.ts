@@ -506,6 +506,10 @@ describe('AcpCodexBackend', () => {
       params: {
         prompt: [
           { type: 'text', text: 'Look' },
+          {
+            type: 'text',
+            text: 'Verity session attachment ID for the following image: 8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4',
+          },
           { type: 'image', mimeType: 'image/png', data: 'aGk=' },
         ],
       },

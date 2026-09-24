@@ -269,6 +269,74 @@ describe('Google Slides agent tool', () => {
     tool.close();
   });
 
+  it.each(['https://upload.wikimedia.org/logo.png?width=320', 'http://example.test/logo.png'])(
+    'inserts a public image URL without uploading a temporary Drive file: %s',
+    async (imageUrl) => {
+      const eventStore = store();
+      const { tool, drive, slides } = dependencies(eventStore);
+
+      await tool.invoke({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        request: {
+          action: 'insert_image',
+          slideId: 'slide-1',
+          imageUrl,
+          x: 400,
+          y: 20,
+          width: 80,
+          height: 80,
+        },
+      });
+
+      expect(drive.upload).not.toHaveBeenCalled();
+      expect(drive.share).not.toHaveBeenCalled();
+      expect(slides.update).toHaveBeenCalledWith(
+        'token',
+        'deck-1',
+        [
+          {
+            createImage: {
+              url: imageUrl,
+              elementProperties: expect.objectContaining({ pageObjectId: 'slide-1' }),
+            },
+          },
+        ],
+        undefined,
+      );
+      tool.close();
+    },
+  );
+
+  it.each([
+    [{ action: 'insert_image', slideId: 'slide-1' }, 'exactly one'],
+    [
+      {
+        action: 'insert_image',
+        slideId: 'slide-1',
+        attachmentId,
+        imageUrl: 'https://example.test/image.png',
+      },
+      'exactly one',
+    ],
+    [
+      { action: 'insert_image', slideId: 'slide-1', imageUrl: 'ftp://example.test/image.png' },
+      'public HTTP(S) URL',
+    ],
+    [
+      { action: 'insert_image', slideId: 'slide-1', imageUrl: 'https://user@example.test/x.png' },
+      'without credentials',
+    ],
+  ])('rejects an invalid image source %#', async (request, message) => {
+    const { tool, drive, slides } = dependencies(store());
+    await expect(
+      tool.invoke({ projectId: 'project-1', sessionId: 'session-1', request }),
+    ).rejects.toThrow(message);
+    expect(drive.upload).not.toHaveBeenCalled();
+    expect(slides.update).not.toHaveBeenCalled();
+    tool.close();
+  });
+
   it('does not restore an assignment cleared while an edit is in flight', async () => {
     let assigned:
       | {
@@ -314,6 +382,30 @@ describe('Google Slides agent tool', () => {
 
     expect(updateRevision).toHaveBeenCalledWith('session-1', 'assignment-1', 'rev-2');
     expect(assigned).toBeUndefined();
+    tool.close();
+  });
+
+  it('passes page backgrounds through with revision protection', async () => {
+    const { tool, slides } = dependencies(store());
+    const background = {
+      updatePageProperties: {
+        objectId: 'slide-1',
+        pageProperties: {
+          pageBackgroundFill: {
+            solidFill: { color: { rgbColor: { red: 0.1, green: 0.2, blue: 0.3 } } },
+          },
+        },
+        fields: 'pageBackgroundFill.solidFill.color',
+      },
+    };
+
+    await tool.invoke({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      request: { action: 'edit', requests: [background], revisionId: 'rev-1' },
+    });
+
+    expect(slides.update).toHaveBeenCalledWith('token', 'deck-1', [background], 'rev-1');
     tool.close();
   });
 

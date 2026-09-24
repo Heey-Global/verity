@@ -166,42 +166,41 @@ export async function getSlidesThumbnail(
 
 export function slidesRequestsNeedRevision(requests: readonly Record<string, unknown>[]): boolean {
   return requests.some((request) => {
-    if ('replaceAllText' in request || 'updatePageElementTransform' in request) return true;
-    if ('updatePageProperties' in request) return true;
+    const kind = Object.keys(request)[0];
+    if (kind === undefined || !REVISION_OPTIONAL_REQUESTS.has(kind)) return true;
     const insert = request.insertText as { insertionIndex?: unknown } | undefined;
     if (insert?.insertionIndex !== undefined) return true;
     const slide = request.createSlide as { insertionIndex?: unknown } | undefined;
     if (slide?.insertionIndex !== undefined) return true;
-    for (const key of [
-      'deleteText',
-      'updateTextStyle',
-      'updateParagraphStyle',
-      'createParagraphBullets',
-    ] as const) {
-      const operation = request[key] as { textRange?: { type?: unknown } } | undefined;
-      if (operation?.textRange?.type === 'FIXED_RANGE') return true;
-    }
     return false;
   });
 }
 
-const SUPPORTED_EDIT_REQUESTS = new Set([
-  'insertText',
-  'deleteText',
-  'replaceAllText',
-  'updateTextStyle',
-  'updateParagraphStyle',
-  'createParagraphBullets',
+/** Operations whose target is independent of previously observed deck state.
+ * Every other current or future Slides request is guarded conservatively. */
+const REVISION_OPTIONAL_REQUESTS = new Set([
   'createShape',
-  'duplicateObject',
+  'createImage',
+  'createLine',
+  'createSheetsChart',
   'createSlide',
+  'createTable',
+  'createVideo',
   'deleteObject',
-  'updatePageElementTransform',
+  'duplicateObject',
+  'insertText',
 ]);
 
 export function slidesRequestsAreSupported(requests: readonly Record<string, unknown>[]): boolean {
   return requests.every((request) => {
     const keys = Object.keys(request);
-    return keys.length === 1 && SUPPORTED_EDIT_REQUESTS.has(keys[0] ?? '');
+    const value = request[keys[0] ?? ''];
+    return (
+      keys.length === 1 &&
+      keys[0] !== '' &&
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    );
   });
 }
