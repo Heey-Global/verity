@@ -797,6 +797,7 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  sandboxSwapBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
@@ -1521,6 +1522,14 @@ export function parseByteSize(value: string | undefined): number | undefined {
     throw new Error(`invalid byte size "${value}": value is outside the supported range`);
   }
   return bytes;
+}
+
+/** Parse a swap allowance (`VERITY_SANDBOX_SWAP`) into bytes. Same syntax as
+ *  {@link parseByteSize}, plus `0` for "no swap" — the one value a memory ceiling
+ *  must never take, and the default here. Unset/empty → `undefined` (default). */
+export function parseSwapSize(value: string | undefined): number | undefined {
+  if (value !== undefined && /^0+(?:\.0+)?\s*[kmgt]?b?$/i.test(value.trim())) return 0;
+  return parseByteSize(value);
 }
 
 /** Parse a CPU-core count (`VERITY_SANDBOX_CPUS`, e.g. `1.5`) into Docker
@@ -3379,6 +3388,9 @@ export async function buildEmbeddedServer(
         : {}),
       ...(config.sandboxMemoryBytes !== undefined
         ? { sandboxMemoryBytes: config.sandboxMemoryBytes }
+        : {}),
+      ...(config.sandboxSwapBytes !== undefined
+        ? { sandboxSwapBytes: config.sandboxSwapBytes }
         : {}),
       ...(config.sandboxNanoCpus !== undefined ? { sandboxNanoCpus: config.sandboxNanoCpus } : {}),
       ...(config.sandboxCpuShares !== undefined

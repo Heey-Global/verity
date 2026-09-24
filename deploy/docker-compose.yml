@@ -113,8 +113,12 @@ services:
       # there. It prefers cgroup v2 with the sandbox's own cgroup visible and
       # falls back to asking Node what libuv found, which is expected to cover a
       # v1 host as well — untested, and the prompt is written not to depend on it.
-      VERITY_SANDBOX_MEMORY: ${VERITY_SANDBOX_MEMORY:-4g}
-      VERITY_SANDBOX_CPUS: ${VERITY_SANDBOX_CPUS:-2}
+      VERITY_SANDBOX_MEMORY: ${VERITY_SANDBOX_MEMORY:-6g}
+      # Swap a sandbox may use on top of VERITY_SANDBOX_MEMORY. 0 disables swap.
+      # Only useful if the HOST has swap, and that swap is shared by every
+      # container on it. See "Resource guardrails" in deploy/README.md.
+      VERITY_SANDBOX_SWAP: ${VERITY_SANDBOX_SWAP:-0}
+      VERITY_SANDBOX_CPUS: ${VERITY_SANDBOX_CPUS:-4}
       # Relative CPU weight per sandbox. The ceiling above bounds ONE sandbox;
       # nothing bounds their sum, so on a host with more projects than cores the
       # per-container ceilings oversubscribe it and Docker's flat default weight

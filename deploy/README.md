@@ -696,8 +696,9 @@ dependency or build cannot consume the whole machine by default. Tune them in
 ```dotenv
 VERITY_SERVER_MEMORY=2g
 VERITY_POSTGRES_MEMORY=1g
-VERITY_SANDBOX_MEMORY=4g
-VERITY_SANDBOX_CPUS=2
+VERITY_SANDBOX_MEMORY=6g
+VERITY_SANDBOX_SWAP=0
+VERITY_SANDBOX_CPUS=4
 VERITY_SANDBOX_CPU_SHARES=512
 ```
 
@@ -754,14 +755,55 @@ the same 512, so the protection is in place either way, but a deliberate overrid
 will not take. Hosts bootstrapped from this release onward seal the name and
 honour it.
 
-Memory has no equivalent knob, and deliberately so: `VERITY_SANDBOX_MEMORY` is a
-hard cgroup ceiling with swap disabled, so an over-large workload is killed
-inside its own container where the session can see and report it, rather than
-being allowed to page the host. Oversubscribing memory across many concurrent
-sandboxes still costs reclaim pressure. If a host runs enough projects at once to
-feel it, lower `VERITY_SANDBOX_MEMORY` or run fewer projects — do not give the
-swap back. Sleep already keeps idle projects from counting toward this; what is
-left is the projects genuinely working at once.
+Memory has no equivalent weight, and deliberately so: `VERITY_SANDBOX_MEMORY` is a
+hard cgroup ceiling, so an over-large workload is stopped inside its own container
+rather than being allowed to page the host. Oversubscribing memory across many
+concurrent sandboxes still costs reclaim pressure. If a host runs enough projects
+at once to feel it, lower `VERITY_SANDBOX_MEMORY` or run fewer projects. Sleep
+already keeps idle projects from counting toward this; what is left is the
+projects genuinely working at once.
+
+Under gVisor, the default project runtime, the ceiling is hit harder than it
+looks. The whole Sandbox is one gVisor Sentry process, and its guest memory is a
+shared-memory file charged to the container. gVisor has no OOM killer of its
+own, so there is no runaway process inside the guest for the kernel to pick:
+it kills the Sentry, and every session of the project goes down together.
+Keeping a margin below the limit does not help, because nothing inside the guest
+ever uses that margin. That is why the default is 6 GiB rather than 4 GiB, and
+why `VERITY_PROJECT_MAX_CONCURRENT_TURNS` limits how many turns share one
+Sandbox.
+
+The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
+not capped to the host, so on a small machine (8 GiB or less) set
+`VERITY_SANDBOX_MEMORY` to what one sandbox can actually get next to the Server
+and Postgres.
+
+`VERITY_SANDBOX_SWAP` lets a sandbox use that much swap on top of
+`VERITY_SANDBOX_MEMORY`. It defaults to `0` (no swap). Unset, Docker would allow
+swap equal to the memory ceiling, so Verity always sets it explicitly. Swap is a
+trade-off, not free headroom:
+
+- It only does anything if the **host** has swap configured. Check `swapon --show`.
+- Host swap is shared by every container on the machine. A host with 4 GiB of
+  swap and five sandboxes at `VERITY_SANDBOX_SWAP=2g` has promised 10 GiB of it.
+- A workload that swaps gets much slower. What swap buys a gVisor Sandbox is a
+  slow build instead of every session in the project dying at once. Use it when
+  that trade is right for the host, and size it so the sum stays near the host's
+  swap.
+
+On the managed topology this variable has the same catch as
+`VERITY_SANDBOX_CPU_SHARES` above. A host bootstrapped before it existed has
+no sealed source for it, so setting it in `.env` there has no effect and swap
+stays off.
+
+The CPU ceiling is capped at the host's CPU count, because Docker refuses to
+create a container that asks for more. On a 2-core host the default of 4 therefore
+gives each sandbox both cores.
+
+Memory, swap, and CPU ceilings are applied when a sandbox container is
+**created**. An existing sandbox keeps the limits it was created with until it
+is next provisioned, repaired, or updated to a new image. To apply new limits to
+a specific project now, recreate its sandbox.
 
 One exception, on the managed topology only: the Server container is created by
 the Updater from the sealed deployment spec, not by Compose, so `mem_limit` and
