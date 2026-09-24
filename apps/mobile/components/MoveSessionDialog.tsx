@@ -56,7 +56,8 @@ export function MoveSessionDialog({
         cause instanceof VerityApiError &&
         cause.status >= 400 &&
         cause.status < 500 &&
-        cause.status !== 408
+        cause.status !== 408 &&
+        cause.code !== 'busy'
       ) {
         pending.delete(sessionId);
         setUnresolved(false);

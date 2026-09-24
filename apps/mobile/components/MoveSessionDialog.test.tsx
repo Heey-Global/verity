@@ -65,6 +65,7 @@ it('reconciles an unresolved move after closing and reopening the dialog', async
   const move = jest
     .fn()
     .mockRejectedValueOnce(new Error('Network interrupted'))
+    .mockRejectedValueOnce(new VerityApiError(409, 'Move still running', { code: 'busy' }))
     .mockResolvedValue(result);
   const client = { moveSession: move } as unknown as VerityClient;
   const props = {
@@ -81,11 +82,13 @@ it('reconciles an unresolved move after closing and reopening the dialog', async
   fireEvent.press(screen.getByText('Target project'));
   fireEvent.press(screen.getByText('Move'));
   await screen.findByText('Network interrupted');
+  fireEvent.press(screen.getByText('Move'));
+  await screen.findByText('Move still running');
   fireEvent.press(screen.getByText('Cancel'));
   first.unmount();
   render(<MoveSessionDialog {...props} />);
   fireEvent.press(screen.getByText('Other project'));
   fireEvent.press(screen.getByText('Move'));
   await screen.findByText(/Not copied: private/);
-  expect(move.mock.calls[1]).toEqual(move.mock.calls[0]);
+  expect(move.mock.calls[2]).toEqual(move.mock.calls[0]);
 });
