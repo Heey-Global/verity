@@ -2701,10 +2701,12 @@ describe('ProvisionerImpl (#174)', () => {
         containerCommand: vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' })),
         isDirectory: (path) => path === `/srv/verity/runners/${id}`,
         isFile: (path) =>
-          opts.packageJson && path === '/srv/verity/workspaces/example-org-example-repo/package.json',
+          opts.packageJson &&
+          path === '/srv/verity/workspaces/example-org-example-repo/package.json',
       });
       await provisioner.provision(id);
-      const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+      const spec = calls.find((call) => call.method === 'createContainer')
+        ?.payload as ContainerSpec;
       return { id, spec, ensureVolume };
     }
 
@@ -7577,7 +7579,12 @@ describe('DeprovisionerImpl (#174)', () => {
     };
     const stopMock = vi.fn();
     const removeMock = vi.fn();
-    const { client: docker } = fakeDocker({ stopContainer: stopMock, removeContainer: removeMock });
+    const removeVolume = vi.fn();
+    const { client: docker } = fakeDocker({
+      stopContainer: stopMock,
+      removeContainer: removeMock,
+      removeVolume,
+    });
     const deprovisioner = new DeprovisionerImpl(
       ctx.store,
       ctx.db,
@@ -7592,7 +7599,7 @@ describe('DeprovisionerImpl (#174)', () => {
     expect(stopMock).toHaveBeenCalledWith('dev-example-org-example-repo');
     expect(removeMock).toHaveBeenCalledWith('dev-example-org-example-repo');
     // A kept project keeps its installed dependencies with its clone.
-    expect(docker.removeVolume).toBeUndefined();
+    expect(removeVolume).not.toHaveBeenCalled();
     // no purge → isDir not even probed (the if-branch short-circuits).
     expect(isDirCalls).toHaveLength(0);
     expect(rmCalls).toEqual([]);
