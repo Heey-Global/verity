@@ -27,6 +27,12 @@ report() {
 
 # A wake and a Server restart both re-run the stack launcher; a second install
 # racing the first would have `npm ci` empty the tree the first is writing.
+# Checked first: `flock -n` failing with 127 would read as "held" and end every
+# start silently, which is the one outcome this script exists to prevent.
+if ! command -v flock >/dev/null 2>&1; then
+  report 'manual: flock is not installed; run npm ci in /work'
+  exit 0
+fi
 exec 9>"$STATE_DIR/lock" || exit 1
 flock -n 9 || exit 0
 

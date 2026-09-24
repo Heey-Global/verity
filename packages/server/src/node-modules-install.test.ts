@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ const LAUNCHER = 'features/verity-sandbox-toolkit/bin/verity-runner-stack-start'
 
 /** A /work stand-in plus an `npm` on PATH that records how it was called and
  *  behaves like `npm ci`: it empties node_modules first, then installs. */
-function sandbox(opts: { lockfile: boolean; npmExit?: number }) {
+function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), 'verity-nm-install-'));
   const work = join(root, 'work');
   const state = join(root, 'state');
@@ -38,8 +39,10 @@ function sandbox(opts: { lockfile: boolean; npmExit?: number }) {
     ].join('\n'),
   );
   chmodSync(join(bin, 'npm'), 0o755);
+  // Without flock, PATH holds only the tools the script needs besides it.
+  const path = opts.flock === false ? isolatedPath(root, bin) : `${bin}:/usr/bin:/bin`;
   const env = {
-    PATH: `${bin}:/usr/bin:/bin`,
+    PATH: path,
     HOME: root,
     VERITY_NODE_MODULES_WORK: work,
     VERITY_NODE_MODULES_STATE_DIR: state,
@@ -53,6 +56,19 @@ function sandbox(opts: { lockfile: boolean; npmExit?: number }) {
   const status = () => readFileSync(join(state, 'status'), 'utf8').trim();
   const npmCalls = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []);
   return { work, state, run, runLocked, status, npmCalls };
+}
+
+/** A PATH directory with just the tools the script uses, minus flock. */
+function isolatedPath(root: string, bin: string): string {
+  const tools = join(root, 'tools');
+  mkdirSync(tools);
+  for (const tool of ['bash', 'mkdir', 'mv', 'cat', 'getent', 'cut', 'id', 'find', 'touch']) {
+    const resolved = execFileSync('bash', ['-c', `command -v ${tool}`], {
+      encoding: 'utf8',
+    }).trim();
+    symlinkSync(resolved, join(tools, tool));
+  }
+  return `${bin}:${tools}`;
 }
 
 describe('verity-node-modules-install', () => {
@@ -95,6 +111,13 @@ describe('verity-node-modules-install', () => {
     expect(box.status()).toBe('ready');
   });
 
+  it('says so rather than exiting silently when flock is missing', () => {
+    const box = sandbox({ lockfile: true, flock: false });
+    box.run();
+    expect(box.npmCalls()).toEqual([]);
+    expect(box.status()).toMatch(/^manual: flock/);
+  });
+
   it('says so instead of guessing when there is no npm lockfile', () => {
     const box = sandbox({ lockfile: false });
     box.run();
@@ -116,12 +139,50 @@ describe('verity-runner-stack-start node_modules hand-over', () => {
     launcher.indexOf('BROKER_RUNTIME='),
   );
 
-  it('only chowns a mount point, and never through a symlink', () => {
+  it('never chowns through a symlink', () => {
     // Without the volume, /work/node_modules is an agent-writable path. A root
-    // chown keyed on mere existence would follow a symlink the agent planted there.
-    expect(block).toContain('/proc/self/mountinfo');
+    // chown that followed a symlink the agent planted there would hand it any file
+    // root can reach.
     expect(block).toMatch(/\[ ! -L "\$NODE_MODULES_DIR" \]/);
     expect(block).toMatch(/chown -h "\$AGENT_UID:\$AGENT_GID" "\$NODE_MODULES_DIR"/);
+  });
+
+  /** Runs the launcher's block with its paths moved into a temp dir and
+   *  `as_agent`/`chown` recorded instead of performed. */
+  function runBlock(opts: { mounted: boolean }) {
+    const root = mkdtempSync(join(tmpdir(), 'verity-nm-launch-'));
+    const dir = join(root, 'node_modules');
+    const mountinfo = join(root, 'mountinfo');
+    const log = join(root, 'calls');
+    mkdirSync(dir);
+    writeFileSync(
+      mountinfo,
+      `36 25 0:32 / ${opts.mounted ? dir : '/work'} rw,relatime - ext4 /dev/sda1 rw\n`,
+    );
+    const script = [
+      `as_agent() { echo "as_agent $*" >>'${log}'; }`,
+      `chown() { echo "chown $*" >>'${log}'; }`,
+      // The test process owns the directory; stand in for Docker's root ownership.
+      `stat() { echo 0; }`,
+      'AGENT_UID=1000 AGENT_GID=1000',
+      block.replaceAll('/proc/self/mountinfo', mountinfo).replaceAll('/work/node_modules', dir),
+      'wait',
+    ].join('\n');
+    execFileSync('bash', ['-c', script]);
+    return existsSync(log) ? readFileSync(log, 'utf8') : '';
+  }
+
+  it('starts the install over the volume, and only there', () => {
+    // Without the volume, `npm ci` would empty the clone's own node_modules on
+    // verity-data, which may hold a yarn or pnpm tree the agent installed by hand.
+    expect(runBlock({ mounted: true })).toContain('verity-node-modules-install');
+    expect(runBlock({ mounted: false })).not.toContain('verity-node-modules-install');
+  });
+
+  it('hands a root-owned node_modules to the agent with or without the volume', () => {
+    // Docker leaves its mount point in the clone root-owned; a Sandbox recreated
+    // without the volume would otherwise find node_modules it cannot install into.
+    expect(runBlock({ mounted: false })).toMatch(/^chown -h 1000:1000 /m);
   });
 
   it('installs as the agent, detached, without being able to fail the stack start', () => {

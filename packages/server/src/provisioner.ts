@@ -939,9 +939,6 @@ export function devcontainerImageTag(owner: string, repo: string, hash12: string
  *  server — so the value is pinned by a test here. Change one, change all three. */
 export const DEVCONTAINER_IMAGE_PREFIX = 'verity-devc-';
 
-/** Docker network name for a project's isolated sandbox network (security review
- *  H2). Docker network names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]*`; sanitize the
- *  project id and prefix so it is always valid and Verity-owned. */
 /** Where a Node project's dependencies are mounted from their own volume. */
 export const NODE_MODULES_TARGET = '/work/node_modules';
 
@@ -976,6 +973,9 @@ export function nodeModulesMountHint(mountpoint: string): Record<string, string>
   };
 }
 
+/** Docker network name for a project's isolated sandbox network (security review
+ *  H2). Docker network names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]*`; sanitize the
+ *  project id and prefix so it is always valid and Verity-owned. */
 export function projectNetworkName(projectId: string): string {
   const clean = projectId
     .toLowerCase()
@@ -5291,11 +5291,15 @@ export class ProvisionerImpl implements Provisioner {
     // Runner runtime path, because its root stack start is what hands the fresh,
     // root-owned volume to the agent and starts the one-time install into it;
     // without that the mount would be an empty directory the agent cannot write.
+    // And only for an npm lockfile, the one case that install can fill unattended:
+    // the volume starts empty and shadows whatever the clone held, so a yarn or
+    // pnpm project recreated onto it would lose working dependencies until someone
+    // noticed and installed by hand.
     let nodeModules: { volume: string; annotations: Record<string, string> } | undefined;
     if (
       runnerRuntimePath !== undefined &&
       this.opts.docker.ensureVolume !== undefined &&
-      this.isFile(join(dirs.clonePath, 'package.json'))
+      this.isFile(join(dirs.clonePath, 'package-lock.json'))
     ) {
       const volume = projectNodeModulesVolumeName(project.id);
       try {

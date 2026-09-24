@@ -2679,10 +2679,14 @@ describe('ProvisionerImpl (#174)', () => {
   describe('per-project node_modules volume', () => {
     const MOUNTPOINT = '/var/lib/docker/volumes/verity-node-modules-x/_data';
 
-    async function provisionWith(opts: { packageJson: boolean; runnerSupervisor: boolean }) {
+    async function provisionWith(opts: {
+      lockfile: boolean;
+      runnerSupervisor: boolean;
+      ensureVolume?: () => Promise<{ mountpoint: string | undefined }>;
+    }) {
       const id = await seedProject();
       const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
-      const ensureVolume = vi.fn(async () => ({ mountpoint: MOUNTPOINT }));
+      const ensureVolume = vi.fn(opts.ensureVolume ?? (async () => ({ mountpoint: MOUNTPOINT })));
       const { client: docker, calls } = fakeDocker({ createdContainerId: 'cid-1', ensureVolume });
       const provisioner = createProvisioner({
         store: ctx.store,
@@ -2701,20 +2705,24 @@ describe('ProvisionerImpl (#174)', () => {
         containerCommand: vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' })),
         isDirectory: (path) => path === `/srv/verity/runners/${id}`,
         isFile: (path) =>
-          opts.packageJson &&
-          path === '/srv/verity/workspaces/example-org-example-repo/package.json',
+          path === '/srv/verity/workspaces/example-org-example-repo/package.json' ||
+          (opts.lockfile &&
+            path === '/srv/verity/workspaces/example-org-example-repo/package-lock.json'),
       });
-      await provisioner.provision(id);
-      const spec = calls.find((call) => call.method === 'createContainer')
-        ?.payload as ContainerSpec;
-      return { id, spec, ensureVolume };
+      const provisioned = provisioner.provision(id);
+      const created = async () => {
+        await provisioned;
+        return calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+      };
+      return { id, provisioned, created, ensureVolume };
     }
 
     it('mounts a Node project its own volume with the exclusive gVisor hint for its source', async () => {
-      const { id, spec, ensureVolume } = await provisionWith({
-        packageJson: true,
+      const { id, created, ensureVolume } = await provisionWith({
+        lockfile: true,
         runnerSupervisor: true,
       });
+      const spec = await created();
       expect(ensureVolume).toHaveBeenCalledWith(projectNodeModulesVolumeName(id), {
         labels: { 'verity.project-id': id },
       });
@@ -2735,11 +2743,15 @@ describe('ProvisionerImpl (#174)', () => {
       });
     });
 
-    it('leaves a project without package.json alone', async () => {
-      const { spec, ensureVolume } = await provisionWith({
-        packageJson: false,
+    it('leaves a project without an npm lockfile on its existing node_modules', async () => {
+      // The volume starts empty and only an npm lockfile gets it filled without
+      // anyone acting. A yarn or pnpm project moved onto it would lose working
+      // dependencies on its next recreate, which an image update triggers unasked.
+      const { created, ensureVolume } = await provisionWith({
+        lockfile: false,
         runnerSupervisor: true,
       });
+      const spec = await created();
       expect(ensureVolume).not.toHaveBeenCalled();
       expect(spec.volumeMounts?.map((mount) => mount.target)).not.toContain(NODE_MODULES_TARGET);
       expect(spec.annotations).toBeUndefined();
@@ -2749,14 +2761,43 @@ describe('ProvisionerImpl (#174)', () => {
       // Without the Runner runtime no root stack start runs, so the fresh volume
       // would stay root-owned and empty: every install into it fails with EACCES
       // and the clone's own node_modules is shadowed. Slow beats broken.
-      const { spec, ensureVolume } = await provisionWith({
-        packageJson: true,
+      const { created, ensureVolume } = await provisionWith({
+        lockfile: true,
         runnerSupervisor: false,
       });
+      const spec = await created();
       expect(ensureVolume).not.toHaveBeenCalled();
       expect(spec.volumeMounts?.map((mount) => mount.target) ?? []).not.toContain(
         NODE_MODULES_TARGET,
       );
+    });
+
+    it('still mounts the volume when the daemon names no mountpoint, without a hint', async () => {
+      // A hint without a source is ignored by runsc; one with a guessed source
+      // could match nothing, or another mount.
+      const { id, created } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+        ensureVolume: async () => ({ mountpoint: undefined }),
+      });
+      const spec = await created();
+      expect(spec.volumeMounts).toContainEqual({
+        volume: projectNodeModulesVolumeName(id),
+        target: NODE_MODULES_TARGET,
+      });
+      expect(spec.annotations).toBeUndefined();
+    });
+
+    it('fails the provision visibly when the volume cannot be created', async () => {
+      const { id, provisioned } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+        ensureVolume: async () => {
+          throw new Error('disk full');
+        },
+      });
+      await expect(provisioned).rejects.toThrow(/node_modules volume could not be created/);
+      expect((await ctx.store.getProject(id))?.state).toBe('failed');
     });
   });
 
