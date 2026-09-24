@@ -256,6 +256,7 @@ const TOOL_SCHEMAS = {
         .string()
         .regex(/^[a-f0-9]{64}$/u)
         .optional(),
+      imageUrl: z.url().max(8192).optional(),
       asBackground: z.boolean().optional(),
       x: z.number().finite().min(0).optional(),
       y: z.number().finite().min(0).optional(),
@@ -299,7 +300,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_recent_session_messages: RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
   verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
   verity_google_slides:
-    'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit needs requests and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested.',
+    'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit accepts any structurally valid Google Slides batchUpdate request and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested; insert_image accepts either a Verity session attachmentId or a public HTTP(S) imageUrl.',
   verity_google_docs:
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; every edit requires the revisionId returned by the read.',
   verity_google_sheets:

@@ -1,4 +1,5 @@
 import * as acp from '@agentclientprotocol/sdk';
+import { createHash } from 'node:crypto';
 import type {
   ContentBlock,
   McpServer,
@@ -229,11 +230,18 @@ function processStream(process: SpawnedProcess): acp.Stream {
 function imageBlocks(attachments: RunTurnOptions['attachments']): ContentBlock[] {
   return (attachments ?? [])
     .filter((attachment) => attachment.kind === 'image')
-    .map((attachment): ContentBlock => ({
-      type: 'image',
-      mimeType: attachment.mediaType,
-      data: attachment.data,
-    }));
+    .flatMap((attachment): ContentBlock[] => {
+      const attachmentId = createHash('sha256')
+        .update(Buffer.from(attachment.data, 'base64'))
+        .digest('hex');
+      return [
+        {
+          type: 'text',
+          text: `Verity session attachment ID for the following image: ${attachmentId}`,
+        },
+        { type: 'image', mimeType: attachment.mediaType, data: attachment.data },
+      ];
+    });
 }
 
 /** Verity's system directives, prefixed onto the prompt. The ACP agents other than
