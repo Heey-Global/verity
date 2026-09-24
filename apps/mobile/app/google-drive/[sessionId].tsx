@@ -90,9 +90,7 @@ function GoogleDrivePicker({
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [projectFolderId, setProjectFolderId] = useState<string | null>(null);
-  const [folderAuthorized, setFolderAuthorized] = useState(false);
   const requestSequence = useRef(0);
-  const folderAuthorizationStarted = useRef(false);
 
   const connected = settings?.googleDriveConnected === true;
   const clientId = settings?.googleDriveClientId ?? '';
@@ -209,7 +207,6 @@ function GoogleDrivePicker({
       );
       return false;
     }
-    if (purpose === 'folder') folderAuthorizationStarted.current = true;
     setConnecting(true);
     try {
       const result = await runGoogleDriveAuth(clientId);
@@ -220,7 +217,6 @@ function GoogleDrivePicker({
         redirectUri: result.redirectUri,
       });
       await loadSettings();
-      if (purpose === 'folder') setFolderAuthorized(true);
       return true;
     } catch (err) {
       const message =
@@ -231,16 +227,6 @@ function GoogleDrivePicker({
       setConnecting(false);
     }
   }, [client, clientId, loadSettings, purpose]);
-
-  useEffect(() => {
-    if (purpose !== 'folder' || !settingsLoaded || !connected || folderAuthorizationStarted.current)
-      return;
-    // Existing refresh tokens may predate project folders and carry only the old
-    // read scopes. Reauthorize when entering the folder picker so uploads and
-    // edits cannot fail later with an apparently connected account.
-    folderAuthorizationStarted.current = true;
-    void connect();
-  }, [connect, connected, purpose, settingsLoaded]);
 
   const openFolder = useCallback(
     (folder: DriveFile) => {
@@ -547,22 +533,7 @@ function GoogleDrivePicker({
         </View>
       ) : (
         <>
-          {purpose === 'folder' && !folderAuthorized ? (
-            <Pressable
-              style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
-              onPress={() => void connect()}
-              disabled={connecting}
-              accessibilityRole="button"
-              accessibilityLabel="Authorize Google Drive editing"
-            >
-              {connecting ? (
-                <ActivityIndicator color={theme.colors.onPrimary} />
-              ) : (
-                <Text style={styles.primaryButtonLabel}>Authorize folder editing</Text>
-              )}
-            </Pressable>
-          ) : null}
-          {purpose === 'folder' && folderAuthorized && path.length > 0 ? (
+          {purpose === 'folder' && path.length > 0 ? (
             <Pressable
               style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
               onPress={connectCurrentFolder}

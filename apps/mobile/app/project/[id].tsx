@@ -40,7 +40,7 @@ import {
   type ProjectMcpBinding,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -167,6 +167,11 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
   useEffect(() => {
     void load();
   }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      if (detailLoaded) void load(true);
+    }, [detailLoaded, load]),
+  );
 
   // Keep the container state live while the screen is open. `GET /projects/:id`
   // reconciles the project against Docker, so this is what turns a sandbox that
