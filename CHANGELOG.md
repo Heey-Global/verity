@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.1.2](https://github.com/Heey-Global/verity/compare/v2.1.1...v2.1.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **server:** validate public preview artifacts ([#673](https://github.com/Heey-Global/verity/issues/673)) ([3f15f06](https://github.com/Heey-Global/verity/commit/3f15f06e63ef82d82d6c1b5687343cc626de3840))
+* **session:** retain MCP when ACP capability is omitted ([#681](https://github.com/Heey-Global/verity/issues/681)) ([d398eee](https://github.com/Heey-Global/verity/commit/d398eeefa379fb676b04d2bf37c303de9925a672))
+* **session:** settle turns stuck running after their sandbox dies ([#674](https://github.com/Heey-Global/verity/issues/674)) ([6a80102](https://github.com/Heey-Global/verity/commit/6a8010293c698ad54529ef15c662662cb0cc360a))
+
+
+### Performance Improvements
+
+* **sandbox:** cache Node dependencies outside the gVisor shared mount ([#682](https://github.com/Heey-Global/verity/issues/682)) ([e18eec3](https://github.com/Heey-Global/verity/commit/e18eec31472e4dc5aac6ab2b8d82f3b37ccb8791))
+
 ## [2.1.1](https://github.com/Heey-Global/verity/compare/v2.1.0...v2.1.1) (2026-09-24)
 
 
