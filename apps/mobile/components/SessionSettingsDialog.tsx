@@ -287,7 +287,11 @@ export function SessionSettingsDialog({
                             key={project.id}
                             accessibilityRole="button"
                             accessibilityLabel={project.name}
-                            accessibilityState={{ selected: target === project.id }}
+                            accessibilityState={{
+                              selected: target === project.id,
+                              disabled: busy || unresolved || !canMove,
+                            }}
+                            disabled={busy || unresolved || !canMove}
                             style={[styles.option, target === project.id && styles.selected]}
                             onPress={() => {
                               setTarget(project.id);

@@ -192,3 +192,27 @@ it('locks commit acknowledgement until an interrupted move is reconciled', async
   await screen.findByText(/Moved to Target project/);
   expect(request.mock.calls[2]).toEqual(request.mock.calls[1]);
 });
+
+it('locks an open project picker while moving and retains the destination on retry', async () => {
+  let rejectMove!: (reason: Error) => void;
+  const inFlight = new Promise((_, reject) => {
+    rejectMove = reject;
+  });
+  const request = jest.fn().mockReturnValueOnce(inFlight).mockResolvedValue(result);
+  setup(request);
+  selectTarget();
+  fireEvent.press(screen.getByRole('button', { name: 'Project' }));
+  move();
+  const other = screen.getByRole('button', { name: 'Other project' });
+  expect(other).toBeDisabled();
+  fireEvent.press(other);
+  await act(async () => {
+    rejectMove(new Error('Network interrupted'));
+  });
+  await screen.findByText('Network interrupted');
+  expect(other).toBeDisabled();
+  fireEvent.press(other);
+  move();
+  await screen.findByText(/Moved to Target project/);
+  expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+});
