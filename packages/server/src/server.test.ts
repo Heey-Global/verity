@@ -5733,7 +5733,6 @@ describe('GET /models (#143)', () => {
   it('pins the curated Claude model list and the spawn default (the single source of record)', () => {
     expect(CLAUDE_MODELS).toEqual([
       'claude-opus-5-5',
-      'claude-opus-5',
       'claude-fable-5-1',
       'claude-sonnet-5',
       'claude-haiku-4-5-20251001',
@@ -5910,12 +5909,12 @@ describe('GET /models (#143)', () => {
       eventStore: ctx.store,
       bus,
       conductor,
-      listModels: () => Promise.resolve(['claude-opus-5', 'deepinfra/zai-org/GLM-5.2']),
+      listModels: () => Promise.resolve(['claude-opus-5-5', 'deepinfra/zai-org/GLM-5.2']),
     });
     try {
       const res = await withModels.inject({ method: 'GET', url: '/models' });
       const body = res.json<{ models: string[] }>();
-      expect(body.models.filter((m) => m === 'claude-opus-5')).toHaveLength(1);
+      expect(body.models.filter((m) => m === 'claude-opus-5-5')).toHaveLength(1);
       expect(body.models).toContain('deepinfra/zai-org/GLM-5.2');
     } finally {
       await withModels.close();
