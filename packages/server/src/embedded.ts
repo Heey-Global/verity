@@ -3878,6 +3878,9 @@ export async function buildEmbeddedServer(
 
   const app = buildControlPlane({
     eventStore,
+    ...(process.env.VERITY_MATRIX_CONNECTOR_TOKEN
+      ? { matrixConnectorToken: process.env.VERITY_MATRIX_CONNECTOR_TOKEN }
+      : {}),
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),

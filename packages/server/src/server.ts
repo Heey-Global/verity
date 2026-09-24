@@ -1,6 +1,7 @@
 import { knowledgeSourceToolResult } from './knowledge-source-tool-result.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
+import { registerIntegrationRoutes } from './integrations/routes.js';
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { publishSharedInsight } from './knowledge-publish.js';
@@ -976,6 +977,7 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
+  matrixConnectorToken?: string | undefined;
   /** TLS termination for direct/non-managed deployments. Managed deployments
    * terminate at the dedicated Gateway instead. */
   https?: HttpsServerOptions | undefined;
@@ -5962,6 +5964,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reconcileInvalidations: reconcileKnowledgeInvalidations,
     });
   }
+  registerIntegrationRoutes(app, {
+    store: deps.eventStore.integrations,
+    ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
+    ...(deps.matrixConnectorToken !== undefined
+      ? { connectorToken: deps.matrixConnectorToken }
+      : {}),
+  });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {

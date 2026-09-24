@@ -47,6 +47,7 @@ export interface ControlPlaneDeps {
    * the route layer; provisioning the same folder does not make it visible to
    * HTTP handlers unless this value crosses the composition boundary too. */
   dataRoot?: ServerDeps['dataRoot'];
+  matrixConnectorToken?: ServerDeps['matrixConnectorToken'];
   /** TLS termination options for the public direct-server listener. */
   https?: ServerDeps['https'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
@@ -301,6 +302,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
   return buildServer({
     eventStore: deps.eventStore,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
+    ...(deps.matrixConnectorToken !== undefined
+      ? { matrixConnectorToken: deps.matrixConnectorToken }
+      : {}),
     ...(deps.https !== undefined ? { https: deps.https } : {}),
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }

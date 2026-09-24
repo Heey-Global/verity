@@ -2981,6 +2981,61 @@ const migrations: Record<string, Migration> = {
       // Authorization and per-session consent cannot be reconstructed safely.
     },
   },
+  '0108_inbound_integrations': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table integration_accounts (
+        id text primary key,
+        provider text not null,
+        endpoint text not null,
+        display_name text not null,
+        status text not null default 'offline',
+        last_error text,
+        updated_at timestamptz not null default now()
+      )`.execute(db);
+      await sql`create table integration_sources (
+        account_id text not null references integration_accounts(id) on delete cascade,
+        source_id text not null,
+        display_name text not null,
+        inviter text,
+        project_id text references projects(id) on delete set null,
+        status text not null default 'pending',
+        activated_at timestamptz,
+        last_ingested_at timestamptz,
+        last_error text,
+        primary key (account_id, source_id)
+      )`.execute(db);
+      await sql`create table integration_events (
+        account_id text not null,
+        source_id text not null,
+        event_id text not null,
+        target_event_id text,
+        kind text not null,
+        sender text not null,
+        occurred_at timestamptz not null,
+        body text,
+        primary key (account_id, source_id, event_id),
+        foreign key (account_id, source_id) references integration_sources(account_id, source_id) on delete cascade
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table integration_events`.execute(db);
+      await sql`drop table integration_sources`.execute(db);
+      await sql`drop table integration_accounts`.execute(db);
+    },
+  },
+  '0109_matrix_connector_config': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table matrix_connector_config (
+        id text primary key,
+        endpoint text not null,
+        username text not null,
+        password_secret text not null
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table matrix_connector_config`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

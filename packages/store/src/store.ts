@@ -16,6 +16,7 @@ export {
   DevServerPortRangeExhaustedError,
 } from './dev-server-ports.js';
 import { KnowledgeError, KnowledgeStore } from './knowledge.js';
+import { IntegrationStore } from './integrations.js';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import { scrubNulEscapes } from './nul-scrub.js';
 import { redactSecrets } from './redact.js';
@@ -1280,9 +1281,11 @@ export class EventStore implements EventSink {
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     this.knowledge = new KnowledgeStore(db);
+    this.integrations = new IntegrationStore(db, cipher);
   }
 
   readonly knowledge: KnowledgeStore;
+  readonly integrations: IntegrationStore;
 
   /** Encrypt a normalized secret value for storage (null stays null). */
   private encryptSecret(value: string | null): string | null {
@@ -4433,6 +4436,7 @@ export class EventStore implements EventSink {
         .where('project_id', '=', id)
         .execute();
       await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
+      await tx.deleteFrom('integration_sources').where('project_id', '=', id).execute();
       return tx.deleteFrom('projects').where('id', '=', id).executeTakeFirst();
     });
     return result.numDeletedRows > 0n;
