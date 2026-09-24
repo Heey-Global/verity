@@ -20,7 +20,13 @@ if let path = ProcessInfo.processInfo.environment["VERITY_PROBE_KEYCHAIN"] {
   var keychain: SecKeychain?
   try require(SecKeychainOpen(path, &keychain) == errSecSuccess, "open test keychain")
   guard let keychain else { fatalError("missing test keychain") }
-  query[kSecUseKeychain as String] = keychain
+  if args[1] == "create" {
+    query[kSecUseKeychain as String] = keychain
+  } else {
+    // Reads and deletes select an explicit search list; kSecUseKeychain selects
+    // the destination for insertion and does not scope a matching query.
+    query[kSecMatchSearchList as String] = [keychain]
+  }
 }
 if args[1] == "delete" {
   let status = SecItemDelete(query as CFDictionary)
@@ -37,7 +43,8 @@ if args[1] == "delete" {
   lookup[kSecReturnData as String] = true
   lookup[kSecReturnAttributes as String] = true
   var result: CFTypeRef?
-  try require(SecItemCopyMatching(lookup as CFDictionary, &result) == errSecSuccess, "read")
+  let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+  try require(status == errSecSuccess, "read OSStatus=\(status)")
   let row = result as! [String: Any]
   try require((row[kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String), "accessibility")
   try require((row[kSecAttrSynchronizable as String] as? NSNumber)?.boolValue != true, "sync")
