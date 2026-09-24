@@ -1,11 +1,12 @@
 import { createSocket, type Socket as UdpSocket } from 'node:dgram';
 import { createConnection, createServer, type Server } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startDnsForwarder, type DnsForwarder } from './dns.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -81,6 +82,39 @@ function answer(socket: UdpSocket, withinMs = 1_000): Promise<Buffer | undefined
 }
 
 describe('the relay DNS forwarder', () => {
+  it('retries when an automatic UDP port is already occupied by TCP', async () => {
+    const upstream = await fakeUpstream();
+    const occupied = createServer();
+    await new Promise<void>((resolve) => occupied.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => occupied.close(() => resolve())));
+    const address = occupied.address();
+    if (typeof address !== 'object' || address === null) throw new Error('missing TCP address');
+
+    const probe = createSocket('udp4');
+    const udpPrototype = Object.getPrototypeOf(probe) as UdpSocket;
+    probe.close();
+    // Preserve the real method before spying so the forced first allocation still
+    // creates an actual socket; binding it here would pin `this` to the probe.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalBind = udpPrototype.bind as unknown as (
+      this: UdpSocket,
+      port: number,
+      address: string,
+      callback?: () => void,
+    ) => UdpSocket;
+    vi.spyOn(udpPrototype, 'bind').mockImplementationOnce(function (
+      this: UdpSocket,
+      ...args: Parameters<UdpSocket['bind']>
+    ) {
+      const callback = args.find((arg): arg is () => void => typeof arg === 'function');
+      return originalBind.call(this, address.port, '127.0.0.1', callback);
+    });
+
+    const dns = await forwarder(upstream.port);
+    expect(dns.udpPort).toBe(dns.tcpPort);
+    expect(dns.udpPort).not.toBe(address.port);
+  });
+
   it('answers a Sandbox query over UDP from the upstream resolver', async () => {
     const upstream = await fakeUpstream();
     const dns = await forwarder(upstream.port);

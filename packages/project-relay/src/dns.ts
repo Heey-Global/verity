@@ -44,14 +44,31 @@ export interface DnsForwarder {
   close(): Promise<void>;
 }
 
-export async function startDnsForwarder(
-  options: {
-    host?: string;
-    port?: number;
-    upstream?: { host: string; port: number };
-    limits?: Partial<DnsForwarderLimits>;
-  } = {},
-): Promise<DnsForwarder> {
+interface DnsForwarderOptions {
+  host?: string;
+  port?: number;
+  upstream?: { host: string; port: number };
+  limits?: Partial<DnsForwarderLimits>;
+}
+
+export async function startDnsForwarder(options: DnsForwarderOptions = {}): Promise<DnsForwarder> {
+  const automaticPort = options.port === 0;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await startDnsForwarderAttempt(options);
+    } catch (error) {
+      if (
+        !automaticPort ||
+        (error as NodeJS.ErrnoException).code !== 'EADDRINUSE' ||
+        attempt === 4
+      ) {
+        throw error;
+      }
+    }
+  }
+}
+
+async function startDnsForwarderAttempt(options: DnsForwarderOptions): Promise<DnsForwarder> {
   const host = options.host ?? '0.0.0.0';
   const port = options.port ?? DNS_PORT;
   const upstream = options.upstream ?? DOCKER_EMBEDDED_DNS;
