@@ -1,409 +1,373 @@
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { AppState, type View } from 'react-native';
 import { Gesture } from 'react-native-gesture-handler';
 import {
-  Easing,
+  measure,
   runOnJS,
-  useAnimatedReaction,
-  useAnimatedStyle,
+  scrollTo,
+  useAnimatedRef,
   useAnimatedScrollHandler,
+  useAnimatedStyle,
   useDerivedValue,
+  useFrameCallback,
   useReducedMotion,
   useSharedValue,
   withSpring,
-  withTiming,
-  type SharedValue,
+  type AnimatedRef,
 } from 'react-native-reanimated';
+
+import { projectHandleRef } from '../lib/projectHandleRef';
 
 import {
   moveProjectIdToIndex,
-  projectDragStartOffset,
-  projectDragTargetIndex,
   projectRowPosition,
-  projectRowTarget,
-  projectRowTranslation,
   projectSortableRange,
   type ProjectDrag,
   type RowHeights,
 } from '../lib/projectReorder';
-import { PROJECT_SESSIONS_COLLAPSE_DURATION_MS } from './ProjectSessionsCollapse';
 
-/** Hold before a press turns into a drag; a shorter hold reads as a scroll that stuck. */
-const PROJECT_DRAG_ACTIVATION_MS = 260;
-/** The released row glides into its slot for this long before the order commits. */
-const PROJECT_DROP_DURATION_MS = 180;
-/** A drop whose animation never reports back is committed after this instead. */
-export const PROJECT_DROP_WATCHDOG_MS = PROJECT_DROP_DURATION_MS + 200;
-/** Movement before the hold elapses is a scroll, so the drag steps aside for it. */
-const PROJECT_DRAG_FAIL_DISTANCE = 12;
-/** How long the row lifts when picked up and settles back on release. */
-const LIFT_DURATION_MS = 150;
-const LIFT_SCALE = 1.02;
-/** Neighbours slide into their preview slot with a firm, non-overshooting spring. */
-const SLOT_SPRING = { damping: 30, stiffness: 320, mass: 1, overshootClamping: true };
-/** Longer than the slot spring takes to settle from a crossing right before the drop. */
-export const PROJECT_DRAG_FORGET_MS = 300;
-
-export type ProjectReorderController = {
-  drag: SharedValue<ProjectDrag | null>;
-  onScroll: ReturnType<typeof useAnimatedScrollHandler>;
-  /** How far the grabbed row sits from its rendered slot: finger travel plus collapse compensation. */
-  offset: SharedValue<number>;
-  heights: SharedValue<RowHeights>;
-  /** The row being dragged or dropped, as React state so the groups can fold. */
-  draggingId: string | null;
-  /** Compact row height (header plus separator) — reported by every row, in any state. */
-  reportCompactHeight: (id: string, height: number) => void;
-  /** Whole-group height while idle, so a drag knows how far the rows above will fold. */
-  reportExpandedHeight: (id: string, height: number) => void;
-  begin: (id: string) => void;
-  /** Commit the drop. Runs once per drag however many times it is called. */
-  finish: (order: readonly string[], token: number) => void;
-  /** Commit the drop after `PROJECT_DROP_WATCHDOG_MS` unless `finish` got there first. */
-  armWatchdog: (order: readonly string[], token: number) => void;
-  /** Let a pickup go whose gesture ended before the pickup reached the JS thread. */
-  cancelPickup: (id: string) => void;
-  /** Finger travel since pickup — written by the row gesture on the UI thread. */
-  travel: SharedValue<number>;
-  /** Fold compensation plus native scroll changes, keeping the row under the finger. */
-  shift: SharedValue<number>;
+type Header = {
+  id: string;
+  row: AnimatedRef<View>;
+  handle: AnimatedRef<View>;
+  slot: AnimatedRef<View>;
 };
+type Pickup = {
+  hostTop: number;
+  token: number;
+  left: number;
+  top: number;
+  width: number;
+  fingerY: number;
+};
+const SLOT_SPRING = { damping: 30, stiffness: 320, overshootClamping: true };
 
-/**
- * Owns one drag at a time for the project overview. The gesture itself lives in
- * each row (`useProjectRowDrag`) and only ever touches shared values; React is
- * involved exactly twice — at pickup, to fold the groups, and at drop, to commit
- * the order — so pointer moves never wait on a render.
- */
+/** One recognizer on the fixed viewport owns the entire touch sequence. Neither
+ * recycling a cell nor changing the content size can detach that recognizer. */
 export function useProjectReorder({
   order,
   sortable,
   onDrop,
 }: {
-  /** Ids of the rows as rendered, top to bottom. */
   order: readonly string[];
-  /** The subset of `order` a drag may move; the rest stay in their slots. */
   sortable: readonly string[];
-  /** The full rendered order after the drop, including pinned rows. */
   onDrop: (order: readonly string[]) => void;
-}): ProjectReorderController {
-  const reducedMotion = useReducedMotion();
+}) {
+  const hostRef = useAnimatedRef<View>();
+  const listRef = useAnimatedRef<React.Component>();
   const drag = useSharedValue<ProjectDrag | null>(null);
-  const travel = useSharedValue(0);
-  const shift = useSharedValue(0);
+  const pickup = useSharedValue<Pickup | null>(null);
+  const fingerY = useSharedValue(0);
   const scrollY = useSharedValue(0);
-  const onScroll = useAnimatedScrollHandler({
-    onScroll: (event) => {
-      const next = event.contentOffset.y;
-      const active = drag.value;
-      // Folding can clamp a deep native scroll offset even with scrolling
-      // disabled. Content coordinates must follow that shift to preserve the
-      // grabbed header's screen position; pointer translation alone cannot.
-      if (active && !active.dropping) shift.value += next - scrollY.value;
-      scrollY.value = next;
-    },
-  });
-  const offset = useDerivedValue(() => shift.value + travel.value);
+  const contentHeight = useSharedValue(0);
+  const viewportHeight = useSharedValue(0);
   const heights = useSharedValue<RowHeights>({});
-  const expandedHeights = useRef<Record<string, number>>({});
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const latest = useRef({ order, sortable, onDrop });
-  latest.current = { order, sortable, onDrop };
-  // Set while a drag is live or dropping; cleared by whichever of the drop
-  // animation's callback and the watchdog runs first, so a commit happens once.
-  const sequence = useRef(0);
-  const pending = useRef<{
-    id: string;
-    token: number;
-    watchdog?: ReturnType<typeof setTimeout>;
-  } | null>(null);
-
-  // The preview order follows the grabbed row's offset, whichever of the finger
-  // and the collapse compensation moved it: with tall groups folding above, the
-  // row can already be past the midpoint of a neighbour before the finger moves.
-  useAnimatedReaction(
-    () => offset.value,
-    (current) => {
-      const active = drag.value;
-      if (!active || active.dropping) return;
-      const targetIndex = projectDragTargetIndex(
-        active.startOrder,
-        active.id,
-        current,
-        heights.value,
-        active.range,
-      );
-      if (targetIndex === active.order.indexOf(active.id)) return;
-      drag.value = {
-        ...active,
-        order: moveProjectIdToIndex(active.startOrder, active.id, targetIndex),
-      };
-    },
-    [],
-  );
-
+  const sequence = useSharedValue(0);
+  const source = useDerivedValue(() => ({ order, sortable }));
+  const [headers, setHeaders] = useState<Header[]>([]);
+  const registeredHeaders = useDerivedValue(() => headers);
+  const [active, setActive] = useState<{ id: string | null; token: number } | null>(null);
+  const activeRef = useRef<{ id: string; token: number } | null>(null);
+  const completedToken = useRef(0);
+  const latestDrop = useRef(onDrop);
+  latestDrop.current = onDrop;
+  const fallback = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const register = useCallback((header: Header) => {
+    setHeaders((current) => [...current, header]);
+    return () => setHeaders((current) => current.filter((entry) => entry !== header));
+  }, []);
   const reportCompactHeight = useCallback(
     (id: string, height: number) => {
-      if (heights.value[id] === height) return;
-      heights.value = { ...heights.value, [id]: height };
+      if (heights.value[id] !== height) heights.value = { ...heights.value, [id]: height };
     },
     [heights],
   );
-  const reportExpandedHeight = useCallback((id: string, height: number) => {
-    expandedHeights.current[id] = height;
-  }, []);
-
-  const begin = useCallback(
-    (id: string) => {
-      if (pending.current) return;
-      const { order: startOrder, sortable: sortableIds } = latest.current;
-      if (!startOrder.includes(id)) return;
-      const token = ++sequence.current;
-      pending.current = { id, token };
-      const range = projectSortableRange(startOrder, sortableIds, id);
-      const startShift = projectDragStartOffset(
-        startOrder,
-        id,
-        expandedHeights.current,
-        heights.value,
-      );
-      travel.value = 0;
-      shift.value = 0;
-      drag.value = { id, token, startOrder, order: startOrder, range };
-      // Runs in step with the fold of the groups above, so the row neither
-      // slides up with them nor jumps down ahead of them.
-      shift.value =
-        reducedMotion || PROJECT_SESSIONS_COLLAPSE_DURATION_MS === 0
-          ? startShift
-          : withTiming(startShift, {
-              duration: PROJECT_SESSIONS_COLLAPSE_DURATION_MS,
-              easing: Easing.inOut(Easing.ease),
-            });
-      setDraggingId(id);
+  const started = useCallback(
+    (id: string, token: number) => {
+      if (drag.value?.token !== token || token <= completedToken.current) return;
+      activeRef.current = { id, token };
+      setActive({ id, token });
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
     },
-    [drag, heights, reducedMotion, shift, travel],
+    [drag],
   );
-
-  const finish = useCallback((order: readonly string[], token: number) => {
-    const current = pending.current;
-    if (!current || current.token !== token) return;
-    pending.current = null;
-    if (current.watchdog !== undefined) clearTimeout(current.watchdog);
-    latest.current.onDrop(order);
-    setDraggingId(null);
+  const ended = useCallback((next: readonly string[] | null, token: number) => {
+    if (token <= completedToken.current) return;
+    completedToken.current = token;
+    if (activeRef.current?.token === token) activeRef.current = null;
+    setActive((current) => (current?.token === token ? { id: null, token } : current));
+    if (next) latestDrop.current(next);
   }, []);
+  // Keep the final compact slot until React commits the new order. Clearing it
+  // in finalize starts a return spring against the old layout before that commit.
+  useLayoutEffect(() => {
+    if (active?.id !== null) return;
+    const current = drag.value;
+    if (current?.dropping && current.token === active.token) drag.value = null;
+  }, [active, drag]);
+  const cancel = useCallback(() => {
+    const current = drag.value ?? activeRef.current;
+    if (!current) return;
+    drag.value = null;
+    pickup.value = null;
+    ended(null, current.token);
+  }, [drag, pickup, ended]);
 
-  // The gesture can end before `begin` has run on the JS thread — a hold that
-  // is released the instant it activates. `begin` then folds the groups for a
-  // finger that is already gone; this runs after it (runOnJS keeps the order)
-  // and lets go again, so the overview cannot stay locked in reorder mode.
-  const cancelPickup = useCallback(
-    (id: string) => {
-      if (pending.current?.id !== id) return;
-      finish(latest.current.order, pending.current.token);
-    },
-    [drag, finish],
-  );
-
-  const armWatchdog = useCallback(
-    (order: readonly string[], token: number) => {
-      const current = pending.current;
-      if (!current || current.token !== token || current.watchdog !== undefined) return;
-      current.watchdog = setTimeout(() => finish(order, token), PROJECT_DROP_WATCHDOG_MS);
-    },
-    [finish],
-  );
-
-  // The commit re-renders the rows in the dropped order, which zeroes every
-  // settled transform by construction (see projectRowTranslation). A neighbour
-  // whose slot spring is still running when the finger lets go finishes that
-  // spring across the commit; forgetting the drag while it runs would snap it.
-  // So the drag is forgotten only once the springs have had time to settle,
-  // and not at all if another pickup has claimed the state by then.
+  // A native interruption must not leave React's scroll lock behind, even if
+  // the platform loses a recognizer callback while backgrounding the app.
   useEffect(() => {
-    if (draggingId !== null) return;
-    const forget = setTimeout(() => {
-      if (pending.current) return;
-      drag.value = null;
-      travel.value = 0;
-      shift.value = 0;
-    }, PROJECT_DRAG_FORGET_MS);
-    return () => clearTimeout(forget);
-  }, [drag, draggingId, shift, travel]);
-  useEffect(
-    () => () => {
-      if (pending.current?.watchdog !== undefined) clearTimeout(pending.current.watchdog);
-    },
-    [],
-  );
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') cancel();
+    });
+    return () => {
+      subscription.remove();
+      clearTimeout(fallback.current);
+    };
+  }, [cancel]);
+  const releaseFallback = useCallback(() => {
+    const token = drag.value?.token ?? activeRef.current?.token;
+    clearTimeout(fallback.current);
+    fallback.current = setTimeout(() => {
+      if (token !== undefined && (drag.value?.token ?? activeRef.current?.token) === token)
+        cancel();
+    }, 250);
+  }, [cancel, drag]);
 
-  return useMemo(
-    () => ({
-      drag,
-      onScroll,
-      offset,
-      travel,
-      shift,
-      heights,
-      draggingId,
-      reportCompactHeight,
-      reportExpandedHeight,
-      begin,
-      finish,
-      armWatchdog,
-      cancelPickup,
-    }),
+  const updateTarget = useCallback(() => {
+    'worklet';
+    const current = drag.value;
+    const origin = pickup.value;
+    if (!current || current.dropping || !origin) return;
+    const screenTop = origin.hostTop + origin.top + fingerY.value - origin.fingerY;
+    let index = current.order.indexOf(current.id);
+    let distance = Infinity;
+    // Measure untransformed slots, not the animated neighbours. Prefix sums of
+    // estimated offscreen row heights drift badly in a long virtualized list.
+    for (const header of registeredHeaders.value) {
+      const candidate = current.startOrder.indexOf(header.id);
+      if (candidate < current.range.min || candidate > current.range.max) continue;
+      const slot = measure(header.slot);
+      if (!slot || slot.height <= 0) continue;
+      const nextDistance = Math.abs(slot.pageY - screenTop);
+      if (nextDistance < distance) {
+        distance = nextDistance;
+        index = candidate;
+      }
+    }
+    if (index !== current.order.indexOf(current.id)) {
+      drag.value = {
+        ...current,
+        order: moveProjectIdToIndex(current.startOrder, current.id, index),
+      };
+    }
+  }, [drag, pickup, fingerY, registeredHeaders]);
+  const onScroll = useAnimatedScrollHandler((event) => {
+    scrollY.value = event.contentOffset.y;
+    updateTarget();
+  });
+  // Keep destinations beyond the viewport reachable without moving the overlay
+  // away from the finger. Native scrolling still stays locked during the drag.
+  useFrameCallback((frame) => {
+    if (!drag.value || drag.value.dropping || !pickup.value) return;
+    updateTarget();
+    const pointer = fingerY.value - pickup.value.hostTop;
+    const edge = 56;
+    const direction = pointer < edge ? -1 : pointer > viewportHeight.value - edge ? 1 : 0;
+    if (!direction) return;
+    const next = Math.max(
+      0,
+      Math.min(
+        Math.max(0, contentHeight.value - viewportHeight.value),
+        scrollY.value + direction * Math.min(frame.timeSincePreviousFrame ?? 16, 32) * 0.45,
+      ),
+    );
+    if (next !== scrollY.value) scrollTo(listRef, 0, next, false);
+  });
+
+  const gesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .withTestId('project-reorder')
+        .activateAfterLongPress(260)
+        .failOffsetX([-12, 12])
+        .failOffsetY([-12, 12])
+        .maxPointers(1)
+        .shouldCancelWhenOutside(false)
+        .onTouchesDown((event, manager) => {
+          const touch = event.allTouches[0];
+          const hit =
+            touch &&
+            registeredHeaders.value.some((header) => {
+              if (!source.value.sortable.includes(header.id)) return false;
+              const bounds = measure(header.handle);
+              return (
+                bounds !== null &&
+                touch.absoluteX >= bounds.pageX &&
+                touch.absoluteX <= bounds.pageX + bounds.width &&
+                touch.absoluteY >= bounds.pageY &&
+                touch.absoluteY <= bounds.pageY + bounds.height
+              );
+            });
+          if (!hit) manager.fail();
+        })
+        // Native touch events survive the Pressable responder cancellation at
+        // pickup. React onTouchCancel does not: using it would abort a healthy
+        // drag as soon as this pan recognizer takes ownership of the touch.
+        .onTouchesUp(() => runOnJS(releaseFallback)())
+        .onTouchesCancelled(() => runOnJS(releaseFallback)())
+        .onStart((event) => {
+          if (drag.value && !drag.value.dropping) return;
+          const host = measure(hostRef);
+          if (!host) return;
+          for (const header of registeredHeaders.value) {
+            if (!source.value.sortable.includes(header.id)) continue;
+            const handle = measure(header.handle);
+            if (
+              !handle ||
+              event.absoluteX < handle.pageX ||
+              event.absoluteX > handle.pageX + handle.width ||
+              event.absoluteY < handle.pageY ||
+              event.absoluteY > handle.pageY + handle.height
+            )
+              continue;
+            const row = measure(header.row);
+            if (!row) continue;
+            const token = ++sequence.value;
+            fingerY.value = event.absoluteY;
+            pickup.value = {
+              token,
+              hostTop: host.pageY,
+              top: row.pageY - host.pageY,
+              left: row.pageX - host.pageX,
+              width: row.width,
+              fingerY: event.absoluteY,
+            };
+            const startOrder = source.value.order;
+            drag.value = {
+              id: header.id,
+              token,
+              startOrder,
+              order: startOrder,
+              range: projectSortableRange(startOrder, source.value.sortable, header.id),
+            };
+            runOnJS(started)(header.id, token);
+            break;
+          }
+        })
+        .onUpdate((event) => {
+          if (!drag.value || drag.value.dropping) return;
+          fingerY.value = event.absoluteY;
+          updateTarget();
+        })
+        .onFinalize((_event, success) => {
+          const current = drag.value;
+          if (!current || current.dropping) return;
+          drag.value = success ? { ...current, dropping: true } : null;
+          pickup.value = null;
+          runOnJS(ended)(success ? current.order : null, current.token);
+        }),
     [
-      armWatchdog,
-      begin,
-      cancelPickup,
+      registeredHeaders,
+      hostRef,
+      source,
+      sequence,
+      fingerY,
+      pickup,
       drag,
-      draggingId,
-      finish,
-      heights,
-      onScroll,
-      offset,
-      reportCompactHeight,
-      reportExpandedHeight,
-      shift,
-      travel,
+      started,
+      ended,
+      updateTarget,
+      releaseFallback,
     ],
   );
+
+  const overlayStyle = useAnimatedStyle(() => {
+    const origin = pickup.value;
+    return {
+      position: 'absolute',
+      left: origin?.left ?? 0,
+      top: origin?.top ?? 0,
+      transform: [{ translateY: origin ? fingerY.value - origin.fingerY : 0 }],
+      width: origin?.width ?? 0,
+      opacity: origin ? 1 : 0,
+      zIndex: 10,
+      elevation: 10,
+    };
+  });
+  return {
+    drag,
+    hostRef,
+    listRef,
+    gesture,
+    overlayStyle,
+    onScroll,
+    draggingId: active?.id ?? null,
+    register,
+    reportCompactHeight,
+    heights,
+    onContentSizeChange: (_width: number, height: number) => {
+      contentHeight.value = height;
+    },
+    onViewportLayout: (height: number) => {
+      viewportHeight.value = height;
+    },
+  };
 }
 
-/**
- * The gesture and transform for one project row.
- *
- * `renderedOrder` is the order React is currently painting. The transform is
- * defined against it — not against a shared value set after the fact — so the
- * commit that reorders the rows and the transform that goes to zero land in the
- * same frame.
- */
+export type ProjectReorderController = ReturnType<typeof useProjectReorder>;
+
+/** Rows are only hit-test targets and drop slots; no row owns a recognizer. */
 export function useProjectRowDrag({
   id,
   reorder,
   renderedOrder,
   enabled,
+  floating = false,
 }: {
   id: string;
   reorder: ProjectReorderController;
   renderedOrder: readonly string[];
   enabled: boolean;
+  floating?: boolean;
 }) {
-  const { drag, offset, travel, shift, heights, begin, finish, armWatchdog, cancelPickup } =
-    reorder;
+  const slotRef = useAnimatedRef<View>();
+  const rowRef = useAnimatedRef<View>();
+  const handleRef = useAnimatedRef<View>();
+  const handleCallbackRef = useMemo(() => projectHandleRef(handleRef), [handleRef]);
+  const { register, drag, heights } = reorder;
   const reducedMotion = useReducedMotion();
-
-  const target = useDerivedValue(
-    () => projectRowTarget(drag.value, id, heights.value, offset.value),
-    [id],
-  );
-  // Neighbours spring to their slot; the grabbed row is pinned to the finger.
-  const visual = useSharedValue(0);
-  useAnimatedReaction(
-    () => target.value,
-    (next, previous) => {
-      if (next === previous) return;
-      const current = drag.value;
-      visual.value =
-        !current || current.id === id || reducedMotion ? next : withSpring(next, SLOT_SPRING);
-    },
-    [id, reducedMotion],
-  );
-  const lift = useDerivedValue(
-    () =>
-      withTiming(drag.value?.id === id && !reducedMotion ? LIFT_SCALE : 1, {
-        duration: LIFT_DURATION_MS,
-      }),
-    [id, reducedMotion],
-  );
-  const style = useAnimatedStyle(
-    () => ({
+  useEffect(() => {
+    if (enabled && !floating)
+      return register({ id, row: rowRef, handle: handleRef, slot: slotRef });
+  }, [enabled, floating, id, register, rowRef, handleRef, slotRef]);
+  const visual = useDerivedValue(() => {
+    const current = drag.value;
+    if (!current || floating) return 0;
+    const target =
+      projectRowPosition(current.order, id, heights.value) -
+      projectRowPosition(current.startOrder, id, heights.value);
+    // Settle unfinished neighbour springs at release. The subtraction below
+    // then removes the same displacement in the render that commits the order.
+    return reducedMotion || current.dropping || current.id === id
+      ? target
+      : withSpring(target, SLOT_SPRING);
+  });
+  const style = useAnimatedStyle(() => {
+    const current = drag.value;
+    return {
+      opacity: !floating && current?.id === id && !current.dropping ? 0 : 1,
       transform: [
         {
-          translateY: projectRowTranslation(
-            drag.value,
-            id,
-            heights.value,
-            visual.value,
-            renderedOrder,
-          ),
+          translateY:
+            !current || floating
+              ? 0
+              : visual.value -
+                (projectRowPosition(renderedOrder, id, heights.value) -
+                  projectRowPosition(current.startOrder, id, heights.value)),
         },
-        { scale: lift.value },
       ],
-    }),
-    [id, renderedOrder],
-  );
-
-  const gesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .withTestId(`project-drag:${id}`)
-        .enabled(enabled)
-        .activateAfterLongPress(PROJECT_DRAG_ACTIVATION_MS)
-        .failOffsetX([-PROJECT_DRAG_FAIL_DISTANCE, PROJECT_DRAG_FAIL_DISTANCE])
-        .failOffsetY([-PROJECT_DRAG_FAIL_DISTANCE, PROJECT_DRAG_FAIL_DISTANCE])
-        .onStart(() => {
-          runOnJS(begin)(id);
-        })
-        .onUpdate((event) => {
-          const current = drag.value;
-          if (!current || current.id !== id || current.dropping) return;
-          // Follow the finger in screen coordinates. Only the destination
-          // slot is bounded: compact-layout bounds would subtract the height
-          // just lost above this row and snap it away from the pickup point.
-          travel.value = event.translationY;
-        })
-        .onFinalize(() => {
-          const current = drag.value;
-          if (!current || current.id !== id) {
-            runOnJS(cancelPickup)(id);
-            return;
-          }
-          if (current.dropping) {
-            // A rapid re-pickup can still see the previous drop on the UI
-            // thread. Always release the JS pickup queued by this gesture.
-            runOnJS(cancelPickup)(id);
-            return;
-          }
-          const order = current.order;
-          drag.value = { ...current, dropping: true };
-          runOnJS(armWatchdog)(order, current.token!);
-          // Freeze a collapse compensation still in flight: the slot below is
-          // measured against the compact layout the glide ends in.
-          const frozenShift = shift.value;
-          shift.value = frozenShift;
-          const rows = heights.value;
-          const slot =
-            projectRowPosition(order, id, rows) - projectRowPosition(current.startOrder, id, rows);
-          if (reducedMotion) {
-            travel.value = slot - frozenShift;
-            runOnJS(finish)(order, current.token!);
-            return;
-          }
-          travel.value = withTiming(
-            slot - frozenShift,
-            { duration: PROJECT_DROP_DURATION_MS, easing: Easing.out(Easing.cubic) },
-            () => {
-              runOnJS(finish)(order, current.token!);
-            },
-          );
-        }),
-    [
-      armWatchdog,
-      begin,
-      cancelPickup,
-      drag,
-      enabled,
-      finish,
-      heights,
-      id,
-      reducedMotion,
-      shift,
-      travel,
-    ],
-  );
-
-  return { gesture, style };
+    };
+  });
+  return { slotRef, rowRef, handleCallbackRef, style };
 }
