@@ -63,3 +63,26 @@ describe('fixed enrollment action vectors', () => {
     }
   });
 });
+
+it('preserves string-pattern acceptance in the portable export without JavaScript flags', () => {
+  const exported = jsonSchemas();
+  for (const name of ['recoveryRequest', 'initialize'] as const) {
+    const schema = exported[name] as { properties: Record<string, { pattern?: string }> };
+    const valid = fixtures.find((f) => f.schema === name && f.valid)!.value;
+    for (const [field, definition] of Object.entries(schema.properties)) {
+      if (!definition.pattern) continue;
+      const pattern = new RegExp(definition.pattern);
+      const value = valid[field] as string;
+      expect(pattern.test(value), field).toBe(true);
+      expect(pattern.test(value + '\n'), field).toBe(false);
+      expect(pattern.test(value + '\r\n'), field).toBe(false);
+    }
+  }
+  const upper = fixtures.find((f) => f.name === 'uppercase-installation-uuid')!;
+  const schema = exported.recoveryRequest as {
+    properties: { installationId: { pattern: string } };
+  };
+  expect(
+    new RegExp(schema.properties.installationId.pattern).test(upper.value.installationId as string),
+  ).toBe(true);
+});

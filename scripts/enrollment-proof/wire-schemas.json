@@ -11,11 +11,11 @@
           },
           "sessionId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
           },
           "installationId": {
             "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
           },
           "purpose": {
             "type": "string",
@@ -49,11 +49,11 @@
           },
           "sessionId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
           },
           "installationId": {
             "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
           },
           "purpose": {
             "type": "string",
@@ -61,7 +61,7 @@
           },
           "redemptionId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
           },
           "recoveryReservationId": {
             "type": "string",
@@ -87,11 +87,11 @@
           },
           "sessionId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
           },
           "installationId": {
             "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
           },
           "purpose": {
             "type": "string",
@@ -99,11 +99,11 @@
           },
           "redemptionId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
           },
           "recoveryReservationId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
           }
         },
         "required": [
@@ -126,15 +126,15 @@
         "properties": {
           "operationId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
           },
           "invitationId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
           },
           "deviceKey": {
             "type": "string",
-            "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+            "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
           },
           "purpose": {
             "type": "string",
@@ -153,15 +153,15 @@
         "properties": {
           "operationId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
           },
           "invitationId": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
           },
           "deviceKey": {
             "type": "string",
-            "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+            "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
           },
           "purpose": {
             "type": "string",
@@ -183,15 +183,15 @@
     "properties": {
       "challengeId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "operationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "invitationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "purpose": {
         "type": "string",
@@ -199,7 +199,7 @@
       },
       "deviceKey": {
         "type": "string",
-        "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "action": {
         "type": "string",
@@ -207,11 +207,11 @@
       },
       "secret": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "signature": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+        "pattern": "^[A-Za-z0-9_-]{85}[AQgw](?![\\s\\S])"
       }
     },
     "required": [
@@ -232,15 +232,15 @@
     "properties": {
       "challengeId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "operationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "invitationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "purpose": {
         "type": "string",
@@ -248,7 +248,7 @@
       },
       "deviceKey": {
         "type": "string",
-        "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "action": {
         "type": "string",
@@ -256,11 +256,11 @@
       },
       "secret": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "signature": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+        "pattern": "^[A-Za-z0-9_-]{85}[AQgw](?![\\s\\S])"
       },
       "masterPassword": {
         "type": "string",
@@ -287,7 +287,7 @@
     "properties": {
       "operationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "state": {
         "type": "string",
@@ -303,11 +303,11 @@
     "properties": {
       "operationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "receiptId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       }
     },
     "required": ["operationId", "receiptId"],
@@ -323,19 +323,19 @@
       },
       "requestId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "installationHandle": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "redemptionId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "operationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "capabilities": {
         "minItems": 1,
@@ -343,7 +343,7 @@
         "type": "array",
         "items": {
           "type": "string",
-          "pattern": "^[\\x20-\\x7e]{1,64}$"
+          "pattern": "^[\\x20-\\x7e]{1,64}(?![\\s\\S])"
         }
       }
     },
@@ -367,23 +367,23 @@
       },
       "requestId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "recoveryReservationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "installationId": {
         "type": "string",
-        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
       },
       "redemptionId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "operationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "expiresAt": {
         "type": "integer",
@@ -412,7 +412,7 @@
       },
       "recoveryReservationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "expiresAt": {
         "type": "integer",
@@ -433,7 +433,7 @@
       },
       "recoveryReservationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "code": {
         "type": "string",
@@ -453,11 +453,11 @@
       },
       "requestId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "recoveryReservationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "expiresAt": {
         "type": "integer",
@@ -478,7 +478,7 @@
       },
       "recoveryReservationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       }
     },
     "required": ["type", "recoveryReservationId"],
@@ -494,11 +494,11 @@
       },
       "requestId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "installationHandle": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
       },
       "capabilities": {
         "minItems": 1,
@@ -506,7 +506,7 @@
         "type": "array",
         "items": {
           "type": "string",
-          "pattern": "^[\\x20-\\x7e]{1,64}$"
+          "pattern": "^[\\x20-\\x7e]{1,64}(?![\\s\\S])"
         }
       },
       "enrollmentPurpose": {
@@ -515,7 +515,7 @@
       },
       "recoveryReservationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       }
     },
     "required": [

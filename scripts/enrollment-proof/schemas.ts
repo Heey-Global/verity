@@ -1,19 +1,21 @@
 // Review-only wire schemas. No production route imports this module.
 import { z } from 'zod';
 
-const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
-const bytes32 = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/);
-const signature = z.string().regex(/^[A-Za-z0-9_-]{85}[AQgw]$/);
-const deviceKey = z.string().regex(/^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/);
+const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}(?![\s\S])/);
+const bytes32 = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\s\S])/);
+const signature = z.string().regex(/^[A-Za-z0-9_-]{85}[AQgw](?![\s\S])/);
+const deviceKey = z
+  .string()
+  .regex(/^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\s\S])/);
 const time = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const purpose = z.enum(['initial-admin', 'team-member']);
 const action = z.enum(['initialize', 'commit', 'recover']);
 const empty = z.literal('');
 const installationId = z
   .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\s\S])/);
 const capabilities = z
-  .array(z.string().regex(/^[\x20-\x7e]{1,64}$/))
+  .array(z.string().regex(/^[\x20-\x7e]{1,64}(?![\s\S])/))
   .max(32)
   .min(1);
 const object = z.strictObject;
