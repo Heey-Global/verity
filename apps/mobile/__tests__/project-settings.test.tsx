@@ -644,6 +644,45 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.getByLabelText('Name')).toHaveProp('value', 'Web');
   });
 
+  it('names the inherited project permissions beside external sharing', async () => {
+    const base = makeDetail();
+    const detail = { ...base, project: { ...base.project, state: 'active' as const } };
+    const server = {
+      id: 'ds-web',
+      projectId: 'p/1',
+      name: 'Web',
+      command: 'npm run dev',
+      url: null,
+      workdir: null,
+      hostPort: '3000',
+      containerPort: '3000',
+      sortOrder: 0,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail,
+        getHealth: jest.fn().mockResolvedValue({ status: 'ok', publicPreviewsEnabled: true }),
+        listDevServers: jest.fn().mockResolvedValue([server]),
+        getDevServerStatus: jest.fn().mockResolvedValue({
+          projectId: 'p/1',
+          url: null,
+          running: true,
+          pid: '123',
+        }),
+      }),
+    );
+    render(<ProjectDetailScreen />);
+
+    expect(await screen.findByText('External sharing')).toBeOnTheScreen();
+    expect(
+      screen.getByText(
+        "Public traffic reaches this project sandbox. A compromised dev server can use the sandbox's project-scoped broker and gateway permissions.",
+      ),
+    ).toBeOnTheScreen();
+  });
+
   it('blocks deletion while a runtime mutation is in flight', async () => {
     const base = makeDetail();
     const detail = { ...base, project: { ...base.project, state: 'active' as const } };

@@ -439,6 +439,12 @@ async function harness() {
     docker: docker as unknown as DockerClient,
     edge: control,
     resolveConnectorImage: async () => CONNECTOR_IMAGE,
+    // Production always supplies these together. The eligibility check derives
+    // the project's exact volume subpath before it evaluates entitlement, so
+    // this composed fixture must model that storage boundary as well.
+    dataVolume: 'verity-data',
+    dataVolumeRoot: '/data',
+    hostCloneRoot: '/data',
     isDevServerRunning: async () => true,
     connectorReadyPollMs: 25,
     // Comfortably below the per-test timeout, so a connector that never attaches

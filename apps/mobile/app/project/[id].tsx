@@ -2671,6 +2671,10 @@ function PublicPreviewShareControls({
       {!canOpen ? (
         <Text style={styles.settingsHint}>Start the project before sharing it.</Text>
       ) : null}
+      <Text style={styles.settingsHint}>
+        Public traffic reaches this project sandbox. A compromised dev server can use the
+        sandbox&apos;s project-scoped broker and gateway permissions.
+      </Text>
       {error ? <Text style={styles.settingsError}>{error}</Text> : null}
       {liveShares.map((share) => (
         <View key={share.id} style={styles.publicShareCard}>

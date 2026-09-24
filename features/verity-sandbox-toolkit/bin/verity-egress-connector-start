@@ -56,7 +56,7 @@ if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ] || [ "$AUTHORITY" != "127.0.0.1:$P
   exit 1
 fi
 
-for _name in VERITY_CLAUDE_EGRESS_URL VERITY_CLAUDE_EGRESS_AUTHORITY VERITY_CLAUDE_EGRESS_CA VERITY_CLAUDE_EGRESS_CERT VERITY_CLAUDE_EGRESS_KEY; do
+for _name in VERITY_CLAUDE_EGRESS_URL VERITY_CLAUDE_EGRESS_AUTHORITY VERITY_CLAUDE_EGRESS_CA VERITY_CLAUDE_EGRESS_CERT VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE; do
   required "$_name" >/dev/null
 done
 CODEX_EGRESS_SET=0
@@ -67,7 +67,7 @@ if [ "$CODEX_EGRESS_SET" -ne 0 ] && [ "$CODEX_EGRESS_SET" -ne 2 ]; then
   echo 'incomplete Codex egress connector configuration' >&2
   exit 1
 fi
-for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CLAUDE_EGRESS_KEY"; do
+for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE"; do
   case "$_path" in /*) ;; *) echo 'Claude egress TLS paths must be absolute' >&2; exit 1 ;; esac
   _canonical="$(realpath -e -- "$_path" 2>/dev/null || true)"
   if [ -z "$_canonical" ] || [ "$_canonical" != "$_path" ] || [ ! -f "$_path" ] || [ -L "$_path" ]; then
@@ -75,14 +75,14 @@ for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CL
     exit 1
   fi
 done
-KEY_OWNER="$(stat -c '%u:%g' "$VERITY_CLAUDE_EGRESS_KEY")"
+KEY_OWNER="$(stat -c '%u:%g' "$VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE")"
 KEY_UID="${KEY_OWNER%:*}"
 KEY_GID="${KEY_OWNER#*:}"
 if [ "$KEY_GID" != "$RUNNER_GID" ]; then
   echo 'Claude egress private key has invalid ownership' >&2
   exit 1
 fi
-KEY_MODE="$(stat -c '%a' "$VERITY_CLAUDE_EGRESS_KEY")"
+KEY_MODE="$(stat -c '%a' "$VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE")"
 if (( 8#$KEY_MODE & 007 )); then
   echo 'Claude egress private key must not be accessible to other users' >&2
   exit 1
@@ -97,7 +97,7 @@ if [ "$KEY_UID" != "$RUNNER_UID" ] && [ "$KEY_UID" != 0 ]; then
     exit 1
   fi
 fi
-for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CLAUDE_EGRESS_KEY"; do
+for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE"; do
   if [ "$(id -u)" -eq 0 ]; then
     /usr/bin/setpriv "--reuid=$RUNNER_UID" "--regid=$RUNNER_GID" --clear-groups \
       /usr/bin/test -r "$_path" || {
@@ -111,7 +111,7 @@ for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CL
 done
 CONFIG_FINGERPRINT="$({
   printf '%s\0%s\0%s\0%s\0%s\0' "$VERITY_CLAUDE_EGRESS_URL" "$VERITY_CLAUDE_EGRESS_AUTHORITY" "${VERITY_CLAUDE_EGRESS_SERVERNAME:-}" "${VERITY_CODEX_EGRESS_URL:-}" "${VERITY_CODEX_EGRESS_AUTHORITY:-}"
-  sha256sum -- "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CLAUDE_EGRESS_KEY"
+  sha256sum -- "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE"
 } | sha256sum | awk '{print $1}')"
 if [ "$MODE" = fingerprint ]; then printf '%s\n' "$CONFIG_FINGERPRINT"; exit 0; fi
 if [ "$MODE" = validate ]; then exit 0; fi
@@ -245,7 +245,7 @@ nohup "${PRIVILEGE_DROP[@]}" \
   "VERITY_CLAUDE_EGRESS_AUTHORITY=$VERITY_CLAUDE_EGRESS_AUTHORITY" \
   "VERITY_CLAUDE_EGRESS_CA=$VERITY_CLAUDE_EGRESS_CA" \
   "VERITY_CLAUDE_EGRESS_CERT=$VERITY_CLAUDE_EGRESS_CERT" \
-  "VERITY_CLAUDE_EGRESS_KEY=$VERITY_CLAUDE_EGRESS_KEY" \
+  "VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=$VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE" \
   "${SERVERNAME_ENV[@]}" \
   "${CODEX_EGRESS_ENV[@]}" \
   "$NODE_BIN" "$CONNECTOR_BIN" >>"$LOG_FILE" 2>&1 9>&- &

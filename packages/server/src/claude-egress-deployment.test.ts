@@ -78,7 +78,7 @@ describe('Claude egress reference deployment', () => {
 
     expect(smoke).toContain('/__verity/gateway-ready');
     expect(smoke).toContain('"authenticated":true');
-    expect(smoke).toContain('VERITY_CLAUDE_EGRESS_KEY');
+    expect(smoke).toContain('VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE');
     expect(smoke).toContain('VERITY_AGENT_GATEWAY_URL');
     expect(smoke).toContain('expected 403');
     expect(smoke).toContain('[non-canary-container]');
@@ -103,7 +103,7 @@ if [ "$1" = inspect ]; then
       VERITY_CLAUDE_EGRESS_URL=https://verity-agent-gateway:9443 \\
       VERITY_CLAUDE_EGRESS_CA=/run/ca.crt \\
       VERITY_CLAUDE_EGRESS_CERT=/run/client.crt \\
-      VERITY_CLAUDE_EGRESS_KEY=/run/client.key
+      VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=/run/client.key
   else
     printf '%s\\n' \\
       VERITY_CLAUDE_CONNECTOR_PORT=47821 \\
@@ -111,7 +111,7 @@ if [ "$1" = inspect ]; then
       VERITY_CLAUDE_EGRESS_URL=https://verity:9443 \\
       VERITY_CLAUDE_EGRESS_CA=/run/ca.crt \\
       VERITY_CLAUDE_EGRESS_CERT=/run/client.crt \\
-      VERITY_CLAUDE_EGRESS_KEY=/run/client.key
+      VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=/run/client.key
   fi
 elif [ "$1" = exec ] && [ "$2" = canary ]; then
   case "$*" in

@@ -446,6 +446,8 @@ export interface ContainerInspect {
          *  caller comparing a mount against a volume NAME must use this. */
         name?: string | undefined;
         source?: string | undefined;
+        /** Named-volume subpath requested in HostConfig.Mounts. */
+        subpath?: string | undefined;
         destination?: string | undefined;
         readWrite?: boolean | undefined;
       }>
@@ -1734,6 +1736,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           DeviceRequests?: unknown;
           RestartPolicy?: { Name?: unknown };
           Init?: unknown;
+          Mounts?: unknown;
         };
         Mounts?: unknown;
       };
@@ -1822,11 +1825,24 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
                   Destination?: unknown;
                   RW?: unknown;
                 };
+                const configuredMounts: unknown[] = Array.isArray(json.HostConfig?.Mounts)
+                  ? (json.HostConfig.Mounts as unknown[])
+                  : [];
+                const configuredMount = configuredMounts.find((candidate) => {
+                  if (typeof candidate !== 'object' || candidate === null) return false;
+                  return (candidate as { Target?: unknown }).Target === value.Destination;
+                });
+                const subpath =
+                  typeof configuredMount === 'object' && configuredMount !== null
+                    ? (configuredMount as { VolumeOptions?: { Subpath?: unknown } }).VolumeOptions
+                        ?.Subpath
+                    : undefined;
                 return [
                   {
                     ...(typeof value.Type === 'string' ? { type: value.Type } : {}),
                     ...(typeof value.Name === 'string' ? { name: value.Name } : {}),
                     ...(typeof value.Source === 'string' ? { source: value.Source } : {}),
+                    ...(typeof subpath === 'string' ? { subpath } : {}),
                     ...(typeof value.Destination === 'string'
                       ? { destination: value.Destination }
                       : {}),

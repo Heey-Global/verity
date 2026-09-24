@@ -1131,6 +1131,14 @@ describe('createDockerClient (#174)', () => {
             DeviceRequests: null,
             RestartPolicy: { Name: 'no' },
             Init: true,
+            Mounts: [
+              {
+                Type: 'volume',
+                Source: 'verity-data',
+                Target: '/run/credentials',
+                VolumeOptions: { Subpath: 'secrets/project/credentials' },
+              },
+            ],
           },
           Mounts: [
             {
@@ -1158,6 +1166,7 @@ describe('createDockerClient (#174)', () => {
       {
         type: 'bind',
         source: '/run/project/credentials',
+        subpath: 'secrets/project/credentials',
         destination: '/run/credentials',
         readWrite: false,
       },
