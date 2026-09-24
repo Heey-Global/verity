@@ -9184,43 +9184,75 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                     });
                   }
                 }
-                const created = await provisioner.add(branch);
-                if (created !== targetWorktree) throw new Error('Unexpected move worktree path');
-                const transferred = await transferMoveSnapshot(snapshot, created);
-                if (
-                  (await captureMoveSnapshot(session.worktree)).fingerprint !== snapshot.fingerprint
-                )
-                  throw new SessionMoveError(
-                    'source_changed',
-                    'Source files changed during the move. Retry after writers have stopped.',
+                try {
+                  const created = await provisioner.add(branch);
+                  if (created !== targetWorktree) throw new Error('Unexpected move worktree path');
+                  const transferred = await transferMoveSnapshot(snapshot, created);
+                  if (
+                    (await captureMoveSnapshot(session.worktree)).fingerprint !==
+                    snapshot.fingerprint
+                  )
+                    throw new SessionMoveError(
+                      'source_changed',
+                      'Source files changed during the move. Retry after writers have stopped.',
+                    );
+                  conductor.closeSession?.(id);
+                  for (const binding of await deps.eventStore.getSessionBackendStates(id))
+                    conductor.closeSession?.(binding.backendSessionId);
+                  const result = {
+                    projectId: target.id,
+                    worktree: created,
+                    branch,
+                    contextMode: 'history-handoff',
+                    ...transferred,
+                    skipped: snapshot.skipped,
+                    retainedWorktree: session.worktree,
+                    retainedBranch: snapshot.branch,
+                  };
+                  const notice =
+                    `This session moved to project ${target.id}, workspace ${containerPathFor(created, targetClone)}, branch ${branch}. ` +
+                    `Historical paths refer to the previous project. Uncommitted work was copied. ` +
+                    `The old workspace ${session.worktree} and branch ${snapshot.branch} are retained. ` +
+                    `Commits were not transferred. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
+                  await deps.previewShareManager?.revokeSessionShares(source.id, id);
+                  await deps.eventStore.commitSessionMove(
+                    id,
+                    body.operationId,
+                    notice,
+                    JSON.stringify(result),
                   );
-                conductor.closeSession?.(id);
-                for (const binding of await deps.eventStore.getSessionBackendStates(id))
-                  conductor.closeSession?.(binding.backendSessionId);
-                const result = {
-                  projectId: target.id,
-                  worktree: created,
-                  branch,
-                  contextMode: 'history-handoff',
-                  ...transferred,
-                  skipped: snapshot.skipped,
-                  retainedWorktree: session.worktree,
-                  retainedBranch: snapshot.branch,
-                };
-                const notice =
-                  `This session moved to project ${target.id}, workspace ${containerPathFor(created, targetClone)}, branch ${branch}. ` +
-                  `Historical paths refer to the previous project. Uncommitted work was copied. ` +
-                  `The old workspace ${session.worktree} and branch ${snapshot.branch} are retained. ` +
-                  `Commits were not transferred. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
-                await deps.previewShareManager?.revokeSessionShares(source.id, id);
-                await deps.eventStore.commitSessionMove(
-                  id,
-                  body.operationId,
-                  notice,
-                  JSON.stringify(result),
-                );
-                invalidateBranchCache(session.worktree);
-                return result;
+                  invalidateBranchCache(session.worktree);
+                  return result;
+                } catch (error) {
+                  // A failed transfer must not leave an unexposed workspace accumulating on disk.
+                  // Re-read the durable result before cleanup: a commit may have succeeded even if its response failed.
+                  try {
+                    const prepared = await deps.eventStore.getSessionMove(id, body.operationId);
+                    if (
+                      prepared &&
+                      prepared.result_json === null &&
+                      !(await deps.eventStore.listSessionWorktrees()).includes(targetWorktree)
+                    ) {
+                      const exists = await lstat(targetWorktree).then(
+                        () => true,
+                        (statError: NodeJS.ErrnoException) => {
+                          if (statError.code === 'ENOENT') return false;
+                          throw statError;
+                        },
+                      );
+                      if (exists)
+                        await moveGit(targetClone, 'worktree', 'remove', '--force', targetWorktree);
+                      if ((await moveGit(targetClone, 'branch', '--list', branch)).length > 0)
+                        await moveGit(targetClone, 'branch', '-D', branch);
+                    }
+                  } catch (cleanupError) {
+                    app.log.warn(
+                      { err: cleanupError, sessionId: id },
+                      'Failed to clean prepared move workspace',
+                    );
+                  }
+                  throw error;
+                }
               } finally {
                 try {
                   await recoverMovePreviews(id, body.operationId);

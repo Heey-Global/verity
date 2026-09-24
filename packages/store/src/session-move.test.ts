@@ -109,3 +109,17 @@ it('retains the canonical backend identity without an explicit backend binding',
   await ctx.store.deleteSession('unbound');
   expect(await ctx.store.listLiveBackendSessionIds()).toContain('unbound');
 });
+
+it('retains backend bindings acquired after preparation when retrying a move', async () => {
+  await ctx.store.upsertSessionBackendState({
+    sessionId: 's',
+    backend: 'claude',
+    backendSessionId: 'after-failure',
+    contextSeq: 1,
+  });
+  await ctx.store.commitSessionMove('s', 'move', 'Moved', '{}');
+  expect(await ctx.store.getSessionBackendStates('s')).toEqual([]);
+  expect(await ctx.store.listLiveBackendSessionIds()).toEqual(
+    expect.arrayContaining(['old', 'after-failure']),
+  );
+});

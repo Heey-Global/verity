@@ -1819,6 +1819,18 @@ export class EventStore implements EventSink {
         .where('preview_session_id', '=', sessionId)
         .where('project_id', '=', move.source_project_id)
         .execute();
+      const currentBindings = await tx
+        .selectFrom('session_backend_state')
+        .select('backend_session_id')
+        .where('session_id', '=', sessionId)
+        .execute();
+      const retainedBackendIds = [
+        ...new Set([
+          ...(JSON.parse(move.backend_ids_json) as string[]),
+          sessionId,
+          ...currentBindings.map((binding) => binding.backend_session_id),
+        ]),
+      ];
       await tx.deleteFrom('session_backend_state').where('session_id', '=', sessionId).execute();
       await tx
         .updateTable('secret_provider_permissions')
@@ -1835,7 +1847,11 @@ export class EventStore implements EventSink {
         and claims_json::jsonb->>'projectId' = ${move.source_project_id}`.execute(tx);
       await tx
         .updateTable('session_moves')
-        .set({ notice, result_json: resultJson })
+        .set({
+          notice,
+          result_json: resultJson,
+          backend_ids_json: JSON.stringify(retainedBackendIds),
+        })
         .where('session_id', '=', sessionId)
         .where('operation_id', '=', operationId)
         .execute();

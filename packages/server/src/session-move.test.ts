@@ -111,6 +111,31 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     });
     expect(admission.ran).toBe(true);
     expect(await ctx.store.listQueuedTurns()).toEqual([]);
+    const targetClone = projectClonePath(root, projects[1]!);
+    await writeFile(join(targetClone, 'new.txt'), 'conflict');
+    await moveGit(targetClone, 'add', 'new.txt');
+    await moveGit(targetClone, 'commit', '-m', 'conflicting target');
+    start.mockReset().mockResolvedValue(runtimeResult);
+    const failedOperation = randomUUID();
+    const conflict = await app.inject({
+      method: 'POST',
+      url: '/sessions/moved/project',
+      payload: { project: projects[1]!.id, operationId: failedOperation },
+    });
+    expect(conflict.statusCode).toBe(409);
+    const preparation = await ctx.store.getSessionMove('moved', failedOperation);
+    expect(preparation).toBeDefined();
+    await expect(readFile(join(preparation!.target_worktree, '.git'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect((await moveGit(targetClone, 'branch', '--list', preparation!.branch)).length).toBe(0);
+    await moveGit(targetClone, 'rm', 'new.txt');
+    await moveGit(targetClone, 'commit', '-m', 'remove conflict');
+    stop.mockClear();
+    start
+      .mockReset()
+      .mockRejectedValueOnce(new Error('restart interrupted'))
+      .mockResolvedValue(runtimeResult);
     const payload = { project: projects[1]!.id, operationId: randomUUID() };
     const response = await app.inject({ method: 'POST', url: '/sessions/moved/project', payload });
     expect(response.statusCode, response.body).toBe(500);
