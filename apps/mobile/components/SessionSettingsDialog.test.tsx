@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
 import { SessionSettingsDialog } from './SessionSettingsDialog';
 
@@ -163,4 +163,32 @@ it('does not attempt a move when renaming fails', async () => {
   move();
   await screen.findByText(/name could not be saved/);
   expect(request).not.toHaveBeenCalled();
+});
+
+it('locks commit acknowledgement until an interrupted move is reconciled', async () => {
+  let rejectMove!: (reason: Error) => void;
+  const inFlight = new Promise((_, reject) => {
+    rejectMove = reject;
+  });
+  const request = jest
+    .fn()
+    .mockRejectedValueOnce(new VerityApiError(409, 'Commits remain', { code: 'source_commits' }))
+    .mockReturnValueOnce(inFlight)
+    .mockResolvedValue(result);
+  setup(request);
+  selectTarget();
+  move();
+  const checkbox = await screen.findByRole('checkbox', { name: 'Leave commits in source project' });
+  fireEvent.press(checkbox);
+  move();
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  expect(checkbox).toBeDisabled();
+  fireEvent.press(checkbox);
+  await act(async () => {
+    rejectMove(new Error('Network interrupted'));
+  });
+  await screen.findByText('Network interrupted');
+  move();
+  await screen.findByText(/Moved to Target project/);
+  expect(request.mock.calls[2]).toEqual(request.mock.calls[1]);
 });

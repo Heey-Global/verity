@@ -2,7 +2,6 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
-  KeyboardAvoidingView,
   Platform,
   TextInput,
   useWindowDimensions,
@@ -13,6 +12,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { Icon } from './Icon';
 import { randomUUID } from 'expo-crypto';
 import { useUnistyles } from 'react-native-unistyles';
@@ -88,7 +88,7 @@ export function SessionSettingsDialog({
         return;
       }
       step = 'move';
-      const input: MoveInput = {
+      const input: MoveInput = pending.get(sessionId) ?? {
         project: target,
         operationId,
         onCommits: leaveCommits ? 'leave' : 'block',
@@ -331,7 +331,8 @@ export function SessionSettingsDialog({
                     <Pressable
                       accessibilityRole="checkbox"
                       accessibilityLabel="Leave commits in source project"
-                      accessibilityState={{ checked: leaveCommits }}
+                      accessibilityState={{ checked: leaveCommits, disabled: busy || unresolved }}
+                      disabled={busy || unresolved}
                       onPress={() => {
                         setLeaveCommits((value) => !value);
                         setOperationId(randomUUID());
