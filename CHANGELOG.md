@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.0](https://github.com/Heey-Global/verity/compare/v2.2.0...v2.3.0) (2026-09-24)
+
+
+### Features
+
+* **integrations:** import Matrix chats into project knowledge ([#703](https://github.com/Heey-Global/verity/issues/703)) ([974d14b](https://github.com/Heey-Global/verity/commit/974d14bcc6491312c4584e5d352235f12f8cfab4))
+* **knowledge:** preserve reusable insights proactively ([#705](https://github.com/Heey-Global/verity/issues/705)) ([f2e4779](https://github.com/Heey-Global/verity/commit/f2e4779ad17c1476f1f6f1a2e3f4b8d8cdf026b0))
+
+
+### Bug Fixes
+
+* **sandbox:** isolate approved scripts under gVisor ([#702](https://github.com/Heey-Global/verity/issues/702)) ([965ef61](https://github.com/Heey-Global/verity/commit/965ef61000049694b0e3d6198026125ceddc73dc))
+
 ## [2.2.0](https://github.com/Heey-Global/verity/compare/v2.1.2...v2.2.0) (2026-09-24)
 
 
