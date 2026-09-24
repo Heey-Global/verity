@@ -4028,6 +4028,7 @@ function SessionFilesSheet({
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
+  const [driveUnconfigured, setDriveUnconfigured] = useState(false);
   // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
   // matches is a superseded tap and is dropped. See openFile.
   const previewRequest = useRef(0);
@@ -4112,6 +4113,7 @@ function SessionFilesSheet({
     const loadDrive = async (): Promise<void> => {
       setLoading(true);
       setError(null);
+      setDriveUnconfigured(false);
       try {
         let folderId = driveFolderId;
         let nextPath = drivePath;
@@ -4119,7 +4121,13 @@ function SessionFilesSheet({
           const detail = await client.getProject(projectId);
           folderId = detail.settings?.googleDriveFolderId ?? null;
           const folderName = detail.settings?.googleDriveFolderName ?? null;
-          if (!folderId || !folderName) throw new Error('No Google Drive folder is connected.');
+          if (!folderId || !folderName) {
+            if (active) {
+              setDriveEntries([]);
+              setDriveUnconfigured(true);
+            }
+            return;
+          }
           nextPath = [{ id: folderId, name: folderName }];
           if (active) {
             setDriveFolderId(folderId);
@@ -4681,7 +4689,7 @@ function SessionFilesSheet({
           ) : null}
           <Pressable
             onPress={driveActive ? uploadDriveFiles : uploadFiles}
-            disabled={uploading || mutating || error !== null}
+            disabled={uploading || mutating || error !== null || (driveActive && driveUnconfigured)}
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={
@@ -4787,7 +4795,24 @@ function SessionFilesSheet({
               </Pressable>
             ) : null}
             {error ? <Text style={styles.sheetError}>{error}</Text> : null}
-            {loading ? (
+            {driveUnconfigured && projectId ? (
+              <View style={styles.driveSetupNotice}>
+                <Text style={styles.sheetEmpty}>No Google Drive folder connected.</Text>
+                <Pressable
+                  onPress={() => {
+                    onClose();
+                    router.push({
+                      pathname: '/project/[id]',
+                      params: { id: projectId, tab: 'settings' },
+                    });
+                  }}
+                  accessibilityRole="link"
+                  accessibilityLabel="Open project settings to connect Google Drive"
+                >
+                  <Text style={styles.driveSetupLink}>Open project settings</Text>
+                </Pressable>
+              </View>
+            ) : loading ? (
               <View style={styles.sheetLoading}>
                 <ActivityIndicator color={theme.colors.textMuted} />
               </View>
@@ -8392,6 +8417,15 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
     paddingVertical: theme.spacing.md,
+  },
+  driveSetupNotice: {
+    alignItems: 'flex-start',
+    gap: theme.spacing.xs,
+  },
+  driveSetupLink: {
+    color: theme.colors.primary,
+    fontSize: theme.text.sm,
+    fontWeight: '700',
   },
   sheetLoading: {
     paddingVertical: theme.spacing.lg,
