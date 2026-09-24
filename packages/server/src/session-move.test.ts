@@ -136,6 +136,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
       .mockReset()
       .mockRejectedValueOnce(new Error('restart interrupted'))
       .mockResolvedValue(runtimeResult);
+    const originalSession = await ctx.store.getSession('moved');
     const payload = { project: projects[1]!.id, operationId: randomUUID() };
     const response = await app.inject({ method: 'POST', url: '/sessions/moved/project', payload });
     expect(response.statusCode, response.body).toBe(500);
@@ -154,6 +155,19 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     expect(await readFile(join(moved.retainedWorktree, 'new.txt'), 'utf8')).toBe('uncommitted');
     const retry = await app.inject({ method: 'POST', url: '/sessions/moved/project', payload });
     expect(retry.json()).toEqual(recovered.json());
+    // Model another request committing after the initial reads but before this request acquires admission.
+    vi.spyOn(ctx.store, 'getSession').mockResolvedValueOnce(originalSession);
+    const moveLookup = vi.spyOn(ctx.store, 'getSessionMove').mockResolvedValueOnce(undefined);
+    const mismatchedRetry = await app.inject({
+      method: 'POST',
+      url: '/sessions/moved/project',
+      payload: { ...payload, onCommits: 'leave' },
+    });
+    expect(mismatchedRetry.statusCode).toBe(409);
+    expect(mismatchedRetry.body).toContain('operation_conflict');
+    moveLookup.mockRestore();
+    vi.mocked(ctx.store.getSession).mockRestore();
+
     await conductor.sendTurn('moved', 'Continue.');
     expect(resume).toBeUndefined();
     expect(cwd).toBe(moved.worktree);

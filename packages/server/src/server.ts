@@ -9052,6 +9052,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           mutation(projectIds[1]!, async () => {
             const claim = await conductor.tryMoveSession(id, async () => {
               const duplicate = await deps.eventStore.getSessionMove(id, body.operationId);
+              if (
+                duplicate &&
+                (duplicate.target_project_id !== body.project ||
+                  duplicate.on_commits !== body.onCommits)
+              )
+                throw new SessionMoveError(
+                  'operation_conflict',
+                  'This retry key belongs to a different move.',
+                );
               if (duplicate?.result_json) return JSON.parse(duplicate.result_json) as unknown;
               if (deps.projectRuntime && !deps.previewShareManager)
                 throw new SessionMoveError(
