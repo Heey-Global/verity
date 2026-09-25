@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.34.11",
+  "version": "1.34.12",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "b5bb07412f38c5ea9ab668076eff53e595170a60",
-  "tag": "mobile-v1.34.11",
-  "branch": "staging-mobile-v1.34.11-b5bb07412f38c5ea9ab668076eff53e595170a60",
-  "baseline": "mobile-v1.34.10",
-  "group": "dff04c4e-b862-4a23-b6e6-522d78b29a36",
+  "commit": "8fc940e306d2facbf3d981822bd9cb137eaa6b3f",
+  "tag": "mobile-v1.34.12",
+  "branch": "staging-mobile-v1.34.12-8fc940e306d2facbf3d981822bd9cb137eaa6b3f",
+  "baseline": "mobile-v1.34.11",
+  "group": "f219e709-1eab-4baf-922d-be393c36466f",
   "notes": [
-    "choose Matrix room project from server settings (#745)"
+    "let session settings scroll and show link failures (#746)"
   ]
 }
