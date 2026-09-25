@@ -29,7 +29,7 @@ export interface ProjectCollectionRouteDeps {
     EventStore,
     'createProject' | 'getProject' | 'setProjectSetupStatus' | 'upsertProject'
   >;
-  listOverview: () => Promise<unknown[]>;
+  listOverview: (userId: string | null) => Promise<unknown[]>;
   reorder: (ids: string[]) => Promise<unknown[]>;
   listAvailableRepositories: () => Promise<ProjectRecord[]>;
   presentRepositories: (projects: ProjectRecord[]) => Promise<unknown[]>;
@@ -43,7 +43,9 @@ export function registerProjectCollectionRoutes(
   app: FastifyInstance,
   deps: ProjectCollectionRouteDeps,
 ): void {
-  app.get('/projects', async (): Promise<unknown[]> => deps.listOverview());
+  app.get('/projects', async (request): Promise<unknown[]> =>
+    deps.listOverview(request.localUserId),
+  );
 
   app.patch('/projects/order', async (request, reply): Promise<unknown> => {
     const body = orderBody.parse(request.body);

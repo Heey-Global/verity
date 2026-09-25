@@ -162,7 +162,8 @@ describe('paired device management', () => {
         url: '/projects',
         headers: { authorization: 'Bearer member-token' },
       });
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual([expect.objectContaining({ id: 'shared' })]);
       const privateProject = await app.inject({
         method: 'GET',
         url: '/projects/private',
@@ -194,6 +195,12 @@ describe('paired device management', () => {
         headers: { authorization: 'Bearer member-token' },
       });
       expect(disabled.statusCode).toBe(403);
+      const disabledOverview = await app.inject({
+        method: 'GET',
+        url: '/projects',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(disabledOverview.statusCode).toBe(403);
     } finally {
       await app.close();
     }

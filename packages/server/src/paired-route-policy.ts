@@ -6,7 +6,8 @@ type ResourceRule = {
   readonly parameter: string;
   readonly permission: ProjectPermission;
 };
-type PairedRoutePolicy = ResourceRule | { readonly kind: 'administrator' };
+type PairedRoutePolicy =
+  ResourceRule | { readonly kind: 'administrator' } | { readonly kind: 'active_user' };
 
 /** Routes become available to members only after their resource and required
  * permission are declared here. Everything else remains administrator-only,
@@ -17,11 +18,16 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [routeScopeKey('GET', '/sessions/:id'), { kind: 'session', parameter: 'id', permission: 'read' }],
 ]);
 
+const activeUserRoutes = new Set([routeScopeKey('GET', '/projects')]);
+
 function pairedRoutePolicy(method: string, routeUrl: string): PairedRoutePolicy {
-  return resourceRules.get(routeScopeKey(method, routeUrl)) ?? { kind: 'administrator' };
+  const key = routeScopeKey(method, routeUrl);
+  if (activeUserRoutes.has(key)) return { kind: 'active_user' };
+  return resourceRules.get(key) ?? { kind: 'administrator' };
 }
 
 export interface PairedRoutePolicyStore {
+  isActiveLocalUser(userId: string): Promise<boolean>;
   isActiveAdministrator(userId: string): Promise<boolean>;
   hasProjectPermission(
     userId: string,
@@ -39,6 +45,9 @@ export async function authorizePairedRoute(
   params: Record<string, unknown>,
 ): Promise<'allow' | 'forbidden' | 'not_found'> {
   const policy = pairedRoutePolicy(method, routeUrl);
+  if (policy.kind === 'active_user') {
+    return (await store.isActiveLocalUser(userId)) ? 'allow' : 'forbidden';
+  }
   if (policy.kind === 'administrator') {
     return (await store.isActiveAdministrator(userId)) ? 'allow' : 'forbidden';
   }
