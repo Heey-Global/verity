@@ -27,6 +27,10 @@ evidence remains separate from the tests introduced here.
 - `schemas.test.ts`: executes the fixtures and vectors, rejects substitution
   of every signed field, checks permitted action/purpose coverage and detects
   schema-export drift.
+- `raw-wire.ts` and `raw-wire.test.ts`: test-only byte decoding guards for
+  duplicate JSON keys, malformed UTF-8, the framed version-2 preface, the
+  16-KiB HTTP body limit and the 4096-byte decoded QR payload limit. They do
+  not define a complete invitation schema or production route behavior.
 
 From the repository root:
 
@@ -78,9 +82,10 @@ receipt identifier profiles should be reconciled against their owning contracts
 before expanding the packet. UUID syntax here does not prove service ownership,
 and identifier length cannot prove random generation.
 
-Duplicate JSON keys, malformed UTF-8, raw 4096-byte preface/QR framing and 16-KiB
-HTTP body limits need raw-wire decoder fixtures; decoded JSON objects cannot
-preserve that evidence. Request routing, initial-admin ownership, authorization,
+The first raw-byte tests now cover duplicate keys, malformed UTF-8 and the
+preface, HTTP and QR byte limits. A portable raw-wire fixture corpus and actual
+Core/Uplink decoder execution remain open; decoded JSON objects cannot preserve
+that evidence. Request routing, initial-admin ownership, authorization,
 same-socket reserve/connect, one-time claims, expiry comparisons, concurrency,
 restart durability, outbox identity and revocation require executable stateful
 Core/Uplink acceptance tests. In particular, a valid recovery expiry number does
