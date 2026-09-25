@@ -1,4 +1,4 @@
-import { MoveSessionDialog } from '../components/MoveSessionDialog';
+import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
 // empty / list states. When no server is configured it falls back to a "not
@@ -44,7 +44,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Keyboard,
   type LayoutChangeEvent,
   Linking,
   type ListRenderItemInfo,
@@ -52,7 +51,6 @@ import {
   Pressable,
   ScrollView,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -187,7 +185,7 @@ function SessionList({ client }: { client: VerityClient }) {
       });
     }
   }, [selected, selectedId, wide]);
-  const { sessions, loading, error, refresh, rename, remove, providerLimitRows, serverAttention } =
+  const { sessions, loading, error, refresh, remove, providerLimitRows, serverAttention } =
     useSessionList(client);
   const authRequired = error !== undefined && isAuthRequiredError(error);
   const { unread, markSeen } = useUnread(client, sessions);
@@ -344,7 +342,6 @@ function SessionList({ client }: { client: VerityClient }) {
   const repairingProjectIdsRef = useRef(new Set<string>());
   // The session whose actions sheet is open (its long-press opened the modal), or
   // null when the modal is closed.
-  const [moving, setMoving] = useState<SessionSummary | null>(null);
   const [moveGeneration, setMoveGeneration] = useState(0);
   const [renaming, setRenaming] = useState<SessionSummary | null>(null);
 
@@ -607,14 +604,6 @@ function SessionList({ client }: { client: VerityClient }) {
     if (open) markSeen(open.sessionId, open.eventCount);
   }, [selectedId, sessions, markSeen]);
 
-  const onSubmitRename = useCallback(
-    (name: string | null) => {
-      if (renaming) rename(renaming.sessionId, name);
-      setRenaming(null);
-    },
-    [renaming, rename],
-  );
-
   const onRefreshOverview = useCallback(async () => {
     setRefreshingOverview(true);
     try {
@@ -746,30 +735,37 @@ function SessionList({ client }: { client: VerityClient }) {
           ) : null}
         </Reanimated.View>
       </GestureDetector>
-      <RenameModal
-        session={renaming}
-        canMove={projects.some(
-          (project) => project.id === renaming?.projectId && project.kind === 'local',
-        )}
-        onSubmit={onSubmitRename}
-        onMove={() => {
-          setMoving(renaming);
-          setRenaming(null);
-        }}
-        onDelete={onDeleteRenaming}
-        onCancel={() => setRenaming(null)}
-      />
-      {moving && client && (
-        <MoveSessionDialog
-          sessionId={moving.sessionId}
+      {renaming && client && (
+        <SessionSettingsDialog
+          key={renaming.sessionId}
+          sessionId={renaming.sessionId}
+          sessionName={renaming.name}
+          displayName={sessionLabel(renaming)}
+          projectId={renaming.projectId ?? null}
+          projectName={
+            projects.find((project) => project.id === renaming.projectId)?.repo ?? 'No project'
+          }
+          canMove={
+            renaming.kind !== 'agent_loop' &&
+            renaming.status !== 'running' &&
+            projects.some(
+              (project) => project.id === renaming.projectId && project.kind === 'local',
+            )
+          }
+          moveDisabledReason={
+            renaming.status === 'running'
+              ? 'Finish the current turn before changing projects.'
+              : 'Moving is available for normal sessions in local projects.'
+          }
           client={client}
           projects={projects
-            .filter((project) => project.kind === 'local' && project.id !== moving.projectId)
+            .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: project.repo }))}
-          onClose={() => setMoving(null)}
-          onMoved={() => {
+          onClose={() => setRenaming(null)}
+          onDelete={onDeleteRenaming}
+          onChanged={(moved) => {
             void refresh({ silent: true });
-            if (selectedId === moving.sessionId) setMoveGeneration((value) => value + 1);
+            if (moved && selectedId === renaming.sessionId) setMoveGeneration((value) => value + 1);
           }}
         />
       )}
@@ -1658,129 +1654,6 @@ function IssueRow({ issue }: { issue: IssueSummary }) {
   );
 }
 
-// A long-press on a row opens this modal: rename the session (set/clear its
-// display name — an empty submission clears it back to the worktree/id) or
-// delete it outright. Seeded with the current name each time it opens.
-function RenameModal({
-  canMove,
-  onMove,
-  session,
-  onSubmit,
-  onDelete,
-  onCancel,
-}: {
-  session: SessionSummary | null;
-  canMove: boolean;
-  onMove: () => void;
-  onSubmit: (name: string | null) => void;
-  onDelete: () => void;
-  onCancel: () => void;
-}) {
-  const { theme } = useUnistyles();
-  const insets = useSafeAreaInsets();
-  const [draft, setDraft] = useState('');
-
-  // Re-seed the field each time a different session opens the modal.
-  useEffect(() => {
-    setDraft(session?.name ?? '');
-  }, [session]);
-
-  const visible = session !== null;
-  const submit = useCallback(() => {
-    const trimmed = draft.trim();
-    onSubmit(trimmed.length > 0 ? trimmed : null);
-    Keyboard.dismiss();
-  }, [draft, onSubmit]);
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-      {/* Anchor the card near the top (not screen-centred) so the keyboard never
-          overlaps it — this avoids a KeyboardAvoidingView, whose padding animated
-          the card downward as the keyboard retracted on dismiss (a visible drift). */}
-      <Pressable
-        style={[styles.modalBackdrop, { paddingTop: insets.top + theme.spacing.xxl * 2 }]}
-        onPress={onCancel}
-        accessibilityRole="button"
-      >
-        {/* Stop taps inside the card from dismissing the modal. */}
-        <Pressable style={styles.modalCard} onPress={() => undefined}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Rename session</Text>
-            {session ? (
-              <Text style={styles.modalSubtitle} numberOfLines={1}>
-                {sessionLabel(session)}
-              </Text>
-            ) : null}
-          </View>
-          <TextInput
-            style={styles.modalInput}
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="Session name"
-            placeholderTextColor={theme.colors.textFaint}
-            maxLength={80}
-            autoFocus
-            returnKeyType="done"
-            onSubmitEditing={submit}
-            accessibilityLabel="Session name"
-          />
-          {canMove && session?.kind !== 'agent_loop' && (
-            <Pressable
-              accessibilityRole="button"
-              disabled={session?.status === 'running'}
-              onPress={onMove}
-              style={styles.modalCancelButton}
-            >
-              <Text style={styles.modalTitle}>
-                {session?.status === 'running'
-                  ? 'Finish the current turn to move'
-                  : 'Move to project…'}
-              </Text>
-            </Pressable>
-          )}
-          <View style={styles.modalActions}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.modalDeleteButton,
-                pressed ? styles.rowPressed : null,
-              ]}
-              onPress={onDelete}
-              accessibilityRole="button"
-              accessibilityLabel="Delete session"
-            >
-              <Text style={styles.modalDeleteText}>Delete</Text>
-            </Pressable>
-            <View style={styles.modalActionsRight}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.modalCancelButton,
-                  pressed ? styles.rowPressed : null,
-                ]}
-                onPress={onCancel}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel rename"
-              >
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.modalSaveButton,
-                  pressed ? styles.rowPressed : null,
-                ]}
-                onPress={submit}
-                accessibilityRole="button"
-                accessibilityLabel="Save session name"
-              >
-                <Text style={styles.modalSaveText}>Save</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
 const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
 
 function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
@@ -2126,7 +1999,7 @@ function SessionRow({
         accessibilityRole="button"
         accessibilityState={{ selected: !!selected }}
         accessibilityLabel={`Open session ${label}`}
-        accessibilityHint="Long press to rename or delete"
+        accessibilityHint="Long press to edit session settings"
       >
         {rowBody}
       </Pressable>
@@ -2150,7 +2023,7 @@ function SessionRow({
         onPress={() => onOpen?.()}
         onLongPress={onRename}
         delayLongPress={300}
-        accessibilityHint="Long press to rename or delete"
+        accessibilityHint="Long press to edit session settings"
       >
         {rowBody}
       </Pressable>
@@ -2746,118 +2619,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   separator: {
     height: theme.spacing.md,
-  },
-  modalBackdrop: {
-    flex: 1,
-    alignItems: 'center',
-    // Top-anchored (paddingTop applied inline from the safe-area inset) so the
-    // card sits in the upper area, clear of the keyboard, with a fixed position
-    // that doesn't move when the keyboard opens or closes.
-    justifyContent: 'flex-start',
-    paddingHorizontal: theme.spacing.lg,
-    backgroundColor: 'rgba(0, 0, 0, 0.66)',
-  },
-  modalCard: {
-    width: '100%',
-    maxWidth: 400,
-    gap: theme.spacing.md,
-    padding: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    // Near-black surface defined by a hairline border, matching the rest of the
-    // app — the violet surfaceAlt fill read as a heavy coloured slab. Depth
-    // comes from the hairline + a soft neutral drop-shadow, not a fill.
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    shadowColor: '#000000',
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 16 },
-    elevation: 16,
-  },
-  modalHeader: {
-    gap: 4,
-  },
-  modalTitle: {
-    color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
-  },
-  modalSubtitle: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-  },
-  modalInput: {
-    minHeight: 44,
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    // Pure-black inset against the near-black card — a crisp, hairline-defined
-    // field rather than another filled block.
-    backgroundColor: theme.colors.background,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-    // Hairline divider separating the field from the actions — the fine-line
-    // structure the rest of the app uses between grouped rows.
-    paddingTop: theme.spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
-  },
-  modalActionsRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  modalDeleteButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    // Ghost (text-only) destructive action — de-emphasised vs the filled Save
-    // pill, and there's a native confirm before it fires (confirmDeleteSession).
-    paddingHorizontal: theme.spacing.sm,
-    borderRadius: theme.radius.pill,
-  },
-  modalDeleteText: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  modalCancelButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
-  },
-  modalCancelText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  modalSaveButton: {
-    minHeight: 44,
-    minWidth: 88,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
-    // Tinted + hairline-outlined accent pill (the app's badge language) instead
-    // of a solid neon fill — reads as the primary action without shouting.
-    backgroundColor: `${theme.colors.accent}24`,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.accent,
-  },
-  modalSaveText: {
-    color: theme.colors.accent,
-    fontSize: theme.text.md,
-    fontWeight: '700',
   },
 }));
