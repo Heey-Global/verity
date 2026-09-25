@@ -4805,8 +4805,8 @@ function SessionFilesSheet({
                   onPress={() => {
                     onClose();
                     router.push({
-                      pathname: '/project/[id]',
-                      params: { id: projectId, tab: 'settings' },
+                      pathname: '/project/[id]/settings/services',
+                      params: { id: projectId },
                     });
                   }}
                   accessibilityRole="link"

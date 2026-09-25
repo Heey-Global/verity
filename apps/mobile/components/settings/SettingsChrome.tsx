@@ -33,6 +33,7 @@ export function SettingsScaffold({
   title,
   onRetry,
   detail = false,
+  state,
   children,
 }: {
   title: string;
@@ -40,11 +41,17 @@ export function SettingsScaffold({
   onRetry?: () => void;
   /** Detail routes use a calmer reading width on tablets and desktop. */
   detail?: boolean;
+  /** Banner state for screens that are not backed by the Verity settings store
+   *  (the project settings routes). Omitted → the shared store's error and
+   *  save state drive the banners. */
+  state?: { error: string | undefined; saving: boolean };
   children: ReactNode;
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
-  const { error, saving } = useVeritySettings();
+  const verity = useVeritySettings();
+  const error = state !== undefined ? state.error : verity.error;
+  const saving = state !== undefined ? (state.saving ? 1 : 0) : verity.saving;
 
   return (
     <View style={styles.flex}>
@@ -181,6 +188,49 @@ export function SettingsNavRow({
         ) : null}
         <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
       </View>
+    </Pressable>
+  );
+}
+
+/**
+ * One option of a single-choice list: the model picker on project settings.
+ * Selection is shown by a check mark on the trailing edge rather than a pill,
+ * so a list of ten rows reads as one control and not ten statuses.
+ */
+export function SettingsChoiceRow({
+  title,
+  subtitle,
+  selected,
+  disabled = false,
+  onPress,
+  accessibilityLabel,
+}: {
+  title: string;
+  subtitle?: string;
+  selected: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+  accessibilityLabel?: string;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.navRow,
+        disabled ? styles.buttonDisabled : null,
+        pressed ? styles.pressed : null,
+      ]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected, disabled }}
+      accessibilityLabel={accessibilityLabel ?? title}
+    >
+      <View style={styles.navRowBody}>
+        <Text style={styles.navRowTitle}>{title}</Text>
+        {subtitle !== undefined ? <Text style={styles.navRowSubtitle}>{subtitle}</Text> : null}
+      </View>
+      {selected ? <Icon name="check" size={18} color={theme.colors.primary} /> : null}
     </Pressable>
   );
 }
