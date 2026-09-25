@@ -31,8 +31,16 @@ import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 
 export default function ProjectServicesScreen() {
-  const { id } = useLocalSearchParams<{ id: string | string[] }>();
+  const { id, section } = useLocalSearchParams<{
+    id: string | string[];
+    section?: string | string[];
+  }>();
   const projectId = projectIdParam(id);
+  const requestedSection = Array.isArray(section) ? section[0] : section;
+  const selectedSection =
+    requestedSection === 'doppler' || requestedSection === 'drive' || requestedSection === 'mcp'
+      ? requestedSection
+      : undefined;
   const client = useMemo(() => createVerityClient(), []);
   if (!client || projectId.length === 0) {
     return (
@@ -43,12 +51,28 @@ export default function ProjectServicesScreen() {
       />
     );
   }
-  return <ProjectServicesView client={client} projectId={projectId} />;
+  return <ProjectServicesView client={client} projectId={projectId} section={selectedSection} />;
 }
 
-function ProjectServicesView({ client, projectId }: { client: VerityClient; projectId: string }) {
+function ProjectServicesView({
+  client,
+  projectId,
+  section,
+}: {
+  client: VerityClient;
+  projectId: string;
+  section?: 'doppler' | 'drive' | 'mcp';
+}) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load, onSettingsSaved } = useProjectDetail(client, projectId);
+  const title =
+    section === 'doppler'
+      ? 'Doppler'
+      : section === 'drive'
+        ? 'Google Drive'
+        : section === 'mcp'
+          ? 'MCP'
+          : 'Connected services';
 
   if (loading && detail === undefined) {
     return (
@@ -62,43 +86,44 @@ function ProjectServicesView({ client, projectId }: { client: VerityClient; proj
       <SettingsMessage
         title="Couldn't load project"
         subtitle={error ?? 'Unknown error'}
-        screenTitle="Connected services"
+        screenTitle={title}
         onRetry={() => load()}
       />
     );
   }
   const { settings } = detail;
   return (
-    <SettingsScaffold
-      title="Connected services"
-      detail
-      state={{ error, saving: false }}
-      onRetry={() => load()}
-    >
-      <SettingsGroup title="Credentials">
-        <DopplerBindingSection
-          client={client}
-          projectId={projectId}
-          settings={settings}
-          onSaved={onSettingsSaved}
-        />
-      </SettingsGroup>
+    <SettingsScaffold title={title} detail state={{ error, saving: false }} onRetry={() => load()}>
+      {section === undefined || section === 'doppler' ? (
+        <SettingsGroup title="Credentials">
+          <DopplerBindingSection
+            client={client}
+            projectId={projectId}
+            settings={settings}
+            onSaved={onSettingsSaved}
+          />
+        </SettingsGroup>
+      ) : null}
 
-      <SettingsGroup title="Files">
-        <GoogleDriveFolderSection
-          client={client}
-          projectId={projectId}
-          settings={settings}
-          onSaved={onSettingsSaved}
-        />
-      </SettingsGroup>
+      {section === undefined || section === 'drive' ? (
+        <SettingsGroup title="Files">
+          <GoogleDriveFolderSection
+            client={client}
+            projectId={projectId}
+            settings={settings}
+            onSaved={onSettingsSaved}
+          />
+        </SettingsGroup>
+      ) : null}
 
-      <SettingsGroup
-        title="Tools"
-        description="Enable only the MCP connections this project may use. Authorization stays on the Verity server."
-      >
-        <ProjectMcpBindingsSection client={client} projectId={projectId} />
-      </SettingsGroup>
+      {section === undefined || section === 'mcp' ? (
+        <SettingsGroup
+          title="Tools"
+          description="Enable only the MCP connections this project may use. Authorization stays on the Verity server."
+        >
+          <ProjectMcpBindingsSection client={client} projectId={projectId} />
+        </SettingsGroup>
+      ) : null}
     </SettingsScaffold>
   );
 }

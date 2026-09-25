@@ -2,11 +2,9 @@
 // lives. Built like the Verity settings index — every row is a destination, and
 // the only control on the screen is the one that removes the project.
 //
-// The groups follow the Verity settings index on purpose (Setup, then the
-// project's own defaults) so an operator who knows one screen knows the other:
-// GitHub and Connected services mean the same thing on both, and
-// Environment is to a project what Maintenance is to the server.
-import { modelDisplayName, projectBadge, projectRepoRef, type VerityClient } from '@verity/mobile';
+// Project-specific bindings are direct entries; account credentials and MCP
+// connection definitions live in Verity settings.
+import { modelDisplayName, projectBadge, type VerityClient } from '@verity/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
@@ -72,7 +70,6 @@ function ProjectSettingsIndexView({
 
   const { project } = detail;
   const defaultModel = detail.settings?.defaultModel ?? null;
-  const repoRef = projectRepoRef(project);
   const badge = projectBadge(project);
   const environmentIntent: StatusPillIntent = badge.pulsing
     ? 'transient'
@@ -84,12 +81,16 @@ function ProjectSettingsIndexView({
   const to = (
     pathname:
       | '/project/[id]/settings/github'
-      | '/project/[id]/settings/services'
       | '/project/[id]/settings/environment'
       | '/project/[id]/settings/model'
       | '/project/[id]/dev-server'
       | '/project/[id]/automations',
   ) => router.push({ pathname, params: { id: projectId } });
+  const toService = (section: 'doppler' | 'drive' | 'mcp') =>
+    router.push({
+      pathname: '/project/[id]/settings/services',
+      params: { id: projectId, section },
+    });
 
   return (
     <SettingsScaffold
@@ -99,22 +100,31 @@ function ProjectSettingsIndexView({
     >
       <SettingsGroup title="Setup">
         <SettingsListPanel>
-          <SettingsNavRow
-            icon="github"
-            title="GitHub"
-            subtitle={repoRef ?? 'Connect this project to a repository'}
-            status={
-              repoRef === undefined
-                ? { intent: 'needsSetup', label: 'Not connected' }
-                : { intent: 'ready', label: 'Connected' }
-            }
-            onPress={() => to('/project/[id]/settings/github')}
-          />
+          {project.kind === 'local' ? (
+            <SettingsNavRow
+              icon="github"
+              title="Connect GitHub"
+              subtitle="Link this local project to a repository"
+              onPress={() => to('/project/[id]/settings/github')}
+            />
+          ) : null}
           <SettingsNavRow
             icon="key"
-            title="Connected services"
-            subtitle="Doppler, Google Drive, MCP"
-            onPress={() => to('/project/[id]/settings/services')}
+            title="Doppler"
+            subtitle="Choose the environment for this project"
+            onPress={() => toService('doppler')}
+          />
+          <SettingsNavRow
+            icon="folder"
+            title="Google Drive"
+            subtitle="Choose the project folder"
+            onPress={() => toService('drive')}
+          />
+          <SettingsNavRow
+            icon="tool"
+            title="MCP"
+            subtitle="Enable connections for this project"
+            onPress={() => toService('mcp')}
           />
           <SettingsNavRow
             icon="server"

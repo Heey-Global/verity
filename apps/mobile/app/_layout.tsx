@@ -208,10 +208,7 @@ function HydratedRoot() {
                 options={{ title: 'Project settings' }}
               />
               <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
-              <Stack.Screen
-                name="project/[id]/settings/services"
-                options={{ title: 'Connected services' }}
-              />
+              <Stack.Screen name="project/[id]/settings/services" options={{ title: 'Services' }} />
               <Stack.Screen
                 name="project/[id]/settings/environment"
                 options={{ title: 'Environment' }}
@@ -297,6 +294,7 @@ function AppHeader({
   const insets = useSafeAreaInsets();
   const { theme } = useUnistyles();
   const isHome = route.name === 'index';
+  const isSettingsRoute = route.name.includes('settings');
   // iPadOS 26 draws the window controls over the header's top-left corner without
   // reserving any safe area for them, so the row is pushed clear of whatever the
   // window's corners claim (zero everywhere else — see components/WindowControls).
@@ -388,7 +386,7 @@ function AppHeader({
               hitSlop={8}
             >
               <Icon name="chevron-left" size={28} color={theme.colors.text} />
-              {back.title ? (
+              {back.title && !isSettingsRoute ? (
                 <Text style={styles.headerBackTitle} numberOfLines={1}>
                   {back.title}
                 </Text>
@@ -397,7 +395,11 @@ function AppHeader({
           ) : null}
         </View>
         <Text
-          style={[styles.headerTitle, isHome ? styles.headerTitleHome : null]}
+          style={[
+            styles.headerTitle,
+            isHome ? styles.headerTitleHome : null,
+            isSettingsRoute ? styles.headerTitleSettings : null,
+          ]}
           numberOfLines={1}
           accessibilityRole="header"
         >
@@ -499,6 +501,9 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     fontSize: theme.text.lg,
     fontWeight: '700',
+  },
+  headerTitleSettings: {
+    flex: 3,
   },
   headerTitleHome: {
     color: theme.colors.accent,
