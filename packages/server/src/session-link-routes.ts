@@ -1,9 +1,16 @@
-import type { EventStore } from '@verity/store';
+import { isSessionLinkProject, type EventStore, type ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 const paramsSchema = z.object({ id: z.string().min(1).max(128) });
 const targetSchema = z.object({ targetSessionId: z.string().min(1).max(128) }).strict();
+
+/** Linkable, and present: a type guard over {@link isSessionLinkProject}. */
+export function sessionLinkProjectAvailable(
+  project: ProjectRecord | undefined,
+): project is ProjectRecord {
+  return project !== undefined && isSessionLinkProject(project);
+}
 
 export function registerSessionLinkRoutes(app: FastifyInstance, store: EventStore): void {
   app.get('/sessions/:id/links', async (request, reply) => {
@@ -47,17 +54,11 @@ export function registerSessionLinkRoutes(app: FastifyInstance, store: EventStor
       store.getProject(target.projectId),
     ]);
     if (
-      !sourceProject ||
-      !targetProject ||
-      sourceProject.kind === 'control_plane' ||
-      targetProject.kind === 'control_plane' ||
-      sourceProject.state !== 'active' ||
-      targetProject.state !== 'active' ||
-      sourceProject.hiddenAt !== null ||
-      targetProject.hiddenAt !== null
+      !sessionLinkProjectAvailable(sourceProject) ||
+      !sessionLinkProjectAvailable(targetProject)
     ) {
       reply.code(400);
-      return { error: 'both sessions must belong to active projects' };
+      return { error: 'both sessions must belong to available projects' };
     }
     const created = await store.createSessionLink(id, targetSessionId);
     reply.code(created ? 201 : 200);

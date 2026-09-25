@@ -180,7 +180,7 @@ describe('EventStore — linked session allowance', () => {
     await ctx.store.hideProject('p2');
     expect(await ctx.store.listSessionLinks('s1')).toEqual([]);
     await expect(ctx.store.createSessionLink('s1', 's2')).rejects.toThrow(
-      'linked sessions require active projects',
+      'linked sessions require available projects',
     );
   });
 });

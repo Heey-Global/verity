@@ -148,6 +148,21 @@ export function isLocalProject(project: Pick<ProjectRecord, 'kind'>): boolean {
 }
 
 /**
+ * Whether a project's sessions can be linked and messaged. A sleeping project
+ * qualifies: a linked message is an ordinary turn, and turn preparation wakes the
+ * Sandbox before running it — the same states the turn route admits.
+ */
+export function isSessionLinkProject(
+  project: Pick<ProjectRecord, 'kind' | 'state' | 'hiddenAt'>,
+): boolean {
+  return (
+    project.kind !== 'control_plane' &&
+    project.hiddenAt === null &&
+    (project.state === 'active' || project.state === 'sleeping' || project.state === 'waking')
+  );
+}
+
+/**
  * Whether a project row is an unadopted installation-sync placeholder — a row
  * {@link syncProjectsFromInstallation} minted purely because the GitHub App can
  * SEE the repository, not because anyone added it as a project.
@@ -1327,12 +1342,14 @@ export class EventStore implements EventSink {
         projects.length !== 2 ||
         projects.some(
           (project) =>
-            project.state !== 'active' ||
-            project.hidden_at !== null ||
-            project.kind === 'control_plane',
+            !isSessionLinkProject({
+              kind: project.kind as ProjectKind,
+              state: project.state as ProjectRecord['state'],
+              hiddenAt: project.hidden_at,
+            }),
         )
       )
-        throw new Error('linked sessions require active projects');
+        throw new Error('linked sessions require available projects');
       const inserted = await tx
         .insertInto('session_links')
         .values({ session_a: sessionA, session_b: sessionB, remaining_a: 6, remaining_b: 6 })

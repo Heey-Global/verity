@@ -251,7 +251,7 @@ import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
 import { registerSessionDeleteRoute } from './session-delete-route.js';
 import { registerSessionControlRoutes } from './session-control-routes.js';
-import { registerSessionLinkRoutes } from './session-link-routes.js';
+import { registerSessionLinkRoutes, sessionLinkProjectAvailable } from './session-link-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
@@ -5577,12 +5577,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const sourceProject = await deps.eventStore.getProject(input.projectId);
           const targetProject = await deps.eventStore.getProject(link.peerProjectId);
           if (
-            !sourceProject ||
-            !targetProject ||
-            sourceProject.state !== 'active' ||
-            targetProject.state !== 'active' ||
-            sourceProject.hiddenAt !== null ||
-            targetProject.hiddenAt !== null
+            !sessionLinkProjectAvailable(sourceProject) ||
+            !sessionLinkProjectAvailable(targetProject)
           )
             throw new ControlPlaneSessionAuthorityError('linked project unavailable');
           const sourceLabel = `${sourceProject.repo} · ${source.name ?? input.sessionId}`;
