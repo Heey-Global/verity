@@ -67,6 +67,12 @@ it('requires an explicit project binding before accepting chat, then updates edi
     payload: { accountId, sourceId, displayName: 'Project chat' },
   });
   expect(discovered.statusCode).toBe(200);
+  const bindingsUrl = `/internal/integrations/matrix/bindings?accountId=${encodeURIComponent(accountId)}`;
+  const workerRooms = async () =>
+    (await app.inject({ method: 'GET', url: bindingsUrl, headers: authorization })).json();
+  expect((await workerRooms()).sources).toEqual([
+    expect.objectContaining({ sourceId, status: 'pending' }),
+  ]);
   const projectId = randomUUID();
   await ctx.store.upsertProject({
     id: projectId,
@@ -136,6 +142,9 @@ it('requires an explicit project binding before accepting chat, then updates edi
     payload: { accountId, sourceId },
   });
   expect(disconnected.statusCode).toBe(200);
+  expect((await workerRooms()).sources).toEqual([
+    expect.objectContaining({ sourceId, status: 'pending', projectId: null }),
+  ]);
   expect(
     (await app.inject({ method: 'GET', url: `/projects/${projectId}/integrations` })).json()
       .sources,

@@ -269,9 +269,11 @@ export class IntegrationStore {
 
   async deleteSource(accountId: string, sourceId: string): Promise<boolean> {
     const row = await this.db
-      .deleteFrom('integration_sources')
+      .updateTable('integration_sources')
+      .set({ project_id: null, status: 'pending', activated_at: null })
       .where('account_id', '=', accountId)
       .where('source_id', '=', sourceId)
+      .where('project_id', 'is not', null)
       .returning('source_id')
       .executeTakeFirst();
     return row !== undefined;
