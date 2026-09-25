@@ -3,6 +3,7 @@ import { authorizePairedRoute, type PairedRoutePolicyStore } from './paired-rout
 
 it('resolves project and session reads while keeping undeclared routes administrator-only', async () => {
   const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: vi.fn(async (userId) => userId !== 'disabled'),
     isActiveAdministrator: vi.fn(async (userId) => userId === 'admin'),
     hasProjectPermission: vi.fn(
       async (_userId, projectId, permission) => projectId === 'shared' && permission === 'read',
@@ -20,6 +21,7 @@ it('resolves project and session reads while keeping undeclared routes administr
   ).toBe('not_found');
   expect(await authorizePairedRoute(store, 'member', 'GET', '/sessions/:id', {})).toBe('not_found');
   expect(await authorizePairedRoute(store, 'member', 'GET', '/settings', {})).toBe('forbidden');
-  expect(await authorizePairedRoute(store, 'member', 'GET', '/projects', {})).toBe('forbidden');
+  expect(await authorizePairedRoute(store, 'member', 'GET', '/projects', {})).toBe('allow');
+  expect(await authorizePairedRoute(store, 'disabled', 'GET', '/projects', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'admin', 'GET', '/settings', {})).toBe('allow');
 });

@@ -4478,6 +4478,42 @@ export class EventStore implements EventSink {
     return user?.role === 'administrator' && user.status === 'active';
   }
 
+  async isActiveLocalUser(userId: string): Promise<boolean> {
+    const user = await this.db
+      .selectFrom('users')
+      .select('status')
+      .where('id', '=', userId)
+      .executeTakeFirst();
+    return user?.status === 'active';
+  }
+
+  /** Keep collection reads consistent with hasProjectPermission's control-plane rule. */
+  async listReadableProjectIds(userId: string): Promise<string[]> {
+    const memberships = await this.db
+      .selectFrom('project_memberships as m')
+      .innerJoin('users as u', 'u.id', 'm.user_id')
+      .innerJoin('projects as p', 'p.id', 'm.project_id')
+      .select([
+        'm.project_id',
+        'm.can_read',
+        'u.status',
+        'u.role',
+        'p.kind',
+        'p.created_by_user_id',
+      ])
+      .where('m.user_id', '=', userId)
+      .execute();
+    return memberships
+      .filter(
+        (membership) =>
+          membership.status === 'active' &&
+          membership.can_read &&
+          (membership.kind !== 'control_plane' ||
+            (membership.role === 'administrator' && membership.created_by_user_id === userId)),
+      )
+      .map((membership) => membership.project_id);
+  }
+
   async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the

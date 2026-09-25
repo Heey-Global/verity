@@ -29,8 +29,17 @@ it('uses active membership rights and keeps the control-plane project private', 
     expect(await store.hasProjectPermission('member', 'ordinary', 'execute')).toBe(false);
     expect(await store.hasProjectPermission('member', 'ordinary', 'manage')).toBe(false);
     expect(await store.hasProjectPermission('member', 'control', 'read')).toBe(false);
+    expect(await store.isActiveLocalUser('member')).toBe(true);
+    expect(await store.listReadableProjectIds('member')).toEqual(['ordinary']);
+    await sql`update project_memberships set can_read = false
+      where project_id = 'ordinary' and user_id = 'member'`.execute(ctx.db);
+    expect(await store.listReadableProjectIds('member')).toEqual([]);
+    await sql`update project_memberships set can_read = true
+      where project_id = 'ordinary' and user_id = 'member'`.execute(ctx.db);
     await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
     expect(await store.hasProjectPermission('member', 'ordinary', 'read')).toBe(false);
+    expect(await store.isActiveLocalUser('member')).toBe(false);
+    expect(await store.listReadableProjectIds('member')).toEqual([]);
     await sql`delete from project_memberships
       where project_id = 'ordinary' and user_id = ${admin}`.execute(ctx.db);
     expect(await store.hasProjectPermission(admin, 'ordinary', 'manage')).toBe(false);

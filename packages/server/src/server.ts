@@ -6074,11 +6074,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerProjectCollectionRoutes(app, {
     store: deps.eventStore,
-    listOverview: async () => {
+    listOverview: async (userId) => {
       const projects = deps.listProjects
         ? await deps.listProjects()
         : await deps.eventStore.listProjects();
-      return publicProjects(await projectsForOverview(projects.filter(appearsInProjectOverview)));
+      const readableIds =
+        userId === null ? null : new Set(await deps.eventStore.listReadableProjectIds(userId));
+      return publicProjects(
+        await projectsForOverview(
+          projects.filter(
+            (project) =>
+              appearsInProjectOverview(project) &&
+              (readableIds === null || readableIds.has(project.id)),
+          ),
+        ),
+      );
     },
     reorder: async (ids) => {
       const reordered = await deps.eventStore.reorderProjects(ids);
