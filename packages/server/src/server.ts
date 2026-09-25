@@ -2562,7 +2562,7 @@ const mergePullRequestBody = z.object({
 function buildLocalMergeDisplayPrompt(): string {
   // This durable transcript text may later be replayed as a model prompt. Keep
   // Git-controlled ref names out of the operator-authored prompt channel.
-  return 'Merged local branch into its base';
+  return 'Saved to project';
 }
 
 function buildLocalMergedPrompt(branch: string, base: string, note: string): string {
@@ -8881,155 +8881,257 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // with a GitHub repository keeps the PR (and its review + CI gate) as the single
   // way work reaches the base branch. Error mapping: 409 busy / not a local project /
   // dirty / conflicting / nothing to merge, 404 unknown session, 503 unconfigured.
-  app.post(
-    '/sessions/:id/merge',
-    async (
-      request,
-      reply,
-    ): Promise<{ merged: true; base: string; branch: string } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
+  const mergeLocalSession = async (
+    id: string,
+    setStatus: (status: number) => void,
+    approvedTip?: string,
+  ): Promise<{ merged: true; base: string; branch: string } | { error: string }> => {
+    const session = await deps.eventStore.getSession(id);
+    if (!session) {
+      setStatus(404);
+      return { error: `session ${id} not found` };
+    }
+    const branches = await branchesForSession(session);
+    if (!branches) {
+      setStatus(503);
+      return { error: 'merging is not configured' };
+    }
+    const target = await localMergeTarget(session);
+    if (target === undefined) {
+      setStatus(409);
+      return { error: 'this project merges through its pull request' };
+    }
+    const { basePath, project } = target;
+    // Every git command below runs in the project's own sandbox, not on the server:
+    // the clone's `.git/config` belongs to the session, and config keys such as
+    // `filter.<name>.clean` or `merge.<name>.driver` name a program git executes.
+    // Without that seam there is nowhere safe to run the merge, so refuse it.
+    const sandboxGit = deps.sandboxGit?.(project, basePath);
+    if (sandboxGit === undefined) {
+      setStatus(503);
+      return { error: 'merging is not configured' };
+    }
+    // Merging a branch a live turn is still writing to would land half-finished
+    // work — same admission rule as the branch switch below. The turn lock is held
+    // for the whole merge rather than only sampled first: a turn that started in
+    // between could commit after the branch tip is read, so the operator would be
+    // told work landed that did not.
+    let merged: { base: string; branch: string; mergedTip: string; baseTip: string };
+    try {
+      const attempt = await conductor.tryRunExclusive(id, async () => {
+        if (approvedTip !== undefined) {
+          const currentTip = (
+            await sandboxGit(['-C', session.worktree, 'rev-parse', 'HEAD'])
+          ).trim();
+          if (currentTip !== approvedTip) return null;
+        }
+        return branches.mergeIntoLocalBase(session.worktree, basePath, { git: sandboxGit });
+      });
+      if (!attempt.ran) {
+        setStatus(409);
+        return { error: `session ${id} is busy — finish the turn before merging` };
       }
-      const branches = await branchesForSession(session);
-      if (!branches) {
-        reply.code(503);
-        return { error: 'merging is not configured' };
+      if (attempt.value === null) {
+        setStatus(409);
+        return { error: 'the session changed after the agent approved it — save again' };
       }
-      const target = await localMergeTarget(session);
-      if (target === undefined) {
-        reply.code(409);
-        return { error: 'this project merges through its pull request' };
+      merged = attempt.value;
+    } catch (error) {
+      if (error instanceof DirtyWorktreeError) {
+        setStatus(409);
+        return { error: 'the worktree has uncommitted changes — commit or stash them first' };
       }
-      const { basePath, project } = target;
-      // Every git command below runs in the project's own sandbox, not on the server:
-      // the clone's `.git/config` belongs to the session, and config keys such as
-      // `filter.<name>.clean` or `merge.<name>.driver` name a program git executes.
-      // Without that seam there is nowhere safe to run the merge, so refuse it.
-      const sandboxGit = deps.sandboxGit?.(project, basePath);
-      if (sandboxGit === undefined) {
-        reply.code(503);
-        return { error: 'merging is not configured' };
+      if (error instanceof BaseCheckoutUnavailableError) {
+        // Deliberately does not echo the error's host path.
+        setStatus(409);
+        return {
+          error:
+            "the project's base checkout is not ready to merge into — it is detached or has uncommitted changes",
+        };
       }
-      // Merging a branch a live turn is still writing to would land half-finished
-      // work — same admission rule as the branch switch below. The turn lock is held
-      // for the whole merge rather than only sampled first: a turn that started in
-      // between could commit after the branch tip is read, so the operator would be
-      // told work landed that did not.
-      let merged: { base: string; branch: string; mergedTip: string; baseTip: string };
-      try {
-        const attempt = await conductor.tryRunExclusive(id, () =>
-          branches.mergeIntoLocalBase(session.worktree, basePath, { git: sandboxGit }),
-        );
-        if (!attempt.ran) {
-          reply.code(409);
-          return { error: `session ${id} is busy — finish the turn before merging` };
-        }
-        merged = attempt.value;
-      } catch (error) {
-        if (error instanceof DirtyWorktreeError) {
-          reply.code(409);
-          return { error: 'the worktree has uncommitted changes — commit or stash them first' };
-        }
-        if (error instanceof BaseCheckoutUnavailableError) {
-          // Deliberately does not echo the error's host path.
-          reply.code(409);
-          return {
-            error:
-              "the project's base checkout is not ready to merge into — it is detached or has uncommitted changes",
-          };
-        }
-        if (error instanceof BaseCheckoutStrandedError) {
-          // The one failure here that does NOT leave the base as it was. Merging again
-          // could compound it, so say what is wrong instead of offering a retry.
-          reply.code(409);
-          return {
-            error: `merging "${error.branch}" failed and the project's base checkout could not be restored — it may be left mid-merge, so check the project before merging again`,
-          };
-        }
-        if (error instanceof MergeConflictError) {
-          reply.code(409);
-          return {
-            error: `"${error.branch}" conflicts with "${error.base}" — resolve the conflicts in this session, then merge again`,
-          };
-        }
-        if (error instanceof NothingToMergeError) {
-          reply.code(409);
-          return { error: `"${error.base}" already contains this branch` };
-        }
-        if (error instanceof BranchNotFoundError) {
-          reply.code(409);
-          return { error: 'this session is not on a local branch' };
-        }
-        if (error instanceof InvalidBranchNameError) {
-          reply.code(409);
-          return {
-            error:
-              'this session or the project base is on a ref whose name git would misread — rename the branch, then merge again',
-          };
-        }
-        if (error instanceof SandboxUnavailableError) {
-          // The merge runs in the project's container, so a stopped project is a
-          // precondition the operator can fix — not a repository problem. Deliberately
-          // does not echo the container name.
-          reply.code(409);
-          return { error: 'this project is not running — start it, then merge again' };
-        }
-        throw error; // unexpected → error boundary → sanitized 500
+      if (error instanceof BaseCheckoutStrandedError) {
+        // The one failure here that does NOT leave the base as it was. Merging again
+        // could compound it, so say what is wrong instead of offering a retry.
+        setStatus(409);
+        return {
+          error: `merging "${error.branch}" failed and the project's base checkout could not be restored — it may be left mid-merge, so check the project before merging again`,
+        };
       }
-      const { base, branch } = merged;
-      // The merge itself has landed; what follows is worktree housekeeping that
-      // detaches HEAD and drops the merged branch, so it must never run beside a live
-      // turn. Unlike the merge it does not have to happen now, so it waits for idle
-      // instead of rejecting: `runExclusive` parks it behind any turn that drained
-      // while the merge released the lock, then holds that lock for the whole reset.
-      await conductor
-        .runExclusive(id, async () => {
-          // The merge is stated unconditionally — it definitely succeeded. Only the
-          // housekeeping clause varies.
-          const merge = `Your branch "${branch}" was merged into "${base}" in this project's local repository (it has no GitHub remote)`;
-          let note: string;
-          try {
-            // The whole merge result: the branch commit it absorbed decides what may be
-            // deleted, the merge commit it created is where the worktree lands.
-            const { deletedBranch, retainedBranch, skipped } = await branches.resetToLocalBase(
-              session.worktree,
-              base,
-              merged,
-              { git: sandboxGit },
-            );
-            if (skipped === true) {
-              note = `${merge}, up to the commit it was on when you merged. Your worktree kept that branch because it has moved on since — commit or discard what is there and merge again to bring the rest across.`;
-            } else if (retainedBranch !== undefined) {
-              // Half-done on purpose: detached, branch kept. Say both, so the retained
-              // commits are not mistaken for merged ones.
-              note = `${merge}, up to the commit it was on when you merged. Your worktree is now detached at that merged commit, but the branch "${retainedBranch}" was kept because it has moved on since — merge again to bring the rest across.`;
-            } else {
-              const deletedClause = deletedBranch
-                ? ` and the merged local branch "${deletedBranch}" was deleted`
-                : '';
-              note = `${merge}. Your worktree is now detached at the merged commit${deletedClause}.`;
-            }
-          } catch {
-            // Non-atomic (detach → delete the branch): on failure the worktree MAY
-            // already be detached or not, and we cannot tell which here. Word it so we
-            // never falsely claim the cleanup did or didn't happen.
-            note = `${merge}, but the automatic worktree cleanup afterwards did not fully complete.`;
+      if (error instanceof MergeConflictError) {
+        setStatus(409);
+        return {
+          error: `"${error.branch}" conflicts with "${error.base}" — resolve the conflicts in this session, then merge again`,
+        };
+      }
+      if (error instanceof NothingToMergeError) {
+        setStatus(409);
+        return { error: `"${error.base}" already contains this branch` };
+      }
+      if (error instanceof BranchNotFoundError) {
+        setStatus(409);
+        return { error: 'this session is not on a local branch' };
+      }
+      if (error instanceof InvalidBranchNameError) {
+        setStatus(409);
+        return {
+          error:
+            'this session or the project base is on a ref whose name git would misread — rename the branch, then merge again',
+        };
+      }
+      if (error instanceof SandboxUnavailableError) {
+        // The merge runs in the project's container, so a stopped project is a
+        // precondition the operator can fix — not a repository problem. Deliberately
+        // does not echo the container name.
+        setStatus(409);
+        return { error: 'this project is not running — start it, then merge again' };
+      }
+      throw error; // unexpected → error boundary → sanitized 500
+    }
+    const { base, branch } = merged;
+    // The merge itself has landed; what follows is worktree housekeeping that
+    // detaches HEAD and drops the merged branch, so it must never run beside a live
+    // turn. Unlike the merge it does not have to happen now, so it waits for idle
+    // instead of rejecting: `runExclusive` parks it behind any turn that drained
+    // while the merge released the lock, then holds that lock for the whole reset.
+    await conductor
+      .runExclusive(id, async () => {
+        // The merge is stated unconditionally — it definitely succeeded. Only the
+        // housekeeping clause varies.
+        const merge = `Your branch "${branch}" was merged into "${base}" in this project's local repository (it has no GitHub remote)`;
+        let note: string;
+        try {
+          // The whole merge result: the branch commit it absorbed decides what may be
+          // deleted, the merge commit it created is where the worktree lands.
+          const { deletedBranch, retainedBranch, skipped } = await branches.resetToLocalBase(
+            session.worktree,
+            base,
+            merged,
+            { git: sandboxGit },
+          );
+          if (skipped === true) {
+            note = `${merge}, up to the commit it was on when you merged. Your worktree kept that branch because it has moved on since — commit or discard what is there and merge again to bring the rest across.`;
+          } else if (retainedBranch !== undefined) {
+            // Half-done on purpose: detached, branch kept. Say both, so the retained
+            // commits are not mistaken for merged ones.
+            note = `${merge}, up to the commit it was on when you merged. Your worktree is now detached at that merged commit, but the branch "${retainedBranch}" was kept because it has moved on since — merge again to bring the rest across.`;
+          } else {
+            const deletedClause = deletedBranch
+              ? ` and the merged local branch "${deletedBranch}" was deleted`
+              : '';
+            note = `${merge}. Your worktree is now detached at the merged commit${deletedClause}.`;
           }
-          // Dispatched while the lock is still held, so it enqueues and drains the
-          // moment the reset releases it — never before the worktree is settled.
-          await conductor
-            .dispatchTurn(id, buildLocalMergedPrompt(branch, base, note), undefined, {
-              displayPrompt: buildLocalMergeDisplayPrompt(),
-            })
-            .catch(() => undefined);
-        })
-        .catch(() => undefined);
-      return { merged: true, base, branch };
-    },
-  );
+        } catch {
+          // Non-atomic (detach → delete the branch): on failure the worktree MAY
+          // already be detached or not, and we cannot tell which here. Word it so we
+          // never falsely claim the cleanup did or didn't happen.
+          note = `${merge}, but the automatic worktree cleanup afterwards did not fully complete.`;
+        }
+        // Dispatched while the lock is still held, so it enqueues and drains the
+        // moment the reset releases it — never before the worktree is settled.
+        await conductor
+          .dispatchTurn(id, buildLocalMergedPrompt(branch, base, note), undefined, {
+            displayPrompt: buildLocalMergeDisplayPrompt(),
+          })
+          .catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return { merged: true, base, branch };
+  };
+
+  app.post('/sessions/:id/merge', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    return mergeLocalSession(id, (status) => {
+      reply.code(status);
+    });
+  });
+
+  const localSavesInFlight = new Set<string>();
+  app.post('/sessions/:id/save-to-project', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    const session = await deps.eventStore.getSession(id);
+    if (session === undefined) {
+      reply.code(404);
+      return { error: `session ${id} not found` };
+    }
+    const target = await localMergeTarget(session);
+    if (target === undefined) {
+      reply.code(409);
+      return { error: 'saving this way is available only for local projects' };
+    }
+    const sandboxGit = deps.sandboxGit?.(target.project, target.basePath);
+    if (!(await branchesForSession(session)) || sandboxGit === undefined) {
+      reply.code(503);
+      return { error: 'saving to this project is not configured' };
+    }
+    if (localSavesInFlight.has(id) || conductor.isBusy(id)) {
+      reply.code(409);
+      return { error: 'finish the current session activity before saving to the project' };
+    }
+
+    localSavesInFlight.add(id);
+    const approvalRef = `refs/verity/save-approval/${randomUUID()}`;
+    const prompt =
+      "Save this session's work to the local project. Review the working tree and the branch changes. " +
+      'Run proportionate checks, then commit relevant uncommitted changes with a clear commit message. ' +
+      'Do not include secrets, generated local state, or unrelated files. Do not push or merge: ' +
+      'Verity will add the committed version to the project after this turn. ' +
+      'If you cannot safely commit the work or checks fail, explain why and leave it unchanged. ' +
+      `Only after all checks pass and the work is ready to add, run git update-ref ${approvalRef} HEAD as your final command. Do not create that ref when declining to save.`;
+    void (async () => {
+      try {
+        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project');
+        if (result.aborted || result.exitCode !== 0) return;
+        let approvedTip: string;
+        try {
+          approvedTip = (
+            await sandboxGit(['-C', session.worktree, 'rev-parse', '--verify', approvalRef])
+          ).trim();
+        } catch (error) {
+          if (error instanceof SandboxUnavailableError) throw error;
+          return;
+        }
+        await sandboxGit(['-C', session.worktree, 'update-ref', '-d', approvalRef]);
+        if (approvedTip.length === 0) return;
+        const branches = await branchesForSession(session);
+        if (await branches?.isDirty(session.worktree)) {
+          await conductor.dispatchTurn(
+            id,
+            'Saving to the local project stopped because some file changes are still uncommitted. Explain which changes need attention. Do not merge them.',
+            undefined,
+            { displayPrompt: 'Save to project needs attention' },
+          );
+          return;
+        }
+        const merged = await mergeLocalSession(id, () => undefined, approvedTip);
+        if ('error' in merged) {
+          await conductor.dispatchTurn(
+            id,
+            appendExternalPromptData(
+              'Saving to the local project could not finish. Explain what needs attention.',
+              'local merge error',
+              { error: merged.error },
+            ),
+            undefined,
+            { displayPrompt: 'Save to project needs attention' },
+          );
+        }
+      } catch (error) {
+        app.log.error({ err: error, sessionId: id }, 'save to local project failed');
+        await conductor
+          .dispatchTurn(
+            id,
+            'Saving to the local project stopped unexpectedly. Explain that the work has not been added to the project and ask to retry once the session is ready.',
+            undefined,
+            { displayPrompt: 'Save to project needs attention' },
+          )
+          .catch(() => undefined);
+      } finally {
+        localSavesInFlight.delete(id);
+      }
+    })();
+    reply.code(202);
+    return { accepted: true };
+  });
 
   const recoverMovePreviews = async (sessionId: string, operationId: string): Promise<void> => {
     const move = await deps.eventStore.getSessionMove(sessionId, operationId);

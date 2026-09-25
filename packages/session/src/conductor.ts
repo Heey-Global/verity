@@ -2955,7 +2955,12 @@ export class Conductor {
    * for it. Use this for in-process callers (tests, CLI) that want to await the
    * full turn; HTTP callers want {@link dispatchTurn} instead.
    */
-  async sendTurn(sessionId: string, prompt: string, opts: TurnOptions = {}): Promise<RunResult> {
+  async sendTurn(
+    sessionId: string,
+    prompt: string,
+    opts: TurnOptions = {},
+    displayPrompt = prompt,
+  ): Promise<RunResult> {
     const session = await this.accept(sessionId, prompt, opts); // lock held on success
     // Register the in-flight handle synchronously (before the async run) so a cancel
     // racing the spawn lands (#79).
@@ -2964,7 +2969,11 @@ export class Conductor {
     // The marker's prompt_seq anchor, captured for the `finally`'s scoped clear.
     let markerSeq: number | undefined;
     try {
-      await this.emitPrompt(sessionId, prompt, await this.storeAttachments(opts.attachments));
+      await this.emitPrompt(
+        sessionId,
+        displayPrompt,
+        await this.storeAttachments(opts.attachments),
+      );
       this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       const sinceSeq = await this.deps.store.latestEventSeq(sessionId);
       markerSeq = sinceSeq;

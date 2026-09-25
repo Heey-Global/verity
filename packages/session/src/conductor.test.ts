@@ -390,6 +390,24 @@ describe('formatBrokeredSecretAliases', () => {
 });
 
 describe('Conductor.sendTurn', () => {
+  it('shows a short action label while sending the full instruction to the backend', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = scriptedBackend({ text: 'saved' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.sendTurn('s1', 'review and commit the changes', {}, 'Save to project');
+
+    expect(fake.last().prompt).toBe('review and commit the changes');
+    expect((await ctx.store.getEvents('s1')).find((event) => event.t === 'prompt')).toMatchObject({
+      t: 'prompt',
+      text: 'Save to project',
+    });
+  });
+
   it('resumes an existing session and persists the turn events', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });

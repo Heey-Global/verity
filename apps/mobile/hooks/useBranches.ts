@@ -58,10 +58,8 @@ export interface UseBranches {
    * when the project has a repository (merging goes through its PR) or the server is
    * older. Drives the local merge bar. */
   localMergeBase: string | undefined;
-  /** Merge the current branch into {@link localMergeBase}. Never throws: a rejected
-   * merge (dirty worktree, conflicts, nothing to merge) resolves `{ ok: false }` with
-   * the server's reason, which the bar shows verbatim. */
-  mergeLocally: () => Promise<{ ok: true } | { ok: false; message: string }>;
+  /** Ask the agent to commit this session's work, then add it to the local project. */
+  saveToProject: () => Promise<{ ok: true } | { ok: false; message: string }>;
 }
 
 /**
@@ -237,10 +235,9 @@ export function useBranches(client: VerityClient, sessionId: string): UseBranche
     [client, sessionId, load],
   );
 
-  const mergeLocally = useCallback<UseBranches['mergeLocally']>(async () => {
+  const saveToProject = useCallback<UseBranches['saveToProject']>(async () => {
     try {
-      await client.mergeSessionBranch(sessionId);
-      await load();
+      await client.saveSessionToProject(sessionId);
       return { ok: true };
     } catch (err) {
       return {
@@ -248,7 +245,7 @@ export function useBranches(client: VerityClient, sessionId: string): UseBranche
         message: err instanceof Error ? err.message : String(err),
       };
     }
-  }, [client, sessionId, load]);
+  }, [client, sessionId]);
 
   return {
     current,
@@ -265,6 +262,6 @@ export function useBranches(client: VerityClient, sessionId: string): UseBranche
     switchTo,
     mergePullRequest,
     localMergeBase,
-    mergeLocally,
+    saveToProject,
   };
 }

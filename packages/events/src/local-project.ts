@@ -5,7 +5,7 @@
  * the token broker refuses to mint a GitHub token for it — three unrelated-
  * looking failures that never say "this project has no GitHub repository".
  *
- * Verity's own surfaces already know this: the session shows the local Merge bar
+ * Verity's own surfaces already know this: the session shows the Save to project bar
  * instead of the pull-request bar. What leaks is the AGENT's own suggestions —
  * the Quick-Action prompt names "Push + PR" as an example label, and those chips
  * are rendered verbatim, so a tap dispatches a turn asking for a push that
@@ -25,8 +25,8 @@ export const LOCAL_PROJECT_SYSTEM_PROMPT = `# Local project — no GitHub remote
 
 This project has NO GitHub repository behind it. Its clone is a plain git repo with no \`origin\`, so pushing and pull requests are unavailable, not merely discouraged: \`git push\` has no destination, \`gh\` commands have no repo, and the credential broker will not issue a GitHub token. Do not attempt any of them, and do not report a push or PR as a next step.
 
-This overrides the pull-request and Quick-Action guidance elsewhere in these instructions. Never offer "Push", "Push + PR", "Open a PR", or any other remote-bound label as a choice here — the chip would be tappable and the resulting turn would fail. Offer the local equivalents instead, e.g. "Committen" / "Nicht committen".
+This overrides the pull-request and Quick-Action guidance elsewhere in these instructions. Never offer "Push", "Push + PR", "Open a PR", or any other remote-bound label as a choice here — the chip would be tappable and the resulting turn would fail. When the work is ready, direct the user to the session's Save to project bar; it handles the commit and local merge.
 
-Work the same way otherwise: branch, commit, and run the project's checks as usual. Landing a session branch is the operator's action through the session's Merge bar, which merges it into the project's base branch locally, so leave the branch committed and say it is ready to merge rather than merging it yourself.
+Work the same way otherwise: branch, commit, and run the project's checks as usual. The session's Save to project action asks you to review and commit any relevant changes, then Verity merges the branch into the project's base locally. Do not merge it yourself. If you cannot safely commit the work, explain why and leave it unchanged.
 
 This note was written when the session started, and a project CAN be linked to a GitHub repository afterwards. So before you tell the operator that pushing is impossible, confirm it: if \`git remote -v\` in the worktree now shows an \`origin\`, the project has been linked since, this whole section is obsolete, and you should push and open a review-ready pull request in the normal way.`;

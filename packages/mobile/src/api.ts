@@ -3795,6 +3795,14 @@ export class VerityClient {
     return localMergedSchema.parse(await res.json());
   }
 
+  /** Ask the session agent to commit its work, then add it to the local project. */
+  async saveSessionToProject(id: string): Promise<{ accepted: true }> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/save-to-project`, {
+      method: 'POST',
+    });
+    return z.object({ accepted: z.literal(true) }).parse(await res.json());
+  }
+
   /** Answer a live mid-turn permission prompt (#149): allow (optionally with edited
    * input) or deny the tool `toolUseId` the in-flight turn paused on. Resolves when
    * the server confirms the decision. A 404 (no pending prompt under that id — the
