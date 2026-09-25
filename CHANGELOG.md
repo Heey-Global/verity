@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.6.0](https://github.com/Heey-Global/verity/compare/v2.5.1...v2.6.0) (2026-09-25)
+
+
+### Features
+
+* **store:** seed local users and project memberships ([#755](https://github.com/Heey-Global/verity/issues/755)) ([c2036fd](https://github.com/Heey-Global/verity/commit/c2036fd1ff14ec33030e12d23775745982723ad8))
+
+
+### Bug Fixes
+
+* **matrix:** discover auto-accepted rooms without leaving them ([#759](https://github.com/Heey-Global/verity/issues/759)) ([65ae4d4](https://github.com/Heey-Global/verity/commit/65ae4d4d0a1448c3cd3a83b2d9805c87456a90b7))
+* **store:** reset users between shared test databases ([#760](https://github.com/Heey-Global/verity/issues/760)) ([82ce6b6](https://github.com/Heey-Global/verity/commit/82ce6b68737d40989584bc01350c16e0a8861a02))
+
 ## [2.5.1](https://github.com/Heey-Global/verity/compare/v2.5.0...v2.5.1) (2026-09-25)
 
 
