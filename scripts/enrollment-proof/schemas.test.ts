@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from 'node:crypto';
+import { createDevicePairingManager } from '../../packages/server/src/device-pairing.js';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { accepts, jsonSchemas, schemas, type SchemaName } from './schemas.js';
@@ -66,7 +68,14 @@ describe('fixed enrollment action vectors', () => {
 
 it('preserves string-pattern acceptance in the portable export without JavaScript flags', () => {
   const exported = jsonSchemas();
-  for (const name of ['recoveryRequest', 'initialize'] as const) {
+  for (const name of [
+    'recoveryRequest',
+    'initialize',
+    'coreIdentity',
+    'ack',
+    'recoveryReserve',
+    'recoveryConnect',
+  ] as const) {
     const schema = exported[name] as { properties: Record<string, { pattern?: string }> };
     const valid = fixtures.find((f) => f.schema === name && f.valid)!.value;
     for (const [field, definition] of Object.entries(schema.properties)) {
@@ -85,4 +94,28 @@ it('preserves string-pattern acceptance in the portable export without JavaScrip
   expect(
     new RegExp(schema.properties.installationId.pattern).test(upper.value.installationId as string),
   ).toBe(true);
+});
+
+it('accepts the identity emitted by Core pairing without changing its spelling', () => {
+  // A duplicated derivation in two test helpers would hide drift in the actual issuer.
+  const { privateKey } = generateKeyPairSync('ed25519');
+  const manager = createDevicePairingManager({
+    privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
+    pairingCode: 'abcdefghijklmnopqrstuvwxyz_0123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    loadConsumedCodeHash: () => undefined,
+    storeConsumedCodeHash: () => true,
+  });
+  const identity = {
+    ...manager.identity(),
+    tlsPin: fixtures.find((f) => f.schema === 'coreIdentity' && f.valid)!.value.tlsPin,
+  };
+  expect(accepts('coreIdentity', identity)).toBe(true);
+  expect(
+    accepts('coreIdentity', {
+      ...identity,
+      serverId: 'srv_' + Buffer.alloc(16).toString('base64url'),
+    }),
+  ).toBe(false);
+  expect(schemas.coreIdentity.parse(identity)).toEqual(identity);
 });

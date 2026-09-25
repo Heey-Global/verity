@@ -117,7 +117,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"]
@@ -184,7 +184,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
@@ -972,7 +972,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"],
@@ -985,7 +985,7 @@
     "schema": "recoveryReserve",
     "value": {
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"]
@@ -997,7 +997,7 @@
     "schema": "recoveryReserve",
     "value": {
       "type": "team.recovery.reserve",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"]
@@ -1022,7 +1022,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"]
     },
@@ -1034,7 +1034,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "capabilities": ["remote-control-v1"]
     },
@@ -1046,7 +1046,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
     },
@@ -1318,7 +1318,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
@@ -1331,7 +1331,7 @@
     "schema": "recoveryConnect",
     "value": {
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
@@ -1343,7 +1343,7 @@
     "schema": "recoveryConnect",
     "value": {
       "type": "connect",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
@@ -1368,7 +1368,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
     },
@@ -1380,7 +1380,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
     },
@@ -1392,7 +1392,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member"
     },
@@ -1688,7 +1688,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
@@ -1702,7 +1702,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"],
@@ -1716,7 +1716,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1", "remote-control-v1"]
@@ -1729,7 +1729,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["other"]
@@ -2133,7 +2133,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo\n",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"]
@@ -2146,7 +2146,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws\n",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw\n",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"]
@@ -2159,7 +2159,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\n",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
       "capabilities": ["remote-control-v1"]
@@ -2172,7 +2172,7 @@
     "value": {
       "type": "team.recovery.reserve",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\n",
       "capabilities": ["remote-control-v1"]
@@ -2306,7 +2306,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo\n",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
@@ -2319,7 +2319,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws\n",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw\n",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
@@ -2332,7 +2332,7 @@
     "value": {
       "type": "connect",
       "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
-      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
       "capabilities": ["remote-control-v1"],
       "enrollmentPurpose": "team-member",
       "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg\n"
@@ -2352,5 +2352,627 @@
       "expiresAt": 1800000060000
     },
     "valid": true
+  },
+  {
+    "name": "valid-core-identity",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": true
+  },
+  {
+    "name": "missing-identity-identityKey",
+    "schema": "coreIdentity",
+    "value": {
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-identity-serverId",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-identity-tlsPin",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-identity-field",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-identityKey-short",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-identityKey-long",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2sA",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-identityKey-padded",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s=",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-identityKey-newline",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s\n",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-identityKey-tail-bits",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2t",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-identityKey-wrong-type",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": null,
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-identityKey-standard-base64",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "/CowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-serverId-short",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMj",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-serverId-long",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjgA",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-serverId-padded",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg=",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-serverId-newline",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg\n",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-serverId-tail-bits",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjh",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-serverId-wrong-type",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": null,
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-serverId-standard-base64",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_/CQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-tlsPin-short",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-tlsPin-long",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcA"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-tlsPin-padded",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-tlsPin-newline",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\n"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-tlsPin-tail-bits",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwd"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-tlsPin-wrong-type",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": null
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-tlsPin-standard-base64",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-/wcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-key-server-id-mismatch",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_AAAAAAAAAAAAAAAAAAAAAA",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-server-id-hashes-raw-der",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_b6YIsd7xujIPC4U-nt6voA",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "identity-wrong-spki-prefix",
+    "schema": "coreIdentity",
+    "value": {
+      "identityKey": "ACowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "serverId": "srv_aCQlF3OdnxemsuFVciKMjg",
+      "tlsPin": "sha256-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-short",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ"
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-long",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkA"
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-padded",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk="
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-newline",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\n"
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-tail-bits",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQl"
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-wrong-type",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": null
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-standard-base64",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "/QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "valid": false
+  },
+  {
+    "name": "ack-receiptId-legacy-generic-id",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "receipt_example"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-short",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLC",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-long",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwA",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-padded",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw=",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-newline",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw\n",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-tail-bits",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCx",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-wrong-type",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": null,
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-standard-base64",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "/wsLCwsLCwsLCwsLCwsLCw",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-installationHandle-legacy-generic-id",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-uuid-as-handle",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryReserve-receipt-not-on-uplink",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"],
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-short",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLC",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-long",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwA",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-padded",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw=",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-newline",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw\n",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-tail-bits",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCx",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-wrong-type",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": null,
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-standard-base64",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "/wsLCwsLCwsLCwsLCwsLCw",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-installationHandle-legacy-generic-id",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-uuid-as-handle",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "00000000-0000-4000-8000-000000000001",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "recoveryConnect-receipt-not-on-uplink",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCw",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "valid": false
   }
 ]

@@ -2,6 +2,10 @@
 
 Status: review candidate, not a frozen contract or production implementation.
 Basis: Enrollment revision 5, Remote Control revision 6 and its Team companion.
+This working revision incorporates the proposed [identity and receipt profile](../../docs/protocols/uplink-enrollment-identity-receipt-v1.md).
+Uplink confirmed the ownership boundary and UUID/handle mapping, not a joint freeze.
+The historical 196-fixture counter-review applies only to the PR #721 artifacts.
+The current candidate contains 253 fixtures; its independent Uplink execution is pending.
 The accepted 24-hour recovery policy is unchanged. The previous simulator
 evidence remains separate from the tests introduced here.
 
@@ -9,7 +13,9 @@ evidence remains separate from the tests introduced here.
 
 - `schemas.ts`: strict test-only validators for Preface v2, challenge,
   complete, initialize, initialize success/errors, acknowledgement, locked error,
-  the six team recovery messages and recovery connect.
+  the six team recovery messages and recovery connect. `coreIdentity` is a reusable
+  trust-field component (`identityKey`, `serverId`, `tlsPin`), not a new endpoint
+  message or a complete invitation decoder.
 - `wire-schemas.json`: portable JSON Schema draft-07 definitions exported from
   those validators. Each entry is an independent schema.
 - `wire-fixtures.json`: named positive and negative decoded-message fixtures;
@@ -46,6 +52,18 @@ Consumers must additionally implement these checks from `accepts`:
 - Password length is 1–1024 UTF-8 bytes, with no normalization or truncation.
   JSON Schema string length alone does not enforce the byte bound.
 - Capability names are unique and include `remote-control-v1`.
+- `coreIdentity.serverId` must equal the existing domain-separated, truncated
+  SHA-256 derivation from its canonical `identityKey` string. JSON Schema only
+  validates the two fields' shapes, not their relationship.
+
+Receipts now require exactly 32 bytes of canonical base64url; recovery routing
+handles require 16 bytes. Fixture handles have been updated from the earlier
+32-byte placeholders to Uplink's issued profile. UUID spelling is preserved.
+The original five signed action vectors remain byte-for-byte unchanged.
+
+`coreIdentity.tlsPin` validates encoding only. It does not verify the hash target,
+a peer certificate, its hostname or chain. Receipt shape tests likewise cannot
+prove randomness, uniqueness, ownership or acknowledgement idempotency.
 
 These checks are exercised by the same fixture set. Wire-shape acceptance alone
 does not verify a signature, password policy or authenticated authority.
