@@ -38,6 +38,8 @@ const withClaims = (patch) =>
   signSegments(protectedSegment, b64url(JSON.stringify({ ...claims, ...patch })));
 const withHeader = (patch) =>
   signSegments(b64url(JSON.stringify({ ...header, ...patch })), payloadSegment);
+const duplicatePayload = `{"issuer":"verity-uplink",${JSON.stringify(claims).slice(1)}`;
+const duplicateHeader = `{"kid":"fixture_key_1",${JSON.stringify(header).slice(1)}`;
 const vectors = {
   testPublicKey: b64url(rawPublicKey),
   signingInput: input,
@@ -47,6 +49,9 @@ const vectors = {
     wrongAudience: withClaims({ audience: 'other-audience' }),
     wrongInstallation: withClaims({ installationId: 'other_installation' }),
     unknownKey: withHeader({ kid: 'unknown_key' }),
+    duplicatePayloadKey: signSegments(protectedSegment, b64url(duplicatePayload)),
+    duplicateHeaderKey: signSegments(b64url(duplicateHeader), payloadSegment),
+    notYetValid: withClaims({ notBefore: claims.issuedAt + 120 }),
   },
 };
 process.stdout.write(`${JSON.stringify(vectors, null, 2)}\n`);
