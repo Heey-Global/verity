@@ -215,6 +215,7 @@ export type ClientOverrides = {
   createHttpMcpConnection?: jest.Mock;
   deleteHttpMcpConnection?: jest.Mock;
   completeHttpMcpOAuth?: jest.Mock;
+  listIntegrations?: jest.Mock;
 };
 
 /**
@@ -260,6 +261,8 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     completeHttpMcpOAuth:
       opts.completeHttpMcpOAuth ?? jest.fn(notImplemented('completeHttpMcpOAuth')),
     listModels: opts.listModels ?? jest.fn(notImplemented('listModels')),
+    listIntegrations:
+      opts.listIntegrations ?? jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
   };
   // `null` stands for a server too old to have the endpoint at all — the method
   // is absent, not failing, which is a case the MCP list has to tell apart.

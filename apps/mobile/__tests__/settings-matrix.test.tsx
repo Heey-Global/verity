@@ -4,8 +4,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
-import IntegrationsSettingsScreen from '../app/settings/integrations';
-import MatrixSettingsScreen from '../app/settings/integrations/matrix';
+import MatrixRoomsScreen from '../app/settings/services/matrix';
+import MatrixAccountScreen from '../app/settings/services/matrix/account';
 import {
   mockCreateVerityClient,
   mockPush,
@@ -27,7 +27,7 @@ const source = {
 
 afterEach(() => resetSettingsHarness());
 
-it('keeps the Integrations overview and opens Matrix settings from its service row', async () => {
+it('shows the room overview and opens the Matrix account from its row', async () => {
   const connectedRoom = {
     ...source,
     sourceId: '!team:example.test',
@@ -41,15 +41,15 @@ it('keeps the Integrations overview and opens Matrix settings from its service r
       .mockResolvedValue({ accounts: [], sources: [source, connectedRoom] }),
   } as unknown as VerityClient);
   setSearchParams({});
-  render(<IntegrationsSettingsScreen />);
+  render(<MatrixRoomsScreen />);
 
   expect(await screen.findByText('Project chat')).toBeOnTheScreen();
   expect(screen.getByText('Invitations')).toBeOnTheScreen();
   expect(screen.getByText('Connected rooms')).toBeOnTheScreen();
   expect(screen.getByText('Team room')).toBeOnTheScreen();
   expect(screen.queryByLabelText('Matrix password')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Matrix'));
-  expect(mockPush).toHaveBeenCalledWith('/settings/integrations/matrix');
+  fireEvent.press(screen.getByLabelText('Matrix account'));
+  expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix/account');
 });
 
 it('configures the Matrix account on its detail screen', async () => {
@@ -58,7 +58,7 @@ it('configures the Matrix account on its detail screen', async () => {
     getMatrixConfig: jest.fn().mockResolvedValue(null),
     saveMatrixConfig,
   } as unknown as VerityClient);
-  render(<MatrixSettingsScreen />);
+  render(<MatrixAccountScreen />);
 
   fireEvent.changeText(
     await screen.findByLabelText('Matrix homeserver URL'),
@@ -82,7 +82,7 @@ it('does not offer a save form when the server lacks Matrix settings', async () 
     getMatrixConfig: jest.fn().mockRejectedValue(new VerityApiError(404, 'Not found')),
     saveMatrixConfig: jest.fn(),
   } as unknown as VerityClient);
-  render(<MatrixSettingsScreen />);
+  render(<MatrixAccountScreen />);
 
   expect(await screen.findByText(/Update the server and retry/)).toBeOnTheScreen();
   expect(screen.queryByLabelText('Matrix password')).toBeNull();
@@ -100,7 +100,7 @@ it('shows the server reason when saving the Matrix account fails', async () => {
         ),
       ),
   } as unknown as VerityClient);
-  render(<MatrixSettingsScreen />);
+  render(<MatrixAccountScreen />);
 
   fireEvent.changeText(
     await screen.findByLabelText('Matrix homeserver URL'),
@@ -127,7 +127,7 @@ it('keeps the Matrix form editable after validation fails and allows a retry', a
     getMatrixConfig: jest.fn().mockResolvedValue(null),
     saveMatrixConfig,
   } as unknown as VerityClient);
-  render(<MatrixSettingsScreen />);
+  render(<MatrixAccountScreen />);
 
   fireEvent.changeText(
     await screen.findByLabelText('Matrix homeserver URL'),
@@ -160,7 +160,7 @@ it('assigns an invited room from a project without showing server credentials', 
     bindIntegrationSource,
   } as unknown as VerityClient);
   setSearchParams({ projectId: 'project-one' });
-  render(<IntegrationsSettingsScreen />);
+  render(<MatrixRoomsScreen />);
 
   fireEvent.press(await screen.findByText('Project chat'));
   await waitFor(() =>

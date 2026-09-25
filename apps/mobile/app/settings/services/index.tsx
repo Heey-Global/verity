@@ -7,10 +7,11 @@ import {
   secretWritable,
   transcriptionBackendStatus,
   type AgentLoginProvider,
+  type IntegrationAccount,
   type VerityClient,
 } from '@verity/mobile';
-import { router, useLocalSearchParams } from 'expo-router';
-import { useMemo } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../../components/AgentLoginPanel';
@@ -87,6 +88,7 @@ function ServicesSettingsView({
   const { settings, secretStatus } = useVeritySettings();
   const text = useSettingsFields(client, TEXT_FIELDS);
   const secrets = useSecretFields(client, SECRET_FIELDS);
+  const matrixAccount = useMatrixAccount(client);
 
   // Secret values may only be written once the store is unlocked (a write while
   // sealed 503s). Until the first status resolves, treat as not-yet-writable.
@@ -291,6 +293,27 @@ function ServicesSettingsView({
         </SettingsGroup>
       ) : null}
 
+      {/* Not gated on the secret store: the server encrypts the Matrix password
+          on its own, so the account stays editable while the store is sealed. */}
+      <SettingsGroup title="Knowledge sources" description="Chats imported into project knowledge.">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="message-circle"
+            title="Matrix"
+            subtitle="Bridged WhatsApp and Signal rooms"
+            status={
+              matrixAccount
+                ? {
+                    intent: matrixAccount.status === 'online' ? 'ready' : 'transient',
+                    label: matrixAccount.status,
+                  }
+                : undefined
+            }
+            onPress={() => router.push('/settings/services/matrix')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+
       <SettingsGroup title="Tools">
         <SettingsListPanel>
           <SettingsNavRow
@@ -363,4 +386,32 @@ function ServicesSettingsView({
       <SettingsSaveState dirty={text.dirty || secrets.dirty} />
     </SettingsScaffold>
   );
+}
+
+/**
+ * The Matrix account's connection state for the row's status pill.
+ *
+ * Refetched on focus so returning from the account screen shows the new state.
+ * A failed or unsupported fetch leaves the row without a pill rather than
+ * blocking the screen — the Matrix screen itself reports the error.
+ */
+function useMatrixAccount(client: VerityClient): IntegrationAccount | null {
+  const [account, setAccount] = useState<IntegrationAccount | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void (async () => {
+        try {
+          const { accounts } = await client.listIntegrations();
+          if (active) setAccount(accounts.find((item) => item.provider === 'matrix') ?? null);
+        } catch {
+          if (active) setAccount(null);
+        }
+      })();
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
+  return account;
 }

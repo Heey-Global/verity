@@ -9,26 +9,26 @@ import {
   SettingsNavRow,
   SettingsPanel,
   SettingsScaffold,
-} from '../../../components/settings/SettingsChrome';
-import { settingsStyles as styles } from '../../../components/settings/settingsStyles';
-import { createVerityClient } from '../../../lib/client';
+} from '../../../../components/settings/SettingsChrome';
+import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
+import { createVerityClient } from '../../../../lib/client';
 
-export default function IntegrationsSettingsScreen() {
+export default function MatrixRoomsScreen() {
   const { projectId } = useLocalSearchParams<{ projectId?: string }>();
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
     return (
       <SettingsMessage
         title="Not connected"
-        subtitle="Connect to your Verity server to manage integrations."
-        screenTitle="Integrations"
+        subtitle="Connect to your Verity server to manage Matrix rooms."
+        screenTitle="Matrix"
       />
     );
   }
-  return <IntegrationsView client={client} projectId={projectId ?? null} />;
+  return <MatrixRoomsView client={client} projectId={projectId ?? null} />;
 }
 
-function IntegrationsView({
+function MatrixRoomsView({
   client,
   projectId,
 }: {
@@ -97,20 +97,17 @@ function IntegrationsView({
 
   return (
     <SettingsScaffold
-      title={projectId ? 'Project integrations' : 'Integrations'}
+      title={projectId ? 'Project rooms' : 'Matrix'}
       detail
       onRetry={() => void reload()}
     >
       {!projectId ? (
-        <SettingsGroup
-          title="Services"
-          description="Connect a service once, then assign its sources to projects."
-        >
+        <SettingsGroup title="Account" description="One Matrix account serves all projects.">
           <SettingsListPanel>
             <SettingsNavRow
-              icon="link"
-              title="Matrix"
-              subtitle="Import bridged WhatsApp and Signal conversations"
+              icon="user"
+              title="Matrix account"
+              subtitle="Homeserver, account ID, and password"
               status={
                 account
                   ? {
@@ -119,7 +116,7 @@ function IntegrationsView({
                     }
                   : undefined
               }
-              onPress={() => router.push('/settings/integrations/matrix')}
+              onPress={() => router.push('/settings/services/matrix/account')}
             />
           </SettingsListPanel>
         </SettingsGroup>
@@ -236,7 +233,7 @@ function IntegrationsView({
                       subtitle={`Project ${item.projectId} · ${item.status}`}
                       onPress={() =>
                         router.push({
-                          pathname: '/settings/integrations',
+                          pathname: '/settings/services/matrix',
                           params: { projectId: item.projectId! },
                         })
                       }

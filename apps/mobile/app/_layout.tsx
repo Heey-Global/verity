@@ -218,6 +218,11 @@ function HydratedRoot() {
                 name="settings/services/mcp/new"
                 options={{ title: 'Add MCP connection' }}
               />
+              <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
+              <Stack.Screen
+                name="settings/services/matrix/account"
+                options={{ title: 'Matrix account' }}
+              />
               <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
               <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />

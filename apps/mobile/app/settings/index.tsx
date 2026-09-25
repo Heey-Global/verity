@@ -178,15 +178,9 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="key"
             title="Connected services"
-            subtitle="Secret store, AI logins, transcription, MCP"
+            subtitle="Secret store, AI logins, transcription, MCP, Matrix"
             status={servicesNeedsUnlock ? { intent: 'needsSetup', label: 'Locked' } : undefined}
             onPress={() => router.push('/settings/services')}
-          />
-          <SettingsNavRow
-            icon="link"
-            title="Integrations"
-            subtitle="Matrix account and server connection"
-            onPress={() => router.push('/settings/integrations')}
           />
           <SettingsNavRow
             icon="tool"
