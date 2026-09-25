@@ -55,7 +55,11 @@ it('shows the room overview and opens the Matrix account from its row', async ()
 it('configures the Matrix account on its detail screen', async () => {
   const saveMatrixConfig = jest.fn().mockResolvedValue(undefined);
   mockCreateVerityClient.mockReturnValue({
-    getMatrixConfig: jest.fn().mockResolvedValue(null),
+    getMatrixConfig: jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
+      endpoint: 'https://matrix.example.test',
+      username: '@verity:example.test',
+      passwordConfigured: true,
+    }),
     saveMatrixConfig,
   } as unknown as VerityClient);
   render(<MatrixAccountScreen />);
@@ -75,6 +79,72 @@ it('configures the Matrix account on its detail screen', async () => {
       password: 'private-password',
     }),
   );
+  expect(await screen.findByText(/^Saved at /)).toBeOnTheScreen();
+  expect(screen.getByText('https://matrix.example.test')).toBeOnTheScreen();
+  expect(screen.queryByLabelText('Matrix homeserver URL')).toBeNull();
+  expect(screen.getByLabelText('Matrix password').props.value).toBe('');
+  expect(screen.getByRole('button', { name: 'Update password' })).toBeDisabled();
+});
+
+// The save button was the one signal of whether a save could happen, and it
+// looked the same disabled as enabled. Its disabled state has to be visible
+// and announced, and it may only light up once every required field is filled.
+it('keeps the save button disabled until the account is complete', async () => {
+  mockCreateVerityClient.mockReturnValue({
+    getMatrixConfig: jest.fn().mockResolvedValue(null),
+    saveMatrixConfig: jest.fn(),
+  } as unknown as VerityClient);
+  render(<MatrixAccountScreen />);
+
+  const button = await screen.findByRole('button', { name: 'Save Matrix account' });
+  expect(button).toBeDisabled();
+  fireEvent.changeText(screen.getByLabelText('Matrix homeserver URL'), 'https://m.example.test');
+  fireEvent.changeText(screen.getByLabelText('Matrix account ID'), '@verity:example.test');
+  expect(button).toBeDisabled();
+  expect(screen.getByText('Unsaved changes')).toBeOnTheScreen();
+  fireEvent.changeText(screen.getByLabelText('Matrix password'), 'private-password');
+  expect(button).toBeEnabled();
+});
+
+// Once saved, the server refuses a different homeserver or account ID (the
+// worker's device store is bound to that identity), so the form must not offer
+// to edit them. Only a password replacement is left, and a completed save has
+// to be visible: the box empties, the button dims again, and the status says so.
+it('shows the saved identity read-only and only replaces the password', async () => {
+  const saveMatrixConfig = jest.fn().mockResolvedValue(undefined);
+  mockCreateVerityClient.mockReturnValue({
+    getMatrixConfig: jest.fn().mockResolvedValue({
+      endpoint: 'https://matrix.example.test',
+      username: '@verity:example.test',
+      passwordConfigured: true,
+    }),
+    saveMatrixConfig,
+  } as unknown as VerityClient);
+  render(<MatrixAccountScreen />);
+
+  expect(await screen.findByText('https://matrix.example.test')).toBeOnTheScreen();
+  expect(screen.getByText('@verity:example.test')).toBeOnTheScreen();
+  expect(screen.queryByLabelText('Matrix homeserver URL')).toBeNull();
+  expect(screen.queryByLabelText('Matrix account ID')).toBeNull();
+  expect(screen.getByText('All changes saved')).toBeOnTheScreen();
+  const button = screen.getByRole('button', { name: 'Update password' });
+  expect(button).toBeDisabled();
+
+  fireEvent.changeText(screen.getByLabelText('Matrix password'), 'new-password');
+  expect(button).toBeEnabled();
+  expect(screen.getByText('Unsaved changes')).toBeOnTheScreen();
+  fireEvent.press(button);
+
+  await waitFor(() =>
+    expect(saveMatrixConfig).toHaveBeenCalledWith({
+      endpoint: 'https://matrix.example.test',
+      username: '@verity:example.test',
+      password: 'new-password',
+    }),
+  );
+  expect(await screen.findByText(/^Saved at /)).toBeOnTheScreen();
+  expect(screen.getByLabelText('Matrix password').props.value).toBe('');
+  expect(screen.getByRole('button', { name: 'Update password' })).toBeDisabled();
 });
 
 it('does not offer a save form when the server lacks Matrix settings', async () => {
