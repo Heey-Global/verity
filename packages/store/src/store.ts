@@ -4469,6 +4469,15 @@ export class EventStore implements EventSink {
     return membership[`can_${permission}`];
   }
 
+  async isActiveAdministrator(userId: string): Promise<boolean> {
+    const user = await this.db
+      .selectFrom('users')
+      .select(['role', 'status'])
+      .where('id', '=', userId)
+      .executeTakeFirst();
+    return user?.role === 'administrator' && user.status === 'active';
+  }
+
   async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the

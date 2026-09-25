@@ -1,5 +1,6 @@
 import type { Conductor } from '@verity/session';
 import { generateKeyPairSync } from 'node:crypto';
+import { sql } from 'kysely';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -127,6 +128,72 @@ describe('paired device management', () => {
         headers: { authorization: `Bearer ${device.token}` },
       });
       expect(revoked.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps undeclared paired-device routes administrator-only', async () => {
+    await sql`insert into users (id, role, status) values ('member', 'member', 'active')`.execute(
+      ctx.db,
+    );
+    await sql`insert into auth_tokens (id, token_hash, user_id)
+      values ('member-device', ${hashAuthToken('member-token')}, 'member')`.execute(ctx.db);
+    await sql`insert into projects
+      (id, owner, repo, container_name, state, overview_visible)
+      values ('shared', 'owner', 'shared', 'shared-container', 'absent', true),
+             ('private', 'owner', 'private', 'private-container', 'absent', true)`.execute(ctx.db);
+    await sql`insert into project_memberships
+      (project_id, user_id, can_read, can_execute, can_manage)
+      values ('shared', 'member', true, false, false)`.execute(ctx.db);
+    await sql`insert into sessions (session_id, worktree, model, project_id)
+      values ('private-session', '/tmp/private-session', 'default', 'private')`.execute(ctx.db);
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/projects',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(response.statusCode).toBe(403);
+      const privateProject = await app.inject({
+        method: 'GET',
+        url: '/projects/private',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(privateProject.statusCode).toBe(403);
+      const privateSession = await app.inject({
+        method: 'GET',
+        url: '/sessions/private-session',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(privateSession.statusCode).toBe(403);
+      const sharedProject = await app.inject({
+        method: 'GET',
+        url: '/projects/shared',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(sharedProject.statusCode).toBe(200);
+      const streamTicket = await app.inject({
+        method: 'POST',
+        url: '/sessions/private-session/stream-ticket',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(streamTicket.statusCode).toBe(403);
+      await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
+      const disabled = await app.inject({
+        method: 'GET',
+        url: '/projects/shared',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(disabled.statusCode).toBe(403);
     } finally {
       await app.close();
     }

@@ -165,6 +165,7 @@ import {
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
 import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
+import { authorizePairedRoute } from './paired-route-policy.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
   createPushFirePoints,
@@ -4059,6 +4060,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const userId = registry.resolveUserId(token);
       if (userId === undefined) return reply.code(401).send({ error: 'unauthorized' });
       request.localUserId = userId;
+      const access = await authorizePairedRoute(
+        deps.eventStore,
+        userId,
+        request.method,
+        request.routeOptions.url ?? pathname,
+        (request.params ?? {}) as Record<string, unknown>,
+      );
+      if (access === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (access === 'forbidden') return reply.code(403).send({ error: 'forbidden' });
       return;
     }
     // A genuine WebSocket upgrade to the live-stream route cannot take a normal HTTP

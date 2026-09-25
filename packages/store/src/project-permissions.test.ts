@@ -18,6 +18,8 @@ it('uses active membership rights and keeps the control-plane project private', 
     );
 
     expect(await store.hasProjectPermission(admin, 'ordinary', 'manage')).toBe(true);
+    expect(await store.isActiveAdministrator(admin)).toBe(true);
+    expect(await store.isActiveAdministrator('member')).toBe(false);
     expect(await store.hasProjectPermission('member', 'ordinary', 'read')).toBe(false);
     await sql`insert into project_memberships
       (project_id, user_id, can_read, can_execute, can_manage)
@@ -29,6 +31,9 @@ it('uses active membership rights and keeps the control-plane project private', 
     expect(await store.hasProjectPermission('member', 'control', 'read')).toBe(false);
     await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
     expect(await store.hasProjectPermission('member', 'ordinary', 'read')).toBe(false);
+    await sql`delete from project_memberships
+      where project_id = 'ordinary' and user_id = ${admin}`.execute(ctx.db);
+    expect(await store.hasProjectPermission(admin, 'ordinary', 'manage')).toBe(false);
     await expect(
       sql`update project_memberships set can_read = false, can_execute = true
         where project_id = 'ordinary' and user_id = 'member'`.execute(ctx.db),
