@@ -1937,6 +1937,19 @@ export function SessionChat({
     [hasOlder, loadingOlder, loadOlder, olderLoadStalled, reportScrollDebug],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
+  const onListContentSizeChange = useCallback((_width: number, height: number) => {
+    lastContentHeightRef.current = height;
+  }, []);
+  const initialHistoryPrefetchRef = useRef(false);
+  useEffect(() => {
+    if (initialHistoryPrefetchRef.current || !loaded || restoring || !hasOlder || loadingOlder)
+      return;
+    initialHistoryPrefetchRef.current = true;
+    // A single extra page starts behind the initial render. Subsequent pages are
+    // governed by the measured two-viewport buffer, so opening a long session
+    // cannot pull its whole transcript into memory.
+    loadOlderNearStartRef.current();
+  }, [loaded, restoring, hasOlder, loadingOlder]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -1957,24 +1970,24 @@ export function SessionChat({
     historyAppendSettleTimer.current = setTimeout(() => {
       historyAppendSettleTimer.current = null;
       historyAppendSettlingRef.current = false;
-      const oldestRowViewable = isOldestRowViewable(
+      const nearHistoryEdge = isHistoryEdgeVisible(
+        lastScrollYRef.current,
+        lastContentHeightRef.current,
+        lastViewportHeightRef.current,
         oldestVisibleIndexRef.current,
         dataRef.current.length,
       );
       reportScrollDebug('history-append-settled', {
         rows: dataRef.current.length,
         y: lastScrollYRef.current,
-        oldestRowViewable,
+        nearHistoryEdge,
       });
-      // Clearing a ref renders nothing, so no effect or callback re-evaluates paging
-      // on its own. Re-check here or the two cases that add no reachable rows stall
-      // after a single page: a metadata-only scan, and an initial viewport still too
-      // short to scroll. Viewability (not the cached content height, which may still
-      // describe the pre-append list) decides, so this cannot run away: once the page
-      // put real rows behind the viewport, the last row is no longer viewable.
+      // Clearing a ref renders nothing, so re-check the measured buffer here. A page
+      // containing little visible content may still leave less than two screens ready;
+      // content-size updates keep this check current after FlashList measures the rows.
       // Never during an active gesture — the settle-idle handler re-checks the same
       // condition once the finger is up.
-      if (oldestRowViewable && !userScrollActiveRef.current) loadOlderNearStartRef.current();
+      if (nearHistoryEdge && !userScrollActiveRef.current) loadOlderNearStartRef.current();
     }, HISTORY_APPEND_SETTLE_MS);
   }, [loadingOlder, olderLoadGeneration, reportScrollDebug]);
   const observedOlderLoadGenerationRef = useRef(olderLoadGeneration);
@@ -3610,6 +3623,7 @@ export function SessionChat({
                     }}
                     contentContainerStyle={styles.listContent}
                     onScroll={onListScroll}
+                    onContentSizeChange={onListContentSizeChange}
                     onTouchEnd={clearSearchHighlightAfterTouch}
                     scrollEventThrottle={64}
                     // Only a real finger drag/fling summons the message-nav stack (see
@@ -4807,7 +4821,7 @@ function SessionFilesSheet({
                     onClose();
                     router.push({
                       pathname: '/project/[id]/settings/services',
-                      params: { id: projectId },
+                      params: { id: projectId, section: 'drive' },
                     });
                   }}
                   accessibilityRole="link"
