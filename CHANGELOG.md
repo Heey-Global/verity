@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.1](https://github.com/Heey-Global/verity/compare/v2.4.0...v2.4.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **mobile:** open project settings directly ([#731](https://github.com/Heey-Global/verity/issues/731)) ([7168c69](https://github.com/Heey-Global/verity/commit/7168c69294e45d9cd087a1bc659286423f4f6fc4))
+* **sessions:** exclude worktree metadata from moves ([#726](https://github.com/Heey-Global/verity/issues/726)) ([c5ffe27](https://github.com/Heey-Global/verity/commit/c5ffe271681d26e16e802247ddf7b8a3c0d07403))
+
 ## [2.4.0](https://github.com/Heey-Global/verity/compare/v2.3.0...v2.4.0) (2026-09-25)
 
 
