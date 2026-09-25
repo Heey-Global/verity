@@ -366,6 +366,63 @@ it('delivers linked agent messages automatically until a renewal card is needed'
   expect(harness.dispatches[0]?.prompt).toContain('agent-to-agent material');
 });
 
+it('hands a linked message for a sleeping project to the turn that wakes it', async () => {
+  const harness = build({ linkedTools: true });
+  for (const [id, repo] of [
+    ['p1', 'alpha'],
+    ['p2', 'beta'],
+  ] as const) {
+    await harness.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo,
+      cloneDir: `__local__-${repo}`,
+      containerName: `verity-${repo}`,
+      state: 'active',
+    });
+  }
+  await harness.store.updateProjectSleepState('p2', 'sleeping', {
+    sleepCompatibilityFingerprint: 'fingerprint',
+    sleepingSince: new Date(),
+    wakeStartedAt: null,
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-linked-s1',
+    model: 'claude-opus-5',
+  });
+  await harness.store.createSession({
+    sessionId: 's2',
+    projectId: 'p2',
+    worktree: '/tmp/verity-linked-s2',
+    model: 'claude-opus-5',
+  });
+  await harness.store.createSessionLink('s1', 's2');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const response = await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'verity_send_session_message',
+        arguments: { targetSessionId: 's2', message: 'Are you there?' },
+      },
+    });
+    expect(response.status).toBe(200);
+    // Refusing here would strand the link the moment its peer idles to sleep, even
+    // though turn preparation wakes the Sandbox before running the dispatched turn.
+    expect(
+      (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+    ).toBeUndefined();
+  });
+  expect(harness.dispatches).toEqual([
+    expect.objectContaining({ sessionId: 's2', prompt: expect.stringContaining('Are you there?') }),
+  ]);
+});
+
 describe('POST /internal/mcp (loopback MCP gateway)', () => {
   it('accepts an escaped Markdown document within the stored byte limit', async () => {
     const harness = build({ knowledge: true, allow: true });

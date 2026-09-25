@@ -75,6 +75,7 @@ export {
   type ProjectKind,
   LOCAL_PROJECT_OWNER,
   isLocalProject,
+  isSessionLinkProject,
   isInstallationPlaceholder,
   ProjectIdentityClaimConflict,
   type AgentLoopRecord,

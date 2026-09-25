@@ -50,3 +50,40 @@ it('links two project sessions and removes the link from either side', async () 
   expect(deleteSessionLink).toHaveBeenCalledWith('b', 'a');
   await app.close();
 });
+
+it('links sessions in sleeping projects, which a linked message wakes', async () => {
+  const project = (id: string, state: string) => ({
+    id,
+    repo: id,
+    kind: 'local',
+    state,
+    hiddenAt: null,
+  });
+  const projects = new Map([
+    ['awake', project('awake', 'active')],
+    ['asleep', project('asleep', 'sleeping')],
+    ['broken', project('broken', 'failed')],
+  ]);
+  const createSessionLink = vi.fn(async () => true);
+  const app = Fastify();
+  registerSessionLinkRoutes(app, {
+    getSession: async (id: string) => ({ projectId: id }),
+    getProject: async (id: string) => projects.get(id),
+    createSessionLink,
+  } as unknown as EventStore);
+  const link = (source: string, target: string) =>
+    app.inject({
+      method: 'POST',
+      url: `/sessions/${source}/links`,
+      payload: { targetSessionId: target },
+    });
+
+  // Refusing a sleeping peer is how the picker's tap once did nothing at all.
+  expect((await link('awake', 'asleep')).statusCode).toBe(201);
+  expect((await link('asleep', 'awake')).statusCode).toBe(201);
+  // A failed Sandbox is not woken by a turn, so a link to it could never deliver.
+  const refused = await link('awake', 'broken');
+  expect(refused.statusCode).toBe(400);
+  expect(createSessionLink).toHaveBeenCalledTimes(2);
+  await app.close();
+});
