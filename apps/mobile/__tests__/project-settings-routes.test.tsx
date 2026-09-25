@@ -610,15 +610,13 @@ describe('project settings — connected services', () => {
     expect(mockPush).toHaveBeenCalledWith('/settings/services/mcp');
   });
 
-  it('opens Matrix rooms with this project selected', async () => {
+  it('keeps Matrix in Verity settings instead of project services', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectServicesScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Matrix'));
-    expect(mockPush).toHaveBeenCalledWith({
-      pathname: '/settings/services/matrix',
-      params: { projectId: 'p/1' },
-    });
+    expect(await screen.findByText('Credentials')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Matrix')).toBeNull();
+    expect(screen.queryByText('Knowledge sources')).toBeNull();
   });
 });
 
