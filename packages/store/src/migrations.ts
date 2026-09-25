@@ -3060,7 +3060,7 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('session_moves').execute();
     },
   },
-  '0110_session_links': {
+  '0111_session_links': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema
         .createTable('session_links')

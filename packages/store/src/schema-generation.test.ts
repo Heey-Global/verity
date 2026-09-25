@@ -33,6 +33,26 @@ describe('earliestMigrationKey', () => {
   });
 });
 
+describe('migration keys', () => {
+  it('are declared in the order Kysely applies them', async () => {
+    const keys = Object.keys(await migrationProvider.getMigrations());
+    // Two branches picking the same next number merge cleanly, but a new key that
+    // sorts before one an installed Server already ran makes Kysely refuse to
+    // start the candidate ("corrupted migrations") — until now only the live
+    // self-update smoke noticed. Appending means the new key must sort last.
+    const inversions = keys.flatMap((key, i) =>
+      i > 0 && key < keys[i - 1]! ? [`${keys[i - 1]} -> ${key}`] : [],
+    );
+    // These shipped inside a single release each, so no installed Server ran one
+    // half without the other. They are history now; nothing may join them.
+    expect(inversions).toEqual([
+      '0038_agent_loops -> 0033_running_turns',
+      '0085_broker_only_doppler_credentials -> 0084_cross_project_workflows',
+      '0096_opencode_model_selection -> 0093_opencode_settings',
+    ]);
+  });
+});
+
 describe('schemaCompatibilityWindow', () => {
   it('declares [earliest, latest] with the latest as both current and max', () => {
     const window = schemaCompatibilityWindow();
