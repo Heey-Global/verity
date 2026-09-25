@@ -229,6 +229,41 @@ describe('truncateAll', () => {
     }
   });
 
+  it('returns users to the migrated seed before the next shared-database test file', async () => {
+    // Users outlived the truncate once: a file that inserted a member left it
+    // for the next file on the same worker, whose own insert of that id then
+    // failed on the primary key. Restoring less than the seed breaks the other
+    // way — projects and tokens default to the seeded administrator.
+    const { db, close } = createRawDb();
+    try {
+      await migrateToLatest(db);
+      const users = () =>
+        db
+          .selectFrom('users')
+          .selectAll()
+          .orderBy('id')
+          .execute()
+          // Every column but the insertion timestamp must match the migrated seed.
+          .then((rows) =>
+            rows.map((row) =>
+              Object.fromEntries(Object.entries(row).filter(([k]) => k !== 'created_at')),
+            ),
+          );
+      const seeded = await users();
+      expect(seeded).not.toEqual([]);
+      await sql`insert into users (id, role, status) values ('member', 'member', 'active')`.execute(
+        db,
+      );
+      await sql`update users set status = 'disabled'`.execute(db);
+
+      await truncateAll(db);
+
+      expect(await users()).toEqual(seeded);
+    } finally {
+      await close();
+    }
+  });
+
   it('drains projection backfills before it takes the truncate lock', async () => {
     // `ingestRunnerFrame` schedules the recovery/search backfill and deliberately
     // does not await it. On the shared PostgreSQL that backfill holds its own
@@ -269,7 +304,14 @@ describe('truncateAll', () => {
 
       // Give anything still queued the turns it would need to reach the driver.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(statements.slice(truncatedAt + 1)).toEqual([]);
+      // truncateAll's own seed restore follows the truncate, once; nothing else may.
+      const afterTruncate = statements.slice(truncatedAt + 1);
+      expect(
+        afterTruncate.filter((statement) => statement.startsWith('insert into users')),
+      ).toHaveLength(1);
+      expect(
+        afterTruncate.filter((statement) => !statement.startsWith('insert into users')),
+      ).toEqual([]);
     } finally {
       await close();
     }

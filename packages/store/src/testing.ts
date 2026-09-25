@@ -310,7 +310,18 @@ export async function truncateAll(db: Kysely<Database>): Promise<void> {
   await waitForMessageProjectionWork(db);
   // `projects` is truncated first (it's referenced by `sessions.project_id` via
   // a SET NULL FK — cascade bounces through `sessions` so include both).
-  await sql`truncate table integration_events, integration_sources, integration_accounts, matrix_connector_config, knowledge_access_events, knowledge_document_revisions, knowledge_documents, knowledge_folders, control_plane_generation, uplink_pending_share_removals, transcript_lines, events, queued_turns, running_turns, runner_frames, session_pending_note, session_automation_marker, session_moves, sessions, attachments, secret_audit_events, audit_mac_keys, secret_job_frames, secret_jobs, secret_revocations, secret_approvals, secret_run_grants, agent_loop_runs, agent_loops, public_preview_shares, google_slide_image_cleanup, recent_google_slide_decks, dev_server_detection_state, dev_servers, claude_egress_client_certs, claude_egress_ca, project_settings, verity_settings, secret_key_meta, push_receipts, device_push_tokens, auth_tokens, session_backend_state, project_identity_claims, projects restart identity cascade`.execute(
-    db,
-  );
+  // One transaction: a failed seed restore must not leave the worker's database
+  // without the administrator every later file's projects and tokens reference.
+  await db.transaction().execute(async (trx) => {
+    await sql`truncate table integration_events, integration_sources, integration_accounts, matrix_connector_config, knowledge_access_events, knowledge_document_revisions, knowledge_documents, knowledge_folders, control_plane_generation, uplink_pending_share_removals, transcript_lines, events, queued_turns, running_turns, runner_frames, session_pending_note, session_automation_marker, session_moves, sessions, attachments, secret_audit_events, audit_mac_keys, secret_job_frames, secret_jobs, secret_revocations, secret_approvals, secret_run_grants, agent_loop_runs, agent_loops, public_preview_shares, google_slide_image_cleanup, recent_google_slide_decks, dev_server_detection_state, dev_servers, claude_egress_client_certs, claude_egress_ca, project_settings, verity_settings, secret_key_meta, push_receipts, device_push_tokens, auth_tokens, session_backend_state, project_identity_claims, projects, project_memberships, users restart identity cascade`.execute(
+      trx,
+    );
+    // `users` carries a seeded row (migration 0112's legacy administrator) that
+    // every project and token defaults to. Leaving the table out of the truncate
+    // let one file's users leak into the next file on the same worker, where
+    // re-inserting the same id failed with a duplicate key; truncating it without
+    // restoring the seed would instead break every insert into `projects`.
+    await sql`insert into users (id, role, status)
+    values ('00000000-0000-4000-8000-000000000001', 'administrator', 'active')`.execute(trx);
+  });
 }
