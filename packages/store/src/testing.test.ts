@@ -207,6 +207,28 @@ describe('createIsolatedTestDb', () => {
 });
 
 describe('truncateAll', () => {
+  it('removes Matrix account secrets before the next shared-database test file', async () => {
+    const { db, close } = createRawDb();
+    try {
+      await migrateToLatest(db);
+      await db
+        .insertInto('matrix_connector_config')
+        .values({
+          id: 'matrix',
+          endpoint: 'https://matrix.example.test',
+          username: '@verity:example.test',
+          password_secret: 'encrypted-under-another-test-key',
+        })
+        .execute();
+
+      await truncateAll(db);
+
+      expect(await db.selectFrom('matrix_connector_config').select('id').execute()).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
   it('drains projection backfills before it takes the truncate lock', async () => {
     // `ingestRunnerFrame` schedules the recovery/search backfill and deliberately
     // does not await it. On the shared PostgreSQL that backfill holds its own
