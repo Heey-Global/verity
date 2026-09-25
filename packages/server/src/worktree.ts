@@ -190,7 +190,7 @@ function adminDirToWorktreeGitFile(worktreeRoots: readonly string[]): Map<string
 }
 
 /** Verity-owned copy of the admin facts, stored INSIDE the checkout. */
-const WORKTREE_SIDECAR = '.verity-worktree.json';
+export const WORKTREE_SIDECAR = '.verity-worktree.json';
 
 /** A commit id, as git writes it into a detached `HEAD` — SHA-1 or SHA-256. */
 const COMMIT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
