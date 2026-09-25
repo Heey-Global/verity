@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.0](https://github.com/Heey-Global/verity/compare/v2.4.1...v2.5.0) (2026-09-25)
+
+
+### Features
+
+* **integrations:** manage Matrix connector after account setup ([#734](https://github.com/Heey-Global/verity/issues/734)) ([b900c70](https://github.com/Heey-Global/verity/commit/b900c70be434d771698a45ed8d398757a7d82221))
+* **sessions:** link agents across projects ([#736](https://github.com/Heey-Global/verity/issues/736)) ([70f9184](https://github.com/Heey-Global/verity/commit/70f9184c48f7515fa982154c996213f960d0102e))
+
 ## [2.4.1](https://github.com/Heey-Global/verity/compare/v2.4.0...v2.4.1) (2026-09-25)
 
 
