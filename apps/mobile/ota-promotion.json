@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.34.10",
+  "version": "1.34.11",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "a50760a85a05172768ddfa5cf6f722914d3e0b44",
-  "tag": "mobile-v1.34.10",
-  "branch": "staging-mobile-v1.34.10-a50760a85a05172768ddfa5cf6f722914d3e0b44",
-  "baseline": "mobile-v1.34.9",
-  "group": "d9532e19-9280-4f35-bbd5-53c129d954d9",
+  "commit": "b5bb07412f38c5ea9ab668076eff53e595170a60",
+  "tag": "mobile-v1.34.11",
+  "branch": "staging-mobile-v1.34.11-b5bb07412f38c5ea9ab668076eff53e595170a60",
+  "baseline": "mobile-v1.34.10",
+  "group": "dff04c4e-b862-4a23-b6e6-522d78b29a36",
   "notes": [
-    "save local session work to project (#739)"
+    "choose Matrix room project from server settings (#745)"
   ]
 }
