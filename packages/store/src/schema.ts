@@ -116,6 +116,7 @@ interface GoogleSlideInvocationsTable {
 
 export interface HttpMcpConnectionsTable {
   id: string;
+  owner_user_id: ColumnType<string, string | undefined, string>;
   name: string;
   url: string;
   authorization: string | null;

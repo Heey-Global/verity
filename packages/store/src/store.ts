@@ -446,6 +446,7 @@ export interface ProjectSettingsRecord {
 
 export interface HttpMcpConnectionRecord {
   id: string;
+  ownerUserId?: string;
   name: string;
   url: string;
   /** Decrypted only at the trusted store boundary; public APIs must project this out. */
@@ -6982,6 +6983,7 @@ export class EventStore implements EventSink {
       .insertInto('http_mcp_connections')
       .values({
         id: record.id,
+        ...(record.ownerUserId === undefined ? {} : { owner_user_id: record.ownerUserId }),
         name: record.name,
         url: record.url,
         authorization: this.encryptSecret(record.authorization),
@@ -7016,15 +7018,17 @@ export class EventStore implements EventSink {
       .execute();
   }
 
-  async listHttpMcpConnections(): Promise<HttpMcpConnectionRecord[]> {
-    const rows = await this.db
+  async listHttpMcpConnections(ownerUserId?: string): Promise<HttpMcpConnectionRecord[]> {
+    let query = this.db
       .selectFrom('http_mcp_connections')
       .selectAll()
       .orderBy('name', 'asc')
-      .orderBy('id', 'asc')
-      .execute();
+      .orderBy('id', 'asc');
+    if (ownerUserId !== undefined) query = query.where('owner_user_id', '=', ownerUserId);
+    const rows = await query.execute();
     return rows.map((row) => ({
       id: row.id,
+      ownerUserId: row.owner_user_id,
       name: row.name,
       url: row.url,
       authorization: this.decryptSecret(row.authorization),

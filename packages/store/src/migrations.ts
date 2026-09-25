@@ -3158,6 +3158,15 @@ const migrations: Record<string, Migration> = {
       await sql`drop table users`.execute(db);
     },
   },
+  '0113_http_mcp_connection_owners': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table http_mcp_connections add column owner_user_id text
+        not null default '00000000-0000-4000-8000-000000000001' references users(id)`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table http_mcp_connections drop column owner_user_id`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
