@@ -57,3 +57,31 @@
 9808b588be68ecef86bd2f0d62585932feb8e489:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2075
 9808b588be68ecef86bd2f0d62585932feb8e489:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2090
 9808b588be68ecef86bd2f0d62585932feb8e489:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2105
+# Public Ed25519 SPKI identityKey fixtures in the identity/receipt review candidate.
+# Only findings from the reviewed commit are suppressed; new locations remain scanned.
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2360
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2379
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2388
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2397
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2408
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2418
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2428
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2438
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2448
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2478
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2488
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2498
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2508
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2518
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2528
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2538
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2548
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2558
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2568
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2578
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2588
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2598
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2608
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2618
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2628
+07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2638
