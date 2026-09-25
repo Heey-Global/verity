@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { captureMoveSnapshot, moveGit, transferMoveSnapshot } from './session-move-files.js';
+import { WORKTREE_SIDECAR, createGitWorktreeProvisioner } from './worktree.js';
 
 const roots: string[] = [];
 async function repo() {
@@ -32,6 +33,30 @@ afterEach(async () => {
 });
 
 describe('session worktree transfer', () => {
+  // Real session worktrees carry Verity's own untracked metadata, and so does the
+  // freshly provisioned target. Bare `git init` fixtures have none, which is how
+  // every move failing with "Conflicting target paths" stayed green.
+  it('moves between provisioned session worktrees without carrying checkout metadata', async () => {
+    const [sourceRepo, targetRepo] = [await repo(), await repo()];
+    const source = await createGitWorktreeProvisioner({
+      repoDir: sourceRepo,
+      worktreeRoot: join(sourceRepo, '.verity-sessions'),
+    }).add('agent/source');
+    const target = await createGitWorktreeProvisioner({
+      repoDir: targetRepo,
+      worktreeRoot: join(targetRepo, '.verity-sessions'),
+    }).add('agent/target');
+    const metadata = await readFile(join(target, WORKTREE_SIDECAR), 'utf8');
+    await writeFile(join(source, 'notes.md'), 'uncommitted');
+    await writeFile(join(source, `${WORKTREE_SIDECAR}.tmp`), 'interrupted sidecar write');
+    const snapshot = await captureMoveSnapshot(source);
+    expect(snapshot.files.map(({ path }) => path)).toEqual(['notes.md']);
+    await transferMoveSnapshot(snapshot, target);
+    expect(await readFile(join(target, 'notes.md'), 'utf8')).toBe('uncommitted');
+    // Overwriting it would point the target's recovery record at the source.
+    expect(await readFile(join(target, WORKTREE_SIDECAR), 'utf8')).toBe(metadata);
+  });
+
   it('keeps independent index and working bytes, untracked files, modes and ignored source assets', async () => {
     const source = await repo();
     const target = await repo();
