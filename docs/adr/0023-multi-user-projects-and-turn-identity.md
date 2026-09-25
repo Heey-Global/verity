@@ -1,11 +1,12 @@
 # ADR 0023 — Core multi-user projects and turn identity
 
-**Status:** Proposed · **Date:** 2026-09-24 · **Revised:** 2026-09-24 (review round 1)
+**Status:** Proposed · **Date:** 2026-09-24 · **Revised:** 2026-09-25 (review round 1 completed)
 
 **Related:** [ADR 0001](0001-model-backend-abstraction.md),
 [ADR 0002](0002-credential-and-isolation-architecture.md),
 [ADR 0006](0006-runner-in-sandbox-extraction.md),
 [ADR 0007](0007-task-management-github-issues-projects.md),
+[ADR 0008](0008-per-project-agent-memory.md),
 [ADR 0009](0009-google-drive-sources.md),
 [ADR 0010](0010-agent-credential-gateway.md),
 [ADR 0011](0011-pragmatic-secret-brokerage.md),
@@ -129,6 +130,29 @@ These are distinct scopes:
   boundaries remain: sandbox agents write only to `insights/`, and overview
   updates go through the broker. Sharing does not grant access to another
   project's private knowledge.
+- **Project memory records its author.** Every overview update and every insight
+  records the member who wrote it, or, for agent writes, the member whose turn
+  produced it. Without that, a member's agent could leave text that later turns
+  of other members read as guidance with no visible origin. Attribution is kept
+  per revision and derived by the server, which requires insight writes to pass
+  a server-mediated path that records each revision: a per-runtime knowledge
+  mount the server attributes to its single owner (section 4), or a broker call
+  with its execution context; sandbox-supplied author fields are ignored.
+  Overwrites, renames and deletions through that path are attributed revisions
+  as well, audited like a member's deletion. Work without an interactive turn
+  (loops, delegated work) records the user it runs for; service-sponsored work
+  writes memory only through the broker, which records the sponsor. Entries
+  written before migration carry an unknown author rather than a fabricated one.
+  Every member with project read permission sees the author; members with
+  execution permission can delete the entry. The deletion is audited with the
+  deleting member, the original author and a hash of the deleted content, so
+  removed guidance keeps a traceable origin. Deletion from the memory store is
+  final by design; the audit keeps no content. Copies elsewhere, such as
+  backups, follow their own retention. Review stays after the fact as in ADR
+  0008; no approval step is added before an entry becomes visible.
+- **There are no private notes inside a project.** Everything in project
+  knowledge and project memory is visible to all members. Personal material
+  belongs in a personal project.
 - **Instance-wide Shared Knowledge** is optional. When sharing a project,
   the instance administrator explicitly chooses whether to include it for
   that project. The default is not included. Mounts, explorer access and
@@ -169,6 +193,19 @@ All project members can read its sessions and history. Execution permission
 allows a member to submit a turn, without transferring ownership of the
 previous participant's accounts. Session creator metadata remains useful for
 audit and does not determine who pays for subsequent turns.
+
+Shared projects have no private sessions. This is deliberate: sessions share the
+project files, the Git state and project memory, so a hidden session would still
+expose its effects through the worktree, commits and memory, and a visibility
+flag would promise protection it cannot give. Creating a session in a shared
+project makes its history visible to every project member; the app states this
+before creation. Sharing a previously personal project makes its existing
+sessions, project memory, knowledge and audit history visible as well, and the
+sharing flow says so before the first invitation is sent. A private project is
+the place for work that should remain personal. Unread state and notification
+preferences still belong to each user. Private sessions would require separate
+working state as well as separate history to provide a meaningful boundary, so
+they need a separate decision.
 
 The server records an immutable execution context when accepting a turn:
 
@@ -349,6 +386,24 @@ payload as well as any query columns. Existing audit-chain entries remain
 unchanged, with unavailable historical attribution treated as unknown rather
 than fabricated.
 
+**Membership changes are audited too.** Invitations, acceptances, permission
+changes, removals, the inviter's per-connection sharing decisions, and the
+administrator's Shared Knowledge inclusion are recorded with the acting user,
+so every past access can be traced to the decision that allowed it.
+
+**Audit visibility.** Members read the audit records of projects they belong to,
+including entries from before they joined, matching their access to earlier
+session history; the administrator reads all of them. Other members' personal
+connections appear by kind and owning member; upstream account identifiers in
+the signed payload are redacted when the record is read, not removed from the
+chain. No product interface edits or deletes entries, including the
+administrator's; the integrity chain makes a change made outside it detectable.
+
+**User IDs are permanent.** A user ID is never reassigned. Deleting a user
+leaves a tombstone carrying the display name and the public halves of the
+user's signing keys, so historical records and earlier signed commits keep
+resolving to the right person instead of to unknown or to a later user.
+
 ### 4. Execution isolation and gateway routing
 
 **One sandbox container per user and project.** The container is the
@@ -478,11 +533,26 @@ or expired personal connection and tells members: "The administrator needs to
 unlock the instance." It does not prompt members to reconnect their accounts
 or request the vault master password from them.
 
+When a member's work is blocked by a locked vault, the administrator receives
+one push notification per locked period that a team member is waiting for the
+instance to be unlocked. Automatic unlock (key file, hardware-backed key)
+changes the security of the whole instance and needs its own ADR; it is out of
+scope here.
+
 Removing membership or disabling a user invalidates queued work, active grants,
 stream access, approvals, and relevant background work. Gateway and broker
 revocation must be fenced against stale bindings after restarts. Cancellation
 cannot undo a request already accepted by an upstream provider or retract
 content a former member already downloaded.
+
+Removing a membership deletes that member's membership-scoped connections for
+the project (their Doppler token and the MCP connections they own there). Other
+members who used one of those shared MCP connections are notified, and the
+connection shows as required again until someone provides a replacement.
+Deleting a user deletes all of their personal connections, including Claude,
+Codex, Google, GitHub and their private signing key, and revokes the upstream
+grants wherever the provider supports it. Their shared MCP connections are
+handled in every project as on membership removal.
 
 ### 7. Uplink authorization contract and the app
 
@@ -619,11 +689,21 @@ before; that is the acceptance test for step 1.
 
 - A non-member cannot discover project content through any resource route,
   stream, search result, preview, notification, or knowledge mount.
+- Every project member can read every session and its history in a shared
+  project; session creation and sharing a previously personal project
+  communicate that visibility, the latter including memory, knowledge and audit
+  history. Unread state and notification preferences remain per user.
 - Project members see the same project files and project knowledge. Shared
   Knowledge is unavailable through mounts and APIs unless the administrator
   explicitly includes it for the project. An imported Drive document remains
   readable as project knowledge without borrowing its importer's Google grant;
   live Drive operations require the acting user's own connection.
+- Without the administrator's inclusion, Shared Knowledge is unreachable both
+  through the knowledge mount and through the ADR 0022 retrieval tools.
+- Every overview update and insight written after migration names the member who
+  wrote it or whose turn produced it, derived by the server even when the
+  sandbox supplies a different author; a member with execution permission can
+  delete it, and the deletion is audited.
 - Two members alternate turns in one session: each turn uses the correct AI,
   Git, signing, Google and Doppler connection while preserving shared state.
   The second turn sees the complete state of the first even when the second
@@ -652,6 +732,10 @@ before; that is the acceptance test for step 1.
   when a member uses a shared MCP service. Personal connections retain their
   own attribution; sandbox-supplied actor fields cannot override it, and secret
   values do not appear in audit payloads.
+- Membership changes, sharing decisions and Shared Knowledge inclusion appear
+  in the audit with the acting user. No product interface, including the
+  administrator's, alters an entry. A change made outside it is detectable.
+  Records of a deleted user still resolve to that user's tombstone.
 - Approvals, delegated work, loops, and transcription retain the correct user
   or explicitly selected service sponsor.
 - Revocation blocks queued and subsequent operations, including on already
@@ -666,7 +750,15 @@ before; that is the acceptance test for step 1.
 - With the vault locked after restart, credential-dependent operations remain
   blocked and the app tells members that administrator unlock is required,
   without prompting for personal reconnection or the master password. After
-  administrator unlock, valid existing personal connections remain usable.
+  administrator unlock, valid existing personal connections remain usable. A
+  member blocked by the locked vault triggers one push notification to the
+  administrator per locked period.
+- Removing a membership deletes that member's Doppler token and owned MCP
+  connections for the project; deleting a user deletes all of their personal
+  connections and revokes upstream grants where supported. No deleted
+  credential remains selectable for queued or background work. In both cases
+  members who used a removed shared MCP connection are notified and see it as
+  required again.
 - An instance with a single user behaves identically before and after
   migration.
 
@@ -685,6 +777,12 @@ Team access has one implementation and one credential-selection rule: the
 container belongs to the user, the turn runs in it, the credentials come from
 there. Additional runtimes increase resource use; sleep/wake and per-user
 quotas must account for that.
+
+The administrator becomes an availability dependency: after a restart, every
+member is blocked until the administrator unlocks the vault. While it is
+unlocked, the server can decrypt every member's connections; the model
+separates members from each other, not from the administrator. Members who
+cannot accept that need connected instances (section 8).
 
 A single project container with turn labels, or a gateway that switches the
 active credential per turn, offers attribution but cannot isolate co-resident
