@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.1](https://github.com/Heey-Global/verity/compare/v2.5.0...v2.5.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **sandbox:** close the Claude CLI's cross-session inbox ([#751](https://github.com/Heey-Global/verity/issues/751)) ([6126371](https://github.com/Heey-Global/verity/commit/61263718be50300c357319e76a12545672ece364))
+* **server:** let sessions in sleeping projects be linked and messaged ([#750](https://github.com/Heey-Global/verity/issues/750)) ([a780078](https://github.com/Heey-Global/verity/commit/a78007897cf9e58f151a980f31c10ce39094739c))
+
 ## [2.5.0](https://github.com/Heey-Global/verity/compare/v2.4.1...v2.5.0) (2026-09-25)
 
 
