@@ -2,7 +2,7 @@
 
 ## Goal and boundary
 
-A dedicated Matrix account joins selected rooms bridged from WhatsApp or Signal. Verity imports new text messages into the assigned project's Knowledge only after a person pairs the room with a project. A room belongs to at most one project; a project may have many rooms. The connector does not send messages back to Matrix.
+A dedicated Matrix account joins selected rooms bridged from WhatsApp or Signal. Verity imports new text messages and attachments into the assigned project's Knowledge only after a person pairs the room with a project. A room belongs to at most one project; a project may have many rooms. The connector does not send messages back to Matrix.
 
 This is an inbound integration. It does not run through an agent session or MCP. Agent tools may later read imported knowledge, but an agent must never treat chat content as instructions.
 
@@ -27,7 +27,7 @@ For an unmanaged Compose installation, build the image from the repository root 
 
 The worker syncs invitations and joined-room events. It may show pending invitations in Verity before joining, but it does not accept or import one until the room has a project binding. On activation, it joins, establishes E2EE, and imports messages from that point forward. It must expose undecipherable events and failed syncs as explicit status rather than silently skipping them.
 
-The worker writes events into a private on-disk outbox before forwarding them. The server stores each event under a unique `(account_id, source_id, event_id)` key, then rewrites the affected Knowledge source. A restart can retry queued events without duplicating entries. If Verity is temporarily unavailable, the outbox keeps events for retry.
+The worker writes events and media references into a private on-disk outbox before forwarding them. It downloads media with a 50 MiB streaming limit and decrypts encrypted attachments when flushing the outbox; failed downloads and unavailable Verity servers are retried. The server stores each event under a unique `(account_id, source_id, event_id)` key, then rewrites the affected Knowledge source. A restart can retry queued events without duplicating entries.
 
 ## Knowledge projection
 
@@ -35,7 +35,7 @@ Write one Markdown source per room and day under `sources/documents/matrix/`, us
 
 An edit replaces the affected entry in the current projection. A redaction removes its body from the current projection and records that it was redacted. Previous Knowledge versions and backups follow Verity's normal retention rules; changing the current projection does not erase them.
 
-Initial scope is text after activation. Attachments, voice messages, reply threading, history backfill, automatic summaries, and outbound replies are separate features.
+Image, file, audio, and video events of at most 50 MiB are saved as original files under the room's `attachments/` folder. The existing Knowledge extractor creates a hidden `.text/` artifact for each file; supported files up to its separate 10 MiB processing limit provide readable derived content. Larger originals retain an extraction-skipped artifact. Attachments over 50 MiB leave a visible skipped-attachment entry. Redacting an attachment removes its current original and extracted text, subject to normal backup retention. Import begins after room activation; history backfill, reply threading, automatic summaries, and outbound replies remain separate features.
 
 ## Settings and project flow
 

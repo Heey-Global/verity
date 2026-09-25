@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
+import { strToU8, zipSync } from 'fflate';
 import { z } from 'zod';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
@@ -114,6 +115,75 @@ it('requires an explicit project binding before accepting chat, then updates edi
     payload: { accountId, sourceId, projectId },
   });
   expect(bound.statusCode).toBe(200);
+  const attachment = {
+    event: { ...base, eventId: '$file', targetEventId: null, kind: 'message', body: 'Attachment' },
+    fileName: '../notes.txt',
+    data: Buffer.from('Meeting notes from Matrix').toString('base64'),
+  };
+  const sendAttachment = (payload: object, headers: Record<string, string> = authorization) =>
+    app.inject({
+      method: 'POST',
+      url: '/internal/integrations/matrix/attachment',
+      headers,
+      payload,
+    });
+  expect((await sendAttachment(attachment, { authorization: 'Bearer wrong' })).statusCode).toBe(
+    401,
+  );
+  expect((await sendAttachment({ ...attachment, data: 'not base64' })).statusCode).toBe(400);
+  expect((await sendAttachment({ ...attachment, data: '' })).statusCode).toBe(400);
+  const tooLarge = await sendAttachment({
+    ...attachment,
+    data: Buffer.alloc(50 * 1024 * 1024 + 1).toString('base64'),
+  });
+  expect(tooLarge.statusCode, tooLarge.body).toBe(413);
+  const imported = await sendAttachment(attachment);
+  expect(imported.statusCode).toBe(200);
+  const attachmentPath = z.object({ path: z.string() }).parse(imported.json()).path;
+  expect(attachmentPath).toMatch(
+    /^sources\/documents\/matrix\/[a-f0-9]+\/attachments\/[a-f0-9]+-notes\.txt$/u,
+  );
+  const attachmentRoot = join(root, 'knowledge', projectId);
+  expect(await readFile(join(attachmentRoot, attachmentPath), 'utf8')).toBe(
+    'Meeting notes from Matrix',
+  );
+  expect(await readFile(join(attachmentRoot, '.text', `${attachmentPath}.md`), 'utf8')).toContain(
+    `Source: ${attachmentPath}`,
+  );
+  expect((await sendAttachment(attachment)).json()).toMatchObject({
+    accepted: false,
+    path: attachmentPath,
+  });
+  const document = await sendAttachment({
+    ...attachment,
+    event: { ...attachment.event, eventId: '$document' },
+    fileName: 'meeting.docx',
+    data: Buffer.from(
+      zipSync({
+        '[Content_Types].xml': strToU8('<Types/>'),
+        'word/document.xml': strToU8(
+          '<w:document xmlns:w="w"><w:p><w:r><w:t>Matrix project notes</w:t></w:r></w:p></w:document>',
+        ),
+      }),
+    ).toString('base64'),
+  });
+  expect(document.statusCode).toBe(200);
+  const documentPath = z.object({ path: z.string() }).parse(document.json()).path;
+  expect(await readFile(join(attachmentRoot, '.text', `${documentPath}.md`), 'utf8')).toContain(
+    'Matrix project notes',
+  );
+  const largerAttachment = await sendAttachment({
+    ...attachment,
+    event: { ...attachment.event, eventId: '$larger-attachment' },
+    fileName: 'archive.bin',
+    data: Buffer.alloc(11 * 1024 * 1024, 65).toString('base64'),
+  });
+  expect(largerAttachment.statusCode).toBe(200);
+  const largerPath = z.object({ path: z.string() }).parse(largerAttachment.json()).path;
+  expect((await readFile(join(attachmentRoot, largerPath))).length).toBe(11 * 1024 * 1024);
+  expect(await readFile(join(attachmentRoot, '.text', `${largerPath}.md`), 'utf8')).toContain(
+    'Extraction skipped',
+  );
   expect((await send(message)).statusCode).toBe(200);
   expect((await send(message)).json()).toEqual({ accepted: false });
   const edit = {
@@ -134,6 +204,7 @@ it('requires an explicit project binding before accepting chat, then updates edi
   const [dayFile] = await readdir(join(path, roomDir!));
   const file = join(path, roomDir!, dayFile!);
   expect(await readFile(file, 'utf8')).toContain('Revised plan');
+  expect(await readFile(file, 'utf8')).toContain('Attachment: sources/documents/matrix/');
   expect(await readFile(file, 'utf8')).not.toContain('Original plan');
   const redaction = {
     ...base,
@@ -145,12 +216,39 @@ it('requires an explicit project binding before accepting chat, then updates edi
   expect((await send(redaction)).statusCode).toBe(200);
   expect(await readFile(file, 'utf8')).toContain('[Message deleted]');
   expect(await readFile(file, 'utf8')).not.toContain('Revised plan');
+  expect(
+    (
+      await send({
+        ...redaction,
+        eventId: '$file-redaction',
+        targetEventId: '$file',
+      })
+    ).statusCode,
+  ).toBe(200);
+  await expect(readFile(join(attachmentRoot, attachmentPath))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+  await expect(
+    readFile(join(attachmentRoot, '.text', `${attachmentPath}.md`)),
+  ).rejects.toMatchObject({ code: 'ENOENT' });
+  expect((await sendAttachment(attachment)).json()).toMatchObject({ accepted: false });
+  await expect(readFile(join(attachmentRoot, attachmentPath))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
   const disconnected = await app.inject({
     method: 'POST',
     url: '/integrations/sources/disconnect',
     payload: { accountId, sourceId },
   });
   expect(disconnected.statusCode).toBe(200);
+  expect(
+    (
+      await sendAttachment({
+        ...attachment,
+        event: { ...attachment.event, eventId: '$after-disconnect' },
+      })
+    ).statusCode,
+  ).toBe(409);
   expect((await workerRooms()).sources).toEqual([
     expect.objectContaining({ sourceId, status: 'pending', projectId: null }),
   ]);

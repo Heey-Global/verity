@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     env,
-    io::Write,
+    io::{Cursor, Read, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
@@ -14,20 +14,25 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Utc};
 use matrix_sdk::{
     Client, LoopCtrl, Room,
     authentication::matrix::MatrixSession,
     config::SyncSettings,
     ruma::events::room::{
+        MediaSource,
         message::{MessageType, OriginalSyncRoomMessageEvent, Relation},
         redaction::OriginalSyncRoomRedactionEvent,
     },
 };
+use matrix_sdk_crypto::AttachmentDecryptor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{fs, sync::RwLock, time::sleep};
 use tracing::{error, info, warn};
+
+const MAX_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Clone)]
 struct Config {
@@ -50,7 +55,11 @@ impl Config {
                 (Some(value), None) => Ok(value),
                 (None, Some(path)) => std::fs::read_to_string(&path)
                     .with_context(|| format!("could not read {file_name}"))
-                    .map(|value| value.trim_end_matches(|c| c == '\r' || c == '\n').to_owned()),
+                    .map(|value| {
+                        value
+                            .trim_end_matches(|c| c == '\r' || c == '\n')
+                            .to_owned()
+                    }),
                 (None, None) => bail!("{name} or {file_name} is required"),
             }
         }
@@ -114,6 +123,116 @@ struct IngestEvent {
     sender: String,
     occurred_at: DateTime<Utc>,
     body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attachment: Option<MediaAttachment>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct MediaAttachment {
+    file_name: String,
+    source: MediaSource,
+    #[serde(default)]
+    declared_size: Option<u64>,
+}
+
+fn media_attachment(
+    name: &str,
+    source: &MediaSource,
+    declared_size: Option<u64>,
+) -> MediaAttachment {
+    let file_name: String = name
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(200)
+        .collect();
+    MediaAttachment {
+        file_name: if file_name.is_empty() {
+            "attachment".into()
+        } else {
+            file_name
+        },
+        source: source.clone(),
+        declared_size,
+    }
+}
+
+async fn download_media_bounded(
+    api: &Api,
+    client: &Client,
+    source: &MediaSource,
+) -> Result<Option<Vec<u8>>> {
+    let uri = match source {
+        MediaSource::Plain(uri) => uri,
+        MediaSource::Encrypted(file) => &file.url,
+    };
+    let (server, media_id) = uri.parts()?;
+    let token = client
+        .access_token()
+        .context("Matrix access token unavailable")?;
+    let mut response = None;
+    for segments in [
+        ["_matrix", "client", "v1", "media", "download"],
+        ["_matrix", "media", "v3", "download", ""],
+    ] {
+        let mut url = client.homeserver();
+        {
+            let mut path = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("invalid Matrix homeserver URL"))?;
+            path.pop_if_empty()
+                .extend(segments.iter().filter(|part| !part.is_empty()).copied())
+                .push(server.as_str())
+                .push(media_id);
+        }
+        let candidate = api
+            .client
+            .get(url)
+            .bearer_auth(&token)
+            .timeout(Duration::from_secs(120))
+            .send()
+            .await?;
+        if candidate.status() == reqwest::StatusCode::NOT_FOUND {
+            continue;
+        }
+        response = Some(candidate.error_for_status()?);
+        break;
+    }
+    let response = response.context("Matrix media download endpoint unavailable")?;
+    let Some(ciphertext) = read_media_bounded(response, MAX_ATTACHMENT_BYTES).await? else {
+        return Ok(None);
+    };
+    if let MediaSource::Encrypted(file) = source {
+        let mut cursor = Cursor::new(ciphertext);
+        let mut decryptor = AttachmentDecryptor::new(&mut cursor, file.as_ref().clone().into())?;
+        let mut plaintext = Vec::new();
+        decryptor.read_to_end(&mut plaintext)?;
+        if plaintext.len() > MAX_ATTACHMENT_BYTES {
+            return Ok(None);
+        }
+        Ok(Some(plaintext))
+    } else {
+        Ok(Some(ciphertext))
+    }
+}
+
+async fn read_media_bounded(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Option<Vec<u8>>> {
+    if response
+        .content_length()
+        .is_some_and(|size| size > limit as u64)
+    {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > limit - bytes.len() {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Some(bytes))
 }
 
 impl Api {
@@ -206,6 +325,24 @@ impl Api {
         self.post("/internal/integrations/matrix/event", event)
             .await
     }
+
+    async fn ingest_attachment(&self, event: &IngestEvent, bytes: &[u8]) -> Result<()> {
+        let attachment = event.attachment.as_ref().context("missing media source")?;
+        let mut event_value = serde_json::to_value(event)?;
+        event_value
+            .as_object_mut()
+            .context("invalid event payload")?
+            .remove("attachment");
+        self.post(
+            "/internal/integrations/matrix/attachment",
+            &serde_json::json!({
+                "event": event_value,
+                "fileName": attachment.file_name,
+                "data": BASE64.encode(bytes),
+            }),
+        )
+        .await
+    }
 }
 
 struct Outbox {
@@ -251,7 +388,12 @@ impl Outbox {
         Ok(())
     }
 
-    async fn flush(&self, api: &Api, bindings: &HashMap<String, Binding>) -> Result<usize> {
+    async fn flush(
+        &self,
+        api: &Api,
+        client: &Client,
+        bindings: &HashMap<String, Binding>,
+    ) -> Result<usize> {
         let mut entries = fs::read_dir(&self.path).await?;
         let mut pending = Vec::new();
         let mut failures = 0;
@@ -283,7 +425,46 @@ impl Outbox {
             if binding.status != "active" {
                 continue;
             }
-            match api.ingest(&event).await {
+            let result = if let Some(attachment) = &event.attachment {
+                if attachment
+                    .declared_size
+                    .is_some_and(|size| size > MAX_ATTACHMENT_BYTES as u64)
+                {
+                    let mut skipped = event.clone();
+                    skipped.attachment = None;
+                    skipped.body = Some(format!(
+                        "Attachment exceeds the 50 MiB import limit: {}",
+                        attachment.file_name
+                    ));
+                    api.ingest(&skipped).await
+                } else {
+                    match download_media_bounded(api, client, &attachment.source).await {
+                        Ok(Some(bytes)) if bytes.is_empty() => {
+                            let mut skipped = event.clone();
+                            skipped.attachment = None;
+                            skipped.body = Some(format!(
+                                "Empty attachment skipped: {}",
+                                attachment.file_name
+                            ));
+                            api.ingest(&skipped).await
+                        }
+                        Ok(Some(bytes)) => api.ingest_attachment(&event, &bytes).await,
+                        Ok(None) => {
+                            let mut skipped = event.clone();
+                            skipped.attachment = None;
+                            skipped.body = Some(format!(
+                                "Attachment exceeds the 50 MiB import limit: {}",
+                                attachment.file_name
+                            ));
+                            api.ingest(&skipped).await
+                        }
+                        Err(error) => Err(error.into()),
+                    }
+                }
+            } else {
+                api.ingest(&event).await
+            };
+            match result {
                 Ok(()) => {
                     fs::remove_file(path).await?;
                 }
@@ -403,7 +584,7 @@ async fn main() -> Result<()> {
                 {
                     return;
                 }
-                let (kind, target_event_id, body) = match &event.content.relates_to {
+                let (kind, target_event_id, body, attachment) = match &event.content.relates_to {
                     Some(Relation::Replacement(replacement)) => {
                         let MessageType::Text(text) = &replacement.new_content.msgtype else {
                             return;
@@ -412,14 +593,71 @@ async fn main() -> Result<()> {
                             "edit",
                             Some(replacement.event_id.to_string()),
                             Some(bounded_body(&text.body)),
+                            None,
                         )
                     }
-                    _ => {
-                        let MessageType::Text(text) = &event.content.msgtype else {
-                            return;
-                        };
-                        ("message", None, Some(bounded_body(&text.body)))
-                    }
+                    _ => match &event.content.msgtype {
+                        MessageType::Text(text) => {
+                            ("message", None, Some(bounded_body(&text.body)), None)
+                        }
+                        MessageType::Image(media) => (
+                            "message",
+                            None,
+                            Some(format!("Attachment: {}", bounded_body(&media.body))),
+                            Some(media_attachment(
+                                media.filename(),
+                                &media.source,
+                                media
+                                    .info
+                                    .as_ref()
+                                    .and_then(|info| info.size)
+                                    .map(u64::from),
+                            )),
+                        ),
+                        MessageType::File(media) => (
+                            "message",
+                            None,
+                            Some(format!("Attachment: {}", bounded_body(&media.body))),
+                            Some(media_attachment(
+                                media.filename(),
+                                &media.source,
+                                media
+                                    .info
+                                    .as_ref()
+                                    .and_then(|info| info.size)
+                                    .map(u64::from),
+                            )),
+                        ),
+                        MessageType::Audio(media) => (
+                            "message",
+                            None,
+                            Some(format!("Attachment: {}", bounded_body(&media.body))),
+                            Some(media_attachment(
+                                media.filename(),
+                                &media.source,
+                                media
+                                    .info
+                                    .as_ref()
+                                    .and_then(|info| info.size)
+                                    .map(u64::from),
+                            )),
+                        ),
+                        MessageType::Video(media) => (
+                            "message",
+                            None,
+                            Some(format!("Attachment: {}", bounded_body(&media.body))),
+                            Some(media_attachment(
+                                media.filename(),
+                                &media.source,
+                                media
+                                    .info
+                                    .as_ref()
+                                    .and_then(|info| info.size)
+                                    .map(u64::from),
+                            )),
+                        ),
+                        _ => return,
+                    },
                 };
                 let Some(occurred_at) = timestamp(i64::from(event.origin_server_ts.0)) else {
                     return;
@@ -433,6 +671,7 @@ async fn main() -> Result<()> {
                     sender: event.sender.to_string(),
                     occurred_at,
                     body,
+                    attachment,
                 };
                 if let Err(error) = outbox.enqueue(&queued).await {
                     error!(%error, "failed to queue Matrix message");
@@ -473,6 +712,7 @@ async fn main() -> Result<()> {
                     sender: event.sender.to_string(),
                     occurred_at,
                     body: None,
+                    attachment: None,
                 };
                 if let Err(error) = outbox.enqueue(&queued).await {
                     error!(%error, "failed to queue Matrix redaction");
@@ -538,7 +778,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                match outbox.flush(&api, &next).await {
+                match outbox.flush(&api, &client, &next).await {
                     Ok(0) if sync_healthy.load(Ordering::Relaxed) => {
                         if let Err(error) = api
                             .report_account(&credentials.endpoint, "online", None)
@@ -581,6 +821,29 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn media_stream_stops_at_limit_without_a_declared_length() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n123456")
+                .await
+                .unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/media"))
+            .send()
+            .await
+            .unwrap();
+        assert!(read_media_bounded(response, 5).await.unwrap().is_none());
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn outbox_event_survives_reopening_and_is_private() {
@@ -599,6 +862,7 @@ mod tests {
             sender: "@person:example.test".to_string(),
             occurred_at: Utc::now(),
             body: Some("hello".to_string()),
+            attachment: None,
         };
         outbox.enqueue(&event).await.unwrap();
         let reopened = Outbox::new(path.clone()).await.unwrap();
@@ -614,6 +878,22 @@ mod tests {
             0o600
         );
         fs::remove_dir_all(path).await.unwrap();
+    }
+
+    #[test]
+    fn media_source_survives_outbox_serialization() {
+        let attachment = MediaAttachment {
+            file_name: "notes.pdf".into(),
+            source: MediaSource::Plain("mxc://example.test/notes".into()),
+            declared_size: Some(42),
+        };
+        let encoded = serde_json::to_vec(&attachment).unwrap();
+        let decoded: MediaAttachment = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.file_name, "notes.pdf");
+        assert_eq!(
+            serde_json::to_value(decoded.source).unwrap(),
+            serde_json::to_value(attachment.source).unwrap()
+        );
     }
 
     #[test]
