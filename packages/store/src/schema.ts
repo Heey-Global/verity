@@ -197,6 +197,7 @@ interface IntegrationEventsTable {
 export interface ProjectsTable {
   /** App-generated UUID; stable across re-provisioning of the same repo. */
   id: string;
+  created_by_user_id: ColumnType<string, string | undefined, never>;
   /** Lowercase canonical owner (`heey-global`). */
   owner: string;
   /** Lowercase canonical repo (`verity`). */
@@ -475,10 +476,28 @@ export interface SecretKeyMetaTable {
  */
 export interface AuthTokenTable {
   id: string;
+  user_id: ColumnType<string, string | undefined, never>;
   token_hash: string;
   label: string | null;
   created_at: ColumnType<Date, string | undefined, never>;
   last_seen_at: ColumnType<Date | null, string | undefined, string | undefined>;
+}
+
+/** Local identity is separate from a paired device and from project access. */
+export interface UsersTable {
+  id: string;
+  role: 'administrator' | 'member';
+  status: 'active' | 'disabled';
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+export interface ProjectMembershipsTable {
+  project_id: string;
+  user_id: string;
+  can_read: boolean;
+  can_execute: boolean;
+  can_manage: boolean;
+  created_at: ColumnType<Date, string | undefined, never>;
 }
 
 /** The current Expo push-token binding for one paired device. The auth-token id
@@ -1250,6 +1269,8 @@ export interface Database {
   queued_turns: QueuedTurnsTable;
   running_turns: RunningTurnsTable;
   projects: ProjectsTable;
+  users: UsersTable;
+  project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   verity_settings: VeritySettingsTable;
