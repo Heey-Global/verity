@@ -121,18 +121,23 @@ must be fixed before release.
 
 ## Control operations
 
-| Request              | Required payload                                                                                                             | Success response and payload                                    |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `team.grant.get`     | None; instance comes from authenticated channel                                                                              | `team.grant`, `assertion`                                       |
-| `team.invite.create` | `operationId`, `localInviteId`, `projectId`, `permissions`, `expiresAt`, `bootstrapCommitment`, `installationKeyFingerprint` | `team.invite.created`, `invitationId`, `expiresAt`, `redeemUrl` |
-| `team.invite.cancel` | `operationId`, `invitationId`                                                                                                | `team.invite.cancelled`, `invitationId`                         |
-| `team.join.commit`   | `operationId`, `invitationId`, `redemptionId`, `membershipRef`                                                               | `team.join.committed`, `redemptionId`                           |
-| `team.state.get`     | `knownGeneration`                                                                                                            | `team.state`, `generation`, `assertion` or `suspendedReason`    |
+| Request                  | Required payload                                                                                                             | Success response and payload                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `team.grant.get`         | None; instance comes from authenticated channel                                                                              | `team.grant`, `assertion`                                       |
+| `team.invite.create`     | `operationId`, `localInviteId`, `projectId`, `permissions`, `expiresAt`, `bootstrapCommitment`, `installationKeyFingerprint` | `team.invite.created`, `invitationId`, `expiresAt`, `redeemUrl` |
+| `team.invite.cancel`     | `operationId`, `invitationId`                                                                                                | `team.invite.cancelled`, `invitationId`, `alreadyCommitted`     |
+| `team.join.commit`       | `operationId`, `invitationId`, `redemptionId`, `membershipRef`                                                               | `team.join.committed`, `redemptionId`                           |
+| `team.membership.remove` | `operationId`, `membershipRef`, `reason`                                                                                     | `team.membership.removed`, `membershipRef`                      |
+| `team.state.get`         | `knownGeneration`                                                                                                            | `team.state`, `generation`, `assertion` or `suspendedReason`    |
 
 `permissions` is an explicit set of `read`, `execute`, `manage`; execute and
 manage require read. No value represents instance administration. The core
 stores the requested set and rejects a redemption with a different set.
 `membershipRef` is an opaque receipt reference, not a personal account token.
+The core creates a fresh one before `team.join.commit` for every membership that
+joins through Uplink and never reuses one after removal, so re-inviting a
+removed member is not blocked by its tombstone; the owner and memberships
+created without Uplink have none.
 `expiresAt` may be shortened by service policy; the returned deadline wins.
 `redeemUrl` is restricted to the trusted Uplink HTTPS origin and contains no
 provider credential. The bootstrap secret is not logged or sent over control;
@@ -182,6 +187,95 @@ reset the persisted revocation floor.
 The service reservation persists sufficiently to reconcile a committed core
 receipt after network loss. No distributed transaction is assumed. Core and
 service must implement the same crash/retry vectors before enabling invitations.
+
+## Membership removal
+
+Removing a membership locally, directly or by deleting the user, takes effect in
+the core immediately: it fences access and closes the member's connections
+without waiting for Uplink. In the same local transaction the core writes outbox
+items:
+
+- one `team.invite.cancel` for every still-open invitation the removed member
+  created, meaning no join for it is committed locally, whose
+  `team.invite.create` was already sent. `team.invite.create` carries no inviter
+  identity, so `membershipRef` cannot reach those invitations on the service
+  side;
+- one `team.membership.remove` for the membership whenever it has a
+  `membershipRef`, including one whose `team.join.commit` is still pending.
+  Deleting a user sends one per membership with a `membershipRef`.
+
+An invitation whose `team.invite.create` was never attempted is dropped from the
+outbox instead of cancelled; once transmission may have been attempted, the
+create counts as sent. One that was sent but not yet acknowledged has no
+`invitationId` yet; its cancel is queued behind the create and sent with the
+`invitationId` from `team.invite.created`; the cancel's retry window starts when
+`team.invite.created` is received. If the create is rejected with `retryable`
+false, no invitation exists and the cancel is dropped. If that create is never
+acknowledged within the retry window, the cancel cannot be sent; the invitation
+may stay reservable on the service until its `expiresAt`, the core never commits
+a join for it, the invitee who reserves it is told it is no longer available,
+and the admin sees it as undelivered. Cancelling covers invitations that are
+reserved but not committed: the core never commits a join for them, and the
+service releases the reservation. A membership the invitee already committed is
+its own membership and is not affected by the inviter's removal. The removal and
+a local join commit for one of the member's invitations are serialized on that
+invitation: the join re-checks that the invitation is not cancelled, so a join
+commits either before the removal selects the invitation or not at all.
+
+`reason` is a closed enum: `membership_removed` or `user_deleted`. Any other
+value is rejected with `invalid_request`; new values need a new negotiated team
+version, so version skew cannot produce one. The removal effect never depends on
+`reason`. The message carries only the installation-scoped, opaque
+`membershipRef`; no email, display name, device key or credential.
+
+Outbox items keep their `operationId` across retries. Delivery is at least once
+and the effect is idempotent. Once the core has recorded a removal it abandons
+every queued or unacknowledged `team.join.commit`, recovery or renewal for that
+membership and never sends or retries one again. If the member's own
+`team.join.commit` is abandoned this way, the core also queues a
+`team.invite.cancel` for that invitation so the service releases its
+reservation. `team.invite.cancel` for an invitation already committed on the
+service returns `team.invite.cancelled` with `alreadyCommitted` true and changes
+nothing; every other cancel returns it with `alreadyCommitted` false, which is
+always present. If the membership for that invitation is removed locally and the
+core holds its `membershipRef`, the core sends `team.membership.remove` for it;
+in every other case core and service disagree and the core shows the invitation
+to the admin as inconsistent. In the removal path that `team.membership.remove`
+is already queued and is not sent twice. The removal does not wait for them; the
+service rejects a commit, recovery or renewal that arrives after a removal for
+the same membership with `revoked`, `retryable` false. The create and cancel of
+one invitation are sent in order. An item rejected with `retryable` false, or
+still unacknowledged at the end of the agreed retry window, stops retrying and
+is shown to the admin as undelivered; access in the core is not affected. A
+`team.membership.remove` is exempt from the retry window: it keeps retrying
+retryable errors until acknowledged and is shown to the admin as pending after
+the window. A non-retryable error, such as `invalid_request` or a permanent
+installation rejection, stops it and shows it to the admin as failed, with an
+action to send it again under a new `operationId`. Until then the core alone
+keeps the member out: it checks membership itself for direct and relayed access,
+so nothing Uplink still renews or relays for that `membershipRef` admits them.
+The service-side membership can therefore be active while a removal is pending
+or failed, including when an earlier commit lands before the removal; the core
+check is the only guard in that time, and the removal ends the service-side
+membership when it lands.
+
+Uplink records the removal, blocks the membership's join state and recovery
+reservations, and writes its tombstone in one durable write before it
+acknowledges; no later `team.join.commit`, recovery or renewal reactivates it.
+It deletes personal metadata it no longer needs and keeps only a minimal
+replay/idempotency tombstone, keyed by installation and `membershipRef`, for
+longer than any commit, recovery or renewal for that membership could still
+arrive: at least the longest of invitation validity, recovery validity and
+renewal validity, plus the agreed retry window, measured from the tombstone's
+durable write. That retention interval and the retry window are fixed together
+at T0. A `membershipRef` the service has never seen or already removed is
+acknowledged as success and still leaves the blocking tombstone for the calling
+installation, so the outbox does not keep retrying and a later commit cannot
+activate it. Tombstones are never evicted before their retention ends. The
+service never refuses a removal to save tombstone storage; it may rate-limit
+removals per installation only with `temporarily_unavailable`, `retryable` true,
+so the core retries. The acknowledgement grants nothing and never changes local
+core state.
 
 ## Signed team authorization
 
@@ -257,26 +351,37 @@ These IDs are the common test manifest for both repositories. Turn them into
 versioned machine-readable fixtures and executable suites in delivery step T1;
 the table itself is not a passing test suite.
 
-| ID  | Input or fault                                               | Expected result                                                   |
-| --- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
-| V01 | No team negotiation; preview feature sets from rename clause | No team invitations; only `preview-sharing` authorizes previews   |
-| V02 | Valid assertion, member with read/execute                    | Only authorized project accessible; turn uses member credentials  |
-| V03 | Signature altered, unknown key, wrong audience/instance      | Reject; no grant installed                                        |
-| V04 | Expired/not-yet-valid assertion or uncertain clock           | No authorization; request online validation as applicable         |
-| V05 | Grant at/below revoked generation after restart              | Remains suspended                                                 |
-| V06 | Disconnect with still-valid cached grant                     | Direct access lasts only until signed expiry; no new invite       |
-| V07 | Reconnect after missed revocation                            | Reconcile state before new team work                              |
-| V08 | Same operation ID and payload twice                          | Same durable result, no duplicate invitation/membership           |
-| V09 | Same operation ID, changed project or permissions            | `idempotency_conflict`                                            |
-| V10 | Invitation consumed by another device                        | Cannot retrieve credential or create membership                   |
-| V11 | Crash after local commit, before service acknowledgement     | Outbox recovery confirms original membership once                 |
-| V12 | Cancel/removal races redemption; delayed success             | No resurrection or privilege escalation                           |
-| V13 | Bootstrap fingerprint/proof/role substituted                 | Reject before member credential issuance                          |
-| V14 | Entitlement renewed after local member removed               | Removed member stays denied                                       |
-| V15 | Three app profiles reuse a local project ID                  | Tokens, notifications and requests remain instance-scoped         |
-| V16 | Member uses shared MCP service                               | Audit separates initiator and connection owner; no secrets logged |
-| V17 | Base revoke or permanent key rejection then restart          | Old cached team assertion remains unusable                        |
-| V18 | Read-only member connects through authorized relay           | Cannot execute or access other projects                           |
+| ID  | Input or fault                                                                                                  | Expected result                                                                                                                                                                                                                                                                                   |
+| --- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| V01 | No team negotiation; preview feature sets from rename clause                                                    | No team invitations; only `preview-sharing` authorizes previews                                                                                                                                                                                                                                   |
+| V02 | Valid assertion, member with read/execute                                                                       | Only authorized project accessible; turn uses member credentials                                                                                                                                                                                                                                  |
+| V03 | Signature altered, unknown key, wrong audience/instance                                                         | Reject; no grant installed                                                                                                                                                                                                                                                                        |
+| V04 | Expired/not-yet-valid assertion or uncertain clock                                                              | No authorization; request online validation as applicable                                                                                                                                                                                                                                         |
+| V05 | Grant at/below revoked generation after restart                                                                 | Remains suspended                                                                                                                                                                                                                                                                                 |
+| V06 | Disconnect with still-valid cached grant                                                                        | Direct access lasts only until signed expiry; no new invite                                                                                                                                                                                                                                       |
+| V07 | Reconnect after missed revocation                                                                               | Reconcile state before new team work                                                                                                                                                                                                                                                              |
+| V08 | Same operation ID and payload twice                                                                             | Same durable result, no duplicate invitation/membership                                                                                                                                                                                                                                           |
+| V09 | Same operation ID, changed project or permissions                                                               | `idempotency_conflict`                                                                                                                                                                                                                                                                            |
+| V10 | Invitation consumed by another device                                                                           | Cannot retrieve credential or create membership                                                                                                                                                                                                                                                   |
+| V11 | Crash after local commit, before service acknowledgement                                                        | Outbox recovery confirms original membership once                                                                                                                                                                                                                                                 |
+| V12 | Cancel/removal races redemption; delayed success                                                                | No resurrection or privilege escalation                                                                                                                                                                                                                                                           |
+| V13 | Bootstrap fingerprint/proof/role substituted                                                                    | Reject before member credential issuance                                                                                                                                                                                                                                                          |
+| V14 | Entitlement renewed after local member removed                                                                  | Removed member stays denied                                                                                                                                                                                                                                                                       |
+| V15 | Three app profiles reuse a local project ID                                                                     | Tokens, notifications and requests remain instance-scoped                                                                                                                                                                                                                                         |
+| V16 | Member uses shared MCP service                                                                                  | Audit separates initiator and connection owner; no secrets logged                                                                                                                                                                                                                                 |
+| V17 | Base revoke or permanent key rejection then restart                                                             | Old cached team assertion remains unusable                                                                                                                                                                                                                                                        |
+| V18 | Read-only member connects through authorized relay                                                              | Cannot execute or access other projects                                                                                                                                                                                                                                                           |
+| V19 | Delayed `team.join.commit` or recovery after membership removal                                                 | Rejected with `revoked`, `retryable` false; membership stays removed on both sides                                                                                                                                                                                                                |
+| V20 | Membership removed while Uplink is unreachable                                                                  | Access ends immediately; removal and the member's invite cancellations are delivered at least once after reconnect and take effect idempotently; a cancel still undelivered at the end of the retry window is shown to the admin as undelivered                                                   |
+| V21 | `team.membership.remove` with an unknown `reason` value                                                         | `invalid_request`; no state change                                                                                                                                                                                                                                                                |
+| V22 | `team.membership.remove` for an unknown or already removed `membershipRef`                                      | Acknowledged as success; tombstone blocks any later commit                                                                                                                                                                                                                                        |
+| V23 | Membership removed while the member's `team.invite.create` is unsent, unacknowledged or rejected                | Unsent create dropped; sent create cancelled after `team.invite.created`; if the create is never acknowledged or is rejected, a reservation of it is refused with no join committed, also when the join races the removal                                                                         |
+| V24 | `team.invite.cancel` races the invitee's reservation before commit                                              | Reservation released; core never commits the join                                                                                                                                                                                                                                                 |
+| V25 | Membership removed while its sent `team.join.commit` is unacknowledged                                          | Commit abandoned and its invitation cancelled; removal sent without waiting; a commit arriving after the removal is treated as removed, one arriving before it is ended by the removal; if the commit landed and only its ack was lost, the cancel is a no-op and the removal ends the membership |
+| V26 | Inviter removed after the invitee's join is committed locally but before its `team.join.commit` is acknowledged | No cancel for that invitation; the invitee's membership stays active                                                                                                                                                                                                                              |
+| V27 | Removed member invited again                                                                                    | Fresh `membershipRef`; the old tombstone does not block the new join                                                                                                                                                                                                                              |
+| V28 | `team.invite.cancel` for an invitation already committed on the service                                         | `team.invite.cancelled` with `alreadyCommitted` true; no service change; exactly one `team.membership.remove` for that `membershipRef` is queued if the membership is removed locally, otherwise shown as inconsistent                                                                            |
+| V29 | `team.membership.remove` rejected non-retryably, rate-limited, or pending past the retry window                 | Core still denies direct and relayed access; rate limit is retried; pending shown after the window; failed shown with re-send under a new `operationId`                                                                                                                                           |
 
 For security guards, deliberately break the guarded verification and observe
 failure. A simulator must consume these same vectors; it cannot define a second
