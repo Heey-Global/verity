@@ -172,9 +172,7 @@ export function registerIntegrationRoutes(
       async (request) => {
         const { accountId } = z.object({ accountId: identifier }).strict().parse(request.query);
         return {
-          sources: (await store.listSources()).filter(
-            (item) => item.accountId === accountId && item.projectId !== null,
-          ),
+          sources: (await store.listSources()).filter((item) => item.accountId === accountId),
         };
       },
     );

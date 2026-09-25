@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
+import { z } from 'zod';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { registerIntegrationRoutes } from './routes.js';
@@ -67,6 +68,20 @@ it('requires an explicit project binding before accepting chat, then updates edi
     payload: { accountId, sourceId, displayName: 'Project chat' },
   });
   expect(discovered.statusCode).toBe(200);
+  const bindingsUrl = `/internal/integrations/matrix/bindings?accountId=${encodeURIComponent(accountId)}`;
+  const workerRooms = async () =>
+    z
+      .object({
+        sources: z.array(
+          z.object({ sourceId: z.string(), status: z.string(), projectId: z.string().nullable() }),
+        ),
+      })
+      .parse(
+        (await app.inject({ method: 'GET', url: bindingsUrl, headers: authorization })).json(),
+      );
+  expect((await workerRooms()).sources).toEqual([
+    expect.objectContaining({ sourceId, status: 'pending' }),
+  ]);
   const projectId = randomUUID();
   await ctx.store.upsertProject({
     id: projectId,
@@ -136,6 +151,9 @@ it('requires an explicit project binding before accepting chat, then updates edi
     payload: { accountId, sourceId },
   });
   expect(disconnected.statusCode).toBe(200);
+  expect((await workerRooms()).sources).toEqual([
+    expect.objectContaining({ sourceId, status: 'pending', projectId: null }),
+  ]);
   expect(
     (await app.inject({ method: 'GET', url: `/projects/${projectId}/integrations` })).json()
       .sources,

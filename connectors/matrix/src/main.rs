@@ -395,7 +395,12 @@ async fn main() -> Result<()> {
             let bindings = bindings.clone();
             async move {
                 let room_id = room.room_id().to_string();
-                if !bindings.read().await.contains_key(&room_id) {
+                if !bindings
+                    .read()
+                    .await
+                    .get(&room_id)
+                    .is_some_and(|binding| binding.status == "active")
+                {
                     return;
                 }
                 let (kind, target_event_id, body) = match &event.content.relates_to {
@@ -445,7 +450,12 @@ async fn main() -> Result<()> {
             let bindings = bindings.clone();
             async move {
                 let room_id = room.room_id().to_string();
-                if !bindings.read().await.contains_key(&room_id) {
+                if !bindings
+                    .read()
+                    .await
+                    .get(&room_id)
+                    .is_some_and(|binding| binding.status == "active")
+                {
                     return;
                 }
                 let Some(target) = event.redacts.as_ref().or(event.content.redacts.as_ref()) else {
@@ -508,14 +518,16 @@ async fn main() -> Result<()> {
                 *bindings.write().await = next.clone();
                 for room in client.joined_rooms() {
                     if !next.contains_key(room.room_id().as_str()) {
-                        if let Err(error) = room.leave().await {
-                            warn!(room = %room.room_id(), %error, "could not leave disconnected room");
+                        if let Err(error) = api.discover(&room).await {
+                            warn!(room = %room.room_id(), %error, "could not report joined room");
                         }
                     }
                 }
                 for room in client.invited_rooms() {
-                    if let Err(error) = api.discover(&room).await {
-                        warn!(%error, "could not report invitation");
+                    if !next.contains_key(room.room_id().as_str()) {
+                        if let Err(error) = api.discover(&room).await {
+                            warn!(%error, "could not report invitation");
+                        }
                     }
                     if next
                         .get(room.room_id().as_str())
