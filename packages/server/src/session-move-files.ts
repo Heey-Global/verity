@@ -13,6 +13,8 @@ import {
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 
+import { WORKTREE_SIDECAR } from './worktree.js';
+
 const exec = promisify(execFile);
 const MAX_BYTES = 64 * 1024 * 1024;
 export class SessionMoveError extends Error {
@@ -183,6 +185,10 @@ export async function captureMoveSnapshot(root: string): Promise<MoveSnapshot> {
   const files: MoveSnapshot['files'] = [];
   let bytes = 0;
   for (const path of [...affected].sort()) {
+    // Each checkout carries its own sidecar, and the target worktree already has
+    // one. Carrying the source's over would conflict with it on every move — and
+    // overwriting it would point the target's recovery record at the source.
+    if (path === WORKTREE_SIDECAR || path === `${WORKTREE_SIDECAR}.tmp`) continue;
     safePath(path);
     if (path.split('/').includes('node_modules')) {
       skipped.push(path);
