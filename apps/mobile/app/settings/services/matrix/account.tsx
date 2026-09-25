@@ -7,25 +7,25 @@ import {
   SettingsMessage,
   SettingsPanel,
   SettingsScaffold,
-} from '../../../components/settings/SettingsChrome';
-import { settingsStyles as styles } from '../../../components/settings/settingsStyles';
-import { createVerityClient } from '../../../lib/client';
+} from '../../../../components/settings/SettingsChrome';
+import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
+import { createVerityClient } from '../../../../lib/client';
 
-export default function MatrixSettingsScreen() {
+export default function MatrixAccountScreen() {
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
     return (
       <SettingsMessage
         title="Not connected"
         subtitle="Connect to your Verity server to configure Matrix."
-        screenTitle="Matrix"
+        screenTitle="Matrix account"
       />
     );
   }
-  return <MatrixSettingsView client={client} />;
+  return <MatrixAccountView client={client} />;
 }
 
-function MatrixSettingsView({ client }: { client: VerityClient }) {
+function MatrixAccountView({ client }: { client: VerityClient }) {
   const [endpoint, setEndpoint] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -88,7 +88,11 @@ function MatrixSettingsView({ client }: { client: VerityClient }) {
   };
 
   return (
-    <SettingsScaffold title="Matrix" detail onRetry={loadError ? () => void reload() : undefined}>
+    <SettingsScaffold
+      title="Matrix account"
+      detail
+      onRetry={loadError ? () => void reload() : undefined}
+    >
       <SettingsGroup title="Account" description="One Matrix account serves all projects.">
         {loading ? (
           <ActivityIndicator />

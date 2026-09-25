@@ -560,7 +560,7 @@ function ProjectIntegrationsSection({
               label: source.status === 'active' ? 'Connected' : 'Paused',
             }}
             onPress={() =>
-              router.push({ pathname: '/settings/integrations', params: { projectId } })
+              router.push({ pathname: '/settings/services/matrix', params: { projectId } })
             }
           />
         ))}
@@ -568,7 +568,9 @@ function ProjectIntegrationsSection({
           icon="link"
           title="Manage project rooms"
           subtitle="Connect invited rooms and manage imports"
-          onPress={() => router.push({ pathname: '/settings/integrations', params: { projectId } })}
+          onPress={() =>
+            router.push({ pathname: '/settings/services/matrix', params: { projectId } })
+          }
         />
       </SettingsListPanel>
     </SettingsGroup>
