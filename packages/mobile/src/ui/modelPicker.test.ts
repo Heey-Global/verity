@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   defaultModel,
   engineLabel,
+  groupModelsByEngine,
   modelDisplayName,
   orderModels,
   partitionModels,
@@ -46,6 +47,22 @@ describe('engineLabel', () => {
     expect(engineLabel('codex/default')).toBe('Codex');
     expect(engineLabel('deepinfra/zai-org/GLM-5.2')).toBe('OpenCode');
     expect(engineLabel(undefined)).toBe('Claude');
+  });
+});
+
+describe('groupModelsByEngine', () => {
+  it('keeps provider order and includes only populated groups', () => {
+    expect(
+      groupModelsByEngine(['openai/gpt-5', 'claude-opus-4-8', 'codex/default', 'other/kimi']),
+    ).toEqual([
+      { engine: 'Claude', models: ['claude-opus-4-8'] },
+      { engine: 'Codex', models: ['codex/default'] },
+      { engine: 'OpenCode', models: ['openai/gpt-5', 'other/kimi'] },
+    ]);
+    expect(groupModelsByEngine(['other/kimi'])).toEqual([
+      { engine: 'OpenCode', models: ['other/kimi'] },
+    ]);
+    expect(groupModelsByEngine([])).toEqual([]);
   });
 });
 

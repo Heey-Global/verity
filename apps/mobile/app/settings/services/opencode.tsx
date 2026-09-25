@@ -56,8 +56,22 @@ function OpenCodeSettingsView({ client }: { client: VerityClient }) {
   const secrets = useSecretFields(client, SECRET_FIELDS);
   const models = modelIds(settings?.opencodeModels);
   const [query, setQuery] = useState('');
-  const visibleModels = models.filter((model) =>
+  // Keep the opening order stable while switches and their saves update settings.
+  const openingOrder = useRef<string[] | null>(null);
+  const openingBoundary = useRef(0);
+  if (openingOrder.current === null && settings && models.length > 0) {
+    const initiallyDisabled = new Set(modelIds(settings?.opencodeDisabledModels));
+    openingBoundary.current = models.filter((model) => !initiallyDisabled.has(model)).length;
+    openingOrder.current = [
+      ...models.filter((model) => !initiallyDisabled.has(model)),
+      ...models.filter((model) => initiallyDisabled.has(model)),
+    ];
+  }
+  const visibleModels = (openingOrder.current ?? models).filter((model) =>
     model.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const dividerIndex = visibleModels.findIndex(
+    (model) => (openingOrder.current?.indexOf(model) ?? -1) >= openingBoundary.current,
   );
   const [disabled, setDisabled] = useState(() => new Set<string>());
   const desiredDisabled = useRef(disabled);
@@ -179,19 +193,23 @@ function OpenCodeSettingsView({ client }: { client: VerityClient }) {
             {visibleModels.length === 0 ? (
               <Text style={styles.reproHint}>No models match your search.</Text>
             ) : null}
-            {visibleModels.map((model) => (
-              <SettingsToggleRow
-                key={model}
-                label={model}
-                value={!disabled.has(model)}
-                disabled={!writable}
-                onValueChange={(enabled) => {
-                  const next = new Set(desiredDisabled.current);
-                  if (enabled) next.delete(model);
-                  else next.add(model);
-                  saveDisabled(next);
-                }}
-              />
+            {visibleModels.map((model, index) => (
+              <View key={model}>
+                {index === dividerIndex && dividerIndex > 0 ? (
+                  <View style={styles.modelGroupSeparator} testID="opencode-model-separator" />
+                ) : null}
+                <SettingsToggleRow
+                  label={model}
+                  value={!disabled.has(model)}
+                  disabled={!writable}
+                  onValueChange={(enabled) => {
+                    const next = new Set(desiredDisabled.current);
+                    if (enabled) next.delete(model);
+                    else next.add(model);
+                    saveDisabled(next);
+                  }}
+                />
+              </View>
             ))}
           </SettingsPanel>
         )}

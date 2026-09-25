@@ -32,19 +32,71 @@ describe('settings/services/opencode', () => {
     await screen.findByLabelText('Alpha/model-2');
     expect(screen.getAllByRole('switch').map((row) => row.props.accessibilityLabel)).toEqual([
       'Alpha/model-2',
-      'zeta/model-2',
       'zeta/model-10',
+      'zeta/model-2',
     ]);
+    expect(screen.getAllByTestId('opencode-model-separator')).toHaveLength(1);
     const search = screen.getByLabelText('Search models');
     fireEvent.changeText(search, ' ZETA/MODEL-2 ');
     expect(screen.getAllByRole('switch')).toHaveLength(1);
     expect(screen.getByLabelText('zeta/model-2').props.accessibilityState.checked).toBe(false);
+    expect(screen.queryByTestId('opencode-model-separator')).toBeNull();
     expect(screen.getByText('2 of 3 enabled')).toBeOnTheScreen();
     fireEvent.changeText(search, 'unavailable');
     expect(screen.getByText('No models match your search.')).toBeOnTheScreen();
     fireEvent.changeText(search, '');
     expect(screen.getAllByRole('switch')).toHaveLength(3);
     expect(updateVeritySettings).not.toHaveBeenCalled();
+  });
+
+  it('keeps the opening order through toggles and reorders on reopening', async () => {
+    let current = makeSettings({
+      opencodeModels: 'z/three\na/one\nb/two',
+      opencodeDisabledModels: 'a/one',
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getVeritySettings: jest.fn(async () => current),
+        updateVeritySettings: jest.fn(async (patch) => {
+          current = { ...current, ...patch };
+          return current;
+        }),
+      }),
+    );
+    const labels = () => screen.getAllByRole('switch').map((row) => row.props.accessibilityLabel);
+    const view = render(<OpenCodeSettingsScreen />);
+    await screen.findByLabelText('a/one');
+    expect(labels()).toEqual(['b/two', 'z/three', 'a/one']);
+    expect(screen.getAllByTestId('opencode-model-separator')).toHaveLength(1);
+    fireEvent.press(screen.getByLabelText('a/one'));
+    await waitFor(() =>
+      expect(screen.getByLabelText('a/one').props.accessibilityState.checked).toBe(true),
+    );
+    expect(labels()).toEqual(['b/two', 'z/three', 'a/one']);
+    expect(screen.getAllByTestId('opencode-model-separator')).toHaveLength(1);
+    view.unmount();
+    render(<OpenCodeSettingsScreen />);
+    await screen.findByLabelText('a/one');
+    await waitFor(() => expect(labels()).toEqual(['a/one', 'b/two', 'z/three']));
+    expect(screen.queryByTestId('opencode-model-separator')).toBeNull();
+  });
+
+  it('omits the divider when every model starts disabled', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({
+          opencodeModels: 'b/two\na/one',
+          opencodeDisabledModels: 'a/one\nb/two',
+        }),
+      }),
+    );
+    render(<OpenCodeSettingsScreen />);
+    await screen.findByLabelText('a/one');
+    expect(screen.getAllByRole('switch').map((row) => row.props.accessibilityLabel)).toEqual([
+      'a/one',
+      'b/two',
+    ]);
+    expect(screen.queryByTestId('opencode-model-separator')).toBeNull();
   });
 
   it('keeps newer toggles while older saves settle and persists them across reopening', async () => {
