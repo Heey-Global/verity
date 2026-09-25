@@ -68,7 +68,11 @@ function authorized(request: FastifyRequest, token: string | undefined): boolean
 
 export function registerIntegrationRoutes(
   app: FastifyInstance,
-  deps: { store: IntegrationStore; dataRoot?: string; connectorToken?: string },
+  deps: {
+    store: IntegrationStore;
+    dataRoot?: string;
+    connectorToken?: string | (() => Promise<string | undefined>);
+  },
 ): void {
   const { store } = deps;
   void app.register((instance, _options, done) => {
@@ -147,7 +151,11 @@ export function registerIntegrationRoutes(
     // The worker credential can only report its account, discover rooms, read its
     // bindings, and submit events. It cannot choose a project or access Knowledge.
     const workerOnly = async (request: FastifyRequest, reply: import('fastify').FastifyReply) => {
-      if (!authorized(request, deps.connectorToken)) {
+      const token =
+        typeof deps.connectorToken === 'function'
+          ? await deps.connectorToken()
+          : deps.connectorToken;
+      if (!authorized(request, token)) {
         return reply.code(401).send({ error: 'Unauthorized connector' });
       }
     };

@@ -16,6 +16,7 @@ import type { ContainerSpec, DockerClient } from '../docker.js';
 import type { UpdateJournal } from './update-journal.js';
 import { readAgentSeedStamp } from './agent-seed-stamp.js';
 import { reconcileManagedControlPlaneRunner } from './managed-control-plane-runner.js';
+import { reconcileManagedMatrixConnector } from './managed-matrix-connector.js';
 import {
   MANAGED_GATEWAY_CONTROL_SOCKET,
   waitForManagedGatewayStatus,
@@ -412,12 +413,17 @@ export async function reconcileManagedCompanions(
   }
 
   if (options.reconcileRunner !== undefined) await options.reconcileRunner();
-  else
+  else {
     await reconcileManagedControlPlaneRunner({
       managedRoot: options.managedRoot,
       docker: options.docker,
       ...(options.environment === undefined ? {} : { environment: options.environment }),
     });
+    await reconcileManagedMatrixConnector({
+      managedRoot: options.managedRoot,
+      docker: options.docker,
+    });
+  }
 
   const refreshed = await options.docker.listContainers();
   for (const item of refreshed.filter(

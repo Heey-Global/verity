@@ -19,6 +19,24 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+it('accepts a connector token provisioned after the server starts', async () => {
+  let token: string | undefined;
+  const app = Fastify();
+  registerIntegrationRoutes(app, {
+    store: ctx.store.integrations,
+    connectorToken: async () => token,
+  });
+  await app.ready();
+  const url = '/internal/integrations/matrix/config';
+  const headers = { authorization: 'Bearer a-secret-long-enough-for-the-worker-route' };
+  expect((await app.inject({ method: 'GET', url, headers })).statusCode).toBe(401);
+  token = 'a-secret-long-enough-for-the-worker-route';
+  expect((await app.inject({ method: 'GET', url, headers })).statusCode).toBe(200);
+  token = undefined;
+  expect((await app.inject({ method: 'GET', url, headers })).statusCode).toBe(401);
+  await app.close();
+});
+
 it('requires an explicit project binding before accepting chat, then updates edited and deleted text', async () => {
   const app = Fastify();
   registerIntegrationRoutes(app, {

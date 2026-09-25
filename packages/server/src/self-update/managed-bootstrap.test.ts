@@ -118,6 +118,7 @@ describe('runManagedBootstrap', () => {
     const env = {
       ...(await environment()),
       VERITY_BUNDLED_PROJECT_RELAY_IMAGE: `ghcr.io/heey-global/verity/verity-project-relay@sha256:${'c'.repeat(64)}`,
+      VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE: `ghcr.io/heey-global/verity/verity-matrix-connector@sha256:${'d'.repeat(64)}`,
     };
     await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
     const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
@@ -125,6 +126,7 @@ describe('runManagedBootstrap', () => {
     expect(state.managed).toBe(true);
     const names = state.managed ? state.spec.environment.map((entry) => entry.name) : [];
     expect(names).not.toContain('VERITY_BUNDLED_PROJECT_RELAY_IMAGE');
+    expect(names).not.toContain('VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE');
     // The forwarding itself still works — this is an exclusion, not a regression.
     expect(names).toContain('VERITY_DATA_VOLUME');
   });

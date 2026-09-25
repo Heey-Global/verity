@@ -31,6 +31,11 @@ interface ReleaseWorkflow {
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
       steps: WorkflowStep[];
     };
+    'build-matrix-connector': {
+      needs?: string | string[];
+      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
+      steps: WorkflowStep[];
+    };
     'build-sandbox': {
       needs?: string | string[];
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
@@ -51,6 +56,11 @@ interface ReleaseWorkflow {
       steps: WorkflowStep[];
     };
     'publish-project-relay': {
+      needs?: string | string[];
+      outputs?: Record<string, string>;
+      steps: WorkflowStep[];
+    };
+    'publish-matrix-connector': {
       needs?: string | string[];
       outputs?: Record<string, string>;
       steps: WorkflowStep[];
@@ -94,6 +104,51 @@ interface ReleaseWorkflow {
     };
   };
 }
+
+describe('Matrix connector release image', () => {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
+
+  it('builds both architectures from the backend release SHA and gates release finalization', () => {
+    const build = workflow.jobs['build-matrix-connector'];
+    expect(build.strategy?.matrix?.include).toEqual([
+      { architecture: 'amd64', runner: 'ubuntu-24.04' },
+      { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+    ]);
+    expect(build.steps.find((step) => step.uses?.startsWith('actions/checkout@'))?.with?.ref).toBe(
+      '${{ needs.release-please.outputs.backend-sha }}',
+    );
+    const push = build.steps.find((step) => step.uses?.startsWith('docker/build-push-action@'));
+    expect(push?.with?.file).toBe('connectors/matrix/Dockerfile');
+    expect(push?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
+    expect(push?.with?.push).toBe(true);
+    const publish = workflow.jobs['publish-matrix-connector'];
+    expect(publish.needs).toContain('self-update-gate');
+    expect(publish.needs).toContain('build-matrix-connector');
+    expect(publish.steps.find((step) => step.name?.includes('multi-architecture'))?.run).toContain(
+      'scripts/publish-release-index.mjs',
+    );
+    expect(workflow.jobs['finalize-backend-release'].needs).toContain('publish-matrix-connector');
+  });
+
+  it('bakes the published digest into the Server image for managed deployment', () => {
+    const publish = workflow.jobs['publish-matrix-connector'];
+    expect(publish.outputs?.image).toBe('${{ steps.connector-reference.outputs.image }}');
+    expect(publish.steps.find((step) => step.id === 'connector-reference')?.run).toContain(
+      'sha256:[a-f0-9]{64}',
+    );
+    const server = workflow.jobs['build-server'];
+    expect(server.needs).toContain('publish-matrix-connector');
+    const build = server.steps.find((step) => step.name?.startsWith('Build + push'));
+    expect(build?.with?.['build-args']).toContain(
+      'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.publish-matrix-connector.outputs.image }}',
+    );
+    const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
+    expect(dockerfile).toContain('ARG VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=');
+    expect(dockerfile).toContain(
+      'ENV VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE}',
+    );
+  });
+});
 
 describe('release relay digest output', () => {
   const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;

@@ -576,6 +576,27 @@ describe('managed Server ownership', () => {
     ).resolves.toEqual({ containerId: 'existing', action: 'unchanged' });
   });
 
+  it('reuses a promoted generation whose image bakes a different Matrix connector reference', async () => {
+    const older = `ghcr.io/heey-global/verity/verity-matrix-connector@sha256:${'b'.repeat(64)}`;
+    const newer = `ghcr.io/heey-global/verity/verity-matrix-connector@sha256:${'c'.repeat(64)}`;
+    const promoted = {
+      ...owned(true),
+      env: [...owned(true).env!, `VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${older}`],
+    };
+
+    await expect(
+      reconcileManagedServer(
+        runtimeOptions(
+          await authority(),
+          docker(promoted, MANAGED_SERVER_NAME, [
+            ...IMAGE_ENV,
+            `VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${newer}`,
+          ]),
+        ),
+      ),
+    ).resolves.toEqual({ containerId: 'existing', action: 'unchanged' });
+  });
+
   it('recreates a missing Server without the legacy sealed relay reference', async () => {
     // A deployment sealed before the bootstrap stopped forwarding it still names the
     // relay as an env source. Resolved here it would come from the CURRENT Updater —

@@ -3878,9 +3878,17 @@ export async function buildEmbeddedServer(
 
   const app = buildControlPlane({
     eventStore,
-    ...(process.env.VERITY_MATRIX_CONNECTOR_TOKEN
-      ? { matrixConnectorToken: process.env.VERITY_MATRIX_CONNECTOR_TOKEN }
-      : {}),
+    matrixConnectorToken: async () => {
+      try {
+        return (
+          await readFile('/run/verity-updater/control/matrix/connector-token', 'utf8')
+        ).trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+          return process.env.VERITY_MATRIX_CONNECTOR_TOKEN;
+        throw error;
+      }
+    },
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),

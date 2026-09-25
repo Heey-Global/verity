@@ -35,6 +35,7 @@ import {
 } from './managed-gateway-control.js';
 import { readManagedDeployment } from './managed-deployment.js';
 import { reconcileManagedControlPlaneRunner } from './managed-control-plane-runner.js';
+import { reconcileManagedMatrixConnector } from './managed-matrix-connector.js';
 import { reconcileManagedCompanions } from './managed-companion-reconcile.js';
 
 /**
@@ -205,6 +206,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     }
     if (phase === 'rolled-back') {
       await reconcileManagedControlPlaneRunner(shared);
+      await reconcileManagedMatrixConnector(shared);
       log(`operation ${journal.updateId} finished at ${phase}`);
       return;
     }
@@ -386,6 +388,7 @@ export async function recoverManagedUpdater(
       reconcile = verdict(reconciled);
       reportDrift(reconcile);
       await reconcileManagedControlPlaneRunner(companion);
+      await reconcileManagedMatrixConnector(companion);
       return { ...runner, reconcile };
     }
     const reconciled = await reconcileManagedServer({
@@ -397,6 +400,7 @@ export async function recoverManagedUpdater(
     reconcile = verdict(reconciled);
     reportDrift(reconcile);
     await reconcileManagedControlPlaneRunner(companion);
+    await reconcileManagedMatrixConnector(companion);
   } catch (error) {
     if (pending === null) throw error;
     (options.log ?? defaultLog)(

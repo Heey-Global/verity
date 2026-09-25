@@ -35,12 +35,10 @@ import { MANAGED_DEPLOYMENT_LABEL, MANAGED_ROLE_LABEL } from './managed-server-o
  *
  * An OCI LABEL rather than an environment variable, and that is not a style
  * choice. `managed-server-owner.ts` documents at length why
- * `VERITY_BUNDLED_PROJECT_RELAY_IMAGE` is the ONLY value allowed to reach a
- * managed Server from its image instead of from the sealed spec: every further
- * exemption re-opens the spec/image disagreement that once left the Updater
- * refusing to start its own Server. A label is read off the pulled target image
- * by the Updater and never enters any container's environment, so it adds
- * nothing to that comparison.
+ * Only bundled sibling-image references are allowed to reach a managed Server
+ * from its image instead of from the sealed spec. A label is read off the
+ * pulled target image by the Updater and never enters any container's
+ * environment, so it adds nothing to that comparison.
  */
 export const POSTGRES_IMAGE_LABEL = 'org.verity.postgres-image';
 

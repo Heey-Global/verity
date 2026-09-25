@@ -43,10 +43,21 @@ impl Config {
         fn required(name: &str) -> Result<String> {
             env::var(name).with_context(|| format!("{name} is required"))
         }
+        fn secret(name: &str) -> Result<String> {
+            let file_name = format!("{name}_FILE");
+            match (env::var(name).ok(), env::var(&file_name).ok()) {
+                (Some(_), Some(_)) => bail!("set either {name} or {file_name}, not both"),
+                (Some(value), None) => Ok(value),
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("could not read {file_name}"))
+                    .map(|value| value.trim_end_matches(|c| c == '\r' || c == '\n').to_owned()),
+                (None, None) => bail!("{name} or {file_name} is required"),
+            }
+        }
         let config = Self {
-            store_passphrase: required("MATRIX_STORE_PASSPHRASE")?,
+            store_passphrase: secret("MATRIX_STORE_PASSPHRASE")?,
             verity_url: required("VERITY_INTERNAL_URL")?,
-            connector_token: required("VERITY_MATRIX_CONNECTOR_TOKEN")?,
+            connector_token: secret("VERITY_MATRIX_CONNECTOR_TOKEN")?,
             verity_ca_cert_path: env::var("VERITY_CA_CERT_PATH").ok().map(PathBuf::from),
             data_dir: PathBuf::from(required("MATRIX_DATA_DIR")?),
         };

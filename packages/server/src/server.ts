@@ -984,7 +984,7 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
-  matrixConnectorToken?: string | undefined;
+  matrixConnectorToken?: string | (() => Promise<string | undefined>) | undefined;
   /** TLS termination for direct/non-managed deployments. Managed deployments
    * terminate at the dedicated Gateway instead. */
   https?: HttpsServerOptions | undefined;
