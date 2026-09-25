@@ -401,6 +401,85 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
 };
 
+type JsonSchemaObject = Record<string, unknown>;
+
+/**
+ * MCP requires every tool's `inputSchema` to be `type: "object"` at the root, and the
+ * Anthropic API additionally refuses `oneOf`/`anyOf`/`allOf` there. A tool that takes a
+ * union of actions converts to exactly that bare union, and Claude Code validates the whole
+ * `tools/list` result: one such entry makes it discard EVERY Verity tool, silently, while
+ * Codex — which does not validate — keeps them all. So a root union is advertised as one
+ * flat object: the discriminator becomes an enum whose description names each action's
+ * required fields, and every other property is optional. Advertising only; calls are still
+ * parsed against the exact zod union in `TOOL_SCHEMAS`.
+ */
+function advertisedInputSchema(schema: JsonSchemaObject): JsonSchemaObject {
+  const branches = schema['oneOf'] ?? schema['anyOf'];
+  if (branches === undefined) return schema;
+  const objects = branches as JsonSchemaObject[];
+  const propertiesOf = (branch: JsonSchemaObject): Record<string, JsonSchemaObject> =>
+    (branch['properties'] ?? {}) as Record<string, JsonSchemaObject>;
+  if (objects.some((branch) => branch['type'] !== 'object')) {
+    throw new Error('a gateway tool union must consist of object schemas only');
+  }
+  const discriminator = Object.keys(propertiesOf(objects[0]!)).find((key) =>
+    objects.every((branch) => typeof propertiesOf(branch)[key]?.['const'] === 'string'),
+  );
+  if (discriminator === undefined) {
+    throw new Error('a gateway tool union must be discriminated by a string literal');
+  }
+  const shapes = new Map<string, JsonSchemaObject[]>();
+  const variants: string[] = [];
+  const values: string[] = [];
+  for (const branch of objects) {
+    const value = propertiesOf(branch)[discriminator]!['const'] as string;
+    values.push(value);
+    const required = ((branch['required'] ?? []) as string[]).filter(
+      (key) => key !== discriminator,
+    );
+    variants.push(required.length === 0 ? value : `${value} (requires ${required.join(', ')})`);
+    for (const [key, property] of Object.entries(propertiesOf(branch))) {
+      if (key === discriminator) continue;
+      const seen = shapes.get(key) ?? [];
+      if (!seen.some((shape) => JSON.stringify(shape) === JSON.stringify(property))) {
+        shapes.set(key, [...seen, property]);
+      }
+    }
+  }
+  // Same name, different shape across actions: offer each shape rather than pick one.
+  const properties = Object.fromEntries(
+    [...shapes].map(([key, seen]) => [key, seen.length === 1 ? seen[0]! : { anyOf: seen }]),
+  );
+  const rest = { ...schema };
+  delete rest['oneOf'];
+  delete rest['anyOf'];
+  return {
+    ...rest,
+    type: 'object',
+    properties: {
+      [discriminator]: {
+        type: 'string',
+        enum: values,
+        description: `One of: ${variants.join('; ')}.`,
+      },
+      ...properties,
+    },
+    required: [discriminator],
+    additionalProperties: false,
+  };
+}
+
+// Built once at module load: a tool whose schema cannot be advertised fails the Server at
+// start, not every `tools/list` — which would again hide all tools at once.
+const ADVERTISED_INPUT_SCHEMAS = Object.fromEntries(
+  gatewayToolNameSchema.options.map((name) => [
+    name,
+    advertisedInputSchema(
+      z.toJSONSchema(TOOL_SCHEMAS[name], { target: 'draft-7' }) as JsonSchemaObject,
+    ),
+  ]),
+) as Record<GatewayToolName, JsonSchemaObject>;
+
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {
   name: string;
   description: string;
@@ -411,7 +490,7 @@ function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {
     .map((name) => ({
       name,
       description: TOOL_DESCRIPTIONS[name],
-      inputSchema: z.toJSONSchema(TOOL_SCHEMAS[name], { target: 'draft-7' }),
+      inputSchema: ADVERTISED_INPUT_SCHEMAS[name],
     }));
 }
 
