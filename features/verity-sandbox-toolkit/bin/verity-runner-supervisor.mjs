@@ -2079,6 +2079,13 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
         logTelemetry({
           event: 'start',
           turnId: request.turnId,
+          backend: request.backend,
+          sessionId: request.sessionId,
+          gatewayTokenPresent: request.mcpGatewayToken !== undefined,
+          gatewayUrlPresent:
+            typeof options.workerEnv?.VERITY_MCP_GATEWAY_URL === 'string' &&
+            options.workerEnv.VERITY_MCP_GATEWAY_URL !== '',
+          configuredMcpServers: request.mcpServers?.length ?? 0,
           queueMs: startedAt - queuedAt,
           startMs: Date.now() - startedAt,
           // Read in `run()`'s `finally`, BEFORE the slot is handed on, so this start
