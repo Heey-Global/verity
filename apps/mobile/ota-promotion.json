@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.34.12",
+  "version": "1.34.13",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "8fc940e306d2facbf3d981822bd9cb137eaa6b3f",
-  "tag": "mobile-v1.34.12",
-  "branch": "staging-mobile-v1.34.12-8fc940e306d2facbf3d981822bd9cb137eaa6b3f",
-  "baseline": "mobile-v1.34.11",
-  "group": "f219e709-1eab-4baf-922d-be393c36466f",
+  "commit": "ec0c2e3047dc200e4ca89a23f248fd3d31ce0887",
+  "tag": "mobile-v1.34.13",
+  "branch": "staging-mobile-v1.34.13-ec0c2e3047dc200e4ca89a23f248fd3d31ce0887",
+  "baseline": "mobile-v1.34.12",
+  "group": "ce69bd16-f7b8-4839-b626-febda04ab628",
   "notes": [
-    "let session settings scroll and show link failures (#746)"
+    "clarify Matrix room connection state (#757)"
   ]
 }
