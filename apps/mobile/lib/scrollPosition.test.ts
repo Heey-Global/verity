@@ -84,12 +84,13 @@ describe('history edge', () => {
     expect(historyEdgeDistance(400, 2000, 600)).toBe(1000);
   });
 
-  it('arms paging once the oldest row is within a third of a viewport', () => {
+  it('arms paging with two viewports of older history still available', () => {
     expect(isHistoryEdgeVisible(1250, 2000, 600, 0, 40)).toBe(true);
+    expect(isHistoryEdgeVisible(200, 2000, 600, 0, 40)).toBe(true);
   });
 
   it('stays disarmed in the middle of the loaded transcript', () => {
-    expect(isHistoryEdgeVisible(400, 2000, 600, 0, 40)).toBe(false);
+    expect(isHistoryEdgeVisible(100, 2000, 600, 0, 40)).toBe(false);
   });
 
   it('falls back to the oldest viewable index before the first scroll event', () => {
