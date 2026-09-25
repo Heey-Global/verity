@@ -383,6 +383,15 @@ export async function dockerStandbyPromotion(
       capAdd: [],
     });
     const deadlineMs = timeoutMs + probeGraceMs;
+    const diagnostics = async (): Promise<string> => {
+      const probeLogs = await docker.containerLogs!(created.id, 50).catch(
+        () => 'the probe container produced no logs',
+      );
+      const candidateLogs = await docker.containerLogs!(state.candidateContainerId, 100).catch(
+        () => 'the candidate Server logs were unavailable',
+      );
+      return `${probeLogs}\nCandidate Server logs:\n${candidateLogs}`;
+    };
     try {
       await docker.startContainer(created.id);
       let exitCode: number;
@@ -396,9 +405,7 @@ export async function dockerStandbyPromotion(
         throw new CandidateReadinessError(
           `candidate readiness probe (${role}) did not finish within ${String(deadlineMs)}ms`,
           schemaDatabaseUrl === undefined
-            ? await docker.containerLogs!(created.id, 50).catch(
-                () => 'the probe container produced no logs',
-              )
+            ? await diagnostics()
             : 'The retained image could not verify the database schema; maintenance remains active.',
         );
       }
@@ -406,7 +413,7 @@ export async function dockerStandbyPromotion(
         throw new CandidateReadinessError(
           `candidate readiness probe (${role}) failed with exit code ${String(exitCode)}`,
           schemaDatabaseUrl === undefined
-            ? await docker.containerLogs!(created.id, 50)
+            ? await diagnostics()
             : 'The retained image rejected the database schema or could not reach the database; maintenance remains active.',
         );
     } finally {

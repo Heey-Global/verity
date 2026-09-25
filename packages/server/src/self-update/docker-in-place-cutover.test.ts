@@ -258,10 +258,12 @@ describe('standby promotion cutover', () => {
     const { root, daemon } = await prepared();
     daemon.exitCodes.set('verity-managed-probe-ready-g1', 1);
     daemon.logs.set('verity-managed-probe-ready-g1', 'connect ECONNREFUSED');
+    daemon.logs.set('verity-managed-server-g1', 'startup failed: database unavailable');
 
-    await expect(resumeUpdateCutover(await cutover(root, daemon))).rejects.toThrow(
-      /readiness probe \(ready\) failed with exit code 1/,
-    );
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).rejects.toMatchObject({
+      message: expect.stringMatching(/readiness probe \(ready\) failed with exit code 1/),
+      diagnostics: expect.stringContaining('startup failed: database unavailable'),
+    });
 
     const state = await readManagedDeployment(root);
     expect(state.managed && state.spec.image).toBe(oldImage);
