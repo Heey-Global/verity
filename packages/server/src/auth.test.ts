@@ -99,6 +99,39 @@ describe('paired device management', () => {
   afterAll(async () => ctx.close());
   beforeEach(async () => truncateAll(ctx.db));
 
+  it('binds only a verified device token to the request user', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('iPad');
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    app.get('/test/local-user', async (request) => ({ userId: request.localUserId }));
+    try {
+      const valid = await app.inject({
+        method: 'GET',
+        url: '/test/local-user',
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toEqual({ userId: registry.resolveUserId(device.token) });
+      const missing = await app.inject({ method: 'GET', url: '/test/local-user' });
+      expect(missing.statusCode).toBe(401);
+      await registry.revoke(device.id);
+      const revoked = await app.inject({
+        method: 'GET',
+        url: '/test/local-user',
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(revoked.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('lets an authenticated device invite, list, and revoke another device', async () => {
     const store = new EventStore(ctx.db);
     const registry = await createAuthTokenRegistry(store, { enabled: true });
