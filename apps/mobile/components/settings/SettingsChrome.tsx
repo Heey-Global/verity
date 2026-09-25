@@ -327,6 +327,7 @@ export function SecretPasteField({
   editable,
   onBlur,
   masked = false,
+  accessibilityLabel,
 }: {
   label: string;
   placeholder: string;
@@ -336,6 +337,7 @@ export function SecretPasteField({
   editable: boolean;
   onBlur: () => void;
   masked?: boolean;
+  accessibilityLabel?: string;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -361,6 +363,7 @@ export function SecretPasteField({
         autoCapitalize="none"
         autoCorrect={false}
         spellCheck={false}
+        accessibilityLabel={accessibilityLabel}
       />
       {editable && !masked ? (
         <Text style={styles.footnote}>The key is visible while entering.</Text>
