@@ -477,31 +477,19 @@ Credential storage/delivery and recovery transcript are handshake freeze gates.
 
 ## Team enrollment and subsequent Remote Control
 
-Team invitation issuance, reservation, `team.join.pending`, local commit and
-outbox acknowledgement follow the team proposal. The trusted inviter supplies
-Core identity and the bootstrap secret; Uplink learns only the specified public
-commitment and routing metadata. Reuse the common TLS transport, but keep the
-team reservation and the transport session as separate state machines.
-
-The joining app establishes inner TLS and presents the reserved redemption proof
-to Core. Core binds that proof, invitation purpose `team-member`, intended project,
-permissions and proved device to the enrollment transaction. Ordinary transport
-admission cannot substitute for that reservation or bypass its checks. Before
-commit, only enrollment is permitted. The proposed binding is explicit: after reservation, the app adds only
-`redemptionId` to `connect` (no bootstrap secret or device bearer). Uplink atomically
-binds that unbound live reservation to the generated `sessionId` and forwards
-`redemptionId` in `session.request`. Core accepts only a matching locally pending
-`team.join.pending` reservation. Both ticket hashes inherit this immutable binding.
-The connector supplies session/redemption context out of band to Core's enrollment
-handler, never through an app-controlled HTTP header. Inside TLS, the app proves
-the invitation and device; Core checks that proof against that exact context.
-A bare redemption ID grants no authority. A pre-commit transport failure makes the
-binding terminal; a new reservation requires the team redemption/recovery flow,
-never rebinding an old ticket. Local commit uniquely consumes the redemption and
-records session, invitation and device with its outbox receipt. Post-commit recovery
-requires the same device proof and receipt; it cannot create a second membership.
-This additive wire/context proposal needs joint review with team V08–V13 before
-freeze, including the same-device recovery transcript.
+Team invitation issuance, local commit and outbox acknowledgement follow the
+team proposal. The [team bootstrap interface](uplink-team-bootstrap-interface-v1.md)
+defines the join-specific admission messages. One app request atomically creates
+and binds a redemption to a transport session; the earlier separate reservation
+then `connect` sketch is superseded for initial team join. Keep reservation and
+transport lifecycles distinct internally. The trusted inviter supplies Core
+identity and the bootstrap secret; Uplink learns only the public commitment and
+routing metadata. The connector supplies session/redemption context out of band
+to Core's enrollment handler, never through an app-controlled HTTP header. Inside
+TLS the app proves the invitation and device; Core binds those proofs to the
+intended project and permissions. A bare redemption ID grants no authority.
+Pre-commit transport failure terminates that binding; post-commit recovery uses
+the separate same-device flow and never creates a second membership.
 
 Team redemption can never create an administrator credential, including on an
 unclaimed installation. Recheck inviter authority, local invitation state, grant
@@ -514,24 +502,11 @@ on each operation. Team eligibility and `remote-control` transport eligibility
 are independent: neither implies the other. Entitlement loss closes the hosted
 transport; direct member access follows the team contract's signed-grant rules.
 
-### Proposed reservation and locally authenticated connector context
+### Locally authenticated connector context
 
-Add a versioned team reservation response to the team bootstrap endpoint:
-`{type: "team.join.reserved", invitationId, redemptionId, expiresAt}`. Issue it
-only after the team's invitation/redemption eligibility checks; it contains no
-Core secret or bearer. The exact endpoint and invitation/device proof remain
-team handshake freeze items. Persist the reservation as `reserved` with its
-installation, invitation, expiry and redemption identity. `team.join.pending`
-carries those same fields to Core. Core persists the pending record before it
-can accept a matching session request; a delivery race returns a retryable refusal,
-never an unbound acceptance.
-
-At `connect`, Uplink compares the supplied redemption ID with that authoritative
-record and atomically changes `reserved -> bound(sessionId)` while creating the
-session request. Reject expired, cancelled, foreign-installation or already bound
-records; the app's ID alone is not evidence. An attacker who learns the ID can
-at most consume a reservation attempt, not prove the inner invitation or device.
-Rate limits and bounded fresh reservations prevent unlimited attempt allocation.
+Core durably persists the bound pending context before `session.accept`; the
+connector presents that exact context through the protected local channel. Rate
+limits and bounded fresh reservations prevent unlimited attempt allocation.
 
 Propose a dedicated Unix-domain socket between the connector and Core enrollment
 handler. The connector here is the **Core-side outbound connector**, not the

@@ -1,0 +1,271 @@
+[
+  {
+    "name": "join reservation binds one negotiated bootstrap profile",
+    "schema": "joinReserve",
+    "valid": true,
+    "value": {
+      "type": "team.join.reserve",
+      "requestId": "request_1",
+      "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ",
+      "invitationId": "invite_1",
+      "capabilities": ["team-bootstrap-v1"]
+    }
+  },
+  {
+    "name": "join reservation cannot offer a remote-control profile",
+    "schema": "joinReserve",
+    "valid": false,
+    "value": {
+      "type": "team.join.reserve",
+      "requestId": "request_1",
+      "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ",
+      "invitationId": "invite_1",
+      "capabilities": ["remote-control-v1"]
+    }
+  },
+  {
+    "name": "pending context names the same bound session",
+    "schema": "joinPending",
+    "valid": true,
+    "value": {
+      "type": "team.join.pending",
+      "requestId": "request_1",
+      "sessionId": "session_1",
+      "invitationId": "invite_1",
+      "redemptionId": "redemption_1",
+      "projectId": "project_1",
+      "permissions": ["read"],
+      "bootstrapSessionId": "session_1",
+      "decisionExpiresAt": 1800000015000,
+      "capability": "team-bootstrap-v1"
+    }
+  },
+  {
+    "name": "pending context cannot substitute a second bootstrap session",
+    "schema": "joinPending",
+    "valid": false,
+    "value": {
+      "type": "team.join.pending",
+      "requestId": "request_1",
+      "sessionId": "session_1",
+      "invitationId": "invite_1",
+      "redemptionId": "redemption_1",
+      "projectId": "project_1",
+      "permissions": ["read"],
+      "bootstrapSessionId": "session_2",
+      "decisionExpiresAt": 1800000015000,
+      "capability": "team-bootstrap-v1"
+    }
+  },
+  {
+    "name": "durable acceptance",
+    "schema": "sessionAccept",
+    "valid": true,
+    "value": {
+      "type": "session.accept",
+      "sessionId": "session_1"
+    }
+  },
+  {
+    "name": "acceptance cannot include an app bearer",
+    "schema": "sessionAccept",
+    "valid": false,
+    "value": {
+      "type": "session.accept",
+      "sessionId": "session_1",
+      "bearer": "secret"
+    }
+  },
+  {
+    "name": "bounded refusal",
+    "schema": "sessionRefuse",
+    "valid": true,
+    "value": {
+      "type": "session.refuse",
+      "sessionId": "session_1",
+      "code": "unavailable"
+    }
+  },
+  {
+    "name": "refusal cannot use an unreviewed reason",
+    "schema": "sessionRefuse",
+    "valid": false,
+    "value": {
+      "type": "session.refuse",
+      "sessionId": "session_1",
+      "code": "invalid_invitation"
+    }
+  },
+  {
+    "name": "Core ticket carries redemption binding",
+    "schema": "sessionTicket",
+    "valid": true,
+    "value": {
+      "type": "session.ticket",
+      "sessionId": "session_1",
+      "redemptionId": "redemption_1",
+      "ticket": "core_ticket_1",
+      "expiresAt": 1800000060000,
+      "capability": "team-bootstrap-v1"
+    }
+  },
+  {
+    "name": "Core ticket cannot omit redemption binding",
+    "schema": "sessionTicket",
+    "valid": false,
+    "value": {
+      "type": "session.ticket",
+      "sessionId": "session_1",
+      "ticket": "core_ticket_1",
+      "expiresAt": 1800000060000,
+      "capability": "team-bootstrap-v1"
+    }
+  },
+  {
+    "name": "app receives one bound ready result",
+    "schema": "joinReady",
+    "valid": true,
+    "value": {
+      "type": "team.join.ready",
+      "requestId": "request_1",
+      "sessionId": "session_1",
+      "redemptionId": "redemption_1",
+      "ticket": "app_ticket_1",
+      "expiresAt": 1800000060000,
+      "capability": "team-bootstrap-v1"
+    }
+  },
+  {
+    "name": "ready result cannot downgrade capability",
+    "schema": "joinReady",
+    "valid": false,
+    "value": {
+      "type": "team.join.ready",
+      "requestId": "request_1",
+      "sessionId": "session_1",
+      "redemptionId": "redemption_1",
+      "ticket": "app_ticket_1",
+      "expiresAt": 1800000060000,
+      "capability": "remote-control-v1"
+    }
+  },
+  {
+    "name": "admission can report a bounded rate limit",
+    "schema": "joinError",
+    "valid": true,
+    "value": {
+      "type": "team.join.error",
+      "requestId": "request_1",
+      "code": "rate_limited",
+      "retryAfterMs": 3000
+    }
+  },
+  {
+    "name": "admission cannot attach retry timing to invitation status",
+    "schema": "joinError",
+    "valid": false,
+    "value": {
+      "type": "team.join.error",
+      "requestId": "request_1",
+      "code": "unavailable",
+      "retryAfterMs": 3000
+    }
+  },
+  {
+    "name": "Core sees bound session cancellation",
+    "schema": "sessionCancelled",
+    "valid": true,
+    "value": {
+      "type": "session.cancelled",
+      "sessionId": "session_1",
+      "code": "cancelled"
+    }
+  },
+  {
+    "name": "cancellation cannot name an unreviewed code",
+    "schema": "sessionCancelled",
+    "valid": false,
+    "value": {
+      "type": "session.cancelled",
+      "sessionId": "session_1",
+      "code": "revoked"
+    }
+  },
+  {
+    "name": "session ID rejects punctuation suffix",
+    "schema": "sessionAccept",
+    "valid": false,
+    "value": {
+      "type": "session.accept",
+      "sessionId": "session!"
+    }
+  },
+  {
+    "name": "session ID rejects overlong values",
+    "schema": "sessionAccept",
+    "valid": false,
+    "value": {
+      "type": "session.accept",
+      "sessionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "name": "installation handle rejects suffix",
+    "schema": "joinReserve",
+    "valid": false,
+    "value": {
+      "type": "team.join.reserve",
+      "requestId": "request_1",
+      "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ!",
+      "invitationId": "invite_1",
+      "capabilities": ["team-bootstrap-v1"]
+    }
+  },
+  {
+    "name": "ticket rejects punctuation suffix",
+    "schema": "sessionTicket",
+    "valid": false,
+    "value": {
+      "type": "session.ticket",
+      "sessionId": "session_1",
+      "redemptionId": "redemption_1",
+      "ticket": "ticket!",
+      "expiresAt": 1800000060000,
+      "capability": "team-bootstrap-v1"
+    }
+  },
+  {
+    "name": "session ID rejects trailing newline",
+    "schema": "sessionAccept",
+    "valid": false,
+    "value": {
+      "type": "session.accept",
+      "sessionId": "session_1\n"
+    }
+  },
+  {
+    "name": "installation handle rejects trailing newline",
+    "schema": "joinReserve",
+    "valid": false,
+    "value": {
+      "type": "team.join.reserve",
+      "requestId": "request_1",
+      "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ\n",
+      "invitationId": "invite_1",
+      "capabilities": ["team-bootstrap-v1"]
+    }
+  },
+  {
+    "name": "ticket rejects trailing newline",
+    "schema": "sessionTicket",
+    "valid": false,
+    "value": {
+      "type": "session.ticket",
+      "sessionId": "session_1",
+      "redemptionId": "redemption_1",
+      "ticket": "ticket_1\n",
+      "expiresAt": 1800000060000,
+      "capability": "team-bootstrap-v1"
+    }
+  }
+]

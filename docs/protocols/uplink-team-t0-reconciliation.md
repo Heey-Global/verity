@@ -37,9 +37,17 @@ bootstrap endpoint terminates HTTPS, forwarding those decrypted messages does
 not preserve end-to-end confidentiality. Server signatures alone do not encrypt
 invitation secrets or returned device credentials.
 
-## Bootstrap decision required before contract freeze
+## Bootstrap direction for joint review
 
-Two viable approaches need joint selection and a transport feasibility review:
+Core and Uplink have selected the opaque TLS tunnel as the **implementation
+direction**, based on Core's native pinning smoke and Uplink's reported `/data`
+relay prototype. The [one-request bootstrap interface](uplink-team-bootstrap-interface-v1.md)
+is the candidate wire contract for joint review. This does not assert an
+end-to-end production implementation or freeze signing and enrollment proofs.
+The alternatives below record why the choice was made, not an open request for
+another transport spike.
+
+The two approaches considered during transport selection were:
 
 1. **Opaque TLS tunnel to Core.** Carry the app's TLS session through Uplink to
    Core without termination at the broker, preserving Core certificate pinning.

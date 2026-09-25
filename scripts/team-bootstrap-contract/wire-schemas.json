@@ -1,0 +1,331 @@
+{
+  "joinReserve": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.join.reserve"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "installationHandle": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{21}[AQgw](?![\\s\\S])"
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "capabilities": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string",
+            "const": "team-bootstrap-v1"
+          }
+        ],
+        "additionalItems": false,
+        "minItems": 1,
+        "maxItems": 1
+      }
+    },
+    "required": ["type", "requestId", "installationHandle", "invitationId", "capabilities"],
+    "additionalProperties": false
+  },
+  "joinPending": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.join.pending"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "redemptionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "projectId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "permissions": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 1,
+            "maxItems": 1
+          },
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "execute"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "manage"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "execute"
+              },
+              {
+                "type": "string",
+                "const": "manage"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 3,
+            "maxItems": 3
+          }
+        ]
+      },
+      "bootstrapSessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "decisionExpiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "capability": {
+        "type": "string",
+        "const": "team-bootstrap-v1"
+      }
+    },
+    "required": [
+      "type",
+      "requestId",
+      "sessionId",
+      "invitationId",
+      "redemptionId",
+      "projectId",
+      "permissions",
+      "bootstrapSessionId",
+      "decisionExpiresAt",
+      "capability"
+    ],
+    "additionalProperties": false,
+    "x-semanticChecks": ["bootstrapSessionIdEqualsSessionId"]
+  },
+  "sessionAccept": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.accept"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "sessionId"],
+    "additionalProperties": false
+  },
+  "sessionRefuse": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.refuse"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "enum": ["unavailable", "limit_reached"]
+      }
+    },
+    "required": ["type", "sessionId", "code"],
+    "additionalProperties": false
+  },
+  "sessionTicket": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.ticket"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "redemptionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "ticket": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,512}(?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "capability": {
+        "type": "string",
+        "const": "team-bootstrap-v1"
+      }
+    },
+    "required": ["type", "sessionId", "redemptionId", "ticket", "expiresAt", "capability"],
+    "additionalProperties": false
+  },
+  "joinReady": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.join.ready"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "redemptionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "ticket": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,512}(?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "capability": {
+        "type": "string",
+        "const": "team-bootstrap-v1"
+      }
+    },
+    "required": [
+      "type",
+      "requestId",
+      "sessionId",
+      "redemptionId",
+      "ticket",
+      "expiresAt",
+      "capability"
+    ],
+    "additionalProperties": false
+  },
+  "joinError": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.join.error"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "enum": [
+          "unavailable",
+          "rate_limited",
+          "limit_reached",
+          "protocol_unsupported",
+          "timeout",
+          "cancelled",
+          "internal"
+        ]
+      },
+      "retryAfterMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 60000
+      }
+    },
+    "required": ["type", "requestId", "code"],
+    "additionalProperties": false,
+    "x-semanticChecks": ["retryAfterMsOnlyForRateLimited"]
+  },
+  "sessionCancelled": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.cancelled"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "enum": ["cancelled", "timeout", "unavailable"]
+      }
+    },
+    "required": ["type", "sessionId", "code"],
+    "additionalProperties": false
+  }
+}
