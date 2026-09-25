@@ -1406,7 +1406,7 @@ function ProjectGroup({
                 )}
                 {!controlPlane ? (
                   <Link
-                    href={{ pathname: '/project/[id]', params: { id: group.project.id } }}
+                    href={{ pathname: '/project/[id]/settings', params: { id: group.project.id } }}
                     accessibilityLabel={`Open project settings for ${group.title}`}
                     asChild
                   >

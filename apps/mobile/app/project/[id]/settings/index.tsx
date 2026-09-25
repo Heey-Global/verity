@@ -86,7 +86,9 @@ function ProjectSettingsIndexView({
       | '/project/[id]/settings/github'
       | '/project/[id]/settings/services'
       | '/project/[id]/settings/environment'
-      | '/project/[id]/settings/model',
+      | '/project/[id]/settings/model'
+      | '/project/[id]/dev-server'
+      | '/project/[id]/automations',
   ) => router.push({ pathname, params: { id: projectId } });
 
   return (
@@ -120,6 +122,23 @@ function ProjectSettingsIndexView({
             subtitle="Secure workspace, updates, rebuild"
             status={{ intent: environmentIntent, label: badge.label }}
             onPress={() => to('/project/[id]/settings/environment')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+
+      <SettingsGroup title="Project tools">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="monitor"
+            title="Dev Server"
+            subtitle="Local previews for this project"
+            onPress={() => to('/project/[id]/dev-server')}
+          />
+          <SettingsNavRow
+            icon="repeat"
+            title="Automations"
+            subtitle="Agent Loops and schedules"
+            onPress={() => to('/project/[id]/automations')}
           />
         </SettingsListPanel>
       </SettingsGroup>

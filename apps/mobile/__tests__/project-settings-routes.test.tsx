@@ -50,6 +50,8 @@ describe('project settings index — destinations', () => {
     ['Connected services', '/project/[id]/settings/services'],
     ['Environment', '/project/[id]/settings/environment'],
     ['Default model', '/project/[id]/settings/model'],
+    ['Dev Server', '/project/[id]/dev-server'],
+    ['Automations', '/project/[id]/automations'],
   ])('routes %s to %s', async (label, pathname) => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectSettingsIndexScreen />);
