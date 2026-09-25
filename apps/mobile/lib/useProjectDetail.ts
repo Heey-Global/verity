@@ -29,7 +29,7 @@ export function projectIdParam(value: string | string[] | undefined): string {
 
 /** Matches the overview's project poll (`PROJECTS_POLL_MS` in app/index.tsx) so the
  *  container state ages the same wherever the operator is looking. */
-export const PROJECT_DETAIL_POLL_MS = 15_000;
+const PROJECT_DETAIL_POLL_MS = 15_000;
 
 export type ProjectDetailState = {
   detail: ProjectDetail | undefined;
