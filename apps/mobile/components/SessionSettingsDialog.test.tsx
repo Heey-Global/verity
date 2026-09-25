@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
+import { ScrollView } from 'react-native';
 import { SessionSettingsDialog } from './SessionSettingsDialog';
 
 jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => `operation-${Math.random()}`) }));
@@ -71,6 +72,40 @@ it('links a chosen session without changing the name or project', async () => {
   await waitFor(() => expect(client.linkSessions).toHaveBeenCalledWith('s', 'peer'));
   expect(client.renameSession).not.toHaveBeenCalled();
   expect(client.moveSession).not.toHaveBeenCalled();
+});
+
+it('reports why the server refused a link where it can be seen', async () => {
+  const view = setup(jest.fn());
+  await act(async () => undefined);
+  const client = view.props.client as jest.Mocked<VerityClient>;
+  client.linkSessions.mockRejectedValue(
+    new VerityApiError(400, 'both sessions must belong to active projects'),
+  );
+  view.rerender(
+    <SessionSettingsDialog
+      {...view.props}
+      linkableSessions={[
+        { id: 'peer', name: 'Backend work', projectId: 'b', projectName: 'Target project' },
+      ]}
+    />,
+  );
+  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Choose Target project' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Could not link the sessions: both sessions must belong to active projects.',
+  );
+});
+
+it('leaves touches on the body to its scroll view', () => {
+  setup(jest.fn());
+  // A responder anywhere above the scroll view wins every drag that starts on
+  // text, so the dialog cannot scroll to options below the fold on a tablet.
+  let node = screen.UNSAFE_getByType(ScrollView).parent;
+  while (node) {
+    expect(node.props.onStartShouldSetResponder).toBeUndefined();
+    node = node.parent;
+  }
 });
 
 it('contains the dialog on tablets and keeps project options collapsed until requested', () => {

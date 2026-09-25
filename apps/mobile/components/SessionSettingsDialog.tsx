@@ -104,8 +104,12 @@ export function SessionSettingsDialog({
       setLinks(await client.listSessionLinks(sessionId));
       setLinkPickerOpen(false);
       setLinkProjectId(null);
-    } catch {
-      setLinkError('Could not link the sessions. Please try again.');
+    } catch (error) {
+      setLinkError(
+        error instanceof VerityApiError && error.status < 500
+          ? `Could not link the sessions: ${error.message}.`
+          : 'Could not link the sessions. Please try again.',
+      );
     } finally {
       setLinkBusy(false);
     }
@@ -243,12 +247,15 @@ export function SessionSettingsDialog({
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <Pressable
-          style={styles.backdrop}
-          onPress={close}
-          accessibilityLabel="Dismiss session settings"
-        >
-          <Pressable style={styles.card} onPress={() => undefined} testID="session-settings-card">
+        <View style={styles.backdrop}>
+          {/* A sibling behind the card, not its parent: a Pressable card would take
+              every touch that starts on text inside it, so the body could not scroll. */}
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={close}
+            accessibilityLabel="Dismiss session settings"
+          />
+          <View style={styles.card} testID="session-settings-card">
             <View style={styles.header}>
               <View style={styles.heading}>
                 <Text style={styles.title}>{result ? 'Session moved' : 'Session settings'}</Text>
@@ -473,6 +480,11 @@ export function SessionSettingsDialog({
                       color={theme.colors.textFaint}
                     />
                   </Pressable>
+                  {linkError ? (
+                    <Text accessibilityRole="alert" style={styles.error}>
+                      {linkError}
+                    </Text>
+                  ) : null}
                   {willMove ? (
                     <Text style={styles.hint}>
                       Save the project change before linking sessions.
@@ -534,11 +546,6 @@ export function SessionSettingsDialog({
                       )}
                     </View>
                   ) : null}
-                  {linkError ? (
-                    <Text accessibilityRole="alert" style={styles.error}>
-                      {linkError}
-                    </Text>
-                  ) : null}
                 </>
               )}
             </ScrollView>
@@ -563,8 +570,8 @@ export function SessionSettingsDialog({
                 </>
               )}
             </View>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );
