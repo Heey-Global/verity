@@ -1170,7 +1170,7 @@ describe('self-update release gate', () => {
       release.match(
         /org\.opencontainers\.image\.revision=\$\{\{ needs\.release-please\.outputs\.backend-sha \}\}/g,
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   });
 
   it('runs for actual release candidates and manual recovery, not every main commit', () => {

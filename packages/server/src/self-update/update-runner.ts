@@ -146,6 +146,8 @@ export interface UpdateRunner {
   start(): void;
   /** Whatever run is currently queued — for shutdown and for tests. */
   idle(): Promise<void>;
+  /** Serialize another Docker mutation with managed updates. */
+  enqueueExclusive(task: () => Promise<void>): Promise<void>;
 }
 
 /** A recovered Updater, plus what its startup reconcile concluded about the
@@ -276,6 +278,11 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
       void enqueue();
     },
     idle: () => chain,
+    enqueueExclusive: (task) => {
+      const result = chain.then(task);
+      chain = result.catch(() => undefined);
+      return result;
+    },
   };
 }
 

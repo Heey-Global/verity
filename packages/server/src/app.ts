@@ -48,6 +48,7 @@ export interface ControlPlaneDeps {
    * HTTP handlers unless this value crosses the composition boundary too. */
   dataRoot?: ServerDeps['dataRoot'];
   matrixConnectorToken?: ServerDeps['matrixConnectorToken'];
+  onMatrixConfigured?: ServerDeps['onMatrixConfigured'];
   /** TLS termination options for the public direct-server listener. */
   https?: ServerDeps['https'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
@@ -304,6 +305,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { matrixConnectorToken: deps.matrixConnectorToken }
+      : {}),
+    ...(deps.onMatrixConfigured !== undefined
+      ? { onMatrixConfigured: deps.onMatrixConfigured }
       : {}),
     ...(deps.https !== undefined ? { https: deps.https } : {}),
     ...(deps.unlockClientIdentity !== undefined

@@ -572,6 +572,7 @@ import {
 } from './sandbox-artifacts.js';
 import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
+import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
@@ -3876,11 +3877,28 @@ export async function buildEmbeddedServer(
           { ttlMs: 3_000 },
         );
 
+  const managedMatrixControl = existsSync('/run/verity-updater/control');
+  let matrixActivationDone = false;
+  const activateMatrixIfConfigured = async (): Promise<void> => {
+    if (!managedMatrixControl || matrixActivationDone) return;
+    if ((await eventStore.integrations.matrixConfigSummary()) === null) return;
+    matrixActivationDone = await notifyManagedMatrixConfigured();
+  };
+
   const app = buildControlPlane({
     eventStore,
-    ...(process.env.VERITY_MATRIX_CONNECTOR_TOKEN
-      ? { matrixConnectorToken: process.env.VERITY_MATRIX_CONNECTOR_TOKEN }
-      : {}),
+    ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
+    matrixConnectorToken: async () => {
+      try {
+        return (
+          await readFile('/run/verity-updater/control/matrix/connector-token', 'utf8')
+        ).trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+          return process.env.VERITY_MATRIX_CONNECTOR_TOKEN;
+        throw error;
+      }
+    },
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
@@ -4574,6 +4592,19 @@ export async function buildEmbeddedServer(
       },
     },
   });
+  if (managedMatrixControl) {
+    const retryMatrixActivation = async (): Promise<void> => {
+      try {
+        await activateMatrixIfConfigured();
+      } catch (error) {
+        app.log.warn({ err: error }, 'Matrix connector activation will retry');
+      }
+    };
+    void retryMatrixActivation();
+    const matrixActivationTimer = setInterval(() => void retryMatrixActivation(), 10_000);
+    matrixActivationTimer.unref?.();
+    app.addHook('onClose', () => clearInterval(matrixActivationTimer));
+  }
   // First statement after `app` exists, and the dial is the second. In that
   // order the handshake, the close code and the refusal reason - the lines this
   // wiring exists for - are pino records rather than console lines, and the

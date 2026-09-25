@@ -2,7 +2,10 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createServerUpdateController } from './server-update-controller.js';
+import {
+  createServerUpdateController,
+  notifyManagedMatrixConfigured,
+} from './server-update-controller.js';
 import { startUpdaterStatusServer, type UpdaterStatusServer } from './updater-status.js';
 
 const servers: UpdaterStatusServer[] = [];
@@ -20,6 +23,25 @@ async function mounted() {
 }
 
 describe('server update controller', () => {
+  it('notifies the Updater only when its authenticated control channel is available', async () => {
+    const { managedRoot, socketPath } = await mounted();
+    await expect(notifyManagedMatrixConfigured(socketPath)).rejects.toThrow(/ENOENT/);
+    let activations = 0;
+    servers.push(
+      await startUpdaterStatusServer({
+        socketPath,
+        token: 'a'.repeat(32),
+        managedRoot,
+        peerGid: process.getgid?.() ?? 0,
+        onMatrixConfigured: async () => {
+          activations += 1;
+        },
+      }),
+    );
+    await expect(notifyManagedMatrixConfigured(socketPath)).resolves.toBe(true);
+    expect(activations).toBe(1);
+  });
+
   it('is absent when the deployment has no updater control mount', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-server-update-controller-'));
     await expect(

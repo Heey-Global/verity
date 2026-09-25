@@ -137,14 +137,15 @@ export async function runManagedBootstrap(
           // uses it for the control-plane identity volume as well as project Runner
           // runtimes. The Updater carries the same source on every reconciliation.
           ![
-            // Baked into every Server image, which is the entire point of it: a
-            // release publishes the relay that matches it. Forwarding it makes the
+            // Baked into every Server image: each release publishes matching
+            // sibling images. Forwarding their references makes the
             // Updater resolve it on every reconcile — from ITS OWN image, and the
             // Updater replaces itself during an update. From the next release on,
-            // its copy therefore names a different relay than the promoted Server
+            // its copy therefore names a different sibling than the promoted Server
             // was created with, and the two can never agree again. Left out, each
             // Server simply uses what its own image carries.
             'VERITY_BUNDLED_PROJECT_RELAY_IMAGE',
+            'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE',
             'VERITY_MANAGED_ROOT',
             'VERITY_SERVER_IMAGE',
             'VERITY_SERVER_UID',

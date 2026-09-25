@@ -131,6 +131,9 @@ describe('a managed deployment refuses project networks', () => {
       'GET /v1/reconcile',
       'GET /v1/update',
       'POST /v1/update',
+      // Activation only records that Matrix credentials exist; the Updater still
+      // owns the worker and this route never grants network attachment verbs.
+      'POST /v1/matrix-connector/configured',
       'GET /v1/handoff',
       'POST /v1/handoff',
       'POST /v1/handoff/envelope',

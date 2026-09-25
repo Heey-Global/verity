@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import { AGENT_SEED_MOUNT_PATH } from './self-update/agent-seed-stamp.js';
 import { createDockerClient } from './docker.js';
 import { recoverManagedUpdater } from './self-update/update-runner.js';
+import {
+  enableManagedMatrixConnector,
+  reconcileManagedMatrixConnector,
+} from './self-update/managed-matrix-connector.js';
 import { createStandbyExchange } from './self-update/standby-directive.js';
 import { startUpdaterStatusServer } from './self-update/updater-status.js';
 import { readControlPlanePostgresState } from './self-update/postgres-image.js';
@@ -61,6 +65,41 @@ export async function startManagedUpdaterMain(): Promise<void> {
     cutover: { standby },
   });
   const peerGid = updaterPeerGid(await readManagedDeployment(MANAGED_DEPLOYMENT_ROOT));
+  let matrixReconcilePending = false;
+  let matrixReconcileRequested = false;
+  let matrixRetry: ReturnType<typeof setTimeout> | undefined;
+  let stopping = false;
+  const scheduleMatrixReconcile = (): void => {
+    if (stopping) return;
+    if (matrixReconcilePending) {
+      matrixReconcileRequested = true;
+      return;
+    }
+    matrixReconcilePending = true;
+    void runner
+      .enqueueExclusive(() =>
+        reconcileManagedMatrixConnector({ managedRoot: MANAGED_DEPLOYMENT_ROOT, docker }),
+      )
+      .catch((error: unknown) => {
+        console.error('managed Matrix connector reconciliation failed', error);
+        if (!stopping) {
+          matrixRetry = setTimeout(() => {
+            matrixRetry = undefined;
+            scheduleMatrixReconcile();
+          }, 10_000);
+          matrixRetry.unref?.();
+        }
+      })
+      .finally(() => {
+        matrixReconcilePending = false;
+        if (matrixReconcileRequested) {
+          matrixReconcileRequested = false;
+          if (matrixRetry !== undefined) clearTimeout(matrixRetry);
+          matrixRetry = undefined;
+          scheduleMatrixReconcile();
+        }
+      });
+  };
   // Passed only when the read-only seed mount is really there. A deployment
   // whose compose file predates that mount has to report "not visible", which
   // is a different fact from "mounted, and the seed carries no stamp" — the
@@ -98,8 +137,20 @@ export async function startManagedUpdaterMain(): Promise<void> {
     onOperationAccepted: () => {
       runner.start();
     },
+    onMatrixConfigured: async () => {
+      await enableManagedMatrixConnector(MANAGED_DEPLOYMENT_ROOT);
+      if (matrixRetry !== undefined) {
+        clearTimeout(matrixRetry);
+        matrixRetry = undefined;
+      }
+      scheduleMatrixReconcile();
+    },
   });
+  // Connector failures must not keep the update control socket offline.
+  scheduleMatrixReconcile();
   const stop = async (): Promise<void> => {
+    stopping = true;
+    if (matrixRetry !== undefined) clearTimeout(matrixRetry);
     await updater.close();
     // Every step is journalled before it runs, so being killed here is safe —
     // but finishing the current one avoids an avoidable resume.

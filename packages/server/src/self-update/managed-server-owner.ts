@@ -92,13 +92,16 @@ function sorted(values: readonly string[] | undefined): string[] {
  * starting at all. New deployments no longer seal it (see `managed-bootstrap`);
  * skipping it here is what keeps the already-sealed ones working.
  *
- * Deliberately the ONLY exemption. The cutover's own variables — the activation
+ * Only bundled sibling-image references are exempt. The cutover's own variables — the activation
  * flag, the update id and the holder id — are compared exactly: `reconcileManagedServer`
  * reconstructs them from the identity it is given, so for the generation actually
  * promoted they already agree, and a container claiming a different operation must
  * still be refused rather than started into an activation that never comes.
  */
-const IMAGE_PROVIDED_ENVIRONMENT = ['VERITY_BUNDLED_PROJECT_RELAY_IMAGE'];
+const IMAGE_PROVIDED_ENVIRONMENT = [
+  'VERITY_BUNDLED_PROJECT_RELAY_IMAGE',
+  'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE',
+];
 
 /**
  * Variables the Server used to be given and no longer is, because the deployment

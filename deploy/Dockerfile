@@ -325,16 +325,21 @@ RUN if [ -n "$VERITY_SCHEMA_FORWARD_MAX" ]; then \
 ARG VERITY_BUNDLED_PROJECT_RELAY_IMAGE=
 ENV VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${VERITY_BUNDLED_PROJECT_RELAY_IMAGE}
 
+# The managed updater reads this immutable connector reference from the Server
+# image, as it does for the project relay. Neither value belongs in the sealed
+# deployment spec: each generation must use the reference carried by its image.
+ARG VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=
+ENV VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE}
+
 # The control-plane PostgreSQL pin this release was built against (ADR 0008 D14),
 # taken by release.yml straight from `deploy/docker-compose.yml` — the same line
 # Renovate bumps. Without it a bump reaches an installed host exactly once, at
 # bootstrap, and the database then never gets a security update again.
 #
 # A LABEL and not an ENV, deliberately. `managed-server-owner.ts` explains why
-# VERITY_BUNDLED_PROJECT_RELAY_IMAGE above is the ONLY environment value a
+# The bundled sibling image references above are the only environment values a
 # managed Server is allowed to inherit from its image instead of from the sealed
-# spec: a second exemption re-opens the spec/image disagreement that once stopped
-# the Updater from starting its Server at all. The Updater reads this off the
+# spec. The Updater reads this off the
 # pulled target image and it never enters any container's environment, so it
 # cannot participate in that comparison. Empty on PR/local builds, which the
 # reader treats identically to a release that predates the label.

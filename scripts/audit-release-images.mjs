@@ -92,6 +92,7 @@ export const RELEASE_IMAGES = [
   'heey-global/verity/verity-sandbox',
   'heey-global/verity/verity-sandbox-toolkit',
   'heey-global/verity/verity-project-relay',
+  'heey-global/verity/verity-matrix-connector',
   'heey-global/verity/verity-preview-edge',
   'heey-global/verity/verity-preview-connector',
 ];

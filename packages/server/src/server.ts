@@ -984,7 +984,8 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
-  matrixConnectorToken?: string | undefined;
+  matrixConnectorToken?: string | (() => Promise<string | undefined>) | undefined;
+  onMatrixConfigured?: (() => Promise<void>) | undefined;
   /** TLS termination for direct/non-managed deployments. Managed deployments
    * terminate at the dedicated Gateway instead. */
   https?: HttpsServerOptions | undefined;
@@ -5976,6 +5977,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { connectorToken: deps.matrixConnectorToken }
+      : {}),
+    ...(deps.onMatrixConfigured !== undefined
+      ? { onMatrixConfigured: deps.onMatrixConfigured }
       : {}),
   });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);

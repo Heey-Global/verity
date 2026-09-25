@@ -40,6 +40,7 @@ import {
   readUpdaterPostgres,
   readUpdaterStandby,
   requestUpdaterOperation,
+  requestManagedMatrixConnector,
   publishControlToken,
   startUpdaterStatusServer,
   updaterControlTokenPath,
@@ -81,6 +82,7 @@ async function fixture(
   options: {
     managed?: boolean;
     onOperationAccepted?: (journal: UpdateJournal) => void | Promise<void>;
+    onMatrixConfigured?: () => Promise<void>;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'verity-updater-status-'));
@@ -106,12 +108,29 @@ async function fixture(
       ((journal) => {
         accepted.push(journal);
       }),
+    ...(options.onMatrixConfigured === undefined
+      ? {}
+      : { onMatrixConfigured: options.onMatrixConfigured }),
   });
   servers.push(server);
   return { socketPath, token, managedRoot, accepted };
 }
 
 describe('managed Updater status boundary', () => {
+  it('accepts Matrix activation only over the authenticated control socket', async () => {
+    let activations = 0;
+    const call = await fixture({
+      managed: true,
+      onMatrixConfigured: async () => {
+        activations += 1;
+      },
+    });
+    await expect(requestManagedMatrixConnector({ ...call, token: 'wrong' })).rejects.toThrow('401');
+    expect(activations).toBe(0);
+    await requestManagedMatrixConnector(call);
+    expect(activations).toBe(1);
+  });
+
   it('keeps a post-202 callback rejection contained and the boundary available', async () => {
     const call = await fixture({
       managed: true,
