@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.34.9",
+  "version": "1.34.10",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "4004fc8d792395bd45815bf0b64598cb101d40ba",
-  "tag": "mobile-v1.34.9",
-  "branch": "staging-mobile-v1.34.9-4004fc8d792395bd45815bf0b64598cb101d40ba",
-  "baseline": "mobile-v1.34.8",
-  "group": "00407e2a-3cad-41ac-8918-c9cc15b41d21",
+  "commit": "a50760a85a05172768ddfa5cf6f722914d3e0b44",
+  "tag": "mobile-v1.34.10",
+  "branch": "staging-mobile-v1.34.10-a50760a85a05172768ddfa5cf6f722914d3e0b44",
+  "baseline": "mobile-v1.34.9",
+  "group": "d9532e19-9280-4f35-bbd5-53c129d954d9",
   "notes": [
-    "link agents across projects (#736)"
+    "save local session work to project (#739)"
   ]
 }
