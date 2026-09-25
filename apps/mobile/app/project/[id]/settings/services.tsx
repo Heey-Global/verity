@@ -31,8 +31,16 @@ import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 
 export default function ProjectServicesScreen() {
-  const { id } = useLocalSearchParams<{ id: string | string[] }>();
+  const { id, section } = useLocalSearchParams<{
+    id: string | string[];
+    section?: string | string[];
+  }>();
   const projectId = projectIdParam(id);
+  const requestedSection = Array.isArray(section) ? section[0] : section;
+  const selectedSection =
+    requestedSection === 'doppler' || requestedSection === 'drive' || requestedSection === 'mcp'
+      ? requestedSection
+      : undefined;
   const client = useMemo(() => createVerityClient(), []);
   if (!client || projectId.length === 0) {
     return (
@@ -43,12 +51,28 @@ export default function ProjectServicesScreen() {
       />
     );
   }
-  return <ProjectServicesView client={client} projectId={projectId} />;
+  return <ProjectServicesView client={client} projectId={projectId} section={selectedSection} />;
 }
 
-function ProjectServicesView({ client, projectId }: { client: VerityClient; projectId: string }) {
+function ProjectServicesView({
+  client,
+  projectId,
+  section,
+}: {
+  client: VerityClient;
+  projectId: string;
+  section?: 'doppler' | 'drive' | 'mcp';
+}) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load, onSettingsSaved } = useProjectDetail(client, projectId);
+  const title =
+    section === 'doppler'
+      ? 'Doppler'
+      : section === 'drive'
+        ? 'Google Drive'
+        : section === 'mcp'
+          ? 'MCP'
+          : 'Connected services';
 
   if (loading && detail === undefined) {
     return (
@@ -62,43 +86,44 @@ function ProjectServicesView({ client, projectId }: { client: VerityClient; proj
       <SettingsMessage
         title="Couldn't load project"
         subtitle={error ?? 'Unknown error'}
-        screenTitle="Connected services"
+        screenTitle={title}
         onRetry={() => load()}
       />
     );
   }
   const { settings } = detail;
   return (
-    <SettingsScaffold
-      title="Connected services"
-      detail
-      state={{ error, saving: false }}
-      onRetry={() => load()}
-    >
-      <SettingsGroup title="Credentials">
-        <DopplerBindingSection
-          client={client}
-          projectId={projectId}
-          settings={settings}
-          onSaved={onSettingsSaved}
-        />
-      </SettingsGroup>
+    <SettingsScaffold title={title} detail state={{ error, saving: false }} onRetry={() => load()}>
+      {section === undefined || section === 'doppler' ? (
+        <SettingsGroup title="Credentials">
+          <DopplerBindingSection
+            client={client}
+            projectId={projectId}
+            settings={settings}
+            onSaved={onSettingsSaved}
+          />
+        </SettingsGroup>
+      ) : null}
 
-      <SettingsGroup title="Files">
-        <GoogleDriveFolderSection
-          client={client}
-          projectId={projectId}
-          settings={settings}
-          onSaved={onSettingsSaved}
-        />
-      </SettingsGroup>
+      {section === undefined || section === 'drive' ? (
+        <SettingsGroup title="Files">
+          <GoogleDriveFolderSection
+            client={client}
+            projectId={projectId}
+            settings={settings}
+            onSaved={onSettingsSaved}
+          />
+        </SettingsGroup>
+      ) : null}
 
-      <SettingsGroup
-        title="Tools"
-        description="Enable only the MCP connections this project may use. Authorization stays on the Verity server."
-      >
-        <ProjectMcpBindingsSection client={client} projectId={projectId} />
-      </SettingsGroup>
+      {section === undefined || section === 'mcp' ? (
+        <SettingsGroup
+          title="Tools"
+          description="Enable only the MCP connections this project may use. Authorization stays on the Verity server."
+        >
+          <ProjectMcpBindingsSection client={client} projectId={projectId} />
+        </SettingsGroup>
+      ) : null}
     </SettingsScaffold>
   );
 }
@@ -465,8 +490,8 @@ function ProjectMcpBindingsSection({
         if (loadGeneration.current === generation) setError('Could not load MCP connections.');
       });
   }, [client, projectId]);
-  // On focus, not on mount: the empty state links to the Verity MCP screen, and
-  // a connection added there has to be here when the operator comes back.
+  // Reload on focus so globally configured connections appear here when this
+  // project screen is opened again.
   useFocusEffect(
     useCallback(() => {
       void load();
@@ -496,14 +521,12 @@ function ProjectMcpBindingsSection({
   return (
     <>
       {connections.length === 0 ? (
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="link"
-            title="MCP connections"
-            subtitle="No connections yet. Add one in Verity settings first."
-            onPress={() => router.push('/settings/services/mcp')}
-          />
-        </SettingsListPanel>
+        <SettingsPanel>
+          <Text style={styles.reproSubtitle}>
+            No MCP connections available. Add and authorize MCP servers in Verity settings; then
+            return here to enable them for this project.
+          </Text>
+        </SettingsPanel>
       ) : (
         <SettingsPanel>
           {connections.map((connection) => (

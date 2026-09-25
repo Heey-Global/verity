@@ -41,13 +41,8 @@ afterEach(() => {
 });
 
 describe('project settings index — destinations', () => {
-  // Each row is the entry point to one of the project's settings screens, and
-  // the only way to reach it. The structure follows the Verity settings index:
-  // Setup first (GitHub, Connected services, Environment), then the
-  // project's own defaults.
+  // Each row opens its project-specific destination directly.
   it.each([
-    ['GitHub', '/project/[id]/settings/github'],
-    ['Connected services', '/project/[id]/settings/services'],
     ['Environment', '/project/[id]/settings/environment'],
     ['Default model', '/project/[id]/settings/model'],
     ['Dev Server', '/project/[id]/dev-server'],
@@ -60,24 +55,43 @@ describe('project settings index — destinations', () => {
     expect(mockPush).toHaveBeenCalledWith({ pathname, params: { id: 'p/1' } });
   });
 
-  it('shows the repository, the environment state and the default model without tapping in', async () => {
+  it.each(['doppler', 'drive', 'mcp'] as const)(
+    'opens %s directly from the project overview',
+    async (section) => {
+      mockCreateVerityClient.mockReturnValue(makeClient());
+      render(<ProjectSettingsIndexScreen />);
+
+      const label = section === 'drive' ? 'Google Drive' : section === 'mcp' ? 'MCP' : 'Doppler';
+      fireEvent.press(await screen.findByLabelText(label));
+      expect(mockPush).toHaveBeenCalledWith({
+        pathname: '/project/[id]/settings/services',
+        params: { id: 'p/1', section },
+      });
+    },
+  );
+
+  it('shows the environment state and default model without GitHub details', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({ detail: makeDetail({ defaultModel: 'codex/default' }) }),
     );
     render(<ProjectSettingsIndexScreen />);
 
-    expect(await screen.findByText('heey-global/verity')).toBeOnTheScreen();
-    expect(screen.getByText('Connected')).toBeOnTheScreen();
+    expect(await screen.findByLabelText('Environment')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('GitHub')).toBeNull();
     // The same badge label the overview dot uses for an `absent` project.
     expect(screen.getByLabelText('Paused')).toBeOnTheScreen();
     expect(screen.getByText('Codex')).toBeOnTheScreen();
   });
 
-  it('marks a local project as not connected to GitHub', async () => {
+  it('keeps the GitHub connection action for local projects', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail({ kind: 'local' }) }));
     render(<ProjectSettingsIndexScreen />);
 
-    expect(await screen.findByText('Not connected')).toBeOnTheScreen();
+    fireEvent.press(await screen.findByLabelText('Connect GitHub'));
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/project/[id]/settings/github',
+      params: { id: 'p/1' },
+    });
     expect(screen.getByText('Server default')).toBeOnTheScreen();
   });
 
@@ -85,7 +99,7 @@ describe('project settings index — destinations', () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectSettingsIndexScreen />);
 
-    await screen.findByLabelText('GitHub');
+    await screen.findByLabelText('Doppler');
     expect(screen.queryByLabelText('Choose Doppler binding')).toBeNull();
     expect(screen.queryByLabelText('Start project')).toBeNull();
     expect(screen.queryByLabelText('Use the server default model')).toBeNull();
@@ -528,6 +542,20 @@ describe('project settings — environment', () => {
 });
 
 describe('project settings — connected services', () => {
+  it.each([
+    ['doppler', 'Credentials', 'Files', 'Tools'],
+    ['drive', 'Files', 'Credentials', 'Tools'],
+    ['mcp', 'Tools', 'Credentials', 'Files'],
+  ])('shows only the %s project binding', async (section, visible, hiddenA, hiddenB) => {
+    setSearchParams({ id: 'p/1', section });
+    mockCreateVerityClient.mockReturnValue(makeClient());
+    render(<ProjectServicesScreen />);
+
+    expect(await screen.findByText(visible)).toBeOnTheScreen();
+    expect(screen.queryByText(hiddenA)).toBeNull();
+    expect(screen.queryByText(hiddenB)).toBeNull();
+  });
+
   it('lists projects, then configs, then PATCHes { dopplerProject, dopplerConfig }', async () => {
     const listDopplerProjects = jest
       .fn()
@@ -602,12 +630,16 @@ describe('project settings — connected services', () => {
     await waitFor(() => expect(setProjectMcpBinding).toHaveBeenCalledWith('p/1', 'c1', true));
   });
 
-  it('points at the Verity MCP screen when there is nothing to enable yet', async () => {
+  it('keeps MCP creation out of project settings when no connections exist', async () => {
+    setSearchParams({ id: 'p/1', section: 'mcp' });
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectServicesScreen />);
 
-    fireEvent.press(await screen.findByLabelText('MCP connections'));
-    expect(mockPush).toHaveBeenCalledWith('/settings/services/mcp');
+    expect(
+      await screen.findByText(/Add and authorize MCP servers in Verity settings/),
+    ).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Add connection')).toBeNull();
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it('keeps Matrix in Verity settings instead of project services', async () => {
