@@ -1,6 +1,6 @@
 # Remote Control v1: transport, enrollment and upgrade contract
 
-Status: revision 5, proposed for joint Core/Uplink review, not frozen or implemented.
+Status: revision 6, proposed for joint Core/Uplink review, not frozen or implemented.
 Incorporates the Uplink reviews through revision 3 against `6e6136802f04858414a0cfccd1e3349582b3b17e`
 (runtime base `2a925eb47e73b2138d451ad954fca20f2fcf8d0e`). Private implementation
 observations below are attributed to that review, not independently verified by
@@ -794,9 +794,9 @@ No implementation begins until both sides approve the revised contract; only the
 pin the public Core commit, Uplink contract revision and machine-readable fixture
 digest. Existing Apple smoke evidence does not satisfy these new fixture vectors.
 
-## Enrollment revision 2 integration (normative proposal)
+## Enrollment revision 5 integration (normative proposal)
 
-The [enrollment companion](uplink-enrollment-v1.md), revision 2 sections
+The [enrollment companion](uplink-enrollment-v1.md), revision 5 sections
 “Trusted enrollment context” and “Separate post-commit recovery reservation”,
 forms part of this proposed remote contract. Adopt its version-2 preface and
 revised proof transcript together; no version-1 inference or fallback is allowed.
@@ -833,3 +833,25 @@ the original commit receipt. New recovery requires a fresh reservation. The
 original `team.join.commit` outbox identity is unchanged. EN13–EN19 supplement
 RC acceptance; neither set has executed evidence yet. This integration records
 Uplink's transport acceptance, not joint credential/security approval or freeze.
+
+### Initial administrator initialization integration
+
+The enrollment companion's “Initialize: exact action and interruption behavior”
+is normative for this proposed profile. The proof action enum is exactly
+`initialize | commit | recover`; `/complete` accepts only commit/recover and
+`/api/enrollment/v1/initialize` accepts initialize with the exact companion schema.
+No additional Uplink control message carries this action or its master password:
+it is entirely inside pinned Core TLS under the version-2 initial-admin context.
+
+Core authenticates the context, invitation and device/operation owner before
+revealing lock state or deriving a password key. Fresh challenges bind initialize
+separately from commit/recover. Initialization and owner metadata are atomic;
+matching-owner retries may unlock the same key but cannot replace it. The app
+re-prompts for the original password without persisting it. A committed owner's
+unlock exception lasts only while its unrevoked recovery receipt is eligible.
+Team members cannot invoke initialize. The companion owns exact HTTP errors,
+including authenticated-only `recovery_locked`, and EN20–EN25 acceptance scenarios.
+
+This incorporates the accepted enrollment direction, not executed evidence or
+joint freeze. Schemas/fixtures follow this aligned contract; runtime implementation
+and pinning remain on hold pending joint review and outstanding platform evidence.

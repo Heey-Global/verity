@@ -35,7 +35,7 @@ enforced.
 
 ## Proposed Remote Control profile
 
-[Remote Control v1, revision 5](protocols/uplink-remote-control-v1.md) incorporates
+[Remote Control v1, revision 6](protocols/uplink-remote-control-v1.md) incorporates
 the Uplink review and proposes concrete
 admission messages, paired-ticket lifecycle, bounded byte transport and joint
 acceptance vectors for administrator setup, paired administrator/member access,

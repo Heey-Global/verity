@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public Ed25519 SPKI in enrollment wire fixtures, including the rejected padded encoding; no private key."
+condition = "AND"
+paths = ['''^scripts/enrollment-proof/wire-fixtures\.json$''']
+regexTarget = "secret"
+regexes = ['''^MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s=?$''']

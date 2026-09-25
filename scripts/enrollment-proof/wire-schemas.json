@@ -1,0 +1,608 @@
+{
+  "preface": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "const": 2
+          },
+          "sessionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+          },
+          "installationId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "initial-admin"
+          },
+          "redemptionId": {
+            "type": "string",
+            "const": ""
+          },
+          "recoveryReservationId": {
+            "type": "string",
+            "const": ""
+          }
+        },
+        "required": [
+          "version",
+          "sessionId",
+          "installationId",
+          "purpose",
+          "redemptionId",
+          "recoveryReservationId"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "const": 2
+          },
+          "sessionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+          },
+          "installationId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "team-member"
+          },
+          "redemptionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+          },
+          "recoveryReservationId": {
+            "type": "string",
+            "const": ""
+          }
+        },
+        "required": [
+          "version",
+          "sessionId",
+          "installationId",
+          "purpose",
+          "redemptionId",
+          "recoveryReservationId"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "const": 2
+          },
+          "sessionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+          },
+          "installationId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "team-member"
+          },
+          "redemptionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+          },
+          "recoveryReservationId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+          }
+        },
+        "required": [
+          "version",
+          "sessionId",
+          "installationId",
+          "purpose",
+          "redemptionId",
+          "recoveryReservationId"
+        ],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "challenge": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+          },
+          "invitationId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+          },
+          "deviceKey": {
+            "type": "string",
+            "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "initial-admin"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["initialize", "commit", "recover"]
+          }
+        },
+        "required": ["operationId", "invitationId", "deviceKey", "purpose", "action"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+          },
+          "invitationId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+          },
+          "deviceKey": {
+            "type": "string",
+            "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "team-member"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["commit", "recover"]
+          }
+        },
+        "required": ["operationId", "invitationId", "deviceKey", "purpose", "action"],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "complete": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "challengeId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "purpose": {
+        "type": "string",
+        "enum": ["initial-admin", "team-member"]
+      },
+      "deviceKey": {
+        "type": "string",
+        "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "action": {
+        "type": "string",
+        "enum": ["commit", "recover"]
+      },
+      "secret": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "signature": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{85}[AQgw](?![\\s\\S])"
+      }
+    },
+    "required": [
+      "challengeId",
+      "operationId",
+      "invitationId",
+      "purpose",
+      "deviceKey",
+      "action",
+      "secret",
+      "signature"
+    ],
+    "additionalProperties": false
+  },
+  "initialize": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "challengeId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "purpose": {
+        "type": "string",
+        "const": "initial-admin"
+      },
+      "deviceKey": {
+        "type": "string",
+        "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "action": {
+        "type": "string",
+        "const": "initialize"
+      },
+      "secret": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "signature": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{85}[AQgw](?![\\s\\S])"
+      },
+      "masterPassword": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "required": [
+      "challengeId",
+      "operationId",
+      "invitationId",
+      "purpose",
+      "deviceKey",
+      "action",
+      "secret",
+      "signature",
+      "masterPassword"
+    ],
+    "additionalProperties": false
+  },
+  "initialized": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "operationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "state": {
+        "type": "string",
+        "const": "ready"
+      }
+    },
+    "required": ["operationId", "state"],
+    "additionalProperties": false
+  },
+  "ack": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "operationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "receiptId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      }
+    },
+    "required": ["operationId", "receiptId"],
+    "additionalProperties": false
+  },
+  "recoveryReserve": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.recovery.reserve"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "installationHandle": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "redemptionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "capabilities": {
+        "minItems": 1,
+        "maxItems": 32,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[\\x20-\\x7e]{1,64}(?![\\s\\S])"
+        }
+      }
+    },
+    "required": [
+      "type",
+      "requestId",
+      "installationHandle",
+      "redemptionId",
+      "operationId",
+      "capabilities"
+    ],
+    "additionalProperties": false
+  },
+  "recoveryRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.recovery.request"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "recoveryReservationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "installationId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "redemptionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": [
+      "type",
+      "requestId",
+      "recoveryReservationId",
+      "installationId",
+      "redemptionId",
+      "operationId",
+      "expiresAt"
+    ],
+    "additionalProperties": false
+  },
+  "recoveryAccept": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.recovery.accept"
+      },
+      "recoveryReservationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": ["type", "recoveryReservationId", "expiresAt"],
+    "additionalProperties": false
+  },
+  "recoveryRefuse": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.recovery.refuse"
+      },
+      "recoveryReservationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "const": "unavailable"
+      }
+    },
+    "required": ["type", "recoveryReservationId", "code"],
+    "additionalProperties": false
+  },
+  "recoveryReady": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.recovery.ready"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "recoveryReservationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": ["type", "requestId", "recoveryReservationId", "expiresAt"],
+    "additionalProperties": false
+  },
+  "recoveryCancel": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.recovery.cancel"
+      },
+      "recoveryReservationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      }
+    },
+    "required": ["type", "recoveryReservationId"],
+    "additionalProperties": false
+  },
+  "recoveryConnect": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "connect"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "installationHandle": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "capabilities": {
+        "minItems": 1,
+        "maxItems": 32,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[\\x20-\\x7e]{1,64}(?![\\s\\S])"
+        }
+      },
+      "enrollmentPurpose": {
+        "type": "string",
+        "const": "team-member"
+      },
+      "recoveryReservationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      }
+    },
+    "required": [
+      "type",
+      "requestId",
+      "installationHandle",
+      "capabilities",
+      "enrollmentPurpose",
+      "recoveryReservationId"
+    ],
+    "additionalProperties": false
+  },
+  "initializeError": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "invalid_request"
+          }
+        },
+        "required": ["error"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "enrollment_rejected"
+          }
+        },
+        "required": ["error"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "password_rejected"
+          }
+        },
+        "required": ["error"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "rate_limited"
+          },
+          "retryAfterMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 60000
+          }
+        },
+        "required": ["error", "retryAfterMs"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "temporarily_unavailable"
+          }
+        },
+        "required": ["error"],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "locked": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "error": {
+        "type": "string",
+        "const": "recovery_locked"
+      }
+    },
+    "required": ["error"],
+    "additionalProperties": false
+  }
+}

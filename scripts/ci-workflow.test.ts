@@ -2936,14 +2936,18 @@ describe('CI runner footprint', () => {
         step.uses?.includes('actions/cache') && String(step.with?.path ?? '').includes('eslint'),
     );
     expect(restored).toEqual([]);
-    // Guards the guard: `lint` must still be the whole-tree ESLint invocation, or
-    // the assertion above passes over a script that no longer runs ESLint at all.
-    expect(scripts?.lint).toContain('eslint');
+    // Follow the npm entry point: a cache hidden in the extracted runner would
+    // otherwise turn unchanged consumers into false green results.
+    const runner = scripts?.lint?.match(/^bash (scripts\/[A-Za-z0-9_-]+\.sh)$/)?.[1];
+    expect(runner).toBeDefined();
+    const source = readFileSync(runner!, 'utf8');
+    expect(source).toMatch(/^\s*npx eslint\s/m);
+    expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
-    expect(eslintStep?.run ?? '(the lint job has no step named ESLint)').toContain('npx eslint');
-    // Comment lines are stripped: the note left in that step explains what was
-    // removed and therefore says `--cache` itself.
-    const flags = (eslintStep?.run ?? '')
+    expect(eslintStep?.run).toBe('npm run lint');
+    // Comments document why caching is forbidden; inspect executable lines.
+    const flags = [scripts?.lint ?? '', eslintStep?.run ?? '', source]
+      .join('\n')
       .split('\n')
       .filter((line) => !line.trim().startsWith('#'));
     expect(flags.filter((line) => line.includes('--cache'))).toEqual([]);
