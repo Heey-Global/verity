@@ -6884,8 +6884,9 @@ function PermissionPrompt({
     typeof pending.input === 'object' &&
     pending.input !== null &&
     !Array.isArray(pending.input) &&
+    typeof (pending.input as Record<string, unknown>).targetSessionId === 'string' &&
     typeof (pending.input as Record<string, unknown>).message === 'string'
-      ? (pending.input as { targetSessionId?: string; message: string })
+      ? (pending.input as { targetSessionId: string; message: string })
       : null;
   const listingSummary = isListSessions ? listSessionsSummary(pending.input) : null;
   const progressSummary = isSessionProgress ? sessionProgressSummary(pending.input) : null;
@@ -6946,7 +6947,7 @@ function PermissionPrompt({
       handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
       linkedMessage === null
         ? null
-        : `Send to ${linkedMessage.targetSessionId ?? 'the linked session'} and continue the exchange?`,
+        : `Send to ${linkedMessage.targetSessionId} and continue the exchange?`,
       listingSummary === null ? null : listSessionsTitle(listingSummary),
       progressSummary === null ? null : `Read progress for session ${progressSummary.sessionId}?`,
       recentSummary === null
@@ -7029,7 +7030,7 @@ function PermissionPrompt({
       ) : linkedMessage !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta} selectable>
-            To {linkedMessage.targetSessionId ?? 'the only linked session'}
+            To {linkedMessage.targetSessionId}
           </Text>
           <ScrollView style={styles.permissionBriefing} nestedScrollEnabled>
             <Text style={styles.permissionSubtitle} selectable>

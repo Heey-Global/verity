@@ -252,7 +252,7 @@ const TOOL_SCHEMAS = {
   verity_session_handoff: sessionHandoffRequestSchema,
   verity_send_session_message: z
     .object({
-      targetSessionId: z.string().min(1).max(128).optional(),
+      targetSessionId: z.string().min(1).max(128),
       message: z.string().trim().min(1).max(20_000),
     })
     .strict(),
@@ -378,7 +378,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
   verity_send_session_message:
-    'Send a message to one explicitly linked session. The message is attributed to this agent in the target chat. A small number of messages are allowed automatically; further sends ask the user to approve the message and renew the allowance.',
+    'Send a message to an explicitly linked session by its session id. Call verity_list_linked_sessions to get the target id. The message is attributed to this agent in the target chat. A small number of messages are allowed automatically; further sends ask the user to approve the message and renew the allowance.',
   verity_list_linked_sessions:
     'List only the project sessions explicitly linked to this session, including their session ids and project names. Use this to choose a target for verity_send_session_message.',
   verity_session_progress: SESSION_PROGRESS_TOOL_DESCRIPTION,

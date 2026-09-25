@@ -822,6 +822,18 @@ it('marks a linked message as renewed only after a fresh approval card', async (
   );
 });
 
+it('requires an explicit linked target so approval cannot follow a replaced sole link', async () => {
+  const gateway = harness({ servedTools: ['verity_send_session_message'] });
+  const response = await gateway.gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call({ message: 'Please check the API change.' }, 'verity_send_session_message'),
+  });
+  expect((response.body as { error: { code: number } }).error.code).toBe(-32_602);
+  expect(gateway.requestApproval).not.toHaveBeenCalled();
+  expect(gateway.invokeTool).not.toHaveBeenCalled();
+});
+
 describe('MCP gateway — the session handoff cannot bypass the card', () => {
   const HANDOFF = {
     target: { sessionId: 'sess-web' },
