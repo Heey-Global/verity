@@ -1395,6 +1395,23 @@ export class EventStore implements EventSink {
     return row !== undefined && (sourceId === sessionA ? row.remaining_a : row.remaining_b) > 0;
   }
 
+  async sessionLinkHasDelivery(
+    sourceId: string,
+    targetId: string,
+    invocationId: string,
+  ): Promise<boolean> {
+    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
+    const row = await this.db
+      .selectFrom('session_link_deliveries')
+      .select('invocation_id')
+      .where('invocation_id', '=', invocationId)
+      .where('session_a', '=', sessionA)
+      .where('session_b', '=', sessionB)
+      .where('source_session_id', '=', sourceId)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
   async reserveSessionLinkMessage(
     sourceId: string,
     targetId: string,

@@ -75,6 +75,9 @@ describe('EventStore — linked session allowance', () => {
       );
     }
     expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', 'out-0', false)).toBe('duplicate');
+    expect(await ctx.store.sessionLinkHasDelivery('s1', 's2', 'out-5')).toBe(true);
+    expect(await ctx.store.sessionLinkHasDelivery('s2', 's1', 'out-5')).toBe(false);
+    expect(await ctx.store.sessionLinkHasDelivery('s1', 's2', 'next')).toBe(false);
     expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', 'next', false)).toBe('exhausted');
     expect(await ctx.store.reserveSessionLinkMessage('s2', 's1', 'reply', false)).toBe('reserved');
     await expect(

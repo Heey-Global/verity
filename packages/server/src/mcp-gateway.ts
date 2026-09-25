@@ -202,7 +202,12 @@ export interface McpGatewayDeps {
    * The call remains authenticated, MAC-keyed, audited, and subject to `authorizeCall` plus the
    * executor's own checks; only the per-call permission card is skipped. */
   hasStandingAuthorization?(
-    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName; request: unknown },
+    input: McpGatewayCaller & {
+      projectId: string;
+      toolName: GatewayToolName;
+      request: unknown;
+      invocationId: string;
+    },
   ): Promise<boolean>;
   /** Execute the approved call. Resolves with the tool's result, or throws if the server
    *  could not serve it (sealed store, missing binding, transport failure). */
@@ -647,6 +652,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
 
     let answer: ExternalPermissionAnswer;
     let standingAuthorization = false;
+    const invocationId = mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac);
     if (deps.hasStandingAuthorization !== undefined) {
       try {
         standingAuthorization = await deps.hasStandingAuthorization({
@@ -655,6 +661,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           turnId,
           toolName,
           request: request.data,
+          invocationId,
         });
       } catch {
         return reject(
@@ -735,7 +742,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         sessionId,
         turnId,
         callId,
-        invocationId: mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac),
+        invocationId,
         approvedByCard: !standingAuthorization,
         toolName: toolName,
         request: request.data,

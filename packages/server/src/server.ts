@@ -5485,7 +5485,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      hasStandingAuthorization: async ({ projectId, sessionId, toolName, request }) => {
+      hasStandingAuthorization: async ({
+        projectId,
+        sessionId,
+        toolName,
+        request,
+        invocationId,
+      }) => {
         if (toolName === 'verity_list_linked_sessions') {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
@@ -5497,7 +5503,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const link = await linkedSessionTarget(sessionId, targetId);
           return (
             link !== undefined &&
-            deps.eventStore.sessionLinkHasAllowance(sessionId, link.peerSessionId)
+            ((await deps.eventStore.sessionLinkHasDelivery(
+              sessionId,
+              link.peerSessionId,
+              invocationId,
+            )) ||
+              (await deps.eventStore.sessionLinkHasAllowance(sessionId, link.peerSessionId)))
           );
         }
         if (toolName === 'verity_knowledge') {

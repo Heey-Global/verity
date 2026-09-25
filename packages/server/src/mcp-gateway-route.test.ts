@@ -336,9 +336,26 @@ it('delivers linked agent messages automatically until a renewal card is needed'
       expect(
         (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
       ).toBeUndefined();
+      if (id === 6) {
+        const retry = await postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: {
+            name: 'verity_send_session_message',
+            arguments: { targetSessionId: 's2', message: `Question ${id}` },
+          },
+        });
+        expect(retry.status).toBe(200);
+        expect(harness.approvals).toHaveLength(0);
+      }
     }
   });
-  expect(harness.dispatches).toHaveLength(7);
+  // The harness records attempts; the real conductor deduplicates the retry by clientReplyId.
+  expect(harness.dispatches).toHaveLength(8);
+  expect(harness.dispatches[6]?.dispatchOpts.clientReplyId).toBe(
+    harness.dispatches[5]?.dispatchOpts.clientReplyId,
+  );
   expect(
     harness.approvals.filter((approval) => approval.toolName === 'verity_send_session_message'),
   ).toHaveLength(1);
