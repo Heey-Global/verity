@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { link, open, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { ContainerSpec, DockerClient } from '../docker.js';
 import { readManagedDeployment } from './managed-deployment.js';
 import { MANAGED_DEPLOYMENT_LABEL, MANAGED_ROLE_LABEL } from './managed-server-owner.js';
@@ -10,6 +14,87 @@ const IMAGE_ENV = 'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE';
 const IMAGE_PATTERN =
   /^ghcr\.io\/heey-global\/verity\/verity-matrix-connector@sha256:[a-f0-9]{64}$/;
 const PREPARATION_TIMEOUT_MS = 120_000;
+const ENABLE_MARKER = 'matrix-connector-enabled';
+
+async function privateRoot(root: string) {
+  const directory = await open(
+    root,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  const metadata = await directory.stat();
+  if (
+    !metadata.isDirectory() ||
+    metadata.uid !== process.geteuid?.() ||
+    (metadata.mode & 0o077) !== 0
+  ) {
+    await directory.close();
+    throw new Error('managed Matrix connector root must be a private updater-owned directory');
+  }
+  return directory;
+}
+
+async function markerEnabled(root: string): Promise<boolean> {
+  const directory = await privateRoot(root);
+  try {
+    const path = join(`/proc/self/fd/${directory.fd}`, ENABLE_MARKER);
+    let marker;
+    try {
+      marker = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+    try {
+      const metadata = await marker.stat();
+      if (
+        !metadata.isFile() ||
+        metadata.uid !== process.geteuid?.() ||
+        (metadata.mode & 0o077) !== 0 ||
+        (await marker.readFile('utf8')) !== 'enabled\n'
+      )
+        throw new Error('managed Matrix connector enable marker is invalid');
+      return true;
+    } finally {
+      await marker.close();
+    }
+  } finally {
+    await directory.close();
+  }
+}
+
+/** Persist the decision to start Matrix after a complete account was saved. */
+export async function enableManagedMatrixConnector(managedRoot: string): Promise<void> {
+  const deployment = await readManagedDeployment(managedRoot);
+  if (!deployment.managed) throw new Error('managed deployment is unavailable');
+  if (await markerEnabled(managedRoot)) return;
+  const directory = await privateRoot(managedRoot);
+  const root = `/proc/self/fd/${directory.fd}`;
+  const temporary = join(root, `${ENABLE_MARKER}.${randomUUID()}.tmp`);
+  try {
+    const marker = await open(temporary, 'wx', 0o600);
+    try {
+      await marker.writeFile('enabled\n');
+      await marker.sync();
+    } finally {
+      await marker.close();
+    }
+    try {
+      await link(temporary, join(root, ENABLE_MARKER));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (!(await markerEnabled(managedRoot)))
+        throw new Error('managed Matrix connector enable marker was not safely created', {
+          cause: error,
+        });
+    }
+    await directory.sync();
+  } finally {
+    await unlink(temporary).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    });
+    await directory.close();
+  }
+}
 
 export type ManagedMatrixConnectorDocker = Pick<
   DockerClient,
@@ -58,7 +143,7 @@ async function create(docker: ManagedMatrixConnectorDocker, spec: ContainerSpec)
 
 const prepareScript = String.raw`
 const { randomBytes } = require('node:crypto');
-const { mkdirSync, openSync, writeSync, closeSync, chmodSync, chownSync, readFileSync, lstatSync } = require('node:fs');
+const { mkdirSync, openSync, writeSync, closeSync, chmodSync, chownSync, readFileSync, lstatSync, linkSync, unlinkSync, fsyncSync } = require('node:fs');
 const directory = '/control/matrix';
 const gid = Number(process.argv[1]);
 mkdirSync(directory, { recursive: true, mode: 0o750 });
@@ -69,16 +154,20 @@ chownSync(directory, 0, gid);
 chmodSync(directory, 0o750);
 for (const name of ['connector-token', 'store-passphrase']) {
   const path = directory + '/' + name;
-  let created = false;
+  const temporary = directory + '/.' + name + '.' + randomBytes(12).toString('hex');
+  const fd = openSync(temporary, 'wx', 0o600);
   try {
-    const fd = openSync(path, 'wx', 0o640);
-    try { writeSync(fd, randomBytes(48).toString('hex') + '\n'); }
-    finally { closeSync(fd); }
-    created = true;
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
+    try {
+      writeSync(fd, randomBytes(48).toString('hex') + '\n');
+      chownSync(temporary, 0, gid);
+      chmodSync(temporary, 0o640);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+    try { linkSync(temporary, path); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+  } finally {
+    unlinkSync(temporary);
   }
-  if (created) { chownSync(path, 0, gid); chmodSync(path, 0o640); }
   const metadata = lstatSync(path);
   if (!metadata.isFile() || metadata.uid !== 0 || metadata.gid !== gid || (metadata.mode & 0o777) !== 0o640)
     throw new Error('unsafe Matrix connector secret file: ' + name);
@@ -204,8 +293,10 @@ export async function reconcileManagedMatrixConnector(
   const deployment = await readManagedDeployment(options.managedRoot);
   if (!deployment.managed) return;
   const { spec } = deployment;
-  const imageEnv = await options.docker.inspectImageEnv?.(spec.image);
-  if (!imageEnv) throw new Error('managed Matrix connector requires Server image inspection');
+  const enabled = await markerEnabled(options.managedRoot);
+  const imageEnv = enabled ? await options.docker.inspectImageEnv?.(spec.image) : undefined;
+  if (enabled && !imageEnv)
+    throw new Error('managed Matrix connector requires Server image inspection');
   const image = imageEnv
     ?.find((entry) => entry.startsWith(`${IMAGE_ENV}=`))
     ?.slice(IMAGE_ENV.length + 1);

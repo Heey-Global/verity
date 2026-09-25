@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { rm } from 'node:fs/promises';
+import { rm, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { adoptedDeployment } from './managed-daemon.test-helper.js';
 import {
+  enableManagedMatrixConnector,
   MANAGED_MATRIX_CONNECTOR_NAME,
   reconcileManagedMatrixConnector,
 } from './managed-matrix-connector.js';
@@ -17,6 +19,7 @@ describe('managed Matrix connector', () => {
   it('uses the bundled digest, private credentials and persistent data on every reconcile', async () => {
     const { root, daemon } = await adoptedDeployment('matrix-managed');
     roots.push(root);
+    await enableManagedMatrixConnector(root);
     vi.mocked(daemon.docker.inspectImageEnv!).mockResolvedValue([
       `VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${image}`,
     ]);
@@ -56,6 +59,7 @@ describe('managed Matrix connector', () => {
   it('does not launch a worker for an older server image without a bundled digest', async () => {
     const { root, daemon } = await adoptedDeployment('matrix-old');
     roots.push(root);
+    await enableManagedMatrixConnector(root);
     vi.mocked(daemon.docker.inspectImageEnv!).mockResolvedValue(['VERITY_SERVER_VERSION=2.4.0']);
     await reconcileManagedMatrixConnector({ managedRoot: root, docker: daemon.docker });
     expect(daemon.names()).not.toContain(MANAGED_MATRIX_CONNECTOR_NAME);
@@ -64,6 +68,7 @@ describe('managed Matrix connector', () => {
   it('allows local Server images whose bundled connector reference is empty', async () => {
     const { root, daemon } = await adoptedDeployment('matrix-local');
     roots.push(root);
+    await enableManagedMatrixConnector(root);
     vi.mocked(daemon.docker.inspectImageEnv!).mockResolvedValue([
       'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=',
     ]);
@@ -74,6 +79,7 @@ describe('managed Matrix connector', () => {
   it('stops the worker when the managed Server rolls back before Matrix support', async () => {
     const { root, daemon } = await adoptedDeployment('matrix-rollback');
     roots.push(root);
+    await enableManagedMatrixConnector(root);
     vi.mocked(daemon.docker.inspectImageEnv!).mockResolvedValue([
       `VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${image}`,
     ]);
@@ -88,6 +94,7 @@ describe('managed Matrix connector', () => {
   it('rejects an untrusted bundled image before writing secrets or creating containers', async () => {
     const { root, daemon } = await adoptedDeployment('matrix-invalid');
     roots.push(root);
+    await enableManagedMatrixConnector(root);
     vi.mocked(daemon.docker.inspectImageEnv!).mockResolvedValue([
       'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=evil.example/matrix:latest',
     ]);
@@ -96,5 +103,26 @@ describe('managed Matrix connector', () => {
     ).rejects.toThrow('not an official digest');
     expect(daemon.names()).not.toContain(MANAGED_MATRIX_CONNECTOR_NAME);
     expect(daemon.names()).not.toContain('verity-managed-matrix-connector-init');
+  });
+
+  it('does not initialize secrets or launch before an account enables Matrix', async () => {
+    const { root, daemon } = await adoptedDeployment('matrix-disabled');
+    roots.push(root);
+    vi.mocked(daemon.docker.inspectImageEnv!).mockResolvedValue([
+      `VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${image}`,
+    ]);
+    await reconcileManagedMatrixConnector({ managedRoot: root, docker: daemon.docker });
+    expect(daemon.names()).not.toContain(MANAGED_MATRIX_CONNECTOR_NAME);
+    expect(daemon.names()).not.toContain('verity-managed-matrix-connector-init');
+    expect(daemon.docker.inspectImageEnv).not.toHaveBeenCalled();
+
+    await enableManagedMatrixConnector(root);
+    await enableManagedMatrixConnector(root);
+    await reconcileManagedMatrixConnector({ managedRoot: root, docker: daemon.docker });
+    expect(daemon.names()).toContain(MANAGED_MATRIX_CONNECTOR_NAME);
+
+    await unlink(join(root, 'matrix-connector-enabled'));
+    await reconcileManagedMatrixConnector({ managedRoot: root, docker: daemon.docker });
+    expect(daemon.names()).not.toContain(MANAGED_MATRIX_CONNECTOR_NAME);
   });
 });

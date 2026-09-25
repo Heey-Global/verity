@@ -225,6 +225,8 @@ export interface UpdaterStatusServerOptions {
    * control boundary itself never touches Docker.
    */
   readonly onOperationAccepted?: (journal: UpdateJournal) => void | Promise<void>;
+  /** Persist Matrix activation and reconcile its worker after account setup. */
+  readonly onMatrixConfigured?: () => Promise<void>;
   /**
    * The Updater's memory of the standby exchange (ADR 0008 D9), shared with the
    * cutover executor: it writes the one request the journal cannot express, and
@@ -777,6 +779,7 @@ export const UPDATER_CONTROL_ROUTES = [
   'GET /v1/reconcile',
   'GET /v1/update',
   'POST /v1/update',
+  'POST /v1/matrix-connector/configured',
   'GET /v1/handoff',
   'POST /v1/handoff',
   'POST /v1/handoff/envelope',
@@ -804,6 +807,15 @@ async function serveUpdaterRequest(
   }
   if (!authorized(req.headers.authorization, options.token)) {
     res.writeHead(401).end(JSON.stringify({ error: 'unauthorized' }));
+    return;
+  }
+  if (path === '/v1/matrix-connector/configured') {
+    if (options.onMatrixConfigured === undefined) {
+      res.writeHead(503).end(JSON.stringify({ error: 'unavailable' }));
+      return;
+    }
+    await options.onMatrixConfigured();
+    res.writeHead(202).end(JSON.stringify({ accepted: true }));
     return;
   }
   if (path.startsWith('/v1/handoff')) {
@@ -1148,6 +1160,15 @@ export async function requestUpdaterOperation(
   if (operation === undefined || operation === null)
     throw new Error('updater operation response is invalid');
   return operation;
+}
+
+/** Trigger the managed worker after a Matrix account has been stored. */
+export async function requestManagedMatrixConnector(options: UpdaterCallOptions): Promise<void> {
+  const { status } = await call(options, {
+    method: 'POST',
+    path: '/v1/matrix-connector/configured',
+  });
+  if (status !== 202) throw new Error(`Matrix connector activation failed (${status})`);
 }
 
 /** The handoff as the Updater currently sees it. */

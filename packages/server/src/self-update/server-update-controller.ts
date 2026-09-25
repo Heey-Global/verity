@@ -10,6 +10,7 @@ import {
   readUpdaterOperation,
   readUpdaterStandby,
   requestUpdaterOperation,
+  requestManagedMatrixConnector,
   updaterControlTokenPath,
   UPDATER_CONTROL_SOCKET,
   type UpdaterHandoffMessage,
@@ -76,6 +77,16 @@ export async function createServerUpdateController(
       return requestUpdaterOperation({ ...(await channel()), ...input });
     },
   };
+}
+
+/** Notify the managed Updater that the Server has stored Matrix credentials. */
+export async function notifyManagedMatrixConfigured(
+  socketPath: string = UPDATER_CONTROL_SOCKET,
+): Promise<boolean> {
+  const channel = await openControlChannel(socketPath);
+  if (channel === undefined) return false;
+  await requestManagedMatrixConnector(await channel());
+  return true;
 }
 
 /**

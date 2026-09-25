@@ -572,6 +572,7 @@ import {
 } from './sandbox-artifacts.js';
 import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
+import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
@@ -3876,8 +3877,17 @@ export async function buildEmbeddedServer(
           { ttlMs: 3_000 },
         );
 
+  const managedMatrixControl = existsSync('/run/verity-updater/control');
+  let matrixActivationDone = false;
+  const activateMatrixIfConfigured = async (): Promise<void> => {
+    if (!managedMatrixControl || matrixActivationDone) return;
+    if ((await eventStore.integrations.matrixConfigSummary()) === null) return;
+    matrixActivationDone = await notifyManagedMatrixConfigured();
+  };
+
   const app = buildControlPlane({
     eventStore,
+    ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
     matrixConnectorToken: async () => {
       try {
         return (
@@ -4582,6 +4592,19 @@ export async function buildEmbeddedServer(
       },
     },
   });
+  if (managedMatrixControl) {
+    const retryMatrixActivation = async (): Promise<void> => {
+      try {
+        await activateMatrixIfConfigured();
+      } catch (error) {
+        app.log.warn({ err: error }, 'Matrix connector activation will retry');
+      }
+    };
+    void retryMatrixActivation();
+    const matrixActivationTimer = setInterval(() => void retryMatrixActivation(), 10_000);
+    matrixActivationTimer.unref?.();
+    app.addHook('onClose', () => clearInterval(matrixActivationTimer));
+  }
   // First statement after `app` exists, and the dial is the second. In that
   // order the handshake, the close code and the refusal reason - the lines this
   // wiring exists for - are pino records rather than console lines, and the

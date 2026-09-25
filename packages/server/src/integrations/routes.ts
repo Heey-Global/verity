@@ -72,6 +72,7 @@ export function registerIntegrationRoutes(
     store: IntegrationStore;
     dataRoot?: string;
     connectorToken?: string | (() => Promise<string | undefined>);
+    onMatrixConfigured?: () => Promise<void>;
   },
 ): void {
   const { store } = deps;
@@ -101,6 +102,9 @@ export function registerIntegrationRoutes(
         .parse(request.body);
       try {
         await store.saveMatrixConfig(input);
+        void Promise.resolve()
+          .then(() => deps.onMatrixConfigured?.())
+          .catch((error: unknown) => request.log.warn({ error }, 'Matrix activation will retry'));
       } catch (error) {
         return reply
           .code(409)

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
 import { createTestDb, type TestDb } from '@verity/store/testing';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { registerIntegrationRoutes } from './routes.js';
 
 let ctx: TestDb;
@@ -146,9 +146,11 @@ it('requires an explicit project binding before accepting chat, then updates edi
 
 it('stores Matrix configuration globally, redacts its settings response, and limits worker access', async () => {
   const app = Fastify();
+  const onMatrixConfigured = vi.fn(async () => undefined);
   registerIntegrationRoutes(app, {
     store: ctx.store.integrations,
     connectorToken: 'a-secret-long-enough-for-the-worker-route',
+    onMatrixConfigured,
   });
   await app.ready();
   const path = '/integrations/matrix/config';
@@ -158,6 +160,7 @@ it('stores Matrix configuration globally, redacts its settings response, and lim
     password: 'private-password',
   };
   expect((await app.inject({ method: 'PUT', url: path, payload })).statusCode).toBe(200);
+  await vi.waitFor(() => expect(onMatrixConfigured).toHaveBeenCalledOnce());
   const summary = await app.inject({ method: 'GET', url: path });
   expect(summary.json()).toEqual({
     config: { endpoint: payload.endpoint, username: payload.username, passwordConfigured: true },

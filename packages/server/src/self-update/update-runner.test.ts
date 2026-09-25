@@ -68,6 +68,29 @@ const runner = (root: string, daemon: FakeDaemon, log: string[] = []) =>
   createUpdateRunner(options(root, daemon, log));
 
 describe('update runner', () => {
+  it('serializes companion Docker work and keeps the queue usable after failure', async () => {
+    const { root, daemon } = await adoptedDeployment('matrix-runner-queue');
+    const update = runner(root, daemon);
+    const steps: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const first = update.enqueueExclusive(async () => {
+      steps.push('first started');
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      throw new Error('injected pull failure');
+    });
+    const second = update.enqueueExclusive(async () => {
+      steps.push('second started');
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(steps).toEqual(['first started']);
+    releaseFirst?.();
+    await expect(first).rejects.toThrow('injected pull failure');
+    await second;
+    expect(steps).toEqual(['first started', 'second started']);
+  });
+
   it('carries an accepted request through companion reconciliation to completion', async () => {
     const { root, daemon, oldContainerId } = await adoptedDeployment('update-runner');
     await journalled(root);
