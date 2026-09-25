@@ -165,6 +165,7 @@ import {
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
 import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
+import { authorizePairedRoute } from './paired-route-policy.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
   createPushFirePoints,
@@ -324,6 +325,13 @@ import {
 import { cachedTrustedToolkitIdentity } from './runner-boundary-attestation.js';
 import { registerServerUpdateRoutes, type ServerUpdateController } from './server-update-routes.js';
 export type { ServerUpdateController } from './server-update-routes.js';
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** Set only after the paired-device bearer has been verified. */
+    localUserId: string | null;
+  }
+}
 
 function isProjectSessionModel(model: string | undefined): boolean {
   return (
@@ -3079,6 +3087,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           bodyLimit,
           https: deps.https,
         } satisfies FastifyHttpsOptions<HttpsServer>);
+  app.decorateRequest('localUserId', null);
   // Derives the auth gate's pre-auth exception set from the routes this instance
   // actually registers; the gate that consumes it is far below, next to the rest
   // of the auth logic. It is attached HERE, in the same statement group as the
@@ -4048,6 +4057,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       WS_STREAM_PATH.test(pathname);
     const token = bearerToken(request.headers.authorization);
     if (registry.verify(token)) {
+      const userId = registry.resolveUserId(token);
+      if (userId === undefined) return reply.code(401).send({ error: 'unauthorized' });
+      request.localUserId = userId;
+      const access = await authorizePairedRoute(
+        deps.eventStore,
+        userId,
+        request.method,
+        request.routeOptions.url ?? pathname,
+        (request.params ?? {}) as Record<string, unknown>,
+      );
+      if (access === 'not_found') return reply.code(404).send({ error: 'not found' });
+      if (access === 'forbidden') return reply.code(403).send({ error: 'forbidden' });
       return;
     }
     // A genuine WebSocket upgrade to the live-stream route cannot take a normal HTTP

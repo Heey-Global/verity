@@ -755,6 +755,7 @@ export interface SecretKeyMetaRecord {
  *  learned to stamp it. */
 export interface AuthTokenRecord {
   id: string;
+  userId: string;
   tokenHash: string;
   label: string | null;
   createdAt: number;
@@ -4434,6 +4435,49 @@ export class EventStore implements EventSink {
     return row ? this.projectRowToRecord(row) : undefined;
   }
 
+  /** Local project authority comes from an active user's membership, never
+   * from their instance role alone. Route handlers will use this once team
+   * access is enabled. */
+  async hasProjectPermission(
+    userId: string,
+    projectId: string,
+    permission: 'read' | 'execute' | 'manage',
+  ): Promise<boolean> {
+    const membership = await this.db
+      .selectFrom('project_memberships as m')
+      .innerJoin('users as u', 'u.id', 'm.user_id')
+      .innerJoin('projects as p', 'p.id', 'm.project_id')
+      .select([
+        'm.can_read',
+        'm.can_execute',
+        'm.can_manage',
+        'u.status',
+        'u.role',
+        'p.kind',
+        'p.created_by_user_id',
+      ])
+      .where('m.user_id', '=', userId)
+      .where('m.project_id', '=', projectId)
+      .executeTakeFirst();
+    if (membership === undefined || membership.status !== 'active') return false;
+    if (
+      membership.kind === 'control_plane' &&
+      (membership.role !== 'administrator' || membership.created_by_user_id !== userId)
+    ) {
+      return false;
+    }
+    return membership[`can_${permission}`];
+  }
+
+  async isActiveAdministrator(userId: string): Promise<boolean> {
+    const user = await this.db
+      .selectFrom('users')
+      .select(['role', 'status'])
+      .where('id', '=', userId)
+      .executeTakeFirst();
+    return user?.role === 'administrator' && user.status === 'active';
+  }
+
   async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
@@ -6679,11 +6723,13 @@ export class EventStore implements EventSink {
     id: string;
     tokenHash: string;
     label?: string | null;
-  }): Promise<void> {
-    await this.db
+  }): Promise<string> {
+    const row = await this.db
       .insertInto('auth_tokens')
       .values({ id: record.id, token_hash: record.tokenHash, label: record.label ?? null })
-      .execute();
+      .returning('user_id')
+      .executeTakeFirstOrThrow();
+    return row.user_id;
   }
 
   /** Every token hash currently valid — loaded once to seed the gate's in-memory
@@ -6698,11 +6744,12 @@ export class EventStore implements EventSink {
   async listAuthTokens(): Promise<AuthTokenRecord[]> {
     const rows = await this.db
       .selectFrom('auth_tokens')
-      .select(['id', 'token_hash', 'label', 'created_at', 'last_seen_at'])
+      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at'])
       .orderBy('created_at', 'desc')
       .execute();
     return rows.map((r) => ({
       id: r.id,
+      userId: r.user_id,
       tokenHash: r.token_hash,
       label: r.label,
       createdAt: new Date(r.created_at).getTime(),

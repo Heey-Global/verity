@@ -3104,6 +3104,60 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('session_links').execute();
     },
   },
+  '0112_local_users': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The legacy installation has one administrator. Keep its identity stable
+      // across backups and rolling upgrades while old servers still write rows.
+      const adminId = '00000000-0000-4000-8000-000000000001';
+      await sql`create table users (
+        id text primary key,
+        role text not null check (role in ('administrator', 'member')),
+        status text not null check (status in ('active', 'disabled')),
+        created_at timestamptz not null default now()
+      )`.execute(db);
+      await sql`insert into users (id, role, status)
+        values (${adminId}, 'administrator', 'active')`.execute(db);
+      await sql`alter table auth_tokens add column user_id text
+        not null default '00000000-0000-4000-8000-000000000001' references users(id)`.execute(db);
+      await sql`alter table projects add column created_by_user_id text
+        not null default '00000000-0000-4000-8000-000000000001' references users(id)`.execute(db);
+      await sql`create table project_memberships (
+        project_id text not null references projects(id) on delete cascade,
+        user_id text not null references users(id),
+        can_read boolean not null,
+        can_execute boolean not null,
+        can_manage boolean not null,
+        created_at timestamptz not null default now(),
+        primary key (project_id, user_id),
+        check (not can_execute or can_read),
+        check (not can_manage or can_read)
+      )`.execute(db);
+      await sql`insert into project_memberships
+        (project_id, user_id, can_read, can_execute, can_manage)
+        select id, ${adminId}, true, true, true from projects`.execute(db);
+      // Old servers may still create projects during a rolling upgrade. The
+      // membership must be written with the project, including on that path.
+      await sql`create function add_project_creator_membership() returns trigger as $$
+        begin
+          insert into project_memberships
+            (project_id, user_id, can_read, can_execute, can_manage)
+          values (new.id, new.created_by_user_id, true, true, true);
+          return new;
+        end
+      $$ language plpgsql`.execute(db);
+      await sql`create trigger project_creator_membership
+        after insert on projects for each row
+        execute function add_project_creator_membership()`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop trigger project_creator_membership on projects`.execute(db);
+      await sql`drop function add_project_creator_membership()`.execute(db);
+      await sql`drop table project_memberships`.execute(db);
+      await sql`alter table projects drop column created_by_user_id`.execute(db);
+      await sql`alter table auth_tokens drop column user_id`.execute(db);
+      await sql`drop table users`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

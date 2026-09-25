@@ -1,5 +1,6 @@
 import type { Conductor } from '@verity/session';
 import { generateKeyPairSync } from 'node:crypto';
+import { sql } from 'kysely';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -20,6 +21,7 @@ const PASSWORD = 'correct-horse-battery';
 
 interface FakeRow {
   id: string;
+  userId: string;
   tokenHash: string;
   label: string | null;
   createdAt: number;
@@ -44,15 +46,17 @@ function fakeStore(): AuthTokenStore & {
       id: string;
       tokenHash: string;
       label?: string | null;
-    }): Promise<void> => {
+    }): Promise<string> => {
+      const userId = '00000000-0000-4000-8000-000000000001';
       rows.push({
         id: r.id,
+        userId,
         tokenHash: r.tokenHash,
         label: r.label ?? null,
         createdAt: 1,
         lastSeenAt: null,
       });
-      return Promise.resolve();
+      return Promise.resolve(userId);
     },
     deleteAuthToken: (id: string): Promise<boolean> => {
       const index = rows.findIndex((row) => row.id === id);
@@ -95,6 +99,105 @@ describe('paired device management', () => {
   });
   afterAll(async () => ctx.close());
   beforeEach(async () => truncateAll(ctx.db));
+
+  it('binds only a verified device token to the request user', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('iPad');
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    app.get('/test/local-user', async (request) => ({ userId: request.localUserId }));
+    try {
+      const valid = await app.inject({
+        method: 'GET',
+        url: '/test/local-user',
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toEqual({ userId: registry.resolveUserId(device.token) });
+      const missing = await app.inject({ method: 'GET', url: '/test/local-user' });
+      expect(missing.statusCode).toBe(401);
+      await registry.revoke(device.id);
+      const revoked = await app.inject({
+        method: 'GET',
+        url: '/test/local-user',
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(revoked.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps undeclared paired-device routes administrator-only', async () => {
+    await sql`insert into users (id, role, status) values ('member', 'member', 'active')`.execute(
+      ctx.db,
+    );
+    await sql`insert into auth_tokens (id, token_hash, user_id)
+      values ('member-device', ${hashAuthToken('member-token')}, 'member')`.execute(ctx.db);
+    await sql`insert into projects
+      (id, owner, repo, container_name, state, overview_visible)
+      values ('shared', 'owner', 'shared', 'shared-container', 'absent', true),
+             ('private', 'owner', 'private', 'private-container', 'absent', true)`.execute(ctx.db);
+    await sql`insert into project_memberships
+      (project_id, user_id, can_read, can_execute, can_manage)
+      values ('shared', 'member', true, false, false)`.execute(ctx.db);
+    await sql`insert into sessions (session_id, worktree, model, project_id)
+      values ('private-session', '/tmp/private-session', 'default', 'private')`.execute(ctx.db);
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/projects',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(response.statusCode).toBe(403);
+      const privateProject = await app.inject({
+        method: 'GET',
+        url: '/projects/private',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(privateProject.statusCode).toBe(403);
+      const privateSession = await app.inject({
+        method: 'GET',
+        url: '/sessions/private-session',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(privateSession.statusCode).toBe(403);
+      const sharedProject = await app.inject({
+        method: 'GET',
+        url: '/projects/shared',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(sharedProject.statusCode).toBe(200);
+      const streamTicket = await app.inject({
+        method: 'POST',
+        url: '/sessions/private-session/stream-ticket',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(streamTicket.statusCode).toBe(403);
+      await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
+      const disabled = await app.inject({
+        method: 'GET',
+        url: '/projects/shared',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(disabled.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
 
   it('lets an authenticated device invite, list, and revoke another device', async () => {
     const store = new EventStore(ctx.db);
@@ -335,12 +438,14 @@ describe('wsOriginAllowed (anti-CSWSH)', () => {
 
 describe('auth token registry', () => {
   it('mints a token whose raw value verifies, and rejects anything else', async () => {
-    const registry = await createAuthTokenRegistry(fakeStore(), { enabled: false });
+    const store = fakeStore();
+    const registry = await createAuthTokenRegistry(store, { enabled: false });
     const { token, id } = await registry.mint('iPhone');
     expect(typeof token).toBe('string');
     expect(id.length).toBeGreaterThan(0);
     expect(registry.verify(token)).toBe(true);
     expect(registry.resolveId(token)).toBe(id);
+    expect(registry.resolveUserId(token)).toBe(store.rows[0]?.userId);
     expect(registry.verify('not-a-token')).toBe(false);
     expect(registry.verify(undefined)).toBe(false);
     expect(registry.verify('')).toBe(false);
@@ -376,6 +481,8 @@ describe('auth token registry', () => {
     const second = await createAuthTokenRegistry(store, { enabled: true });
     expect(second.verify(token)).toBe(true);
     expect(second.resolveId(token)).toBe(id);
+    expect(second.resolveUserId(token)).toBe(store.rows[0]?.userId);
+    expect(second.resolveUserId('unknown')).toBeUndefined();
   });
 
   it('forget() drops one hash and clear() drops all from the in-memory set', async () => {
@@ -384,9 +491,11 @@ describe('auth token registry', () => {
     const b = await registry.mint(null);
     registry.forget(hashAuthToken(a.token));
     expect(registry.verify(a.token)).toBe(false);
+    expect(registry.resolveUserId(a.token)).toBeUndefined();
     expect(registry.verify(b.token)).toBe(true);
     registry.clear();
     expect(registry.verify(b.token)).toBe(false);
+    expect(registry.resolveUserId(b.token)).toBeUndefined();
   });
 
   it('lists safe device metadata and revokes the selected token', async () => {
@@ -399,6 +508,7 @@ describe('auth token registry', () => {
     ]);
     expect(await registry.revoke(first.id)).toBe(true);
     expect(registry.verify(first.token)).toBe(false);
+    expect(registry.resolveUserId(first.token)).toBeUndefined();
     expect(registry.verify(second.token)).toBe(true);
     expect(await registry.revoke(first.id)).toBe(false);
   });
