@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.1](https://github.com/Heey-Global/verity/compare/v2.7.0...v2.7.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **server:** advertise union gateway tools as flat object schemas ([#767](https://github.com/Heey-Global/verity/issues/767)) ([d671425](https://github.com/Heey-Global/verity/commit/d67142573559eb49569a352540cc02b9aaa9c1fe))
+
 ## [2.7.0](https://github.com/Heey-Global/verity/compare/v2.6.0...v2.7.0) (2026-09-25)
 
 
