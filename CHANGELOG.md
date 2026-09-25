@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.7.0](https://github.com/Heey-Global/verity/compare/v2.6.0...v2.7.0) (2026-09-25)
+
+
+### Features
+
+* **matrix:** import chat attachments into project knowledge ([#765](https://github.com/Heey-Global/verity/issues/765)) ([792ebd3](https://github.com/Heey-Global/verity/commit/792ebd37248b50c3cd7a2ae3f995bb592ec052bc))
+* **server:** assign ownership to HTTP MCP connections ([#761](https://github.com/Heey-Global/verity/issues/761)) ([e252789](https://github.com/Heey-Global/verity/commit/e25278994167bd77168a3e7e531e2057a2f552ad))
+* **server:** scope project overview to local memberships ([#762](https://github.com/Heey-Global/verity/issues/762)) ([ff4ecf7](https://github.com/Heey-Global/verity/commit/ff4ecf75166e6551abb49b1fe53b1062948a6e70))
+
 ## [2.6.0](https://github.com/Heey-Global/verity/compare/v2.5.1...v2.6.0) (2026-09-25)
 
 
