@@ -153,7 +153,7 @@ export function isLocalProject(project: Pick<ProjectRecord, 'kind'>): boolean {
  * Sandbox before running it — the same states the turn route admits.
  */
 export function isSessionLinkProject(
-  project: Pick<ProjectRecord, 'state' | 'hiddenAt'> & { kind?: string | undefined },
+  project: Pick<ProjectRecord, 'kind' | 'state' | 'hiddenAt'>,
 ): boolean {
   return (
     project.kind !== 'control_plane' &&
@@ -1343,7 +1343,7 @@ export class EventStore implements EventSink {
         projects.some(
           (project) =>
             !isSessionLinkProject({
-              kind: project.kind,
+              kind: project.kind as ProjectKind,
               state: project.state as ProjectRecord['state'],
               hiddenAt: project.hidden_at,
             }),
