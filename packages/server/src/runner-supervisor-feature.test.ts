@@ -616,6 +616,7 @@ describe('verity-runner supervisor runtime', () => {
         env: {
           CLAUDE_CONFIG_DIR: '/run/verity-runner/claude',
           CLAUDE_CODE_EXECUTABLE: '/work/project/attacker-controlled',
+          CLAUDE_CODE_HARBOR_KITE: '1',
           CLAUDE_CODE_OAUTH_TOKEN: 'must-not-cross',
           ANTHROPIC_API_KEY: 'must-not-cross',
         },
@@ -625,6 +626,9 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).toMatchObject({
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:47821',
       CLAUDE_CODE_EXECUTABLE: '/usr/local/bin/claude',
+      // Without it every session of the project opens an inbox any sibling session
+      // can write to, and agents message each other past session links unseen.
+      CLAUDE_CODE_HARBOR_KITE: '0',
       CLAUDE_CONFIG_DIR: '/run/verity-runner/claude',
       CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_EGRESS_PLACEHOLDER,
       // Both Claude transports are marked, so an in-Sandbox helper never has to

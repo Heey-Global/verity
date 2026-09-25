@@ -576,6 +576,13 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     // Agent SDK. Pin it to the root-owned image binary so upgrades and the live
     // smoke exercise the same executable. Never accept this path from a request.
     ...(command === 'claude-agent-acp' ? { CLAUDE_CODE_EXECUTABLE: '/usr/local/bin/claude' } : {}),
+    // The Claude CLI opens a cross-session inbox by default: a socket under
+    // /tmp/cc-socks that every other Claude process of the same user can find and
+    // write to. All sessions of a project share this Sandbox and its uid, so any
+    // of them could message any other directly, bypassing session links, their
+    // approval and their allowance. Session links are the only agent-to-agent
+    // channel. Never accept this value from a request.
+    ...(isClaude ? { CLAUDE_CODE_HARBOR_KITE: '0' } : {}),
     // ADR 0006 D10: derive auth only from one validated local connector URL.
     // Never copy an inherited OAuth/API token; the placeholder is fixed here.
     ...connectorEnv,
