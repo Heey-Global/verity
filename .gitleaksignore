@@ -144,8 +144,7 @@
 07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2628
 07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2638
 
-# Public Ed25519 identityKey fixtures after PR #729 was merged with a new commit ID.
-# Only these reviewed locations are suppressed; new values and locations remain scanned.
+# Same synthetic enrollment fixtures after the squash merge of #729 changed the commit SHA.
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2360
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2379
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2388
