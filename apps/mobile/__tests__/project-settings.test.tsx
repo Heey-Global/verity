@@ -1,12 +1,7 @@
-// Smoke tests for the project-detail screen (app/project/[id]/index.tsx): the
-// Dev Server / Automations tabs, the runtime status panel, and the gear that
-// opens the project settings routes. The settings screens themselves are
+// Project tool screens for Dev Servers and Automations. The settings screens are
 // covered in `project-settings-routes.test.tsx`.
 //
-// The @verity/mobile client is never real: `../../lib/client` is mocked so
-// `createVerityClient()` returns an in-memory fake whose methods we control. The
-// project is `absent` (inactive) so the Runtime section short-circuits without any
-// dev-server calls.
+// The client is an in-memory fake whose methods each test controls.
 import { type VerityClient, type ProjectDetail } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
@@ -14,10 +9,13 @@ import { Alert, AppState } from 'react-native';
 
 const mockCreateVerityClient = jest.fn<VerityClient | null, []>();
 
-// expo-router surfaces the route param + navigation sinks. `Stack.Screen` and
-// `Link` render nothing; `useLocalSearchParams` returns a fixed project id.
+// Expo Router exposes a fixed project id and records navigation destinations.
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
+  Redirect: ({ href }: { href: unknown }) => {
+    jest.requireMock<typeof import('expo-router')>('expo-router').router.replace(href as never);
+    return null;
+  },
   Link: ({ children }: { children?: unknown }) => children ?? null,
   router: { replace: jest.fn(), push: jest.fn(), dismissTo: jest.fn() },
   useLocalSearchParams: () => ({ id: 'p/1' }),
@@ -29,8 +27,6 @@ jest.mock('expo-router', () => ({
   },
 }));
 
-// The screen imports `../../lib/client` (from app/project/[id].tsx); jest.mock
-// resolves the specifier relative to THIS test file, where the module is `../lib/client`.
 jest.mock('../lib/client', () => ({
   createVerityClient: () => mockCreateVerityClient(),
 }));
@@ -39,7 +35,9 @@ jest.mock('expo-clipboard', () => ({
   setStringAsync: jest.fn().mockResolvedValue(undefined),
 }));
 
-import ProjectDetailScreen from '../app/project/[id]';
+import ProjectEntry from '../app/project/[id]';
+import ProjectDevServerScreen from '../app/project/[id]/dev-server';
+import ProjectAutomationsScreen from '../app/project/[id]/automations';
 
 const mockRouter = router as unknown as {
   replace: jest.Mock;
@@ -226,8 +224,16 @@ afterEach(() => {
   mockRouter.dismissTo.mockClear();
 });
 
-describe('ProjectDetailScreen — project settings', () => {
-  it('keeps project settings available while setup is pending', async () => {
+it('opens project settings directly from the project entry route', () => {
+  render(<ProjectEntry />);
+  expect(mockRouter.replace).toHaveBeenCalledWith({
+    pathname: '/project/[id]/settings',
+    params: { id: 'p/1' },
+  });
+});
+
+describe('Project tools', () => {
+  it('keeps Dev Server available while setup is pending', async () => {
     const base = makeDetail();
     const detail: ProjectDetail = {
       ...base,
@@ -237,28 +243,21 @@ describe('ProjectDetailScreen — project settings', () => {
       .fn()
       .mockResolvedValue({ ...detail.project, setupStatus: 'complete' });
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, setProjectSetupStatus }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
-    // The gear is a destination, not a tab: settings live on their own route
-    // stack, so a project still provisioning can be configured all the same.
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    expect(mockRouter.push).toHaveBeenCalledWith({
-      pathname: '/project/[id]/settings',
-      params: { id: 'p/1' },
-    });
-    expect(screen.getByText('Dev Servers')).toBeOnTheScreen();
+    expect(await screen.findByText('Dev Servers')).toBeOnTheScreen();
     await waitFor(() => expect(setProjectSetupStatus).toHaveBeenCalledWith('p/1', 'complete'));
     expect(mockRouter.replace).not.toHaveBeenCalled();
   });
 
-  it('renders project tabs after provisioning completes', async () => {
+  it('renders Dev Server after provisioning completes', async () => {
     const base = makeDetail();
     const detail: ProjectDetail = {
       ...base,
       project: { ...base.project, state: 'active', setupStatus: 'complete' },
     };
     mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     expect(await screen.findByText('Dev Servers')).toBeOnTheScreen();
     expect(mockRouter.replace).not.toHaveBeenCalledWith(
@@ -266,11 +265,10 @@ describe('ProjectDetailScreen — project settings', () => {
     );
   });
 
-  it('keeps Knowledge and legacy Memory out of project settings', async () => {
+  it('keeps Dev Server and Automations in their own screens', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail() }));
-    render(<ProjectDetailScreen />);
+    const { unmount } = render(<ProjectDevServerScreen />);
 
-    // Dev Server is the landing tab and starts with the collection empty.
     expect(await screen.findByText('Dev Servers')).toBeOnTheScreen();
     expect(await screen.findByText('No Dev Server found')).toBeOnTheScreen();
     expect(await screen.findByLabelText('Manual Dev Server setup')).toBeOnTheScreen();
@@ -280,7 +278,8 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.queryByText('Knowledge')).toBeNull();
     expect(screen.queryByLabelText('Show preserved legacy notes')).toBeNull();
 
-    fireEvent.press(screen.getByText('Automations'));
+    unmount();
+    render(<ProjectAutomationsScreen />);
     expect(await screen.findByText('Agent Loops')).toBeOnTheScreen();
     expect(screen.getByLabelText('Create Agent Loop')).toBeOnTheScreen();
     expect(
@@ -306,7 +305,7 @@ describe('ProjectDetailScreen — project settings', () => {
     };
     const createDevServer = jest.fn().mockResolvedValue(created);
     mockCreateVerityClient.mockReturnValue(makeClient({ createDevServer }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     fireEvent.press(await screen.findByLabelText('Manual Dev Server setup'));
     fireEvent.changeText(screen.getByLabelText('Name'), 'Web');
@@ -336,7 +335,7 @@ describe('ProjectDetailScreen — project settings', () => {
     };
     const deprovisionProject = jest.fn();
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, deprovisionProject }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     fireEvent.press(await screen.findByLabelText('Manual Dev Server setup'));
     expect(await screen.findByLabelText('Save Dev Server')).toBeOnTheScreen();
@@ -373,7 +372,7 @@ describe('ProjectDetailScreen — project settings', () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({ detail, getDevServerDetection, setupDetectedDevServers }),
     );
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     expect(await screen.findByText('Dev Server found')).toBeOnTheScreen();
     fireEvent.press(screen.getByText('Start'));
@@ -437,7 +436,7 @@ describe('ProjectDetailScreen — project settings', () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({ getDevServerDetection, setupDetectedDevServers }),
     );
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     expect(await screen.findByText('2 Dev Servers found')).toBeOnTheScreen();
     fireEvent.press(screen.getByText('Choose'));
@@ -485,7 +484,7 @@ describe('ProjectDetailScreen — project settings', () => {
       ],
     });
     mockCreateVerityClient.mockReturnValue(makeClient({ getDevServerDetection }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     await waitFor(() => expect(getDevServerDetection).toHaveBeenCalledWith('p/1'));
     expect(screen.getByText('No Dev Server found')).toBeOnTheScreen();
@@ -507,7 +506,7 @@ describe('ProjectDetailScreen — project settings', () => {
         return { remove: jest.fn() };
       });
     mockCreateVerityClient.mockReturnValue(makeClient({ getDevServerDetection }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     await waitFor(() => expect(getDevServerDetection).toHaveBeenCalledTimes(1));
     act(() => onAppStateChange?.('active'));
@@ -582,7 +581,7 @@ describe('ProjectDetailScreen — project settings', () => {
         return { remove: jest.fn() };
       });
     mockCreateVerityClient.mockReturnValue(makeClient({ getDevServerDetection }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     expect(await screen.findByText('2 Dev Servers found')).toBeOnTheScreen();
     fireEvent.press(screen.getByText('Choose'));
@@ -630,7 +629,7 @@ describe('ProjectDetailScreen — project settings', () => {
         startDevServer,
       }),
     );
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     const start = await screen.findByLabelText('Start Web');
     await waitFor(() => expect(start).toBeEnabled());
@@ -677,7 +676,7 @@ describe('ProjectDetailScreen — project settings', () => {
         }),
       }),
     );
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     expect(await screen.findByText('External sharing')).toBeOnTheScreen();
     expect(
@@ -727,7 +726,7 @@ describe('ProjectDetailScreen — project settings', () => {
         startDevServer,
       }),
     );
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     const start = await screen.findByLabelText('Start Web');
     await waitFor(() => expect(start).toBeEnabled());
@@ -752,7 +751,7 @@ describe('ProjectDetailScreen — project settings', () => {
       },
     };
     mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
+    render(<ProjectDevServerScreen />);
 
     expect(await screen.findByText('Starting secure workspace…')).toBeOnTheScreen();
     expect(screen.queryByText('A previous provisioning attempt failed.')).toBeNull();
@@ -781,9 +780,7 @@ describe('ProjectDetailScreen — project settings', () => {
       },
     ]);
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail(), listAgentLoops }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByText('Automations'));
+    render(<ProjectAutomationsScreen />);
     expect(await screen.findByText('Dependency audit')).toBeOnTheScreen();
     expect(screen.getByText('Every 30 minutes')).toBeOnTheScreen();
     expect(screen.getByText('Setup')).toBeOnTheScreen();
@@ -818,9 +815,7 @@ describe('ProjectDetailScreen — project settings', () => {
         ensureAgentLoopSession,
       }),
     );
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByText('Automations'));
+    render(<ProjectAutomationsScreen />);
     fireEvent.press(await screen.findByLabelText('Open Agent Loop Dependency audit'));
 
     await waitFor(() => expect(ensureAgentLoopSession).toHaveBeenCalledWith('loop-1'));
@@ -836,9 +831,7 @@ describe('ProjectDetailScreen — project settings', () => {
     const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
       buttons?.find((button) => button.text === 'Agent Loop')?.onPress?.();
     });
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByText('Automations'));
+    render(<ProjectAutomationsScreen />);
     fireEvent.press(await screen.findByLabelText('Create Agent Loop'));
 
     await waitFor(() =>

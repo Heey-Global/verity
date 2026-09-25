@@ -93,19 +93,6 @@ function ProjectServicesView({ client, projectId }: { client: VerityClient; proj
         />
       </SettingsGroup>
 
-      <SettingsGroup title="Knowledge sources" description="Chats imported into project knowledge.">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="message-square"
-            title="Matrix"
-            subtitle="Manage project rooms and imports"
-            onPress={() =>
-              router.push({ pathname: '/settings/services/matrix', params: { projectId } })
-            }
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-
       <SettingsGroup
         title="Tools"
         description="Enable only the MCP connections this project may use. Authorization stays on the Verity server."
