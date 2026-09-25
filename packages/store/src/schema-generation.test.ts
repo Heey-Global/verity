@@ -43,13 +43,7 @@ describe('migration keys', () => {
     const inversions = keys.flatMap((key, i) =>
       i > 0 && key < keys[i - 1]! ? [`${keys[i - 1]} -> ${key}`] : [],
     );
-    // These shipped inside a single release each, so no installed Server ran one
-    // half without the other. They are history now; nothing may join them.
-    expect(inversions).toEqual([
-      '0038_agent_loops -> 0033_running_turns',
-      '0085_broker_only_doppler_credentials -> 0084_cross_project_workflows',
-      '0096_opencode_model_selection -> 0093_opencode_settings',
-    ]);
+    expect(inversions).toEqual([]);
   });
 });
 

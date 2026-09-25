@@ -776,100 +776,6 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('gh_token_capabilities').execute();
     },
   },
-  // This feature branch originally used a 0033 name before main advanced through
-  // 0037. Keep the release migration after main's published history: Kysely
-  // rejects migrations inserted alphabetically before already-executed entries.
-  '0038_agent_loops': {
-    async up(db: Kysely<unknown>): Promise<void> {
-      // Session discriminator (ADR 0008 §1): mark a session as the durable runtime
-      // of an Agent Loop so the list UI can pin/label it without a join back
-      // through `agent_loops.session_id`. notNull default `'normal'`, so existing
-      // sessions read back as ordinary runs.
-      await db.schema
-        .alterTable('sessions')
-        .addColumn('kind', 'text', (c) => c.notNull().defaultTo('normal'))
-        .execute();
-
-      // Recurring automations ("der Loop", ADR 0008): a project-scoped
-      // `{ script, schedule }` bound to one durable agent session. Both tables
-      // CASCADE with the project/loop — this is runtime automation config +
-      // history, not part of the durable event log. No column holds a credential,
-      // so nothing here is encrypted. `schedule_config` is jsonb (structured
-      // schedule, never a raw cron string). A loop starts as `status:'draft'` with
-      // no schedule/script yet, so those columns are nullable.
-      await db.schema
-        .createTable('agent_loops')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('project_id', 'text', (c) =>
-          c.notNull().references('projects.id').onDelete('cascade'),
-        )
-        .addColumn('name', 'text', (c) => c.notNull())
-        .addColumn('status', 'text', (c) => c.notNull().defaultTo('draft'))
-        .addColumn('schedule_kind', 'text')
-        .addColumn('schedule_config', 'jsonb')
-        .addColumn('script', 'text')
-        .addColumn('reaction_prompt', 'text')
-        .addColumn('reaction_model', 'text')
-        .addColumn('session_id', 'text', (c) =>
-          c.references('sessions.session_id').onDelete('set null'),
-        )
-        .addColumn('tested_script_fingerprint', 'text')
-        .addColumn('consecutive_error_count', 'integer', (c) => c.notNull().defaultTo(0))
-        .addColumn('last_run_at', 'timestamptz')
-        .addColumn('last_outcome', 'text')
-        .addColumn('next_run_at', 'timestamptz')
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addColumn('updated_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .execute();
-
-      // The scheduler's hot path: pick the minimum next_run_at across enabled,
-      // scheduled loops. Index (status, next_run_at) serves that scan.
-      await db.schema
-        .createIndex('agent_loops_status_next_run_at_idx')
-        .on('agent_loops')
-        .columns(['status', 'next_run_at'])
-        .execute();
-
-      // Per-project loop listing.
-      await db.schema
-        .createIndex('agent_loops_project_id_idx')
-        .on('agent_loops')
-        .column('project_id')
-        .execute();
-
-      // Append-only run history, one row per scheduler pass that touched a loop.
-      await db.schema
-        .createTable('agent_loop_runs')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        // Monotonic insert order: the reliable newest-first tiebreak when several
-        // runs share a `started_at` millisecond (a random UUID id would not).
-        .addColumn('seq', 'bigserial', (c) => c.notNull())
-        .addColumn('loop_id', 'text', (c) =>
-          c.notNull().references('agent_loops.id').onDelete('cascade'),
-        )
-        .addColumn('started_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addColumn('finished_at', 'timestamptz')
-        .addColumn('outcome', 'text', (c) => c.notNull())
-        .addColumn('exit_code', 'integer')
-        .addColumn('detail', 'text')
-        .addColumn('session_id', 'text')
-        .addColumn('is_test', 'boolean', (c) => c.notNull().defaultTo(false))
-        .execute();
-
-      // Run history is read newest-first per loop, ordered by insertion seq.
-      await db.schema
-        .createIndex('agent_loop_runs_loop_id_seq_idx')
-        .on('agent_loop_runs')
-        .columns(['loop_id', 'seq'])
-        .execute();
-    },
-    async down(db: Kysely<unknown>): Promise<void> {
-      await db.schema.dropTable('agent_loop_runs').execute();
-      await db.schema.dropTable('agent_loops').execute();
-      await db.schema.alterTable('sessions').dropColumn('kind').execute();
-    },
-  },
-
   '0033_running_turns': {
     async up(db: Kysely<unknown>): Promise<void> {
       // Durable "a turn is in flight for this session" marker (lifecycle Phase 1,
@@ -991,6 +897,100 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('push_receipts').execute();
     },
   },
+  // This feature branch originally used a 0033 name before main advanced through
+  // 0037. Keep the release migration after main's published history: Kysely
+  // rejects migrations inserted alphabetically before already-executed entries.
+  '0038_agent_loops': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Session discriminator (ADR 0008 §1): mark a session as the durable runtime
+      // of an Agent Loop so the list UI can pin/label it without a join back
+      // through `agent_loops.session_id`. notNull default `'normal'`, so existing
+      // sessions read back as ordinary runs.
+      await db.schema
+        .alterTable('sessions')
+        .addColumn('kind', 'text', (c) => c.notNull().defaultTo('normal'))
+        .execute();
+
+      // Recurring automations ("der Loop", ADR 0008): a project-scoped
+      // `{ script, schedule }` bound to one durable agent session. Both tables
+      // CASCADE with the project/loop — this is runtime automation config +
+      // history, not part of the durable event log. No column holds a credential,
+      // so nothing here is encrypted. `schedule_config` is jsonb (structured
+      // schedule, never a raw cron string). A loop starts as `status:'draft'` with
+      // no schedule/script yet, so those columns are nullable.
+      await db.schema
+        .createTable('agent_loops')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('project_id', 'text', (c) =>
+          c.notNull().references('projects.id').onDelete('cascade'),
+        )
+        .addColumn('name', 'text', (c) => c.notNull())
+        .addColumn('status', 'text', (c) => c.notNull().defaultTo('draft'))
+        .addColumn('schedule_kind', 'text')
+        .addColumn('schedule_config', 'jsonb')
+        .addColumn('script', 'text')
+        .addColumn('reaction_prompt', 'text')
+        .addColumn('reaction_model', 'text')
+        .addColumn('session_id', 'text', (c) =>
+          c.references('sessions.session_id').onDelete('set null'),
+        )
+        .addColumn('tested_script_fingerprint', 'text')
+        .addColumn('consecutive_error_count', 'integer', (c) => c.notNull().defaultTo(0))
+        .addColumn('last_run_at', 'timestamptz')
+        .addColumn('last_outcome', 'text')
+        .addColumn('next_run_at', 'timestamptz')
+        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .addColumn('updated_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .execute();
+
+      // The scheduler's hot path: pick the minimum next_run_at across enabled,
+      // scheduled loops. Index (status, next_run_at) serves that scan.
+      await db.schema
+        .createIndex('agent_loops_status_next_run_at_idx')
+        .on('agent_loops')
+        .columns(['status', 'next_run_at'])
+        .execute();
+
+      // Per-project loop listing.
+      await db.schema
+        .createIndex('agent_loops_project_id_idx')
+        .on('agent_loops')
+        .column('project_id')
+        .execute();
+
+      // Append-only run history, one row per scheduler pass that touched a loop.
+      await db.schema
+        .createTable('agent_loop_runs')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        // Monotonic insert order: the reliable newest-first tiebreak when several
+        // runs share a `started_at` millisecond (a random UUID id would not).
+        .addColumn('seq', 'bigserial', (c) => c.notNull())
+        .addColumn('loop_id', 'text', (c) =>
+          c.notNull().references('agent_loops.id').onDelete('cascade'),
+        )
+        .addColumn('started_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .addColumn('finished_at', 'timestamptz')
+        .addColumn('outcome', 'text', (c) => c.notNull())
+        .addColumn('exit_code', 'integer')
+        .addColumn('detail', 'text')
+        .addColumn('session_id', 'text')
+        .addColumn('is_test', 'boolean', (c) => c.notNull().defaultTo(false))
+        .execute();
+
+      // Run history is read newest-first per loop, ordered by insertion seq.
+      await db.schema
+        .createIndex('agent_loop_runs_loop_id_seq_idx')
+        .on('agent_loop_runs')
+        .columns(['loop_id', 'seq'])
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('agent_loop_runs').execute();
+      await db.schema.dropTable('agent_loops').execute();
+      await db.schema.alterTable('sessions').dropColumn('kind').execute();
+    },
+  },
+
   '0038_running_turns_turn_identity': {
     async up(db: Kysely<unknown>): Promise<void> {
       // ADR 0006 Stage 4 (remote attach): the in-flight marker gains the turn's
@@ -2341,6 +2341,12 @@ const migrations: Record<string, Migration> = {
       // column itself is 0075's to drop.
     },
   },
+  // Kysely rejects already-applied migration IDs that disappear from the provider.
+  '0084_cross_project_workflows': {
+    async up(): Promise<void> {},
+    async down(): Promise<void> {},
+  },
+
   '0085_broker_only_doppler_credentials': {
     async up(db: Kysely<unknown>): Promise<void> {
       // Verity currently supports fresh installations only. This migration was
@@ -2423,12 +2429,6 @@ const migrations: Record<string, Migration> = {
         foreign key (credential_ref) references secret_provider_credentials (credential_ref)
       `.execute(db);
     },
-  },
-
-  // Kysely rejects already-applied migration IDs that disappear from the provider.
-  '0084_cross_project_workflows': {
-    async up(): Promise<void> {},
-    async down(): Promise<void> {},
   },
 
   '0086_events_session_id_type_id_idx': {
@@ -2580,6 +2580,21 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('session_slide_decks').dropColumn('assignment_id').execute();
     },
   },
+  '0093_opencode_settings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('opencode_base_url', 'text')
+        .execute();
+      await db.schema.alterTable('verity_settings').addColumn('opencode_api_key', 'text').execute();
+      await db.schema.alterTable('verity_settings').addColumn('opencode_models', 'text').execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_models').execute();
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_api_key').execute();
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_base_url').execute();
+    },
+  },
   '0094_http_mcp_connections': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema
@@ -2652,21 +2667,6 @@ const migrations: Record<string, Migration> = {
         .alterTable('verity_settings')
         .dropColumn('opencode_disabled_models')
         .execute();
-    },
-  },
-  '0093_opencode_settings': {
-    async up(db: Kysely<unknown>): Promise<void> {
-      await db.schema
-        .alterTable('verity_settings')
-        .addColumn('opencode_base_url', 'text')
-        .execute();
-      await db.schema.alterTable('verity_settings').addColumn('opencode_api_key', 'text').execute();
-      await db.schema.alterTable('verity_settings').addColumn('opencode_models', 'text').execute();
-    },
-    async down(db: Kysely<unknown>): Promise<void> {
-      await db.schema.alterTable('verity_settings').dropColumn('opencode_models').execute();
-      await db.schema.alterTable('verity_settings').dropColumn('opencode_api_key').execute();
-      await db.schema.alterTable('verity_settings').dropColumn('opencode_base_url').execute();
     },
   },
   '0097_remove_cross_project_workflows': {
