@@ -1295,8 +1295,8 @@ export class EventStore implements EventSink {
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
-  /** Only one same-pair delivery holds a database connection while the target accepts it. */
-  private readonly sessionLinkDeliveryTails = new Map<string, Promise<void>>();
+  /** One delivery at a time leaves pool capacity for conductor acceptance. */
+  private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
 
   async createSessionLink(leftId: string, rightId: string): Promise<boolean> {
     if (leftId === rightId) throw new Error('a session cannot link to itself');
@@ -1420,18 +1420,15 @@ export class EventStore implements EventSink {
     deliver?: () => Promise<void>,
   ): Promise<SessionLinkReservation> {
     const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const key = `${sessionA}\0${sessionB}`;
-    const previous = this.sessionLinkDeliveryTails.get(key);
+    const previous = this.sessionLinkDeliveryTail;
     let release = (): void => undefined;
     const finished = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.sessionLinkDeliveryTails.set(key, finished);
+    this.sessionLinkDeliveryTail = finished;
     try {
       await previous;
-      let refund:
-        { column: 'remaining_a' | 'remaining_b'; before: number; after: number } | undefined;
-      const reservation = await this.db.transaction().execute(async (trx) => {
+      return await this.db.transaction().execute(async (trx) => {
         const link = await trx
           .selectFrom('session_links')
           .selectAll()
@@ -1452,16 +1449,15 @@ export class EventStore implements EventSink {
             prior.source_session_id !== sourceId
           )
             throw new Error('linked message invocation was reused for a different target');
+          await deliver?.();
           return 'duplicate';
         }
-        const column: 'remaining_a' | 'remaining_b' =
-          sourceId === sessionA ? 'remaining_a' : 'remaining_b';
+        const column = sourceId === sessionA ? 'remaining_a' : 'remaining_b';
         const remaining = link[column];
         if (remaining === 0 && !approvedRenewal) return 'exhausted';
-        const after = remaining === 0 ? 5 : remaining - 1;
         await trx
           .updateTable('session_links')
-          .set({ [column]: after })
+          .set({ [column]: remaining === 0 ? 5 : remaining - 1 })
           .where('session_a', '=', sessionA)
           .where('session_b', '=', sessionB)
           .execute();
@@ -1474,39 +1470,14 @@ export class EventStore implements EventSink {
             source_session_id: sourceId,
           })
           .execute();
-        refund = { column, before: remaining, after };
+        // The row lock keeps unlink and project changes from completing until
+        // the target has accepted this turn. Global serialization leaves pool
+        // capacity for conductor work that uses the same store.
+        await deliver?.();
         return 'reserved';
       });
-      if (reservation !== 'reserved' && reservation !== 'duplicate') return reservation;
-      try {
-        await deliver?.();
-      } catch (error) {
-        if (reservation === 'reserved' && refund) {
-          const refundDetails = refund;
-          await this.db.transaction().execute(async (trx) => {
-            const deleted = await trx
-              .deleteFrom('session_link_deliveries')
-              .where('invocation_id', '=', invocationId)
-              .returning('invocation_id')
-              .executeTakeFirst();
-            if (deleted) {
-              await trx
-                .updateTable('session_links')
-                .set({ [refundDetails.column]: refundDetails.before })
-                .where('session_a', '=', sessionA)
-                .where('session_b', '=', sessionB)
-                .where(refundDetails.column, '=', refundDetails.after)
-                .execute();
-            }
-          });
-        }
-        throw error;
-      }
-      return reservation;
     } finally {
       release();
-      if (this.sessionLinkDeliveryTails.get(key) === finished)
-        this.sessionLinkDeliveryTails.delete(key);
     }
   }
 

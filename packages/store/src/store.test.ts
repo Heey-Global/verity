@@ -47,13 +47,10 @@ const sampleEvents: AgentEvent[] = [
 ];
 
 describe('EventStore — linked session allowance', () => {
-  it('releases pool connections before concurrent target acceptance', async () => {
+  it('serializes concurrent acceptance so the pool cannot be exhausted', async () => {
     const pairCount = 11;
-    let arrived = 0;
-    let release!: () => void;
-    const allArrived = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    let active = 0;
+    let maxActive = 0;
     for (let index = 0; index < pairCount * 2; index += 1) {
       const id = `parallel-${index}`;
       await ctx.store.upsertProject({
@@ -79,14 +76,15 @@ describe('EventStore — linked session allowance', () => {
           `delivery-${index}`,
           false,
           async () => {
-            arrived += 1;
-            if (arrived === pairCount) release();
-            await allArrived;
+            active += 1;
+            maxActive = Math.max(maxActive, active);
             expect(await ctx.store.getSession(`parallel-${index * 2 + 1}`)).toBeDefined();
+            active -= 1;
           },
         ),
       ),
     );
+    expect(maxActive).toBe(1);
   }, 10_000);
 
   it('bounds each direction, renews only after approval, and does not charge retries', async () => {
@@ -108,6 +106,36 @@ describe('EventStore — linked session allowance', () => {
     });
     expect(await ctx.store.createSessionLink('s1', 's2')).toBe(true);
     expect(await ctx.store.createSessionLink('s2', 's1')).toBe(false);
+    let accept!: () => void;
+    let entered!: () => void;
+    const accepting = new Promise<void>((resolve) => {
+      accept = resolve;
+    });
+    const deliveryEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const inFlight = ctx.store.reserveSessionLinkMessage(
+      's1',
+      's2',
+      'in-flight',
+      false,
+      async () => {
+        entered();
+        await accepting;
+      },
+    );
+    await deliveryEntered;
+    const disconnect = ctx.store.deleteSessionLink('s1', 's2');
+    expect(
+      await Promise.race([
+        disconnect.then(() => 'disconnected'),
+        new Promise((resolve) => setTimeout(() => resolve('waiting'), 25)),
+      ]),
+    ).toBe('waiting');
+    accept();
+    expect(await inFlight).toBe('reserved');
+    expect(await disconnect).toBe(true);
+    expect(await ctx.store.createSessionLink('s1', 's2')).toBe(true);
     expect(await ctx.store.listSessionLinks('s1')).toEqual([
       { sessionId: 's1', peerSessionId: 's2', peerProjectId: 'p2', peerName: null },
     ]);
