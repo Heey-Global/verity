@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
+import { z } from 'zod';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { registerIntegrationRoutes } from './routes.js';
@@ -69,7 +70,15 @@ it('requires an explicit project binding before accepting chat, then updates edi
   expect(discovered.statusCode).toBe(200);
   const bindingsUrl = `/internal/integrations/matrix/bindings?accountId=${encodeURIComponent(accountId)}`;
   const workerRooms = async () =>
-    (await app.inject({ method: 'GET', url: bindingsUrl, headers: authorization })).json();
+    z
+      .object({
+        sources: z.array(
+          z.object({ sourceId: z.string(), status: z.string(), projectId: z.string().nullable() }),
+        ),
+      })
+      .parse(
+        (await app.inject({ method: 'GET', url: bindingsUrl, headers: authorization })).json(),
+      );
   expect((await workerRooms()).sources).toEqual([
     expect.objectContaining({ sourceId, status: 'pending' }),
   ]);
