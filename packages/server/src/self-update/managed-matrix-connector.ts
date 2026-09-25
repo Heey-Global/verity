@@ -96,7 +96,7 @@ export async function enableManagedMatrixConnector(managedRoot: string): Promise
   }
 }
 
-export type ManagedMatrixConnectorDocker = Pick<
+type ManagedMatrixConnectorDocker = Pick<
   DockerClient,
   | 'createContainer'
   | 'inspectContainer'
@@ -201,7 +201,7 @@ function initSpec(
   };
 }
 
-export function managedMatrixConnectorSpec(
+function managedMatrixConnectorSpec(
   image: string,
   deploymentId: string,
   architecture: 'amd64' | 'arm64',
