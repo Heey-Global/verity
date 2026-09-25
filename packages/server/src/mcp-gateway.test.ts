@@ -1,4 +1,4 @@
-import { secretAuditEventInputSchema } from '@verity/secret-contracts';
+import { gatewayToolNameSchema, secretAuditEventInputSchema } from '@verity/secret-contracts';
 import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/session';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -94,6 +94,44 @@ describe('MCP gateway — handshake and discovery (ADR 0014 D1)', () => {
     expect(JSON.stringify(tool?.inputSchema)).toContain('create_reply_draft');
     expect(JSON.stringify(tool?.inputSchema)).toContain('prepare_draft_send');
     expect(JSON.stringify(tool?.inputSchema)).toContain('send_draft');
+  });
+
+  it('declares every tool as a flat object schema clients accept', async () => {
+    // MCP requires `inputSchema.type: "object"` at the root and the Anthropic API refuses a
+    // root `oneOf`/`anyOf`/`allOf`. Claude Code validates the whole `tools/list` result, so one
+    // union-shaped tool made it drop EVERY Verity tool with no error the agent could see.
+    // Enumerate the served set from the name schema so a new union-shaped tool is covered.
+    const { gateway } = harness({ servedTools: [...gatewayToolNameSchema.options] });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    });
+    const tools = (
+      response.body as {
+        result: { tools: { name: string; inputSchema: Record<string, unknown> }[] };
+      }
+    ).result.tools;
+    expect(tools.map((tool) => tool.name)).toEqual(gatewayToolNameSchema.options);
+    for (const tool of tools) {
+      const { type, oneOf, anyOf, allOf } = tool.inputSchema;
+      expect({ name: tool.name, type, oneOf, anyOf, allOf }).toEqual({
+        name: tool.name,
+        type: 'object',
+        oneOf: undefined,
+        anyOf: undefined,
+        allOf: undefined,
+      });
+    }
+    // Flattening must keep the actions an agent needs to reach, send_draft above all.
+    const gmail = tools.find((tool) => tool.name === 'verity_gmail')?.inputSchema as {
+      properties: { action: { enum: string[] } };
+      required: string[];
+    };
+    expect(gmail.required).toEqual(['action']);
+    expect(gmail.properties.action.enum).toEqual(
+      expect.arrayContaining(['search', 'read_thread', 'create_draft', 'send_draft']),
+    );
   });
 
   it('echoes a protocol revision it speaks and falls back to its newest', async () => {
