@@ -140,16 +140,27 @@ These are distinct scopes:
   with its execution context; sandbox-supplied author fields are ignored.
   Overwrites, renames and deletions through that path are attributed revisions
   as well, audited like a member's deletion. Work without an interactive turn
-  (loops, delegated work) records the user it runs for; service-sponsored work
-  writes memory only through the broker, which records the sponsor. Entries
-  written before migration carry an unknown author rather than a fabricated one.
-  Every member with project read permission sees the author; members with
-  execution permission can delete the entry. The deletion is audited with the
-  deleting member, the original author and a hash of the deleted content, so
-  removed guidance keeps a traceable origin. Deletion from the memory store is
-  final by design; the audit keeps no content. Copies elsewhere, such as
-  backups, follow their own retention. Review stays after the fact as in ADR
-  0008; no approval step is added before an entry becomes visible.
+  (loops, delegated work) records the user it runs for. When that work used a
+  shared service, the audit additionally names the service and its owner; the
+  author stays the user. Entries written before migration carry an unknown
+  author rather than a fabricated one. Every member with project read permission
+  sees the author; members with execution permission can delete the entry. The
+  deletion is audited with the deleting member, the original author and the
+  keyed MAC of the deleted content, so removed guidance keeps an origin the
+  administrator can trace. A revision record holds the author, the time and a
+  keyed content MAC (under the instance's active audit MAC key,
+  `audit_mac_keys`, with the key ID stored alongside so MACs remain checkable
+  after rotation), never earlier content, so a deleted text cannot be confirmed
+  by guessing without the vault: the key material is encrypted under the store
+  cipher, and retired keys are kept for verification. The administrator, who can
+  unlock the vault, can still confirm guesses. In the memory store only the
+  current version's text exists; session history that recorded the writing tool
+  call follows its own retention. Deleting an entry removes that text for good,
+  while the revision records stay in the audit and cannot be deleted, so
+  provenance survives for the administrator and restoring content is possible
+  only from a backup. Copies elsewhere, such as backups, follow their own
+  retention. Review stays after the fact as in ADR 0008; no approval step is
+  added before an entry becomes visible.
 - **There are no private notes inside a project.** Everything in project
   knowledge and project memory is visible to all members. Personal material
   belongs in a personal project.
@@ -200,12 +211,12 @@ expose its effects through the worktree, commits and memory, and a visibility
 flag would promise protection it cannot give. Creating a session in a shared
 project makes its history visible to every project member; the app states this
 before creation. Sharing a previously personal project makes its existing
-sessions, project memory, knowledge and audit history visible as well, and the
-sharing flow says so before the first invitation is sent. A private project is
-the place for work that should remain personal. Unread state and notification
-preferences still belong to each user. Private sessions would require separate
-working state as well as separate history to provide a meaningful boundary, so
-they need a separate decision.
+sessions, project memory and knowledge visible as well, and the sharing flow
+says so before the first invitation is sent. A private project is the place for
+work that should remain personal. Unread state and notification preferences
+still belong to each user. Private sessions would require separate working state
+as well as separate history to provide a meaningful boundary, so they need a
+separate decision.
 
 The server records an immutable execution context when accepting a turn:
 
@@ -232,11 +243,13 @@ Verity does not promise how an external provider meters a subscription. Usage
 records distinguish the initiator from the credential owner when a shared
 service is explicitly selected.
 
-Retries, tool calls, delegated work, and automatic follow-up actions retain the
-initiating identity. Scheduled loops have an explicit sponsoring user and stop
-when that user's authorization or credentials are unavailable. Cross-project
-work additionally requires access to the destination project. It never adopts
-the destination owner's credentials.
+**There is no work without a user.** Every turn, loop, retry and delegated step
+runs in exactly one user's runtime on that user's behalf; a shared service only
+supplies a credential and never acts on its own. Retries, tool calls, delegated
+work, and automatic follow-up actions retain the initiating identity. Scheduled
+loops have an explicit sponsoring user and stop when that user's authorization
+or credentials are unavailable. Cross-project work additionally requires access
+to the destination project. It never adopts the destination owner's credentials.
 
 Another member cannot inject instructions into an active turn or answer its
 credential approval on behalf of the initiator. Their message becomes a new
@@ -388,16 +401,31 @@ than fabricated.
 
 **Membership changes are audited too.** Invitations, acceptances, permission
 changes, removals, the inviter's per-connection sharing decisions, and the
-administrator's Shared Knowledge inclusion are recorded with the acting user,
-so every past access can be traced to the decision that allowed it.
+administrator's Shared Knowledge inclusion are recorded with the acting user, so
+every past access can be traced to the decision that allowed it. The events that
+end access are recorded the same way: disabling and re-enabling a user, deleting
+a user together with the tombstone it leaves, removing a device, and deleting a
+connection with its owner, kind and revocation outcome (revoked, failed,
+confirmed by the administrator, or deleted locally because the user brought it).
+Tokens and upstream account data are never part of these records.
 
-**Audit visibility.** Members read the audit records of projects they belong to,
-including entries from before they joined, matching their access to earlier
-session history; the administrator reads all of them. Other members' personal
-connections appear by kind and owning member; upstream account identifiers in
-the signed payload are redacted when the record is read, not removed from the
-chain. No product interface edits or deletes entries, including the
-administrator's; the integrity chain makes a change made outside it detectable.
+**Audit visibility.** Only the instance administrator reads audit records; team
+members do not, not even for their own projects. Member-facing views such as
+session history, cost attribution or the author of a memory entry (section 1)
+are product data, not audit reads, and stay as specified. From migration on,
+upstream account identifiers are not written into audit payloads. Entries
+recorded before migration stay unchanged, because altering them would break the
+chain, and an export carries them as recorded. No product interface edits or
+deletes entries, including the administrator's.
+
+**Audit integrity.** The server verifies the chain (`verifySecretAuditChain`)
+periodically and whenever the audit is opened, and shows the administrator
+either an intact result or a warning from the first entry that does not match.
+The administrator can export the full chain and verify it independently of the
+server. The chain makes changes made outside Verity detectable, such as a
+tampered backup or direct database access. It does not fully protect against
+an administrator in complete control of the server, consistent with the trust
+model in section 6.
 
 **User IDs are permanent.** A user ID is never reassigned. Deleting a user
 leaves a tombstone carrying the display name and the public halves of the
@@ -535,9 +563,12 @@ or request the vault master password from them.
 
 When a member's work is blocked by a locked vault, the administrator receives
 one push notification per locked period that a team member is waiting for the
-instance to be unlocked. Automatic unlock (key file, hardware-backed key)
-changes the security of the whole instance and needs its own ADR; it is out of
-scope here.
+instance to be unlocked. The existing biometric unlock of the administrator's
+app (the master password stored on the device behind Face ID or equivalent)
+usually makes tapping the notification enough. It still requires the
+administrator's presence and is not automatic unlock; unlocking without the
+administrator (key file, hardware-backed key) changes the security of the whole
+instance and needs its own ADR; it is out of scope here.
 
 Removing membership or disabling a user invalidates queued work, active grants,
 stream access, approvals, and relevant background work. Gateway and broker
@@ -550,9 +581,40 @@ the project (their Doppler token and the MCP connections they own there). Other
 members who used one of those shared MCP connections are notified, and the
 connection shows as required again until someone provides a replacement.
 Deleting a user deletes all of their personal connections, including Claude,
-Codex, Google, GitHub and their private signing key, and revokes the upstream
-grants wherever the provider supports it. Their shared MCP connections are
-handled in every project as on membership removal.
+Codex, Google, GitHub and their private signing key. Their shared MCP
+connections are handled in every project as on membership removal.
+
+**Verity revokes upstream only what Verity issued.** Grants obtained through
+Verity's own authorization flows (Google, the GitHub App user authorization,
+Claude and Codex logins where the provider allows revocation) and tokens Verity
+minted itself (the per-project Doppler tokens derived from the administrator's
+connection) are revoked at the provider. Membership removal revokes only the
+project-scoped ones (Verity-minted Doppler tokens and Verity-authorized MCP
+grants for that project); personal grants serve all of a user's projects and are
+revoked only on user deletion. Credentials a user created elsewhere and pasted
+in (a Doppler service token, an API key) belong to that user's upstream account
+and may serve other purposes; Verity deletes its copy only and tells the user to
+revoke the credential at the provider if it is no longer needed there; on user
+deletion that notice goes to the administrator instead.
+
+Ending access never waits for the vault: disabling a user or removing a
+membership takes effect immediately, locked or not, and makes the affected
+connections unselectable. Deleting connections requires an unlocked vault,
+because upstream revocation needs the decrypted token and a user's connection
+set is handled as one operation. A user deletion against a locked vault is
+therefore rejected rather than queued, and the connections of a membership
+removed while locked are revoked and deleted at the next unlock, and the
+administrator's app shows them as pending revocations until then; upstream they
+stay valid for that window. That pending work targets the connection IDs
+recorded at removal, so a connection added after a later re-invitation is never
+affected. Through the administrator's app the vault is normally already
+unlocked, and revocation and deletion then run in the same operation as the
+removal. If a required upstream revocation fails (provider unreachable), the
+connection stays encrypted, unselectable and listed for the administrator, who
+can retry or confirm that it was removed at the provider; only then is the
+ciphertext deleted. A user deletion still completes in that case: the tombstone
+exists, and the pending connections stay attached to it until each is resolved.
+The same applies to connections deleted on membership removal.
 
 ### 7. Uplink authorization contract and the app
 
@@ -691,7 +753,7 @@ before; that is the acceptance test for step 1.
   stream, search result, preview, notification, or knowledge mount.
 - Every project member can read every session and its history in a shared
   project; session creation and sharing a previously personal project
-  communicate that visibility, the latter including memory, knowledge and audit
+  communicate that visibility, the latter including memory and knowledge
   history. Unread state and notification preferences remain per user.
 - Project members see the same project files and project knowledge. Shared
   Knowledge is unavailable through mounts and APIs unless the administrator
@@ -703,7 +765,9 @@ before; that is the acceptance test for step 1.
 - Every overview update and insight written after migration names the member who
   wrote it or whose turn produced it, derived by the server even when the
   sandbox supplies a different author; a member with execution permission can
-  delete it, and the deletion is audited.
+  delete it, and the deletion is audited. After deletion no earlier content
+  of the entry is retrievable from the store, while every revision's author,
+  time and keyed content MAC remains in the audit.
 - Two members alternate turns in one session: each turn uses the correct AI,
   Git, signing, Google and Doppler connection while preserving shared state.
   The second turn sees the complete state of the first even when the second
@@ -732,12 +796,18 @@ before; that is the acceptance test for step 1.
   when a member uses a shared MCP service. Personal connections retain their
   own attribution; sandbox-supplied actor fields cannot override it, and secret
   values do not appear in audit payloads.
-- Membership changes, sharing decisions and Shared Knowledge inclusion appear
-  in the audit with the acting user. No product interface, including the
-  administrator's, alters an entry. A change made outside it is detectable.
-  Records of a deleted user still resolve to that user's tombstone.
+- Membership changes, sharing decisions, Shared Knowledge inclusion, user
+  disabling, re-enabling and deletion, device removal and connection deletion
+  with its revocation outcome appear in the audit with the acting user. No
+  product interface, including the administrator's, alters an entry. A change
+  made outside it is detectable. Records of a deleted user still resolve to that
+  user's tombstone.
+- Audit routes and exports reject every caller except the instance
+  administrator, including members of the project. A deliberately altered
+  chain entry makes the administrator's view show a warning from that entry on.
 - Approvals, delegated work, loops, and transcription retain the correct user
-  or explicitly selected service sponsor.
+  and run in that user's runtime; where a shared service was used, the audit
+  also names the service and its owner.
 - Revocation blocks queued and subsequent operations, including on already
   connected clients; prior accepted upstream effects are recorded accurately.
   Expired or revoked Uplink authorization suspends team access on direct and
@@ -755,10 +825,23 @@ before; that is the acceptance test for step 1.
   administrator per locked period.
 - Removing a membership deletes that member's Doppler token and owned MCP
   connections for the project; deleting a user deletes all of their personal
-  connections and revokes upstream grants where supported. No deleted
-  credential remains selectable for queued or background work. In both cases
-  members who used a removed shared MCP connection are notified and see it as
-  required again.
+  connections, revoking upstream what Verity issued. No deleted credential
+  remains selectable for queued or background work. In both cases members who
+  used a removed shared MCP connection are notified and see it as required
+  again.
+- Membership removal revokes only project-scoped grants and tokens issued by
+  Verity; user deletion revokes all grants and tokens Verity issued; credentials
+  a user pasted in are deleted locally, not revoked, and the user is told to
+  revoke them at the provider.
+- Connections recorded at a membership removal made while the vault was locked
+  are revoked and deleted at the next unlock.
+- A connection added after re-invitation survives the pending deletion of the
+  connections recorded at an earlier removal made while the vault was locked.
+- Disabling a user or removing a membership ends access immediately even with
+  the vault locked. Deleting a user against a locked vault is rejected. A failed
+  upstream revocation leaves the connection unselectable and listed for the
+  administrator; its ciphertext is deleted only after a successful retry or the
+  administrator's confirmation.
 - An instance with a single user behaves identically before and after
   migration.
 
