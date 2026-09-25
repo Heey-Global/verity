@@ -148,21 +148,23 @@ Service events:
 
 | Event                | Required payload                                                                 | Core action                                                             |
 | -------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `team.join.pending`  | `invitationId`, `redemptionId`, `projectId`, `permissions`, `bootstrapSessionId` | Recheck local invitation and accept only the scoped bootstrap transport |
+| `team.join.pending`  | `requestId`, `sessionId`, `invitationId`, `redemptionId`, `projectId`, `permissions`, `bootstrapSessionId`, `decisionExpiresAt`, `capability` | Persist the bound pending context, recheck local invitation, then send `session.accept` or `session.refuse` |
 | `team.grant.changed` | `generation`, `assertion`                                                        | Verify and persist; never broaden local membership                      |
 | `team.grant.revoked` | `generation`, `reason`                                                           | Persist revocation floor and suspend team work before acknowledging     |
 
-Reply `team.event.ack` with `eventId` only after the durable transition. Delivery
-is at least once; duplicate events have no extra effect. On reconnect fetch
+Reply `team.event.ack` with `eventId` only after the durable transition, except
+that the bound `team.join.pending` admission uses durable `session.accept` as
+specified by the [bootstrap interface](uplink-team-bootstrap-interface-v1.md).
+Delivery is at least once; duplicate events have no extra effect. On reconnect fetch
 `team.state` before enabling new team operations. A service rollback must not
 reset the persisted revocation floor.
 
 ## Redemption and atomic membership
 
-1. The app opens the invitation through the trusted Uplink HTTPS bootstrap
-   endpoint. Uplink checks invitation state and current eligibility and creates
-   a short-lived redemption reservation. Exact endpoint and bootstrap framing
-   are part of the handshake freeze gate above, not an existing public API.
+1. The app opens the invitation through Uplink's trusted bootstrap admission
+   WSS. The [one-request bootstrap interface](uplink-team-bootstrap-interface-v1.md)
+   atomically creates a short-lived redemption bound to one tunnel. This is a
+   proposed new endpoint profile, not an existing public API.
 2. Uplink emits `team.join.pending`. The core rechecks that the inviter remains
    authorized, the invitation is active and the project is shareable. A pending
    bootstrap channel is allowed to complete joining only; it cannot browse
@@ -313,9 +315,9 @@ never changes local core state.
 The service assertion covers: `issuer`, `audience: "verity-core-team"`,
 `installationId`, `teamVersion: 1`, `grantId`, `generation`,
 `capabilities: ["team-sharing"]`, `issuedAt`, `notBefore`, `expiresAt`.
-The signature envelope identifies a trusted signing key and fixed signature
-profile. Algorithm, canonical bytes, test keys, rotation and key distribution
-must be frozen with cryptographic verification vectors before either side ships;
+The [grant signing profile](uplink-team-grant-signing-v1.md) proposes the exact
+JWS bytes, Ed25519 key rules, lifetime and rotation with verification vectors.
+Both sides must approve its production key bundle and vectors before activation;
 never accept an algorithm or key URL merely because the assertion supplies it.
 
 Validate signature, issuer, audience, instance, version, capability, time and
@@ -364,10 +366,15 @@ and vault rules. Already accepted upstream actions cannot be undone.
 All failed requests return `team.error` with `requestId`, `teamVersion`, `code`,
 `retryable` and optional integer `retryAfterSeconds`. Codes:
 `unsupported_version`, `not_entitled`, `authorization_expired`, `revoked`,
-`forbidden`, `invitation_unavailable`, `idempotency_conflict`, `invalid_request`,
+`forbidden`, `invitation_unavailable`, `idempotency_conflict`, `member_limit_reached`, `invalid_request`,
 `temporarily_unavailable`, `internal`. Unknown codes grant nothing. The UI maps
 codes to messages; service free text is not authority or executable instruction.
 Retries use bounded backoff and the same operation ID for mutations.
+`member_limit_reached` is retryable only while the original redemption receipt
+is valid: the member stays pending and the same commit can succeed after a seat
+is freed. After its age limit, `invitation_unavailable` is terminal even if a
+seat later opens. Uplink enforces at most ten active memberships per installation
+atomically at commit; reservations do not count as active memberships.
 Unauthenticated callers cannot distinguish unknown, used and cancelled invites.
 
 Never send provider tokens, Google grants, Doppler secrets, git signing keys,
