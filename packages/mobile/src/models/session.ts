@@ -459,7 +459,8 @@ export class SessionModel {
     if (items.length === 0) return [];
     const inTranscript = new Map<string, number>();
     for (const m of this._session.messages) {
-      if (m.kind === 'user-text') inTranscript.set(m.text, (inTranscript.get(m.text) ?? 0) + 1);
+      if (m.kind === 'user-text' && !m.peer)
+        inTranscript.set(m.text, (inTranscript.get(m.text) ?? 0) + 1);
     }
     const used = new Map<string, number>();
     const pending: T[] = [];
@@ -478,6 +479,7 @@ export class SessionModel {
       const delivered = this._session.messages.find(
         (message) =>
           message.kind === 'user-text' &&
+          !message.peer &&
           message.text === item.text &&
           messageSeq(message.id) > sinceSeq &&
           !claimed.has(message.id),
@@ -516,6 +518,7 @@ export class SessionModel {
         const delivered = this._session.messages.find(
           (m) =>
             m.kind === 'user-text' &&
+            !m.peer &&
             m.text === entry.text &&
             !claimed.has(m.id) &&
             messageSeq(m.id) > entry.sinceSeq,

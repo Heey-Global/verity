@@ -688,6 +688,7 @@ export interface TurnOptions {
 export interface DispatchTurnOptions {
   /** Transcript text to show for this turn when it differs from the backend prompt. */
   displayPrompt?: string;
+  peer?: { sessionId: string; projectId: string; label: string; message: string };
   /** Client-minted idempotency key (ADR 0008). A background-woken app can be
    * suspended by iOS before it reads the 202 and re-flush the same quick reply on
    * the next foreground; keyed dispatches dedupe so the replay returns the prior
@@ -701,6 +702,7 @@ interface QueuedConductorTurn {
   prompt: string;
   opts: TurnOptions;
   displayPrompt?: string;
+  peer?: { sessionId: string; projectId: string; label: string; message: string };
   /** Stored attachment refs used by queue-status consumers for lightweight previews. */
   displayAttachments?: Attachment[];
   /** True when recovery is replaying a tail prompt event and must not append it again. */
@@ -3095,7 +3097,7 @@ export class Conductor {
         // The seq counter orders by append time, not logical time, so under extreme
         // store contention the prompt could theoretically land just after the reply
         // — a transcript blemish, never a lost turn (the message is already in claude).
-        void this.persistSteeredPrompt(sessionId, displayPrompt, opts);
+        void this.persistSteeredPrompt(sessionId, displayPrompt, opts, dispatchOpts.peer);
         return { queued: false };
       }
       if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
@@ -3111,6 +3113,7 @@ export class Conductor {
         const storedOpts = await this.toStorableOpts(
           opts,
           displayPrompt === prompt ? undefined : displayPrompt,
+          dispatchOpts.peer,
         );
         await this.deps.store.enqueueTurn({
           id,
@@ -3127,6 +3130,7 @@ export class Conductor {
           prompt,
           opts,
           ...(displayPrompt !== prompt ? { displayPrompt } : {}),
+          ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
           ...(storedOpts.attachments !== undefined
             ? { displayAttachments: storedOpts.attachments }
             : {}),
@@ -3151,6 +3155,7 @@ export class Conductor {
     const session = await this.accept(sessionId, prompt, opts); // lock held on success
     this.launchAcceptedTurn(sessionId, prompt, session, opts, displayPrompt, {
       persistPrompt: true,
+      ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
     });
     return { queued: false };
   }
@@ -3182,6 +3187,7 @@ export class Conductor {
       dispatchOpts.displayPrompt ?? prompt,
       {
         persistPrompt: true,
+        ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
       },
     );
     return { accepted: true };
@@ -3193,7 +3199,11 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
     displayPrompt: string,
-    launchOpts: { persistPrompt: boolean; autoResumeCount?: number },
+    launchOpts: {
+      persistPrompt: boolean;
+      autoResumeCount?: number;
+      peer?: { sessionId: string; projectId: string; label: string; message: string };
+    },
   ): void {
     // Register the in-flight handle synchronously so the operator can cancel/steer
     // from now, even before the async run spawns (#79/#101). Held so an auto-resume
@@ -3213,6 +3223,8 @@ export class Conductor {
           sessionId,
           displayPrompt,
           await this.storeAttachments(opts.attachments),
+          false,
+          launchOpts.peer,
         );
         this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       }
@@ -3518,6 +3530,7 @@ export class Conductor {
           ...(row.opts.displayPrompt !== undefined
             ? { displayPrompt: row.opts.displayPrompt }
             : {}),
+          ...(row.opts.peer ? { peer: row.opts.peer } : {}),
         });
         this.queues.set(row.sessionId, queue);
         sessions.add(row.sessionId);
@@ -4390,6 +4403,7 @@ export class Conductor {
           next.displayPrompt ?? next.prompt,
           {
             persistPrompt: false,
+            ...(next.peer ? { peer: next.peer } : {}),
             ...(next.autoResumeCount === undefined
               ? {}
               : { autoResumeCount: next.autoResumeCount }),
@@ -4425,8 +4439,13 @@ export class Conductor {
           const text = next.displayPrompt ?? next.prompt;
           const event: AgentEvent =
             attachments && attachments.length > 0
-              ? { t: 'prompt', text, attachments: [...attachments] }
-              : { t: 'prompt', text };
+              ? {
+                  t: 'prompt',
+                  text,
+                  attachments: [...attachments],
+                  ...(next.peer ? { peer: next.peer } : {}),
+                }
+              : { t: 'prompt', text, ...(next.peer ? { peer: next.peer } : {}) };
           const persisted = await this.deps.store.drainQueuedTurn(next.id, sessionId, event);
           if (!persisted) {
             // The row was already drained/retracted by a concurrent path (run-once
@@ -4437,6 +4456,7 @@ export class Conductor {
           this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
           this.launchAcceptedTurn(sessionId, next.prompt, session, next.opts, text, {
             persistPrompt: false,
+            ...(next.peer ? { peer: next.peer } : {}),
           });
         } catch (error) {
           // The atomic drain rolled back (row still durable, prompt not persisted).
@@ -4781,7 +4801,11 @@ export class Conductor {
    * screenshot survives a restart without bloating the row. The inverse of
    * {@link toRuntimeOpts}.
    */
-  private async toStorableOpts(opts: TurnOptions, displayPrompt?: string): Promise<QueuedTurnOpts> {
+  private async toStorableOpts(
+    opts: TurnOptions,
+    displayPrompt?: string,
+    peer?: { sessionId: string; projectId: string; label: string; message: string },
+  ): Promise<QueuedTurnOpts> {
     const attachments = await this.storeAttachments(opts.attachments);
     return {
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
@@ -4791,6 +4815,7 @@ export class Conductor {
       ...(opts.disallowedTools !== undefined ? { disallowedTools: [...opts.disallowedTools] } : {}),
       ...(attachments !== undefined ? { attachments } : {}),
       ...(displayPrompt !== undefined ? { displayPrompt } : {}),
+      ...(peer ? { peer } : {}),
     };
   }
 
@@ -4842,6 +4867,7 @@ export class Conductor {
     text: string,
     attachments?: readonly Attachment[],
     steered = false,
+    peer?: { sessionId: string; projectId: string; label: string; message: string },
   ): Promise<void> {
     const event =
       attachments && attachments.length > 0
@@ -4850,8 +4876,14 @@ export class Conductor {
             text,
             attachments: [...attachments],
             ...(steered ? { steered } : {}),
+            ...(peer ? { peer } : {}),
           }
-        : { t: 'prompt' as const, text, ...(steered ? { steered } : {}) };
+        : {
+            t: 'prompt' as const,
+            text,
+            ...(steered ? { steered } : {}),
+            ...(peer ? { peer } : {}),
+          };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
     this.deps.bus?.publish(sessionId, { seq, ts, event });
   }
@@ -4868,9 +4900,16 @@ export class Conductor {
     sessionId: string,
     prompt: string,
     opts: TurnOptions,
+    peer?: { sessionId: string; projectId: string; label: string; message: string },
   ): Promise<void> {
     try {
-      await this.emitPrompt(sessionId, prompt, await this.storeAttachments(opts.attachments), true);
+      await this.emitPrompt(
+        sessionId,
+        prompt,
+        await this.storeAttachments(opts.attachments),
+        true,
+        peer,
+      );
     } catch (error) {
       this.reportTurnError(sessionId, error);
     }

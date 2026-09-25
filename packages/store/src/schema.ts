@@ -49,6 +49,24 @@ export interface SessionsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Explicit pair of sessions allowed to exchange bounded agent messages. */
+interface SessionLinksTable {
+  session_a: string;
+  session_b: string;
+  remaining_a: number;
+  remaining_b: number;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** One durable reservation per gateway invocation, including transport retries. */
+interface SessionLinkDeliveriesTable {
+  invocation_id: string;
+  session_a: string;
+  session_b: string;
+  source_session_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 /** One native Google Workspace file explicitly assigned to a session. */
 interface SessionSlideDecksTable {
   session_id: string;
@@ -563,6 +581,7 @@ export interface QueuedTurnOpts {
   disallowedTools?: string[];
   attachments?: Attachment[];
   displayPrompt?: string;
+  peer?: { sessionId: string; projectId: string; label: string; message: string };
 }
 
 /**
@@ -1196,6 +1215,8 @@ interface SessionMovesTable {
 }
 
 export interface Database {
+  session_links: SessionLinksTable;
+  session_link_deliveries: SessionLinkDeliveriesTable;
   session_moves: SessionMovesTable;
   integration_accounts: IntegrationAccountsTable;
   matrix_connector_config: MatrixConnectorConfigTable;

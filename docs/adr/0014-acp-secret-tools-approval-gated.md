@@ -667,3 +667,22 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
 - `opencode-mcp` in `@verity/secret-contracts` still names nothing. It is a label
   for an ATTESTED native relay; gateway calls carry `acp-mcp`, whose premise is
   that nothing attests them.
+
+## Amendment 5 (2026-09-25) — explicit linked-session messages
+
+ADR 0024 adds `verity_list_linked_sessions` and `verity_send_session_message` to
+the gateway. This is a narrow exception to D2's per-call card rule, rather than
+an extension of the standing-grant store. The user creates one exact pair of
+sessions through the authenticated app. Listing returns only that caller's
+linked peers without a card. Sending consumes a durable allowance of six
+messages per direction; once exhausted, the next message requires a fresh card
+showing its complete content and target. Approval both delivers that message
+and renews the same directional allowance. Denial delivers nothing.
+
+The gateway still MAC-keys and audits every invocation, including automatic
+sends and denied renewals. Its authenticated session and turn bind the source;
+the server resolves the target from the link and reserves the allowance under a
+row lock through target acceptance. The card decision is passed to that
+reservation, so a concurrent send cannot convert an exhausted automatic call
+into an unapproved renewal. Link creation, revocation, provenance, and the
+cross-project information-flow decision are recorded in ADR 0024.

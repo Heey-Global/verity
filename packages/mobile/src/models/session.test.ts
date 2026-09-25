@@ -1909,6 +1909,34 @@ describe('SessionModel — server activity + queued messages', () => {
     model.stop();
   });
 
+  it('does not treat a peer message with the same text as a delivered user turn', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = {
+      sendTurn: vi.fn(),
+      getSession: vi.fn().mockResolvedValue({ resumable: true }),
+      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getActivity: vi
+        .fn()
+        .mockResolvedValue({ busy: true, queued: [{ id: 'q1', text: 'same words' }] }),
+    } as unknown as VerityClient;
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    model.start();
+    await flush();
+    sockets[0]?.emitEvent(1, {
+      t: 'prompt',
+      text: 'Untrusted peer envelope',
+      peer: {
+        sessionId: 'peer',
+        projectId: 'project-b',
+        label: 'B · peer',
+        message: 'same words',
+      },
+    });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 }));
+    expect(model.state.waitingMessages).toEqual([{ id: 'q1', text: 'same words' }]);
+    model.stop();
+  });
+
   it('does not let an older identical prompt hide a newly observed waiting message', async () => {
     const { connect, sockets } = recordingConnect();
     let resolveActivity!: (value: {

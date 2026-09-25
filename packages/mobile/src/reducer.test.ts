@@ -106,6 +106,24 @@ describe('SessionReducer', () => {
     expect(r.messages[1]).toMatchObject({ kind: 'user-text', text: 'now do the next thing' });
   });
 
+  it('keeps a linked agent message distinct from a user prompt', () => {
+    const r = new SessionReducer();
+    const peer = {
+      sessionId: 'other',
+      projectId: 'project-b',
+      label: 'project-b · API work',
+      message: 'Review this contract',
+    };
+    r.apply(1, { t: 'prompt', text: 'Untrusted peer envelope', peer });
+    expect(r.messages[0]).toMatchObject({
+      kind: 'user-text',
+      text: 'Review this contract',
+      peer: { sessionId: 'other', projectId: 'project-b', label: peer.label },
+    });
+    r.apply(2, { t: 'prompt', text: 'Review this contract' });
+    expect(r.messages[1]).not.toHaveProperty('peer');
+  });
+
   it('carries image attachments from a prompt event onto the user-text message', () => {
     const r = new SessionReducer();
     const attachments = [{ kind: 'image' as const, mediaType: 'image/png' as const, data: 'aGk=' }];

@@ -202,7 +202,12 @@ export interface McpGatewayDeps {
    * The call remains authenticated, MAC-keyed, audited, and subject to `authorizeCall` plus the
    * executor's own checks; only the per-call permission card is skipped. */
   hasStandingAuthorization?(
-    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName; request: unknown },
+    input: McpGatewayCaller & {
+      projectId: string;
+      toolName: GatewayToolName;
+      request: unknown;
+      invocationId: string;
+    },
   ): Promise<boolean>;
   /** Execute the approved call. Resolves with the tool's result, or throws if the server
    *  could not serve it (sealed store, missing binding, transport failure). */
@@ -212,6 +217,8 @@ export interface McpGatewayDeps {
       callId: string;
       /** Stable across an MCP transport retry of the same JSON-RPC invocation. */
       invocationId: string;
+      /** Whether this invocation passed a fresh permission card. */
+      approvedByCard?: boolean;
       toolName: GatewayToolName;
       request: unknown;
     },
@@ -248,6 +255,13 @@ const TOOL_SCHEMAS = {
   verity_secret_run: trustedCliRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
+  verity_send_session_message: z
+    .object({
+      targetSessionId: z.string().min(1).max(128),
+      message: z.string().trim().min(1).max(20_000),
+    })
+    .strict(),
+  verity_list_linked_sessions: z.object({}).strict(),
   verity_session_progress: sessionProgressRequestSchema,
   verity_recent_session_messages: recentSessionMessagesRequestSchema,
   verity_publish_session_progress: publishSessionProgressRequestSchema,
@@ -368,6 +382,10 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_secret_run: TRUSTED_CLI_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
+  verity_send_session_message:
+    'Send a message to an explicitly linked session by its session id. Call verity_list_linked_sessions to get the target id. The message is attributed to this agent in the target chat. A small number of messages are allowed automatically; further sends ask the user to approve the message and renew the allowance.',
+  verity_list_linked_sessions:
+    'List only the project sessions explicitly linked to this session, including their session ids and project names. Use this to choose a target for verity_send_session_message.',
   verity_session_progress: SESSION_PROGRESS_TOOL_DESCRIPTION,
   verity_recent_session_messages: RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
   verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
@@ -634,6 +652,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
 
     let answer: ExternalPermissionAnswer;
     let standingAuthorization = false;
+    const invocationId = mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac);
     if (deps.hasStandingAuthorization !== undefined) {
       try {
         standingAuthorization = await deps.hasStandingAuthorization({
@@ -642,6 +661,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           turnId,
           toolName,
           request: request.data,
+          invocationId,
         });
       } catch {
         return reject(
@@ -722,7 +742,8 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         sessionId,
         turnId,
         callId,
-        invocationId: mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac),
+        invocationId,
+        approvedByCard: !standingAuthorization,
         toolName: toolName,
         request: request.data,
       });

@@ -3060,6 +3060,50 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('session_moves').execute();
     },
   },
+  '0110_session_links': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('session_links')
+        .addColumn('session_a', 'text', (c) =>
+          c.notNull().references('sessions.session_id').onDelete('cascade'),
+        )
+        .addColumn('session_b', 'text', (c) =>
+          c.notNull().references('sessions.session_id').onDelete('cascade'),
+        )
+        .addColumn('remaining_a', 'integer', (c) => c.notNull().defaultTo(6))
+        .addColumn('remaining_b', 'integer', (c) => c.notNull().defaultTo(6))
+        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .addPrimaryKeyConstraint('session_links_pk', ['session_a', 'session_b'])
+        .addCheckConstraint('session_links_order', sql`session_a < session_b`)
+        .addCheckConstraint('session_links_remaining_a', sql`remaining_a >= 0`)
+        .addCheckConstraint('session_links_remaining_b', sql`remaining_b >= 0`)
+        .execute();
+      await db.schema
+        .createIndex('session_links_b_idx')
+        .on('session_links')
+        .column('session_b')
+        .execute();
+      await db.schema
+        .createTable('session_link_deliveries')
+        .addColumn('invocation_id', 'text', (c) => c.primaryKey())
+        .addColumn('session_a', 'text', (c) => c.notNull())
+        .addColumn('session_b', 'text', (c) => c.notNull())
+        .addColumn('source_session_id', 'text', (c) => c.notNull())
+        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .addForeignKeyConstraint(
+          'session_link_deliveries_link_fk',
+          ['session_a', 'session_b'],
+          'session_links',
+          ['session_a', 'session_b'],
+          (c) => c.onDelete('cascade'),
+        )
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('session_link_deliveries').execute();
+      await db.schema.dropTable('session_links').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

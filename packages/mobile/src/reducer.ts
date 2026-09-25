@@ -251,7 +251,16 @@ export class SessionReducer {
           id: `user-${String(seq)}`,
           localId: null,
           createdAt: ts,
-          text: event.text,
+          text: event.peer?.message ?? event.text,
+          ...(event.peer
+            ? {
+                peer: {
+                  sessionId: event.peer.sessionId,
+                  projectId: event.peer.projectId,
+                  label: event.peer.label,
+                },
+              }
+            : {}),
           ...(event.attachments && event.attachments.length > 0
             ? { attachments: event.attachments }
             : {}),

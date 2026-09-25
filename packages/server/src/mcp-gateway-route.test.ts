@@ -78,6 +78,7 @@ function build(
     enforceAuth?: boolean;
     /** Advertise the control-plane session tools, as `embedded.ts` does for that project. */
     sessionTools?: boolean;
+    linkedTools?: boolean;
     /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
     authorizeCall?: McpGatewayDeps['authorizeCall'];
   } = {},
@@ -95,7 +96,9 @@ function build(
         ? ['verity_knowledge']
         : options.trustedCli === true
           ? ['verity_http_request', 'verity_secret_run']
-          : ['verity_http_request'],
+          : options.linkedTools === true
+            ? ['verity_send_session_message', 'verity_list_linked_sessions']
+            : ['verity_http_request'],
     ...(options.sessionTools === true
       ? {
           extraToolsForProject: () =>
@@ -175,7 +178,7 @@ function build(
     // live permission state, and `verity_session_handoff` delivers through the conductor.
     // Wired only when those tools are advertised, so every other test keeps the
     // absent-surface property above.
-    ...(options.sessionTools === true
+    ...(options.sessionTools === true || options.linkedTools === true
       ? {
           pendingPermissions: () => [],
           isBusy: () => false,
@@ -287,6 +290,81 @@ async function withListener(
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+it('delivers linked agent messages automatically until a renewal card is needed', async () => {
+  const harness = build({ linkedTools: true });
+  for (const [id, repo] of [
+    ['p1', 'alpha'],
+    ['p2', 'beta'],
+  ] as const) {
+    await harness.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo,
+      cloneDir: `__local__-${repo}`,
+      containerName: `verity-${repo}`,
+      state: 'active',
+    });
+  }
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-linked-s1',
+    model: 'claude-opus-5',
+  });
+  await harness.store.createSession({
+    sessionId: 's2',
+    projectId: 'p2',
+    worktree: '/tmp/verity-linked-s2',
+    model: 'claude-opus-5',
+  });
+  await harness.store.createSessionLink('s1', 's2');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    for (let id = 1; id <= 7; id += 1) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id,
+        method: 'tools/call',
+        params: {
+          name: 'verity_send_session_message',
+          arguments: { targetSessionId: 's2', message: `Question ${id}` },
+        },
+      });
+      expect(response.status).toBe(200);
+      expect(
+        (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+      ).toBeUndefined();
+      if (id === 6) {
+        const retry = await postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: {
+            name: 'verity_send_session_message',
+            arguments: { targetSessionId: 's2', message: `Question ${id}` },
+          },
+        });
+        expect(retry.status).toBe(200);
+        expect(harness.approvals).toHaveLength(0);
+      }
+    }
+  });
+  // The harness records attempts; the real conductor deduplicates the retry by clientReplyId.
+  expect(harness.dispatches).toHaveLength(8);
+  expect(harness.dispatches[6]?.dispatchOpts.clientReplyId).toBe(
+    harness.dispatches[5]?.dispatchOpts.clientReplyId,
+  );
+  expect(
+    harness.approvals.filter((approval) => approval.toolName === 'verity_send_session_message'),
+  ).toHaveLength(1);
+  expect(harness.dispatches[0]).toMatchObject({
+    sessionId: 's2',
+    dispatchOpts: { peer: { sessionId: 's1', projectId: 'p1', message: 'Question 1' } },
+  });
+  expect(harness.dispatches[0]?.prompt).toContain('agent-to-agent material');
+});
 
 describe('POST /internal/mcp (loopback MCP gateway)', () => {
   it('accepts an escaped Markdown document within the stored byte limit', async () => {

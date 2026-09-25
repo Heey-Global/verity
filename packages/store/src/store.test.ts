@@ -46,6 +46,145 @@ const sampleEvents: AgentEvent[] = [
   { t: 'raw', backend: 'claude-code', payload: { nested: { a: 1 }, list: [1, 2] } },
 ];
 
+describe('EventStore — linked session allowance', () => {
+  it('serializes concurrent acceptance so the pool cannot be exhausted', async () => {
+    const pairCount = 11;
+    let active = 0;
+    let maxActive = 0;
+    for (let index = 0; index < pairCount * 2; index += 1) {
+      const id = `parallel-${index}`;
+      await ctx.store.upsertProject({
+        id,
+        owner: 'local',
+        repo: id,
+        containerName: `test-${id}`,
+        state: 'active',
+      });
+      await ctx.store.createSession({
+        sessionId: id,
+        worktree: `/wt/${id}`,
+        model: session.model,
+        projectId: id,
+      });
+      if (index % 2 === 1) await ctx.store.createSessionLink(`parallel-${index - 1}`, id);
+    }
+    await Promise.all(
+      Array.from({ length: pairCount }, (_, index) =>
+        ctx.store.reserveSessionLinkMessage(
+          `parallel-${index * 2}`,
+          `parallel-${index * 2 + 1}`,
+          `delivery-${index}`,
+          false,
+          async () => {
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            expect(await ctx.store.getSession(`parallel-${index * 2 + 1}`)).toBeDefined();
+            active -= 1;
+          },
+        ),
+      ),
+    );
+    expect(maxActive).toBe(1);
+  }, 10_000);
+
+  it('bounds each direction, renews only after approval, and does not charge retries', async () => {
+    for (const id of ['p1', 'p2']) {
+      await ctx.store.upsertProject({
+        id,
+        owner: 'local',
+        repo: id,
+        containerName: `test-${id}`,
+        state: 'active',
+      });
+    }
+    await ctx.store.createSession({ ...session, projectId: 'p1' });
+    await ctx.store.createSession({
+      sessionId: 's2',
+      worktree: '/wt/agent-s2',
+      model: session.model,
+      projectId: 'p2',
+    });
+    expect(await ctx.store.createSessionLink('s1', 's2')).toBe(true);
+    expect(await ctx.store.createSessionLink('s2', 's1')).toBe(false);
+    let accept!: () => void;
+    let entered!: () => void;
+    const accepting = new Promise<void>((resolve) => {
+      accept = resolve;
+    });
+    const deliveryEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const inFlight = ctx.store.reserveSessionLinkMessage(
+      's1',
+      's2',
+      'in-flight',
+      false,
+      async () => {
+        entered();
+        await accepting;
+      },
+    );
+    await deliveryEntered;
+    const disconnect = ctx.store.deleteSessionLink('s1', 's2');
+    expect(
+      await Promise.race([
+        disconnect.then(() => 'disconnected'),
+        new Promise((resolve) => setTimeout(() => resolve('waiting'), 25)),
+      ]),
+    ).toBe('waiting');
+    accept();
+    expect(await inFlight).toBe('reserved');
+    expect(await disconnect).toBe(true);
+    expect(await ctx.store.createSessionLink('s1', 's2')).toBe(true);
+    expect(await ctx.store.listSessionLinks('s1')).toEqual([
+      { sessionId: 's1', peerSessionId: 's2', peerProjectId: 'p2', peerName: null },
+    ]);
+    for (let index = 0; index < 6; index += 1) {
+      expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', `out-${index}`, false)).toBe(
+        'reserved',
+      );
+    }
+    expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', 'out-0', false)).toBe('duplicate');
+    expect(await ctx.store.sessionLinkHasDelivery('s1', 's2', 'out-5')).toBe(true);
+    expect(await ctx.store.sessionLinkHasDelivery('s2', 's1', 'out-5')).toBe(false);
+    expect(await ctx.store.sessionLinkHasDelivery('s1', 's2', 'next')).toBe(false);
+    expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', 'next', false)).toBe('exhausted');
+    expect(await ctx.store.reserveSessionLinkMessage('s2', 's1', 'reply', false)).toBe('reserved');
+    await expect(
+      ctx.store.reserveSessionLinkMessage('s1', 's2', 'next', true, async () => {
+        throw new Error('target unavailable');
+      }),
+    ).rejects.toThrow('target unavailable');
+    expect(await ctx.store.sessionLinkHasAllowance('s1', 's2')).toBe(false);
+    expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', 'next', true)).toBe('reserved');
+    expect(await ctx.store.sessionLinkHasAllowance('s1', 's2')).toBe(true);
+    const concurrent = await Promise.all(
+      Array.from({ length: 7 }, (_, index) =>
+        ctx.store.reserveSessionLinkMessage('s1', 's2', `parallel-${index}`, false),
+      ),
+    );
+    expect(concurrent.filter((result) => result === 'reserved')).toHaveLength(5);
+    expect(concurrent.filter((result) => result === 'exhausted')).toHaveLength(2);
+    expect(await ctx.store.deleteSessionLink('s1', 's2')).toBe(true);
+    expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', 'after-delete', true)).toBe(
+      'unlinked',
+    );
+    await ctx.store.createSessionLink('s1', 's2');
+    await ctx.store.setSessionProject('s1', 'p2');
+    expect(await ctx.store.listSessionLinks('s2')).toEqual([]);
+    await expect(ctx.store.createSessionLink('s1', 's2')).rejects.toThrow(
+      'linked sessions must belong to different projects',
+    );
+    await ctx.store.setSessionProject('s1', 'p1');
+    await ctx.store.createSessionLink('s1', 's2');
+    await ctx.store.hideProject('p2');
+    expect(await ctx.store.listSessionLinks('s1')).toEqual([]);
+    await expect(ctx.store.createSessionLink('s1', 's2')).rejects.toThrow(
+      'linked sessions require active projects',
+    );
+  });
+});
+
 describe('EventStore — session Google Slides assignment', () => {
   it('enables Gmail per session idempotently and cascades the grant on session deletion', async () => {
     await ctx.store.createSession(session);

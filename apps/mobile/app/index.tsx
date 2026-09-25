@@ -761,6 +761,28 @@ function SessionList({ client }: { client: VerityClient }) {
           projects={projects
             .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: project.repo }))}
+          linkableSessions={sessions
+            .filter(
+              (candidate) =>
+                candidate.projectId !== renaming.projectId &&
+                candidate.projectId !== null &&
+                candidate.kind !== 'agent_loop' &&
+                candidate.resumable !== false &&
+                projects.some(
+                  (project) =>
+                    project.id === candidate.projectId &&
+                    project.state === 'active' &&
+                    project.kind !== 'control_plane',
+                ),
+            )
+            .map((candidate) => ({
+              id: candidate.sessionId,
+              name: sessionLabel(candidate),
+              projectId: candidate.projectId!,
+              projectName:
+                projects.find((project) => project.id === candidate.projectId)?.repo ??
+                candidate.projectId!,
+            }))}
           onClose={() => setRenaming(null)}
           onDelete={onDeleteRenaming}
           onChanged={(moved) => {

@@ -408,6 +408,7 @@ describe('MCP gateway — every call is recorded (ADR 0014 D3)', () => {
       turnId: 'turn-1',
       callId: expect.any(String),
       invocationId: expect.any(String),
+      approvedByCard: true,
       toolName: 'verity_secret_run',
       request: cli,
     });
@@ -788,6 +789,49 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
     expect(resultOf(response.body)).toMatchObject({ isError: true });
     expect(resultOf(response.body).content[0]?.text).toContain('Do not retry');
   });
+});
+
+it('marks a linked message as renewed only after a fresh approval card', async () => {
+  const message = { targetSessionId: 'peer', message: 'Please check the API change.' };
+  const quota = harness({
+    servedTools: ['verity_send_session_message'],
+    hasStandingAuthorization: async () => true,
+  });
+  await quota.gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(message, 'verity_send_session_message'),
+  });
+  expect(quota.requestApproval).not.toHaveBeenCalled();
+  expect(quota.invokeTool).toHaveBeenCalledWith(expect.objectContaining({ approvedByCard: false }));
+
+  const renewal = harness({
+    servedTools: ['verity_send_session_message'],
+    hasStandingAuthorization: async () => false,
+  });
+  await renewal.gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(message, 'verity_send_session_message'),
+  });
+  expect(renewal.requestApproval).toHaveBeenCalledWith(
+    expect.objectContaining({ toolName: 'verity_send_session_message', input: message }),
+  );
+  expect(renewal.invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({ approvedByCard: true }),
+  );
+});
+
+it('requires an explicit linked target so approval cannot follow a replaced sole link', async () => {
+  const gateway = harness({ servedTools: ['verity_send_session_message'] });
+  const response = await gateway.gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call({ message: 'Please check the API change.' }, 'verity_send_session_message'),
+  });
+  expect((response.body as { error: { code: number } }).error.code).toBe(-32_602);
+  expect(gateway.requestApproval).not.toHaveBeenCalled();
+  expect(gateway.invokeTool).not.toHaveBeenCalled();
 });
 
 describe('MCP gateway — the session handoff cannot bypass the card', () => {

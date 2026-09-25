@@ -351,6 +351,15 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     // a turn is dispatched, so the operator's own message shows in the transcript
     // (claude's stream doesn't echo it). Distinct from `text` (the agent's output).
     t: z.literal('prompt'),
+    // A linked peer's identity is durable provenance, not caller-controlled display text.
+    peer: z
+      .object({
+        sessionId: z.string(),
+        projectId: z.string(),
+        label: z.string(),
+        message: z.string(),
+      })
+      .optional(),
     // May be empty when the turn carries only attachments (e.g. a screenshot with
     // no caption); the dispatch boundary guarantees at least one of text/attachments.
     text: z.string(),

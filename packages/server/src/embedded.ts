@@ -1960,6 +1960,8 @@ export async function buildEmbeddedServer(
             'verity_http_request',
             'verity_secret_run',
             'verity_publish_session_progress',
+            'verity_send_session_message',
+            'verity_list_linked_sessions',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -1970,6 +1972,8 @@ export async function buildEmbeddedServer(
         : [
             'verity_http_request',
             'verity_publish_session_progress',
+            'verity_send_session_message',
+            'verity_list_linked_sessions',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',

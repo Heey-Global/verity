@@ -34,6 +34,9 @@ function setup(moveSession: jest.Mock, sessionId = 's') {
     client: {
       moveSession,
       renameSession: jest.fn().mockResolvedValue({}),
+      listSessionLinks: jest.fn(() => new Promise(() => undefined)),
+      linkSessions: jest.fn().mockResolvedValue(undefined),
+      unlinkSessions: jest.fn().mockResolvedValue(undefined),
     } as unknown as VerityClient,
     onClose: jest.fn(),
     onChanged: jest.fn(),
@@ -49,6 +52,26 @@ function selectTarget() {
 function move() {
   fireEvent.press(screen.getByRole('button', { name: /Save and move|Retry move/ }));
 }
+
+it('links a chosen session without changing the name or project', async () => {
+  const view = setup(jest.fn());
+  await act(async () => undefined);
+  const client = view.props.client as jest.Mocked<VerityClient>;
+  view.rerender(
+    <SessionSettingsDialog
+      {...view.props}
+      linkableSessions={[
+        { id: 'peer', name: 'Backend work', projectId: 'b', projectName: 'Target project' },
+      ]}
+    />,
+  );
+  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Choose Target project' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
+  await waitFor(() => expect(client.linkSessions).toHaveBeenCalledWith('s', 'peer'));
+  expect(client.renameSession).not.toHaveBeenCalled();
+  expect(client.moveSession).not.toHaveBeenCalled();
+});
 
 it('contains the dialog on tablets and keeps project options collapsed until requested', () => {
   setup(jest.fn());

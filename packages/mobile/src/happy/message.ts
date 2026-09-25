@@ -56,6 +56,7 @@ export interface UserTextMessage {
   localId: string | null;
   createdAt: number;
   text: string;
+  peer?: { sessionId: string; projectId: string; label: string };
   /** Operator-attached images (v1) sent with this prompt, rendered as thumbnails
    * in the bubble. Omitted when the turn had no attachments. */
   attachments?: Attachment[];
