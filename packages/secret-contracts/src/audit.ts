@@ -90,15 +90,16 @@ export type GatewayChannel = z.infer<typeof gatewayChannelSchema>;
 /** Tools the loopback MCP gateway serves. `verity_secret_job` is not among them: it is a
  *  native-relay tool and never reached over this channel.
  *
- *  The first two are the brokered-secret tools every project may reach. The rest are
- *  served only to the control-plane project (`extraToolsForProject`) and hold no secret at
- *  all — they are here because the gateway's approval card, keyed MAC and audit record are
- *  exactly the envelope a cross-project action needs, not because they resolve credentials. */
+ *  The gateway also serves project-scoped integrations, linked-session messages,
+ *  and control-plane-only tools (`extraToolsForProject`). Cross-project tools use
+ *  its approval card, keyed MAC, and audit record without resolving credentials. */
 export const gatewayToolNameSchema = z.enum([
   'verity_http_request',
   'verity_secret_run',
   'verity_list_sessions',
   'verity_session_handoff',
+  'verity_send_session_message',
+  'verity_list_linked_sessions',
   'verity_session_progress',
   'verity_recent_session_messages',
   'verity_publish_session_progress',

@@ -515,6 +515,52 @@ export function SessionChat({
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const { theme } = useUnistyles();
+  const [linkedSessions, setLinkedSessions] = useState<
+    Awaited<ReturnType<VerityClient['listSessionLinks']>>
+  >([]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      setLinkedSessions([]);
+      const refresh = () => {
+        void client
+          .listSessionLinks(sessionId)
+          .then((links) => {
+            if (active) setLinkedSessions(links);
+          })
+          .catch(() => undefined);
+      };
+      refresh();
+      const interval = setInterval(refresh, 15_000);
+      return () => {
+        active = false;
+        clearInterval(interval);
+      };
+    }, [client, sessionId]),
+  );
+  const disconnectLinkedSession = (link: (typeof linkedSessions)[number]) => {
+    Alert.alert(
+      'Disconnect sessions?',
+      `Stop sharing agent messages with ${link.name ?? link.sessionId}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: () => {
+            void client
+              .unlinkSessions(sessionId, link.sessionId)
+              .then(() => {
+                setLinkedSessions((current) =>
+                  current.filter((item) => item.sessionId !== link.sessionId),
+                );
+              })
+              .catch(() => Alert.alert('Disconnect failed', 'Please try again.'));
+          },
+        },
+      ],
+    );
+  };
   const compactLandscape =
     Platform.OS === 'ios' && !Platform.isPad && windowWidth > windowHeight && !embedded;
   const {
@@ -3335,6 +3381,31 @@ export function SessionChat({
           </Pressable>
         </View>
       </View>
+      {linkedSessions.length > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.headerLinks}
+          accessibilityLabel="Linked sessions"
+        >
+          {linkedSessions.map((link) => (
+            <View key={link.sessionId} style={styles.headerLinkChip}>
+              <Icon name="link" size={13} color={theme.colors.primary} />
+              <Text style={styles.headerLinkText} numberOfLines={1}>
+                {link.projectName} · {link.name ?? link.sessionId}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Disconnect ${link.name ?? link.sessionId}`}
+                hitSlop={8}
+                onPress={() => disconnectLinkedSession(link)}
+              >
+                <Icon name="x" size={15} color={theme.colors.textMuted} />
+              </Pressable>
+            </View>
+          ))}
+        </ScrollView>
+      ) : null}
     </View>
   );
 
@@ -5131,8 +5202,19 @@ function UserBubble({ message }: { message: UserTextMessage }) {
   return (
     <View>
       <Text style={styles.turnTimestamp}>{formatTurnTimestamp(message.createdAt)}</Text>
-      <View style={styles.userRow}>
-        <View style={[styles.userBubble, pending ? styles.userBubblePending : null]}>
+      <View style={[styles.userRow, message.peer ? styles.peerRow : null]}>
+        <View
+          style={[
+            styles.userBubble,
+            message.peer ? styles.peerBubble : null,
+            pending ? styles.userBubblePending : null,
+          ]}
+        >
+          {message.peer ? (
+            <Text style={styles.peerSource} accessibilityLabel={`Agent from ${message.peer.label}`}>
+              Agent · {message.peer.label}
+            </Text>
+          ) : null}
           {attachments.length > 0 ? (
             <View style={styles.userImages}>
               {attachments.map((a, i) =>
@@ -6789,6 +6871,7 @@ function PermissionPrompt({
   const isBrokeredHttp = pending.tool === 'verity_http_request';
   const isTrustedCli = pending.tool === 'verity_secret_run';
   const isSessionHandoff = pending.tool === 'verity_session_handoff';
+  const isLinkedMessage = pending.tool === 'verity_send_session_message';
   const isListSessions = pending.tool === 'verity_list_sessions';
   const isSessionProgress = pending.tool === 'verity_session_progress';
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
@@ -6796,6 +6879,14 @@ function PermissionPrompt({
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
+  const linkedMessage =
+    isLinkedMessage &&
+    typeof pending.input === 'object' &&
+    pending.input !== null &&
+    !Array.isArray(pending.input) &&
+    typeof (pending.input as Record<string, unknown>).message === 'string'
+      ? (pending.input as { targetSessionId?: string; message: string })
+      : null;
   const listingSummary = isListSessions ? listSessionsSummary(pending.input) : null;
   const progressSummary = isSessionProgress ? sessionProgressSummary(pending.input) : null;
   const recentSummary = isRecentSessionMessages
@@ -6820,6 +6911,7 @@ function PermissionPrompt({
     (isBrokeredHttp && httpSummary === null) ||
     (isTrustedCli && cliSummary === null) ||
     (isSessionHandoff && handoffSummary === null) ||
+    (isLinkedMessage && linkedMessage === null) ||
     (isListSessions && listingSummary === null) ||
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
@@ -6852,6 +6944,9 @@ function PermissionPrompt({
       httpSummary === null ? null : brokeredHttpTitle(httpSummary),
       cliSecretLabel === null ? null : `Run trusted command with ${cliSecretLabel}?`,
       handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
+      linkedMessage === null
+        ? null
+        : `Send to ${linkedMessage.targetSessionId ?? 'the linked session'} and continue the exchange?`,
       listingSummary === null ? null : listSessionsTitle(listingSummary),
       progressSummary === null ? null : `Read progress for session ${progressSummary.sessionId}?`,
       recentSummary === null
@@ -6929,6 +7024,21 @@ function PermissionPrompt({
             transform, or disclose{' '}
             {cliSummary.secrets.length === 1 ? 'the complete secret' : 'every one of them in full'}.
             Output redaction is hygiene only and cannot prevent exfiltration.
+          </Text>
+        </View>
+      ) : linkedMessage !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionHttpMeta} selectable>
+            To {linkedMessage.targetSessionId ?? 'the only linked session'}
+          </Text>
+          <ScrollView style={styles.permissionBriefing} nestedScrollEnabled>
+            <Text style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(linkedMessage.message)}
+            </Text>
+          </ScrollView>
+          <Text style={styles.permissionHttpMeta}>
+            Allowing sends this message and permits a small further exchange. The next limit asks
+            again.
           </Text>
         </View>
       ) : handoffSummary !== null ? (
@@ -8424,6 +8534,20 @@ const styles = StyleSheet.create((theme) => ({
     gap: 3,
   },
   // A quiet pill: muted caption text on a faint surface, distinct from the title.
+  headerLinks: { paddingHorizontal: 16, paddingBottom: 8, gap: 8, alignItems: 'center' },
+  headerLinkChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    maxWidth: 250,
+    paddingHorizontal: 10,
+    minHeight: 30,
+    borderRadius: theme.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  headerLinkText: { flexShrink: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
   headerMetaChip: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
@@ -8966,6 +9090,14 @@ const styles = StyleSheet.create((theme) => ({
     // user row rather than bumping `listContent.gap`, which would also spread
     // agent↔agent blocks and tool cards.
     marginVertical: theme.spacing.sm,
+  },
+  peerRow: { justifyContent: 'flex-start' },
+  peerBubble: { borderColor: theme.colors.primary, backgroundColor: theme.colors.surface },
+  peerSource: {
+    color: theme.colors.primary,
+    fontSize: theme.text.xs,
+    fontWeight: '700',
+    marginBottom: 6,
   },
   userBubble: {
     // A subtle raised surface (one step above true black) rather than a loud

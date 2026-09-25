@@ -2153,6 +2153,44 @@ export class VerityClient {
     return z.array(sessionSummarySchema).parse(await res.json());
   }
 
+  async listSessionLinks(id: string): Promise<
+    Array<{
+      sessionId: string;
+      name: string | null;
+      projectId: string;
+      projectName: string;
+    }>
+  > {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/links`, { method: 'GET' });
+    return z
+      .object({
+        links: z.array(
+          z.object({
+            sessionId: z.string(),
+            name: z.string().nullable(),
+            projectId: z.string(),
+            projectName: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json()).links;
+  }
+
+  async linkSessions(id: string, targetSessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(id)}/links`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetSessionId }),
+    });
+  }
+
+  async unlinkSessions(id: string, targetSessionId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(targetSessionId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
   /**
    * The session list AND the server-level attention signals, in one request.
    *

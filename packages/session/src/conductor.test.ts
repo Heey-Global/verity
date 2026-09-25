@@ -1537,6 +1537,23 @@ describe('Conductor.dispatchTurn', () => {
     expect(fake.last().prompt).toBe('full backend instruction');
     const prompts = (await ctx.store.getEvents('s1')).filter((e) => e.t === 'prompt');
     expect(prompts).toEqual([{ t: 'prompt', text: 'Merged PR #119' }]);
+
+    const peer = {
+      sessionId: 's2',
+      projectId: 'p2',
+      label: 'other · API work',
+      message: 'Review this contract',
+    };
+    await conductor.dispatchTurn('s1', 'untrusted peer envelope', undefined, {
+      displayPrompt: 'Review this contract',
+      peer,
+    });
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect((await ctx.store.getEvents('s1')).filter((e) => e.t === 'prompt').at(-1)).toEqual({
+      t: 'prompt',
+      text: 'Review this contract',
+      peer,
+    });
   });
 
   it('rejects an unknown session without spawning', async () => {
@@ -1935,6 +1952,34 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     release();
     await vi.waitFor(() => {
       expect(conductor.isBusy('s1')).toBe(false);
+    });
+  });
+
+  it('keeps peer provenance when a linked turn waits behind a running turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate).backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first');
+    const peer = {
+      sessionId: 's2',
+      projectId: 'p2',
+      label: 'beta · API work',
+      message: 'Review this contract',
+    };
+    await conductor.dispatchTurn('s1', 'Untrusted peer envelope', undefined, { peer });
+    expect((await ctx.store.listQueuedTurns())[0]?.opts.peer).toEqual(peer);
+    release();
+    await vi.waitFor(async () => {
+      expect(
+        (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt').at(-1),
+      ).toMatchObject({ peer });
     });
   });
 

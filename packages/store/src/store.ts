@@ -57,6 +57,15 @@ export interface SessionRecord {
   lastSeenEventCount: number | null;
 }
 
+export interface SessionLinkRecord {
+  sessionId: string;
+  peerSessionId: string;
+  peerProjectId: string;
+  peerName: string | null;
+}
+
+export type SessionLinkReservation = 'reserved' | 'duplicate' | 'exhausted' | 'unlinked';
+
 export type GoogleWorkspaceFileKind = 'slides' | 'docs' | 'sheets';
 
 export interface SessionWorkspaceFileRecord {
@@ -1031,7 +1040,7 @@ async function projectMessageEvent(
         session_id: sessionId,
         role: 'user',
         kind: 'prompt',
-        text: event.text,
+        text: event.peer?.message ?? event.text,
         first_event_seq: seq,
         last_event_seq: seq,
         finalized: true,
@@ -1286,6 +1295,176 @@ export class EventStore implements EventSink {
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
+  /** Only one same-pair delivery holds a database connection while the target accepts it. */
+  private readonly sessionLinkDeliveryTails = new Map<string, Promise<void>>();
+
+  async createSessionLink(leftId: string, rightId: string): Promise<boolean> {
+    if (leftId === rightId) throw new Error('a session cannot link to itself');
+    const [sessionA, sessionB] = [leftId, rightId].sort() as [string, string];
+    return this.db.transaction().execute(async (tx) => {
+      const sessions = await tx
+        .selectFrom('sessions')
+        .select(['session_id', 'project_id'])
+        .where('session_id', 'in', [sessionA, sessionB])
+        .orderBy('session_id')
+        .forShare()
+        .execute();
+      if (
+        sessions.length !== 2 ||
+        !sessions[0]?.project_id ||
+        !sessions[1]?.project_id ||
+        sessions[0].project_id === sessions[1].project_id
+      )
+        throw new Error('linked sessions must belong to different projects');
+      const projects = await tx
+        .selectFrom('projects')
+        .select(['id', 'state', 'hidden_at', 'kind'])
+        .where('id', 'in', [sessions[0].project_id, sessions[1].project_id])
+        .orderBy('id')
+        .forShare()
+        .execute();
+      if (
+        projects.length !== 2 ||
+        projects.some(
+          (project) =>
+            project.state !== 'active' ||
+            project.hidden_at !== null ||
+            project.kind === 'control_plane',
+        )
+      )
+        throw new Error('linked sessions require active projects');
+      const inserted = await tx
+        .insertInto('session_links')
+        .values({ session_a: sessionA, session_b: sessionB, remaining_a: 6, remaining_b: 6 })
+        .onConflict((oc) => oc.columns(['session_a', 'session_b']).doNothing())
+        .returning('session_a')
+        .executeTakeFirst();
+      return inserted !== undefined;
+    });
+  }
+
+  async deleteSessionLink(leftId: string, rightId: string): Promise<boolean> {
+    const [sessionA, sessionB] = [leftId, rightId].sort() as [string, string];
+    const deleted = await this.db
+      .deleteFrom('session_links')
+      .where('session_a', '=', sessionA)
+      .where('session_b', '=', sessionB)
+      .returning('session_a')
+      .executeTakeFirst();
+    return deleted !== undefined;
+  }
+
+  async listSessionLinks(sessionId: string): Promise<SessionLinkRecord[]> {
+    const rows = await this.db
+      .selectFrom('session_links')
+      .innerJoin('sessions', (join) =>
+        join
+          .onRef('sessions.session_id', '=', 'session_links.session_a')
+          .on('session_links.session_b', '=', sessionId),
+      )
+      .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name'])
+      .unionAll(
+        this.db
+          .selectFrom('session_links')
+          .innerJoin('sessions', (join) =>
+            join
+              .onRef('sessions.session_id', '=', 'session_links.session_b')
+              .on('session_links.session_a', '=', sessionId),
+          )
+          .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name']),
+      )
+      .execute();
+    return rows
+      .filter((row) => row.project_id !== null)
+      .map((row) => ({
+        sessionId,
+        peerSessionId: row.peer_id,
+        peerProjectId: row.project_id!,
+        peerName: row.name,
+      }));
+  }
+
+  async sessionLinkHasAllowance(sourceId: string, targetId: string): Promise<boolean> {
+    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
+    const row = await this.db
+      .selectFrom('session_links')
+      .select(['remaining_a', 'remaining_b'])
+      .where('session_a', '=', sessionA)
+      .where('session_b', '=', sessionB)
+      .executeTakeFirst();
+    return row !== undefined && (sourceId === sessionA ? row.remaining_a : row.remaining_b) > 0;
+  }
+
+  async reserveSessionLinkMessage(
+    sourceId: string,
+    targetId: string,
+    invocationId: string,
+    approvedRenewal: boolean,
+    deliver?: () => Promise<void>,
+  ): Promise<SessionLinkReservation> {
+    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
+    const key = `${sessionA}\0${sessionB}`;
+    const previous = this.sessionLinkDeliveryTails.get(key);
+    let release = (): void => undefined;
+    const finished = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.sessionLinkDeliveryTails.set(key, finished);
+    try {
+      await previous;
+      return await this.db.transaction().execute(async (trx) => {
+        const link = await trx
+          .selectFrom('session_links')
+          .selectAll()
+          .where('session_a', '=', sessionA)
+          .where('session_b', '=', sessionB)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!link) return 'unlinked';
+        const prior = await trx
+          .selectFrom('session_link_deliveries')
+          .select(['invocation_id', 'session_a', 'session_b', 'source_session_id'])
+          .where('invocation_id', '=', invocationId)
+          .executeTakeFirst();
+        if (prior) {
+          if (
+            prior.session_a !== sessionA ||
+            prior.session_b !== sessionB ||
+            prior.source_session_id !== sourceId
+          )
+            throw new Error('linked message invocation was reused for a different target');
+          await deliver?.();
+          return 'duplicate';
+        }
+        const column = sourceId === sessionA ? 'remaining_a' : 'remaining_b';
+        const remaining = link[column];
+        if (remaining === 0 && !approvedRenewal) return 'exhausted';
+        await trx
+          .updateTable('session_links')
+          .set({ [column]: remaining === 0 ? 5 : remaining - 1 })
+          .where('session_a', '=', sessionA)
+          .where('session_b', '=', sessionB)
+          .execute();
+        await trx
+          .insertInto('session_link_deliveries')
+          .values({
+            invocation_id: invocationId,
+            session_a: sessionA,
+            session_b: sessionB,
+            source_session_id: sourceId,
+          })
+          .execute();
+        // Hold the link row lock through delivery so unlink cannot complete between
+        // authorization and the target accepting the turn.
+        await deliver?.();
+        return 'reserved';
+      });
+    } finally {
+      release();
+      if (this.sessionLinkDeliveryTails.get(key) === finished)
+        this.sessionLinkDeliveryTails.delete(key);
+    }
+  }
 
   /** Encrypt a normalized secret value for storage (null stays null). */
   private encryptSecret(value: string | null): string | null {
@@ -1872,6 +2051,10 @@ export class EventStore implements EventSink {
       )
         throw new Error('Session workspace changed during move');
       await tx
+        .deleteFrom('session_links')
+        .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
+        .execute();
+      await tx
         .updateTable('sessions')
         .set({ project_id: move.target_project_id, worktree: move.target_worktree })
         .where('session_id', '=', sessionId)
@@ -1945,6 +2128,16 @@ export class EventStore implements EventSink {
           .where('id', '=', projectId)
           .executeTakeFirst();
         if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
+        await tx
+          .selectFrom('sessions')
+          .select('session_id')
+          .where('session_id', '=', sessionId)
+          .forUpdate()
+          .executeTakeFirst();
+        await tx
+          .deleteFrom('session_links')
+          .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
+          .execute();
         const result = await tx
           .updateTable('sessions')
           .set({ project_id: projectId })
@@ -1953,12 +2146,24 @@ export class EventStore implements EventSink {
         return result.numUpdatedRows > 0n;
       });
     }
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ project_id: null })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.db.transaction().execute(async (tx) => {
+      await tx
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      await tx
+        .deleteFrom('session_links')
+        .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
+        .execute();
+      const result = await tx
+        .updateTable('sessions')
+        .set({ project_id: null })
+        .where('session_id', '=', sessionId)
+        .executeTakeFirst();
+      return result.numUpdatedRows > 0n;
+    });
   }
 
   /**
@@ -4599,6 +4804,16 @@ export class EventStore implements EventSink {
         .set({ hidden_at: sql`now()`, updated_at: sql`now()` })
         .where('id', '=', id)
         .executeTakeFirst();
+      const projectSessions = tx
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('project_id', '=', id);
+      await tx
+        .deleteFrom('session_links')
+        .where((eb) =>
+          eb.or([eb('session_a', 'in', projectSessions), eb('session_b', 'in', projectSessions)]),
+        )
+        .execute();
       await tx
         .updateTable('knowledge_folders')
         .set({ archived: true, project_id: null })
@@ -4618,6 +4833,22 @@ export class EventStore implements EventSink {
   async deleteProject(id: string): Promise<boolean> {
     const result = await this.db.transaction().execute(async (tx) => {
       await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      await tx
+        .selectFrom('projects')
+        .select('id')
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      const projectSessions = tx
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('project_id', '=', id);
+      await tx
+        .deleteFrom('session_links')
+        .where((eb) =>
+          eb.or([eb('session_a', 'in', projectSessions), eb('session_b', 'in', projectSessions)]),
+        )
+        .execute();
       await tx
         .updateTable('knowledge_folders')
         .set({ archived: true, project_id: null })

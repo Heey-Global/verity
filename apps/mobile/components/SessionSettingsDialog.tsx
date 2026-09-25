@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
@@ -32,6 +32,7 @@ export function SessionSettingsDialog({
   canMove,
   moveDisabledReason,
   projects,
+  linkableSessions = [],
   client,
   onClose,
   onChanged,
@@ -45,6 +46,12 @@ export function SessionSettingsDialog({
   canMove: boolean;
   moveDisabledReason?: string;
   projects: readonly { id: string; name: string }[];
+  linkableSessions?: readonly {
+    id: string;
+    name: string;
+    projectId: string;
+    projectName: string;
+  }[];
   client: VerityClient;
   onClose: () => void;
   onChanged: (moved: boolean) => void;
@@ -67,9 +74,59 @@ export function SessionSettingsDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [result, setResult] = useState<MoveResult>();
+  const [links, setLinks] = useState<Awaited<ReturnType<VerityClient['listSessionLinks']>>>([]);
+  const [linkPickerOpen, setLinkPickerOpen] = useState(false);
+  const [linkProjectId, setLinkProjectId] = useState<string | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkError, setLinkError] = useState<string>();
+  const unlinkedSessions = linkableSessions.filter(
+    (item) => !links.some((link) => link.sessionId === item.id),
+  );
+  useEffect(() => {
+    let active = true;
+    void client
+      .listSessionLinks(sessionId)
+      .then((items) => {
+        if (active) setLinks(items);
+      })
+      .catch(() => {
+        if (active) setLinkError('Linked sessions could not be loaded.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [client, sessionId]);
+  const addLink = async (targetId: string) => {
+    setLinkBusy(true);
+    setLinkError(undefined);
+    try {
+      await client.linkSessions(sessionId, targetId);
+      setLinks(await client.listSessionLinks(sessionId));
+      setLinkPickerOpen(false);
+      setLinkProjectId(null);
+    } catch {
+      setLinkError('Could not link the sessions. Please try again.');
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+  const removeLink = async (targetId: string) => {
+    setLinkBusy(true);
+    setLinkError(undefined);
+    try {
+      await client.unlinkSessions(sessionId, targetId);
+      setLinks((current) => current.filter((link) => link.sessionId !== targetId));
+    } catch {
+      setLinkError('Could not disconnect the sessions. Please try again.');
+    } finally {
+      setLinkBusy(false);
+    }
+  };
   const willMove = unresolved || (target !== null && target !== projectId);
   const canSave =
-    !busy && (!willMove || (canMove && !!target && (!commitConfirmation || leaveCommits)));
+    !busy &&
+    !linkBusy &&
+    (!willMove || (canMove && !!target && (!commitConfirmation || leaveCommits)));
   const save = async () => {
     if (!canSave) return;
     Keyboard.dismiss();
@@ -126,7 +183,7 @@ export function SessionSettingsDialog({
       ? projectName
       : (projects.find((project) => project.id === target)?.name ?? target);
   const close = () => {
-    if (!busy) onClose();
+    if (!busy && !linkBusy) onClose();
   };
   const deleteButton = !result && (
     <Pressable
@@ -142,7 +199,7 @@ export function SessionSettingsDialog({
   const cancelButton = !result && (
     <Pressable
       accessibilityRole="button"
-      disabled={busy}
+      disabled={busy || linkBusy}
       onPress={close}
       style={[styles.button, busy && styles.disabled]}
     >
@@ -204,7 +261,7 @@ export function SessionSettingsDialog({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Close session settings"
-                disabled={busy}
+                disabled={busy || linkBusy}
                 onPress={close}
                 style={styles.close}
               >
@@ -230,6 +287,9 @@ export function SessionSettingsDialog({
                 </>
               ) : (
                 <>
+                  <Text style={styles.sectionTitle} accessibilityRole="header">
+                    Details
+                  </Text>
                   <View style={styles.field}>
                     <Text style={styles.label}>Name</Text>
                     <TextInput
@@ -359,6 +419,126 @@ export function SessionSettingsDialog({
                       in the original project.
                     </Text>
                   )}
+                  <View style={styles.sectionDivider} />
+                  <Text style={styles.sectionTitle} accessibilityRole="header">
+                    Linked sessions
+                  </Text>
+                  <Text style={styles.hint}>
+                    Linked agents can share messages across projects, including information they can
+                    access there. Disconnecting stops future messages; it cannot remove messages
+                    already delivered.
+                  </Text>
+                  {links.length === 0 ? (
+                    <Text style={styles.hint}>No sessions linked yet.</Text>
+                  ) : (
+                    links.map((link) => (
+                      <View key={link.sessionId} style={styles.linkRow}>
+                        <Icon name="link" size={17} color={theme.colors.primary} />
+                        <View style={styles.linkLabel}>
+                          <Text style={styles.optionText} numberOfLines={1}>
+                            {link.name ?? link.sessionId}
+                          </Text>
+                          <Text style={styles.hint} numberOfLines={1}>
+                            {link.projectName}
+                          </Text>
+                        </View>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Disconnect ${link.name ?? link.sessionId}`}
+                          disabled={linkBusy || busy || unresolved || willMove}
+                          onPress={() => void removeLink(link.sessionId)}
+                          style={styles.linkRemove}
+                        >
+                          <Icon name="x" size={18} color={theme.colors.textMuted} />
+                        </Pressable>
+                      </View>
+                    ))
+                  )}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      links.length === 0 ? 'Link a session' : 'Link another session'
+                    }
+                    disabled={linkBusy || busy || unresolved || willMove}
+                    onPress={() => setLinkPickerOpen((open) => !open)}
+                    style={styles.linkAction}
+                  >
+                    <Icon name="plus" size={18} color={theme.colors.primary} />
+                    <Text style={styles.linkActionText}>
+                      {links.length === 0 ? 'Link a session' : 'Link another session'}
+                    </Text>
+                    <Icon
+                      name={linkPickerOpen ? 'chevron-up' : 'chevron-right'}
+                      size={18}
+                      color={theme.colors.textFaint}
+                    />
+                  </Pressable>
+                  {willMove ? (
+                    <Text style={styles.hint}>
+                      Save the project change before linking sessions.
+                    </Text>
+                  ) : null}
+                  {linkPickerOpen ? (
+                    <View style={styles.linkPicker}>
+                      {linkProjectId === null ? (
+                        <>
+                          <Text style={styles.hint}>Choose a project</Text>
+                          {[
+                            ...new Map(
+                              unlinkedSessions.map((item) => [item.projectId, item.projectName]),
+                            ).entries(),
+                          ].map(([id, name]) => (
+                            <Pressable
+                              key={id}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Choose ${name}`}
+                              style={styles.option}
+                              onPress={() => setLinkProjectId(id)}
+                            >
+                              <Icon name="folder" size={16} color={theme.colors.textMuted} />
+                              <Text style={styles.optionText}>{name}</Text>
+                              <Icon name="chevron-right" size={16} color={theme.colors.textFaint} />
+                            </Pressable>
+                          ))}
+                          {unlinkedSessions.length === 0 ? (
+                            <Text style={styles.hint}>No more project sessions available.</Text>
+                          ) : null}
+                        </>
+                      ) : (
+                        <>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Back to projects"
+                            style={styles.option}
+                            onPress={() => setLinkProjectId(null)}
+                          >
+                            <Icon name="chevron-left" size={16} color={theme.colors.textMuted} />
+                            <Text style={styles.optionText}>Choose another project</Text>
+                          </Pressable>
+                          {unlinkedSessions
+                            .filter((item) => item.projectId === linkProjectId)
+                            .map((item) => (
+                              <Pressable
+                                key={item.id}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Link ${item.name}`}
+                                disabled={linkBusy || busy || unresolved || willMove}
+                                style={styles.option}
+                                onPress={() => void addLink(item.id)}
+                              >
+                                <Icon name="link" size={16} color={theme.colors.primary} />
+                                <Text style={styles.optionText}>{item.name}</Text>
+                              </Pressable>
+                            ))}
+                        </>
+                      )}
+                    </View>
+                  ) : null}
+                  {linkError ? (
+                    <Text accessibilityRole="alert" style={styles.error}>
+                      {linkError}
+                    </Text>
+                  ) : null}
                 </>
               )}
             </ScrollView>
@@ -456,6 +636,45 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       lineHeight: 18 * theme.fontScale,
     },
     field: { gap: 8 },
+    sectionTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+    sectionDivider: {
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: theme.colors.border,
+      marginVertical: 4,
+    },
+    linkRow: {
+      minHeight: 52,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      paddingHorizontal: 12,
+      borderRadius: theme.radius.md,
+      backgroundColor: theme.colors.background,
+    },
+    linkLabel: { flex: 1, gap: 2 },
+    linkRemove: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+    linkAction: {
+      minHeight: 48,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      paddingHorizontal: 12,
+      borderRadius: theme.radius.md,
+      backgroundColor: theme.colors.surfaceAlt,
+    },
+    linkActionText: {
+      flex: 1,
+      color: theme.colors.text,
+      fontSize: theme.text.sm,
+      fontWeight: '600',
+    },
+    linkPicker: {
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      borderRadius: theme.radius.md,
+      padding: 8,
+      gap: 4,
+    },
     nameInput: {
       minHeight: 48,
       borderWidth: 1,
