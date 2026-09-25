@@ -1,7 +1,9 @@
 // Review-only wire schemas. No production route imports this module.
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}(?![\s\S])/);
+const bytes16 = z.string().regex(/^[A-Za-z0-9_-]{21}[AQgw](?![\s\S])/);
 const bytes32 = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\s\S])/);
 const signature = z.string().regex(/^[A-Za-z0-9_-]{85}[AQgw](?![\s\S])/);
 const deviceKey = z
@@ -62,6 +64,12 @@ const challenge = z.union([
 ]);
 
 export const schemas = {
+  // Reusable invitation trust fields, not a complete invitation or endpoint message.
+  coreIdentity: object({
+    identityKey: deviceKey,
+    serverId: z.string().regex(/^srv_[A-Za-z0-9_-]{21}[AQgw](?![\s\S])/),
+    tlsPin: z.string().regex(/^sha256-[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\s\S])/),
+  }),
   preface,
   challenge,
   complete: object({ ...proof, action: z.enum(['commit', 'recover']) }),
@@ -73,11 +81,11 @@ export const schemas = {
     masterPassword: z.string().min(1).max(1024),
   }),
   initialized: object({ operationId: bytes32, state: z.literal('ready') }),
-  ack: object({ operationId: bytes32, receiptId: id }),
+  ack: object({ operationId: bytes32, receiptId: bytes32 }),
   recoveryReserve: object({
     type: z.literal('team.recovery.reserve'),
     requestId: id,
-    installationHandle: id,
+    installationHandle: bytes16,
     redemptionId: id,
     operationId: bytes32,
     capabilities,
@@ -114,7 +122,7 @@ export const schemas = {
   recoveryConnect: object({
     type: z.literal('connect'),
     requestId: id,
-    installationHandle: id,
+    installationHandle: bytes16,
     capabilities,
     enrollmentPurpose: z.literal('team-member'),
     recoveryReservationId: bytes32,
@@ -137,6 +145,16 @@ export type SchemaName = keyof typeof schemas;
 export function accepts(name: SchemaName, value: unknown): boolean {
   if (!schemas[name].safeParse(value).success) return false;
   const row = value as Record<string, unknown>;
+  if (name === 'coreIdentity') {
+    const expected =
+      'srv_' +
+      createHash('sha256')
+        .update(`verity.device-pairing.v1.server-id\0${row.identityKey as string}`, 'utf8')
+        .digest()
+        .subarray(0, 16)
+        .toString('base64url');
+    if (row.serverId !== expected) return false;
+  }
   if (name === 'initialize' && Buffer.byteLength(row.masterPassword as string, 'utf8') > 1024)
     return false;
   if ('capabilities' in row) {

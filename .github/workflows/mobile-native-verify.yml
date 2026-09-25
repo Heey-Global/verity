@@ -1,13 +1,13 @@
 name: verity-mobile-native-verify
 
-# Non-publishing. Mobile pull requests and manual refs compile on a GitHub-hosted
-# macOS runner, so native changes are tested before their release PR is merged.
+# Non-publishing. Native app changes compile on a GitHub-hosted macOS runner;
+# fixture changes run their matching Apple probes without rebuilding the app.
 on:
   pull_request:
     paths:
       # JavaScript/TypeScript screens, components and tests are OTA-safe and are
-      # already covered by the Linux mobile-app job. Reserve the scarce macOS
-      # runner for inputs that can change the generated native project or binary.
+      # already covered by the Linux mobile-app job. Reserve the macOS runner
+      # for native inputs and Apple-specific smoke fixtures.
       - '.github/workflows/mobile-native-verify.yml'
       - 'apps/mobile/app.config.ts'
       - 'apps/mobile/android/**'
@@ -53,6 +53,10 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       required: ${{ steps.native.outputs.required }}
+      compile: ${{ steps.native.outputs.compile }}
+      enrollment: ${{ steps.native.outputs.enrollment }}
+      tls: ${{ steps.native.outputs.tls }}
+      tunnel: ${{ steps.native.outputs.tunnel }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,26 +75,39 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" != pull_request ]; then
-            echo 'required=true' >> "$GITHUB_OUTPUT"
+            for check in required compile enrollment tls tunnel; do
+              echo "$check=true" >> "$GITHUB_OUTPUT"
+            done
             exit 0
           fi
-          # Smoke fixtures do not alter the shipping app fingerprint, but their
-          # changes must still execute on Apple rather than silently skip CI.
-          if ! git diff --quiet "$BASE_SHA" HEAD -- \
-            .github/workflows/mobile-native-verify.yml \
-            'scripts/ios-pinned-tls-smoke*' scripts/remote-control-tunnel \
-            scripts/enrollment-proof docs/protocols/uplink-enrollment-v1.md \
+          compile=false
+          enrollment=false
+          tls=false
+          tunnel=false
+          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/enrollment-proof \
+            docs/protocols/uplink-enrollment-v1.md \
             docs/protocols/uplink-enrollment-storage-v1.md; then
-            echo 'required=true' >> "$GITHUB_OUTPUT"
-            exit 0
+            enrollment=true
+          fi
+          if ! git diff --quiet "$BASE_SHA" HEAD -- 'scripts/ios-pinned-tls-smoke*'; then
+            tls=true
+          fi
+          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel; then
+            tunnel=true
           fi
           native_changes="$(node scripts/mobile-native-compatibility.mjs "$BASE_SHA" HEAD)"
           if [ -n "$native_changes" ]; then
             printf '%s\n' "$native_changes"
-            echo 'required=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'required=false' >> "$GITHUB_OUTPUT"
+            compile=true
           fi
+          required=false
+          if [ "$compile" = true ] || [ "$enrollment" = true ] || \
+            [ "$tls" = true ] || [ "$tunnel" = true ]; then
+            required=true
+          fi
+          for check in required compile enrollment tls tunnel; do
+            echo "$check=${!check}" >> "$GITHUB_OUTPUT"
+          done
 
   verify-ios:
     needs: changes
@@ -108,25 +125,31 @@ jobs:
         with:
           node-version: '24.21.0'
 
-      - name: Install and verify the mobile sources
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify the mobile sources
+        if: needs.changes.outputs.compile == 'true'
         run: |
           set -euo pipefail
-          npm ci
           npm run -w @verity/mobile-app patch:native
           npm run -w @verity/mobile build
           npm run -w @verity/mobile-app typecheck
 
       - name: Verify enrollment reference model and macOS Keychain probe
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.enrollment == 'true'
         timeout-minutes: 5
         run: |
           npx vitest run scripts/enrollment-proof
           bash scripts/enrollment-proof/run-apple.sh
 
       - name: Verify iOS enrollment Keychain persistence
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.enrollment == 'true'
         timeout-minutes: 10
         run: bash scripts/enrollment-proof/run-ios.sh
 
       - name: Generate the iOS project
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tls == 'true'
         working-directory: apps/mobile
         env:
           GOOGLE_AUTH_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
@@ -136,14 +159,17 @@ jobs:
       # dictionary out of the generated Info.plist, which is what decides
       # whether iOS keeps a pinned private-CA connection at all.
       - name: Verify pinned TLS against a self-signed server
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tls == 'true'
         run: scripts/ios-pinned-tls-smoke.sh
 
       - name: Verify pinned TLS through an opaque relay
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tls == 'true'
         env:
           VERITY_SMOKE_OPAQUE_RELAY: '1'
         run: scripts/ios-pinned-tls-smoke.sh
 
       - name: Verify native Remote Control tunnel prototype
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
         timeout-minutes: 10
         run: |
           node --test scripts/remote-control-tunnel/mock.test.mjs
@@ -151,10 +177,12 @@ jobs:
           bash scripts/remote-control-tunnel/run-apple.sh ios
 
       - name: Install CocoaPods
+        if: needs.changes.outputs.compile == 'true'
         working-directory: apps/mobile/ios
         run: pod install
 
       - name: Compile the iOS simulator app
+        if: needs.changes.outputs.compile == 'true'
         working-directory: apps/mobile
         run: |
           set -euo pipefail

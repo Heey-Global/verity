@@ -119,6 +119,9 @@ even if cleanup is delayed. Delete recovery ciphertext on acknowledgement,
 revocation or expiry; run bounded cleanup at least once per minute. Database/WAL
 physical erasure is not guaranteed by row deletion; backup restore is unsupported.
 
+Receipt generation, binding and acknowledgement metadata follow the proposed
+[identity and receipt profile](uplink-enrollment-identity-receipt-v1.md).
+
 Propose `POST /api/enrollment/v1/ack` with exactly `operationId`, `receiptId`,
 authenticated using the resulting device token over pinned TLS. Verify that token
 belongs to that exact receipt/device, then delete the encrypted result atomically

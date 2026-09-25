@@ -449,9 +449,10 @@ The invitation is a bearer secret and must be deliberately transferred to the ap
 
 The invitation carries a version, configured Uplink origin, installation handle,
 logical Core origin, Core trust material, invitation ID, expiry and purpose
-`initial-admin`. The exact encoding and binding to the existing signed pairing
-identity must be reviewed before freeze. A fingerprint alone is insufficient if
-the existing delegate requires certificate/chain material. Uplink must not provide
+`initial-admin`. The [identity and receipt profile](uplink-enrollment-identity-receipt-v1.md)
+specifies the existing identity derivation and pin encoding for review before
+freeze. The current delegate obtains the required chain from the TLS handshake;
+it requires both the leaf point pin and logical-hostname chain validation. Uplink must not provide
 a replacement trust anchor. Secrets in links must stay out of HTTP requests,
 referrers and analytics; link/QR encoding and app-link handling are freeze gates.
 

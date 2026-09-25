@@ -794,7 +794,7 @@ describe('native iOS compile gate', () => {
     // Editing the gate must exercise its cheap classifier without recursively
     // allocating the macOS runner that the edit is trying to avoid.
     expect(detector).toContain('scripts/mobile-native-compatibility.mjs');
-    expect(detector).toContain("echo 'required=false'");
+    expect(detector).toContain('required=false');
   });
 
   it('runs the pinned TLS smoke against the generated app configuration', () => {
@@ -819,6 +819,45 @@ describe('native iOS compile gate', () => {
     // Ahead of prebuild it would run under its own bundle defaults, which pass
     // while the shipping rules reject every self-hosted server.
     expect(smoke).toBeGreaterThan(prebuild);
+  });
+
+  it('runs fixture Apple probes without compiling the iOS app', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      jobs: Record<string, { outputs?: Record<string, string>; steps: WorkflowStep[] }>;
+    };
+    const detector = workflow.jobs.changes.steps.find((step) => step.id === 'native')?.run ?? '';
+    const steps = workflow.jobs['verify-ios'].steps;
+    const named = (name: string) => steps.find((step) => step.name === name);
+
+    for (const area of ['compile', 'enrollment', 'tls', 'tunnel']) {
+      expect(workflow.jobs.changes.outputs?.[area]).toContain(`steps.native.outputs.${area}`);
+      expect(detector).toContain(`${area}=false`);
+      expect(detector).toContain(`${area}=true`);
+    }
+    expect(detector).toContain('scripts/enrollment-proof');
+    expect(detector).toContain("'scripts/ios-pinned-tls-smoke*'");
+    expect(detector).toContain('scripts/remote-control-tunnel');
+    expect(detector).not.toMatch(/git diff[^;]*mobile-native-verify\.yml[\s\S]*compile=true/u);
+    expect(named('Verify enrollment reference model and macOS Keychain probe')?.if).toContain(
+      "outputs.enrollment == 'true'",
+    );
+    expect(named('Verify iOS enrollment Keychain persistence')?.if).toContain(
+      "outputs.enrollment == 'true'",
+    );
+    expect(named('Generate the iOS project')?.if).toContain("outputs.tls == 'true'");
+    expect(named('Verify pinned TLS against a self-signed server')?.if).toContain(
+      "outputs.tls == 'true'",
+    );
+    expect(named('Verify native Remote Control tunnel prototype')?.if).toContain(
+      "outputs.tunnel == 'true'",
+    );
+    for (const name of [
+      'Verify the mobile sources',
+      'Install CocoaPods',
+      'Compile the iOS simulator app',
+    ]) {
+      expect(named(name)?.if).toBe("needs.changes.outputs.compile == 'true'");
+    }
   });
 
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {

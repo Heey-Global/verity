@@ -2,8 +2,14 @@
 useDefault = true
 
 [[allowlists]]
-description = "Public Ed25519 SPKI in enrollment wire fixtures, including the rejected padded encoding; no private key."
+description = "Public Ed25519 SPKI in enrollment wire fixtures, including rejected encodings; no private key."
 condition = "AND"
 paths = ['''^scripts/enrollment-proof/wire-fixtures\.json$''']
 regexTarget = "secret"
-regexes = ['''^MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s=?$''']
+regexes = [
+  '''^MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s=?$''',
+  '''^MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2$''',
+  '''^MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2sA$''',
+  '''^MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2t$''',
+  '''^ACowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s$''',
+]

@@ -115,7 +115,8 @@
 18c9aec6c9e7e07de3ace981834e5404b395ece8:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2090
 18c9aec6c9e7e07de3ace981834e5404b395ece8:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2105
 
-# Synthetic public enrollment contract vectors from the identity/receipt profile branch.
+# Public Ed25519 identityKey fixtures from the identity/receipt profile branch.
+# Only findings from the reviewed commit are suppressed; new locations remain scanned.
 07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2360
 07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2379
 07729fa7ad8796164024b2f7f409d8c0868baccc:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2388

@@ -1,6 +1,6 @@
 # Remote enrollment v1: invitation and recovery proposal
 
-Status: revision 5 discussion draft accompanying Remote Control revision 4. Not approved,
+Status: revision 5 discussion draft accompanying Remote Control revision 6. Not approved,
 implemented or frozen. Existing runtime remains unchanged.
 
 ## Evidence and trust material
@@ -16,6 +16,10 @@ It additionally verifies the logical HTTPS hostname and the delivered certificat
 chain. Both the pin and existing fresh signed identity proof remain mandatory
 before any enrollment secret is sent. Do not expose general device enrollment
 as a team enrollment endpoint.
+
+Exact identity encodings and the proposed Core-only receipt namespace are specified
+in the [identity and receipt profile](uplink-enrollment-identity-receipt-v1.md).
+Its new validation requirements remain proposed, not existing runtime behavior.
 
 ## Invitation envelope
 
