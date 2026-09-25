@@ -17,7 +17,7 @@ beforeEach(async () => {
 });
 
 describe('EventStore — HTTP MCP connections', () => {
-  it('persists global connections and updates them by id', async () => {
+  it('persists administrator-owned connections and updates them by id', async () => {
     await ctx.store.upsertHttpMcpConnection({
       id: 'gmail',
       name: 'Gmail',
@@ -36,6 +36,7 @@ describe('EventStore — HTTP MCP connections', () => {
     expect(await ctx.store.listHttpMcpConnections()).toEqual([
       {
         id: 'gmail',
+        ownerUserId: '00000000-0000-4000-8000-000000000001',
         name: 'Work Gmail',
         url: 'https://proxy.example.test/gmail',
         authorization: null,
@@ -51,6 +52,38 @@ describe('EventStore — HTTP MCP connections', () => {
         enabled: false,
       },
     ]);
+  });
+
+  it('lists a user’s connections without revealing another user’s credentials', async () => {
+    const memberId = randomUUID();
+    await ctx.db
+      .insertInto('users')
+      .values({ id: memberId, role: 'member', status: 'active' })
+      .execute();
+    await ctx.store.upsertHttpMcpConnection({
+      id: 'private-member',
+      ownerUserId: memberId,
+      name: 'Private Member',
+      url: 'https://mcp.example.test/member',
+      authorization: 'Bearer private',
+      enabled: true,
+    });
+    await ctx.store.upsertHttpMcpConnection({
+      id: 'admin',
+      name: 'Admin',
+      url: 'https://mcp.example.test/admin',
+      authorization: 'Bearer admin',
+      enabled: true,
+    });
+
+    expect((await ctx.store.listHttpMcpConnections(memberId)).map((item) => item.id)).toEqual([
+      'private-member',
+    ]);
+    expect(
+      (await ctx.store.listHttpMcpConnections('00000000-0000-4000-8000-000000000001')).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['admin']);
   });
 
   it('persists OAuth credentials and tokens at the trusted store boundary', async () => {

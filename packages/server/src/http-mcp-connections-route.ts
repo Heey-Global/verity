@@ -62,6 +62,12 @@ const bindingBody = z
   })
   .strict();
 
+const legacyAdministratorId = '00000000-0000-4000-8000-000000000001';
+
+function connectionOwnerId(request: { localUserId: string | null }): string {
+  return request.localUserId ?? legacyAdministratorId;
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -71,22 +77,24 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
-/** Global server definitions with explicit per-project activation. No credential value is public. */
+/** User-owned server definitions with explicit per-project activation. No credential value is public. */
 export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: EventStore): void {
-  app.get('/mcp-connections', async () => ({
-    connections: (await store.listHttpMcpConnections()).map((connection) => ({
-      id: connection.id,
-      name: connection.name,
-      url: connection.url,
-      enabled: connection.enabled,
-      authType: connection.authType ?? (connection.authorization === null ? 'none' : 'static'),
-      authorizationConfigured: connection.authorization !== null,
-      oauthConnected: connection.oauthRefreshToken != null || connection.oauthAccessToken != null,
-      oauthClientId: connection.oauthClientId ?? null,
-      oauthAuthorizationEndpoint: connection.oauthAuthorizationEndpoint ?? null,
-      oauthTokenEndpoint: connection.oauthTokenEndpoint ?? null,
-      oauthScopes: connection.oauthScopes ?? null,
-    })),
+  app.get('/mcp-connections', async (request) => ({
+    connections: (await store.listHttpMcpConnections(connectionOwnerId(request))).map(
+      (connection) => ({
+        id: connection.id,
+        name: connection.name,
+        url: connection.url,
+        enabled: connection.enabled,
+        authType: connection.authType ?? (connection.authorization === null ? 'none' : 'static'),
+        authorizationConfigured: connection.authorization !== null,
+        oauthConnected: connection.oauthRefreshToken != null || connection.oauthAccessToken != null,
+        oauthClientId: connection.oauthClientId ?? null,
+        oauthAuthorizationEndpoint: connection.oauthAuthorizationEndpoint ?? null,
+        oauthTokenEndpoint: connection.oauthTokenEndpoint ?? null,
+        oauthScopes: connection.oauthScopes ?? null,
+      }),
+    ),
   }));
 
   app.post('/mcp-connections', async (request, reply) => {
@@ -112,6 +120,7 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
     }
     const connection = {
       id: randomUUID(),
+      ownerUserId: connectionOwnerId(request),
       name: body.name.toLowerCase(),
       url,
       authorization: body.authorization ?? null,
@@ -163,7 +172,7 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
       })
       .strict()
       .parse(request.body);
-    const connection = (await store.listHttpMcpConnections()).find(
+    const connection = (await store.listHttpMcpConnections(connectionOwnerId(request))).find(
       (item) => item.id === connectionId,
     );
     if (connection === undefined)
@@ -178,6 +187,13 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
 
   app.delete('/mcp-connections/:connectionId', async (request, reply) => {
     const { connectionId } = connectionParams.parse(request.params);
+    if (
+      !(await store.listHttpMcpConnections(connectionOwnerId(request))).some(
+        (item) => item.id === connectionId,
+      )
+    ) {
+      return reply.code(404).send({ error: 'MCP connection not found' });
+    }
     if (!(await store.deleteHttpMcpConnection(connectionId))) {
       reply.code(404);
       return { error: 'MCP connection not found' };
@@ -188,7 +204,14 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
 
   app.get('/projects/:id/mcp-bindings', async (request) => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-    return { bindings: await store.listProjectMcpBindings(id) };
+    const ownedIds = new Set(
+      (await store.listHttpMcpConnections(connectionOwnerId(request))).map((entry) => entry.id),
+    );
+    return {
+      bindings: (await store.listProjectMcpBindings(id)).filter((binding) =>
+        ownedIds.has(binding.connectionId),
+      ),
+    };
   });
 
   app.put('/projects/:id/mcp-bindings/:connectionId', async (request, reply) => {
@@ -197,7 +220,11 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
       reply.code(404);
       return { error: 'project not found' };
     }
-    if (!(await store.listHttpMcpConnections()).some((entry) => entry.id === connectionId)) {
+    if (
+      !(await store.listHttpMcpConnections(connectionOwnerId(request))).some(
+        (entry) => entry.id === connectionId,
+      )
+    ) {
       reply.code(404);
       return { error: 'MCP connection not found' };
     }
@@ -221,6 +248,13 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
 
   app.delete('/projects/:id/mcp-bindings/:connectionId', async (request, reply) => {
     const { id, connectionId } = projectConnectionParams.parse(request.params);
+    if (
+      !(await store.listHttpMcpConnections(connectionOwnerId(request))).some(
+        (entry) => entry.id === connectionId,
+      )
+    ) {
+      return reply.code(404).send({ error: 'MCP binding not found' });
+    }
     if (!(await store.deleteProjectMcpBinding(id, connectionId))) {
       reply.code(404);
       return { error: 'MCP binding not found' };

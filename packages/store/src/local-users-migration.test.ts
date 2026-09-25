@@ -14,6 +14,8 @@ it('binds legacy devices and projects to one administrator without granting othe
     await sql`insert into auth_tokens (id, token_hash) values ('device', 'hash')`.execute(ctx.db);
     await sql`insert into projects (id, owner, repo, container_name, state, overview_visible)
       values ('project', 'owner', 'repo', 'container', 'absent', true)`.execute(ctx.db);
+    await sql`insert into http_mcp_connections (id, name, url)
+      values ('connection', 'legacy', 'https://mcp.example.test')`.execute(ctx.db);
 
     const after = await migrator.migrateToLatest();
     if (after.error) throw new Error('Migration failed', { cause: after.error });
@@ -30,6 +32,9 @@ it('binds legacy devices and projects to one administrator without granting othe
     await expect(
       sql`select created_by_user_id from projects where id = 'project'`.execute(ctx.db),
     ).resolves.toMatchObject({ rows: [{ created_by_user_id: adminId }] });
+    await expect(
+      sql`select owner_user_id from http_mcp_connections where id = 'connection'`.execute(ctx.db),
+    ).resolves.toMatchObject({ rows: [{ owner_user_id: adminId }] });
     await expect(sql`select * from project_memberships`.execute(ctx.db)).resolves.toMatchObject({
       rows: [
         {
