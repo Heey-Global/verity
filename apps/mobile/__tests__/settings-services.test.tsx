@@ -1,5 +1,6 @@
 // Connected services: the secret store's master-password lifecycle, the AI
-// backend logins, transcription, Doppler, and the way into MCP connections.
+// backend logins, transcription, Doppler, and the way into MCP connections and
+// Matrix.
 //
 // Two things are worth more than the rest here. The secret-store branches
 // (uninitialized → set, sealed → unlock, unlocked → paste boxes editable),
@@ -464,7 +465,50 @@ describe('settings/services — tools', () => {
     // old single screen unreadable.
     expect(screen.queryByLabelText('Remote HTTPS MCP URL')).toBeNull();
   });
+});
 
+describe('settings/services — knowledge sources', () => {
+  it('leads to Matrix and shows its account state', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listIntegrations: jest.fn().mockResolvedValue({
+          accounts: [{ provider: 'matrix', status: 'online' }],
+          sources: [],
+        }),
+      }),
+    );
+    render(<ServicesSettingsScreen />);
+
+    expect(await screen.findByText('online')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Matrix'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix');
+  });
+
+  // The Matrix password is encrypted by the server independently of the secret
+  // store. Hiding the row with the store's credential groups would leave an
+  // unmanaged deployment with no way to reach the Matrix account at all.
+  it('keeps Matrix reachable when the deployment has no secret store', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unmanaged'));
+    render(<ServicesSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Matrix'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix');
+  });
+
+  it('still renders when the server predates integrations', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listIntegrations: jest.fn().mockRejectedValue(new VerityApiError(404, 'Not found')),
+      }),
+    );
+    render(<ServicesSettingsScreen />);
+
+    expect(await screen.findByLabelText('Matrix')).toBeOnTheScreen();
+    expect(screen.getByLabelText('MCP connections')).toBeOnTheScreen();
+  });
+});
+
+describe('settings/services — not connected', () => {
   it('renders a not-connected message when no server URL is configured', () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<ServicesSettingsScreen />);

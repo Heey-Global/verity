@@ -198,7 +198,26 @@ function HydratedRoot() {
                 options={{ presentation: 'fullScreenModal', headerShown: false }}
               />
               <Stack.Screen name="session/[id]" options={{ title: 'Session' }} />
-              <Stack.Screen name="project/[id]" options={{ title: 'Project' }} />
+              <Stack.Screen name="project/[id]/index" options={{ title: 'Project' }} />
+              {/* Project settings mirror the Verity settings stack below: sibling
+                routes under one prefix, each with the shared settings scaffold. */}
+              <Stack.Screen
+                name="project/[id]/settings/index"
+                options={{ title: 'Project settings' }}
+              />
+              <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen
+                name="project/[id]/settings/services"
+                options={{ title: 'Connected services' }}
+              />
+              <Stack.Screen
+                name="project/[id]/settings/environment"
+                options={{ title: 'Environment' }}
+              />
+              <Stack.Screen
+                name="project/[id]/settings/model"
+                options={{ title: 'Default model' }}
+              />
               <Stack.Screen name="new" options={{ title: 'New agent' }} />
               <Stack.Screen name="new-project" options={{ title: 'New project' }} />
               {/* Settings is a flat stack of sibling routes, not a nested layout:
@@ -217,6 +236,11 @@ function HydratedRoot() {
               <Stack.Screen
                 name="settings/services/mcp/new"
                 options={{ title: 'Add MCP connection' }}
+              />
+              <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
+              <Stack.Screen
+                name="settings/services/matrix/account"
+                options={{ title: 'Matrix account' }}
               />
               <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />

@@ -39,6 +39,17 @@ export function partitionModels(
   return { primary: ordered.filter((model) => !moreSet.has(model)), more };
 }
 
+/** Preserve the order within each provider while omitting empty groups. */
+export function groupModelsByEngine(
+  models: readonly string[],
+): { engine: string; models: string[] }[] {
+  const groups = ['Claude', 'Codex', 'OpenCode'].map((engine) => ({
+    engine,
+    models: models.filter((model) => engineLabel(model) === engine),
+  }));
+  return groups.filter((group) => group.models.length > 0);
+}
+
 /**
  * The human-friendly display name for a model id, shared by every model/engine surface
  * (the new-session picker, the in-session switcher sheet, the composer chip, and the

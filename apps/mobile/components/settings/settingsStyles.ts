@@ -146,6 +146,11 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     marginLeft: theme.spacing.md,
     backgroundColor: theme.colors.setup.border,
   },
+  modelGroupSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: theme.colors.setup.border,
+    marginVertical: theme.spacing.sm,
+  },
   navRowIcon: {
     width: 30,
     alignItems: 'center',

@@ -1,53 +1,32 @@
-// Project detail: local Verity project metadata plus the sessions bound to this
-// repository. Project operations such as dev servers and Agent Loops live here so
-// the screen stays the stable management surface for per-repo automation.
+// Project detail: the sessions bound to this repository plus the project
+// operations — Dev Servers and Agent Loops — that live on the project itself.
+// Configuration is one screen deeper: the gear opens the project settings routes
+// under `project/[id]/settings/`, which mirror the Verity settings surface.
 import {
   VerityApiError,
-  PROJECT_IMAGE_REBUILDING_WARNING,
   canCreatePublicPreviewTarget,
-  projectBadge,
-  REBUILDING_PROJECT_BADGE,
-  projectDisplayName,
-  publishProjectStatusMutation,
   publishAgentLoopMutation,
   publishDevServerStatusMutation,
   subscribeAgentLoopMutations,
   subscribeDevServerStatusMutations,
-  subscribeProjectStatusMutations,
-  projectRepoRef,
-  projectSettingsDraft,
-  projectSettingsPatchFromDraft,
-  sameProjectSettingsDraft,
-  isSecuritySandboxUpdate,
-  sandboxUpdateSummary,
-  usesDevcontainerImage,
   type VerityClient,
   type AgentLoop,
   type DevServer,
   type DevServerStatusMutation,
   type DevServerDetection,
   type DevServerSuggestion,
-  type ProjectDetail,
   type ProjectRecord,
   type ProjectRuntimeHealth,
   type ProjectRuntimeStarted,
   type PublicPreviewShare,
-  type DopplerProjectSummary,
-  type DopplerConfigSummary,
-  type ProjectSettings,
-  type ProjectSettingsDraft,
-  type HttpMcpConnection,
-  type ProjectMcpBinding,
-  type IntegrationSource,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
-import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   AppState,
-  BackHandler,
   Linking,
   Modal,
   Pressable,
@@ -60,34 +39,17 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { createVerityClient } from '../../lib/client';
-import { Icon } from '../../components/Icon';
-import { StatusPill, type StatusPillIntent } from '../../components/StatusPill';
-import {
-  SettingsGroup,
-  SettingsListPanel,
-  SettingsNavRow,
-  SettingsPanel,
-} from '../../components/settings/SettingsChrome';
-import { repairProject } from '../../lib/projectRepair';
-import {
-  projectLifecycleState,
-  projectSetupStatus,
-  toolkitDriftNotice,
-} from '../../lib/projectSetup';
-
-function param(value: string | string[] | undefined): string {
-  return Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
-}
-
-/** Matches the overview's project poll (`PROJECTS_POLL_MS` in app/index.tsx) so the
- *  container state ages the same wherever the operator is looking. */
-const PROJECT_DETAIL_POLL_MS = 15_000;
+import { createVerityClient } from '../../../lib/client';
+import { Icon } from '../../../components/Icon';
+import { StatusPill } from '../../../components/StatusPill';
+import { repairProject } from '../../../lib/projectRepair';
+import { projectLifecycleState, projectSetupStatus } from '../../../lib/projectSetup';
+import { projectIdParam, useProjectDetail } from '../../../lib/useProjectDetail';
 
 export default function ProjectDetailScreen() {
-  const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const client = useMemo(() => createVerityClient(), []);
-  const projectId = param(id);
+  const projectId = projectIdParam(id);
 
   if (!client || projectId.length === 0) {
     return (
@@ -97,209 +59,17 @@ export default function ProjectDetailScreen() {
       />
     );
   }
-  return (
-    <ProjectDetailView
-      client={client}
-      projectId={projectId}
-      initialTab={param(tab) === 'settings' ? 'settings' : 'dev-server'}
-    />
-  );
+  return <ProjectDetailView client={client} projectId={projectId} />;
 }
 
-function ProjectDetailView({
-  client,
-  projectId,
-  initialTab,
-}: {
-  client: VerityClient;
-  projectId: string;
-  initialTab: ProjectTab;
-}) {
+function ProjectDetailView({ client, projectId }: { client: VerityClient; projectId: string }) {
   const insets = useSafeAreaInsets();
-  const { theme } = useUnistyles();
-  const [detail, setDetail] = useState<ProjectDetail | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [deleting, setDeleting] = useState(false);
-  const [creatingLoop, setCreatingLoop] = useState(false);
-  const [activeTab, setActiveTab] = useState<ProjectTab>(initialTab);
-  const [settingsPage, setSettingsPage] = useState<ProjectSettingsPage | null>(null);
-  const leaveSettings = useCallback(() => {
-    if (settingsPage !== null) setSettingsPage(null);
-    else setActiveTab('dev-server');
-  }, [settingsPage]);
-  useFocusEffect(
-    useCallback(() => {
-      if (activeTab !== 'settings') return;
-      const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-        leaveSettings();
-        return true;
-      });
-      return () => subscription.remove();
-    }, [activeTab, leaveSettings]),
-  );
-  const loadGeneration = useRef(0);
-  const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
-  const pendingProjectMutationRef = useRef<ProjectRecord | undefined>(undefined);
-  const onProjectUpdated = useCallback((next: ProjectRecord) => {
-    // A poll already in flight carries pre-action state and must not win later.
-    loadGeneration.current += 1;
-    setLoading(false);
-    pendingProjectMutationRef.current = undefined;
-    publishedProjectRef.current = next;
-    setDetail((current) => (current ? { ...current, project: next } : current));
-    publishProjectStatusMutation(next);
-  }, []);
-  const onSettingsSaved = useCallback((next: ProjectSettings) => {
-    setDetail((current) => (current ? { ...current, settings: next } : current));
-  }, []);
-  // One settings form drives fields spread across the Dev Server, Memory, and
-  // Settings tabs (see useProjectSettingsForm). Lifted here — above the loading/
-  // error early-returns — so the shared draft/autosave survive tab switches and
-  // obey the Rules of Hooks. Tolerates a null settings during the initial load.
-  const settingsForm = useProjectSettingsForm(
+  const { detail, loading, error, setError, load, onProjectUpdated } = useProjectDetail(
     client,
     projectId,
-    detail?.settings ?? null,
-    onSettingsSaved,
   );
-
-  const load = useCallback(
-    async (silent = false): Promise<void> => {
-      const generation = ++loadGeneration.current;
-      if (!silent) {
-        setLoading(true);
-        setError(undefined);
-      }
-      try {
-        const next = await client.getProject(projectId);
-        if (generation === loadGeneration.current) {
-          const project = pendingProjectMutationRef.current ?? next.project;
-          pendingProjectMutationRef.current = undefined;
-          publishedProjectRef.current = project;
-          setDetail({ ...next, project });
-          publishProjectStatusMutation(project);
-        }
-      } catch (caught) {
-        if (!silent && generation === loadGeneration.current) {
-          setError(caught instanceof VerityApiError ? caught.message : 'Could not load project');
-        }
-      } finally {
-        if (!silent && generation === loadGeneration.current) setLoading(false);
-      }
-    },
-    [client, projectId],
-  );
-
-  const detailLoaded = detail !== undefined;
-  useEffect(
-    () =>
-      subscribeProjectStatusMutations((next) => {
-        if (next.id !== projectId) return;
-        if (publishedProjectRef.current === next) return;
-        pendingProjectMutationRef.current = next;
-        setDetail((current) => (current ? { ...current, project: next } : current));
-      }),
-    [projectId],
-  );
-  useEffect(() => {
-    void load();
-  }, [load]);
-  useEffect(() => {
-    if (detail?.project.setupStatus !== 'pending') return;
-    // Projects created before the guided flow was removed can use the same
-    // independent settings and repair controls as newly created projects.
-    void client
-      .setProjectSetupStatus(projectId, 'complete')
-      .then(onProjectUpdated)
-      .catch(() => {
-        // A later visit retries; the project remains usable in the meantime.
-      });
-  }, [client, detail?.project.setupStatus, onProjectUpdated, projectId]);
-  useFocusEffect(
-    useCallback(() => {
-      if (detailLoaded) void load(true);
-    }, [detailLoaded, load]),
-  );
-
-  // Keep the container state live while the screen is open. `GET /projects/:id`
-  // reconciles the project against Docker, so this is what turns a sandbox that
-  // died under the operator into a visible "Needs repair" plus the Repair action,
-  // instead of a stale "Running" with a Pause button. Silent: a failing poll must
-  // not replace the rendered project with an error banner. Same cadence as the
-  // overview poll. Native timers resume after the app returns to the foreground.
-  useEffect(() => {
-    // The initial request owns the loading gate. Starting a silent generation
-    // before it settles could supersede it without any request clearing loading.
-    if (!detailLoaded) return;
-    const refresh = (): void => void load(true);
-    const timer = setInterval(refresh, PROJECT_DETAIL_POLL_MS);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [detailLoaded, load]);
-
-  useEffect(() => {
-    const project = detail?.project;
-    if (project === undefined) return;
-    const state = projectLifecycleState(project);
-    if (
-      state !== 'cloning' &&
-      state !== 'container_starting' &&
-      state !== 'sleeping_starting' &&
-      state !== 'waking'
-    )
-      return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async (): Promise<void> => {
-      await load(true);
-      if (!cancelled) timer = setTimeout(() => void poll(), 2_000);
-    };
-    timer = setTimeout(() => void poll(), 2_000);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [detail?.project.lifecycleState, detail?.project.state, load]);
-
-  const deleteProject = useCallback(() => {
-    if (detail === undefined || deleting) return;
-    const target = detail.project;
-    Alert.alert(
-      'Delete project?',
-      `This removes ${projectDisplayName(target)} from Verity, stops its container, and deletes the local clone, including retained recovery workspaces, along with the project's sessions and their history. This can't be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            setDeleting(true);
-            setError(undefined);
-            void client
-              .deleteProject(target.id)
-              // `dismissTo`, not `replace`: this screen was pushed on top of the
-              // home the operator came from, so replacing it with `/` leaves TWO
-              // home screens stacked — and the second one renders a back button
-              // to the first, the nonsensical "‹ Verity" on the overview. Popping
-              // returns to the home already below (which refetches on focus, so
-              // the deleted project is gone from it either way). Same reasoning as
-              // the split-screen redirect in `session/[id].tsx`; with no home
-              // below — a cold deep link straight into a project — it falls back
-              // to replacing this route, exactly as before.
-              .then(() => router.dismissTo('/'))
-              .catch((caught) => {
-                setError(
-                  caught instanceof VerityApiError ? caught.message : 'Could not delete project',
-                );
-              })
-              .finally(() => setDeleting(false));
-          },
-        },
-      ],
-    );
-  }, [client, deleting, detail]);
+  const [creatingLoop, setCreatingLoop] = useState(false);
+  const [activeTab, setActiveTab] = useState<ProjectTab>('dev-server');
 
   const createAgentLoop = useCallback(() => {
     if (!detail || creatingLoop) return;
@@ -331,7 +101,11 @@ function ProjectDetailView({
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
-  }, [client, creatingLoop, detail]);
+  }, [client, creatingLoop, detail, setError]);
+
+  const openSettings = useCallback(() => {
+    router.push({ pathname: '/project/[id]/settings', params: { id: projectId } });
+  }, [projectId]);
 
   if (loading && detail === undefined) {
     return (
@@ -352,44 +126,20 @@ function ProjectDetailView({
     );
   }
 
-  const { project, settings } = detail;
-  const title = project.repo;
+  const { project } = detail;
   const lifecycleState = projectLifecycleState(project);
   return (
     <View style={styles.flex}>
-      <Stack.Screen
-        options={{ title: activeTab === 'settings' ? (settingsPage ?? 'Project settings') : title }}
-      />
+      <Stack.Screen options={{ title: project.repo }} />
       {error ? <StaleBanner message={error} onRetry={() => load()} /> : null}
-      {activeTab === 'settings' ? (
-        <Pressable
-          style={styles.settingsBack}
-          onPress={leaveSettings}
-          accessibilityRole="button"
-          accessibilityLabel={
-            settingsPage === null ? 'Back to project' : 'Back to project settings'
-          }
-        >
-          <Icon name="chevron-left" size={20} color={theme.colors.primary} />
-          <Text style={styles.settingsBackText}>
-            {settingsPage === null ? title : 'Project settings'}
-          </Text>
-        </Pressable>
-      ) : (
-        <ProjectTabs
-          active={activeTab}
-          creating={creatingLoop}
-          onCreate={createAgentLoop}
-          onChange={setActiveTab}
-        />
-      )}
-      <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          activeTab === 'settings' ? styles.settingsContent : null,
-          { paddingBottom: insets.bottom + 24 },
-        ]}
-      >
+      <ProjectTabs
+        active={activeTab}
+        creating={creatingLoop}
+        onCreate={createAgentLoop}
+        onChange={setActiveTab}
+        onOpenSettings={openSettings}
+      />
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
         {lifecycleState !== 'active' && lifecycleState !== 'absent' ? (
           <View style={styles.runtimePanel} accessibilityLabel="Project setup progress">
             <Text style={styles.operationsTitle}>{projectSetupStatus(project).label}</Text>
@@ -418,173 +168,25 @@ function ProjectDetailView({
             onCreateAgentLoop={createAgentLoop}
           />
         ) : null}
-        {activeTab === 'settings' ? (
-          <>
-            {settingsPage === null ? (
-              <>
-                <SettingsGroup title="Project">
-                  <SettingsListPanel>
-                    <SettingsNavRow
-                      icon="server"
-                      title="Environment"
-                      subtitle="Workspace lifecycle and updates"
-                      onPress={() => setSettingsPage('Environment')}
-                    />
-                    <SettingsNavRow
-                      icon="key"
-                      title="Connected services"
-                      subtitle="Doppler, Google Drive, and MCP"
-                      onPress={() => setSettingsPage('Connected services')}
-                    />
-                    <SettingsNavRow
-                      icon="message-square"
-                      title="Integrations"
-                      subtitle="Connected project conversations"
-                      onPress={() => setSettingsPage('Integrations')}
-                    />
-                    {project.kind === 'local' ? (
-                      <SettingsNavRow
-                        icon="github"
-                        title="GitHub"
-                        subtitle="Connect this project to a repository"
-                        onPress={() => setSettingsPage('GitHub')}
-                      />
-                    ) : null}
-                  </SettingsListPanel>
-                </SettingsGroup>
-                <SettingsGroup title="About">
-                  <SettingsListPanel>
-                    <SettingsNavRow
-                      icon="info"
-                      title="Project information"
-                      subtitle="Repository and release details"
-                      onPress={() => setSettingsPage('Project information')}
-                    />
-                    <SettingsNavRow
-                      icon="trash-2"
-                      title="Danger zone"
-                      subtitle="Delete this project"
-                      onPress={() => setSettingsPage('Danger zone')}
-                    />
-                  </SettingsListPanel>
-                </SettingsGroup>
-              </>
-            ) : null}
-            {settingsPage === 'Environment' ? (
-              <EnvironmentSection
-                client={client}
-                project={project}
-                onUpdated={onProjectUpdated}
-                onReload={load}
-              />
-            ) : null}
-            {settingsPage === 'Connected services' ? (
-              <ProjectSettingsSection
-                client={client}
-                projectId={project.id}
-                settings={settings}
-                onSaved={onSettingsSaved}
-              />
-            ) : null}
-            {settingsPage === 'Integrations' ? (
-              <ProjectIntegrationsSection client={client} projectId={project.id} />
-            ) : null}
-            {settingsPage === 'GitHub' && project.kind === 'local' ? (
-              <LinkGitHubSection client={client} project={project} onUpdated={onProjectUpdated} />
-            ) : null}
-            {settingsPage === 'Project information' ? (
-              <SettingsGroup title="Project information">
-                <SettingsPanel>
-                  <ProjectFields project={project} />
-                </SettingsPanel>
-              </SettingsGroup>
-            ) : null}
-            {settingsPage === 'Danger zone' ? (
-              <DangerSection project={project} deleting={deleting} onDelete={deleteProject} />
-            ) : null}
-          </>
-        ) : null}
       </ScrollView>
     </View>
   );
 }
 
-type ProjectTab = 'dev-server' | 'automations' | 'settings';
-type ProjectSettingsPage =
-  | 'Environment'
-  | 'Connected services'
-  | 'Integrations'
-  | 'GitHub'
-  | 'Project information'
-  | 'Danger zone';
-
-function ProjectIntegrationsSection({
-  client,
-  projectId,
-}: {
-  client: VerityClient;
-  projectId: string;
-}) {
-  const [sources, setSources] = useState<IntegrationSource[]>([]);
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      void client
-        .listProjectIntegrations(projectId)
-        .then((items) => {
-          if (active) setSources(items);
-        })
-        .catch(() => {
-          if (active) setSources([]);
-        });
-      return () => {
-        active = false;
-      };
-    }, [client, projectId]),
-  );
-  return (
-    <SettingsGroup title="Integrations">
-      <SettingsListPanel>
-        {sources.map((source) => (
-          <SettingsNavRow
-            key={`${source.accountId}:${source.sourceId}`}
-            icon="link"
-            title={source.displayName}
-            subtitle={
-              source.lastIngestedAt
-                ? `Last import: ${new Date(source.lastIngestedAt).toLocaleString()}`
-                : 'No messages imported yet'
-            }
-            status={{
-              intent: source.status === 'active' ? 'ready' : 'transient',
-              label: source.status === 'active' ? 'Connected' : 'Paused',
-            }}
-            onPress={() =>
-              router.push({ pathname: '/settings/integrations', params: { projectId } })
-            }
-          />
-        ))}
-        <SettingsNavRow
-          icon="link"
-          title="Manage project rooms"
-          subtitle="Connect invited rooms and manage imports"
-          onPress={() => router.push({ pathname: '/settings/integrations', params: { projectId } })}
-        />
-      </SettingsListPanel>
-    </SettingsGroup>
-  );
-}
+type ProjectTab = 'dev-server' | 'automations';
 
 function ProjectTabs({
   active,
   creating,
   onCreate,
   onChange,
+  onOpenSettings,
 }: {
   active: ProjectTab;
   creating: boolean;
   onCreate: () => void;
   onChange: (tab: ProjectTab) => void;
+  onOpenSettings: () => void;
 }) {
   const { theme } = useUnistyles();
   const tabs: { key: ProjectTab; label: string }[] = [
@@ -632,664 +234,17 @@ function ProjectTabs({
           <Icon name="plus" size={20} color={theme.colors.text} />
         )}
       </Pressable>
+      {/* A destination, not a tab: settings is its own route stack, like the
+          gear on the home header that opens Verity settings. */}
       <Pressable
-        style={[
-          styles.projectSettingsTab,
-          active === 'settings' ? styles.projectTabSelected : null,
-        ]}
-        onPress={() => onChange('settings')}
-        accessibilityRole="tab"
+        style={styles.projectSettingsTab}
+        onPress={onOpenSettings}
+        accessibilityRole="button"
         accessibilityLabel="Project settings"
-        accessibilityState={{ selected: active === 'settings' }}
       >
-        <Icon
-          name="settings"
-          size={19}
-          color={active === 'settings' ? theme.colors.text : theme.colors.textMuted}
-        />
+        <Icon name="settings" size={19} color={theme.colors.textMuted} />
       </Pressable>
     </View>
-  );
-}
-
-function DangerSection({
-  project,
-  deleting,
-  onDelete,
-}: {
-  project: ProjectRecord;
-  deleting: boolean;
-  onDelete: () => void;
-}) {
-  const { theme } = useUnistyles();
-  return (
-    <SettingsGroup title="Danger zone">
-      <SettingsPanel>
-        <View style={styles.runtimeMetaRow}>
-          <Text style={styles.runtimeMetaLabel}>Project</Text>
-          <Text style={styles.runtimeMetaValue} numberOfLines={1}>
-            {projectDisplayName(project)}
-          </Text>
-          <Text style={styles.runtimeMetaValueMuted}>
-            Delete the Verity project record, stop its container, and remove the local clone.
-          </Text>
-        </View>
-        <Pressable
-          style={({ pressed }) => [
-            styles.deleteProjectButton,
-            deleting ? styles.lifecycleButtonDisabled : null,
-            pressed ? styles.rowPressed : null,
-          ]}
-          onPress={onDelete}
-          disabled={deleting}
-          accessibilityRole="button"
-          accessibilityLabel="Delete project"
-        >
-          {deleting ? <ActivityIndicator size="small" /> : null}
-          <Text style={[styles.lifecycleButtonLabel, { color: theme.colors.tone.danger }]}>
-            {deleting ? 'Deleting...' : 'Delete project'}
-          </Text>
-        </Pressable>
-      </SettingsPanel>
-    </SettingsGroup>
-  );
-}
-
-function sandboxRefLabel(
-  ref: string | null | undefined,
-  version?: string | null,
-  revision?: string | null,
-): string | null {
-  const normalizedVersion = normalizeImageVersion(version);
-  const shortRevision = shortSha(revision);
-  if (normalizedVersion && shortRevision) return `${normalizedVersion} · ${shortRevision}`;
-  if (normalizedVersion) return normalizedVersion;
-  if (shortRevision) return shortRevision;
-  if (!ref) return null;
-  if (ref.includes('/dev-base')) return 'Legacy base';
-  const tag = ref.match(/:([0-9]+(?:\.[0-9]+){1,3}(?:[-.][A-Za-z0-9]+)*)$/)?.[1];
-  if (tag !== undefined) return `v${tag}`;
-  const digest = shortDigest(ref);
-  if (digest) return digest;
-  if (ref.endsWith(':latest')) return 'Unpinned sandbox';
-  return ref;
-}
-
-function normalizeImageVersion(version: string | null | undefined): string | null {
-  if (!version) return null;
-  const trimmed = version.trim();
-  if (trimmed.length === 0) return null;
-  return trimmed.startsWith('v') ? trimmed : `v${trimmed}`;
-}
-
-function shortSha(revision: string | null | undefined): string | null {
-  if (!revision) return null;
-  const trimmed = revision.trim();
-  return /^[0-9a-f]{7,}$/i.test(trimmed) ? trimmed.slice(0, 7) : trimmed || null;
-}
-
-function shortDigest(ref: string): string | null {
-  const match = ref.match(/(?:@|^)sha256:([0-9a-f]{12,})/i);
-  return match ? `sha256:${match[1].slice(0, 12)}` : null;
-}
-
-// Environment — the project's runtime: run state + one state-driven lifecycle
-// action, plus a slim update affordance when the sandbox image has one. Replaces
-// the old separate Container + Sandbox sections. No raw container/Docker jargon;
-// destructive removal lives in the Danger zone, not here.
-function EnvironmentSection({
-  client,
-  project,
-  onUpdated,
-  onReload,
-}: {
-  client: VerityClient;
-  project: ProjectRecord;
-  onUpdated: (project: ProjectRecord) => void;
-  onReload: () => void;
-}) {
-  const [working, setWorking] = useState<'start' | 'pause' | 'update' | 'rebuild' | undefined>(
-    undefined,
-  );
-  const [error, setError] = useState<string | undefined>(undefined);
-  const recoveryGeneration = useRef(0);
-  const awaitingDurableCompletion = useRef(false);
-  // Whether the server understands `forceRebuild`. Asked once when the panel
-  // mounts — the answer only changes when the server is redeployed, and a stale
-  // `false` costs a hidden button rather than a rebuild that silently did
-  // nothing (see `healthSchema.imageRebuildSupported`).
-  const [rebuildSupported, setRebuildSupported] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    void client
-      .getHealth()
-      .then((health) => {
-        if (active) setRebuildSupported(health.imageRebuildSupported === true);
-      })
-      .catch(() => {
-        if (active) setRebuildSupported(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [client]);
-
-  useEffect(
-    () => () => {
-      recoveryGeneration.current += 1;
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (
-      awaitingDurableCompletion.current &&
-      project.state !== 'cloning' &&
-      project.state !== 'container_starting' &&
-      project.provisionWarning !== PROJECT_IMAGE_REBUILDING_WARNING
-    ) {
-      awaitingDurableCompletion.current = false;
-      setWorking(undefined);
-    }
-  }, [project.provisionWarning, project.state]);
-
-  const running = project.state === 'active';
-  const stopped = project.state === 'absent';
-  const failed = project.state === 'failed';
-  const starting = project.state === 'container_starting';
-  const update = project.sandboxUpdate;
-  // Null exactly when there is no pending update, so it gates the update row as
-  // well as labelling it — one source of truth instead of a boolean that has to
-  // stay in agreement with the summary next to it.
-  const updateSummary = sandboxUpdateSummary(update);
-  const driftNotice = toolkitDriftNotice(project);
-
-  // Same descriptor the overview dot uses, so both surfaces name the container
-  // state identically — and so the pill never leaks a raw state id like
-  // `container_starting`, which it did for every transitional state.
-  const badge = projectBadge(project);
-  const rebuilding =
-    working === 'rebuild' ||
-    (project.provisionWarning != null &&
-      project.provisionWarning === PROJECT_IMAGE_REBUILDING_WARNING);
-  // `working === 'rebuild'` is optimistic local state the badge cannot see, so it
-  // borrows the badge's own rebuild wording rather than keeping a third copy of
-  // it — this pill used to say "Rebuilding…" next to an overview row saying
-  // "Rebuilding secure workspace…" about the same container.
-  const statusLabel = rebuilding ? REBUILDING_PROJECT_BADGE.label : badge.label;
-  // `pulsing` is the badge's own "Verity is working on this", and a transient
-  // pill is how this screen says it. Without it a running project mid-update read
-  // as a settled green "ready" while its label said it was updating.
-  const statusIntent: StatusPillIntent =
-    rebuilding || badge.pulsing
-      ? 'transient'
-      : running
-        ? 'ready'
-        : badge.needsRepair
-          ? 'needsSetup'
-          : 'optional';
-
-  // Start / Repair: (re)provision the environment. Preserves the sealed-secret
-  // redirect and the server-warning confirmation from the old Reprovision path.
-  const start = useCallback(() => {
-    if (working !== undefined) return;
-    setWorking('start');
-    setError(undefined);
-    void repairProject({
-      client,
-      projectId: project.id,
-      returnTo: `/project/${project.id}`,
-      onUpdated,
-      onError: setError,
-    }).finally(() => setWorking(undefined));
-  }, [client, onUpdated, project.id, working]);
-
-  // Pause: stop and remove the environment but keep the local clone for next start.
-  const pause = useCallback(() => {
-    if (working !== undefined) return;
-    Alert.alert(
-      'Pause project?',
-      'This stops the project environment. Your local files stay, so you can start it again anytime.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Pause',
-          onPress: () => {
-            setWorking('pause');
-            setError(undefined);
-            void client
-              .deprovisionProject(project.id, { purge: false })
-              .then(onUpdated)
-              .catch((caught) => {
-                setError(
-                  caught instanceof VerityApiError ? caught.message : 'Could not pause project',
-                );
-              })
-              .finally(() => setWorking(undefined));
-          },
-        },
-      ],
-    );
-  }, [client, onUpdated, project.id, working]);
-
-  // Both container-replacing actions run the same request and differ only in
-  // whether the image is rebuilt, so they share one driver — including the
-  // dropped-request recovery, which a rebuild needs MORE than an update does:
-  // a `--no-cache` build is minutes long and the more likely of the two to
-  // outlive the request that started it.
-  const recreate = useCallback(
-    (forceRebuild: boolean, failureMessage: string) => {
-      const generation = ++recoveryGeneration.current;
-      let keepWorkingAfterRecovery = false;
-      setWorking(forceRebuild ? 'rebuild' : 'update');
-      setError(undefined);
-      void client
-        .recreateProjectContainer(project.id, { confirmWarnings: true, forceRebuild })
-        .then(() => {
-          if (recoveryGeneration.current === generation) onReload();
-        })
-        .catch(async (caught) => {
-          if (!(caught instanceof VerityApiError)) {
-            try {
-              // A cacheless build can outlive the HTTP request. Keep the action
-              // disabled while the server still reports its transitional state,
-              // then surface the actual completed/failed project record.
-              let sawTransitionalState = false;
-              const recoveryAttempts = forceRebuild ? 450 : 150;
-              for (let attempt = 0; attempt < recoveryAttempts; attempt += 1) {
-                if (recoveryGeneration.current !== generation) return;
-                const next = await client.getProject(project.id);
-                onUpdated(next.project);
-                const transitional =
-                  next.project.state === 'cloning' ||
-                  next.project.state === 'container_starting' ||
-                  next.project.provisionWarning === PROJECT_IMAGE_REBUILDING_WARNING;
-                if (transitional) sawTransitionalState = true;
-                const terminalChanged =
-                  (next.project.stateChangedAt !== undefined &&
-                    next.project.stateChangedAt !== project.stateChangedAt) ||
-                  next.project.provisionError !== project.provisionError ||
-                  next.project.provisionWarning !== project.provisionWarning;
-                if ((sawTransitionalState || terminalChanged) && !transitional) {
-                  if (next.project.provisionWarning !== project.provisionWarning) {
-                    setError(next.project.provisionWarning ?? failureMessage);
-                  } else if (next.project.provisionError) {
-                    setError(next.project.provisionError);
-                  }
-                  onReload();
-                  return;
-                }
-                // A request that never reached the server leaves the original
-                // terminal state untouched. Do not turn that into a false
-                // success; allow a short window for the server's state write,
-                // then surface the original transport error.
-                if (!sawTransitionalState && attempt >= (forceRebuild ? 449 : 59)) break;
-                await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
-              }
-              if (!sawTransitionalState) throw new Error('request did not reach the server');
-              awaitingDurableCompletion.current = true;
-              keepWorkingAfterRecovery = true;
-              setError(
-                `${forceRebuild ? 'Rebuild' : 'Update'} is still running. Status updates will continue automatically.`,
-              );
-              return;
-            } catch {
-              // Fall through to the visible error below only when the recheck
-              // also fails; a dropped long-running request can still complete
-              // server-side.
-            }
-          }
-          if (recoveryGeneration.current === generation) {
-            setError(caught instanceof VerityApiError ? caught.message : failureMessage);
-          }
-        })
-        .finally(() => {
-          if (recoveryGeneration.current === generation && !keepWorkingAfterRecovery) {
-            setWorking(undefined);
-          }
-        });
-    },
-    [
-      client,
-      onReload,
-      onUpdated,
-      project.id,
-      project.provisionError,
-      project.provisionWarning,
-      project.stateChangedAt,
-    ],
-  );
-
-  const runUpdate = useCallback(() => {
-    if (!updateSummary || working !== undefined) return;
-    const blocked = update?.turnBlocked === true;
-    Alert.alert(
-      blocked ? 'Update waiting for a turn' : 'Update project?',
-      blocked
-        ? 'A turn is running in this project. Recreating the environment now would end it — cancel the turn first, then update.'
-        : isSecuritySandboxUpdate(update)
-          ? 'This recreates the project environment and applies the pending security update.'
-          : 'This recreates the project environment and applies the pending update.',
-      // No Update button while a turn holds the update off, and not out of
-      // caution: the Server refuses this recreate for as long as the turn runs
-      // (SBX-1), so the button could only ever produce the 409 the message just
-      // explained. An action that cannot be taken is worse than none — it invites
-      // the operator to read the refusal as a fault.
-      blocked
-        ? [{ text: 'OK', style: 'cancel' }]
-        : [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Update', onPress: () => recreate(false, 'Could not update project') },
-          ],
-    );
-  }, [recreate, update, updateSummary, working]);
-
-  // Rebuild image: the escape hatch for a devcontainer change the image cache
-  // cannot see. Verity caches the built image under a content hash over the
-  // `.devcontainer/` directory, so a change to a Dockerfile or build context
-  // OUTSIDE it — or to anything a build step fetches at build time — leaves the
-  // hash, and therefore the cached image, exactly as it was. Update and Repair
-  // both reuse it; this discards it.
-  const rebuild = useCallback(() => {
-    if (working !== undefined) return;
-    Alert.alert(
-      'Rebuild image?',
-      'This rebuilds the project image from the repository devcontainer without the build cache, then recreates the environment. It can take several minutes.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Rebuild', onPress: () => recreate(true, 'Could not rebuild project image') },
-      ],
-    );
-  }, [recreate, working]);
-
-  // Only a project on a BUILT image has a build to redo, and the server rejects
-  // a recreate for a paused or mid-provision project — so the button is absent
-  // rather than present-and-failing in those states.
-  //
-  // `imageRef` names the image of the last SUCCESSFUL provision and is left
-  // untouched when one fails, so a project that built once and now fails — the
-  // canonical reason to want `--no-cache` — still shows the action. A project
-  // that has never provisioned successfully has no `imageRef` and no cached
-  // derived image either, so its ordinary Repair already rebuilds.
-  const canRebuild =
-    rebuildSupported && usesDevcontainerImage(project.imageRef) && (running || failed);
-
-  // One primary action, chosen by run state. Unknown/transient states disable it.
-  const primary = running
-    ? {
-        label: 'Pause',
-        busyLabel: 'Pausing…',
-        run: pause,
-        busy: working === 'pause',
-        enabled: true,
-      }
-    : failed || starting
-      ? {
-          label: 'Repair',
-          busyLabel: 'Repairing…',
-          run: start,
-          busy: working === 'start',
-          enabled: true,
-        }
-      : {
-          label: 'Start',
-          busyLabel: 'Starting…',
-          run: start,
-          busy: working === 'start',
-          enabled: stopped,
-        };
-
-  return (
-    <SettingsGroup
-      title="Environment"
-      trailing={
-        <View style={styles.sectionHeaderRow}>
-          <StatusPill intent={statusIntent} label={statusLabel} />
-          {working && !rebuilding ? <ActivityIndicator size="small" /> : null}
-        </View>
-      }
-    >
-      <SettingsPanel>
-        <Pressable
-          style={({ pressed }) => [
-            styles.saveButton,
-            !primary.enabled || working ? styles.saveButtonDisabled : null,
-            pressed ? styles.rowPressed : null,
-          ]}
-          onPress={primary.run}
-          disabled={!primary.enabled || working !== undefined}
-          accessibilityRole="button"
-          accessibilityLabel={`${primary.label} project`}
-        >
-          <Text style={styles.saveButtonLabel}>
-            {primary.busy ? primary.busyLabel : primary.label}
-          </Text>
-        </Pressable>
-        {updateSummary ? (
-          <>
-            <View style={styles.runtimeMetaRow}>
-              <Text style={styles.runtimeMetaLabel}>{updateSummary}</Text>
-              <Text style={styles.runtimeMetaValue}>
-                {sandboxRefLabel(update?.target, update?.targetVersion, update?.targetRevision) ??
-                  'available'}
-              </Text>
-            </View>
-            <Pressable
-              style={({ pressed }) => [
-                styles.lifecycleButton,
-                working ? styles.lifecycleButtonDisabled : null,
-                pressed ? styles.rowPressed : null,
-              ]}
-              onPress={runUpdate}
-              disabled={working !== undefined}
-              accessibilityRole="button"
-              accessibilityLabel="Update project environment"
-            >
-              <Text style={styles.lifecycleButtonLabel}>
-                {working === 'update' ? 'Updating…' : 'Update'}
-              </Text>
-            </Pressable>
-          </>
-        ) : null}
-        {canRebuild ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.lifecycleButton,
-              working ? styles.lifecycleButtonDisabled : null,
-              pressed ? styles.rowPressed : null,
-            ]}
-            onPress={rebuild}
-            disabled={working !== undefined}
-            accessibilityRole="button"
-            accessibilityLabel="Rebuild project image"
-          >
-            <Text style={styles.lifecycleButtonLabel}>
-              {working === 'rebuild' ? 'Rebuilding…' : 'Rebuild image'}
-            </Text>
-          </Pressable>
-        ) : null}
-        {/* Both notices live beside Start/Repair/Update rather than in the
-            Project information list at the bottom: they describe the environment,
-            and the actions that answer them are right here. */}
-        {project.provisionWarning ? (
-          <Text style={styles.runtimeNotice}>{project.provisionWarning}</Text>
-        ) : null}
-        {driftNotice ? <Text style={styles.runtimeNotice}>{driftNotice}</Text> : null}
-        {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-      </SettingsPanel>
-    </SettingsGroup>
-  );
-}
-
-/** The "connect later" bridge for a project created without GitHub. Verity does
- *  not create repositories, so the operator picks one the GitHub App installation
- *  already sees; the server pushes this project's history into it and rewrites the
- *  project's identity. The repository must be EMPTY — the server's plain
- *  (non-forced) push is what enforces that, so nothing here can overwrite history
- *  someone else pushed. */
-function LinkGitHubSection({
-  client,
-  project,
-  onUpdated,
-}: {
-  client: VerityClient;
-  project: ProjectRecord;
-  onUpdated: (project: ProjectRecord) => void;
-}) {
-  const [repositories, setRepositories] = useState<ProjectRecord[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [linking, setLinking] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    void client
-      .listAvailableRepositories()
-      .then((next) => {
-        if (cancelled) return;
-        setRepositories(next);
-        setSelectedId((current) => current ?? next[0]?.id ?? null);
-      })
-      .catch((caught) => {
-        if (cancelled) return;
-        setError(caught instanceof VerityApiError ? caught.message : 'Could not load repositories');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [client]);
-
-  const sorted = useMemo(
-    () =>
-      [...repositories].sort((a, b) =>
-        `${a.owner}/${a.repo}`.localeCompare(`${b.owner}/${b.repo}`),
-      ),
-    [repositories],
-  );
-  const selected = sorted.find((candidate) => candidate.id === selectedId) ?? sorted[0] ?? null;
-
-  const link = useCallback(() => {
-    if (selected === null || linking) return;
-    const repo = `${selected.owner}/${selected.repo}`;
-    Alert.alert(
-      'Connect to GitHub',
-      `Verity publishes this project's history to ${repo} and rebuilds its container. ` +
-        'An empty repository receives it directly; one that already has history gets a ' +
-        'pull request for you to merge. Any running session in this project restarts.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Connect',
-          style: 'destructive',
-          onPress: () => {
-            setLinking(true);
-            setError(undefined);
-            void client
-              .linkProjectToGitHub(project.id, repo)
-              .then((linked) => {
-                onUpdated(linked.project);
-                // The history landed on a branch, not on the default branch — say so,
-                // or the operator reads "connected" and never merges the pull request.
-                if (linked.pullRequest !== undefined) {
-                  Alert.alert(
-                    'Pull request opened',
-                    `${repo} already had history, so this project's files arrived on ` +
-                      `${linked.importBranch ?? 'an import branch'}. Merge pull request #` +
-                      `${String(linked.pullRequest.number)} to publish them.`,
-                  );
-                } else if (linked.importBranch !== undefined) {
-                  Alert.alert(
-                    'History pushed to a branch',
-                    `This project's files are on ${linked.importBranch}, but the pull request ` +
-                      `could not be opened${
-                        linked.pullRequestError === undefined ? '' : `: ${linked.pullRequestError}`
-                      }. Open it on GitHub to publish them.`,
-                  );
-                }
-              })
-              .catch((caught) =>
-                setError(
-                  caught instanceof VerityApiError ? caught.message : 'Could not connect to GitHub',
-                ),
-              )
-              .finally(() => setLinking(false));
-          },
-        },
-      ],
-    );
-  }, [client, linking, onUpdated, project.id, selected]);
-
-  return (
-    <SettingsGroup
-      title="GitHub"
-      description="This project has no GitHub repository. Connect it to an existing repository to combine its history with this project and get pull requests, issues and CI status."
-    >
-      <SettingsPanel>
-        <Pressable
-          style={({ pressed }) => [
-            styles.lifecycleButton,
-            loading || linking || sorted.length === 0 ? styles.lifecycleButtonDisabled : null,
-            pressed ? styles.rowPressed : null,
-          ]}
-          onPress={() => setPickerOpen((open) => !open)}
-          disabled={loading || linking || sorted.length === 0}
-          accessibilityRole="button"
-          accessibilityLabel="Repository to connect"
-        >
-          <Text style={styles.lifecycleButtonLabel}>
-            {loading
-              ? 'Loading repositories…'
-              : selected
-                ? `${selected.owner}/${selected.repo}`
-                : 'No repositories available'}
-          </Text>
-        </Pressable>
-        {pickerOpen
-          ? sorted.map((repository) => (
-              <Pressable
-                key={repository.id}
-                style={({ pressed }) => [
-                  styles.lifecycleButton,
-                  pressed ? styles.rowPressed : null,
-                ]}
-                onPress={() => {
-                  setSelectedId(repository.id);
-                  setPickerOpen(false);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`${repository.owner}/${repository.repo}`}
-              >
-                <Text style={styles.lifecycleButtonLabel}>
-                  {repository.owner}/{repository.repo}
-                </Text>
-              </Pressable>
-            ))
-          : null}
-        <Pressable
-          style={({ pressed }) => [
-            styles.saveButton,
-            selected === null || linking ? styles.saveButtonDisabled : null,
-            pressed ? styles.rowPressed : null,
-          ]}
-          onPress={link}
-          disabled={selected === null || linking}
-          accessibilityRole="button"
-          accessibilityLabel="Connect project to GitHub"
-        >
-          <Text style={styles.saveButtonLabel}>
-            {linking ? 'Connecting…' : 'Connect to GitHub'}
-          </Text>
-        </Pressable>
-        {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-      </SettingsPanel>
-    </SettingsGroup>
   );
 }
 
@@ -3015,575 +1970,6 @@ function PublicPreviewShareControls({
   );
 }
 
-type ProjectSettingsForm = {
-  draft: ProjectSettingsDraft;
-  setField: (key: keyof ProjectSettingsDraft, value: string) => void;
-  save: () => void;
-  saving: boolean;
-  dirty: boolean;
-  error: string | undefined;
-  settings: ProjectSettings | null;
-};
-
-// One draft + one autosave for the remaining project settings. Dev Servers use
-// their own CRUD model above; this form retains the in-flight merge that protects
-// text typed while an earlier save is airborne (notably the multiline Memory field).
-function useProjectSettingsForm(
-  client: VerityClient,
-  projectId: string,
-  settings: ProjectSettings | null,
-  onSaved: (settings: ProjectSettings) => void,
-): ProjectSettingsForm {
-  const [draft, setDraft] = useState(() => projectSettingsDraft(settings));
-  const [saving, setSaving] = useState(false);
-  const [saveQueued, setSaveQueued] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const lastSettings = useRef(settings);
-  const dirty = !sameProjectSettingsDraft(settings, draft);
-
-  useEffect(() => {
-    if (saving || lastSettings.current === settings) return;
-    // This form is lifted above the screen's loading gate, so `settings` starts
-    // null and becomes real once the project loads. On that first null→real
-    // transition there can be no user edits yet (the fields are still behind the
-    // spinner), so seed the draft unconditionally — the `dirty` guard below only
-    // applies to later background refreshes, where an empty-vs-real diff would
-    // otherwise read as "dirty" and leave every configured field blank.
-    const hadSettings = lastSettings.current !== null;
-    lastSettings.current = settings;
-    // A background refresh or Doppler binding update must not overwrite text
-    // currently being edited. The successful save path below reseeds the draft
-    // from the server response once those edits have landed.
-    if (hadSettings && dirty) return;
-    setDraft((current) =>
-      sameProjectSettingsDraft(settings, current) ? current : projectSettingsDraft(settings),
-    );
-  }, [dirty, saving, settings]);
-
-  const setField = useCallback((key: keyof ProjectSettingsDraft, value: string) => {
-    setDraft((current) => ({ ...current, [key]: value }));
-  }, []);
-
-  const save = useCallback(() => {
-    if (!dirty) return;
-    if (saving) {
-      setSaveQueued(true);
-      return;
-    }
-    // `projectSettingsPatchFromDraft` omits empty write-only fields so a save never
-    // clears a value the operator left untouched.
-    const submittedDraft = draft;
-    const patch = projectSettingsPatchFromDraft(submittedDraft);
-    setSaving(true);
-    setError(undefined);
-    void client
-      .updateProjectSettings(projectId, patch)
-      .then((next) => {
-        const savedDraft = projectSettingsDraft(next);
-        setDraft((current) => {
-          const merged = { ...savedDraft };
-          for (const key of Object.keys(submittedDraft) as Array<keyof ProjectSettingsDraft>) {
-            // A response only acknowledges the snapshot that was submitted. Keep
-            // anything typed while that request was in flight so a slow save can
-            // never roll back a newer edit (notably the multiline Memory field).
-            if (current[key] !== submittedDraft[key]) merged[key] = current[key];
-          }
-          return merged;
-        });
-        lastSettings.current = next;
-        onSaved(next);
-      })
-      .catch((caught) => {
-        // Defensive: a 503 means the at-rest secret store is sealed. No field on
-        // this form currently writes an at-rest secret (the manual Doppler token
-        // was removed), so this is a general fallback rather than a reachable path.
-        setError(
-          caught instanceof VerityApiError
-            ? caught.status === 503
-              ? 'Unlock the secret store first.'
-              : caught.message
-            : 'Could not save settings',
-        );
-      })
-      .finally(() => setSaving(false));
-  }, [client, dirty, draft, onSaved, projectId, saving]);
-
-  useEffect(() => {
-    if (!saving && saveQueued) {
-      setSaveQueued(false);
-      save();
-    }
-  }, [save, saveQueued, saving]);
-
-  return { draft, setField, save, saving, dirty, error, settings };
-}
-
-// Shared autosave status line rendered under each editable group. All groups read
-// the same form, so whichever tab is visible reflects the single save state.
-function SettingsSaveHint({ form }: { form: ProjectSettingsForm }) {
-  return (
-    <>
-      {form.error ? <Text style={styles.settingsError}>{form.error}</Text> : null}
-      <Text style={styles.settingsHint}>
-        {form.saving
-          ? 'Saving changes…'
-          : form.dirty
-            ? 'Changes save when you leave the field.'
-            : form.settings?.updatedAt
-              ? `All changes saved · ${formatDate(form.settings.updatedAt)}`
-              : 'All changes save automatically.'}
-      </Text>
-    </>
-  );
-}
-
-// Settings tab — the broker-owned Doppler mapping. There is no per-project
-// credential or token state. Binding writes are handled by
-// DopplerBindingSection's own save, so this section carries no shared-form field.
-function ProjectSettingsSection({
-  client,
-  projectId,
-  settings,
-  onSaved,
-}: {
-  client: VerityClient;
-  projectId: string;
-  settings: ProjectSettings | null;
-  onSaved: (settings: ProjectSettings) => void;
-}) {
-  return (
-    <SettingsGroup
-      title="Connected services"
-      description="Choose which Doppler environment, Google Drive folder, and MCP connections this project can access."
-    >
-      <SettingsPanel>
-        <DopplerBindingSection
-          client={client}
-          projectId={projectId}
-          settings={settings}
-          onSaved={onSaved}
-        />
-        <GoogleDriveFolderSection
-          client={client}
-          projectId={projectId}
-          settings={settings}
-          onSaved={onSaved}
-        />
-        <ProjectMcpBindingsSection client={client} projectId={projectId} />
-        <Text style={styles.settingsHint}>
-          Verity resolves approved secrets in the central broker. No Doppler credential is stored in
-          or injected into the project container.
-        </Text>
-      </SettingsPanel>
-    </SettingsGroup>
-  );
-}
-
-function GoogleDriveFolderSection({
-  client,
-  projectId,
-  settings,
-  onSaved,
-}: {
-  client: VerityClient;
-  projectId: string;
-  settings: ProjectSettings | null;
-  onSaved: (settings: ProjectSettings) => void;
-}) {
-  const [disconnecting, setDisconnecting] = useState(false);
-  const folderName = settings?.googleDriveFolderName ?? null;
-  const choose = useCallback(() => {
-    router.push({
-      pathname: '/google-drive/[sessionId]',
-      params: { sessionId: projectId, purpose: 'folder' },
-    });
-  }, [projectId]);
-  const disconnect = useCallback(() => {
-    if (disconnecting) return;
-    Alert.alert(
-      'Disconnect Google Drive folder?',
-      'The files stay in Google Drive. Verity will no longer access them from this project.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: () => {
-            setDisconnecting(true);
-            void client
-              .disconnectProjectGoogleDriveFolder(projectId)
-              .then(() =>
-                onSaved({
-                  ...settings!,
-                  googleDriveFolderId: null,
-                  googleDriveFolderName: null,
-                }),
-              )
-              .catch(() => Alert.alert('Could not disconnect folder'))
-              .finally(() => setDisconnecting(false));
-          },
-        },
-      ],
-    );
-  }, [client, disconnecting, onSaved, projectId, settings]);
-
-  return (
-    <View style={styles.bindingSection} accessibilityLabel="Google Drive folder">
-      <View style={styles.settingsLabelRow}>
-        <Text style={styles.fieldLabel}>Google Drive folder</Text>
-        {folderName ? <StatusPill intent="ready" label="Connected" /> : null}
-      </View>
-      <Text style={styles.bindingCurrent}>{folderName ?? 'No Drive folder connected.'}</Text>
-      <Text style={styles.bindingHint}>
-        Verity can read, create, and edit files in the connected folder.
-      </Text>
-      <View style={styles.settingsLabelRow}>
-        <Pressable
-          style={({ pressed }) => [styles.bindingButton, pressed ? styles.rowPressed : null]}
-          onPress={choose}
-          accessibilityRole="button"
-          accessibilityLabel={
-            folderName ? 'Change Google Drive folder' : 'Connect Google Drive folder'
-          }
-        >
-          <Text style={styles.bindingButtonLabel}>{folderName ? 'Change' : 'Connect folder'}</Text>
-        </Pressable>
-        {folderName ? (
-          <Pressable
-            style={({ pressed }) => [styles.bindingButton, pressed ? styles.rowPressed : null]}
-            onPress={disconnect}
-            disabled={disconnecting}
-            accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Drive folder"
-          >
-            <Text style={styles.bindingButtonLabel}>
-              {disconnecting ? 'Disconnecting…' : 'Disconnect'}
-            </Text>
-          </Pressable>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-function ProjectMcpBindingsSection({
-  client,
-  projectId,
-}: {
-  client: VerityClient;
-  projectId: string;
-}) {
-  const [connections, setConnections] = useState<HttpMcpConnection[]>([]);
-  const [bindings, setBindings] = useState<ProjectMcpBinding[]>([]);
-  const [pendingConnectionId, setPendingConnectionId] = useState<string | undefined>();
-  const [error, setError] = useState<string | undefined>();
-  const mutationInFlight = useRef(false);
-  const loadGeneration = useRef(0);
-  const load = useCallback(async (): Promise<void> => {
-    if (
-      typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function' ||
-      typeof (client as Partial<VerityClient>).listProjectMcpBindings !== 'function'
-    ) {
-      return;
-    }
-    const generation = ++loadGeneration.current;
-    setError(undefined);
-    await Promise.all([client.listHttpMcpConnections(), client.listProjectMcpBindings(projectId)])
-      .then(([nextConnections, nextBindings]) => {
-        if (loadGeneration.current !== generation) return;
-        setConnections(nextConnections.filter((connection) => connection.enabled));
-        setBindings(nextBindings);
-      })
-      .catch(() => {
-        if (loadGeneration.current === generation) setError('Could not load MCP connections.');
-      });
-  }, [client, projectId]);
-  useEffect(() => void load(), [load]);
-  const enabled = useCallback(
-    (connectionId: string) =>
-      bindings.some((binding) => binding.connectionId === connectionId && binding.enabled),
-    [bindings],
-  );
-  const toggle = useCallback(
-    (connectionId: string) => {
-      if (mutationInFlight.current) return;
-      mutationInFlight.current = true;
-      setPendingConnectionId(connectionId);
-      void client
-        .setProjectMcpBinding(projectId, connectionId, !enabled(connectionId))
-        .then(load)
-        .catch(() => setError('Could not update the MCP connection.'))
-        .finally(() => {
-          mutationInFlight.current = false;
-          setPendingConnectionId(undefined);
-        });
-    },
-    [client, enabled, load, projectId],
-  );
-  return (
-    <View style={styles.section}>
-      <Text style={styles.sectionHeader}>MCP connections</Text>
-      <Text style={styles.settingsGroupDescription}>
-        Enable only the global MCP connections this project may use. Authorization stays on the
-        Verity server.
-      </Text>
-      {connections.length === 0 ? (
-        <Text style={styles.settingsHint}>
-          Add an HTTP MCP connection in global Settings first.
-        </Text>
-      ) : (
-        <View style={styles.bindingList}>
-          {connections.map((connection) => (
-            <Pressable
-              key={connection.id}
-              style={({ pressed }) => [styles.bindingRow, pressed ? styles.rowPressed : null]}
-              onPress={() => toggle(connection.id)}
-              disabled={pendingConnectionId !== undefined}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: enabled(connection.id) }}
-              accessibilityLabel={`${enabled(connection.id) ? 'Disable' : 'Enable'} ${connection.name} MCP connection`}
-            >
-              <Text style={styles.bindingRowText}>{connection.name}</Text>
-              <StatusPill
-                intent={enabled(connection.id) ? 'ready' : 'optional'}
-                label={enabled(connection.id) ? 'Enabled' : 'Disabled'}
-              />
-            </Pressable>
-          ))}
-        </View>
-      )}
-      {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-    </View>
-  );
-}
-
-// Broker-only binding picker: map a project to a Doppler project + config chosen
-// from the account's trusted live list. Single-select matches the project mapping
-// contract; credentials remain central and never enter this form.
-//
-// Flow: "Choose / Change" → fetch projects → pick one → fetch that project's
-// configs → pick one → PATCH { dopplerProject, dopplerConfig } → onSaved refresh.
-// This mapping is the only project-level Doppler setting.
-type BindingPickerPhase = 'idle' | 'projects' | 'configs' | 'saving';
-
-function DopplerBindingSection({
-  client,
-  projectId,
-  settings,
-  onSaved,
-}: {
-  client: VerityClient;
-  projectId: string;
-  settings: ProjectSettings | null;
-  onSaved: (settings: ProjectSettings) => void;
-}) {
-  const [phase, setPhase] = useState<BindingPickerPhase>('idle');
-  const [projects, setProjects] = useState<DopplerProjectSummary[]>([]);
-  const [configs, setConfigs] = useState<DopplerConfigSummary[]>([]);
-  const [pickedProject, setPickedProject] = useState<string | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  // Set when the server reports no account token — the picker can't list; hint the
-  // operator to configure the Doppler account token in onboarding/settings first.
-  const [notConfigured, setNotConfigured] = useState(false);
-
-  const boundProject = settings?.dopplerProject ?? null;
-  const boundConfig = settings?.dopplerConfig ?? null;
-  const bound = boundProject !== null && boundProject.length > 0;
-
-  const cancel = useCallback(() => {
-    setPhase('idle');
-    setProjects([]);
-    setConfigs([]);
-    setPickedProject(undefined);
-    setLoading(false);
-    setError(undefined);
-    setNotConfigured(false);
-  }, []);
-
-  const start = useCallback(() => {
-    setError(undefined);
-    setNotConfigured(false);
-    setPickedProject(undefined);
-    setConfigs([]);
-    setPhase('projects');
-    setLoading(true);
-    void client
-      .listDopplerProjects()
-      .then((result) => {
-        if ('error' in result) {
-          if (result.error === 'not configured') setNotConfigured(true);
-          else setError(bindingErrorCopy(result.error));
-          setPhase('idle');
-          return;
-        }
-        setProjects(result.projects);
-      })
-      .catch(() => setError('Could not load Doppler projects'))
-      .finally(() => setLoading(false));
-  }, [client]);
-
-  const pickProject = useCallback(
-    (slug: string) => {
-      setPickedProject(slug);
-      setError(undefined);
-      setPhase('configs');
-      setLoading(true);
-      void client
-        .listDopplerConfigs(slug)
-        .then((result) => {
-          if ('error' in result) {
-            if (result.error === 'not configured') setNotConfigured(true);
-            else setError(bindingErrorCopy(result.error));
-            setPhase('projects');
-            return;
-          }
-          setConfigs(result.configs);
-        })
-        .catch(() => setError('Could not load Doppler configs'))
-        .finally(() => setLoading(false));
-    },
-    [client],
-  );
-
-  const pickConfig = useCallback(
-    (configName: string) => {
-      if (pickedProject === undefined) return;
-      setError(undefined);
-      setPhase('saving');
-      void client
-        .updateProjectSettings(projectId, {
-          dopplerProject: pickedProject,
-          dopplerConfig: configName,
-        })
-        .then((saved) => {
-          onSaved(saved);
-          cancel();
-        })
-        .catch((caught) => {
-          setError(
-            caught instanceof VerityApiError
-              ? caught.status === 503
-                ? 'Unlock the secret store first.'
-                : caught.message
-              : 'Could not save the Doppler binding',
-          );
-          setPhase('configs');
-        });
-    },
-    [cancel, client, onSaved, pickedProject, projectId],
-  );
-
-  return (
-    <View style={styles.bindingSection} accessibilityLabel="Doppler binding">
-      <View style={styles.settingsLabelRow}>
-        <Text style={styles.fieldLabel}>Doppler binding</Text>
-        {bound ? <StatusPill intent="ready" label="Mapped" /> : null}
-      </View>
-      <Text style={styles.bindingCurrent}>
-        {bound
-          ? `${boundProject}${boundConfig ? ` / ${boundConfig}` : ''}`
-          : 'No Doppler environment selected.'}
-      </Text>
-
-      {phase === 'idle' ? (
-        <Pressable
-          style={({ pressed }) => [styles.bindingButton, pressed ? styles.rowPressed : null]}
-          onPress={start}
-          accessibilityRole="button"
-          accessibilityLabel={bound ? 'Change Doppler binding' : 'Choose Doppler binding'}
-        >
-          <Text style={styles.bindingButtonLabel}>{bound ? 'Change' : 'Choose'}</Text>
-        </Pressable>
-      ) : null}
-
-      {loading ? <ActivityIndicator size="small" /> : null}
-      {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-      {notConfigured ? (
-        <Text style={styles.bindingHint}>
-          Set the Doppler account token in onboarding or global settings first, then choose a
-          binding here.
-        </Text>
-      ) : null}
-
-      {phase === 'projects' && !loading && !notConfigured ? (
-        <View style={styles.bindingList} accessibilityLabel="Doppler projects">
-          {projects.length === 0 ? (
-            <Text style={styles.bindingHint}>No Doppler projects found for this account.</Text>
-          ) : (
-            projects.map((project) => (
-              <Pressable
-                key={project.slug}
-                style={({ pressed }) => [styles.bindingRow, pressed ? styles.rowPressed : null]}
-                onPress={() => pickProject(project.slug)}
-                accessibilityRole="button"
-                accessibilityLabel={`Doppler project ${project.name}`}
-              >
-                <Text style={styles.bindingRowText} numberOfLines={1}>
-                  {project.name}
-                </Text>
-              </Pressable>
-            ))
-          )}
-          <BindingCancel onPress={cancel} />
-        </View>
-      ) : null}
-
-      {phase === 'configs' && !loading && !notConfigured ? (
-        <View style={styles.bindingList} accessibilityLabel="Doppler configs">
-          {configs.length === 0 ? (
-            <Text style={styles.bindingHint}>No configs found for this project.</Text>
-          ) : (
-            configs.map((config) => (
-              <Pressable
-                key={config.name}
-                style={({ pressed }) => [styles.bindingRow, pressed ? styles.rowPressed : null]}
-                onPress={() => pickConfig(config.name)}
-                accessibilityRole="button"
-                accessibilityLabel={`Doppler config ${config.name}`}
-              >
-                <Text style={styles.bindingRowText} numberOfLines={1}>
-                  {config.name}
-                </Text>
-              </Pressable>
-            ))
-          )}
-          <BindingCancel onPress={cancel} />
-        </View>
-      ) : null}
-
-      {bound ? (
-        <Text style={styles.bindingHint}>
-          Changing the environment applies to future brokered secret requests.
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-// A shared "Cancel" affordance for the picker's project/config lists — returns to
-// the idle (current-binding) view without changing anything.
-function BindingCancel({ onPress }: { onPress: () => void }) {
-  return (
-    <Pressable
-      style={({ pressed }) => [styles.bindingCancel, pressed ? styles.rowPressed : null]}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel="Cancel Doppler binding"
-    >
-      <Text style={styles.bindingCancelLabel}>Cancel</Text>
-    </Pressable>
-  );
-}
-
-// Map a redacted server error string to operator-facing copy. The server sends
-// fixed, non-secret messages ('locked', 'Doppler rejected the token', etc.); we
-// keep them but special-case the sealed case for a clearer instruction.
-function bindingErrorCopy(error: string): string {
-  if (error === 'locked') return 'Unlock the secret store first.';
-  return error;
-}
-
 function SettingsInput({
   label,
   accessibilityLabel = label,
@@ -3646,49 +2032,6 @@ function SettingsInput({
   );
 }
 
-function ProjectFields({ project }: { project: ProjectRecord }) {
-  return (
-    <View style={styles.projectFactsPanel}>
-      <Field
-        label="Repository"
-        value={projectRepoRef(project) ?? 'Not connected to a GitHub repository'}
-      />
-      <Field label="Latest release" value={project.latestReleaseTag ?? 'No published release'} />
-      <Field label="Created" value={formatDate(project.createdAt)} />
-      <Field label="Updated" value={formatDate(project.updatedAt)} />
-      {project.provisionError ? (
-        <Field label="Provision error" value={project.provisionError} danger />
-      ) : null}
-      {/* `provisionWarning` deliberately does NOT appear here. It is rendered in
-          the Environment panel above, beside the Start/Repair/Update actions
-          that answer it — repeating it in this facts list put the same sentence
-          on screen twice and moved it no closer to a remedy. */}
-    </View>
-  );
-}
-
-function Field({
-  label,
-  value,
-  danger = false,
-}: {
-  label: string;
-  value: string;
-  danger?: boolean;
-}) {
-  return (
-    <View style={styles.projectFactRow}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <Text
-        style={danger ? styles.projectFactValueDanger : styles.projectFactValue}
-        numberOfLines={3}
-      >
-        {value}
-      </Text>
-    </View>
-  );
-}
-
 function StaleBanner({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <View style={styles.banner}>
@@ -3725,12 +2068,6 @@ function CenteredMessage({
   );
 }
 
-function formatDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
-}
-
 const styles = StyleSheet.create((theme) => ({
   flex: { flex: 1, backgroundColor: theme.colors.background },
   centered: {
@@ -3745,22 +2082,6 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing.lg,
     gap: theme.spacing.lg,
   },
-  settingsContent: {
-    width: '100%',
-    maxWidth: 760,
-    alignSelf: 'center',
-    gap: theme.spacing.xl,
-  },
-  settingsBack: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
-  },
-  settingsBackText: { color: theme.colors.primary, fontSize: theme.text.sm },
   projectTabs: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3824,36 +2145,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     fontWeight: '600',
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  stateDot: {
-    width: 12,
-    height: 12,
-    borderRadius: theme.radius.pill,
-  },
-  headerText: {
-    flex: 1,
-    gap: 2,
-  },
-  ownerRepo: {
-    color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
-  },
-  stateLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
   section: {
     gap: theme.spacing.sm,
   },
@@ -3875,56 +2166,12 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '700',
     textTransform: 'uppercase',
   },
-  projectFactsPanel: {
-    gap: theme.spacing.xs,
-  },
-  projectFactRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-  },
-  projectFactValue: {
-    flex: 1,
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-    textAlign: 'right',
-  },
-  projectFactValueDanger: {
-    flex: 1,
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-    textAlign: 'right',
-  },
   settingsInputRow: {
     gap: theme.spacing.xs,
     paddingVertical: theme.spacing.md,
     paddingHorizontal: theme.spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.border,
-  },
-  settingsGroupHeader: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginTop: theme.spacing.sm,
-  },
-  settingsGroupDescription: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-  },
-  settingsFormGroup: {
-    overflow: 'hidden',
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
   },
   settingsLabelRow: {
     flexDirection: 'row',
@@ -3966,59 +2213,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
   },
-  bindingSection: {
-    gap: theme.spacing.xs,
-    paddingVertical: theme.spacing.sm,
-  },
-  bindingCurrent: {
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-  },
-  bindingButton: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  bindingButtonLabel: {
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
-  bindingList: {
-    gap: theme.spacing.xs,
-  },
-  bindingRow: {
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  bindingRowText: {
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-  },
-  bindingCancel: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-  },
-  bindingCancelLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
-  bindingHint: {
-    color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
-  },
   modalOverlay: {
     flex: 1,
     justifyContent: 'center',
@@ -4036,15 +2230,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   devServerEditorScroll: {
     flexGrow: 0,
-  },
-  lifecyclePanel: {
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
   },
   lifecycleActions: {
     flexDirection: 'row',
@@ -4109,26 +2294,6 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.primary,
     backgroundColor: theme.colors.surface,
   },
-  dangerPanel: {
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-  },
-  deleteProjectButton: {
-    height: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
-  },
   operationsSubsectionHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -4161,12 +2326,6 @@ const styles = StyleSheet.create((theme) => ({
   runtimeActionButton: {
     flex: 1,
   },
-  runtimeHeaderActions: {
-    marginLeft: 'auto',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
   runtimeMetaRow: {
     gap: 2,
   },
@@ -4190,19 +2349,10 @@ const styles = StyleSheet.create((theme) => ({
   // but needs looking at, and `settingsError` beneath them is what a genuine
   // failure uses. Wraps freely — the drift text names its own remedy, and
   // truncating it would cut off the half that says what to do.
-  runtimeNotice: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-  },
   runtimeMetaValueMuted: {
     color: theme.colors.textFaint,
     fontSize: theme.text.sm,
     lineHeight: 20 * theme.fontScale,
-  },
-  runtimeLink: {
-    alignSelf: 'flex-start',
-    maxWidth: '100%',
   },
   runtimeUrl: {
     fontSize: theme.text.sm,
@@ -4219,9 +2369,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.primary,
     fontSize: theme.text.xs,
     fontWeight: '700',
-  },
-  runtimeTextButtonDisabled: {
-    color: theme.colors.textFaint,
   },
   runtimeLogsBox: {
     maxHeight: 180,

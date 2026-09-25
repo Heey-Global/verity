@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.0](https://github.com/Heey-Global/verity/compare/v2.3.0...v2.4.0) (2026-09-25)
+
+
+### Features
+
+* **sessions:** move sessions between local projects ([#708](https://github.com/Heey-Global/verity/issues/708)) ([e16056b](https://github.com/Heey-Global/verity/commit/e16056b251ddcccd87fca58f82dcbf9f9cd71756))
+
+
+### Bug Fixes
+
+* **integrations:** configure Matrix account in Verity settings ([#714](https://github.com/Heey-Global/verity/issues/714)) ([c89df9d](https://github.com/Heey-Global/verity/commit/c89df9d345be0a5a4eb98a78b376642e92e91f0d))
+* **mobile:** move Matrix settings under Connected services ([#723](https://github.com/Heey-Global/verity/issues/723)) ([992d172](https://github.com/Heey-Global/verity/commit/992d1726ea1f4512ed94dd2fb0e7babd138e56e5))
+* **release:** discover pending merges without the search index ([#720](https://github.com/Heey-Global/verity/issues/720)) ([97a4e43](https://github.com/Heey-Global/verity/commit/97a4e439d5bc7ad2b28a32a8e8643b3339ddeaaa))
+
 ## [2.3.0](https://github.com/Heey-Global/verity/compare/v2.2.0...v2.3.0) (2026-09-24)
 
 

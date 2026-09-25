@@ -34,6 +34,7 @@ import {
   briefingExtent,
   chunkFilePreview,
   engineLabel,
+  groupModelsByEngine,
   formatChoiceAnswer,
   freezeTranscriptTail,
   frozenTranscriptRows,
@@ -4805,8 +4806,8 @@ function SessionFilesSheet({
                   onPress={() => {
                     onClose();
                     router.push({
-                      pathname: '/project/[id]',
-                      params: { id: projectId, tab: 'settings' },
+                      pathname: '/project/[id]/settings/services',
+                      params: { id: projectId },
                     });
                   }}
                   accessibilityRole="link"
@@ -6700,12 +6701,20 @@ function EngineSwitcherSheet({
           <Text style={styles.sheetLimited}>limit reached</Text>
         ) : isSelected ? (
           <Text style={styles.sheetCurrent}>current</Text>
-        ) : modelEngine === 'OpenCode' ? (
-          <Text style={styles.sheetCurrent}>OpenCode</Text>
         ) : null}
       </Pressable>
     );
   };
+  const renderGroups = (items: string[]) =>
+    groupModelsByEngine(items).map((group, index) => (
+      <View key={group.engine}>
+        {index > 0 ? (
+          <View style={styles.sheetModelSeparator} testID="model-group-separator" />
+        ) : null}
+        <Text style={styles.sheetSectionLabel}>{group.engine}</Text>
+        {group.models.map(renderModelRow)}
+      </View>
+    ));
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <Pressable
@@ -6719,7 +6728,7 @@ function EngineSwitcherSheet({
         <Text style={styles.sheetTitle}>Switch model</Text>
         <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
           {models.length === 0 ? <Text style={styles.sheetEmpty}>No models available.</Text> : null}
-          {partitionedModels.primary.map(renderModelRow)}
+          {renderGroups(partitionedModels.primary)}
           {partitionedModels.more.length > 0 ? (
             <Pressable
               style={({ pressed }) => [
@@ -6740,7 +6749,7 @@ function EngineSwitcherSheet({
               />
             </Pressable>
           ) : null}
-          {moreOpen ? partitionedModels.more.map(renderModelRow) : null}
+          {moreOpen ? renderGroups(partitionedModels.more) : null}
         </ScrollView>
       </Animated.View>
     </Modal>
@@ -8642,6 +8651,11 @@ const styles = StyleSheet.create((theme) => ({
     marginTop: theme.spacing.sm,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
+  },
+  sheetModelSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: theme.colors.border,
+    marginTop: theme.spacing.sm,
   },
   sheetRowDisabled: {
     opacity: 0.55,

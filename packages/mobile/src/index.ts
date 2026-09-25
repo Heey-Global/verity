@@ -114,6 +114,7 @@ export { splitSearchHighlights, type SearchHighlightSegment } from './ui/searchH
 export {
   orderModels,
   partitionModels,
+  groupModelsByEngine,
   defaultModel,
   modelDisplayName,
   engineLabel,
