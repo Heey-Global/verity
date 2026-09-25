@@ -490,8 +490,8 @@ function ProjectMcpBindingsSection({
         if (loadGeneration.current === generation) setError('Could not load MCP connections.');
       });
   }, [client, projectId]);
-  // On focus, not on mount: the empty state links to the Verity MCP screen, and
-  // a connection added there has to be here when the operator comes back.
+  // Reload on focus so globally configured connections appear here when this
+  // project screen is opened again.
   useFocusEffect(
     useCallback(() => {
       void load();
@@ -521,14 +521,12 @@ function ProjectMcpBindingsSection({
   return (
     <>
       {connections.length === 0 ? (
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="link"
-            title="MCP connections"
-            subtitle="No connections yet. Add one in Verity settings first."
-            onPress={() => router.push('/settings/services/mcp')}
-          />
-        </SettingsListPanel>
+        <SettingsPanel>
+          <Text style={styles.reproSubtitle}>
+            No MCP connections available. Add and authorize MCP servers in Verity settings; then
+            return here to enable them for this project.
+          </Text>
+        </SettingsPanel>
       ) : (
         <SettingsPanel>
           {connections.map((connection) => (

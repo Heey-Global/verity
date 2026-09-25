@@ -630,12 +630,16 @@ describe('project settings — connected services', () => {
     await waitFor(() => expect(setProjectMcpBinding).toHaveBeenCalledWith('p/1', 'c1', true));
   });
 
-  it('points at the Verity MCP screen when there is nothing to enable yet', async () => {
+  it('keeps MCP creation out of project settings when no connections exist', async () => {
+    setSearchParams({ id: 'p/1', section: 'mcp' });
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectServicesScreen />);
 
-    fireEvent.press(await screen.findByLabelText('MCP connections'));
-    expect(mockPush).toHaveBeenCalledWith('/settings/services/mcp');
+    expect(
+      await screen.findByText(/Add and authorize MCP servers in Verity settings/),
+    ).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Add connection')).toBeNull();
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it('keeps Matrix in Verity settings instead of project services', async () => {
