@@ -936,6 +936,65 @@ describe('native iOS compile gate', () => {
   });
 });
 
+describe('Matrix connector image gate', () => {
+  it('builds the release Dockerfile when its inputs change and joins the required gate', async () => {
+    const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs: Record<string, WorkflowJob & { needs?: string[]; 'timeout-minutes'?: number }>;
+    };
+    const job = workflow.jobs['matrix-connector-image'];
+    const scope = job.steps.find((step) => step.id === 'scope')!;
+    const build = job.steps.find((step) => step.uses?.startsWith('docker/build-push-action@'))!;
+    const dockerfile = build.with?.file ?? '';
+    const aggregate = workflow.jobs['ci-checks'];
+    expect(dockerfile).toBe('connectors/matrix/Dockerfile');
+    expect(existsSync(dockerfile)).toBe(true);
+    expect(build.with?.push).toBe(false);
+    expect(job['timeout-minutes']).toBeLessThanOrEqual(45);
+    expect(aggregate.needs).toContain('matrix-connector-image');
+    expect(aggregate.steps[0]?.run).toContain('require_success matrix-connector-image');
+
+    const outputDir = await mkdtemp(join(tmpdir(), 'verity-matrix-ci-'));
+    try {
+      const script = `git() {
+        if [[ "$1" == cat-file ]]; then [[ "${'$'}UNKNOWN_BASE" != true ]]; return; fi
+        if [[ "$1" == diff ]]; then
+          for path in "${'$'}@"; do
+            case "${'$'}CHANGED_PATH" in "${'$'}path"|"${'$'}path"/*) return 1;; esac
+          done
+          return 0
+        fi
+      }
+      ${scope.run ?? ''}`;
+      const selected = (event: string, changed: string, checkSuite = 'full', unknown = false) => {
+        const output = join(outputDir, 'result');
+        writeFileSync(output, '');
+        const run = spawnSync('bash', ['-c', script], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            EVENT_NAME: event,
+            BASE_SHA: 'known-base',
+            CHECK_SUITE: checkSuite,
+            CHANGED_PATH: changed,
+            UNKNOWN_BASE: String(unknown),
+            GITHUB_OUTPUT: output,
+          },
+        });
+        expect(run.status, run.stderr).toBe(0);
+        return readFileSync(output, 'utf8').trim();
+      };
+      expect(selected('pull_request', dockerfile)).toBe('build=true');
+      expect(selected('pull_request', '.github/workflows/ci.yml')).toBe('build=true');
+      expect(selected('pull_request', 'docs/adr/0008.md')).toBe('build=false');
+      expect(selected('push', 'docs/adr/0008.md', 'full', true)).toBe('build=true');
+      expect(selected('workflow_dispatch', '', 'full')).toBe('build=true');
+      expect(selected('workflow_dispatch', '', 'server-image')).toBe('build=false');
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('mobile OTA promotion', () => {
   it('uses the tested rolling-candidate program for staging and promotion', () => {
     const stage = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {

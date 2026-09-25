@@ -1159,6 +1159,56 @@ jobs:
       - run: npm run -w @verity/mobile-app typecheck
       - run: npm run -w @verity/mobile-app test
 
+  # Compile the same Dockerfile used by the release train before connector
+  # changes reach main. A host cargo check does not invoke the final linker and
+  # cannot detect a missing system library in the image builder.
+  matrix-connector-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: scope
+        name: Select Matrix connector image build
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CHECK_SUITE: ${{ inputs['check-suite'] || 'full' }}
+        run: |
+          set -euo pipefail
+          build=false
+          if [[ "$EVENT_NAME" == workflow_dispatch && "$CHECK_SUITE" == full ]]; then
+            build=true
+          elif [[ "$EVENT_NAME" != schedule && "$EVENT_NAME" != workflow_dispatch ]]; then
+            if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || \
+              ! git diff --quiet --no-renames "$BASE_SHA" HEAD -- \
+                connectors/matrix .dockerignore .github/workflows/ci.yml; then
+              build=true
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.scope.outputs.build == 'true'
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+      # renovate: datasource=github-actions depName=docker/build-push-action
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.0.0
+        if: steps.scope.outputs.build == 'true'
+        with:
+          context: .
+          file: connectors/matrix/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=verity-matrix-connector-amd64
+
   server-image:
     needs: changes
     if: needs.changes.outputs.server_image == 'true'
@@ -1617,6 +1667,7 @@ jobs:
         coverage,
         mobile,
         mobile-app,
+        matrix-connector-image,
         server-image,
         agent-seed-drift,
       ]
@@ -1668,5 +1719,6 @@ jobs:
           require_when_changed coverage "${{ needs.coverage.result }}" "${{ needs.changes.outputs.coverage }}"
           require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.changes.outputs.mobile }}"
           require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.changes.outputs.mobile_app }}"
+          require_success matrix-connector-image "${{ needs.matrix-connector-image.result }}"
           require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.changes.outputs.server_image }}"
           echo "all required CI jobs succeeded"
