@@ -1,8 +1,15 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { IntegrationEvent, IntegrationStore } from '@verity/store';
 import { z } from 'zod';
 import { affectedChatDay, projectChatDay } from './knowledge-projection.js';
+import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
+import { ingestKnowledgeBytes, removeKnowledgeExtraction } from '../knowledge-file-ingest.js';
+import { acquireKnowledgeMutationLock } from '../knowledge-mutation-lock.js';
+
+const MAX_MATRIX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 function hasNoControls(value: string): boolean {
   return [...value].every((character) => {
@@ -56,6 +63,28 @@ const event = z
       ctx.addIssue({ code: 'custom', message: 'Redaction must not contain text' });
     }
   });
+const attachment = z
+  .object({
+    event: event.refine((value) => value.kind === 'message', 'Attachment requires a message'),
+    fileName: z.string().min(1).max(500),
+    data: z.string().max(Math.ceil(MAX_MATRIX_ATTACHMENT_BYTES / 3) * 4),
+  })
+  .strict();
+
+function attachmentPath(input: IntegrationEvent, activatedAt: Date, fileName: string): string {
+  const room = createHash('sha256')
+    .update(`${input.accountId}\0${input.sourceId}\0${activatedAt.toISOString()}`)
+    .digest('hex')
+    .slice(0, 24);
+  const eventId = createHash('sha256').update(input.eventId).digest('hex').slice(0, 24);
+  const leaf = fileName.replace(/\\/gu, '/').split('/').at(-1) ?? '';
+  const safeName =
+    Array.from(leaf.normalize('NFC').replace(/[^\p{L}\p{N}._ -]/gu, '_'))
+      .slice(0, 50)
+      .join('')
+      .replace(/^\.+/u, '') || 'file';
+  return `${KNOWLEDGE_DOCUMENTS_DIR}/matrix/${room}/attachments/${eventId}-${safeName}`;
+}
 
 function authorized(request: FastifyRequest, token: string | undefined): boolean {
   if (!token || token.length < 32) return false;
@@ -229,9 +258,98 @@ export function registerIntegrationRoutes(
             activatedAt: binding.activatedAt,
             day,
           });
+          if (input.kind === 'redaction' && target?.body) {
+            const prefix = `Attachment: ${KNOWLEDGE_DOCUMENTS_DIR}/matrix/`;
+            const marker = createHash('sha256').update(target.eventId).digest('hex').slice(0, 24);
+            const relative = target.body.startsWith(prefix)
+              ? target.body.slice('Attachment: '.length)
+              : '';
+            const expectedPrefix = `${KNOWLEDGE_DOCUMENTS_DIR}/matrix/${createHash('sha256')
+              .update(`${input.accountId}\0${input.sourceId}\0${binding.activatedAt.toISOString()}`)
+              .digest('hex')
+              .slice(0, 24)}/attachments/${marker}-`;
+            if (
+              relative.startsWith(expectedPrefix) &&
+              !relative.slice(expectedPrefix.length).includes('/')
+            ) {
+              const root = await ensureProjectKnowledge(deps.dataRoot, result.projectId);
+              const release = await acquireKnowledgeMutationLock(root);
+              try {
+                await unlink(join(root, relative)).catch((error: unknown) => {
+                  if ((error as { code?: string }).code !== 'ENOENT') throw error;
+                });
+                await removeKnowledgeExtraction(root, relative);
+              } finally {
+                release();
+              }
+            }
+          }
           await store.markProjected(input.accountId, input.sourceId);
         }
         return { accepted: result.inserted };
+      },
+    );
+    instance.post(
+      '/internal/integrations/matrix/attachment',
+      { preHandler: workerOnly, bodyLimit: 70_000_000 },
+      async (request, reply) => {
+        const payload = attachment.parse(request.body);
+        if (!deps.dataRoot) return reply.code(503).send({ error: 'Knowledge storage unavailable' });
+        if (payload.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(payload.data)) {
+          return reply.code(400).send({ error: 'Invalid attachment encoding' });
+        }
+        const bytes = Buffer.from(payload.data, 'base64');
+        if (bytes.length === 0) return reply.code(400).send({ error: 'Empty Matrix attachment' });
+        if (bytes.length > MAX_MATRIX_ATTACHMENT_BYTES) {
+          return reply.code(413).send({ error: 'Matrix attachment exceeds 50 MiB limit' });
+        }
+        const input: IntegrationEvent = {
+          ...payload.event,
+          occurredAt: new Date(payload.event.occurredAt),
+        };
+        const binding = (await store.listSources()).find(
+          (item) => item.accountId === input.accountId && item.sourceId === input.sourceId,
+        );
+        if (!binding?.projectId || !binding.activatedAt) {
+          return reply.code(409).send({ error: 'Room binding changed' });
+        }
+        const relative = attachmentPath(input, binding.activatedAt, payload.fileName);
+        input.body = `Attachment: ${relative}`;
+        let result: { projectId: string; inserted: boolean };
+        try {
+          result = await store.ingestEvent(input);
+        } catch (error) {
+          return reply
+            .code(409)
+            .send({ error: error instanceof Error ? error.message : 'Room unavailable' });
+        }
+        if (result.projectId !== binding.projectId) {
+          return reply.code(409).send({ error: 'Room binding changed' });
+        }
+        const root = await ensureProjectKnowledge(deps.dataRoot, result.projectId);
+        const release = await acquireKnowledgeMutationLock(root);
+        try {
+          const changes = await store.listChangesForTargets(input.accountId, input.sourceId, [
+            input.eventId,
+          ]);
+          if (!changes.some((change) => change.kind === 'redaction')) {
+            await ingestKnowledgeBytes(root, relative, bytes);
+          }
+        } finally {
+          release();
+        }
+        // The event is persisted before the file write; a failed write stays in the
+        // connector outbox and is retried until the original and projection exist.
+        await projectChatDay(store, deps.dataRoot, {
+          accountId: input.accountId,
+          sourceId: input.sourceId,
+          projectId: result.projectId,
+          displayName: binding.displayName,
+          activatedAt: binding.activatedAt,
+          day: input.occurredAt.toISOString().slice(0, 10),
+        });
+        await store.markProjected(input.accountId, input.sourceId);
+        return { accepted: result.inserted, path: relative };
       },
     );
     done();
