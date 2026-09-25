@@ -92,10 +92,13 @@ must not be silently reused for all of them.
   Uplink capabilities; then specify endpoint, proof and encrypted framing.
 - Agree signing profile and keys, time policy and all lifecycle/retention values.
 - Review the membership removal contract (`team.membership.remove`, invite
-  cancellation on removal, V19–V29) and fix its retry window and tombstone
-  retention, plus tombstone storage sizing (removals are never refused for it),
-  with the other lifecycle values.
-- Convert all V01–V29 cases into one shared schema/fixture revision at T1.
+  cancellation on removal, V19–V30) and fix and test its retry window together
+  with an upper age bound for every late commit, recovery and renewal message.
+  Until those bounds hold, removal tombstones are kept permanently; also size
+  tombstone storage (removals are never refused for it) and decide whether a
+  per-installation quota bounds tombstones for never-seen refs. Such a quota may
+  only defer with the retryable `temporarily_unavailable`.
+- Convert all V01–V30 cases into one shared schema/fixture revision at T1.
 - Commit and review the agreed public contract, then record that commit plus
   the matching private service ADR revision on both sides. No such contract
   commit exists yet; document checksums are not joint protocol approval.
