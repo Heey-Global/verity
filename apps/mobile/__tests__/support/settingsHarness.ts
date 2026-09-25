@@ -24,6 +24,7 @@ export const mockCheckForAppUpdate = jest.fn();
 export const mockPush = jest.fn<void, [string]>();
 export const mockReplace = jest.fn<void, [string]>();
 export const mockBack = jest.fn<void, []>();
+export const mockDismissTo = jest.fn<void, [string]>();
 // Both are awaited by their callers, so they resolve rather than return
 // `undefined` — here and again after every reset.
 export const mockOpenURL = jest.fn<Promise<void>, [string]>().mockResolvedValue(undefined);
@@ -58,6 +59,7 @@ export function expoRouterMock(): Record<string, unknown> {
       push: (href: string) => mockPush(href),
       replace: (href: string) => mockReplace(href),
       back: () => mockBack(),
+      dismissTo: (href: string) => mockDismissTo(href),
     },
     useFocusEffect: (cb: () => void) =>
       react.useEffect(() => {
@@ -115,6 +117,7 @@ export function resetSettingsHarness(): void {
   mockPush.mockReset();
   mockReplace.mockReset();
   mockBack.mockReset();
+  mockDismissTo.mockReset();
   mockOpenURL.mockReset();
   mockOpenURL.mockResolvedValue(undefined);
   mockSetStringAsync.mockReset();

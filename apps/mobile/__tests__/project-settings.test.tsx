@@ -1,10 +1,7 @@
-// Smoke tests for the per-project Settings tab on the project-detail screen
-// (app/project/[id].tsx): the tab layout (Dev Server / Memory / Automations /
-// Settings), the shared-form autosave behaviour, and the Doppler binding. The
-// per-project manual Doppler token entry was removed — resolution is brokered centrally — so a
-// normal save must never emit a `dopplerToken` key. The pure draft→patch rules are
-// unit-tested in packages/mobile (vitest); here we only assert the screen wires
-// them into the rendered tree.
+// Smoke tests for the project-detail screen (app/project/[id]/index.tsx): the
+// Dev Server / Automations tabs, the runtime status panel, and the gear that
+// opens the project settings routes. The settings screens themselves are
+// covered in `project-settings-routes.test.tsx`.
 //
 // The @verity/mobile client is never real: `../../lib/client` is mocked so
 // `createVerityClient()` returns an in-memory fake whose methods we control. The
@@ -84,12 +81,6 @@ function makeDetail(
   };
 }
 
-// A current server: reports that it honours `forceRebuild` on recreate-container.
-const healthWithRebuild = (): jest.Mock =>
-  jest
-    .fn()
-    .mockResolvedValue({ status: 'ok', publicPreviewsEnabled: false, imageRebuildSupported: true });
-
 // Build a fake client. Only the methods the screen calls for an `absent` project on
 // mount + save are implemented; the rest throw if touched so an unexpected call
 // surfaces loudly instead of silently no-op'ing.
@@ -128,9 +119,8 @@ function makeClient(
   const notImplemented = (name: string) => () => {
     throw new Error(`unexpected client.${name} call`);
   };
-  // The default health answer below deliberately omits `imageRebuildSupported`,
-  // so every test that wants the Rebuild button has to say so via
-  // `healthWithRebuild()` — the capability gate is opt-in, like the server's.
+  // The default health answer below deliberately omits `imageRebuildSupported`;
+  // the Rebuild capability gate is exercised in `project-settings-routes.test.tsx`.
   return {
     getHealth:
       opts.getHealth ?? jest.fn().mockResolvedValue({ status: 'ok', publicPreviewsEnabled: false }),
@@ -249,16 +239,14 @@ describe('ProjectDetailScreen — project settings', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, setProjectSetupStatus }));
     render(<ProjectDetailScreen />);
 
+    // The gear is a destination, not a tab: settings live on their own route
+    // stack, so a project still provisioning can be configured all the same.
     fireEvent.press(await screen.findByLabelText('Project settings'));
-    expect(await screen.findByText('Environment')).toBeOnTheScreen();
-    expect(screen.getByText('Connected services')).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText('Connected services'));
-    expect(await screen.findByLabelText('Doppler binding')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Environment')).toBeNull();
-    fireEvent.press(screen.getByLabelText('Back to project settings'));
-    expect(await screen.findByLabelText('Environment')).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText('Back to project'));
-    expect(await screen.findByText('Dev Servers')).toBeOnTheScreen();
+    expect(mockRouter.push).toHaveBeenCalledWith({
+      pathname: '/project/[id]/settings',
+      params: { id: 'p/1' },
+    });
+    expect(screen.getByText('Dev Servers')).toBeOnTheScreen();
     await waitFor(() => expect(setProjectSetupStatus).toHaveBeenCalledWith('p/1', 'complete'));
     expect(mockRouter.replace).not.toHaveBeenCalled();
   });
@@ -752,251 +740,6 @@ describe('ProjectDetailScreen — project settings', () => {
     await waitFor(() => expect(screen.getByLabelText('Delete Web')).not.toBeDisabled());
   });
 
-  it('shows a running environment with a Pause action and an update affordance', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'active',
-        sandboxUpdate: {
-          state: 'available',
-          kind: 'normal',
-          category: 'software',
-          reason: null,
-          current: null,
-          target: null,
-          currentVersion: '1.22.1',
-          currentRevision: null,
-          targetVersion: '2.9.2',
-          targetRevision: null,
-          selfRepair: 'converging',
-          turnBlocked: false,
-        },
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    expect(screen.getByText('Environment')).toBeOnTheScreen();
-    expect(screen.getByText('Connected services')).toBeOnTheScreen();
-    expect(screen.getByText('Project information')).toBeOnTheScreen();
-    expect(screen.queryByText('Container')).toBeNull();
-    fireEvent.press(screen.getByLabelText('Environment'));
-    // Not "Running": Verity is recreating this container onto the new image, and
-    // the pill reads the same badge the overview dot pulses on. A green settled
-    // "Running" beside a row saying a rebuild is in flight is the screen
-    // reporting two states of one container.
-    expect(await screen.findByLabelText('Updating secure workspace…')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Running')).toBeNull();
-    // Still pausable — an update in flight is not a lifecycle transition.
-    expect(screen.getByLabelText('Pause project')).toBeOnTheScreen();
-    // The slim update row appears only because an update is available.
-    expect(screen.getByLabelText('Update project environment')).toBeOnTheScreen();
-    // Reads as reassurance, not as a fault: while Verity is still rebuilding the
-    // sandbox the row says so, and the manual Update stays available anyway.
-    expect(
-      screen.getByText('Update pending — Verity is rebuilding this sandbox'),
-    ).toBeOnTheScreen();
-  });
-
-  it('offers no Update button for an update a turn is holding off', async () => {
-    // The silent failure this guards: the Server refuses this recreate for as long
-    // as a turn runs (SBX-1), so an Update button here can only return a 409 that
-    // surfaces as "Could not update project" — the operator reads a fault where
-    // there is a turn, and pressing it again never helps. The dialog has to say
-    // what would move it and then offer nothing that would not.
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'active',
-        sandboxUpdate: {
-          state: 'available',
-          kind: 'normal',
-          category: 'software',
-          reason: null,
-          current: null,
-          target: null,
-          currentVersion: '1.22.1',
-          currentRevision: null,
-          targetVersion: '2.9.2',
-          targetRevision: null,
-          selfRepair: 'stalled',
-          turnBlocked: true,
-        },
-      },
-    };
-    const recreateProjectContainer = jest.fn();
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail, recreateProjectContainer }));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(
-      await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
-    ).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText('Update project environment'));
-
-    const [title, message, buttons] = alert.mock.calls[0];
-    expect(title).toBe('Update waiting for a turn');
-    expect(message).toContain('cancel the turn first');
-    expect(buttons?.map((button) => button.text)).toEqual(['OK']);
-    // Nothing on this path may reach the route that would 409 — or, if SBX-1 ever
-    // stopped holding, kill the turn the message just promised was safe.
-    buttons?.forEach((button) => button.onPress?.());
-    expect(recreateProjectContainer).not.toHaveBeenCalled();
-    alert.mockRestore();
-  });
-
-  // The Environment panel is where Start/Repair/Update live, so the finding and
-  // the action that answers it are on the same surface. `ProjectFields` at the
-  // bottom keeps its own copy as the detail view.
-  it('explains toolkit drift next to the environment actions', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        toolkitDrift: { verdict: 'drifted', carrier: 'devcontainer' },
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(
-      await screen.findByText(/attestation verdict no longer holds and needs re-checking/),
-    ).toBeOnTheScreen();
-    expect(screen.getByText(/rebuilds and re-attests it/)).toBeOnTheScreen();
-  });
-
-  // A base-image project must not be told to repair its way out of this: only a
-  // rebuilt base image changes what that image contains.
-  it('does not promise a rebuild for a base-image project', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        toolkitDrift: { verdict: 'drifted', carrier: 'base-image' },
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByText(/only a rebuilt base image fixes it/)).toBeOnTheScreen();
-  });
-
-  it('stays silent when the recorded toolkit matches', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        toolkitDrift: { verdict: 'matches', carrier: 'devcontainer' },
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByText('Environment')).toBeOnTheScreen();
-    expect(screen.queryByText(/needs re-checking/)).toBeNull();
-  });
-
-  // Moved out of the "Project information" facts list and up into the Environment
-  // panel: the warning now sits beside Start/Repair/Update instead of below the
-  // fold, and appears exactly once on the screen.
-  it('surfaces a project provision warning beside the environment actions', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        provisionWarning: 'Runner supervisor is disabled after boundary attestation failed.',
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(
-      await screen.findByText('Runner supervisor is disabled after boundary attestation failed.'),
-    ).toBeOnTheScreen();
-    expect(screen.queryByText('Provision warning')).toBeNull();
-  });
-
-  it('shows a rebuilding status instead of Running during an image rebuild', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'active',
-        provisionWarning: 'Project image rebuild is in progress.',
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Rebuilding secure workspace…')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Running')).toBeNull();
-  });
-
-  // The pill reads from the shared `projectBadge`, so it names the container state
-  // the same way the overview dot does — and never falls back to the raw state id
-  // (it used to render a literal "container_starting" at the operator).
-  it('offers Start for a paused environment and hides the update row', async () => {
-    // The default fixture is `absent` (paused) with no sandbox update.
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail() }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Paused')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Start project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Update project environment')).toBeNull();
-  });
-
-  it('offers Repair for a failed environment', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = { ...base, project: { ...base.project, state: 'failed' } };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Needs repair')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
-  });
-
-  it('offers Repair while an environment is starting', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: { ...base.project, state: 'container_starting', setupStatus: 'complete' },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Starting secure workspace…')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('container_starting')).toBeNull();
-    expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
-  });
-
   it('does not show a stale provision error while the environment is starting', async () => {
     const base = makeDetail();
     const detail: ProjectDetail = {
@@ -1014,132 +757,6 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(await screen.findByText('Starting secure workspace…')).toBeOnTheScreen();
     expect(screen.queryByText('A previous provisioning attempt failed.')).toBeNull();
     expect(screen.getByText(/continues in the background/)).toBeOnTheScreen();
-  });
-
-  // The escape hatch for a devcontainer change the image cache cannot see:
-  // Update and Repair both reuse the content-hash-cached tag, so only this
-  // action rebuilds. It has to reach the server as an explicit `forceRebuild`,
-  // otherwise it is just another Repair.
-  it('rebuilds the image without the build cache when asked to', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'active',
-        imageRef: 'verity-devc-heey-global-verity:0123456789ab',
-      },
-    };
-    const recreateProjectContainer = jest.fn().mockResolvedValue(detail.project);
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({ detail, recreateProjectContainer, getHealth: healthWithRebuild() }),
-    );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Rebuild')?.onPress?.();
-    });
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    fireEvent.press(await screen.findByLabelText('Rebuild project image'));
-
-    await waitFor(() =>
-      expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
-        confirmWarnings: true,
-        forceRebuild: true,
-      }),
-    );
-    expect(alert.mock.calls[0][0]).toBe('Rebuild image?');
-    alert.mockRestore();
-  });
-
-  // The canonical reason to want a cacheless rebuild: the project built once and
-  // now fails. `imageRef` names the last SUCCESSFUL provision and survives a
-  // failed one, so the action has to still be there in that state.
-  it('offers the rebuild action for a failed project that built once', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'failed',
-        imageRef: 'verity-devc-heey-global-verity:0123456789ab',
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail, getHealth: healthWithRebuild() }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Repair project')).toBeOnTheScreen();
-    expect(await screen.findByLabelText('Rebuild project image')).toBeOnTheScreen();
-  });
-
-  // A project running the pulled sandbox image has no build of its own to redo,
-  // and a paused one has no container the server would accept a recreate for.
-  it('hides the rebuild action for a base-image project and while paused', async () => {
-    const base = makeDetail();
-    const pulled: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'active',
-        imageRef: 'ghcr.io/heey-global/verity-sandbox@sha256:abc',
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({ detail: pulled, getHealth: healthWithRebuild() }),
-    );
-    const view = render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Pause project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
-    view.unmount();
-
-    const paused: ProjectDetail = {
-      ...base,
-      project: { ...base.project, imageRef: 'verity-devc-heey-global-verity:0123456789ab' },
-    };
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({ detail: paused, getHealth: healthWithRebuild() }),
-    );
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Start project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
-  });
-
-  // The app ships on its own release train, and the server's recreate body schema
-  // is non-strict: an older server would STRIP `forceRebuild` and recreate from
-  // the cached image, so the operator would wait out a rebuild that rebuilt
-  // nothing. Hide the action until the server says it honours the flag.
-  it('hides the rebuild action from a server that does not report the capability', async () => {
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'active',
-        imageRef: 'verity-devc-heey-global-verity:0123456789ab',
-      },
-    };
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({
-        detail,
-        // An older server: liveness only, no capability keys at all.
-        getHealth: jest.fn().mockResolvedValue({ status: 'ok' }),
-      }),
-    );
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Environment'));
-    expect(await screen.findByLabelText('Pause project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
   });
 
   it('shows persisted Agent Loops in the Automations tab', async () => {
@@ -1232,109 +849,5 @@ describe('ProjectDetailScreen — project settings', () => {
       params: { id: 'loop-session-1' },
     });
     alert.mockRestore();
-  });
-
-  // `replace` here swapped this screen for `/` while the home it was opened from
-  // stayed below it, so the overview came back carrying a back button to itself —
-  // the "‹ Verity" on the top left of the project list. Popping to the existing
-  // home is the whole fix, so the assertion is on which router verb runs.
-  it('pops back to the existing overview after deleting a project', async () => {
-    const deleteProject = jest.fn().mockResolvedValue({ projectId: 'p/1' });
-    mockCreateVerityClient.mockReturnValue(makeClient({ deleteProject }));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Delete')?.onPress?.();
-    });
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Danger zone'));
-    fireEvent.press(await screen.findByLabelText('Delete project'));
-
-    await waitFor(() => expect(deleteProject).toHaveBeenCalledWith('p/1'));
-    await waitFor(() => expect(mockRouter.dismissTo).toHaveBeenCalledWith('/'));
-    expect(mockRouter.replace).not.toHaveBeenCalledWith('/');
-    alert.mockRestore();
-  });
-
-  // The server deletes a project's sessions along with it, so the confirmation
-  // must not promise the operator that they survive somewhere in the list.
-  it('warns that the project sessions go with the project', async () => {
-    mockCreateVerityClient.mockReturnValue(makeClient({}));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Danger zone'));
-    fireEvent.press(await screen.findByLabelText('Delete project'));
-
-    const [title, message] = alert.mock.calls[0];
-    expect(title).toBe('Delete project?');
-    expect(message).toContain('sessions and their history');
-    expect(message).not.toContain('stay in the list');
-    alert.mockRestore();
-  });
-});
-
-describe('ProjectDetailScreen — Doppler binding picker (#320)', () => {
-  it('lists projects, then configs, then PATCHes { dopplerProject, dopplerConfig }', async () => {
-    const listDopplerProjects = jest
-      .fn()
-      .mockResolvedValue({ projects: [{ slug: 'acme-app', name: 'Acme App' }] });
-    const listDopplerConfigs = jest
-      .fn()
-      .mockResolvedValue({ configs: [{ name: 'dev', environment: 'dev', root: true }] });
-    const updateProjectSettings = jest.fn().mockResolvedValue({
-      ...makeDetail().settings,
-      dopplerProject: 'acme-app',
-      dopplerConfig: 'dev',
-    });
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({ listDopplerProjects, listDopplerConfigs, updateProjectSettings }),
-    );
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Connected services'));
-    // Open the picker → project list loads.
-    fireEvent.press(await screen.findByLabelText('Choose Doppler binding'));
-    fireEvent.press(await screen.findByLabelText('Doppler project Acme App'));
-    await waitFor(() => expect(listDopplerConfigs).toHaveBeenCalledWith('acme-app'));
-
-    // Pick a config → PATCH lands with the binding.
-    fireEvent.press(await screen.findByLabelText('Doppler config dev'));
-    await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(1));
-    const [, patch] = updateProjectSettings.mock.calls[0];
-    expect(patch).toEqual({ dopplerProject: 'acme-app', dopplerConfig: 'dev' });
-  });
-
-  it('shows the account-token hint when the list is not configured', async () => {
-    const listDopplerProjects = jest.fn().mockResolvedValue({ error: 'not configured' });
-    mockCreateVerityClient.mockReturnValue(makeClient({ listDopplerProjects }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Connected services'));
-    fireEvent.press(await screen.findByLabelText('Choose Doppler binding'));
-    expect(
-      await screen.findByText(/Set the Doppler account token in onboarding/),
-    ).toBeOnTheScreen();
-  });
-
-  it('renders the current binding and a "Change" control when already bound', async () => {
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({
-        detail: makeDetail({
-          dopplerProject: 'acme-app',
-          dopplerConfig: 'dev',
-        }),
-      }),
-    );
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByLabelText('Project settings'));
-    fireEvent.press(await screen.findByLabelText('Connected services'));
-    expect(await screen.findByText('acme-app / dev')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Change Doppler binding')).toBeOnTheScreen();
-    expect(screen.getByText('Mapped')).toBeOnTheScreen();
   });
 });
