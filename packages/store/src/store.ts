@@ -755,6 +755,7 @@ export interface SecretKeyMetaRecord {
  *  learned to stamp it. */
 export interface AuthTokenRecord {
   id: string;
+  userId: string;
   tokenHash: string;
   label: string | null;
   createdAt: number;
@@ -6679,11 +6680,13 @@ export class EventStore implements EventSink {
     id: string;
     tokenHash: string;
     label?: string | null;
-  }): Promise<void> {
-    await this.db
+  }): Promise<string> {
+    const row = await this.db
       .insertInto('auth_tokens')
       .values({ id: record.id, token_hash: record.tokenHash, label: record.label ?? null })
-      .execute();
+      .returning('user_id')
+      .executeTakeFirstOrThrow();
+    return row.user_id;
   }
 
   /** Every token hash currently valid — loaded once to seed the gate's in-memory
@@ -6698,11 +6701,12 @@ export class EventStore implements EventSink {
   async listAuthTokens(): Promise<AuthTokenRecord[]> {
     const rows = await this.db
       .selectFrom('auth_tokens')
-      .select(['id', 'token_hash', 'label', 'created_at', 'last_seen_at'])
+      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at'])
       .orderBy('created_at', 'desc')
       .execute();
     return rows.map((r) => ({
       id: r.id,
+      userId: r.user_id,
       tokenHash: r.token_hash,
       label: r.label,
       createdAt: new Date(r.created_at).getTime(),

@@ -20,6 +20,7 @@ const PASSWORD = 'correct-horse-battery';
 
 interface FakeRow {
   id: string;
+  userId: string;
   tokenHash: string;
   label: string | null;
   createdAt: number;
@@ -44,15 +45,17 @@ function fakeStore(): AuthTokenStore & {
       id: string;
       tokenHash: string;
       label?: string | null;
-    }): Promise<void> => {
+    }): Promise<string> => {
+      const userId = '00000000-0000-4000-8000-000000000001';
       rows.push({
         id: r.id,
+        userId,
         tokenHash: r.tokenHash,
         label: r.label ?? null,
         createdAt: 1,
         lastSeenAt: null,
       });
-      return Promise.resolve();
+      return Promise.resolve(userId);
     },
     deleteAuthToken: (id: string): Promise<boolean> => {
       const index = rows.findIndex((row) => row.id === id);
@@ -335,12 +338,14 @@ describe('wsOriginAllowed (anti-CSWSH)', () => {
 
 describe('auth token registry', () => {
   it('mints a token whose raw value verifies, and rejects anything else', async () => {
-    const registry = await createAuthTokenRegistry(fakeStore(), { enabled: false });
+    const store = fakeStore();
+    const registry = await createAuthTokenRegistry(store, { enabled: false });
     const { token, id } = await registry.mint('iPhone');
     expect(typeof token).toBe('string');
     expect(id.length).toBeGreaterThan(0);
     expect(registry.verify(token)).toBe(true);
     expect(registry.resolveId(token)).toBe(id);
+    expect(registry.resolveUserId(token)).toBe(store.rows[0]?.userId);
     expect(registry.verify('not-a-token')).toBe(false);
     expect(registry.verify(undefined)).toBe(false);
     expect(registry.verify('')).toBe(false);
@@ -376,6 +381,8 @@ describe('auth token registry', () => {
     const second = await createAuthTokenRegistry(store, { enabled: true });
     expect(second.verify(token)).toBe(true);
     expect(second.resolveId(token)).toBe(id);
+    expect(second.resolveUserId(token)).toBe(store.rows[0]?.userId);
+    expect(second.resolveUserId('unknown')).toBeUndefined();
   });
 
   it('forget() drops one hash and clear() drops all from the in-memory set', async () => {
@@ -384,9 +391,11 @@ describe('auth token registry', () => {
     const b = await registry.mint(null);
     registry.forget(hashAuthToken(a.token));
     expect(registry.verify(a.token)).toBe(false);
+    expect(registry.resolveUserId(a.token)).toBeUndefined();
     expect(registry.verify(b.token)).toBe(true);
     registry.clear();
     expect(registry.verify(b.token)).toBe(false);
+    expect(registry.resolveUserId(b.token)).toBeUndefined();
   });
 
   it('lists safe device metadata and revokes the selected token', async () => {
@@ -399,6 +408,7 @@ describe('auth token registry', () => {
     ]);
     expect(await registry.revoke(first.id)).toBe(true);
     expect(registry.verify(first.token)).toBe(false);
+    expect(registry.resolveUserId(first.token)).toBeUndefined();
     expect(registry.verify(second.token)).toBe(true);
     expect(await registry.revoke(first.id)).toBe(false);
   });

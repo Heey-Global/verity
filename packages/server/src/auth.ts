@@ -55,13 +55,18 @@ export interface AuthTokenStore {
   listAuthTokens(): Promise<
     Array<{
       id: string;
+      userId: string;
       tokenHash: string;
       label?: string | null;
       createdAt?: number;
       lastSeenAt?: number | null;
     }>
   >;
-  insertAuthToken(record: { id: string; tokenHash: string; label?: string | null }): Promise<void>;
+  insertAuthToken(record: {
+    id: string;
+    tokenHash: string;
+    label?: string | null;
+  }): Promise<string>;
   deleteAuthToken(id: string): Promise<boolean>;
   renameAuthToken(id: string, label: string): Promise<boolean>;
   touchAuthToken(id: string): Promise<void>;
@@ -102,6 +107,8 @@ export interface AuthTokenRegistry {
   verify(token: string | undefined | null): boolean;
   /** Resolve a verified raw token to Verity's opaque paired-device handle. */
   resolveId(token: string | undefined | null): string | undefined;
+  /** The local user bound to a verified device token. */
+  resolveUserId(token: string | undefined | null): string | undefined;
   /** Whether a paired-device handle is still active, for delayed policy rechecks. */
   isKnownId?(id: string): boolean;
   /** Mint a new device token, persist its hash, and return the raw token once. */
@@ -129,9 +136,9 @@ export async function createAuthTokenRegistry(
   store: AuthTokenStore,
   opts: { enabled: boolean },
 ): Promise<AuthTokenRegistry> {
-  const tokenIdsByHash = new Map(
-    (await store.listAuthTokens()).map((record) => [record.tokenHash, record.id]),
-  );
+  const records = await store.listAuthTokens();
+  const tokenIdsByHash = new Map(records.map((record) => [record.tokenHash, record.id]));
+  const tokenUsersByHash = new Map(records.map((record) => [record.tokenHash, record.userId]));
   // Device id → when its `last_seen_at` was last written, so `touch` can skip
   // the write for the rest of the interval. In memory only: after a restart the
   // first request from each device pays one update, which is the point.
@@ -150,6 +157,10 @@ export async function createAuthTokenRegistry(
       if (token === undefined || token === null || token.length === 0) return undefined;
       return tokenIdsByHash.get(hashAuthToken(token));
     },
+    resolveUserId(token): string | undefined {
+      if (token === undefined || token === null || token.length === 0) return undefined;
+      return tokenUsersByHash.get(hashAuthToken(token));
+    },
     isKnownId(id): boolean {
       return [...tokenIdsByHash.values()].includes(id);
     },
@@ -157,8 +168,9 @@ export async function createAuthTokenRegistry(
       const token = randomBytes(TOKEN_BYTES).toString('base64url');
       const id = randomBytes(ID_BYTES).toString('base64url');
       const tokenHash = hashAuthToken(token);
-      await store.insertAuthToken({ id, tokenHash, label: label ?? null });
+      const userId = await store.insertAuthToken({ id, tokenHash, label: label ?? null });
       tokenIdsByHash.set(tokenHash, id);
+      tokenUsersByHash.set(tokenHash, userId);
       return { token, id };
     },
     async register(token, id, label): Promise<MintedAuthToken> {
@@ -169,8 +181,9 @@ export async function createAuthTokenRegistry(
         return { token, id };
       }
       if ([...tokenIdsByHash.values()].includes(id)) throw new Error('auth token id collision');
-      await store.insertAuthToken({ id, tokenHash, label: label ?? null });
+      const userId = await store.insertAuthToken({ id, tokenHash, label: label ?? null });
       tokenIdsByHash.set(tokenHash, id);
+      tokenUsersByHash.set(tokenHash, userId);
       return { token, id };
     },
     async list(): Promise<PairedDevice[]> {
@@ -203,16 +216,19 @@ export async function createAuthTokenRegistry(
       const record = (await store.listAuthTokens()).find((candidate) => candidate.id === id);
       if (record === undefined || !(await store.deleteAuthToken(id))) return false;
       tokenIdsByHash.delete(record.tokenHash);
+      tokenUsersByHash.delete(record.tokenHash);
       touchedAt.delete(id);
       return true;
     },
     forget(tokenHash): void {
       const id = tokenIdsByHash.get(tokenHash);
       tokenIdsByHash.delete(tokenHash);
+      tokenUsersByHash.delete(tokenHash);
       if (id !== undefined) touchedAt.delete(id);
     },
     clear(): void {
       tokenIdsByHash.clear();
+      tokenUsersByHash.clear();
       touchedAt.clear();
     },
   };
