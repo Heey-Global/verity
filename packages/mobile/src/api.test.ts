@@ -2205,6 +2205,15 @@ describe('VerityClient.mergePullRequest', () => {
 });
 
 describe('VerityClient.mergeSessionBranch', () => {
+  it('starts the local save workflow', async () => {
+    const { fetch, calls } = fakeFetch(json({ accepted: true }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    expect(await client.saveSessionToProject('s1')).toEqual({ accepted: true });
+    expect(calls[0]?.url).toBe('http://host/sessions/s1/save-to-project');
+    expect(calls[0]?.init?.method).toBe('POST');
+  });
+
   it('posts the local merge and validates the merged response', async () => {
     const { fetch, calls } = fakeFetch(json({ merged: true, base: 'main', branch: 'feat/notes' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
