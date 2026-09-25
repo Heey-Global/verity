@@ -52,6 +52,40 @@ it('shows the room overview and opens the Matrix account from its row', async ()
   expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix/account');
 });
 
+it('assigns an invited room to a chosen project from the Matrix overview', async () => {
+  const bindIntegrationSource = jest
+    .fn()
+    .mockResolvedValue({ ...source, projectId: 'project-two' });
+  mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest
+      .fn()
+      .mockResolvedValueOnce({ accounts: [], sources: [source] })
+      .mockResolvedValue({
+        accounts: [],
+        sources: [{ ...source, projectId: 'project-two', status: 'active' }],
+      }),
+    listProjects: jest.fn().mockResolvedValue([
+      { id: 'project-one', owner: 'team', repo: 'first' },
+      { id: 'project-two', owner: 'team', repo: 'second' },
+    ]),
+    bindIntegrationSource,
+  } as unknown as VerityClient);
+  setSearchParams({});
+  render(<MatrixRoomsScreen />);
+
+  fireEvent.press(await screen.findByText('Project chat'));
+  expect(await screen.findByText('team/second')).toBeOnTheScreen();
+  expect(bindIntegrationSource).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('team/second'));
+  await waitFor(() =>
+    expect(bindIntegrationSource).toHaveBeenCalledWith(
+      source.accountId,
+      source.sourceId,
+      'project-two',
+    ),
+  );
+});
+
 it('configures the Matrix account on its detail screen', async () => {
   const saveMatrixConfig = jest.fn().mockResolvedValue(undefined);
   mockCreateVerityClient.mockReturnValue({

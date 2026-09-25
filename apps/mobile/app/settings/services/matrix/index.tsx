@@ -1,4 +1,9 @@
-import { type IntegrationAccount, type IntegrationSource, type VerityClient } from '@verity/mobile';
+import {
+  type IntegrationAccount,
+  type IntegrationSource,
+  type ProjectRecord,
+  type VerityClient,
+} from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
@@ -40,6 +45,9 @@ function MatrixRoomsView({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedRoom, setSelectedRoom] = useState<IntegrationSource | null>(null);
+  const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -62,11 +70,22 @@ function MatrixRoomsView({
     }, [reload]),
   );
 
-  const bind = async (source: IntegrationSource) => {
-    if (!projectId) return;
+  const chooseRoom = async (source: IntegrationSource) => {
+    setSelectedRoom(source);
+    setProjects(null);
+    setProjectError(null);
+    try {
+      setProjects((await client.listProjects()).filter((project) => !project.archived));
+    } catch {
+      setProjectError('Could not load projects. Tap the room to retry.');
+    }
+  };
+
+  const bind = async (source: IntegrationSource, targetProjectId: string) => {
     setBusy(true);
     try {
-      await client.bindIntegrationSource(source.accountId, source.sourceId, projectId);
+      await client.bindIntegrationSource(source.accountId, source.sourceId, targetProjectId);
+      setSelectedRoom(null);
       await reload();
     } catch {
       setError('Could not connect this room.');
@@ -134,7 +153,7 @@ function MatrixRoomsView({
             description={
               projectId
                 ? 'Tap a room to import its new messages into this project.'
-                : 'Connect invited rooms from the Integrations section of a project.'
+                : 'Choose a room, then select the project that should receive its new messages.'
             }
           >
             {pending.length === 0 ? (
@@ -151,16 +170,46 @@ function MatrixRoomsView({
                       title={item.displayName}
                       subtitle={item.inviter ? `Invited by ${item.inviter}` : item.sourceId}
                       onPress={() => {
-                        if (!busy) void bind(item);
+                        if (!busy) void bind(item, projectId);
                       }}
                     />
                   ) : (
-                    <SettingsPanel key={`${item.accountId}:${item.sourceId}`}>
-                      <Text style={styles.disclosureTitle}>{item.displayName}</Text>
-                      <Text style={styles.reproSubtitle}>
-                        {item.inviter ? `Invited by ${item.inviter}` : item.sourceId}
-                      </Text>
-                    </SettingsPanel>
+                    <View key={`${item.accountId}:${item.sourceId}`}>
+                      <SettingsNavRow
+                        icon="link"
+                        title={item.displayName}
+                        subtitle={item.inviter ? `Invited by ${item.inviter}` : item.sourceId}
+                        onPress={() => {
+                          if (!busy) void chooseRoom(item);
+                        }}
+                      />
+                      {selectedRoom?.sourceId === item.sourceId ? (
+                        <SettingsPanel>
+                          <Text style={styles.disclosureTitle}>Choose a project</Text>
+                          {projectError ? (
+                            <Text style={styles.reproHint}>{projectError}</Text>
+                          ) : null}
+                          {projects === null && !projectError ? <ActivityIndicator /> : null}
+                          {projects?.length === 0 ? (
+                            <Text style={styles.reproSubtitle}>No projects available.</Text>
+                          ) : null}
+                          {projects?.map((project) => (
+                            <SettingsNavRow
+                              key={project.id}
+                              icon="folder"
+                              title={
+                                project.kind === 'local'
+                                  ? project.repo
+                                  : `${project.owner}/${project.repo}`
+                              }
+                              onPress={() => {
+                                if (!busy) void bind(item, project.id);
+                              }}
+                            />
+                          ))}
+                        </SettingsPanel>
+                      ) : null}
+                    </View>
                   ),
                 )}
               </SettingsListPanel>
