@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
+import { pendingReleasePrs } from './pending-release-prs.mjs';
 
 const [train, eventSha] = process.argv.slice(2);
 /** @type {Record<string, {component: string, path: string, prefix: string}>} */
@@ -82,23 +83,7 @@ if (main !== eventSha) {
     .split('\n')
     .filter(Boolean)
     .map(parseRelease);
-  const pending =
-    /** @type {{number: number, author: {login: string}, mergeCommit: {oid: string}}[]} */ (
-      gh(
-        'pr',
-        'list',
-        '--state',
-        'merged',
-        '--base',
-        'main',
-        '--head',
-        `release-please--branches--main--components--${spec.component}`,
-        '--label',
-        'autorelease: pending',
-        '--json',
-        'number,author,mergeCommit',
-      )
-    );
+  const pending = pendingReleasePrs(spec.component);
   const drafts = releases.filter((release) => {
     if (train === 'website')
       return (

@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -508,7 +508,7 @@ describe('release merge policy', () => {
     expect(pretagIndex).toBeGreaterThan(-1);
     expect(pretagIndex).toBeLessThan(firstReleasePleaseIndex);
     expect(pretag?.env?.GH_TOKEN).toBe('${{ secrets.GITHUB_TOKEN }}');
-    expect(pretag?.run).toContain("--label 'autorelease: pending'");
+    expect(pretag?.run).toContain('node scripts/pending-release-prs.mjs "$component"');
     expect(pretag?.run).toContain('git merge-base --is-ancestor');
     expect(pretag?.run).toContain('[[ "$release_sha" != "$HEAD_SHA" ]] || return 0');
     expect(pretag?.run).toContain(
@@ -1170,10 +1170,21 @@ describe('planning resumes after publication', () => {
     // That checkout is all the run gets: the only install on the push path
     // belongs to the mobile train. A third-party import here would strand
     // planning on a bare workspace, after the release is already public.
-    const source = readFileSync('scripts/release-lifecycle.mjs', 'utf8');
-    const specifiers = [...source.matchAll(/^import [^']*'([^']+)';$/gmu)].map(([, name]) => name);
-    expect(specifiers.length).toBeGreaterThan(0);
-    for (const specifier of specifiers) expect(specifier, specifier).toMatch(/^node:/u);
+    const visited = new Set<string>();
+    function checkImports(file: string) {
+      if (visited.has(file)) return;
+      visited.add(file);
+      const source = readFileSync(file, 'utf8');
+      const specifiers = [...source.matchAll(/^import [^']*'([^']+)';$/gmu)].map(
+        ([, name]) => name!,
+      );
+      expect(specifiers.length).toBeGreaterThan(0);
+      for (const specifier of specifiers) {
+        if (specifier.startsWith('./')) checkImports(resolve(dirname(file), specifier));
+        else expect(specifier, file).toMatch(/^node:/u);
+      }
+    }
+    checkImports(resolve('scripts/release-lifecycle.mjs'));
   });
 
   it('keeps a dispatched re-plan in planning mode only', () => {

@@ -335,10 +335,7 @@ jobs:
             [[ "$selected" == true ]] || return 0
 
             local prs count pr author release_sha version tag
-            prs="$(gh pr list --state merged --base main \
-              --head "release-please--branches--main--components--${component}" \
-              --label 'autorelease: pending' --limit 2 \
-              --json number,author,mergeCommit)"
+            prs="$(node scripts/pending-release-prs.mjs "$component")"
             count="$(jq 'length' <<<"$prs")"
             [[ "$count" != 0 ]] || return 0
             if [[ "$count" != 1 ]]; then
