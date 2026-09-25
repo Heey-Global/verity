@@ -7,21 +7,22 @@ import { createRawDb } from './testing.js';
 it('upgrades an existing database without reordering the released migrations', async () => {
   const ctx = createRawDb();
   try {
-    const migrations = await migrationProvider.getMigrations();
+    // Every migration but the newest one is already on installed Servers.
     const released = Object.fromEntries(
-      Object.entries(migrations).filter(([name]) => !name.endsWith('_session_project_moves')),
+      Object.entries(await migrationProvider.getMigrations()).slice(0, -1),
     );
     const before = await new Migrator({
       db: ctx.db,
       provider: { getMigrations: async () => released },
     }).migrateToLatest();
     expect(before.error).toBeUndefined();
-    // Inserting the feature migration before already-applied main migrations breaks upgrades.
+    // A newest migration that sorts before an applied one breaks every upgrade.
     const after = await new Migrator({ db: ctx.db, provider: migrationProvider }).migrateToLatest();
     expect(after.error).toBeUndefined();
     expect(after.results?.filter((result) => result.status === 'Success')).toHaveLength(1);
     for (const table of [
       'session_moves',
+      'session_links',
       'session_gmail_connections',
       'integration_accounts',
       'matrix_connector_config',

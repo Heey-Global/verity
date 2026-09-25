@@ -33,6 +33,20 @@ describe('earliestMigrationKey', () => {
   });
 });
 
+describe('migration keys', () => {
+  it('are declared in the order Kysely applies them', async () => {
+    const keys = Object.keys(await migrationProvider.getMigrations());
+    // Two branches picking the same next number merge cleanly, but a new key that
+    // sorts before one an installed Server already ran makes Kysely refuse to
+    // start the candidate ("corrupted migrations") — until now only the live
+    // self-update smoke noticed. Appending means the new key must sort last.
+    const inversions = keys.flatMap((key, i) =>
+      i > 0 && key < keys[i - 1]! ? [`${keys[i - 1]} -> ${key}`] : [],
+    );
+    expect(inversions).toEqual([]);
+  });
+});
+
 describe('schemaCompatibilityWindow', () => {
   it('declares [earliest, latest] with the latest as both current and max', () => {
     const window = schemaCompatibilityWindow();
