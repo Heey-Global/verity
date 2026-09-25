@@ -1,16 +1,15 @@
 {
   "schema": 1,
-  "version": "1.34.7",
+  "version": "1.34.8",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "7168c69294e45d9cd087a1bc659286423f4f6fc4",
-  "tag": "mobile-v1.34.7",
-  "branch": "staging-mobile-v1.34.7-7168c69294e45d9cd087a1bc659286423f4f6fc4",
-  "baseline": "mobile-v1.34.6",
-  "group": "32f4e3ba-da8c-40ba-860d-7e7209e1fbd0",
+  "commit": "877fba2f3b5ed6ee1b7a70030d879c3ccaeb7858",
+  "tag": "mobile-v1.34.8",
+  "branch": "staging-mobile-v1.34.8-877fba2f3b5ed6ee1b7a70030d879c3ccaeb7858",
+  "baseline": "mobile-v1.34.7",
+  "group": "2c155cbc-54e9-405f-ba0b-7ed978b2d245",
   "notes": [
-    "open project settings directly (#731)",
-    "group model picker and pin OpenCode model order (#728)",
-    "make Matrix account form reflect its save state (#727)"
+    "simplify project settings overview (#735)",
+    "prefetch older chat history before scroll edge (#732)"
   ]
 }
