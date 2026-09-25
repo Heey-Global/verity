@@ -47,6 +47,48 @@ const sampleEvents: AgentEvent[] = [
 ];
 
 describe('EventStore — linked session allowance', () => {
+  it('releases pool connections before concurrent target acceptance', async () => {
+    const pairCount = 11;
+    let arrived = 0;
+    let release!: () => void;
+    const allArrived = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    for (let index = 0; index < pairCount * 2; index += 1) {
+      const id = `parallel-${index}`;
+      await ctx.store.upsertProject({
+        id,
+        owner: 'local',
+        repo: id,
+        containerName: `test-${id}`,
+        state: 'active',
+      });
+      await ctx.store.createSession({
+        sessionId: id,
+        worktree: `/wt/${id}`,
+        model: session.model,
+        projectId: id,
+      });
+      if (index % 2 === 1) await ctx.store.createSessionLink(`parallel-${index - 1}`, id);
+    }
+    await Promise.all(
+      Array.from({ length: pairCount }, (_, index) =>
+        ctx.store.reserveSessionLinkMessage(
+          `parallel-${index * 2}`,
+          `parallel-${index * 2 + 1}`,
+          `delivery-${index}`,
+          false,
+          async () => {
+            arrived += 1;
+            if (arrived === pairCount) release();
+            await allArrived;
+            expect(await ctx.store.getSession(`parallel-${index * 2 + 1}`)).toBeDefined();
+          },
+        ),
+      ),
+    );
+  }, 10_000);
+
   it('bounds each direction, renews only after approval, and does not charge retries', async () => {
     for (const id of ['p1', 'p2']) {
       await ctx.store.upsertProject({

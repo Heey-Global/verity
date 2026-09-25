@@ -1429,7 +1429,9 @@ export class EventStore implements EventSink {
     this.sessionLinkDeliveryTails.set(key, finished);
     try {
       await previous;
-      return await this.db.transaction().execute(async (trx) => {
+      let refund:
+        { column: 'remaining_a' | 'remaining_b'; before: number; after: number } | undefined;
+      const reservation = await this.db.transaction().execute(async (trx) => {
         const link = await trx
           .selectFrom('session_links')
           .selectAll()
@@ -1450,15 +1452,16 @@ export class EventStore implements EventSink {
             prior.source_session_id !== sourceId
           )
             throw new Error('linked message invocation was reused for a different target');
-          await deliver?.();
           return 'duplicate';
         }
-        const column = sourceId === sessionA ? 'remaining_a' : 'remaining_b';
+        const column: 'remaining_a' | 'remaining_b' =
+          sourceId === sessionA ? 'remaining_a' : 'remaining_b';
         const remaining = link[column];
         if (remaining === 0 && !approvedRenewal) return 'exhausted';
+        const after = remaining === 0 ? 5 : remaining - 1;
         await trx
           .updateTable('session_links')
-          .set({ [column]: remaining === 0 ? 5 : remaining - 1 })
+          .set({ [column]: after })
           .where('session_a', '=', sessionA)
           .where('session_b', '=', sessionB)
           .execute();
@@ -1471,11 +1474,35 @@ export class EventStore implements EventSink {
             source_session_id: sourceId,
           })
           .execute();
-        // Hold the link row lock through delivery so unlink cannot complete between
-        // authorization and the target accepting the turn.
-        await deliver?.();
+        refund = { column, before: remaining, after };
         return 'reserved';
       });
+      if (reservation !== 'reserved' && reservation !== 'duplicate') return reservation;
+      try {
+        await deliver?.();
+      } catch (error) {
+        if (reservation === 'reserved' && refund) {
+          const refundDetails = refund;
+          await this.db.transaction().execute(async (trx) => {
+            const deleted = await trx
+              .deleteFrom('session_link_deliveries')
+              .where('invocation_id', '=', invocationId)
+              .returning('invocation_id')
+              .executeTakeFirst();
+            if (deleted) {
+              await trx
+                .updateTable('session_links')
+                .set({ [refundDetails.column]: refundDetails.before })
+                .where('session_a', '=', sessionA)
+                .where('session_b', '=', sessionB)
+                .where(refundDetails.column, '=', refundDetails.after)
+                .execute();
+            }
+          });
+        }
+        throw error;
+      }
+      return reservation;
     } finally {
       release();
       if (this.sessionLinkDeliveryTails.get(key) === finished)
