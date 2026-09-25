@@ -4435,6 +4435,40 @@ export class EventStore implements EventSink {
     return row ? this.projectRowToRecord(row) : undefined;
   }
 
+  /** Local project authority comes from an active user's membership, never
+   * from their instance role alone. Route handlers will use this once team
+   * access is enabled. */
+  async hasProjectPermission(
+    userId: string,
+    projectId: string,
+    permission: 'read' | 'execute' | 'manage',
+  ): Promise<boolean> {
+    const membership = await this.db
+      .selectFrom('project_memberships as m')
+      .innerJoin('users as u', 'u.id', 'm.user_id')
+      .innerJoin('projects as p', 'p.id', 'm.project_id')
+      .select([
+        'm.can_read',
+        'm.can_execute',
+        'm.can_manage',
+        'u.status',
+        'u.role',
+        'p.kind',
+        'p.created_by_user_id',
+      ])
+      .where('m.user_id', '=', userId)
+      .where('m.project_id', '=', projectId)
+      .executeTakeFirst();
+    if (membership === undefined || membership.status !== 'active') return false;
+    if (
+      membership.kind === 'control_plane' &&
+      (membership.role !== 'administrator' || membership.created_by_user_id !== userId)
+    ) {
+      return false;
+    }
+    return membership[`can_${permission}`];
+  }
+
   async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
