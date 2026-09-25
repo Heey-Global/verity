@@ -1,5 +1,6 @@
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
@@ -39,6 +40,9 @@ it('shows the room overview and opens the Matrix account from its row', async ()
     listIntegrations: jest
       .fn()
       .mockResolvedValue({ accounts: [], sources: [source, connectedRoom] }),
+    listProjects: jest
+      .fn()
+      .mockResolvedValue([{ id: 'project-one', owner: 'team', repo: 'first', archived: true }]),
   } as unknown as VerityClient);
   setSearchParams({});
   render(<MatrixRoomsScreen />);
@@ -47,15 +51,21 @@ it('shows the room overview and opens the Matrix account from its row', async ()
   expect(screen.getByText('Invitations')).toBeOnTheScreen();
   expect(screen.getByText('Connected rooms')).toBeOnTheScreen();
   expect(screen.getByText('Team room')).toBeOnTheScreen();
+  expect(await screen.findByText('team/first · active')).toBeOnTheScreen();
+  expect(screen.queryByText('project-one')).toBeNull();
   expect(screen.queryByLabelText('Matrix password')).toBeNull();
   fireEvent.press(screen.getByLabelText('Matrix account'));
   expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix/account');
 });
 
 it('assigns an invited room to a chosen project from the Matrix overview', async () => {
-  const bindIntegrationSource = jest
-    .fn()
-    .mockResolvedValue({ ...source, projectId: 'project-two' });
+  let finishBinding!: (result: unknown) => void;
+  const bindIntegrationSource = jest.fn().mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishBinding = resolve;
+      }),
+  );
   mockCreateVerityClient.mockReturnValue({
     listIntegrations: jest
       .fn()
@@ -67,6 +77,7 @@ it('assigns an invited room to a chosen project from the Matrix overview', async
     listProjects: jest.fn().mockResolvedValue([
       { id: 'project-one', owner: 'team', repo: 'first' },
       { id: 'project-two', owner: 'team', repo: 'second' },
+      { id: 'project-old', owner: 'team', repo: 'archived', archived: true },
     ]),
     bindIntegrationSource,
   } as unknown as VerityClient);
@@ -75,14 +86,66 @@ it('assigns an invited room to a chosen project from the Matrix overview', async
 
   fireEvent.press(await screen.findByText('Project chat'));
   expect(await screen.findByText('team/second')).toBeOnTheScreen();
+  expect(screen.queryByText('team/archived')).toBeNull();
   expect(bindIntegrationSource).not.toHaveBeenCalled();
   fireEvent.press(screen.getByText('team/second'));
+  expect(screen.getByText('Connecting to team/second…')).toBeOnTheScreen();
+  expect(screen.queryByText('team/first')).toBeNull();
+  finishBinding({ ...source, projectId: 'project-two' });
   await waitFor(() =>
     expect(bindIntegrationSource).toHaveBeenCalledWith(
       source.accountId,
       source.sourceId,
       'project-two',
     ),
+  );
+  expect(await screen.findByText('team/second · active')).toBeOnTheScreen();
+});
+
+it('disconnects a connected room from its overview row after confirmation', async () => {
+  const disconnectIntegrationSource = jest.fn().mockResolvedValue(undefined);
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(jest.fn());
+  mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({
+      accounts: [],
+      sources: [{ ...source, projectId: 'project-one', status: 'active' }],
+    }),
+    listProjects: jest
+      .fn()
+      .mockResolvedValue([{ id: 'project-one', owner: 'team', repo: 'first' }]),
+    disconnectIntegrationSource,
+  } as unknown as VerityClient);
+  render(<MatrixRoomsScreen />);
+
+  fireEvent.press(await screen.findByLabelText('Disconnect Project chat'));
+  expect(disconnectIntegrationSource).not.toHaveBeenCalled();
+  const actions = alert.mock.calls[0]?.[2];
+  await act(async () => {
+    actions?.find((action) => action.text === 'Disconnect')?.onPress?.();
+  });
+  await waitFor(() =>
+    expect(disconnectIntegrationSource).toHaveBeenCalledWith(source.accountId, source.sourceId),
+  );
+  alert.mockRestore();
+});
+
+it('keeps pause and resume available on the connected room row', async () => {
+  const pauseIntegrationSource = jest.fn().mockResolvedValue(undefined);
+  mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({
+      accounts: [],
+      sources: [{ ...source, projectId: 'project-one', status: 'paused' }],
+    }),
+    listProjects: jest
+      .fn()
+      .mockResolvedValue([{ id: 'project-one', owner: 'team', repo: 'first' }]),
+    pauseIntegrationSource,
+  } as unknown as VerityClient);
+  render(<MatrixRoomsScreen />);
+
+  fireEvent.press(await screen.findByLabelText('Resume Project chat'));
+  await waitFor(() =>
+    expect(pauseIntegrationSource).toHaveBeenCalledWith(source.accountId, source.sourceId, false),
   );
 });
 
@@ -253,26 +316,4 @@ it('keeps the Matrix form editable after validation fails and allows a retry', a
     username: '@verity:example.test',
     password: 'private-password',
   });
-});
-
-it('assigns an invited room from a project without showing server credentials', async () => {
-  const bindIntegrationSource = jest
-    .fn()
-    .mockResolvedValue({ ...source, projectId: 'project-one', status: 'active' });
-  mockCreateVerityClient.mockReturnValue({
-    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [source] }),
-    bindIntegrationSource,
-  } as unknown as VerityClient);
-  setSearchParams({ projectId: 'project-one' });
-  render(<MatrixRoomsScreen />);
-
-  fireEvent.press(await screen.findByText('Project chat'));
-  await waitFor(() =>
-    expect(bindIntegrationSource).toHaveBeenCalledWith(
-      source.accountId,
-      source.sourceId,
-      'project-one',
-    ),
-  );
-  expect(screen.queryByLabelText('Matrix password')).toBeNull();
 });
