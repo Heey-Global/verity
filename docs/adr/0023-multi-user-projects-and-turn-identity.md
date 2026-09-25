@@ -579,10 +579,14 @@ content a former member already downloaded.
 Removing a membership deletes that member's membership-scoped connections for
 the project (their Doppler token and the MCP connections they own there). Other
 members who used one of those shared MCP connections are notified, and the
-connection shows as required again until someone provides a replacement.
-Deleting a user deletes all of their personal connections, including Claude,
-Codex, Google, GitHub and their private signing key. Their shared MCP
-connections are handled in every project as on membership removal.
+connection shows as required again until someone provides a replacement. The
+core reports the removal to Uplink through the team protocol's membership
+removal messages (`team.membership.remove` and `team.invite.cancel`, with the
+exact cases defined in the protocol's Membership removal section); local access
+ends without waiting for Uplink's acknowledgement. Deleting a user deletes all
+of their personal connections, including Claude, Codex, Google, GitHub and their
+private signing key. Their shared MCP connections are handled in every project
+as on membership removal.
 
 **Verity revokes upstream only what Verity issued.** Grants obtained through
 Verity's own authorization flows (Google, the GitHub App user authorization,
