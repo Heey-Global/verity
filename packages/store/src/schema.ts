@@ -484,14 +484,14 @@ export interface AuthTokenTable {
 }
 
 /** Local identity is separate from a paired device and from project access. */
-export interface UsersTable {
+interface UsersTable {
   id: string;
   role: 'administrator' | 'member';
   status: 'active' | 'disabled';
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-export interface ProjectMembershipsTable {
+interface ProjectMembershipsTable {
   project_id: string;
   user_id: string;
   can_read: boolean;
