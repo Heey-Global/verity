@@ -2406,12 +2406,12 @@ export function SessionChat({
     },
     [branches.mergePullRequest, scrollToLatest],
   );
-  const onMergeLocally = useCallback<UseBranches['mergeLocally']>(() => {
+  const onSaveToProject = useCallback<UseBranches['saveToProject']>(() => {
     // Same reasoning as the pull-request merge above: the server dispatches a turn
     // describing the post-merge state, so follow the live edge to see it arrive.
     scrollToLatest(true);
-    return branches.mergeLocally();
-  }, [branches.mergeLocally, scrollToLatest]);
+    return branches.saveToProject();
+  }, [branches.saveToProject, scrollToLatest]);
   const voiceAbort = voice.abort;
   const onSend = useCallback(() => {
     const prompt = draft.trim();
@@ -3849,7 +3849,8 @@ export function SessionChat({
         <LocalMergeBar
           branch={branches.current}
           base={branches.localMergeBase}
-          onMerge={onMergeLocally}
+          busy={working}
+          onSave={onSaveToProject}
         />
       ) : null}
       <InputBar
@@ -7587,22 +7588,21 @@ function PullRequestBar({
   );
 }
 
-/** The merge affordance for a project WITHOUT a GitHub repository: there is no pull
- *  request to show status for, so this is deliberately plain — the branch it would
- *  merge, the base it merges into, and one button. Every precondition (uncommitted
- *  changes, conflicts, a running turn) is decided server-side and surfaced here as
- *  the returned message, so the button never claims a readiness it can't know. */
+/** Save a local session's work through the agent and then into the project base.
+ *  The server checks the commit and merge preconditions. */
 function LocalMergeBar({
   branch,
   base,
-  onMerge,
+  busy,
+  onSave,
 }: {
   branch: string;
   base: string;
-  onMerge: UseBranches['mergeLocally'];
+  busy: boolean;
+  onSave: UseBranches['saveToProject'];
 }) {
   const { theme } = useUnistyles();
-  const [merging, setMerging] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
   useEffect(() => {
@@ -7616,17 +7616,16 @@ function LocalMergeBar({
     setError(undefined);
   }, [branch, base]);
 
-  const merge = (): void => {
-    if (merging) return;
+  const save = (): void => {
+    if (saving || busy) return;
     void (async () => {
-      setMerging(true);
+      setSaving(true);
       setError(undefined);
-      const result = await onMerge();
+      const result = await onSave();
       if (!mounted.current) return;
-      setMerging(false);
+      setSaving(false);
       if (!result.ok) setError(result.message);
-      // On success there is nothing to do client-side: onMerge refreshed the branch
-      // state, and the worktree reset + agent notification happen server-side.
+      // The server runs the agent turn and local merge after accepting the request.
     })();
   };
 
@@ -7634,15 +7633,11 @@ function LocalMergeBar({
     <View style={styles.prBarWrap}>
       <View style={styles.prBar}>
         <View style={styles.prLocalMain}>
-          {/* Branch on its own line, truncated in the MIDDLE: a session branch is
-              `<type>/<issue>-<long-slug>`, so the distinctive tail matters as much as
-              the type prefix. The base lives on the sub-line instead of after a `→`,
-              where a long branch name would truncate it away entirely. */}
-          <Text style={styles.prTitle} numberOfLines={1} ellipsizeMode="middle">
-            {branch}
+          <Text style={styles.prTitle} numberOfLines={1}>
+            Changes from this session
           </Text>
           <Text style={styles.prSub} numberOfLines={1}>
-            → {base} · local project
+            Save them as a version in your project.
           </Text>
           {error !== undefined ? (
             <Text style={styles.prError} numberOfLines={2}>
@@ -7653,20 +7648,21 @@ function LocalMergeBar({
         <Pressable
           style={({ pressed }) => [
             styles.prMergeButton,
+            styles.prLocalMergeButton,
             { backgroundColor: theme.colors.tone.done },
-            merging ? styles.prMergeButtonDisabled : null,
-            pressed && !merging ? styles.prMergeButtonPressed : null,
+            saving || busy ? styles.prMergeButtonDisabled : null,
+            pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
           ]}
-          onPress={merge}
-          disabled={merging}
+          onPress={save}
+          disabled={saving || busy}
           accessibilityRole="button"
-          accessibilityState={{ disabled: merging, busy: merging }}
-          accessibilityLabel={`Merge ${branch} into ${base}`}
+          accessibilityState={{ disabled: saving || busy, busy: saving }}
+          accessibilityLabel="Save this session's changes as a version in your project"
         >
-          {merging ? (
+          {saving ? (
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
-            <Text style={styles.prMergeText}>Merge</Text>
+            <Text style={styles.prMergeText}>Save to project</Text>
           )}
         </Pressable>
       </View>
@@ -8986,6 +8982,9 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.primary,
+  },
+  prLocalMergeButton: {
+    width: 124,
   },
   prMergeButtonDisabled: {
     opacity: 0.45,

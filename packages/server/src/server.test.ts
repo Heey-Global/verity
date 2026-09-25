@@ -333,6 +333,7 @@ const dispatchTurnWhenIdle =
       dispatchOpts?: unknown,
     ) => Promise<{ accepted: boolean }>
   >();
+const sendTurn = vi.fn<() => Promise<{ exitCode: number; aborted: boolean }>>();
 const startSession = vi.fn<(opts: StartOptions) => Promise<{ sessionId: string }>>();
 const isBusy = vi.fn<(id: string) => boolean>(() => false);
 const queuedItems = vi.fn<
@@ -397,6 +398,7 @@ const tryRunExclusive = vi.fn<
   ) => Promise<{ ran: true; value: unknown } | { ran: false }>
 >(async (id, fn) => (isBusy(id) ? { ran: false } : { ran: true, value: await fn() }));
 const conductor = {
+  sendTurn,
   dispatchTurn,
   dispatchTurnWhenIdle,
   startSession,
@@ -516,6 +518,8 @@ beforeEach(async () => {
   dispatchTurn.mockReset();
   dispatchTurnWhenIdle.mockReset();
   dispatchTurnWhenIdle.mockResolvedValue({ accepted: true });
+  sendTurn.mockReset();
+  sendTurn.mockResolvedValue({ exitCode: 0, aborted: false });
   dispatchTurn.mockResolvedValue({ queued: false });
   startSession.mockReset();
   startSession.mockResolvedValue({ sessionId: 'backend-session' });
@@ -9075,6 +9079,16 @@ describe('POST /sessions/:id/pull-request/merge', () => {
 });
 
 describe('POST /sessions/:id/merge (project without GitHub)', () => {
+  const localIsDirty = vi.fn<(wt: string) => Promise<boolean>>();
+  let approveSave = true;
+  let currentTip = 'approved-tip';
+  beforeEach(() => {
+    localIsDirty.mockReset();
+    localIsDirty.mockResolvedValue(false);
+    approveSave = true;
+    currentTip = 'approved-tip';
+    sandboxGit.mockClear();
+  });
   const localProject = {
     id: 'p1',
     owner: LOCAL_PROJECT_OWNER,
@@ -9087,7 +9101,11 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
   // The merge's git runs in the project's container, so the route builds a runner per
   // project instead of using the branch service's own. Here it only has to be
   // recognisable: the service is a stub, and what matters is WHICH runner reaches it.
-  const sandboxGit: GitOutput = () => Promise.resolve('');
+  const sandboxGit = vi.fn<GitOutput>(async (args) => {
+    if (args.includes('--verify') && !approveSave) throw new Error('approval ref absent');
+    if (args.includes('--verify')) return 'approved-tip\n';
+    return args.includes('rev-parse') ? `${currentTip}\n` : '';
+  });
   const sandboxGitFor = vi.fn<(project: { id: string }, clonePath: string) => GitOutput>(
     () => sandboxGit,
   );
@@ -9099,7 +9117,7 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       eventStore: ctx.store,
       bus,
       conductor,
-      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branches: { ...branchSvc, isDirty: localIsDirty },
       projectCloneRoot: '/clones',
       sandboxGit: sandboxGitFor,
       ...overrides,
@@ -9114,6 +9132,122 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       projectId: 'p1',
     });
   };
+
+  it('commits through the agent before adding the session work to the project', async () => {
+    await seedLocalSession();
+    const app = buildLocal();
+
+    const res = await app.inject({ method: 'POST', url: '/sessions/s1/save-to-project' });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toEqual({ accepted: true });
+    await vi.waitFor(() => expect(branchSvc.mergeIntoLocalBase).toHaveBeenCalledOnce());
+    expect(sendTurn).toHaveBeenCalledWith(
+      's1',
+      expect.stringContaining('Review the working tree'),
+      {},
+      'Save to project',
+    );
+    expect(sendTurn.mock.invocationCallOrder[0]).toBeLessThan(
+      branchSvc.mergeIntoLocalBase.mock.invocationCallOrder[0]!,
+    );
+    await app.close();
+  });
+
+  it('does not add the branch when the commit turn is cancelled', async () => {
+    await seedLocalSession();
+    sendTurn.mockResolvedValueOnce({ exitCode: 0, aborted: true });
+    const app = buildLocal();
+
+    const res = await app.inject({ method: 'POST', url: '/sessions/s1/save-to-project' });
+
+    expect(res.statusCode).toBe(202);
+    await vi.waitFor(() => expect(sendTurn).toHaveBeenCalledOnce());
+    expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('does not add clean, committed work when the agent declines to save it', async () => {
+    await seedLocalSession();
+    approveSave = false;
+    const app = buildLocal();
+
+    const res = await app.inject({ method: 'POST', url: '/sessions/s1/save-to-project' });
+
+    expect(res.statusCode).toBe(202);
+    await vi.waitFor(() => expect(sendTurn).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(sandboxGit).toHaveBeenCalledWith(expect.arrayContaining(['--verify'])),
+    );
+    expect(localIsDirty).not.toHaveBeenCalled();
+    expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('refuses when the branch changes before the exclusive merge begins', async () => {
+    await seedLocalSession();
+    tryRunExclusive.mockImplementationOnce(async (_id, fn) => {
+      currentTip = 'changed-tip';
+      return { ran: true, value: await fn() };
+    });
+    const app = buildLocal();
+
+    const res = await app.inject({ method: 'POST', url: '/sessions/s1/save-to-project' });
+
+    expect(res.statusCode).toBe(202);
+    await vi.waitFor(() =>
+      expect(dispatchTurn).toHaveBeenCalledWith(
+        's1',
+        expect.stringContaining('changed after the agent approved it'),
+        undefined,
+        { displayPrompt: 'Save to project needs attention' },
+      ),
+    );
+    expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('does not add a partial version while file changes remain', async () => {
+    await seedLocalSession();
+    localIsDirty.mockResolvedValueOnce(true);
+    const app = buildLocal();
+
+    const res = await app.inject({ method: 'POST', url: '/sessions/s1/save-to-project' });
+
+    expect(res.statusCode).toBe(202);
+    await vi.waitFor(() =>
+      expect(dispatchTurn).toHaveBeenCalledWith(
+        's1',
+        expect.stringContaining('still uncommitted'),
+        undefined,
+        { displayPrompt: 'Save to project needs attention' },
+      ),
+    );
+    expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('keeps the save running after the response and rejects a second request', async () => {
+    await seedLocalSession();
+    let finishTurn!: () => void;
+    sendTurn.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      return { exitCode: 0, aborted: false };
+    });
+    const app = buildLocal();
+
+    const first = await app.inject({ method: 'POST', url: '/sessions/s1/save-to-project' });
+    const second = await app.inject({ method: 'POST', url: '/sessions/s1/save-to-project' });
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(409);
+    expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
+    finishTurn();
+    await vi.waitFor(() => expect(branchSvc.mergeIntoLocalBase).toHaveBeenCalledOnce());
+    await app.close();
+  });
 
   it('merges into the project clone, resets the worktree and tells the agent where it landed', async () => {
     await seedLocalSession();
@@ -9146,7 +9280,7 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       's1',
       expect.stringContaining('detached at the merged commit'),
       undefined,
-      { displayPrompt: 'Merged local branch into its base' },
+      { displayPrompt: 'Saved to project' },
     );
     await app.close();
   });
