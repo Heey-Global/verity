@@ -29371,6 +29371,9 @@ async function runAcpTurn(opts, profile) {
   const args = opts.extraArgs ?? [];
   assertSafeArgs(args, profile.permissionModes);
   assertProfilePermissionMode(profile, opts.permissionMode);
+  if (opts.toolless === true && profile.enforcesToolless !== true) {
+    throw new Error(`${profile.telemetryBackend} cannot run a turn without tools`);
+  }
   const child = spawner(opts.command ?? profile.defaultCommand, args, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
@@ -29499,7 +29502,7 @@ async function runAcpTurn(opts, profile) {
       const gateway = opts.mcpGateway;
       const advertisedHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http;
       const agentSpeaksHttpMcp = advertisedHttpMcp === true || advertisedHttpMcp === void 0 && profile.httpMcpWhenUnspecified === true;
-      const mcpServers2 = agentSpeaksHttpMcp ? [
+      const mcpServers2 = agentSpeaksHttpMcp && opts.toolless !== true ? [
         ...gateway === void 0 ? [] : [
           {
             type: "http",
@@ -29705,6 +29708,7 @@ var CLAUDE_ACP_PROFILE = {
   defaultCommand: "claude-agent-acp",
   telemetryBackend: "claude-acp",
   httpMcpWhenUnspecified: true,
+  enforcesToolless: true,
   loadSessionUnsupported: "Claude ACP adapter does not support persistent session loading",
   clientCapabilitiesMeta: { "subagent-transcript": true },
   sessionMeta: (opts) => ({
@@ -29719,7 +29723,10 @@ var CLAUDE_ACP_PROFILE = {
       options: {
         ...opts.model !== void 0 ? { model: opts.model } : {},
         ...opts.allowedTools !== void 0 ? { allowedTools: [...opts.allowedTools] } : {},
-        ...opts.disallowedTools !== void 0 ? { disallowedTools: [...opts.disallowedTools] } : {}
+        ...opts.disallowedTools !== void 0 ? { disallowedTools: [...opts.disallowedTools] } : {},
+        // No built-in tools, no MCP beyond the (empty) list sent with the session,
+        // and no settings files whose allow rules or servers would add some back.
+        ...opts.toolless === true ? { tools: [], strictMcpConfig: true, settingSources: [] } : {}
       }
     }
   }),
@@ -31094,6 +31101,7 @@ var startTurnRequestSchema = import_zod5.z.strictObject({
   permissionMode: boundedString(128).optional(),
   allowedTools: import_zod5.z.array(boundedString(4096)).max(256).optional(),
   disallowedTools: import_zod5.z.array(boundedString(4096)).max(256).optional(),
+  toolless: import_zod5.z.boolean().optional(),
   timeoutMs: import_zod5.z.number().int().min(1).max(864e5).optional(),
   trustedCliExecution: import_zod5.z.boolean().optional(),
   mcpGatewayToken: boundedString(512).min(1).optional(),
@@ -31193,6 +31201,7 @@ var turn = await server.run(join2(turnDir, "events.jsonl"), {
   ...request.permissionMode !== void 0 ? { permissionMode: request.permissionMode } : {},
   ...request.allowedTools !== void 0 ? { allowedTools: request.allowedTools } : {},
   ...request.disallowedTools !== void 0 ? { disallowedTools: request.disallowedTools } : {},
+  ...request.toolless === true ? { toolless: true } : {},
   ...mcpServers !== void 0 ? { mcpServers } : {},
   ...request.timeoutMs !== void 0 ? { timeoutMs: request.timeoutMs } : {},
   // The Sandbox's own environment stays the base; only Verity's per-turn runtime
