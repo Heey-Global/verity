@@ -1156,6 +1156,38 @@ describe('Conductor.query', () => {
       expect.objectContaining({ sessionId: null, projectId: null, worktree: '/wt' }),
     );
   });
+  it('sends images through the supervised turn, never a text-only native one-shot', async () => {
+    // A native one-shot drops the image, and the model then transcribes a picture it
+    // never saw — a plausible, fabricated text that would land in Knowledge.
+    const nativeQuery = vi.fn(async () => 'invented');
+    const seen: RunTurnOptions[] = [];
+    const backend: Backend = {
+      runnerSupervisorBackend: 'claude-acp',
+      run: vi.fn(async () => ({ sessionId: undefined, exitCode: 0, stderr: '', aborted: false })),
+      query: nativeQuery,
+    };
+    const runner = vi.fn(async (_selected: Backend, context: RunnerClientContext) => ({
+      startTurn: (opts: RunTurnOptions) => {
+        seen.push(opts);
+        context.ephemeralEventSink?.({ t: 'text', delta: 'INVOICE 42' });
+        return {
+          result: Promise.resolve({ sessionId: 'q', exitCode: 0, stderr: '', aborted: false }),
+          steer: async () => false,
+          answerPermission: async () => false,
+          cancel: async () => false,
+        };
+      },
+    }));
+    const conductor = new Conductor({ store: ctx.store, backend, runner });
+    const image = { kind: 'image' as const, mediaType: 'image/png' as const, data: 'iVBORw0K' };
+
+    await expect(
+      conductor.query({ prompt: 'read', cwd: '/wt', attachments: [image] }),
+    ).resolves.toBe('INVOICE 42');
+    expect(nativeQuery).not.toHaveBeenCalled();
+    expect(seen[0]?.attachments).toEqual([image]);
+    expect(seen[0]?.toolless).toBe(true);
+  });
 });
 
 describe('Conductor.dispatchTurn', () => {

@@ -191,6 +191,13 @@ export interface RunTurnOptions {
   allowedTools?: readonly string[];
   /** Per-turn tool denylist; passed comma-joined to `--disallowedTools` (§5b). */
   disallowedTools?: readonly string[];
+  /**
+   * Run with no tools at all — no built-in tools, no MCP servers, no user or project
+   * settings — for turns that read untrusted content (a chat image) and must only
+   * answer in text. A prompt asking the model not to use tools is not a boundary;
+   * a backend that cannot enforce this must refuse the turn instead of running it.
+   */
+  toolless?: boolean;
   command?: string;
   extraArgs?: readonly string[];
   /** Wall-clock ceiling for the whole session; on expiry the process is killed. */

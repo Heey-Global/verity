@@ -267,6 +267,22 @@ describe('AcpCodexBackend', () => {
     expect(fake.writes.some((message) => message['method'] === '_session/steering')).toBe(false);
   });
 
+  it('refuses a toolless turn it cannot enforce instead of running it with tools', async () => {
+    const fake = acpSpawner({ httpMcp: true });
+    await expect(
+      new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-codex-toolless',
+        worktree: '/work/project',
+        cwd: '/work/project',
+        prompt: 'Transcribe',
+        spawner: fake.spawner,
+        toolless: true,
+      }),
+    ).rejects.toThrow('cannot run a turn without tools');
+    expect(fake.writes).toEqual([]);
+  });
+
   it('offers the turn gateway when Codex advertises HTTP MCP', async () => {
     const url = 'http://relay:8080/internal/mcp';
     const fake = acpSpawner({ httpMcp: true });

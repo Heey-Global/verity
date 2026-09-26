@@ -41,10 +41,12 @@ it('accepts a connector token provisioned after the server starts', async () => 
 
 it('requires an explicit project binding before accepting chat, then updates edited and deleted text', async () => {
   const app = Fastify();
+  const extractImageText = vi.fn();
   registerIntegrationRoutes(app, {
     store: ctx.store.integrations,
     dataRoot: root,
     connectorToken: 'a-secret-long-enough-for-the-worker-route',
+    extractImageText,
   });
   await app.ready();
   const authorization = { authorization: 'Bearer a-secret-long-enough-for-the-worker-route' };
@@ -144,6 +146,13 @@ it('requires an explicit project binding before accepting chat, then updates edi
     /^sources\/documents\/matrix\/[a-f0-9]+\/attachments\/[a-f0-9]+-notes\.txt$/u,
   );
   const attachmentRoot = join(root, 'knowledge', projectId);
+  // Without this hand-off, images import fine and their text silently never appears.
+  expect(extractImageText).toHaveBeenCalledWith({
+    projectId,
+    root: attachmentRoot,
+    relativePath: attachmentPath,
+    bytes: Buffer.from(attachment.data, 'base64'),
+  });
   expect(await readFile(join(attachmentRoot, attachmentPath), 'utf8')).toBe(
     'Meeting notes from Matrix',
   );

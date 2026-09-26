@@ -376,6 +376,7 @@ describe('SupervisorRunnerClient', () => {
         permissionMode: 'plan',
         allowedTools: ['Read', 'Bash(git *)'],
         disallowedTools: ['WebFetch'],
+        toolless: true,
         timeoutMs: 30_000,
       },
       {},
@@ -399,6 +400,7 @@ describe('SupervisorRunnerClient', () => {
       permissionMode: 'plan',
       allowedTools: ['Read', 'Bash(git *)'],
       disallowedTools: ['WebFetch'],
+      toolless: true,
       timeoutMs: 30_000,
     });
   });

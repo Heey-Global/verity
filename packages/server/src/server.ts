@@ -9,6 +9,7 @@ import { knowledgeSourceToolResult } from './knowledge-source-tool-result.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
+import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { publishSharedInsight } from './knowledge-publish.js';
@@ -6117,6 +6118,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reconcileInvalidations: reconcileKnowledgeInvalidations,
     });
   }
+  // Chat images get their text read by the project's default model in the
+  // background, through the same stateless query the task refiner uses.
+  const imageTextExtractor =
+    deps.refineCwd === undefined
+      ? undefined
+      : createImageTextExtractor({
+          query: (input) => conductor.query(input),
+          cwd: deps.refineCwd,
+          modelFor: async (projectId) =>
+            (await projectSettingsStore(deps.eventStore).getProjectSettings(projectId))
+              ?.defaultModel ?? (await availableModels()).default,
+          onError: (error, job) =>
+            app.log.warn(
+              { err: error, projectId: job.projectId, path: job.relativePath },
+              'verity: image text extraction failed',
+            ),
+        });
   registerIntegrationRoutes(app, {
     store: deps.eventStore.integrations,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
@@ -6125,6 +6143,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
     ...(deps.onMatrixConfigured !== undefined
       ? { onMatrixConfigured: deps.onMatrixConfigured }
+      : {}),
+    ...(imageTextExtractor !== undefined
+      ? { extractImageText: (job: ImageTextJob) => void imageTextExtractor.enqueue(job) }
       : {}),
   });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
