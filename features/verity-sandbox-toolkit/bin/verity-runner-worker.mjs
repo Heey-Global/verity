@@ -25792,6 +25792,18 @@ var zUsageUpdate = z6.object({
   cost: defaultOnError(zCost.nullish(), () => void 0),
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
+var zNoticeSeverity = z6.union([
+  z6.literal("info"),
+  z6.literal("warning"),
+  z6.literal("error"),
+  z6.string()
+]);
+var zNotice = z6.object({
+  severity: zNoticeSeverity,
+  title: z6.string().min(1),
+  description: defaultOnError(z6.string().nullish(), () => void 0),
+  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+});
 var zCompactionId = z6.string();
 var zCompactionStatus = z6.union([
   z6.literal("in_progress"),
@@ -25852,6 +25864,9 @@ var zSessionUpdate = z6.union([
   zUsageUpdate.and(z6.object({
     sessionUpdate: z6.literal("usage_update")
   })),
+  zNotice.and(z6.object({
+    sessionUpdate: z6.literal("notice")
+  })),
   zCompactionUpdate.and(z6.object({
     sessionUpdate: z6.literal("compaction_update")
   })),
@@ -25897,9 +25912,11 @@ var zSessionConfigOptionsCapabilities = z6.object({
   boolean: defaultOnError(zBooleanConfigOptionCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
+var zNoticeCapabilities = z6.record(z6.string(), z6.unknown());
 var zClientSessionCapabilities = z6.object({
   compaction: defaultOnError(zCompactionCapabilities.nullish(), () => void 0),
   configOptions: defaultOnError(zSessionConfigOptionsCapabilities.nullish(), () => void 0),
+  notices: defaultOnError(zNoticeCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
 var zPlanCapabilities = z6.object({
@@ -28640,6 +28657,8 @@ var AcpEventAdapter = class {
       case "current_mode_update":
       case "config_option_update":
       case "session_info_update":
+        return lifecycle;
+      case "notice":
         return lifecycle;
       case "usage_update":
         return [

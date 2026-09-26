@@ -257,6 +257,10 @@ export class AcpEventAdapter {
         // configuration and usage state is handled by the ACP session/result
         // path; plans do not yet have a canonical Verity presentation.
         return lifecycle;
+      case 'notice':
+        // ACP notices are live advisories, not session history. The session
+        // adapter must not persist them as transcript content.
+        return lifecycle;
       case 'usage_update':
         return [
           ...lifecycle,
