@@ -14,15 +14,19 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.close()));
 });
 
-async function fixture(reserveGate?: { started: () => void; ready: Promise<void> }) {
+async function fixture(options?: {
+  reserveGate?: { started: () => void; ready: Promise<void> };
+  dataSocket?: boolean;
+}) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise<void>((resolve) => server.once('listening', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('no test server address');
   const peers: ControlPeer[] = [];
-  server.on('connection', (socket) => {
+  const dataPeers: ControlPeer[] = [];
+  server.on('connection', (socket, request) => {
     const peer: ControlPeer = { socket, received: [] };
-    peers.push(peer);
+    (request.url === '/data' ? dataPeers : peers).push(peer);
     socket.on('message', (data) => {
       if (!Buffer.isBuffer(data)) throw new Error('unexpected test frame');
       peer.received.push(JSON.parse(data.toString('utf8')) as Record<string, unknown>);
@@ -48,10 +52,12 @@ async function fixture(reserveGate?: { started: () => void; ready: Promise<void>
     localHost: '127.0.0.1',
     localPort: 1,
     webSocketFactory: () => {
+      if (options?.dataSocket) return new WebSocket(`ws://127.0.0.1:${address.port}/data`);
       throw new Error('ticketless admission must not open /data');
     },
   });
   const reservations: { closed?: Promise<void> }[] = [];
+  const attachedSessions: string[] = [];
   const client = new UplinkControlClient({
     url: 'wss://uplink.example/control',
     store: store as unknown as EventStore & typeof store,
@@ -60,10 +66,17 @@ async function fixture(reserveGate?: { started: () => void; ready: Promise<void>
       new WebSocket(`ws://127.0.0.1:${address.port}/control`, options),
     offerRemoteControl: true,
     reserveRemoteConnector: async (request, signal) => {
-      reserveGate?.started();
-      await reserveGate?.ready;
+      options?.reserveGate?.started();
+      await options?.reserveGate?.ready;
       const reservation = await pool.reserve(request, signal);
-      if (typeof reservation !== 'string') reservations.push(reservation);
+      if (typeof reservation !== 'string') {
+        reservations.push(reservation);
+        const attach = reservation.attach.bind(reservation);
+        reservation.attach = async (ticket, expiresAt, attachSignal) => {
+          await attach(ticket, expiresAt, attachSignal);
+          attachedSessions.push(request.sessionId);
+        };
+      }
       return reservation;
     },
   });
@@ -75,7 +88,7 @@ async function fixture(reserveGate?: { started: () => void; ready: Promise<void>
     },
   });
   client.start();
-  return { peers, reservations };
+  return { peers, dataPeers, reservations, attachedSessions };
 }
 
 async function nextPeer(peers: ControlPeer[], index: number): Promise<ControlPeer> {
@@ -117,7 +130,9 @@ describe('real control socket with connector reservation', () => {
     const reservationReady = new Promise<void>((resolve) => {
       finishReservation = resolve;
     });
-    const f = await fixture({ started: beginReservation, ready: reservationReady });
+    const f = await fixture({
+      reserveGate: { started: beginReservation, ready: reservationReady },
+    });
     const peer = await nextPeer(f.peers, 0);
     expect(peer.received[0]).toMatchObject({ capabilities: ['remote-control-v1'] });
     request(peer, 'session_one');
@@ -152,5 +167,45 @@ describe('real control socket with connector reservation', () => {
       expect(second.received).toContainEqual({ type: 'session.accept', sessionId: 'session_two' }),
     );
     expect(f.reservations).toHaveLength(2);
+  });
+
+  it('attaches the installation ticket and waits for the data barrier', async () => {
+    const f = await fixture({ dataSocket: true });
+    const peer = await nextPeer(f.peers, 0);
+    request(peer, 'session_one');
+    await vi.waitFor(() =>
+      expect(peer.received).toContainEqual({ type: 'session.accept', sessionId: 'session_one' }),
+    );
+    peer.socket.send(
+      JSON.stringify({
+        type: 'session.ticket',
+        sessionId: 'session_one',
+        ticket: 'installation_ticket',
+        expiresAt: Date.now() + 60_000,
+        capability: 'remote-control-v1',
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(f.dataPeers[0]?.received).toContainEqual({
+        type: 'attach',
+        ticket: 'installation_ticket',
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(f.attachedSessions).toHaveLength(0);
+    f.dataPeers[0]!.socket.send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await vi.waitFor(() => expect(f.attachedSessions).toEqual(['session_one']));
+    peer.socket.send(
+      JSON.stringify({ type: 'session.cancelled', sessionId: 'session_one', code: 'cancelled' }),
+    );
+    expect(f.reservations[0]?.closed).toBeInstanceOf(Promise);
+    await f.reservations[0]!.closed;
+    await vi.waitFor(() => expect(f.dataPeers[0]?.socket.readyState).toBe(WebSocket.CLOSED));
   });
 });
