@@ -1,12 +1,14 @@
 {
   "schema": 1,
-  "version": "1.34.14",
+  "version": "1.34.15",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "517d8813dabd74376af013be953eb53345d49287",
-  "tag": "mobile-v1.34.14",
-  "branch": "staging-mobile-v1.34.14-517d8813dabd74376af013be953eb53345d49287",
-  "baseline": "mobile-v1.34.13",
-  "group": "456d97ac-d072-4994-8ccd-52d533bdab4e",
-  "notes": []
+  "commit": "b1a2519c80750590abddf86083ee5c4e55332488",
+  "tag": "mobile-v1.34.15",
+  "branch": "staging-mobile-v1.34.15-b1a2519c80750590abddf86083ee5c4e55332488",
+  "baseline": "mobile-v1.34.14",
+  "group": "ee206f8b-a397-464f-b395-c2bf8c6d02a0",
+  "notes": [
+    "keep message approvals until decided (#796)"
+  ]
 }
