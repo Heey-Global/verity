@@ -27,6 +27,16 @@ push check on its exact immutable base. Success permits inheritance; failure,
 missing evidence, API errors, or timeout retain full validation. Main pushes do
 not wait and keep their existing merged-tree validation.
 
+Every push queues each train's metadata job behind one `release-metadata` lock.
+The mobile train's Expo fingerprint (about two minutes) runs before that lock in
+`classify-native-changes`, still inside the mobile train's own lock; the
+metadata job reuses its verdict only while the latest native release tag still
+names the same commit, and recomputes it otherwise. The job runs for every
+train so that a skip never propagates to publication. The cost is one more runner
+allocation ahead of the lock for every train, and a job-level failure there
+(runner, action download, timeout) now stops the backend and website trains as
+visibly as a failed metadata job always has.
+
 ## Comparison protocol
 
 After merging, record the next two normal backend release runs. Do not publish

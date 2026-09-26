@@ -197,6 +197,8 @@ describe('release-please train isolation', () => {
           `  printf '%s\\n' '{".":"1.2.3"}'\n` +
           'elif [[ "$1" == tag ]]; then\n' +
           '  printf "%s\\n" "$RELEASE_NATIVE_TAG"\n' +
+          'elif [[ "$1" == rev-parse && "$2" == "${RELEASE_NATIVE_TAG}^{commit}" ]]; then\n' +
+          '  printf "%s\\n" "$RELEASE_NATIVE_COMMIT"\n' +
           'elif [[ "$1" == diff && "$2" == --name-only ]]; then\n' +
           '  [[ "$RELEASE_NATIVE_DIFF_FAIL" != true ]] || exit 1\n' +
           '  printf "%s\\n" "$RELEASE_NATIVE_PATHS"\n' +
@@ -208,10 +210,17 @@ describe('release-please train isolation', () => {
       await writeFile(
         join(dir, 'node'),
         '#!/usr/bin/env bash\n' +
+          'echo node >> "$RELEASE_CALLS"\n' +
           '[[ "$RELEASE_NATIVE_LOCK_FAIL" != true && "$RELEASE_NATIVE_DIFF_FAIL" != true ]] || exit 1\n' +
           'printf "%s\\n%s\\n" "$RELEASE_NATIVE_LOCK" "$RELEASE_NATIVE_PATHS"\n',
         { mode: 0o755 },
       );
+      await writeFile(
+        join(dir, 'npm'),
+        '#!/usr/bin/env bash\n[[ "$*" == ci ]] || exit 2\necho npm >> "$RELEASE_CALLS"\n',
+        { mode: 0o755 },
+      );
+      const calls = join(dir, 'calls');
       const run = (
         rows: string[],
         options: {
@@ -221,10 +230,13 @@ describe('release-please train isolation', () => {
           nativeLock?: string;
           failNativeDiff?: boolean;
           failNativeLock?: boolean;
+          classifiedBoundary?: string;
+          classifiedChanged?: string;
         } = {},
       ): Record<string, string> => {
         const output = join(dir, 'github-output');
         writeFileSync(output, '');
+        writeFileSync(calls, '');
         execFileSync('bash', ['-c', select?.run ?? 'exit 1'], {
           env: {
             ...process.env,
@@ -241,6 +253,10 @@ describe('release-please train isolation', () => {
             RELEASE_NATIVE_LOCK: options.nativeLock ?? '',
             RELEASE_NATIVE_DIFF_FAIL: String(options.failNativeDiff === true),
             RELEASE_NATIVE_LOCK_FAIL: String(options.failNativeLock === true),
+            RELEASE_NATIVE_COMMIT: 'native-commit',
+            RELEASE_CALLS: calls,
+            CLASSIFIED_NATIVE_BOUNDARY: options.classifiedBoundary ?? '',
+            CLASSIFIED_NATIVE_CHANGED: options.classifiedChanged ?? '',
           },
           stdio: 'pipe',
         });
@@ -331,6 +347,87 @@ describe('release-please train isolation', () => {
       expect(() => run(['M\tpackages/server/src/app.ts'], { failDiff: true })).toThrow();
       expect(() => run(['M\tapps/mobile/app/index.tsx'], { failNativeDiff: true })).toThrow();
       expect(() => run(['M\tapps/mobile/app/index.tsx'], { failNativeLock: true })).toThrow();
+      // Without a verdict the selector installs the Expo graph before reading it.
+      expect(readFileSync(calls, 'utf8')).toBe('npm\nnode\n');
+
+      // The verdict from `classify-native-changes` replaces the two-minute
+      // fingerprint inside the lock only for the boundary it was computed
+      // against; a stale one would decide a native release from the wrong base.
+      const current = 'mobile-v1.27.0@native-commit';
+      const lockChange = { nativeLock: 'expo: 57.0.20 -> 57.0.21' };
+      for (const changed of ['true', 'false']) {
+        expect(
+          run(['M\tpackage-lock.json'], {
+            classifiedBoundary: current,
+            classifiedChanged: changed,
+          }),
+        ).toEqual({ backend: 'true', mobile: changed, website: 'true' });
+        expect(readFileSync(calls, 'utf8')).toBe('');
+      }
+      for (const classified of [
+        { classifiedBoundary: 'mobile-v1.26.0@older-commit', classifiedChanged: 'true' },
+        { classifiedBoundary: 'mobile-v1.27.0@moved-commit', classifiedChanged: 'false' },
+        { classifiedBoundary: current, classifiedChanged: '' },
+      ]) {
+        expect(run(['M\tpackage-lock.json'], { ...lockChange, ...classified })).toEqual({
+          backend: 'true',
+          mobile: 'true',
+          website: 'true',
+        });
+        expect(readFileSync(calls, 'utf8')).toBe('npm\nnode\n');
+      }
+      expect(
+        run(['M\tpackage-lock.json'], {
+          classifiedBoundary: 'mobile-v1.26.0@older-commit',
+          classifiedChanged: 'true',
+        }),
+      ).toEqual({ backend: 'true', mobile: 'false', website: 'true' });
+
+      // Round-trip the real producer: a boundary spelled differently on either
+      // side never matches, and every push would quietly pay the fingerprint
+      // inside the lock again with all checks still green.
+      const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+        jobs: Record<string, { steps?: WorkflowStep[] }>;
+      };
+      const classify = release.jobs['classify-native-changes']?.steps?.find(
+        (step) => step.id === 'classify',
+      );
+      expect(classify?.run).toContain('scripts/mobile-native-compatibility.mjs');
+      // The stubbed `git tag` answers any query, so pin the boundary lookup to
+      // one spelling on both sides.
+      const boundaryQuery =
+        'git tag --merged "$HEAD_SHA" --list \'mobile-v[0-9]*.[0-9]*.0\' --sort=-version:refname';
+      expect(classify?.run).toContain(boundaryQuery);
+      expect(select?.run).toContain(boundaryQuery);
+      const classifyOutput = join(dir, 'classify-output');
+      writeFileSync(classifyOutput, '');
+      execFileSync('bash', ['-c', classify?.run ?? 'exit 1'], {
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH ?? ''}`,
+          HEAD_SHA: 'event-sha',
+          GITHUB_OUTPUT: classifyOutput,
+          RELEASE_NATIVE_TAG: 'mobile-v1.27.0',
+          RELEASE_NATIVE_COMMIT: 'native-commit',
+          RELEASE_NATIVE_LOCK: 'expo: 57.0.20 -> 57.0.21',
+          RELEASE_NATIVE_PATHS: '',
+          RELEASE_CALLS: calls,
+        },
+        stdio: 'pipe',
+      });
+      const verdict = Object.fromEntries(
+        readFileSync(classifyOutput, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => line.split('=') as [string, string]),
+      );
+      expect(
+        run(['M\tpackage-lock.json'], {
+          classifiedBoundary: verdict['native-boundary'],
+          classifiedChanged: verdict['native-changed'],
+        }),
+      ).toEqual({ backend: 'true', mobile: 'true', website: 'true' });
+      expect(readFileSync(calls, 'utf8')).toBe('');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
