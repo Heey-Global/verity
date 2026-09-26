@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.2](https://github.com/Heey-Global/verity/compare/v2.7.1...v2.7.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **matrix:** allow connector attachment requests through auth gate ([#779](https://github.com/Heey-Global/verity/issues/779)) ([08b0671](https://github.com/Heey-Global/verity/commit/08b0671602d3b991cc668e058c4f018aa73d4513))
+
 ## [2.7.1](https://github.com/Heey-Global/verity/compare/v2.7.0...v2.7.1) (2026-09-25)
 
 
