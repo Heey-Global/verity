@@ -78,7 +78,7 @@
     },
     "dopplerVersion": {
       "type": "string",
-      "default": "3.76.5",
+      "default": "3.76.6",
       "description": "Exact DopplerHQ/cli release version to pin."
     },
     "gitleaksVersion": {
