@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.8.0](https://github.com/Heey-Global/verity/compare/v2.7.2...v2.8.0) (2026-09-26)
+
+
+### Features
+
+* **matrix:** extract text from chat images with the default model ([#784](https://github.com/Heey-Global/verity/issues/784)) ([99294e1](https://github.com/Heey-Global/verity/commit/99294e106cbbda83142a60522c9b8d483c98cc81))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v1.5.0 ([#776](https://github.com/Heey-Global/verity/issues/776)) ([517d881](https://github.com/Heey-Global/verity/commit/517d8813dabd74376af013be953eb53345d49287))
+* **deps:** update rust crate base64 to v0.23.1 ([#777](https://github.com/Heey-Global/verity/issues/777)) ([2b6d5b4](https://github.com/Heey-Global/verity/commit/2b6d5b46072b1e129c102872ac2bcdabfa3cf086))
+* **deps:** update rust crate sha2 to 0.11 ([#778](https://github.com/Heey-Global/verity/issues/778)) ([a260a55](https://github.com/Heey-Global/verity/commit/a260a55faaeb73516f38f798097a39fcdfca7b27))
+
 ## [2.7.2](https://github.com/Heey-Global/verity/compare/v2.7.1...v2.7.2) (2026-09-26)
 
 
