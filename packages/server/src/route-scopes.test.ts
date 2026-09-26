@@ -198,6 +198,15 @@ describe('route scope declarations', () => {
     expect([...NON_OPERATOR_ROUTES.keys()].filter((key) => !registered.has(key))).toEqual([]);
   });
 
+  it('admits every Matrix connector route through the paired-device gate', () => {
+    // A new connector route silently gets a 401 before its own token check unless declared here.
+    const routes = registeredRouteKeys().filter((key) =>
+      key.includes(' /internal/integrations/matrix/'),
+    );
+    expect(routes.length).toBeGreaterThan(0);
+    expect(routes.filter((key) => !NON_OPERATOR_ROUTES.has(key))).toEqual([]);
+  });
+
   it('states, for every exception, which credential stands in for the operator token', () => {
     for (const [key, declaration] of NON_OPERATOR_ROUTES) {
       expect(key, `${key} must be keyed "METHOD /path"`).toMatch(
