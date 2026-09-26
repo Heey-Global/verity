@@ -1,0 +1,228 @@
+[
+  {
+    "name": "negotiated remote profile",
+    "schema": "negotiation",
+    "valid": true,
+    "value": { "capabilities": ["remote-control-v1"], "channels": ["http", "ws", "remote"] }
+  },
+  {
+    "name": "legacy absent negotiation fields",
+    "schema": "negotiation",
+    "valid": true,
+    "value": {}
+  },
+  {
+    "name": "duplicate channel",
+    "schema": "negotiation",
+    "valid": false,
+    "value": { "channels": ["remote", "remote"] }
+  },
+  {
+    "name": "empty explicit channels",
+    "schema": "negotiation",
+    "valid": false,
+    "value": { "channels": [] }
+  },
+  {
+    "name": "connect personal session",
+    "schema": "connect",
+    "valid": true,
+    "value": {
+      "type": "connect",
+      "requestId": "request_example",
+      "installationHandle": "handle_example",
+      "capabilities": ["remote-control-v1"]
+    }
+  },
+  {
+    "name": "connect without remote capability",
+    "schema": "connect",
+    "valid": false,
+    "value": {
+      "type": "connect",
+      "requestId": "request_example",
+      "installationHandle": "handle_example",
+      "capabilities": ["preview"]
+    }
+  },
+  {
+    "name": "connect with duplicate capability",
+    "schema": "connect",
+    "valid": false,
+    "value": {
+      "type": "connect",
+      "requestId": "request_example",
+      "installationHandle": "handle_example",
+      "capabilities": ["remote-control-v1", "remote-control-v1"]
+    }
+  },
+  {
+    "name": "session request",
+    "schema": "sessionRequest",
+    "valid": true,
+    "value": {
+      "type": "session.request",
+      "requestId": "request_example",
+      "sessionId": "session_example",
+      "capability": "remote-control-v1",
+      "decisionExpiresAt": 1800000000000
+    }
+  },
+  {
+    "name": "session accept",
+    "schema": "sessionAccept",
+    "valid": true,
+    "value": { "type": "session.accept", "sessionId": "session_example" }
+  },
+  {
+    "name": "session refuse",
+    "schema": "sessionRefuse",
+    "valid": true,
+    "value": { "type": "session.refuse", "sessionId": "session_example", "code": "limit_reached" }
+  },
+  {
+    "name": "session ticket",
+    "schema": "sessionTicket",
+    "valid": true,
+    "value": {
+      "type": "session.ticket",
+      "sessionId": "session_example",
+      "ticket": "illustrative_ticket",
+      "expiresAt": 1800000060000,
+      "capability": "remote-control-v1"
+    }
+  },
+  {
+    "name": "connect ready",
+    "schema": "connectReady",
+    "valid": true,
+    "value": {
+      "type": "connect.ready",
+      "requestId": "request_example",
+      "sessionId": "session_example",
+      "ticket": "illustrative_ticket",
+      "expiresAt": 1800000060000,
+      "capability": "remote-control-v1"
+    }
+  },
+  {
+    "name": "generic unavailable",
+    "schema": "connectError",
+    "valid": true,
+    "value": { "type": "connect.error", "requestId": "request_example", "code": "unavailable" }
+  },
+  {
+    "name": "bounded retry",
+    "schema": "connectError",
+    "valid": true,
+    "value": {
+      "type": "connect.error",
+      "requestId": "request_example",
+      "code": "rate_limited",
+      "retryAfterMs": 1000
+    }
+  },
+  {
+    "name": "retry hint only for rate limit",
+    "schema": "connectError",
+    "valid": false,
+    "value": {
+      "type": "connect.error",
+      "requestId": "request_example",
+      "code": "unavailable",
+      "retryAfterMs": 1000
+    }
+  },
+  {
+    "name": "connect cancellation",
+    "schema": "connectCancel",
+    "valid": true,
+    "value": { "type": "connect.cancel", "requestId": "request_example" }
+  },
+  {
+    "name": "session cancellation",
+    "schema": "sessionCancelled",
+    "valid": true,
+    "value": { "type": "session.cancelled", "sessionId": "session_example", "code": "cancelled" }
+  },
+  {
+    "name": "ticket attach",
+    "schema": "attach",
+    "valid": true,
+    "value": { "type": "attach", "ticket": "illustrative_ticket" }
+  },
+  {
+    "name": "both peers attached",
+    "schema": "attached",
+    "valid": true,
+    "value": {
+      "type": "attached",
+      "sessionId": "session_example",
+      "capability": "remote-control-v1"
+    }
+  },
+  {
+    "name": "remote stream open",
+    "schema": "streamOpen",
+    "valid": true,
+    "value": {
+      "type": "stream.open",
+      "streamId": "stream_example",
+      "channel": "remote",
+      "meta": {}
+    }
+  },
+  {
+    "name": "reject destination injection",
+    "schema": "streamOpen",
+    "valid": false,
+    "value": {
+      "type": "stream.open",
+      "streamId": "stream_example",
+      "channel": "remote",
+      "meta": { "host": "other.test" }
+    }
+  },
+  {
+    "name": "remote bytes",
+    "schema": "streamData",
+    "valid": true,
+    "value": { "type": "stream.data", "streamId": "stream_example", "seq": 0, "payload": "AQID" }
+  },
+  {
+    "name": "reject noncanonical base64",
+    "schema": "streamData",
+    "valid": false,
+    "value": { "type": "stream.data", "streamId": "stream_example", "seq": 0, "payload": "AQI" }
+  },
+  {
+    "name": "reject invalid base64",
+    "schema": "streamData",
+    "valid": false,
+    "value": { "type": "stream.data", "streamId": "stream_example", "seq": 0, "payload": "!!!!" }
+  },
+  {
+    "name": "reject negative sequence",
+    "schema": "streamData",
+    "valid": false,
+    "value": { "type": "stream.data", "streamId": "stream_example", "seq": -1, "payload": "AQID" }
+  },
+  {
+    "name": "stream half close",
+    "schema": "streamEnd",
+    "valid": true,
+    "value": { "type": "stream.end", "streamId": "stream_example" }
+  },
+  {
+    "name": "stream reset",
+    "schema": "streamReset",
+    "valid": true,
+    "value": { "type": "stream.reset", "streamId": "stream_example", "code": "timeout" }
+  },
+  {
+    "name": "reject arbitrary reset code",
+    "schema": "streamReset",
+    "valid": false,
+    "value": { "type": "stream.reset", "streamId": "stream_example", "code": "other" }
+  }
+]

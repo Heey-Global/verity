@@ -1,6 +1,10 @@
 # Remote Control v1: transport, enrollment and upgrade contract
 
-Status: revision 6, proposed for joint Core/Uplink review, not frozen or implemented.
+Status: revision 7 staging candidate, proposed for joint Core/Uplink review,
+not frozen or implemented. It adds staging choices and RC-A fixtures to revision 6.
+The personal Remote Control RC-A staging candidate uses the wire and lifecycle
+fixtures in `scripts/remote-control-contract/`. This candidate does not activate
+the profile or establish a cross-repository freeze.
 Incorporates the Uplink reviews through revision 3 against `6e6136802f04858414a0cfccd1e3349582b3b17e`
 (runtime base `2a925eb47e73b2138d451ad954fca20f2fcf8d0e`). Private implementation
 observations below are attributed to that review, not independently verified by
@@ -265,6 +269,17 @@ first admission message wait to five seconds. Existing per-handle/IP limits stil
 apply. Lower deployment limits may reject earlier; larger targets need a separate
 scaling decision, implementation/advertised-limit changes and load evidence.
 
+For the first isolated personal Remote Control staging slice, use these proposed
+numbers as **hard upper bounds**, not promised capacity: 32 active sessions,
+16 pending sessions, 16 pre-request admission/attach sockets, five active
+sessions per installation, 10 attempts/minute/handle, 30 attempts/minute/source
+IP and 65536 combined limiter entries. The existing shared 256 WebSocket,
+64 pending-WebSocket and 320 HTTP-socket ceilings take precedence. Measure
+actual load before a production release and revise the profile if needed.
+Staging derives the limiter source IP from the socket peer only. A later trusted
+proxy configuration needs an explicit gateway-hop inventory, location for its
+configuration and negative tests before forwarded addresses may be used.
+
 Derive source IP from the socket peer unless it belongs to an explicitly configured
 trusted ingress chain. Only then consume the ingress-overwritten forwarded source;
 walk the trusted chain from the server side and stop at the first untrusted hop.
@@ -380,17 +395,22 @@ concern, never a tunnel responsibility.
 | RC13 | Host/port injection and invalid device token | No arbitrary target dial; Core refuses API access inside TLS |
 | RC14 | Hosted gateway plus real connector, macOS and iOS device/simulator | Outer TLS/ATS, frame limits, timeouts and lifecycle verified beyond loopback |
 
-After joint schema approval, create shared machine-readable fixtures, then pin
-the schema revision and fixture digest together. Run each on Core
-and Uplink. Before trusting guards, deliberately break the corresponding bound,
-pin, sequence or cleanup behavior and observe the guard fail. Synthetic credentials
-only; no ticket, bearer, subscription key or private certificate key in artifacts.
+The RC-A staging candidate provides shared machine-readable wire and lifecycle
+fixtures in `scripts/remote-control-contract/`. The RC-A contract freeze requires
+independent Core and Uplink contract harnesses to accept the same schemas and
+expected transitions, then pin both contract commits and the identical fixture
+digest. It does not claim that production handlers enforce those transitions.
+RC01–RC14 remain runtime acceptance gates for RC-B, RC-C and RC-D; run the
+fixtures against real handlers and add raw-frame, race, slow-reader, TLS and
+gateway tests there. Before trusting each guard, deliberately break it and
+observe its test fail. Use synthetic credentials only; no ticket, bearer,
+subscription key or private certificate key belongs in artifacts.
 
 ## Paired implementation packages and freeze gate
 
 | Package | Core deliverable | Uplink deliverable | Exit evidence |
 | --- | --- | --- | --- |
-| RC-A: contract | Strict remote codec/schema and native mapping review | Review admission wire shapes, ticket binding and proposed limits | One approved contract revision and matching fixtures |
+| RC-A: contract | Portable schemas, expected lifecycle transitions and native mapping review | Independent contract harness, wire-shape and limit review | Both contract commits and one fixture digest pinned; no runtime-handler claim |
 | RC-B: admission | Capability negotiation, handle pairing storage, reservation and outbound connector | Admission endpoint, bounded reservations, paired ticket issuance and barrier | RC01–04, RC10, RC12 |
 | RC-C: byte path | JSON/base64 native adapter, fixed TLS target, bounded queues and cleanup | Remote-profile validation, queues, lifecycle and fair forwarding | RC05–09, RC11, RC13 |
 | RC-D: integration | App transport selection and actionable failures, direct path retained | Staging gateway configuration and operational bounds | RC14 plus full paired fixture run |

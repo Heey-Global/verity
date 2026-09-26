@@ -1,0 +1,69 @@
+[
+  { "name": "accept issues one pair", "events": ["accept"], "phase": "accepted", "ticketPairs": 1 },
+  {
+    "name": "duplicate acceptance issues no new pair",
+    "events": ["accept", "accept"],
+    "phase": "accepted",
+    "ticketPairs": 1
+  },
+  {
+    "name": "app first waits for installation",
+    "events": ["accept", "appAttach"],
+    "phase": "accepted",
+    "ticketPairs": 1
+  },
+  {
+    "name": "installation first waits for app",
+    "events": ["accept", "installationAttach"],
+    "phase": "accepted",
+    "ticketPairs": 1
+  },
+  {
+    "name": "both parties activate app first",
+    "events": ["accept", "appAttach", "installationAttach"],
+    "phase": "active",
+    "ticketPairs": 1
+  },
+  {
+    "name": "both parties activate installation first",
+    "events": ["accept", "installationAttach", "appAttach"],
+    "phase": "active",
+    "ticketPairs": 1
+  },
+  {
+    "name": "duplicate attachment does not activate",
+    "events": ["accept", "appAttach", "appAttach"],
+    "phase": "accepted",
+    "ticketPairs": 1
+  },
+  {
+    "name": "cancellation closes first peer",
+    "events": ["accept", "appAttach", "cancel", "installationAttach"],
+    "phase": "terminal",
+    "ticketPairs": 1
+  },
+  {
+    "name": "expiry closes first peer",
+    "events": ["accept", "installationAttach", "expire", "appAttach"],
+    "phase": "terminal",
+    "ticketPairs": 1
+  },
+  {
+    "name": "control replacement fences pending session",
+    "events": ["accept", "controlReplace", "appAttach", "installationAttach"],
+    "phase": "terminal",
+    "ticketPairs": 1
+  },
+  {
+    "name": "control replacement closes active session",
+    "events": ["accept", "appAttach", "installationAttach", "controlReplace"],
+    "phase": "terminal",
+    "ticketPairs": 1
+  },
+  {
+    "name": "cancellation before decision issues no tickets",
+    "events": ["cancel", "accept"],
+    "phase": "terminal",
+    "ticketPairs": 0
+  }
+]
