@@ -100,6 +100,7 @@ import {
 } from './docker.js';
 import {
   defaultContainerCommandRunner,
+  underNodeModulesInstallLock,
   type ContainerCommandRunner,
 } from './devcontainer-lifecycle.js';
 export {
@@ -5663,7 +5664,15 @@ export class ProvisionerImpl implements Provisioner {
         lifecycleFailureLabel = 'postCreateCommand';
         await this.containerCommand({
           containerName: dirs.containerName,
-          command: devcontainerRuntime.postCreateCommand,
+          // The Runner stack start above may have left a dependency install
+          // running in the background; see underNodeModulesInstallLock.
+          command:
+            runnerRuntimePath !== undefined
+              ? underNodeModulesInstallLock(
+                  devcontainerRuntime.postCreateCommand,
+                  NODE_MODULES_TARGET,
+                )
+              : devcontainerRuntime.postCreateCommand,
           dockerHost: this.opts.dockerHostForBuild,
           user: devcontainerRuntime.remoteUser,
           workdir: '/work',

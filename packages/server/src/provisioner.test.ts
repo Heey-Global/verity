@@ -62,6 +62,7 @@ import {
   type DevcontainerBuildSpawner,
   type ContainerCommandRunner,
 } from './provisioner.js';
+import { underNodeModulesInstallLock } from './devcontainer-lifecycle.js';
 import {
   DockerError,
   type DockerClient,
@@ -3004,6 +3005,40 @@ describe('ProvisionerImpl (#174)', () => {
         spec.volumeMounts?.filter((mount) => mount.target === NODE_MODULES_TARGET) ?? [],
       ).toEqual([]);
       expect(ensureVolume).not.toHaveBeenCalled();
+    });
+
+    it('runs the postCreateCommand under the node_modules install lock the stack start uses', async () => {
+      // verity-runner-stack-start leaves `npm ci` running in the background over a
+      // mounted node_modules and returns; a postCreateCommand that installs as well
+      // raced it into ENOTEMPTY and failed every provision and every repair. The
+      // devcontainer's own volume is the reported case, and gets no managed one.
+      const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+        stdout: '',
+        stderr: '',
+      }));
+      const { error, warning } = await recreateDevcontainerProject(
+        false,
+        { containerCommand },
+        JSON.stringify({
+          image: 'node:24',
+          remoteUser: 'vscode',
+          mounts: [
+            'source=project-dependencies,target=${containerWorkspaceFolder}/node_modules,type=volume',
+          ],
+          postCreateCommand: 'npm ci',
+        }),
+      );
+
+      expect(error).toBeUndefined();
+      expect(warning).toBeNull();
+      const commands = containerCommand.mock.calls.map(([args]) => args.command);
+      const stackStart = commands.indexOf('verity-runner-stack-start');
+      const postCreate = commands.indexOf(
+        underNodeModulesInstallLock('npm ci', NODE_MODULES_TARGET),
+      );
+      expect(stackStart).toBeGreaterThanOrEqual(0);
+      expect(postCreate).toBeGreaterThan(stackStart);
+      expect(commands).not.toContain('npm ci');
     });
 
     it('enables the supervisor for an image Verity did not build once it proves the boundary', async () => {

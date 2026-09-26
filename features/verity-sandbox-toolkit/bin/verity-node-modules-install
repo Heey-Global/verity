@@ -27,14 +27,18 @@ report() {
 }
 
 # A wake and a Server restart both re-run the stack launcher; a second install
-# racing the first would have `npm ci` empty the tree the first is writing.
+# racing the first would have `npm ci` empty the tree the first is writing. The
+# provisioner runs a devcontainer postCreateCommand under the same lock
+# (underNodeModulesInstallLock), because that command usually installs too. The
+# lock is node_modules itself: the mount point, so `npm ci` never removes it, and
+# openable by that command whichever user it runs as.
 # Checked first: `flock -n` failing with 127 would read as "held" and end every
 # start silently, which is the one outcome this script exists to prevent.
 if ! command -v flock >/dev/null 2>&1; then
   report 'manual: flock is not installed; run npm ci in /work'
   exit 0
 fi
-exec 9>"$STATE_DIR/lock" || exit 1
+exec 9<"$MODULES" || exit 1
 flock -n 9 || exit 0
 
 # npm can write its hidden lockfile before lifecycle scripts finish. Our marker is

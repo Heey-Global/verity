@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { underNodeModulesInstallLock } from './devcontainer-lifecycle.js';
 
 const SCRIPT = 'features/verity-sandbox-toolkit/bin/verity-node-modules-install';
 const LAUNCHER = 'features/verity-sandbox-toolkit/bin/verity-runner-stack-start';
@@ -48,10 +49,14 @@ function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean })
     VERITY_NODE_MODULES_STATE_DIR: state,
   };
   const run = () => execFileSync('bash', [SCRIPT], { env });
-  /** Runs the script while another holder already has its lock. */
+  /** Runs the script inside a postCreateCommand holding the lock the
+   *  provisioner wraps it in, which is also what a second install sees. */
   const runLocked = () => {
-    mkdirSync(state, { recursive: true });
-    execFileSync('flock', [join(state, 'lock'), 'bash', SCRIPT], { env });
+    execFileSync(
+      'sh',
+      ['-c', underNodeModulesInstallLock(`bash ${SCRIPT}`, join(work, 'node_modules'))],
+      { env },
+    );
   };
   const status = () => readFileSync(join(state, 'status'), 'utf8').trim();
   const npmCalls = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []);
@@ -94,8 +99,11 @@ describe('verity-node-modules-install', () => {
   });
 
   it('never runs a second install beside one already in progress', () => {
-    // A wake and a Server restart both re-run the launcher. Two concurrent `npm ci`
-    // runs each start by emptying the tree the other is writing.
+    // A wake and a Server restart both re-run the launcher, and the provisioner runs
+    // a devcontainer postCreateCommand (usually `npm ci`) right after it. Two
+    // concurrent `npm ci` runs each start by emptying the tree the other is writing,
+    // and fail with ENOTEMPTY. Held through the provisioner's own wrapper, so the
+    // two cannot drift onto different locks.
     const box = sandbox({ lockfile: true });
     box.runLocked();
     expect(box.npmCalls()).toEqual([]);
@@ -208,5 +216,57 @@ describe('verity-runner-stack-start node_modules hand-over', () => {
         '/usr/local/bin/verity-node-modules-install',
       );
     }
+  });
+});
+
+describe('underNodeModulesInstallLock', () => {
+  function dirs() {
+    const root = mkdtempSync(join(tmpdir(), 'verity-nm-lock-'));
+    const modules = join(root, 'node_modules');
+    mkdirSync(modules);
+    return { root, modules, log: join(root, 'log') };
+  }
+
+  it('waits for an install still holding node_modules before running', () => {
+    // The Runner stack start returns while its `npm ci` is still running; the
+    // postCreateCommand must start only after it has finished.
+    const { root, modules, log } = dirs();
+    const wrapped = join(root, 'post-create.sh');
+    writeFileSync(wrapped, underNodeModulesInstallLock(`echo command >>'${log}'`, modules));
+    execFileSync('bash', [
+      '-c',
+      [
+        `flock '${modules}' sh -c "sleep 1; echo install >>'${log}'" &`,
+        'sleep 0.2',
+        `sh '${wrapped}'`,
+        'wait',
+      ].join('\n'),
+    ]);
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['install', 'command']);
+  });
+
+  it('passes the command through unchanged, exit code included', () => {
+    const { modules } = dirs();
+    const run = (command: string) => {
+      try {
+        execFileSync('sh', ['-c', underNodeModulesInstallLock(command, modules)], {
+          encoding: 'utf8',
+        });
+        return 0;
+      } catch (error) {
+        return (error as { status: number }).status;
+      }
+    };
+    expect(run("test \"$(printf '%s' 'a b')\" = 'a b'")).toBe(0);
+    expect(run('exit 42')).toBe(42);
+  });
+
+  it('runs the command as before when there is no node_modules directory', () => {
+    // flock would otherwise create a plain file named node_modules in its place.
+    const { root, log } = dirs();
+    const missing = join(root, 'absent');
+    execFileSync('sh', ['-c', underNodeModulesInstallLock(`echo ran >>'${log}'`, missing)]);
+    expect(readFileSync(log, 'utf8').trim()).toBe('ran');
+    expect(existsSync(missing)).toBe(false);
   });
 });
