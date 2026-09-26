@@ -785,6 +785,23 @@ jobs:
     needs: changes
     if: needs.changes.outputs.test == 'true'
     runs-on: ubuntu-24.04
+    strategy:
+      # Every shard reports, so one red shard never hides another's verdict.
+      fail-fast: false
+      matrix:
+        # Four hash-split shards plus embedded.test.ts on its own — each a job
+        # of its own rather than one job running them one after another. The
+        # serial layout used to make sense: the suite's dominant cost was a WASM
+        # Postgres booted per test file, whose RSS only a process exit gave
+        # back, and one job paid the setup prologue once. Since the shared
+        # PostgreSQL below removed that cost, the serial job simply used one of
+        # the runner's cores for fifteen minutes while the prologue it saved
+        # (checkout, Node, `npm ci`, PostgreSQL) is about forty seconds. Five
+        # prologues in parallel cost less wall-clock than one serial suite.
+        # Vitest assigns files to shards by path hash, not by duration, so the
+        # shards are uneven (about 2 to 5 minutes each); the job time is the
+        # slowest shard, not the sum.
+        shard: [1, 2, 3, 4, embedded]
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -807,65 +824,64 @@ jobs:
       # (Renovate) run — Vitest keys transforms by source content, not by
       # resolved dependency versions, so a stale transform can survive and skew
       # results. Exact-key hits still warm normal (non-dep-changing) PRs.
+      # The shard is part of the key: each job transforms only its own files,
+      # and five jobs saving under one key would keep the first shard's cache
+      # and warm nothing for the other four.
       # renovate: datasource=github-actions depName=actions/cache
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/vitest
-          key: ${{ runner.os }}-vitest-${{ hashFiles('package-lock.json', 'vitest.config.ts') }}
+          key: ${{ runner.os }}-vitest-${{ matrix.shard }}-${{ hashFiles('package-lock.json', 'vitest.config.ts') }}
       # The full suite runs when a PR or routed main push changes runtime inputs.
       # deliberately are NOT scoped to the diff: this suite drives child processes
       # and reads fixtures/resources by path, so `vitest --changed` (module-graph
       # only) would silently omit affected tests. The PR speed-up comes from NOT
       # re-running it under instrumentation — see the nightly `coverage` job.
-      # Four fresh Vitest processes run one at a time. Separate processes retain
-      # the RSS reset that sharding exists for, while one job avoids paying four
-      # times for checkout, Node setup, npm ci, cache restore and PostgreSQL.
-      # Keep each shard single-worker, and give the especially
-      # memory-heavy embedded composition suite a fresh process below; otherwise
-      # its fork can disappear after the preceding PGlite files without an
-      # assertion failure.
-      # One real PostgreSQL for the whole job instead of a private WASM Postgres
-      # per test file: booting pglite costs ~5s and ~790MB that destroy() does not
-      # hand back, and 50+ files pay it. That fixed cost, not the amount of test
-      # code, is what forced serial shards/maxWorkers down to one. See
+      # One real PostgreSQL per job instead of a private WASM Postgres per test
+      # file: booting pglite costs ~5s and ~790MB that destroy() does not hand
+      # back, and 50+ files pay it. That fixed cost, not the amount of test code,
+      # is what once forced serial shards and one worker. See
       # packages/store/src/testing.ts — without the URL the suite stays hermetic
       # on pglite, which is what local runs (and any runner without Docker) get.
       - id: postgres
         uses: ./.github/actions/postgres
         with:
-          container-name: verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Run four isolated test shards serially
+          container-name: verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+      - name: Run one isolated test shard
         env:
           CONTRACT_TEST_SELECTED: ${{ needs.changes.outputs.contract_test }}
+          SHARD: ${{ matrix.shard }}
           VERITY_TEST_SHARED_POSTGRES_URL: ${{ steps.postgres.outputs.url }}
         run: |
           set -euo pipefail
-          failed=0
+          if [[ "$SHARD" == embedded ]]; then
+            # Keep this memory-heavy suite in a fresh single-worker invocation.
+            # A thread worker aborted inside V8 UnregisterWasmAllocation (run
+            # 35117365072); a fork isolates its WASM runtime from the parent.
+            npx vitest run packages/server/src/embedded.test.ts \
+              --pool=forks --maxWorkers=1 --maxConcurrency=1
+            exit 0
+          fi
           script_excludes=()
           # Contract tests own scripts only when that job is selected. A backend-only
           # change must still exercise the root suite's script contracts here.
           if [[ "$CONTRACT_TEST_SELECTED" == true ]]; then
             script_excludes=(--exclude 'scripts/**/*.test.ts')
           fi
-          for shard in 1 2 3 4; do
-            if ! npx vitest run --shard="$shard/4" --maxWorkers=1 \
-              --exclude packages/server/src/embedded.test.ts "${script_excludes[@]}"; then
-              failed=1
-            fi
-          done
-          # Keep this memory-heavy suite in a fresh single-worker invocation.
-          # A thread worker aborted inside V8 UnregisterWasmAllocation (run
-          # 35117365072); a fork isolates its WASM runtime from the parent.
-          if ! npx vitest run packages/server/src/embedded.test.ts \
-            --pool=forks --maxWorkers=1 --maxConcurrency=1; then
-            failed=1
-          fi
-          exit "$failed"
+          # Two workers, the same cap vitest.config.ts applies locally, on a
+          # four-core runner. Not more: the files that stay hermetic by design
+          # (`createIsolatedTestDb` callers, the pglite suites) still boot a WASM
+          # Postgres each, and running those at CPU-count parallelism is what
+          # killed workers mid-run ("Worker exited unexpectedly") before the pool
+          # was bounded. Each worker gets its own database on the shared server
+          # (`workerDatabaseUrl`), so two never truncate each other.
+          npx vitest run --shard="$SHARD/4" --maxWorkers=2 \
+            --exclude packages/server/src/embedded.test.ts "${script_excludes[@]}"
       - name: Clean test PostgreSQL
         if: always()
         shell: bash
         run: |
-          docker rm -f "verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}" \
+          docker rm -f "verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}" \
             >/dev/null 2>&1 || true
 
   # Repository script contracts validate declarative inputs and workflow wiring

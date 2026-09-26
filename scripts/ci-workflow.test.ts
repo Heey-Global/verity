@@ -21,6 +21,7 @@ import {
 } from '../packages/server/src/gvisor-runtime-config.js';
 // @ts-expect-error -- plain .mjs helper, no types
 import { RELEASE_IMAGES, SERVER_IMAGE } from './audit-release-images.mjs';
+import { MAX_TEST_WORKERS } from './test-postgres.js';
 
 type WorkflowStep = {
   env?: Record<string, string>;
@@ -708,33 +709,48 @@ describe('server test CI', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
     jobs: {
       test: {
-        strategy?: unknown;
+        strategy?: { 'fail-fast'?: boolean; matrix?: { shard?: Array<number | string> } };
         steps: WorkflowStep[];
       };
     };
   };
   const job = workflow.jobs.test;
   const test = job.steps.find((step) => step.run?.includes('vitest run --shard='));
+  const shards = job.strategy?.matrix?.shard ?? [];
+  const numberedShards = shards.filter((shard) => typeof shard === 'number');
 
-  it('bounds aggregate Vitest workers on the hosted runner', () => {
-    // One job starts four fresh processes serially: process exit resets RSS,
-    // without four matrix jobs repeating the whole setup prologue.
-    expect(job.strategy).toBeUndefined();
-    expect(test?.run).toContain('for shard in 1 2 3 4');
-    expect(test?.run).toContain('--shard="$shard/4"');
-    expect(test?.run).toContain('--maxWorkers=1');
+  it('runs every shard as its own job with a bounded worker pool', () => {
+    // The serial single-job layout used one core for fifteen minutes to save a
+    // forty-second setup prologue. A matrix pays the prologue per shard and
+    // finishes in the slowest shard's time; a rebuilt serial loop would restore
+    // the wait without any test going red.
+    expect(job.strategy?.['fail-fast']).toBe(false);
+    expect(numberedShards).toEqual([1, 2, 3, 4]);
+    expect(test?.run).not.toContain('for shard in');
+    // The divisor is derived from the matrix, not restated: adding a fifth
+    // numbered shard without touching the command would silently drop the
+    // files of the shard the command still divides by four.
+    expect(test?.run).toContain(`--shard="$SHARD/${numberedShards.length}"`);
+    expect(test?.env?.SHARD).toBe('${{ matrix.shard }}');
     expect(test?.run).toContain('--exclude packages/server/src/embedded.test.ts');
-
-    const embedded = job.steps.find((step) =>
-      step.run?.includes('vitest run packages/server/src/embedded.test.ts'),
-    );
-    expect(embedded?.if).toBeUndefined();
-    expect(embedded?.run).toContain('--maxWorkers=1');
+    // Two workers is what vitest.config.ts already allows locally; a wider CLI
+    // pool would put more WASM Postgres instances side by side than the runner
+    // survived before the cap, and a narrower one is the serial layout again.
+    const shardCommand = test?.run
+      ?.replace(/\\\n\s*/g, ' ')
+      .split('\n')
+      .find((line) => line.includes('--shard='));
+    expect(shardCommand).toContain(`--maxWorkers=${MAX_TEST_WORKERS}`);
   });
 
-  it('isolates the embedded WASM runtime in a process instead of a worker thread', () => {
+  it('isolates the embedded WASM runtime in its own single-worker job', () => {
     // Run 35117365072 aborted inside V8 UnregisterWasmAllocation in the thread
-    // pool, before Vitest could report a test result or run cleanup.
+    // pool, before Vitest could report a test result or run cleanup. The suite
+    // is a matrix entry rather than a second step so it also runs in parallel
+    // with the shards instead of after them.
+    expect(shards).toContain('embedded');
+    expect(test?.if).toBeUndefined();
+    expect(test?.run).toContain('if [[ "$SHARD" == embedded ]]');
     const command = test?.run
       ?.replace(/\\\n\s*/g, ' ')
       .split('\n')
@@ -752,7 +768,6 @@ describe('server test CI', () => {
     // the memory profile that has been killing workers. Assert it instead.
     const postgres = job.steps.find((step) => step.uses === './.github/actions/postgres');
     expect(postgres?.id).toBe('postgres');
-    expect(postgres?.with?.['container-name']).not.toContain('matrix.shard');
     for (const step of job.steps.filter((s) => s.run?.includes('vitest run'))) {
       expect(step.env?.VERITY_TEST_SHARED_POSTGRES_URL).toBe('${{ steps.postgres.outputs.url }}');
     }
@@ -765,6 +780,21 @@ describe('server test CI', () => {
     expect(action).toContain('@127.0.0.1:$port/verity');
     expect(action).not.toContain('/proc/net/route');
     expect(action).not.toContain('verity-test-postgres-run');
+  });
+
+  it('keeps the matrix jobs from sharing a container name or a transform cache', () => {
+    // The action names the container per job on purpose; five jobs naming the
+    // same container would each `docker rm -f` the others' if they ever shared
+    // a host. The cache key matters more: actions/cache keeps the first save
+    // under a key, so a key without the shard warms one shard and none of the
+    // others — a slowdown no assertion notices.
+    const postgres = job.steps.find((step) => step.uses === './.github/actions/postgres');
+    expect(postgres?.with?.['container-name']).toContain('${{ matrix.shard }}');
+    const cleanup = job.steps.find((step) => step.run?.includes('docker rm -f'));
+    expect(cleanup?.run).toContain('${{ matrix.shard }}');
+    const cache = job.steps.find((step) => step.uses?.startsWith('actions/cache@'));
+    expect(cache?.with?.key).toContain('${{ matrix.shard }}');
+    expect(cache?.with?.['restore-keys']).toBeUndefined();
   });
 });
 
