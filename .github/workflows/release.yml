@@ -1475,17 +1475,82 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  stage-bundled-images:
+    # The Server bakes the relay and connector in by digest. Their indexes are
+    # staged here under `candidate-vX.Y.Z`, ahead of the release gate, so the
+    # Server build does not wait for it; no Server resolves a candidate tag, and
+    # the `vX.Y.Z` tags stay with the gated publish jobs.
+    needs: [release-please, build-project-relay, build-matrix-connector]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      project-relay-image: ${{ steps.stage.outputs.project-relay }}
+      matrix-connector-image: ${{ steps.stage.outputs.matrix-connector }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+      SOURCE_REVISION: ${{ needs.release-please.outputs.backend-sha }}
+      # Must match IMAGE_NAME of publish-project-relay and publish-matrix-connector.
+      PROJECT_RELAY_IMAGE_NAME: heey-global/verity/verity-project-relay
+      MATRIX_CONNECTOR_IMAGE_NAME: heey-global/verity/verity-matrix-connector
+    steps:
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+      # renovate: datasource=github-actions depName=docker/login-action
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Stage multi-architecture relay and Matrix connector indexes
+        id: stage
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_REVISION:0:12}"
+          for component in project-relay matrix-connector; do
+            name_var="${component//-/_}"
+            name_var="${name_var^^}_IMAGE_NAME"
+            image="${REGISTRY}/${!name_var}"
+            # An index already released under vX.Y.Z is returned instead of a
+            # staged twin, so a re-run bundles what was published.
+            result="$(GITHUB_OUTPUT= IMAGE="$image" VERSION="$VERSION" \
+              SOURCE_SHA="$SOURCE_REVISION" STAGE_TAG="candidate-v${VERSION}" \
+              node .release-tools/scripts/publish-release-index.mjs \
+                "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64")"
+            digest="$(sed -n 's/^digest=//p' <<<"$result")"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            echo "${component}=${image}@${digest}" >> "$GITHUB_OUTPUT"
+          done
+
   build-server:
-    needs:
-      [
-        release-please,
-        self-update-gate,
-        publish-project-relay,
-        publish-matrix-connector,
-        publish-sandbox,
-        publish-toolkit,
-        prepare-server-build-context,
-      ]
+    # Builds and pushes only `sha-<commit>-<arch>`, which nothing resolves, so it
+    # runs alongside `self-update-gate` rather than after it. The images it
+    # bundles are pinned to the indexes `stage-bundled-images` staged; the gate
+    # still holds every version tag, including the Server's own in
+    # `publish-server`, and the relay and connector promotions confirm that
+    # their version tags name exactly these digests.
+    needs: [release-please, stage-bundled-images, prepare-server-build-context]
     if: needs.release-please.outputs.backend-release-created == 'true'
     strategy:
       fail-fast: false
@@ -1588,8 +1653,8 @@ jobs:
           build-args: |
             VERITY_SERVER_VERSION=${{ env.VERSION }}
             VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}
-            VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.publish-project-relay.outputs.image }}
-            VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.publish-matrix-connector.outputs.image }}
+            VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.stage-bundled-images.outputs.project-relay-image }}
+            VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.stage-bundled-images.outputs.matrix-connector-image }}
             VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
             GOOGLE_AUTH_ID=${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
           labels: |
@@ -1612,6 +1677,7 @@ jobs:
         release-please,
         self-update-gate,
         publish-project-relay,
+        publish-matrix-connector,
         publish-sandbox,
         publish-toolkit,
         build-server,
@@ -2282,7 +2348,7 @@ jobs:
           cache-to: type=gha,mode=min,timeout=60s,scope=verity-project-relay-${{ matrix.architecture }},ignore-error=true
 
   publish-project-relay:
-    needs: [release-please, self-update-gate, build-project-relay]
+    needs: [release-please, self-update-gate, stage-bundled-images]
     if: needs.release-please.outputs.backend-release-created == 'true'
     outputs:
       image: ${{ steps.relay-reference.outputs.image }}
@@ -2328,9 +2394,12 @@ jobs:
           set -euo pipefail
           short_sha="${SOURCE_REVISION:0:12}"
           image="${REGISTRY}/${IMAGE_NAME}"
-          IMAGE="$image" VERSION="$VERSION" SOURCE_SHA='${{ needs.release-please.outputs.backend-sha }}' \
-            node .release-tools/scripts/publish-release-index.mjs \
-              "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
+          # The Server was built against the staged digest; the promotion
+          # fails rather than tag an index it does not bundle.
+          staged='${{ needs.stage-bundled-images.outputs.project-relay-image }}'
+          [[ "$staged" == "${image}@sha256:"* ]]
+          IMAGE="$image" VERSION="$VERSION" SOURCE_SHA="$SOURCE_REVISION" PROMOTE_DIGEST="${staged#*@}" \
+            node .release-tools/scripts/publish-release-index.mjs
           if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
             docker buildx imagetools create \
               -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
@@ -2616,7 +2685,7 @@ jobs:
           cache-to: type=gha,mode=min,timeout=60s,scope=verity-matrix-connector-${{ matrix.architecture }},ignore-error=true
 
   publish-matrix-connector:
-    needs: [release-please, self-update-gate, build-matrix-connector]
+    needs: [release-please, self-update-gate, stage-bundled-images]
     if: needs.release-please.outputs.backend-release-created == 'true'
     runs-on: ubuntu-24.04
     outputs:
@@ -2656,9 +2725,12 @@ jobs:
           set -euo pipefail
           short_sha="${SOURCE_REVISION:0:12}"
           image="${REGISTRY}/${IMAGE_NAME}"
-          IMAGE="$image" VERSION="$VERSION" SOURCE_SHA="$SOURCE_REVISION" \
-            node .release-tools/scripts/publish-release-index.mjs \
-              "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
+          # The Server was built against the staged digest; the promotion
+          # fails rather than tag an index it does not bundle.
+          staged='${{ needs.stage-bundled-images.outputs.matrix-connector-image }}'
+          [[ "$staged" == "${image}@sha256:"* ]]
+          IMAGE="$image" VERSION="$VERSION" SOURCE_SHA="$SOURCE_REVISION" PROMOTE_DIGEST="${staged#*@}" \
+            node .release-tools/scripts/publish-release-index.mjs
           if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
             docker buildx imagetools create \
               -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"

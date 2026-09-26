@@ -51,6 +51,12 @@ interface ReleaseWorkflow {
       needs?: string | string[];
       steps: WorkflowStep[];
     };
+    'stage-bundled-images': {
+      needs?: string | string[];
+      outputs?: Record<string, string>;
+      env?: Record<string, string>;
+      steps: WorkflowStep[];
+    };
     'build-preview-images': {
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
       steps: WorkflowStep[];
@@ -58,11 +64,13 @@ interface ReleaseWorkflow {
     'publish-project-relay': {
       needs?: string | string[];
       outputs?: Record<string, string>;
+      env?: Record<string, string>;
       steps: WorkflowStep[];
     };
     'publish-matrix-connector': {
       needs?: string | string[];
       outputs?: Record<string, string>;
+      env?: Record<string, string>;
       steps: WorkflowStep[];
     };
     'publish-toolkit': {
@@ -121,9 +129,10 @@ describe('Matrix connector release image', () => {
     expect(push?.with?.file).toBe('connectors/matrix/Dockerfile');
     expect(push?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
     expect(push?.with?.push).toBe(true);
+    expect(workflow.jobs['stage-bundled-images'].needs).toContain('build-matrix-connector');
     const publish = workflow.jobs['publish-matrix-connector'];
     expect(publish.needs).toContain('self-update-gate');
-    expect(publish.needs).toContain('build-matrix-connector');
+    expect(publish.needs).toContain('stage-bundled-images');
     expect(publish.steps.find((step) => step.name?.includes('multi-architecture'))?.run).toContain(
       'scripts/publish-release-index.mjs',
     );
@@ -137,11 +146,14 @@ describe('Matrix connector release image', () => {
       'sha256:[a-f0-9]{64}',
     );
     const server = workflow.jobs['build-server'];
-    expect(server.needs).toContain('publish-matrix-connector');
+    expect(server.needs).toContain('stage-bundled-images');
     const build = server.steps.find((step) => step.name?.startsWith('Build + push'));
     expect(build?.with?.['build-args']).toContain(
-      'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.publish-matrix-connector.outputs.image }}',
+      'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.stage-bundled-images.outputs.matrix-connector-image }}',
     );
+    // The Server is built before the gate, so the connector's version tag is
+    // only ordered ahead of the Server's by this dependency.
+    expect(workflow.jobs['publish-server'].needs).toContain('publish-matrix-connector');
     const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
     expect(dockerfile).toContain('ARG VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=');
     expect(dockerfile).toContain(
@@ -164,9 +176,11 @@ describe('release relay digest output', () => {
     expect(push?.uses).toContain('docker/build-push-action@');
     expect(push?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
 
-    const publish = steps.find((step) => step.name === 'Publish multi-architecture relay index');
-    expect(publish?.run).toContain('sha-${short_sha}-amd64');
-    expect(publish?.run).toContain('sha-${short_sha}-arm64');
+    const stage = workflow.jobs['stage-bundled-images'].steps.find((step) =>
+      step.run?.includes('publish-release-index.mjs'),
+    );
+    expect(stage?.run).toContain('sha-${short_sha}-amd64');
+    expect(stage?.run).toContain('sha-${short_sha}-arm64');
     const record = steps.find((step) => step.name === 'Record digest-pinned relay reference');
     expect(record?.run).toContain('^sha256:[a-f0-9]{64}$');
     expect(record?.run).toContain('imagetools inspect');
@@ -199,11 +213,14 @@ describe('release relay digest output', () => {
     // tags that do not exist. `self-update-gate` is the one dependency that is
     // not a sibling artifact: it proves the live cutover (ADR 0008's release
     // condition). It is listed here as well as on the siblings, so reading this
-    // job alone still shows the release gate.
+    // job alone still shows the release gate. The Matrix connector is baked in
+    // like the relay, but since `build-server` no longer waits for its publish
+    // job, only this entry keeps its version tag ahead of the Server's.
     expect(server.needs).toEqual([
       'release-please',
       'self-update-gate',
       'publish-project-relay',
+      'publish-matrix-connector',
       'publish-sandbox',
       'publish-toolkit',
       'build-server',
@@ -216,7 +233,7 @@ describe('release relay digest output', () => {
 
     const build = buildServer.steps.find((step) => step.name?.startsWith('Build + push'));
     expect(build?.with?.['build-args']).toContain(
-      'VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.publish-project-relay.outputs.image }}',
+      'VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.stage-bundled-images.outputs.project-relay-image }}',
     );
 
     const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
@@ -294,35 +311,80 @@ describe('multi-architecture runtime image publication', () => {
     expect(sandbox?.run).toContain('${image}:sha-${short_sha}-amd64');
     expect(sandbox?.run).toContain('${image}:sha-${short_sha}-arm64');
 
-    const relay = workflow.jobs['publish-project-relay'].steps.find(
-      (step) => step.name === 'Publish multi-architecture relay index',
+    const staged = workflow.jobs['stage-bundled-images'].steps.find((step) =>
+      step.run?.includes('publish-release-index.mjs'),
     );
-    expect(relay?.run).toContain('${image}:sha-${short_sha}-amd64');
-    expect(relay?.run).toContain('${image}:sha-${short_sha}-arm64');
+    expect(staged?.run).toContain('${image}:sha-${short_sha}-amd64');
+    expect(staged?.run).toContain('${image}:sha-${short_sha}-arm64');
   });
 
-  it('prepares local Server inputs while the release gate runs without bypassing it', () => {
-    // Waiting for published siblings here silently puts a local-only compiler
-    // job on the critical path after every image has already finished.
+  it('builds the Server while the release gate runs without bypassing it', () => {
+    // Waiting for published siblings here silently puts the Server build on the
+    // critical path after the gate, which is where every release waited for it.
     const prepare = workflow.jobs['prepare-server-build-context'];
     expect([prepare.needs].flat()).toEqual(['release-please']);
     const build = workflow.jobs['build-server'];
-    expect(build.needs).toEqual(
-      expect.arrayContaining([
-        'prepare-server-build-context',
-        'self-update-gate',
-        'publish-project-relay',
-        'publish-sandbox',
-        'publish-toolkit',
-      ]),
+    expect(build.needs).toEqual([
+      'release-please',
+      'stage-bundled-images',
+      'prepare-server-build-context',
+    ]);
+    // That is only safe while everything upstream of it stays ungated too and
+    // it pushes nothing a deployment resolves: a `vX.Y.Z` or `latest` pushed
+    // from here would ship a Server the smoke never approved.
+    for (const name of [
+      'stage-bundled-images',
+      'build-project-relay',
+      'build-matrix-connector',
+    ] as const) {
+      expect([workflow.jobs[name].needs].flat()).not.toContain('self-update-gate');
+    }
+    const tags = build.steps.find((step) => step.id === 'tags')?.run ?? '';
+    expect(tags).toContain(':sha-${short_sha}-${{ matrix.architecture }}');
+    expect(tags).not.toMatch(/:v\$|:latest/);
+    // A `needs.<job>` reference to a job dropped from `needs` renders empty
+    // rather than failing, and the Server would build with blank inputs.
+    const referenced = JSON.stringify(build).matchAll(/needs\.([\w-]+)\./gu);
+    for (const [, job] of referenced) expect(build.needs).toContain(job);
+    expect(workflow.jobs['publish-server'].needs).toContain('self-update-gate');
+  });
+
+  it('stages bundled indexes under a tag no deployment resolves', () => {
+    // The staged digest is what the Server bakes in; the gated publish jobs may
+    // only point the version tag at that same digest, never rebuild the index.
+    const stage = workflow.jobs['stage-bundled-images'].steps.find((step) =>
+      step.run?.includes('publish-release-index.mjs'),
     );
+    expect(stage?.run).toContain('STAGE_TAG="candidate-v${VERSION}"');
+    expect(stage?.run).not.toContain('imagetools create');
+    for (const component of ['project-relay', 'matrix-connector'] as const) {
+      expect(workflow.jobs['stage-bundled-images'].outputs?.[`${component}-image`]).toBe(
+        `\${{ steps.stage.outputs.${component} }}`,
+      );
+      // A staged name drifting from the publish job's leaves the Server
+      // bundling an image the promotion never touches.
+      const name = `${component.replace('-', '_').toUpperCase()}_IMAGE_NAME`;
+      expect(workflow.jobs['stage-bundled-images'].env?.[name]).toBe(
+        workflow.jobs[`publish-${component}`].env?.IMAGE_NAME,
+      );
+      expect(workflow.jobs['stage-bundled-images'].env?.[name]).toBeDefined();
+      const promote = workflow.jobs[`publish-${component}`].steps.find((step) =>
+        step.run?.includes('publish-release-index.mjs'),
+      );
+      expect(promote?.run).toContain(`needs.stage-bundled-images.outputs.${component}-image`);
+      expect(promote?.run).toContain('PROMOTE_DIGEST=');
+      expect(promote?.run).not.toContain('sha-${short_sha}-amd64');
+    }
   });
 
   it('overlaps candidate builds with acceptance while keeping version publication gated', () => {
-    for (const component of ['sandbox', 'project-relay'] as const) {
+    for (const component of ['sandbox', 'project-relay', 'matrix-connector'] as const) {
       expect([workflow.jobs[`build-${component}`].needs].flat()).toEqual(['release-please']);
       expect([workflow.jobs[`publish-${component}`].needs].flat()).toEqual(
-        expect.arrayContaining(['self-update-gate', `build-${component}`]),
+        expect.arrayContaining([
+          'self-update-gate',
+          component === 'sandbox' ? 'build-sandbox' : 'stage-bundled-images',
+        ]),
       );
     }
   });

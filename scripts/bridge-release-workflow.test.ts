@@ -7,7 +7,12 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 type Step = { name?: string; run?: string; if?: string };
-type Job = { if?: string; steps?: Step[]; with?: Record<string, string> };
+type Job = {
+  if?: string;
+  needs?: string | string[];
+  steps?: Step[];
+  with?: Record<string, string>;
+};
 const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
   on: { workflow_call: { inputs: Record<string, unknown> } };
   jobs: Record<string, Job>;
@@ -68,8 +73,11 @@ describe('artifact-only maintenance release', () => {
   it('publishes immutable indexes without moving mutable image aliases', () => {
     // Execute the checked-in publishers: merely asserting an input exists misses
     // a sibling publisher silently moving latest back to the maintenance version.
-    const publishers = Object.values(release.jobs)
-      .flatMap((job) => job.steps ?? [])
+    // `stage-bundled-images` writes only a candidate tag ahead of the gate and
+    // is guarded in release-workflow.test.ts.
+    const publishers = Object.entries(release.jobs)
+      .filter(([name]) => name !== 'stage-bundled-images')
+      .flatMap(([, job]) => job.steps ?? [])
       .filter((entry) => entry.run?.includes('publish-release-index.mjs'));
     expect(publishers.length).toBeGreaterThan(0);
     const directory = mkdtempSync(join(tmpdir(), 'bridge-release-'));
@@ -78,6 +86,10 @@ describe('artifact-only maintenance release', () => {
         for (const artifactOnly of [true, false]) {
           const script = publisher
             .run!.replaceAll('${{ inputs.backend-artifact-only }}', String(artifactOnly))
+            .replace(
+              /\$\{\{ needs\.stage-bundled-images\.outputs\.[\w-]+ \}\}/gu,
+              `registry/image@sha256:${'0'.repeat(64)}`,
+            )
             .replace(/\$\{\{[^}]+\}\}/gu, 'fixture');
           const result = spawnSync(
             'bash',

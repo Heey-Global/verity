@@ -6,9 +6,12 @@ completed in 41m56s on 2026-09-16. Its Server ARM64 image was pushed at
 preview edge AMD64 each spent approximately another 2m22s exporting cache after
 image export. These intervals overlap other work; they are not additive savings.
 
-Candidate sandbox and relay builds now overlap live acceptance. Only temporary
-SHA/architecture tags can publish before acceptance; version tags, channels, and
-release finalization retain their gates. Compiler binaries and the compatibility
+Candidate sandbox, relay, Matrix connector, and Server builds now overlap live
+acceptance. Before acceptance only temporary SHA/architecture tags and the
+`candidate-vX.Y.Z` relay and connector indexes the Server bakes in by digest can
+publish; version tags, channels, and release finalization retain their gates.
+The gated relay and connector publish jobs point `vX.Y.Z` at the staged digest
+and fail if the registry reports any other. Compiler binaries and the compatibility
 ledger are prepared once and consumed by both toolkit and Server builds.
 
 Release image cache exports use final-image layers (`mode=min`), a 60-second
