@@ -165,6 +165,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/integrations/matrix/attachment',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
+    'POST',
     '/internal/github/token',
     'container-capability',
     'per-container capability, presented by the sandbox git credential helper / gh wrapper',
