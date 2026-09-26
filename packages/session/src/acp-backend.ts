@@ -133,6 +133,8 @@ export interface AcpBackendProfile {
    * still wins. */
   readonly httpMcpWhenUnspecified?: boolean | undefined;
   readonly adapter?: AcpEventAdapterOptions | undefined;
+  /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
+  readonly enforcesToolless?: boolean | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */
   sessionMeta(opts: RunTurnOptions): Record<string, unknown>;
   /** Model recorded on the `session` event when the turn names none. */
@@ -480,6 +482,9 @@ export async function runAcpTurn(
   // request in any agent.
   assertSafeArgs(args, profile.permissionModes);
   assertProfilePermissionMode(profile, opts.permissionMode);
+  if (opts.toolless === true && profile.enforcesToolless !== true) {
+    throw new Error(`${profile.telemetryBackend} cannot run a turn without tools`);
+  }
   const child = spawner(opts.command ?? profile.defaultCommand, args, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
@@ -729,26 +734,27 @@ export async function runAcpTurn(
         const agentSpeaksHttpMcp =
           advertisedHttpMcp === true ||
           (advertisedHttpMcp === undefined && profile.httpMcpWhenUnspecified === true);
-        const mcpServers: McpServer[] = agentSpeaksHttpMcp
-          ? [
-              ...(gateway === undefined
-                ? []
-                : [
-                    {
-                      type: 'http' as const,
-                      name: 'verity',
-                      url: gateway.url,
-                      headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
-                    },
-                  ]),
-              ...(opts.mcpServers ?? []).map((server) => ({
-                type: 'http' as const,
-                name: server.name,
-                url: server.url,
-                headers: server.headers.map((header) => ({ ...header })),
-              })),
-            ]
-          : [];
+        const mcpServers: McpServer[] =
+          agentSpeaksHttpMcp && opts.toolless !== true
+            ? [
+                ...(gateway === undefined
+                  ? []
+                  : [
+                      {
+                        type: 'http' as const,
+                        name: 'verity',
+                        url: gateway.url,
+                        headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
+                      },
+                    ]),
+                ...(opts.mcpServers ?? []).map((server) => ({
+                  type: 'http' as const,
+                  name: server.name,
+                  url: server.url,
+                  headers: server.headers.map((header) => ({ ...header })),
+                })),
+              ]
+            : [];
         // A bearer was minted but no server was offered, so tell the turn through the
         // channel its profile supports. Claude carries this in `sessionMeta`; Codex and
         // OpenCode have no native system-prompt slot and receive it in `promptBlocks`.

@@ -7,6 +7,7 @@ const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   defaultCommand: 'claude-agent-acp',
   telemetryBackend: 'claude-acp',
   httpMcpWhenUnspecified: true,
+  enforcesToolless: true,
   loadSessionUnsupported: 'Claude ACP adapter does not support persistent session loading',
   clientCapabilitiesMeta: { 'subagent-transcript': true },
   sessionMeta: (opts) => ({
@@ -26,6 +27,9 @@ const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
         ...(opts.disallowedTools !== undefined
           ? { disallowedTools: [...opts.disallowedTools] }
           : {}),
+        // No built-in tools, no MCP beyond the (empty) list sent with the session,
+        // and no settings files whose allow rules or servers would add some back.
+        ...(opts.toolless === true ? { tools: [], strictMcpConfig: true, settingSources: [] } : {}),
       },
     },
   }),

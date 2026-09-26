@@ -1644,6 +1644,8 @@ export class Conductor {
     cwd: string;
     model?: string | undefined;
     signal?: AbortSignal | undefined;
+    /** Images shown to the model with the prompt (e.g. text extraction). */
+    attachments?: readonly AttachmentUpload[] | undefined;
   }): Promise<string | undefined> {
     const selected = this.modelBackend(input.model);
     const backend = (await this.deps.queryBackend?.(selected, input.model)) ?? selected;
@@ -1664,10 +1666,14 @@ export class Conductor {
       cwd: string;
       model?: string | undefined;
       signal?: AbortSignal | undefined;
+      attachments?: readonly AttachmentUpload[] | undefined;
     },
     context: { sessionId: string | null; projectId: string | null; worktree: string },
   ): Promise<string | undefined> {
-    if (backend.query !== undefined) {
+    const attachments = input.attachments ?? [];
+    // Native one-shots take a prompt string only; answering an image request
+    // without the image would return a confident, invented transcript.
+    if (backend.query !== undefined && attachments.length === 0) {
       const direct = await backend.query({
         prompt: input.prompt,
         cwd: input.cwd,
@@ -1701,6 +1707,8 @@ export class Conductor {
           startCommandId: randomUUID(),
           storeSessionId: `query-${turnId}`,
           permissionMode: 'dontAsk',
+          // An image is content from outside; the turn that reads it gets no tools.
+          ...(attachments.length > 0 ? { attachments, toolless: true } : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...(input.signal !== undefined ? { signal: input.signal } : {}),
         },

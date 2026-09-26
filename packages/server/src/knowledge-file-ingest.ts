@@ -60,6 +60,35 @@ export async function writeKnowledgeExtraction(
   });
 }
 
+/**
+ * Append a derived section to an existing artifact, once. Returns false when the
+ * section is already there or the original or its artifact is gone: a redaction
+ * that landed while the section was being produced must not be resurrected.
+ */
+export async function appendKnowledgeExtractionSection(
+  root: string,
+  relativePath: string,
+  heading: string,
+  body: string,
+): Promise<boolean> {
+  const source = sessionFilePath(root, relativePath);
+  const output = knowledgeExtractionPath(root, source.rel);
+  return withExtractionLock([output], async () => {
+    const present = await stat(source.abs).then(
+      (stats) => stats.isFile(),
+      () => false,
+    );
+    if (!present) return false;
+    const markdown = await readFile(output, 'utf8').catch(() => undefined);
+    if (markdown === undefined || markdown.includes(`\n## ${heading}\n`)) return false;
+    const separator = markdown.endsWith('\n') ? '\n' : '\n\n';
+    await writeFile(output, `${markdown}${separator}## ${heading}\n\n${body.trim()}\n`, {
+      mode: 0o644,
+    });
+    return true;
+  });
+}
+
 function extractedMarkdown(
   relativePath: string,
   result: Awaited<ReturnType<typeof processKnowledgeSource>>,

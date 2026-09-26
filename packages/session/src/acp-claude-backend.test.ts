@@ -902,6 +902,33 @@ describe('AcpClaudeBackend', () => {
     expect(JSON.stringify(fake.writes)).not.toContain('turn-bearer');
   });
 
+  it('runs a toolless turn with no tools, no MCP servers, and no settings files', async () => {
+    // A turn reading an untrusted chat image: any tool it keeps — built-in, the
+    // gateway, or one a project settings file allows — is one an injected
+    // instruction in the image can use.
+    const fake = acpSpawner({ httpMcp: true });
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-toolless',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Transcribe',
+      spawner: fake.spawner,
+      toolless: true,
+      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'turn-bearer' },
+    });
+    const session = fake.writes.find((message) => message['method'] === 'session/new');
+    expect(session).toMatchObject({
+      params: {
+        mcpServers: [],
+        _meta: {
+          claudeCode: { options: { tools: [], strictMcpConfig: true, settingSources: [] } },
+        },
+      },
+    });
+    expect(JSON.stringify(fake.writes)).not.toContain('turn-bearer');
+  });
+
   it('tells the turn when it was entitled to the gateway and did not get it', async () => {
     const fake = acpSpawner({ httpMcp: false });
     await new AcpClaudeBackend().run({

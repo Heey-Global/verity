@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { affectedChatDay, projectChatDay } from './knowledge-projection.js';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
 import { ingestKnowledgeBytes, removeKnowledgeExtraction } from '../knowledge-file-ingest.js';
+import type { ImageTextJob } from '../knowledge-image-text.js';
 import { acquireKnowledgeMutationLock } from '../knowledge-mutation-lock.js';
 
 const MAX_MATRIX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
@@ -102,6 +103,8 @@ export function registerIntegrationRoutes(
     dataRoot?: string;
     connectorToken?: string | (() => Promise<string | undefined>);
     onMatrixConfigured?: () => Promise<void>;
+    /** Queue background text extraction for a stored attachment; ignores non-images. */
+    extractImageText?: (job: ImageTextJob) => void;
   },
 ): void {
   const { store } = deps;
@@ -333,7 +336,13 @@ export function registerIntegrationRoutes(
             input.eventId,
           ]);
           if (!changes.some((change) => change.kind === 'redaction')) {
-            await ingestKnowledgeBytes(root, relative, bytes);
+            const stored = await ingestKnowledgeBytes(root, relative, bytes);
+            deps.extractImageText?.({
+              projectId: result.projectId,
+              root,
+              relativePath: stored,
+              bytes,
+            });
           }
         } finally {
           release();
