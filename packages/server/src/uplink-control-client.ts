@@ -70,6 +70,8 @@ export interface RemoteConnectorReservation {
   /** Resolves only after the data attachment succeeds; owns the fixed TLS destination. */
   attach(ticket: string, expiresAt: number, signal: AbortSignal): Promise<void>;
   release(reason: string): void;
+  /** Optional terminal signal for connectors whose data socket can close independently. */
+  closed?: Promise<void>;
 }
 
 export interface RemoteConnectorRequest {
@@ -785,6 +787,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return refuse(result);
     }
     session.reservation = result;
+    void result.closed?.then(() => {
+      if (this.remoteSessions.get(request.sessionId) === session)
+        this.releaseRemoteSession(request.sessionId, 'remote connector closed');
+    });
     handedOff = true;
     session.deadlineTimer = setTimeout(
       () => this.releaseRemoteSession(request.sessionId, 'remote ticket was not delivered'),

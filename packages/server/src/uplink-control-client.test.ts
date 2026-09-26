@@ -304,6 +304,41 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('releases an accepted session when its connector data socket closes', async () => {
+    let closeConnector!: () => void;
+    const closed = new Promise<void>((resolve) => (closeConnector = resolve));
+    const reservation = { attach: vi.fn(async () => undefined), release: vi.fn(), closed };
+    const { client, socket } = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => reservation,
+    });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await vi.waitFor(() =>
+      expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(true),
+    );
+    closeConnector();
+    await vi.waitFor(() => expect(reservation.release).toHaveBeenCalledTimes(1));
+    await client.stop();
+  });
+
   it('does not accept a reservation that completes after cancellation', async () => {
     let completeReservation!: (value: RemoteConnectorReservation) => void;
     const reservation = { attach: vi.fn(async () => undefined), release: vi.fn() };

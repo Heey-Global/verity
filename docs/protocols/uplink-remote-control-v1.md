@@ -56,11 +56,16 @@ stream IDs, timing and sizes, but must not receive Core HTTP credentials or TLS
 private keys. Tickets are secrets: never place them in URLs or logs.
 
 Each app-side TCP socket maps to one remote stream. The Core connector dials one
-administratively configured local Core TLS listener. Neither admission nor stream
+administratively configured local Verity TLS ingress: Core's existing TLS listener
+in direct deployments, or the existing managed Gateway's TLS listener in managed
+deployments. The managed Gateway uses the installation's provisioned certificate
+and forwards the TLS-terminated request to Core through its existing private HTTP
+backend connection. The app validates the same logical Core hostname and pin in
+both modes; Uplink never terminates this TLS connection. Neither admission nor stream
 metadata accepts a destination host, port, path or URL. A native loopback proxy
 binds only loopback, restricts destinations to the paired logical Core origin,
 and exists only for its owning transport session. It must not become a general
-proxy. The local Core listener retains normal TLS and API authentication.
+proxy. The selected ingress retains normal TLS and Core API authentication.
 
 ## Negotiation and endpoints (new proposal)
 
@@ -479,7 +484,7 @@ referrers and analytics; link/QR encoding and app-link handling are freeze gates
 The app uses ordinary remote admission to establish pinned inner TLS, then proves
 invitation possession and binds its device using the reviewed pairing handshake.
 The invitation secret and any resulting credential travel only inside inner TLS.
-While unclaimed, the configured local TLS target exposes a join-only listener:
+While unclaimed, Core restricts the configured local TLS target to join-only access:
 only bounded enrollment operations are available and normal APIs remain denied.
 After atomic claim, Core transitions that listener to normal authenticated access;
 neither `session.accept` nor any app routing field selects an administrator API. This restriction is enforced by Core, not by a routing
