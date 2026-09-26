@@ -1596,10 +1596,32 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ env.VERSION }}
-          # Export only final-image layers, with a bounded optional cache write.
-          # Cold intermediate dependency/compile stages may rebuild on later runs.
-          cache-from: type=gha,scope=verity-server-${{ matrix.architecture }}
-          cache-to: type=gha,mode=min,timeout=60s,scope=verity-server-${{ matrix.architecture }},ignore-error=true
+          # THE canonical note for the release build caches; the other release
+          # build steps point back here. Release builds export to a
+          # `buildcache-<arch>` tag of their own ghcr package instead of the
+          # Actions cache. That cache is ONE 10 GB budget for the whole repository
+          # and is evicted least-recently-used: v2.7.2 found both Matrix connector
+          # scopes gone and recompiled the unchanged Rust connector for 21 minutes,
+          # blocking the Server build behind it. The registry has no such budget.
+          #
+          # Only this workflow writes the tag, and only with `packages: write`
+          # from main's release commit — PR builds never log in to ghcr — so a
+          # published image still takes its layers only from release builds plus
+          # the `type=gha` entries main wrote. The `type=gha` import stays second:
+          # ci.yml writes that scope from main between releases, and it remains
+          # the warm start whenever the registry tag is missing. Only version tags
+          # count as releases (scripts/audit-release-images.mjs, self-update.yml),
+          # so the extra tag is invisible to both.
+          #
+          # `mode=min` exports only final-image layers: mode=max once held the
+          # release job five minutes after the ARM64 push, uploading intermediate
+          # stages. `ignore-error` because the image is already pushed when the
+          # export runs, so a failed export costs the next run time, never this
+          # run its artifact.
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }}
+            type=gha,scope=verity-server-${{ matrix.architecture }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }},mode=min,ignore-error=true
 
   publish-server:
     # Also gated on the sandbox image and toolkit Feature, not just the relay: a
@@ -2097,10 +2119,13 @@ jobs:
             org.opencontainers.image.version=v${{ env.VERSION }}
             org.opencontainers.image.title=heey-global/verity-sandbox
             org.opencontainers.image.description=Verity project base image (plain base + verity-sandbox-toolkit Feature)
-          # Scope matches verity-sandbox.yml's read-only build; see the note on the
-          # `Build Verity server image` step in ci.yml.
-          cache-from: type=gha,scope=verity-sandbox-${{ matrix.architecture }}
-          cache-to: type=gha,mode=min,timeout=60s,scope=verity-sandbox-${{ matrix.architecture }},ignore-error=true
+          # See the note on the release cache in `build-server`. The gha scope
+          # matches verity-sandbox.yml's build; see the note on the `Build Verity
+          # server image` step in ci.yml.
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_NEW }}:buildcache-${{ matrix.architecture }}
+            type=gha,scope=verity-sandbox-${{ matrix.architecture }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_NEW }}:buildcache-${{ matrix.architecture }},mode=min,ignore-error=true
 
   publish-sandbox:
     needs: [release-please, self-update-gate, build-sandbox]
@@ -2232,8 +2257,11 @@ jobs:
           # Same Dockerfile as the push step below and as project-relay.yml, so
           # deliberately the same scope; see the note on the `Build Verity server
           # image` step in ci.yml.
-          # The push step reuses this builder and exports the cache once.
-          cache-from: type=gha,scope=verity-project-relay-${{ matrix.architecture }}
+          # The push step reuses this builder and exports the cache once; see
+          # the note on the release cache in `build-server`.
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }}
+            type=gha,scope=verity-project-relay-${{ matrix.architecture }}
 
       - name: Verify exact release relay confinement
         run: deploy/bin/verity-project-relay-smoke verity-project-relay:release-smoke
@@ -2277,9 +2305,12 @@ jobs:
             org.opencontainers.image.version=v${{ env.VERSION }}
             org.opencontainers.image.title=heey-global/verity-project-relay
             org.opencontainers.image.description=Fixed-destination per-project Verity relay
-          # See the note on the `Build Verity server image` step in ci.yml.
-          cache-from: type=gha,scope=verity-project-relay-${{ matrix.architecture }}
-          cache-to: type=gha,mode=min,timeout=60s,scope=verity-project-relay-${{ matrix.architecture }},ignore-error=true
+          # See the note on the release cache in `build-server`, and for the gha
+          # scope the note on the `Build Verity server image` step in ci.yml.
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }}
+            type=gha,scope=verity-project-relay-${{ matrix.architecture }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }},mode=min,ignore-error=true
 
   publish-project-relay:
     needs: [release-please, self-update-gate, build-project-relay]
@@ -2466,11 +2497,12 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ env.VERSION }}
-          # One scope per component and architecture; neither independent writer
-          # may replace the other's index. See the note on the `Build Verity
-          # server image` step in ci.yml.
-          cache-from: type=gha,scope=preview-${{ matrix.component }}-${{ matrix.architecture }}
-          cache-to: type=gha,mode=min,timeout=60s,scope=preview-${{ matrix.component }}-${{ matrix.architecture }},ignore-error=true
+          # One cache tag per component and architecture, so neither independent
+          # writer replaces the other's. See the note on the release cache in
+          # `build-server`; no other workflow builds these images, so there is no
+          # gha scope to fall back on.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ matrix.image }}:buildcache-${{ matrix.architecture }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ matrix.image }}:buildcache-${{ matrix.architecture }},mode=min,ignore-error=true
 
   publish-preview-images:
     needs: [release-please, self-update-gate, publish-server, build-preview-images]
@@ -2612,8 +2644,14 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ needs.release-please.outputs.backend-version }}
-          cache-from: type=gha,scope=verity-matrix-connector-${{ matrix.architecture }}
-          cache-to: type=gha,mode=min,timeout=60s,scope=verity-matrix-connector-${{ matrix.architecture }},ignore-error=true
+          # See the note on the release cache in `build-server`. The one
+          # deliberate `mode=max`: the Dockerfile compiles the Rust dependencies
+          # in a builder layer of their own, and that intermediate layer is the
+          # whole point — without it every connector source change recompiles
+          # matrix-sdk from scratch. It is re-uploaded only when Cargo.lock
+          # changes. ci.yml's connector build reads this amd64 tag anonymously.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }},mode=max,ignore-error=true
 
   publish-matrix-connector:
     needs: [release-please, self-update-gate, build-matrix-connector]
