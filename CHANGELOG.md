@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.9.0](https://github.com/Heey-Global/verity/compare/v2.8.0...v2.9.0) (2026-09-26)
+
+
+### Features
+
+* **server:** add bounded remote control connector for existing TLS ingress ([#792](https://github.com/Heey-Global/verity/issues/792)) ([8e5c2a2](https://github.com/Heey-Global/verity/commit/8e5c2a2560c6ffaabd70b8aaa5349eac90f77247))
+* **server:** negotiate remote control admission safely ([#786](https://github.com/Heey-Global/verity/issues/786)) ([46c3865](https://github.com/Heey-Global/verity/commit/46c386562d4a02561464576390666c207d952a43))
+* **server:** reserve remote connector before session acceptance ([#790](https://github.com/Heey-Global/verity/issues/790)) ([0b3bccd](https://github.com/Heey-Global/verity/commit/0b3bccd94e4bcc3f963a3a315586b10b8aeb1c98))
+* **server:** wire opt-in remote connector into Uplink control ([#793](https://github.com/Heey-Global/verity/issues/793)) ([69343eb](https://github.com/Heey-Global/verity/commit/69343ebf1abd755429f6748b32bea65b46acde15))
+
+
+### Bug Fixes
+
+* **session-links:** keep message approvals until decided ([#796](https://github.com/Heey-Global/verity/issues/796)) ([b1a2519](https://github.com/Heey-Global/verity/commit/b1a2519c80750590abddf86083ee5c4e55332488))
+
 ## [2.8.0](https://github.com/Heey-Global/verity/compare/v2.7.2...v2.8.0) (2026-09-26)
 
 
