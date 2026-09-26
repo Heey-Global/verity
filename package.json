@@ -42,8 +42,8 @@
     "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.79.0",
-    "@agentclientprotocol/codex-acp": "1.12.0",
+    "@agentclientprotocol/claude-agent-acp": "0.81.0",
+    "@agentclientprotocol/codex-acp": "1.13.0",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.30.0",
