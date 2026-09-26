@@ -100,6 +100,8 @@ import {
 } from './docker.js';
 import {
   defaultContainerCommandRunner,
+  NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS,
+  NODE_MODULES_INSTALL_WAIT_COMMAND,
   underNodeModulesInstallLock,
   type ContainerCommandRunner,
 } from './devcontainer-lifecycle.js';
@@ -5661,11 +5663,25 @@ export class ProvisionerImpl implements Provisioner {
             provisionWarning,
           )) as ProjectRecord;
         }
+        if (runnerRuntimePath !== undefined) {
+          // The Runner stack start above may have left the node_modules install
+          // running in the background. Let it finish (or run it) first, as the
+          // agent it installs as. Dependencies are a convenience and never fail
+          // the provision; a wedged install surfaces as the lock timeout below.
+          await this.containerCommand({
+            containerName: dirs.containerName,
+            command: NODE_MODULES_INSTALL_WAIT_COMMAND,
+            dockerHost: this.opts.dockerHostForBuild,
+            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
+            workdir: '/work',
+            timeoutMs: NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS * 1000,
+          }).catch(() => undefined);
+        }
         lifecycleFailureLabel = 'postCreateCommand';
         await this.containerCommand({
           containerName: dirs.containerName,
-          // The Runner stack start above may have left a dependency install
-          // running in the background; see underNodeModulesInstallLock.
+          // Held against an install a later stack start (a wake, a Server
+          // restart) could begin meanwhile; see underNodeModulesInstallLock.
           command:
             runnerRuntimePath !== undefined
               ? underNodeModulesInstallLock(

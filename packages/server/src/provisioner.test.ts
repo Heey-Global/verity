@@ -42,6 +42,8 @@ import {
   projectNetworkName,
   projectNodeModulesVolumeName,
   NODE_MODULES_TARGET,
+  RUNNER_AGENT_GID,
+  RUNNER_AGENT_UID,
   devcontainerBuildArgs,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
@@ -62,7 +64,10 @@ import {
   type DevcontainerBuildSpawner,
   type ContainerCommandRunner,
 } from './provisioner.js';
-import { underNodeModulesInstallLock } from './devcontainer-lifecycle.js';
+import {
+  NODE_MODULES_INSTALL_WAIT_COMMAND,
+  underNodeModulesInstallLock,
+} from './devcontainer-lifecycle.js';
 import {
   DockerError,
   type DockerClient,
@@ -3031,13 +3036,21 @@ describe('ProvisionerImpl (#174)', () => {
 
       expect(error).toBeUndefined();
       expect(warning).toBeNull();
-      const commands = containerCommand.mock.calls.map(([args]) => args.command);
+      const calls = containerCommand.mock.calls.map(([args]) => args);
+      const commands = calls.map((args) => args.command);
       const stackStart = commands.indexOf('verity-runner-stack-start');
+      const wait = commands.indexOf(NODE_MODULES_INSTALL_WAIT_COMMAND);
       const postCreate = commands.indexOf(
         underNodeModulesInstallLock('npm ci', NODE_MODULES_TARGET),
       );
+      // The dependencies are in place before the command runs, whatever it does
+      // itself: one that only holds the lock would otherwise make the background
+      // install step aside and leave node_modules empty.
       expect(stackStart).toBeGreaterThanOrEqual(0);
-      expect(postCreate).toBeGreaterThan(stackStart);
+      expect(wait).toBeGreaterThan(stackStart);
+      expect(postCreate).toBeGreaterThan(wait);
+      // As the agent the background install runs as, or its tree is unwritable.
+      expect(calls[wait]?.user).toBe(`${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`);
       expect(commands).not.toContain('npm ci');
     });
 

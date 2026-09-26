@@ -64,6 +64,9 @@ export const NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS = 1800;
 /** flock's exit code when that wait runs out, picked to be distinguishable from
  *  any exit code the postCreateCommand itself plausibly returns. */
 const NODE_MODULES_INSTALL_LOCK_TIMEOUT_EXIT = 75;
+/** The file `verity-node-modules-install` writes into node_modules once an install
+ *  finished, and checks on every start before installing again. */
+export const NODE_MODULES_INSTALL_COMPLETE_MARKER = '.verity-install-complete';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -77,11 +80,14 @@ function shellQuote(value: string): string {
  * `verity-runner-stack-start` launches that install in the background whenever
  * something is mounted at /work/node_modules, and returns before it finishes; the
  * postCreateCommand runs right after. A postCreateCommand that installs too
- * (`npm ci` is the common one) then writes the same tree concurrently, and the
- * two fail each other with ENOTEMPTY on rmdir. The provision fails, the container
- * is removed, the volume keeps the half-written tree, and every repair replays
- * the same race. Holding the lock makes the command wait for an install already
- * running, and makes an install that starts later step aside.
+ * (`npm ci` is the common one) then wrote the same tree concurrently, and the two
+ * failed each other with ENOTEMPTY on rmdir. The provision failed, the container
+ * was removed, the volume kept the half-written tree, and every repair replayed
+ * the same race. Under the lock, an install that starts later steps aside.
+ *
+ * A successful command that reinstalled (npm's hidden lockfile is there) also
+ * emptied the install's completion marker with the rest of the tree; it is put
+ * back, or the next start would reinstall a tree that is already complete.
  *
  * Without a real node_modules directory or without flock (the install script
  * cannot run then either) the command runs as before.
@@ -90,12 +96,22 @@ export function underNodeModulesInstallLock(command: string, nodeModules: string
   const dir = shellQuote(nodeModules);
   const inner = `sh -c ${shellQuote(command)}`;
   const exit = String(NODE_MODULES_INSTALL_LOCK_TIMEOUT_EXIT);
+  const marker = shellQuote(`${nodeModules}/${NODE_MODULES_INSTALL_COMPLETE_MARKER}`);
+  const hiddenLockfile = shellQuote(`${nodeModules}/.package-lock.json`);
   return [
     `if [ -d ${dir} ] && [ ! -L ${dir} ] && command -v flock >/dev/null 2>&1; then`,
-    `  flock -w ${String(NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS)} -E ${exit} ${dir} ${inner}; rc=$?;`,
+    `  flock -w ${String(NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS)} -E ${exit} ${dir} sh -c ${shellQuote(
+      `${inner} || exit; if [ -e ${hiddenLockfile} ] && [ ! -e ${marker} ]; then touch ${marker} || true; fi`,
+    )}; rc=$?;`,
     `  if [ "$rc" -eq ${exit} ]; then echo "timed out waiting for the dependency install holding ${nodeModules}" >&2; fi;`,
     `  exit "$rc";`,
     `fi;`,
     inner,
   ].join('\n');
 }
+
+/** Runs the node_modules install to completion, or waits for the one already
+ *  running, before a postCreateCommand: that command must find the dependencies
+ *  in place whatever it does itself. Absent from images without the toolkit. */
+export const NODE_MODULES_INSTALL_WAIT_COMMAND =
+  'if command -v verity-node-modules-install >/dev/null 2>&1; then verity-node-modules-install --wait; fi';

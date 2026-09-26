@@ -39,7 +39,14 @@ if ! command -v flock >/dev/null 2>&1; then
   exit 0
 fi
 exec 9<"$MODULES" || exit 1
-flock -n 9 || exit 0
+# --wait is the provisioner's call before a devcontainer postCreateCommand: that
+# command must find finished dependencies, so it waits for an install already
+# running instead of leaving it to the background one.
+if [ "${1:-}" = '--wait' ]; then
+  flock 9 || exit 1
+else
+  flock -n 9 || exit 0
+fi
 
 # npm can write its hidden lockfile before lifecycle scripts finish. Our marker is
 # written only after the whole command succeeds, so an interrupted prepare or
