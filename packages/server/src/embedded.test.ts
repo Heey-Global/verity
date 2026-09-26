@@ -1202,6 +1202,11 @@ describe('Uplink control client logging (#582 follow-up)', () => {
   });
 });
 
+it('keeps remote control admission disabled in the production entrypoint', () => {
+  const main = readFileSync(new URL('./server-main.ts', import.meta.url), 'utf8');
+  expect(main.match(/\bremoteControl\s*:/u)).toBeNull();
+});
+
 describe('devcontainerBuildOptionsForDockerBaseUrl (R3.1/#299)', () => {
   const ORIG = process.env.VERITY_SANDBOX_TOOLKIT_FEATURE_REF;
   afterEach(() => {
