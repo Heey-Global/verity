@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.35.0](https://github.com/Heey-Global/verity/compare/mobile-v1.34.0...mobile-v1.35.0) (2026-09-26)
+
+
+### Features
+
+* **integrations:** import Matrix chats into project knowledge ([#703](https://github.com/Heey-Global/verity/issues/703)) ([974d14b](https://github.com/Heey-Global/verity/commit/974d14bcc6491312c4584e5d352235f12f8cfab4))
+* **mobile:** add opt-in remote control smoke request ([#799](https://github.com/Heey-Global/verity/issues/799)) ([907e88b](https://github.com/Heey-Global/verity/commit/907e88ba004d0e25bef1cd2ae29e4cef50ce0b25))
+* **mobile:** group model picker and pin OpenCode model order ([#728](https://github.com/Heey-Global/verity/issues/728)) ([ff7ff46](https://github.com/Heey-Global/verity/commit/ff7ff464d164c89d602463bde0e3fb208ef341fb))
+* **mobile:** save local session work to project ([#739](https://github.com/Heey-Global/verity/issues/739)) ([a50760a](https://github.com/Heey-Global/verity/commit/a50760a85a05172768ddfa5cf6f722914d3e0b44))
+* **sessions:** link agents across projects ([#736](https://github.com/Heey-Global/verity/issues/736)) ([70f9184](https://github.com/Heey-Global/verity/commit/70f9184c48f7515fa982154c996213f960d0102e))
+* **sessions:** move sessions between local projects ([#708](https://github.com/Heey-Global/verity/issues/708)) ([e16056b](https://github.com/Heey-Global/verity/commit/e16056b251ddcccd87fca58f82dcbf9f9cd71756))
+
+
+### Bug Fixes
+
+* **integrations:** configure Matrix account in Verity settings ([#714](https://github.com/Heey-Global/verity/issues/714)) ([c89df9d](https://github.com/Heey-Global/verity/commit/c89df9d345be0a5a4eb98a78b376642e92e91f0d))
+* **integrations:** restore overview and show Matrix setup errors ([#717](https://github.com/Heey-Global/verity/issues/717)) ([abbf7e4](https://github.com/Heey-Global/verity/commit/abbf7e401fb1ebd4f7cd7a30e5307ef60951f0d3))
+* **mobile:** choose Matrix room project from server settings ([#745](https://github.com/Heey-Global/verity/issues/745)) ([b5bb074](https://github.com/Heey-Global/verity/commit/b5bb07412f38c5ea9ab668076eff53e595170a60))
+* **mobile:** clarify Matrix room connection state ([#757](https://github.com/Heey-Global/verity/issues/757)) ([ec0c2e3](https://github.com/Heey-Global/verity/commit/ec0c2e3047dc200e4ca89a23f248fd3d31ce0887))
+* **mobile:** keep dragged projects anchored to the finger ([#707](https://github.com/Heey-Global/verity/issues/707)) ([49e3772](https://github.com/Heey-Global/verity/commit/49e377235ba752727113b3efaf27f555cef7e317))
+* **mobile:** let session settings scroll and show link failures ([#746](https://github.com/Heey-Global/verity/issues/746)) ([8fc940e](https://github.com/Heey-Global/verity/commit/8fc940e306d2facbf3d981822bd9cb137eaa6b3f))
+* **mobile:** make Matrix account form reflect its save state ([#727](https://github.com/Heey-Global/verity/issues/727)) ([bd50611](https://github.com/Heey-Global/verity/commit/bd50611b43ae4dc0c0e039a317bc085a3fe232bb))
+* **mobile:** move Matrix settings under Connected services ([#723](https://github.com/Heey-Global/verity/issues/723)) ([992d172](https://github.com/Heey-Global/verity/commit/992d1726ea1f4512ed94dd2fb0e7babd138e56e5))
+* **mobile:** open project settings directly ([#731](https://github.com/Heey-Global/verity/issues/731)) ([7168c69](https://github.com/Heey-Global/verity/commit/7168c69294e45d9cd087a1bc659286423f4f6fc4))
+* **mobile:** prefetch older chat history before scroll edge ([#732](https://github.com/Heey-Global/verity/issues/732)) ([b9979a9](https://github.com/Heey-Global/verity/commit/b9979a935e27d19a61a1c6e79550a95654e7bf08))
+* **mobile:** restore floating project drag with safe ref cleanup ([#712](https://github.com/Heey-Global/verity/issues/712)) ([02dd64b](https://github.com/Heey-Global/verity/commit/02dd64b2a93d126b91d84709f91a117c65823fcf))
+* **mobile:** simplify project settings overview ([#735](https://github.com/Heey-Global/verity/issues/735)) ([877fba2](https://github.com/Heey-Global/verity/commit/877fba2f3b5ed6ee1b7a70030d879c3ccaeb7858))
+* **mobile:** unify session settings and project selection ([#719](https://github.com/Heey-Global/verity/issues/719)) ([1eaad62](https://github.com/Heey-Global/verity/commit/1eaad62fee1ae55a74960237a16f5dcc0d156bef))
+* **session-links:** keep message approvals until decided ([#796](https://github.com/Heey-Global/verity/issues/796)) ([b1a2519](https://github.com/Heey-Global/verity/commit/b1a2519c80750590abddf86083ee5c4e55332488))
+
+
+### Reverts
+
+* **mobile:** restore the project reorder from build 1.34.0 ([#709](https://github.com/Heey-Global/verity/issues/709)) ([c57330d](https://github.com/Heey-Global/verity/commit/c57330de74cc9e4ea3ce68bfe977a2e65eb996ba))
+
 ## [1.34.0](https://github.com/Heey-Global/verity/compare/mobile-v1.33.0...mobile-v1.34.0) (2026-09-24)
 
 
