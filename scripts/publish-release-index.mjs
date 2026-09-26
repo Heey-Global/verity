@@ -43,25 +43,26 @@ function runDocker(args) {
 }
 
 /**
- * @param {{image: string, version: string, sourceSha: string, sources: string[]}} input
+ * @param {{image: string, version: string, sourceSha: string}} input
  * @param {Docker} docker
  */
-export function publishReleaseIndex(input, docker = runDocker) {
-  const { image, version, sourceSha, sources } = input;
+function releaseIndex(input, docker) {
+  const { image, version, sourceSha } = input;
   if (!image || image.startsWith('-') || /[\s@]/u.test(image))
     throw new Error('Invalid image repository');
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version))
     throw new Error('Invalid release version');
   if (!/^[a-f0-9]{40}$/u.test(sourceSha)) throw new Error('Invalid release source SHA');
-  const target = `${image}:v${version}`;
   const annotations = {
     'org.opencontainers.image.revision': sourceSha,
     'org.opencontainers.image.version': `v${version}`,
   };
-  const readTarget = () => {
+  /** @param {string} tag */
+  const read = (tag) => {
+    const reference = `${image}:${tag}`;
     let digest;
     try {
-      digest = digestValue(docker(['inspect', '--format', '{{.Manifest.Digest}}', target]));
+      digest = digestValue(docker(['inspect', '--format', '{{.Manifest.Digest}}', reference]));
     } catch (error) {
       if (manifestAbsent(error)) return undefined;
       throw error;
@@ -78,13 +79,40 @@ export function publishReleaseIndex(input, docker = runDocker) {
       typeof raw.annotations !== 'object' ||
       raw.annotations === null
     )
-      throw new Error(`Existing ${target} is not an annotated release index`);
+      throw new Error(`Existing ${reference} is not an annotated release index`);
     for (const [key, expected] of Object.entries(annotations)) {
       if (!(key in raw.annotations) || Reflect.get(raw.annotations, key) !== expected)
-        throw new Error(`Existing ${target} has conflicting ${key}`);
+        throw new Error(`Existing ${reference} has conflicting ${key}`);
     }
     return digest;
   };
+  return { image, annotations, releaseTag: `v${version}`, read };
+}
+
+/**
+ * Creates the annotated index for a release, or reuses the one already there.
+ * With `stageTag` the index is written under that tag instead of `vX.Y.Z`, so
+ * a consumer can pin its digest before the release gate allows the version tag
+ * to exist; `promoteReleaseIndex` later points `vX.Y.Z` at the same digest.
+ *
+ * @param {{image: string, version: string, sourceSha: string, sources: string[],
+ *   stageTag?: string}} input
+ * @param {Docker} docker
+ */
+export function publishReleaseIndex(input, docker = runDocker) {
+  const { image, annotations, releaseTag, read } = releaseIndex(input, docker);
+  const { sources, stageTag } = input;
+  if (
+    stageTag !== undefined &&
+    (stageTag === releaseTag || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/u.test(stageTag))
+  )
+    throw new Error('Invalid stage tag');
+  // A version tag that already exists wins even when staging: a re-run after
+  // the gate must bundle what was published, not a freshly staged twin.
+  const released = read(releaseTag);
+  if (released) return { digest: released, reused: true };
+  const tag = stageTag ?? releaseTag;
+  const readTarget = () => (tag === releaseTag ? undefined : read(tag));
   const existing = readTarget();
   if (existing) return { digest: existing, reused: true };
   if (
@@ -97,7 +125,7 @@ export function publishReleaseIndex(input, docker = runDocker) {
       `${repository(source)}@${digestValue(docker(['inspect', '--format', '{{.Manifest.Digest}}', source]))}`,
   );
   // Another serialized workflow may have completed while sources were resolving.
-  const appeared = readTarget();
+  const appeared = read(releaseTag) ?? readTarget();
   if (appeared) return { digest: appeared, reused: true };
   docker([
     'create',
@@ -106,22 +134,51 @@ export function publishReleaseIndex(input, docker = runDocker) {
       `index:${key}=${value}`,
     ]),
     '--tag',
-    target,
+    `${image}:${tag}`,
     ...immutableSources,
   ]);
-  const digest = readTarget();
-  if (!digest) throw new Error(`Published release index ${target} is missing`);
+  const digest = read(tag);
+  if (!digest) throw new Error(`Published release index ${image}:${tag} is missing`);
+  return { digest, reused: false };
+}
+
+/**
+ * Points `vX.Y.Z` at an index staged by `publishReleaseIndex`. A single-source
+ * `imagetools create` copies the index bytes unchanged, so the digest a Server
+ * bundled before the gate is the digest its release tag names; the read-back
+ * turns any exception to that into a failed publication rather than a Server
+ * pinned to an index no release tag points at.
+ *
+ * @param {{image: string, version: string, sourceSha: string, digest: string}} input
+ * @param {Docker} docker
+ */
+export function promoteReleaseIndex(input, docker = runDocker) {
+  const { image, releaseTag, read } = releaseIndex(input, docker);
+  const digest = digestValue(input.digest);
+  const existing = read(releaseTag);
+  if (existing === digest) return { digest, reused: true };
+  if (existing) throw new Error(`Existing ${image}:${releaseTag} is not the staged ${digest}`);
+  docker(['create', '--tag', `${image}:${releaseTag}`, `${image}@${digest}`]);
+  const promoted = read(releaseTag);
+  if (promoted !== digest)
+    throw new Error(`Promoted ${image}:${releaseTag} is ${promoted ?? 'missing'}, not ${digest}`);
   return { digest, reused: false };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const result = publishReleaseIndex({
+    const release = {
       image: process.env.IMAGE ?? '',
       version: process.env.VERSION ?? '',
       sourceSha: process.env.SOURCE_SHA ?? '',
-      sources: process.argv.slice(2),
-    });
+    };
+    const result = process.env.PROMOTE_DIGEST
+      ? promoteReleaseIndex({ ...release, digest: process.env.PROMOTE_DIGEST })
+      : publishReleaseIndex({
+          ...release,
+          sources: process.argv.slice(2),
+          ...(process.env.STAGE_TAG ? { stageTag: process.env.STAGE_TAG } : {}),
+        });
     const output = `digest=${result.digest}\nreused=${String(result.reused)}\n`;
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, output);
     else process.stdout.write(output);
