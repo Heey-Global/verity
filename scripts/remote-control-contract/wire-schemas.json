@@ -1,0 +1,377 @@
+{
+  "negotiation": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "capabilities": {
+        "maxItems": 32,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[\\x21-\\x7e]{1,64}(?![\\s\\S])"
+        }
+      },
+      "channels": {
+        "minItems": 1,
+        "maxItems": 32,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[\\x21-\\x7e]{1,64}(?![\\s\\S])"
+        }
+      }
+    },
+    "additionalProperties": false,
+    "x-semanticChecks": ["uniqueNames"]
+  },
+  "connect": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "connect"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "installationHandle": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "capabilities": {
+        "minItems": 1,
+        "maxItems": 32,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[\\x21-\\x7e]{1,64}(?![\\s\\S])"
+        }
+      }
+    },
+    "required": ["type", "requestId", "installationHandle", "capabilities"],
+    "additionalProperties": false,
+    "x-semanticChecks": ["offeredRemoteCapability", "uniqueCapabilityNames"]
+  },
+  "sessionRequest": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.request"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "capability": {
+        "type": "string",
+        "const": "remote-control-v1"
+      },
+      "decisionExpiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": ["type", "requestId", "sessionId", "capability", "decisionExpiresAt"],
+    "additionalProperties": false
+  },
+  "sessionAccept": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.accept"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "sessionId"],
+    "additionalProperties": false
+  },
+  "sessionRefuse": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.refuse"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "enum": ["unavailable", "limit_reached"]
+      }
+    },
+    "required": ["type", "sessionId", "code"],
+    "additionalProperties": false
+  },
+  "sessionTicket": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.ticket"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "ticket": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,512}(?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "capability": {
+        "type": "string",
+        "const": "remote-control-v1"
+      }
+    },
+    "required": ["type", "sessionId", "ticket", "expiresAt", "capability"],
+    "additionalProperties": false
+  },
+  "connectReady": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "connect.ready"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "ticket": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,512}(?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "capability": {
+        "type": "string",
+        "const": "remote-control-v1"
+      }
+    },
+    "required": ["type", "requestId", "sessionId", "ticket", "expiresAt", "capability"],
+    "additionalProperties": false
+  },
+  "connectError": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "connect.error"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "enum": [
+          "unavailable",
+          "rate_limited",
+          "limit_reached",
+          "protocol_unsupported",
+          "timeout",
+          "cancelled",
+          "internal"
+        ]
+      },
+      "retryAfterMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 60000
+      }
+    },
+    "required": ["type", "requestId", "code"],
+    "additionalProperties": false,
+    "x-semanticChecks": ["retryAfterMsOnlyForRateLimited"]
+  },
+  "connectCancel": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "connect.cancel"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "requestId"],
+    "additionalProperties": false
+  },
+  "sessionCancelled": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "session.cancelled"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "enum": ["cancelled", "timeout", "unavailable"]
+      }
+    },
+    "required": ["type", "sessionId", "code"],
+    "additionalProperties": false
+  },
+  "attach": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "attach"
+      },
+      "ticket": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,512}(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "ticket"],
+    "additionalProperties": false
+  },
+  "attached": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "attached"
+      },
+      "sessionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "capability": {
+        "type": "string",
+        "const": "remote-control-v1"
+      }
+    },
+    "required": ["type", "sessionId", "capability"],
+    "additionalProperties": false
+  },
+  "streamOpen": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "stream.open"
+      },
+      "streamId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "channel": {
+        "type": "string",
+        "const": "remote"
+      },
+      "meta": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "required": ["type", "streamId", "channel", "meta"],
+    "additionalProperties": false
+  },
+  "streamData": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "stream.data"
+      },
+      "streamId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "seq": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "payload": {
+        "type": "string",
+        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "streamId", "seq", "payload"],
+    "additionalProperties": false,
+    "x-semanticChecks": ["canonicalBase64", "decodedChunkAtMost65536Bytes"]
+  },
+  "streamEnd": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "stream.end"
+      },
+      "streamId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "streamId"],
+    "additionalProperties": false
+  },
+  "streamReset": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "stream.reset"
+      },
+      "streamId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "code": {
+        "type": "string",
+        "enum": ["protocol_error", "concurrency_limit", "upstream_error", "timeout"]
+      }
+    },
+    "required": ["type", "streamId", "code"],
+    "additionalProperties": false
+  }
+}
