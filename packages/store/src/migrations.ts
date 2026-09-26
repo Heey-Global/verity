@@ -3167,6 +3167,49 @@ const migrations: Record<string, Migration> = {
       await sql`alter table http_mcp_connections drop column owner_user_id`.execute(db);
     },
   },
+  '0114_pending_session_link_messages': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('session_link_pending_messages')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('invocation_id', 'text', (c) => c.notNull().unique())
+        .addColumn('session_a', 'text', (c) => c.notNull())
+        .addColumn('session_b', 'text', (c) => c.notNull())
+        .addColumn('source_session_id', 'text', (c) => c.notNull())
+        .addColumn('target_session_id', 'text', (c) => c.notNull())
+        .addColumn('message', 'text', (c) => c.notNull())
+        .addColumn('approved_at', 'timestamptz')
+        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .addForeignKeyConstraint(
+          'session_link_pending_messages_link_fk',
+          ['session_a', 'session_b'],
+          'session_links',
+          ['session_a', 'session_b'],
+          (c) => c.onDelete('cascade'),
+        )
+        .addCheckConstraint(
+          'session_link_pending_messages_source',
+          sql`source_session_id = session_a or source_session_id = session_b`,
+        )
+        .addCheckConstraint(
+          'session_link_pending_messages_target',
+          sql`target_session_id = session_a or target_session_id = session_b`,
+        )
+        .addCheckConstraint(
+          'session_link_pending_messages_direction',
+          sql`source_session_id <> target_session_id`,
+        )
+        .execute();
+      await db.schema
+        .createIndex('session_link_pending_messages_source_idx')
+        .on('session_link_pending_messages')
+        .column('source_session_id')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('session_link_pending_messages').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

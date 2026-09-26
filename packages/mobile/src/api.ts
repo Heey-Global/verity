@@ -2176,6 +2176,33 @@ export class VerityClient {
       .parse(await res.json()).links;
   }
 
+  async listPendingLinkedMessages(id: string): Promise<
+    Array<{
+      id: string;
+      targetSessionId: string;
+      message: string;
+      approved: boolean;
+      createdAt: string;
+    }>
+  > {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/linked-message-approvals`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        approvals: z.array(
+          z.object({
+            id: z.string(),
+            targetSessionId: z.string(),
+            message: z.string(),
+            approved: z.boolean(),
+            createdAt: z.string().datetime(),
+          }),
+        ),
+      })
+      .parse(await res.json()).approvals;
+  }
+
   async linkSessions(id: string, targetSessionId: string): Promise<void> {
     await this.request(`/sessions/${encodeURIComponent(id)}/links`, {
       method: 'POST',

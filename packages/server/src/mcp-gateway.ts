@@ -168,6 +168,7 @@ export interface McpGatewayDeps {
     projectId: string;
     sessionId: string;
     callId: string;
+    invocationId: string;
     toolName: GatewayToolName;
     input: Record<string, unknown>;
     signal: AbortSignal;
@@ -762,6 +763,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           projectId,
           sessionId,
           callId,
+          invocationId,
           toolName: toolName,
           input: request.data,
           signal: timeout,

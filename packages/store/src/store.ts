@@ -66,6 +66,16 @@ export interface SessionLinkRecord {
 
 export type SessionLinkReservation = 'reserved' | 'duplicate' | 'exhausted' | 'unlinked';
 
+export interface PendingSessionLinkMessage {
+  id: string;
+  invocationId: string;
+  sourceSessionId: string;
+  targetSessionId: string;
+  message: string;
+  approvedAt: Date | null;
+  createdAt: Date;
+}
+
 export type GoogleWorkspaceFileKind = 'slides' | 'docs' | 'sheets';
 
 export interface SessionWorkspaceFileRecord {
@@ -1429,6 +1439,133 @@ export class EventStore implements EventSink {
       .where('source_session_id', '=', sourceId)
       .executeTakeFirst();
     return row !== undefined;
+  }
+
+  async createPendingSessionLinkMessage(input: {
+    id: string;
+    invocationId: string;
+    sourceSessionId: string;
+    targetSessionId: string;
+    message: string;
+  }): Promise<boolean> {
+    const [sessionA, sessionB] = [input.sourceSessionId, input.targetSessionId].sort() as [
+      string,
+      string,
+    ];
+    return this.db.transaction().execute(async (trx) => {
+      const link = await trx
+        .selectFrom('session_links')
+        .select('session_a')
+        .where('session_a', '=', sessionA)
+        .where('session_b', '=', sessionB)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!link) return false;
+      const count = await trx
+        .selectFrom('session_link_pending_messages')
+        .select(sql<number>`count(*)::int`.as('count'))
+        .where('source_session_id', '=', input.sourceSessionId)
+        .executeTakeFirstOrThrow();
+      if (count.count >= 6) throw new Error('too many linked messages awaiting approval');
+      const inserted = await trx
+        .insertInto('session_link_pending_messages')
+        .values({
+          id: input.id,
+          invocation_id: input.invocationId,
+          session_a: sessionA,
+          session_b: sessionB,
+          source_session_id: input.sourceSessionId,
+          target_session_id: input.targetSessionId,
+          message: input.message,
+          approved_at: null,
+        })
+        .onConflict((oc) => oc.column('invocation_id').doNothing())
+        .returning('id')
+        .executeTakeFirst();
+      return inserted !== undefined;
+    });
+  }
+
+  async listPendingSessionLinkMessages(
+    sourceSessionId: string,
+  ): Promise<PendingSessionLinkMessage[]> {
+    const rows = await this.db
+      .selectFrom('session_link_pending_messages')
+      .selectAll()
+      .where('source_session_id', '=', sourceSessionId)
+      .orderBy('created_at')
+      .execute();
+    return rows.map((row) => ({
+      id: row.id,
+      invocationId: row.invocation_id,
+      sourceSessionId: row.source_session_id,
+      targetSessionId: row.target_session_id,
+      message: row.message,
+      approvedAt: row.approved_at,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async pendingSessionLinkMessageIds(
+    sessionIds: readonly string[],
+  ): Promise<Map<string, string[]>> {
+    const result = new Map<string, string[]>();
+    if (sessionIds.length === 0) return result;
+    const rows = await this.db
+      .selectFrom('session_link_pending_messages')
+      .select(['id', 'source_session_id'])
+      .where('source_session_id', 'in', [...sessionIds])
+      .execute();
+    for (const row of rows) {
+      const ids = result.get(row.source_session_id) ?? [];
+      ids.push(row.id);
+      result.set(row.source_session_id, ids);
+    }
+    return result;
+  }
+
+  async getPendingSessionLinkMessage(
+    sourceSessionId: string,
+    id: string,
+  ): Promise<PendingSessionLinkMessage | undefined> {
+    const row = await this.db
+      .selectFrom('session_link_pending_messages')
+      .selectAll()
+      .where('source_session_id', '=', sourceSessionId)
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : {
+          id: row.id,
+          invocationId: row.invocation_id,
+          sourceSessionId: row.source_session_id,
+          targetSessionId: row.target_session_id,
+          message: row.message,
+          approvedAt: row.approved_at,
+          createdAt: row.created_at,
+        };
+  }
+
+  async approvePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
+    const updated = await this.db
+      .updateTable('session_link_pending_messages')
+      .set({ approved_at: sql`coalesce(approved_at, now())` })
+      .where('source_session_id', '=', sourceSessionId)
+      .where('id', '=', id)
+      .returning('id')
+      .executeTakeFirst();
+    return updated !== undefined;
+  }
+
+  async deletePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
+    const deleted = await this.db
+      .deleteFrom('session_link_pending_messages')
+      .where('source_session_id', '=', sourceSessionId)
+      .where('id', '=', id)
+      .returning('id')
+      .executeTakeFirst();
+    return deleted !== undefined;
   }
 
   async reserveSessionLinkMessage(

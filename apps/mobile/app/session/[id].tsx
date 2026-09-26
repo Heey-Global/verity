@@ -519,6 +519,10 @@ export function SessionChat({
   const [linkedSessions, setLinkedSessions] = useState<
     Awaited<ReturnType<VerityClient['listSessionLinks']>>
   >([]);
+  const [pendingLinkedMessages, setPendingLinkedMessages] = useState<
+    Awaited<ReturnType<VerityClient['listPendingLinkedMessages']>>
+  >([]);
+  const [decidingLinkedMessage, setDecidingLinkedMessage] = useState<string | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -539,6 +543,40 @@ export function SessionChat({
       };
     }, [client, sessionId]),
   );
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      const refresh = () => {
+        void client
+          .listPendingLinkedMessages(sessionId)
+          .then((items) => {
+            if (active) setPendingLinkedMessages(items);
+          })
+          .catch(() => undefined);
+      };
+      refresh();
+      const interval = setInterval(refresh, 5_000);
+      return () => {
+        active = false;
+        clearInterval(interval);
+      };
+    }, [client, sessionId]),
+  );
+  const decideLinkedMessage = (id: string, decision: PermissionDecision): void => {
+    setDecidingLinkedMessage(id);
+    void client
+      .decidePermission(sessionId, id, decision)
+      .then(() => {
+        setPendingLinkedMessages((items) => items.filter((item) => item.id !== id));
+      })
+      .catch((error: unknown) => {
+        Alert.alert(
+          'Message decision failed',
+          error instanceof Error ? error.message : 'Please try again.',
+        );
+      })
+      .finally(() => setDecidingLinkedMessage(null));
+  };
   const disconnectLinkedSession = (link: (typeof linkedSessions)[number]) => {
     Alert.alert(
       'Disconnect sessions?',
@@ -3830,6 +3868,25 @@ export function SessionChat({
           onDecide={decidePermission}
         />
       ) : null}
+      {pendingLinkedMessages
+        .filter((item) => item.id !== session.pendingPermission?.toolUseId)
+        .slice(0, 1)
+        .map((item) => (
+          <PermissionPrompt
+            key={item.id}
+            pending={{
+              toolUseId: item.id,
+              tool: 'verity_send_session_message',
+              input: { targetSessionId: item.targetSessionId, message: item.message },
+              riskClass: 'ask',
+              createdAt: Date.parse(item.createdAt),
+              grantChannel: 'acp',
+            }}
+            deciding={decidingLinkedMessage === item.id}
+            dead={false}
+            onDecide={decideLinkedMessage}
+          />
+        ))}
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}

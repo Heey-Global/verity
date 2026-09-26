@@ -19,6 +19,7 @@ import {
   type MessageSearchResult,
   PROJECT_MEMORY_MAX_CHARS,
   ProjectMemoryTooLargeError,
+  EventStore,
   waitForPendingMessageProjections,
 } from './store.js';
 import { createIsolatedTestDb, createTestDb, truncateAll, type TestDb } from './testing.js';
@@ -47,6 +48,58 @@ const sampleEvents: AgentEvent[] = [
 ];
 
 describe('EventStore — linked session allowance', () => {
+  it('retains unanswered messages across store instances and bounds the pending inbox', async () => {
+    for (const id of ['p1', 'p2']) {
+      await ctx.store.upsertProject({
+        id,
+        owner: 'local',
+        repo: id,
+        containerName: `test-${id}`,
+        state: 'active',
+      });
+    }
+    await ctx.store.createSession({ ...session, projectId: 'p1' });
+    await ctx.store.createSession({
+      sessionId: 's2',
+      worktree: '/wt/agent-s2',
+      model: session.model,
+      projectId: 'p2',
+    });
+    await ctx.store.createSessionLink('s1', 's2');
+    for (let index = 0; index < 6; index += 1) {
+      expect(
+        await ctx.store.createPendingSessionLinkMessage({
+          id: `card-${index}`,
+          invocationId: `call-${index}`,
+          sourceSessionId: 's1',
+          targetSessionId: 's2',
+          message: `Question ${index}`,
+        }),
+      ).toBe(true);
+    }
+    const restarted = new EventStore(ctx.db);
+    expect((await restarted.listPendingSessionLinkMessages('s1')).map((row) => row.id)).toEqual(
+      Array.from({ length: 6 }, (_, index) => `card-${index}`),
+    );
+    await expect(
+      ctx.store.createPendingSessionLinkMessage({
+        id: 'overflow',
+        invocationId: 'overflow',
+        sourceSessionId: 's1',
+        targetSessionId: 's2',
+        message: 'Another question',
+      }),
+    ).rejects.toThrow('too many linked messages awaiting approval');
+    expect(await restarted.approvePendingSessionLinkMessage('s1', 'card-0')).toBe(true);
+    expect(
+      (await ctx.store.getPendingSessionLinkMessage('s1', 'card-0'))?.approvedAt,
+    ).toBeInstanceOf(Date);
+    expect(await restarted.deletePendingSessionLinkMessage('s1', 'card-0')).toBe(true);
+    expect((await restarted.pendingSessionLinkMessageIds(['s1'])).get('s1')).toHaveLength(5);
+    await ctx.store.deleteSessionLink('s1', 's2');
+    expect(await restarted.listPendingSessionLinkMessages('s1')).toEqual([]);
+  });
+
   it('serializes concurrent acceptance so the pool cannot be exhausted', async () => {
     const pairCount = 11;
     let active = 0;
