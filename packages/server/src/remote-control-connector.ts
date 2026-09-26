@@ -43,6 +43,21 @@ export interface RemoteConnectorPoolOptions {
   connectLocal?: (host: string, port: number) => Socket;
 }
 
+export function remoteDataUrlForControl(controlUrl: string): string {
+  const url = new URL(controlUrl);
+  if (
+    url.protocol !== 'wss:' ||
+    url.pathname !== '/control' ||
+    url.search ||
+    url.hash ||
+    url.username ||
+    url.password
+  )
+    throw new Error('remote connector requires a fixed WSS /control endpoint');
+  url.pathname = '/data';
+  return url.href;
+}
+
 /** A bounded, opt-in connector. Construction does not activate remote admission. */
 export function createRemoteConnectorPool(options: RemoteConnectorPoolOptions): {
   reserve: (

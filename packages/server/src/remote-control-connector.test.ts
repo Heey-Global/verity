@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import WebSocket, { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRemoteConnectorPool } from './remote-control-connector.js';
+import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
 import type { RemoteConnectorReservation } from './uplink-control-client.js';
 
 const open = new Set<{ close: () => Promise<void> }>();
@@ -83,6 +83,13 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it('derives data attachment from the authenticated control origin', () => {
+    expect(remoteDataUrlForControl('wss://uplink.example/control')).toBe(
+      'wss://uplink.example/data',
+    );
+    expect(() => remoteDataUrlForControl('ws://uplink.example/control')).toThrow();
+    expect(() => remoteDataUrlForControl('wss://uplink.example/control?target=other')).toThrow();
+  });
   it('attaches a ticket before forwarding opaque bytes to the fixed local TLS ingress', async () => {
     const f = await fixture();
     const reservation = await reserve(f);

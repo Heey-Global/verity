@@ -102,6 +102,11 @@ import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } 
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
 import { PreviewShareManager, sweepOrphanedPreviewShares } from './preview-share-manager.js';
 import { UplinkControlClient } from './uplink-control-client.js';
+import {
+  createRemoteConnectorPool,
+  remoteDataUrlForControl,
+  type RemoteConnectorPoolOptions,
+} from './remote-control-connector.js';
 import { createDeferredLogger } from './deferred-logger.js';
 import { createDockerGvisorRuntimeVerifier } from './docker-gvisor-runtime-verifier.js';
 import {
@@ -792,6 +797,8 @@ export interface EmbeddedServerConfig {
         resolveConnectorImage: () => Promise<string | undefined>;
         uplinkUrl: string;
         serverVersion: string;
+        /** Explicitly configured fixed ingress; absent in the production entrypoint. */
+        remoteControl?: Pick<RemoteConnectorPoolOptions, 'localHost' | 'localPort'>;
       }
     | undefined;
   /** Sandbox runtime hardening (security review C1). The provisioner always drops
@@ -2465,12 +2472,21 @@ export async function buildEmbeddedServer(
   // lines. Allocated whether or not a client is built, so the binding below
   // needs no second copy of the conditions that decide it.
   const uplinkLog = createDeferredLogger();
+  const remoteConnector = config.publicPreviews?.remoteControl
+    ? createRemoteConnectorPool({
+        dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
+        ...config.publicPreviews.remoteControl,
+      })
+    : undefined;
   const uplinkControl =
     config.publicPreviews !== undefined && projectDocker !== undefined
       ? new UplinkControlClient({
           url: config.publicPreviews.uplinkUrl,
           store: eventStore,
           serverVersion: config.publicPreviews.serverVersion,
+          ...(remoteConnector === undefined
+            ? {}
+            : { offerRemoteControl: true, reserveRemoteConnector: remoteConnector.reserve }),
           log: uplinkLog,
           onFeaturesDisabled: (reason) =>
             previewShareManager?.disableAll(reason) ?? Promise.resolve(),
