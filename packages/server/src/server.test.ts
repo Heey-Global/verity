@@ -3071,6 +3071,60 @@ describe('GET /sessions', () => {
     ]);
   });
 
+  it('keeps a timed-out linked message visible as needing input after its turn ends', async () => {
+    for (const id of ['p1', 'p2']) {
+      await ctx.store.upsertProject({
+        id,
+        owner: 'local',
+        repo: id,
+        containerName: `test-${id}`,
+        state: 'active',
+      });
+    }
+    await ctx.store.createSession({
+      sessionId: 's1',
+      worktree: '/wt/s1',
+      model: 'm',
+      projectId: 'p1',
+    });
+    await ctx.store.createSession({
+      sessionId: 's2',
+      worktree: '/wt/s2',
+      model: 'm',
+      projectId: 'p2',
+    });
+    await ctx.store.createSessionLink('s1', 's2');
+    await ctx.store.appendEvent('s1', {
+      t: 'result',
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      stopReason: 'end_turn',
+    });
+    await ctx.store.createPendingSessionLinkMessage({
+      id: 'card-1',
+      invocationId: 'call-1',
+      sourceSessionId: 's1',
+      targetSessionId: 's2',
+      sourceProjectId: 'p1',
+      requestMac: 'a'.repeat(64),
+      macKeyId: 'key-1',
+      message: 'Deliver after approval',
+    });
+
+    const overview = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(overview.statusCode).toBe(200);
+    expect(overview.json()).toContainEqual(
+      expect.objectContaining({
+        sessionId: 's1',
+        status: 'awaiting_input',
+        pendingPermissions: ['card-1'],
+        permissionAwaitingInput: true,
+      }),
+    );
+    const activity = await app.inject({ method: 'GET', url: '/sessions/s1/activity' });
+    expect(activity.statusCode).toBe(200);
+    expect(activity.json().pendingPermissions).toContain('card-1');
+  });
+
   it('reports a conductor-busy session as running even when its last event is terminal', async () => {
     // Regression: the operator sends a new turn after a previous one `completed`.
     // The event log's last status is still `completed` (claude hasn't emitted its

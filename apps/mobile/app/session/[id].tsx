@@ -519,6 +519,10 @@ export function SessionChat({
   const [linkedSessions, setLinkedSessions] = useState<
     Awaited<ReturnType<VerityClient['listSessionLinks']>>
   >([]);
+  const [pendingLinkedMessages, setPendingLinkedMessages] = useState<
+    Awaited<ReturnType<VerityClient['listPendingLinkedMessages']>>
+  >([]);
+  const [decidingLinkedMessage, setDecidingLinkedMessage] = useState<string | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -539,6 +543,41 @@ export function SessionChat({
       };
     }, [client, sessionId]),
   );
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      setPendingLinkedMessages([]);
+      const refresh = () => {
+        void client
+          .listPendingLinkedMessages(sessionId)
+          .then((items) => {
+            if (active) setPendingLinkedMessages(items);
+          })
+          .catch(() => undefined);
+      };
+      refresh();
+      const interval = setInterval(refresh, 5_000);
+      return () => {
+        active = false;
+        clearInterval(interval);
+      };
+    }, [client, sessionId]),
+  );
+  const decideLinkedMessage = (id: string, decision: PermissionDecision): void => {
+    setDecidingLinkedMessage(id);
+    void client
+      .decidePermission(sessionId, id, decision)
+      .then(() => {
+        setPendingLinkedMessages((items) => items.filter((item) => item.id !== id));
+      })
+      .catch((error: unknown) => {
+        Alert.alert(
+          'Message decision failed',
+          error instanceof Error ? error.message : 'Please try again.',
+        );
+      })
+      .finally(() => setDecidingLinkedMessage(null));
+  };
   const disconnectLinkedSession = (link: (typeof linkedSessions)[number]) => {
     Alert.alert(
       'Disconnect sessions?',
@@ -3826,10 +3865,36 @@ export function SessionChat({
         <PermissionPrompt
           pending={session.pendingPermission}
           deciding={decidingPermission === session.pendingPermission.toolUseId}
-          dead={dead}
+          dead={
+            dead &&
+            !pendingLinkedMessages.some((item) => item.id === session.pendingPermission?.toolUseId)
+          }
+          approvedForDelivery={pendingLinkedMessages.some(
+            (item) => item.id === session.pendingPermission?.toolUseId && item.approved,
+          )}
           onDecide={decidePermission}
         />
       ) : null}
+      {pendingLinkedMessages
+        .filter((item) => item.id !== session.pendingPermission?.toolUseId)
+        .slice(0, 1)
+        .map((item) => (
+          <PermissionPrompt
+            key={item.id}
+            pending={{
+              toolUseId: item.id,
+              tool: 'verity_send_session_message',
+              input: { targetSessionId: item.targetSessionId, message: item.message },
+              riskClass: 'ask',
+              createdAt: Date.parse(item.createdAt),
+              grantChannel: 'acp',
+            }}
+            deciding={decidingLinkedMessage === item.id}
+            dead={false}
+            approvedForDelivery={item.approved}
+            onDecide={decideLinkedMessage}
+          />
+        ))}
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
@@ -6870,6 +6935,7 @@ function PermissionPrompt({
   pending,
   deciding,
   dead,
+  approvedForDelivery = false,
   onDecide,
 }: {
   pending: PendingPermission;
@@ -6877,6 +6943,8 @@ function PermissionPrompt({
   deciding: boolean;
   /** Session can't be resumed (worktree gone) — the prompt is inert. */
   dead: boolean;
+  /** The decision was saved, but the target has not accepted the turn yet. */
+  approvedForDelivery?: boolean;
   onDecide: (toolUseId: string, decision: PermissionDecision) => void;
 }) {
   const { theme } = useUnistyles();
@@ -6971,7 +7039,9 @@ function PermissionPrompt({
       handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
       linkedMessage === null
         ? null
-        : `Send to ${linkedMessage.targetSessionId} and continue the exchange?`,
+        : approvedForDelivery
+          ? `Retry delivery to ${linkedMessage.targetSessionId}?`
+          : `Send to ${linkedMessage.targetSessionId} and continue the exchange?`,
       listingSummary === null ? null : listSessionsTitle(listingSummary),
       progressSummary === null ? null : `Read progress for session ${progressSummary.sessionId}?`,
       recentSummary === null
@@ -7008,7 +7078,11 @@ function PermissionPrompt({
             transported. (`auto` is normally pre-approved upstream, so it's rare here —
             labelled plainly if it ever arrives.) */}
         <Text style={styles.permissionRisk}>
-          {pending.riskClass === 'ask' ? 'needs approval' : pending.riskClass}
+          {approvedForDelivery
+            ? 'delivery pending'
+            : pending.riskClass === 'ask'
+              ? 'needs approval'
+              : pending.riskClass}
         </Text>
       </View>
       {httpSummary !== null ? (
@@ -7062,8 +7136,9 @@ function PermissionPrompt({
             </Text>
           </ScrollView>
           <Text style={styles.permissionHttpMeta}>
-            Allowing sends this message and permits a small further exchange. The next limit asks
-            again.
+            {approvedForDelivery
+              ? 'Already approved. Retry sending this message or cancel it.'
+              : 'Allowing sends this message and permits a small further exchange. The next limit asks again.'}
           </Text>
         </View>
       ) : handoffSummary !== null ? (
@@ -7218,7 +7293,7 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`Deny ${pending.tool}`}
+          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${pending.tool}`}
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionDeny,
@@ -7230,7 +7305,7 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.tone.danger} />
           ) : (
             <Text style={[styles.permissionButtonLabel, { color: theme.colors.tone.danger }]}>
-              Deny
+              {approvedForDelivery ? 'Cancel' : 'Deny'}
             </Text>
           )}
         </Pressable>
@@ -7239,7 +7314,7 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`Allow ${pending.tool}${isScopedSecretTool ? ' once' : ''}`}
+          accessibilityLabel={`${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`}
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionAllow,
@@ -7251,7 +7326,7 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {isScopedSecretTool ? 'Allow once' : 'Allow'}
+              {approvedForDelivery ? 'Retry delivery' : isScopedSecretTool ? 'Allow once' : 'Allow'}
             </Text>
           )}
         </Pressable>

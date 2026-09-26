@@ -79,6 +79,7 @@ function build(
     /** Advertise the control-plane session tools, as `embedded.ts` does for that project. */
     sessionTools?: boolean;
     linkedTools?: boolean;
+    deferLinkedApproval?: boolean;
     /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
     authorizeCall?: McpGatewayDeps['authorizeCall'];
   } = {},
@@ -91,6 +92,7 @@ function build(
   const approvals: Harness['approvals'] = [];
   const dispatches: Harness['dispatches'] = [];
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
+    ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
       options.knowledge === true
         ? ['verity_knowledge']
@@ -155,6 +157,7 @@ function build(
       toolUseId: string;
       toolName: string;
       allowStandingGrant?: boolean;
+      signal?: AbortSignal;
     }) => {
       approvals.push({
         sessionId: input.sessionId,
@@ -164,6 +167,23 @@ function build(
           ? {}
           : { allowStandingGrant: input.allowStandingGrant }),
       });
+      if (
+        options.deferLinkedApproval === true &&
+        input.toolName === 'verity_send_session_message'
+      ) {
+        return new Promise<{
+          decision: { behavior: 'deny'; message: string };
+          decidedBy: 'card';
+        }>((resolve) => {
+          const deny = () =>
+            resolve({
+              decision: { behavior: 'deny', message: 'approval timed out' },
+              decidedBy: 'card',
+            });
+          if (input.signal?.aborted) deny();
+          else input.signal?.addEventListener('abort', deny, { once: true });
+        });
+      }
       // `'card'`, not a free-form word: `decidedBy` is a `PermissionDecisionSource` and
       // reaches the audit record as its `decision`, where the schema admits `card` or `grant`
       // and nothing else. The stub is cast to `Conductor` below, so only the parse in
@@ -182,6 +202,7 @@ function build(
       ? {
           pendingPermissions: () => [],
           isBusy: () => false,
+          decidePermission: async () => false,
           // Typed as the real method, so the four-argument call the route makes is checked
           // against `Conductor` at compile time rather than only at run time — the cast
           // below would otherwise let an arity change through silently.
@@ -348,14 +369,11 @@ it('delivers linked agent messages automatically until a renewal card is needed'
         });
         expect(retry.status).toBe(200);
         expect(harness.approvals).toHaveLength(0);
+        expect(harness.dispatches).toHaveLength(6);
       }
     }
   });
-  // The harness records attempts; the real conductor deduplicates the retry by clientReplyId.
-  expect(harness.dispatches).toHaveLength(8);
-  expect(harness.dispatches[6]?.dispatchOpts.clientReplyId).toBe(
-    harness.dispatches[5]?.dispatchOpts.clientReplyId,
-  );
+  expect(harness.dispatches).toHaveLength(7);
   expect(
     harness.approvals.filter((approval) => approval.toolName === 'verity_send_session_message'),
   ).toHaveLength(1);
@@ -421,6 +439,163 @@ it('hands a linked message for a sleeping project to the turn that wakes it', as
   expect(harness.dispatches).toEqual([
     expect.objectContaining({ sessionId: 's2', prompt: expect.stringContaining('Are you there?') }),
   ]);
+});
+
+it('keeps an expired linked-message approval until a later decision sends it once', async () => {
+  const harness = build({ linkedTools: true, deferLinkedApproval: true });
+  for (const [id, repo] of [
+    ['p1', 'alpha'],
+    ['p2', 'beta'],
+  ] as const) {
+    await harness.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo,
+      cloneDir: `__local__-${repo}`,
+      containerName: `verity-${repo}`,
+      state: 'active',
+    });
+  }
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-linked-s1',
+    model: 'claude-opus-5',
+  });
+  await harness.store.createSession({
+    sessionId: 's2',
+    projectId: 'p2',
+    worktree: '/tmp/verity-linked-s2',
+    model: 'claude-opus-5',
+  });
+  await harness.store.createSessionLink('s1', 's2');
+  for (let id = 0; id < 6; id += 1)
+    expect(await harness.store.reserveSessionLinkMessage('s1', 's2', `prior-${id}`, false)).toBe(
+      'reserved',
+    );
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const expired = await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: {
+        name: 'verity_send_session_message',
+        arguments: {
+          targetSessionId: 's2',
+          message: 'Please answer later',
+        },
+      },
+    });
+    expect(expired.status).toBe(200);
+    expect((JSON.parse(expired.body) as { result: { isError?: boolean } }).result.isError).toBe(
+      true,
+    );
+    expect(harness.dispatches).toHaveLength(0);
+    const listing = await harness.app.inject({
+      method: 'GET',
+      url: '/sessions/s1/linked-message-approvals',
+    });
+    expect(listing.statusCode).toBe(200);
+    expect(listing.json().approvals).toMatchObject([
+      { targetSessionId: 's2', message: 'Please answer later', approved: false },
+    ]);
+    const id = (listing.json().approvals as Array<{ id: string }>)[0]!.id;
+    const decision = await harness.app.inject({
+      method: 'POST',
+      url: `/sessions/s1/permissions/${id}`,
+      payload: { behavior: 'allow' },
+    });
+    expect(decision.statusCode).toBe(200);
+    expect(harness.dispatches).toMatchObject([
+      { sessionId: 's2', dispatchOpts: { peer: { message: 'Please answer later' } } },
+    ]);
+    expect(harness.records).toContainEqual(
+      expect.objectContaining({
+        kind: 'gateway_call_served',
+        callId: id,
+        toolName: 'verity_send_session_message',
+        decision: 'card',
+      }),
+    );
+    expect(await harness.store.listPendingSessionLinkMessages('s1')).toEqual([]);
+    expect(
+      (
+        await harness.app.inject({
+          method: 'POST',
+          url: `/sessions/s1/permissions/${id}`,
+          payload: { behavior: 'allow' },
+        })
+      ).statusCode,
+    ).toBe(404);
+    // A crash or DB error after acceptance can leave the approval row behind.
+    // Its durable delivery record must make a later tap a cleanup, not a second turn.
+    await harness.store.createPendingSessionLinkMessage({
+      id: 'already-delivered',
+      invocationId: 'prior-0',
+      sourceSessionId: 's1',
+      targetSessionId: 's2',
+      sourceProjectId: 'p1',
+      requestMac: 'a'.repeat(64),
+      macKeyId: 'key-1',
+      message: 'Already sent',
+    });
+    expect(
+      (
+        await harness.app.inject({
+          method: 'POST',
+          url: '/sessions/s1/permissions/already-delivered',
+          payload: { behavior: 'allow' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(harness.dispatches).toHaveLength(1);
+    expect(await harness.store.listPendingSessionLinkMessages('s1')).toEqual([]);
+    await harness.store.createPendingSessionLinkMessage({
+      id: 'declined',
+      invocationId: 'declined-invocation',
+      sourceSessionId: 's1',
+      targetSessionId: 's2',
+      sourceProjectId: 'p1',
+      requestMac: 'a'.repeat(64),
+      macKeyId: 'key-1',
+      message: 'Do not send',
+    });
+    expect(
+      (
+        await harness.app.inject({
+          method: 'POST',
+          url: '/sessions/s1/permissions/declined',
+          payload: { behavior: 'deny' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(await harness.store.listPendingSessionLinkMessages('s1')).toEqual([]);
+    expect(harness.dispatches).toHaveLength(1);
+    await harness.store.createPendingSessionLinkMessage({
+      id: 'unlinked',
+      invocationId: 'unlinked-invocation',
+      sourceSessionId: 's1',
+      targetSessionId: 's2',
+      sourceProjectId: 'p1',
+      requestMac: 'a'.repeat(64),
+      macKeyId: 'key-1',
+      message: 'No link, no delivery',
+    });
+    await harness.store.deleteSessionLink('s1', 's2');
+    expect(await harness.store.listPendingSessionLinkMessages('s1')).toEqual([]);
+    expect(
+      (
+        await harness.app.inject({
+          method: 'POST',
+          url: '/sessions/s1/permissions/unlinked',
+          payload: { behavior: 'allow' },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(harness.dispatches).toHaveLength(1);
+  });
 });
 
 describe('POST /internal/mcp (loopback MCP gateway)', () => {

@@ -25,6 +25,11 @@ export interface SessionControlRouteDeps {
   >;
   cancelMeetingJobs: (sessionId: string) => boolean;
   permissionResolved?: (sessionId: string, toolUseId: string) => void;
+  decidePendingLinkedMessage?: (
+    sessionId: string,
+    toolUseId: string,
+    decision: { behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown> },
+  ) => Promise<boolean>;
 }
 
 /** Registers stop, permission-decision, and queued-turn retraction controls. */
@@ -87,6 +92,17 @@ export function registerSessionControlRoutes(
         return { error: error.message };
       }
       throw error;
+    }
+    if (!decided && deps.decidePendingLinkedMessage !== undefined) {
+      try {
+        decided = await deps.decidePendingLinkedMessage(id, toolUseId, decision);
+      } catch (error) {
+        if (error instanceof PermissionDecisionInProgressError) {
+          reply.code(409);
+          return { error: error.message };
+        }
+        throw error;
+      }
     }
     if (!decided) {
       reply.code(404);

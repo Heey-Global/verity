@@ -67,6 +67,22 @@ interface SessionLinkDeliveriesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** A linked message awaiting a decision after its gateway call has gone away. */
+interface SessionLinkPendingMessagesTable {
+  id: string;
+  invocation_id: string;
+  session_a: string;
+  session_b: string;
+  source_session_id: string;
+  target_session_id: string;
+  source_project_id: string;
+  request_mac: string;
+  mac_key_id: string;
+  message: string;
+  approved_at: Date | null;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 /** One native Google Workspace file explicitly assigned to a session. */
 interface SessionSlideDecksTable {
   session_id: string;
@@ -1237,6 +1253,7 @@ interface SessionMovesTable {
 export interface Database {
   session_links: SessionLinksTable;
   session_link_deliveries: SessionLinkDeliveriesTable;
+  session_link_pending_messages: SessionLinkPendingMessagesTable;
   session_moves: SessionMovesTable;
   integration_accounts: IntegrationAccountsTable;
   matrix_connector_config: MatrixConnectorConfigTable;
