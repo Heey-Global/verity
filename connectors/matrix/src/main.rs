@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     env,
+    fmt::Write as _,
     io::{Cursor, Read, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -379,7 +380,12 @@ impl Outbox {
             "{}\0{}\0{}",
             event.account_id, event.source_id, event.event_id
         ));
-        self.path.join(format!("{digest:x}.json"))
+        let mut name = String::with_capacity(69);
+        for byte in digest {
+            write!(&mut name, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        name.push_str(".json");
+        self.path.join(name)
     }
 
     async fn enqueue(&self, event: &IngestEvent) -> Result<()> {
@@ -864,6 +870,10 @@ mod tests {
             body: Some("hello".to_string()),
             attachment: None,
         };
+        assert_eq!(
+            outbox.file(&event).file_name().unwrap(),
+            "077d441c3d24e4f5b8c82e99f6b76731e4f660ded5e3a631bf8767ea84de179c.json"
+        );
         outbox.enqueue(&event).await.unwrap();
         let reopened = Outbox::new(path.clone()).await.unwrap();
         let bytes = fs::read(reopened.file(&event)).await.unwrap();
