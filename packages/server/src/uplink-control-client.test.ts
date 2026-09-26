@@ -42,6 +42,7 @@ function setup(
     pendingRemovals?: string[];
     disableFeatures?: (reason: string) => Promise<void>;
     installationId?: string;
+    offerRemoteControl?: boolean;
   } = {},
 ) {
   const socket = new FakeSocket();
@@ -71,6 +72,9 @@ function setup(
     webSocketFactory: socketFactory,
     onFeaturesDisabled: disabled,
     onShareExpired: expired,
+    ...(options.offerRemoteControl !== undefined
+      ? { offerRemoteControl: options.offerRemoteControl }
+      : {}),
     log,
   });
   return { client, socket, socketFactory, store, settings, disabled, expired, log };
@@ -79,7 +83,12 @@ function setup(
 /** Like `setup`, but mints a fresh socket per dial. The shared-socket fixture
  * cannot show a reconnect: its socket stays CLOSED, so a second dial would be
  * indistinguishable from none at all. */
-function setupReconnecting(options: { disableFeatures?: (reason: string) => Promise<void> } = {}) {
+function setupReconnecting(
+  options: {
+    disableFeatures?: (reason: string) => Promise<void>;
+    offerRemoteControl?: boolean;
+  } = {},
+) {
   const sockets: FakeSocket[] = [];
   const settings = {
     uplinkSubscriptionKey: 'subscription-fixture',
@@ -105,6 +114,9 @@ function setupReconnecting(options: { disableFeatures?: (reason: string) => Prom
     serverVersion: 'test',
     webSocketFactory: socketFactory,
     onFeaturesDisabled: disabled,
+    ...(options.offerRemoteControl !== undefined
+      ? { offerRemoteControl: options.offerRemoteControl }
+      : {}),
     log,
   });
   return { client, sockets, socketFactory, store, disabled, log };
@@ -160,6 +172,299 @@ async function flush(): Promise<void> {
 
 describe('UplinkControlClient', () => {
   beforeEach(() => vi.useRealTimers());
+
+  it('offers remote negotiation only when the RC-B probe is enabled', async () => {
+    const defaultFixture = setup();
+    defaultFixture.client.start();
+    await flush();
+    defaultFixture.socket.open();
+    const defaultHello = JSON.parse(defaultFixture.socket.sent[0]!) as Record<string, unknown>;
+    expect(defaultHello).not.toHaveProperty('capabilities');
+    expect(defaultHello).not.toHaveProperty('channels');
+    await defaultFixture.client.stop();
+
+    const probe = setup({ offerRemoteControl: true });
+    probe.client.start();
+    await flush();
+    probe.socket.open();
+    const hello = JSON.parse(probe.socket.sent[0]!) as Record<string, unknown>;
+    expect(hello.capabilities).toEqual(['remote-control-v1']);
+    expect(hello.channels).toEqual(['http', 'ws', 'remote']);
+    await probe.client.stop();
+  });
+
+  it('rejects a remote request before the welcome completes', async () => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    expect(socket.sent.some((raw) => raw.includes('session.refuse'))).toBe(false);
+    await client.stop();
+  });
+
+  it('refuses a negotiated personal session while no connector is wired', async () => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    expect(socket.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>)).toContainEqual({
+      type: 'session.refuse',
+      sessionId: 'session_example',
+      code: 'unavailable',
+    });
+    expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(false);
+    expect(socket.sent.some((raw) => raw.includes('session.ticket'))).toBe(false);
+    await client.stop();
+  });
+
+  it.each([
+    { capabilities: undefined, channels: undefined },
+    { capabilities: ['remote-control-v1'], channels: ['http', 'ws'] },
+    { capabilities: ['remote-control-v1'], channels: ['http', 'ws', 'remote'], features: [] },
+  ])('rejects remote session traffic without full selection and entitlement', async (selection) => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: selection.features ?? ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      ...(selection.capabilities ? { capabilities: selection.capabilities } : {}),
+      ...(selection.channels ? { channels: selection.channels } : {}),
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    await client.stop();
+  });
+
+  it.each([
+    { capabilities: ['remote-control-v1', 'remote-control-v1'] },
+    { channels: [] },
+    { channels: ['remote\n'] },
+  ])('rejects malformed welcome negotiation', async (badFields) => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+      ...badFields,
+    });
+    await flush();
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    await client.stop();
+  });
+
+  it('rejects malformed session fields before any decision', async () => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example\n',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    expect(socket.sent.some((raw) => raw.includes('session.refuse'))).toBe(false);
+    await client.stop();
+  });
+
+  it.each([
+    { decisionExpiresAt: 'tomorrow' },
+    { decisionExpiresAt: Number.MAX_SAFE_INTEGER + 1 },
+    { unexpected: true },
+  ])('rejects malformed session request shape', async (badFields) => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+      ...badFields,
+    });
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    expect(socket.sent.some((raw) => raw.includes('session.refuse'))).toBe(false);
+    await client.stop();
+  });
+
+  it('fences remote requests after renewal removes the entitlement', async () => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'renewed',
+      features: [],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    expect(socket.sent.some((raw) => raw.includes('session.refuse'))).toBe(false);
+    await client.stop();
+  });
+
+  it('rejects an oversized session frame before refusing admission', async () => {
+    const { client, socket } = setup({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    const request = JSON.stringify({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    socket.emit('message', Buffer.from(request + ' '.repeat(16_384)));
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    expect(socket.sent.some((raw) => raw.includes('session.refuse'))).toBe(false);
+    await client.stop();
+  });
+
+  it('does not carry remote negotiation across a control reconnect', async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setupReconnecting({ offerRemoteControl: true });
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    sockets[0]!.close(1006, 'lost');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.open();
+    sockets[1]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    sockets[1]!.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    await vi.waitFor(() =>
+      expect(sockets[1]!.close).toHaveBeenCalledWith(1002, 'invalid control message'),
+    );
+    await client.stop();
+  });
 
   it('matches the deployed control path and requires TLS', () => {
     const url = new URL(UPLINK_CONTROL_URL);

@@ -24,6 +24,9 @@ export const RECONNECT_CAPACITY_MS = 5 * 60_000;
 const ABANDONED_REQUEST_TTL_MS = 9 * 60 * 60_000;
 const MAX_ABANDONED_CREATES = 1_024;
 const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
+const MAX_REMOTE_SESSION_FRAME_BYTES = 16 * 1024;
+const REMOTE_CAPABILITY = 'remote-control-v1';
+const REMOTE_CHANNEL = 'remote';
 const MAX_REFUSAL_REASON_CHARS = 200;
 /** Hard WebSocket limit on a close reason; `ws` throws above it. */
 const MAX_CLOSE_REASON_BYTES = 123;
@@ -69,6 +72,8 @@ export interface UplinkControlClientOptions {
   webSocketFactory?: (url: string, options: { maxPayload: number }) => WebSocket;
   onFeaturesDisabled?: (reason: string) => Promise<void>;
   onShareExpired?: (shareId: string) => Promise<void>;
+  /** RC-B negotiation probe. Admission remains refusal-only until a connector is wired. */
+  offerRemoteControl?: boolean;
   log?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -85,6 +90,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private leaseTimer: NodeJS.Timeout | undefined;
   private renewalTimer: NodeJS.Timeout | undefined;
   private features = new Set<string>();
+  private remoteNegotiated = false;
   private pending = new Map<string, Pending>();
   private abandonedCreates = new Map<string, NodeJS.Timeout>();
   private orphanShareIds = new Set<string>();
@@ -277,6 +283,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
               }
             : {}),
           serverVersion: this.options.serverVersion,
+          ...(this.options.offerRemoteControl === true
+            ? { capabilities: [REMOTE_CAPABILITY], channels: ['http', 'ws', REMOTE_CHANNEL] }
+            : {}),
         }),
       );
     });
@@ -394,6 +403,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (frame.type === 'welcome') {
       const installationId = stringField(frame, 'installationId');
+      const negotiation = remoteNegotiation(frame);
       this.retryMs = 1_000;
       this.retryCeilingMs = RECONNECT_MAX_MS;
       this.validateLease(frame);
@@ -435,6 +445,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
         // client behind the slot it just consumed until the lease expires.
         await this.awaitRequiredCleanup();
         this.applyLease(frame);
+        this.remoteNegotiated =
+          this.options.offerRemoteControl === true &&
+          negotiation.capabilities.has(REMOTE_CAPABILITY) &&
+          negotiation.channels.has(REMOTE_CHANNEL);
         this.welcomed = true;
         this.startHeartbeat();
         if (!this.features.has('sharing')) {
@@ -456,6 +470,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'renewed') {
+      // A renewal may change entitlement, but never renegotiates wire capabilities.
+      remoteNegotiation(frame);
       const hadSharing = this.features.has('sharing');
       const leaseUntil = this.applyLease(frame);
       this.options.log?.info(
@@ -503,6 +519,27 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (frame.type === 'share.expired') {
       await this.options.onShareExpired?.(stringField(frame, 'shareId'));
+      return;
+    }
+    if (frame.type === 'session.request') {
+      if (!this.remoteNegotiated || !this.features.has('remote-control')) {
+        throw new Error('unnegotiated remote control request');
+      }
+      if (
+        Buffer.byteLength(raw, 'utf8') > MAX_REMOTE_SESSION_FRAME_BYTES ||
+        !validRemoteSessionRequest(frame)
+      ) {
+        throw new Error('invalid remote control request');
+      }
+      // The local connector/reservation is not wired yet. Never acknowledge a
+      // remote session merely because the control transport negotiated it.
+      this.socket?.send(
+        JSON.stringify({
+          type: 'session.refuse',
+          sessionId: frame.sessionId,
+          code: 'unavailable',
+        }),
+      );
       return;
     }
     throw new Error(`unknown Uplink control frame: ${frameType || 'missing type'}`);
@@ -594,6 +631,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
 
   private clearAuthority(reason: string, notify = true): void {
     this.features.clear();
+    this.remoteNegotiated = false;
     this.welcomed = false;
     this.controlReady = false;
     this.unansweredPings = 0;
@@ -728,6 +766,56 @@ function stringField(frame: Record<string, unknown>, key: string): string {
   const value = frame[key];
   if (typeof value !== 'string' || !value) throw new Error(`invalid Uplink ${key}`);
   return value;
+}
+
+function remoteNegotiation(frame: Record<string, unknown>): {
+  capabilities: Set<string>;
+  channels: Set<string>;
+} {
+  const names = (value: unknown, fallback: string[], allowEmpty: boolean): Set<string> => {
+    if (value === undefined) return new Set(fallback);
+    if (!Array.isArray(value) || value.length > 32 || (!allowEmpty && value.length === 0)) {
+      throw new Error('invalid Uplink negotiation');
+    }
+    const result = new Set<string>();
+    for (const name of value as unknown[]) {
+      if (
+        typeof name !== 'string' ||
+        !/^[\x21-\x7e]{1,64}(?![\s\S])/.test(name) ||
+        result.has(name)
+      ) {
+        throw new Error('invalid Uplink negotiation');
+      }
+      result.add(name);
+    }
+    return result;
+  };
+  return {
+    capabilities: names(frame.capabilities, [], true),
+    channels: names(frame.channels, ['http', 'ws'], false),
+  };
+}
+
+function validRemoteSessionRequest(frame: Record<string, unknown>): boolean {
+  const keys = Object.keys(frame);
+  if (
+    keys.length !== 5 ||
+    !['type', 'requestId', 'sessionId', 'capability', 'decisionExpiresAt'].every((key) =>
+      Object.hasOwn(frame, key),
+    )
+  )
+    return false;
+  const validId = (value: unknown): boolean =>
+    typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}(?![\s\S])/.test(value);
+  return (
+    frame.type === 'session.request' &&
+    validId(frame.requestId) &&
+    validId(frame.sessionId) &&
+    frame.capability === REMOTE_CAPABILITY &&
+    typeof frame.decisionExpiresAt === 'number' &&
+    Number.isSafeInteger(frame.decisionExpiresAt) &&
+    frame.decisionExpiresAt > 0
+  );
 }
 
 function validatedBindingUrl(
