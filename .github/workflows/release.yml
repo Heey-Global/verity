@@ -57,7 +57,91 @@ permissions:
   contents: read
 
 jobs:
+  classify-native-changes:
+    # The Expo fingerprint behind mobile train selection takes about two minutes
+    # and reads only immutable refs, so it runs here rather than inside the
+    # `release-metadata` lock, which every train of every push waits on.
+    # It still runs inside the dispatcher's per-train lock, so mobile pushes keep
+    # their order. `release-please` reuses the verdict only while the native
+    # release boundary it was computed against is unchanged, and recomputes it
+    # otherwise; a failure here leaves no output and falls back the same way.
+    # The job runs for every train and gates its steps instead: a skipped job
+    # skips every job downstream of `release-please` that keeps the implicit
+    # `success()` condition, which would silently end the other trains after
+    # their metadata step. For the same reason no step may fail the job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      native-boundary: ${{ steps.classify.outputs.native-boundary }}
+      native-changed: ${{ steps.classify.outputs.native-changed }}
+    steps:
+      - name: Repair workspace ownership
+        if: github.event_name == 'push' && inputs.train == 'mobile'
+        continue-on-error: true
+        timeout-minutes: 2
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              # No sudo on the runner: a prior container job left root-owned files the
+              # non-root runner can't chown (so actions/checkout's clean fails with
+              # EACCES). Chown them back as root in a throwaway container — the runner
+              # is in the docker group.
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            else
+              chown -R "$owner" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            fi
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'push' && inputs.train == 'mobile'
+        continue-on-error: true
+        timeout-minutes: 3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: github.event_name == 'push' && inputs.train == 'mobile'
+        continue-on-error: true
+        timeout-minutes: 3
+        with:
+          node-version: '24.21.0'
+      - name: Classify native changes since the latest native release
+        id: classify
+        if: github.event_name == 'push' && inputs.train == 'mobile'
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          native_tag="$(git tag --merged "$HEAD_SHA" --list 'mobile-v[0-9]*.[0-9]*.0' --sort=-version:refname | head -n 1)"
+          [[ -n "$native_tag" ]]
+          native_commit="$(git rev-parse "${native_tag}^{commit}")"
+          npm ci
+          native_changes="$(node scripts/mobile-native-compatibility.mjs "$native_tag" "$HEAD_SHA")"
+          changed=false
+          if [[ -n "$native_changes" ]]; then
+            changed=true
+            echo "$native_changes"
+          fi
+          {
+            echo "native-boundary=${native_tag}@${native_commit}"
+            echo "native-changed=$changed"
+          } >> "$GITHUB_OUTPUT"
+
   release-please:
+    needs: classify-native-changes
     concurrency:
       group: release-metadata
       queue: max
@@ -182,15 +266,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Native compatibility uses Expo's installed dependency graph.
+      # Native compatibility uses Expo's installed dependency graph, installed
+      # below only when the verdict of `classify-native-changes` is unusable.
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: github.event_name == 'push' && inputs.train == 'mobile'
         with:
           node-version: '24.21.0'
-      - name: Install native classification dependencies
-        if: github.event_name == 'push' && inputs.train == 'mobile'
-        run: npm ci
 
       - name: Select release trains for this push
         id: release-trains
@@ -199,6 +281,8 @@ jobs:
           BEFORE: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
           TRAIN: ${{ inputs.train }}
+          CLASSIFIED_NATIVE_BOUNDARY: ${{ needs.classify-native-changes.outputs.native-boundary }}
+          CLASSIFIED_NATIVE_CHANGED: ${{ needs.classify-native-changes.outputs.native-changed }}
         shell: bash
         run: |
           set -euo pipefail
@@ -258,13 +342,27 @@ jobs:
                 echo '::error::No native release boundary; explicit bootstrap is required.' >&2
                 exit 1
               fi
-              if ! native_changes="$(node scripts/mobile-native-compatibility.mjs "$native_tag" "$HEAD_SHA")"; then
-                echo "::error::Could not classify native compatibility with $native_tag." >&2
-                exit 1
+              # The train lock keeps releases from tagging in between, but a
+              # native tag pushed or moved by hand would leave the verdict
+              # compared against the wrong boundary; recompute it then.
+              native_boundary=""
+              if [[ -n "${CLASSIFIED_NATIVE_BOUNDARY:-}" ]]; then
+                native_boundary="${native_tag}@$(git rev-parse "${native_tag}^{commit}")"
               fi
-              if [[ -n "$native_changes" ]]; then
-                mobile=true
-                echo "$native_changes"
+              if [[ -n "$native_boundary" && "$native_boundary" == "$CLASSIFIED_NATIVE_BOUNDARY" &&
+                    "${CLASSIFIED_NATIVE_CHANGED:-}" =~ ^(true|false)$ ]]; then
+                echo "Reusing native-changed=$CLASSIFIED_NATIVE_CHANGED against $native_boundary; the changes are listed in classify-native-changes."
+                [[ "$CLASSIFIED_NATIVE_CHANGED" == false ]] || mobile=true
+              else
+                npm ci
+                if ! native_changes="$(node scripts/mobile-native-compatibility.mjs "$native_tag" "$HEAD_SHA")"; then
+                  echo "::error::Could not classify native compatibility with $native_tag." >&2
+                  exit 1
+                fi
+                if [[ -n "$native_changes" ]]; then
+                  mobile=true
+                  echo "$native_changes"
+                fi
               fi
             fi
           else

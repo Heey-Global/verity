@@ -22,6 +22,8 @@ interface WorkflowStep {
   env?: Record<string, string>;
   run?: string;
   with?: Record<string, string>;
+  'continue-on-error'?: boolean;
+  'timeout-minutes'?: number;
 }
 
 interface ReleaseWorkflow {
@@ -1071,6 +1073,7 @@ describe('release train concurrency', () => {
   type Job = {
     needs?: string | string[];
     if?: string;
+    'timeout-minutes'?: number;
     uses?: string;
     strategy?: { matrix?: { train?: string[] }; 'fail-fast'?: boolean };
     concurrency?: { group?: string; queue?: string; 'cancel-in-progress'?: boolean };
@@ -1092,6 +1095,48 @@ describe('release train concurrency', () => {
   const dispatch = parse(
     readFileSync('.github/workflows/release-dispatch.yml', 'utf8'),
   ) as Workflow;
+
+  it('classifies native changes outside the metadata lock without gating other trains', () => {
+    // The fingerprint is what made every push hold `release-metadata` for two
+    // minutes; back inside that job it silently restores the queue.
+    const classify = trains.jobs['classify-native-changes'];
+    const metadata = trains.jobs['release-please'];
+    expect(classify?.concurrency).toBeUndefined();
+    expect(JSON.stringify(metadata?.steps)).not.toContain('Install native classification');
+    // A skipped or failed classification job would skip, through the implicit
+    // `success()`, every publish job downstream of `release-please` on the
+    // backend and website trains while their metadata job stays green. So the
+    // job itself always runs and succeeds; only its steps are mobile-scoped.
+    expect(metadata?.needs).toBe('classify-native-changes');
+    expect(metadata?.if).toBeUndefined();
+    expect(classify?.if).toBeUndefined();
+    expect(classify?.steps?.length).toBeGreaterThan(0);
+    for (const entry of classify?.steps ?? []) {
+      expect(entry.if, entry.name ?? entry.uses).toBe(
+        "github.event_name == 'push' && inputs.train == 'mobile'",
+      );
+      expect(entry['continue-on-error'], entry.name ?? entry.uses).toBe(true);
+    }
+    // `continue-on-error` does not cover the job timeout: step budgets must
+    // expire first, leaving setup and teardown their share of the job's.
+    const stepBudget = (classify?.steps ?? []).reduce(
+      (sum, entry) => sum + (entry['timeout-minutes'] ?? Infinity),
+      0,
+    );
+    expect(stepBudget + 5).toBeLessThanOrEqual(classify?.['timeout-minutes'] ?? 0);
+    // A failed classification must fall back to the lock's own, not block it.
+    const select = metadata?.steps?.find((entry) => entry.id === 'release-trains');
+    expect(select?.env?.CLASSIFIED_NATIVE_BOUNDARY).toBe(
+      '${{ needs.classify-native-changes.outputs.native-boundary }}',
+    );
+    expect(select?.env?.CLASSIFIED_NATIVE_CHANGED).toBe(
+      '${{ needs.classify-native-changes.outputs.native-changed }}',
+    );
+    expect(classify?.outputs).toEqual({
+      'native-boundary': '${{ steps.classify.outputs.native-boundary }}',
+      'native-changed': '${{ steps.classify.outputs.native-changed }}',
+    });
+  });
 
   it('holds each train lock from metadata through publication without cancelling queued releases', () => {
     // Locking publication alone lets a second metadata run recreate next-release
