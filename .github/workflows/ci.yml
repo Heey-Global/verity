@@ -1207,7 +1207,9 @@ jobs:
           file: connectors/matrix/Dockerfile
           platforms: linux/amd64
           push: false
-          cache-from: type=gha,scope=verity-matrix-connector-amd64
+          # Only release.yml writes the connector cache, to a registry tag of the
+          # public package; this build reads it without logging in.
+          cache-from: type=registry,ref=ghcr.io/heey-global/verity/verity-matrix-connector:buildcache-amd64
 
   server-image:
     needs: changes

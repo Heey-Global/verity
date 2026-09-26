@@ -3083,10 +3083,18 @@ describe('Actions cache budget', () => {
                   `'${template.replaceAll('{0}', matrix[key] ?? '')}'`,
               )
               .replace(/\$\{\{ matrix\.(\w+) \}\}/g, (_, key: string) => matrix[key] ?? '');
+          // Only the gha lines: a release step also lists a registry cache,
+          // which the budget below does not govern.
+          const ghaOnly = (value: string | undefined) =>
+            String(value ?? '')
+              .split('\n')
+              .filter((line) => line.includes('type=gha'))
+              .join('\n')
+              .trim();
           return (job.steps ?? [])
             .filter((step) =>
-              [step.with?.['cache-from'], step.with?.['cache-to']].some((value) =>
-                String(value ?? '').includes('type=gha'),
+              [step.with?.['cache-from'], step.with?.['cache-to']].some(
+                (value) => ghaOnly(value) !== '',
               ),
             )
             .map((step) => ({
@@ -3095,8 +3103,8 @@ describe('Actions cache budget', () => {
               triggers,
               dockerfile: expand(String(step.with?.file ?? '(none)')),
               platform: expand(String(step.with?.platforms ?? '')),
-              from: expand(String(step.with?.['cache-from'] ?? '')),
-              to: expand(String(step.with?.['cache-to'] ?? '')),
+              from: expand(ghaOnly(step.with?.['cache-from'])),
+              to: expand(ghaOnly(step.with?.['cache-to'])),
               timeoutMinutes: job['timeout-minutes'],
             }));
         }),
@@ -3157,16 +3165,11 @@ describe('Actions cache budget', () => {
     expect(group(scope, imagePlatform)).toEqual([]);
   });
 
-  it('bounds release cache exports and omits intermediate layers', () => {
-    // The ARM64 image was already pushed while mode=max kept the release job
-    // waiting another five minutes to prepare and upload intermediate layers.
-    const exports = gha.filter((site) => site.file === 'release.yml' && site.to !== '');
-    expect(exports.length).toBeGreaterThan(0);
-    for (const site of exports) {
-      expect(site.to, site.id).toContain('mode=min');
-      expect(site.to, site.id).toContain('timeout=60s');
-      expect(site.to, site.id).toContain('ignore-error=true');
-    }
+  it('leaves the gha budget to the workflows that build between releases', () => {
+    // Release builds export to a registry tag instead (see 'release build
+    // cache'). A release write here would compete with main's entries for the
+    // same 10 GB, which is how v2.7.2 lost its Matrix connector cache.
+    expect(gha.filter((site) => site.file === 'release.yml' && site.to !== '')).toEqual([]);
   });
 
   it('shares the AMD64 server cache with the self-update smoke', () => {
@@ -3260,6 +3263,150 @@ describe('Actions cache budget', () => {
       )
       .map((site) => `${site.id}: ${site.timeoutMinutes ?? 'no timeout-minutes'}`);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('release build cache', () => {
+  // Release builds cache to a `buildcache-<arch>` tag of their own ghcr package,
+  // not the repository's shared 10 GB Actions cache: v2.7.2 found both Matrix
+  // connector gha scopes evicted and recompiled the unchanged Rust connector for
+  // 21 minutes on ARM64 while the Server build waited behind it. Every assertion
+  // below is a way this degrades to "builds fine, caches nothing" or worse.
+  type Job = {
+    env?: Record<string, string>;
+    steps?: WorkflowStep[];
+    strategy?: { matrix?: { include?: Record<string, string>[] } };
+  };
+  const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+    env?: Record<string, string>;
+    jobs: Record<string, Job>;
+  };
+  const sites = Object.entries(release.jobs).flatMap(([jobName, job]) =>
+    (job.strategy?.matrix?.include ?? [{}]).flatMap((matrix) =>
+      (job.steps ?? [])
+        .filter((step) => step.uses?.startsWith('docker/build-push-action@'))
+        .map((step) => {
+          const env = { ...release.env, ...job.env, ...step.env };
+          // An unknown name stays visibly unresolved rather than expanding to ''
+          // and still producing a plausible-looking ref.
+          const expand = (value: string | undefined) =>
+            String(value ?? '').replace(
+              /\$\{\{ (env|matrix)\.(\w+) \}\}/g,
+              (_, scope: string, key: string) =>
+                (scope === 'env' ? env[key] : matrix[key]) ?? `<unset ${scope}.${key}>`,
+            );
+          return {
+            id: `${jobName}:${step.name ?? '(unnamed)'}:${matrix.architecture ?? ''}`,
+            job: `${jobName}:${matrix.architecture ?? ''}`,
+            pushes: String(step.with?.push) === 'true',
+            dockerfile: expand(step.with?.file),
+            architecture: expand(step.with?.platforms).replace(/^linux\//, ''),
+            from: expand(step.with?.['cache-from'])
+              .split('\n')
+              .map((line) => line.trim())
+              .filter((line) => line !== ''),
+            to: expand(step.with?.['cache-to']).trim(),
+          };
+        }),
+    ),
+  );
+  const refOf = (value: string) => /type=registry,ref=([^,\s]+)/.exec(value)?.[1];
+
+  it('finds every release image build', () => {
+    // Guards the guard: a renamed action input would make everything below
+    // pass by matching nothing.
+    expect(sites.filter((site) => site.pushes).length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('exports every pushed release image to a registry tag of a release package', () => {
+    for (const site of sites.filter((candidate) => candidate.pushes)) {
+      const ref = refOf(site.to);
+      expect(ref, site.id).toBeDefined();
+      expect(site.to, site.id).not.toContain('type=gha');
+      expect(ref, site.id).not.toContain('<unset');
+      const [repository, tag] = ref!.replace(/^ghcr\.io\//, '').split(':');
+      expect(RELEASE_IMAGES, site.id).toContain(repository);
+      // Per architecture: the two matrix legs export concurrently, and one tag
+      // for both would leave whichever finished last.
+      expect(tag, site.id).toBe(`buildcache-${site.architecture}`);
+      // The image is already pushed when the export runs; a failed export may
+      // cost the next release time but must not fail this one.
+      expect(site.to, site.id).toContain('ignore-error=true');
+    }
+  });
+
+  it('reads the tag it writes, and every build in the job reads it too', () => {
+    // A write nobody imports succeeds silently and every build stays cold.
+    for (const site of sites.filter((candidate) => candidate.to !== '')) {
+      const ref = refOf(site.to)!;
+      for (const reader of sites.filter(
+        (candidate) => candidate.job === site.job && candidate.dockerfile === site.dockerfile,
+      )) {
+        expect(reader.from.map(refOf), reader.id).toContain(ref);
+      }
+    }
+  });
+
+  it('gives each image and architecture its own tag', () => {
+    const owners = new Map<string, Set<string>>();
+    for (const site of sites.filter((candidate) => candidate.to !== '')) {
+      const ref = refOf(site.to)!;
+      owners.set(ref, (owners.get(ref) ?? new Set()).add(site.dockerfile));
+    }
+    expect([...owners].filter(([, dockerfiles]) => dockerfiles.size > 1)).toEqual([]);
+  });
+
+  it('exports intermediate layers only where a dependency layer makes them worth it', () => {
+    // mode=max once held the release job five minutes after the ARM64 push,
+    // uploading intermediate stages. The Rust connector is the exception: its
+    // dependency layer is an intermediate one, and without it every connector
+    // source change recompiles matrix-sdk from scratch.
+    for (const site of sites.filter((candidate) => candidate.to !== '')) {
+      const dockerfile = readFileSync(site.dockerfile, 'utf8');
+      const dependencyLayer =
+        /cargo build/.test(dockerfile) &&
+        dockerfile.indexOf('cargo build') < dockerfile.search(/^COPY \S*src /m);
+      expect(site.to, site.id).toContain(dependencyLayer ? 'mode=max' : 'mode=min');
+    }
+  });
+
+  it("lets CI's connector build read the release connector cache", () => {
+    // Nothing writes a gha scope for the connector any more; a CI read that
+    // drifts from the release tag silently compiles from scratch.
+    const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs: Record<string, Job>;
+    };
+    const build = (ci.jobs['matrix-connector-image']?.steps ?? []).find((step) =>
+      step.uses?.startsWith('docker/build-push-action@'),
+    );
+    const written = sites.find(
+      (site) =>
+        site.pushes &&
+        site.dockerfile === build?.with?.file &&
+        `linux/${site.architecture}` === build?.with?.platforms,
+    );
+    expect(written).toBeDefined();
+    expect(refOf(String(build?.with?.['cache-from']))).toBe(refOf(written!.to));
+  });
+
+  it('cannot ship the placeholder binary from the Matrix connector dependency layer', () => {
+    // The dependency layer builds a placeholder `fn main() {}` under the real
+    // crate name. The real sources are copied in with their checkout mtimes,
+    // which predate that build, so unless the placeholder's own artifacts are
+    // removed cargo considers the crate fresh and the image ships an empty
+    // binary that exits 0.
+    const dockerfile = readFileSync('connectors/matrix/Dockerfile', 'utf8');
+    const crate = /^name = "([^"]+)"/m.exec(
+      readFileSync('connectors/matrix/Cargo.toml', 'utf8'),
+    )?.[1];
+    expect(crate).toBeDefined();
+    const placeholder = dockerfile.slice(
+      dockerfile.indexOf('fn main() {}'),
+      dockerfile.search(/^COPY \S*src /m),
+    );
+    expect(placeholder).toContain(`target/release/.fingerprint/${crate}-*`);
+    expect(placeholder).toContain(`target/release/deps/${crate!.replaceAll('-', '_')}-*`);
+    expect(placeholder).toContain(`target/release/${crate}*`);
   });
 });
 
