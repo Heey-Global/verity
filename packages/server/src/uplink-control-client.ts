@@ -27,6 +27,7 @@ const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
 const MAX_REMOTE_SESSION_FRAME_BYTES = 16 * 1024;
 const REMOTE_CAPABILITY = 'remote-control-v1';
 const REMOTE_CHANNEL = 'remote';
+const MAX_REMOTE_RESERVATIONS = 4;
 const MAX_REFUSAL_REASON_CHARS = 200;
 /** Hard WebSocket limit on a close reason; `ws` throws above it. */
 const MAX_CLOSE_REASON_BYTES = 123;
@@ -65,6 +66,26 @@ interface Pending {
   inlineResponse: boolean;
 }
 
+export interface RemoteConnectorReservation {
+  /** Resolves only after the data attachment succeeds; owns the fixed TLS destination. */
+  attach(ticket: string, expiresAt: number, signal: AbortSignal): Promise<void>;
+  release(reason: string): void;
+}
+
+export interface RemoteConnectorRequest {
+  requestId: string;
+  sessionId: string;
+  decisionExpiresAt: number;
+}
+
+interface RemoteSession {
+  requestId: string;
+  controller: AbortController;
+  deadlineTimer: NodeJS.Timeout;
+  reservation?: RemoteConnectorReservation;
+  ticketReceived?: boolean;
+}
+
 export interface UplinkControlClientOptions {
   url: string;
   store: SettingsStore;
@@ -72,8 +93,12 @@ export interface UplinkControlClientOptions {
   webSocketFactory?: (url: string, options: { maxPayload: number }) => WebSocket;
   onFeaturesDisabled?: (reason: string) => Promise<void>;
   onShareExpired?: (shareId: string) => Promise<void>;
-  /** RC-B negotiation probe. Admission remains refusal-only until a connector is wired. */
+  /** Remote admission is offered only when explicitly enabled. */
   offerRemoteControl?: boolean;
+  reserveRemoteConnector?: (
+    request: RemoteConnectorRequest,
+    signal: AbortSignal,
+  ) => Promise<RemoteConnectorReservation | 'unavailable' | 'limit_reached'>;
   log?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -91,6 +116,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private renewalTimer: NodeJS.Timeout | undefined;
   private features = new Set<string>();
   private remoteNegotiated = false;
+  private remoteSessions = new Map<string, RemoteSession>();
   private pending = new Map<string, Pending>();
   private abandonedCreates = new Map<string, NodeJS.Timeout>();
   private orphanShareIds = new Set<string>();
@@ -472,8 +498,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (frame.type === 'renewed') {
       // A renewal may change entitlement, but never renegotiates wire capabilities.
       remoteNegotiation(frame);
+      const hadRemoteControl = this.features.has('remote-control');
       const hadSharing = this.features.has('sharing');
       const leaseUntil = this.applyLease(frame);
+      if (hadRemoteControl && !this.features.has('remote-control')) {
+        this.clearRemoteSessions('remote control entitlement withdrawn');
+      }
       this.options.log?.info(
         {
           leaseUntil: new Date(leaseUntil).toISOString(),
@@ -531,15 +561,55 @@ export class UplinkControlClient implements PreviewEdgeControl {
       ) {
         throw new Error('invalid remote control request');
       }
-      // The local connector/reservation is not wired yet. Never acknowledge a
-      // remote session merely because the control transport negotiated it.
-      this.socket?.send(
-        JSON.stringify({
-          type: 'session.refuse',
-          sessionId: frame.sessionId,
-          code: 'unavailable',
-        }),
+      void this.handleRemoteSessionRequest(frame as unknown as RemoteConnectorRequest).catch(
+        (error: unknown) => {
+          this.options.log?.warn({ error }, 'remote connector reservation failed');
+          this.releaseRemoteSession(frame.sessionId as string, 'remote reservation failed');
+        },
       );
+      return;
+    }
+    if (frame.type === 'session.cancelled') {
+      if (!this.remoteNegotiated) throw new Error('unnegotiated remote cancellation');
+      if (!validRemoteSessionCancelled(frame)) throw new Error('invalid remote cancellation');
+      this.releaseRemoteSession(frame.sessionId as string, 'Uplink cancelled remote session');
+      return;
+    }
+    if (frame.type === 'session.ticket') {
+      if (!this.remoteNegotiated || !this.features.has('remote-control'))
+        throw new Error('unnegotiated remote ticket');
+      if (!validRemoteSessionTicket(frame)) throw new Error('invalid remote ticket');
+      const session = this.remoteSessions.get(frame.sessionId as string);
+      if (!session?.reservation || session.ticketReceived)
+        throw new Error('ticket without accepted reservation');
+      const expiresAt = frame.expiresAt as number;
+      if (expiresAt <= Date.now()) throw new Error('expired remote ticket');
+      session.ticketReceived = true;
+      clearTimeout(session.deadlineTimer);
+      session.deadlineTimer = setTimeout(
+        () => this.releaseRemoteSession(frame.sessionId as string, 'remote ticket expired'),
+        Math.min(60_000, expiresAt - Date.now()),
+      );
+      session.deadlineTimer.unref();
+      void session.reservation
+        .attach(frame.ticket as string, expiresAt, session.controller.signal)
+        .then(() => {
+          if (this.remoteSessions.get(frame.sessionId as string) !== session) return;
+          clearTimeout(session.deadlineTimer);
+          session.deadlineTimer = setTimeout(() => {
+            if (this.remoteSessions.get(frame.sessionId as string) === session)
+              this.releaseRemoteSession(
+                frame.sessionId as string,
+                'remote session duration reached',
+              );
+          }, 5 * 60_000);
+          session.deadlineTimer.unref();
+        })
+        .catch((error: unknown) => {
+          this.options.log?.warn({ error }, 'remote connector attachment failed');
+          if (this.remoteSessions.get(frame.sessionId as string) === session)
+            this.releaseRemoteSession(frame.sessionId as string, 'remote connector attach failed');
+        });
       return;
     }
     throw new Error(`unknown Uplink control frame: ${frameType || 'missing type'}`);
@@ -632,6 +702,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private clearAuthority(reason: string, notify = true): void {
     this.features.clear();
     this.remoteNegotiated = false;
+    this.clearRemoteSessions(reason);
     this.welcomed = false;
     this.controlReady = false;
     this.unansweredPings = 0;
@@ -643,6 +714,98 @@ export class UplinkControlClient implements PreviewEdgeControl {
     this.renewalTimer = undefined;
     this.cancelPending(reason);
     if (notify) void this.disableFeaturesOnce(reason).catch(() => undefined);
+  }
+
+  private async handleRemoteSessionRequest(request: RemoteConnectorRequest): Promise<void> {
+    const socket = this.socket;
+    const refuse = (code: 'unavailable' | 'limit_reached'): void => {
+      if (this.socket === socket && socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'session.refuse', sessionId: request.sessionId, code }));
+      }
+    };
+    if (this.remoteSessions.has(request.sessionId)) return;
+    if (this.remoteSessions.size >= MAX_REMOTE_RESERVATIONS) return refuse('limit_reached');
+    if (!this.options.reserveRemoteConnector || request.decisionExpiresAt <= Date.now()) {
+      return refuse('unavailable');
+    }
+    const controller = new AbortController();
+    const timeoutMs = Math.min(15_000, request.decisionExpiresAt - Date.now());
+    const deadlineTimer = setTimeout(() => controller.abort(), timeoutMs);
+    deadlineTimer.unref();
+    const session: RemoteSession = { requestId: request.requestId, controller, deadlineTimer };
+    this.remoteSessions.set(request.sessionId, session);
+    let result: RemoteConnectorReservation | 'unavailable' | 'limit_reached';
+    let handedOff = false;
+    let released = false;
+    let removeAbortListener: () => void = () => undefined;
+    try {
+      const reservation = this.options.reserveRemoteConnector(request, controller.signal);
+      // The callback may settle after timeout. Release that late result instead of
+      // restoring a session whose admission binding is already gone.
+      void reservation
+        .then((late) => {
+          if (controller.signal.aborted && typeof late !== 'string' && !handedOff && !released) {
+            released = true;
+            late.release('late reservation');
+          }
+        })
+        .catch(() => undefined);
+      const aborted = new Promise<'unavailable'>((resolve) => {
+        const onAbort = () => resolve('unavailable');
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        removeAbortListener = () => controller.signal.removeEventListener('abort', onAbort);
+      });
+      result = await Promise.race([reservation, aborted]);
+    } catch {
+      result = 'unavailable';
+    } finally {
+      removeAbortListener();
+    }
+    if (
+      this.remoteSessions.get(request.sessionId) !== session ||
+      controller.signal.aborted ||
+      this.socket !== socket ||
+      !this.remoteNegotiated ||
+      !this.features.has('remote-control') ||
+      Date.now() >= request.decisionExpiresAt
+    ) {
+      if (typeof result !== 'string' && !released) {
+        released = true;
+        result.release('remote admission expired');
+      }
+      if (this.remoteSessions.get(request.sessionId) === session) {
+        this.releaseRemoteSession(request.sessionId, 'remote admission expired');
+        refuse('unavailable');
+      }
+      return;
+    }
+    clearTimeout(deadlineTimer);
+    if (typeof result === 'string') {
+      this.remoteSessions.delete(request.sessionId);
+      return refuse(result);
+    }
+    session.reservation = result;
+    handedOff = true;
+    session.deadlineTimer = setTimeout(
+      () => this.releaseRemoteSession(request.sessionId, 'remote ticket was not delivered'),
+      60_000,
+    );
+    session.deadlineTimer.unref();
+    socket?.send(JSON.stringify({ type: 'session.accept', sessionId: request.sessionId }));
+  }
+
+  private releaseRemoteSession(sessionId: string, reason: string): void {
+    const session = this.remoteSessions.get(sessionId);
+    if (!session) return;
+    this.remoteSessions.delete(sessionId);
+    clearTimeout(session.deadlineTimer);
+    session.controller.abort();
+    session.reservation?.release(reason);
+  }
+
+  private clearRemoteSessions(reason: string): void {
+    for (const sessionId of this.remoteSessions.keys())
+      this.releaseRemoteSession(sessionId, reason);
   }
 
   private cancelPending(reason: string): void {
@@ -816,6 +979,32 @@ function validRemoteSessionRequest(frame: Record<string, unknown>): boolean {
     Number.isSafeInteger(frame.decisionExpiresAt) &&
     frame.decisionExpiresAt > 0
   );
+}
+
+function validRemoteSessionCancelled(frame: Record<string, unknown>): boolean {
+  return (
+    Object.keys(frame).length === 3 &&
+    frame.type === 'session.cancelled' &&
+    validRemoteId(frame.sessionId) &&
+    ['cancelled', 'timeout', 'unavailable'].includes(frame.code as string)
+  );
+}
+
+function validRemoteSessionTicket(frame: Record<string, unknown>): boolean {
+  return (
+    Object.keys(frame).length === 5 &&
+    frame.type === 'session.ticket' &&
+    validRemoteId(frame.sessionId) &&
+    typeof frame.ticket === 'string' &&
+    /^[A-Za-z0-9_-]{1,512}$/.test(frame.ticket) &&
+    typeof frame.expiresAt === 'number' &&
+    Number.isSafeInteger(frame.expiresAt) &&
+    frame.capability === REMOTE_CAPABILITY
+  );
+}
+
+function validRemoteId(value: unknown): boolean {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 
 function validatedBindingUrl(

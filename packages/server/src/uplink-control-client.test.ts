@@ -8,6 +8,8 @@ import {
   RECONNECT_MAX_MS,
   UplinkControlClient,
   UPLINK_CONTROL_URL,
+  type RemoteConnectorRequest,
+  type RemoteConnectorReservation,
 } from './uplink-control-client.js';
 
 class FakeSocket extends EventEmitter {
@@ -43,6 +45,10 @@ function setup(
     disableFeatures?: (reason: string) => Promise<void>;
     installationId?: string;
     offerRemoteControl?: boolean;
+    reserveRemoteConnector?: (
+      request: RemoteConnectorRequest,
+      signal: AbortSignal,
+    ) => Promise<RemoteConnectorReservation | 'unavailable' | 'limit_reached'>;
   } = {},
 ) {
   const socket = new FakeSocket();
@@ -74,6 +80,9 @@ function setup(
     onShareExpired: expired,
     ...(options.offerRemoteControl !== undefined
       ? { offerRemoteControl: options.offerRemoteControl }
+      : {}),
+    ...(options.reserveRemoteConnector
+      ? { reserveRemoteConnector: options.reserveRemoteConnector }
       : {}),
     log,
   });
@@ -242,6 +251,226 @@ describe('UplinkControlClient', () => {
     expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(false);
     expect(socket.sent.some((raw) => raw.includes('session.ticket'))).toBe(false);
     await client.stop();
+  });
+
+  it('accepts only after a connector reservation and releases it on cancellation', async () => {
+    let completeReservation!: (value: RemoteConnectorReservation) => void;
+    const reservation = { attach: vi.fn(async () => undefined), release: vi.fn() };
+    const reserveRemoteConnector = vi.fn(
+      () => new Promise<RemoteConnectorReservation>((resolve) => (completeReservation = resolve)),
+    );
+    const { client, socket } = setup({ offerRemoteControl: true, reserveRemoteConnector });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(false);
+    completeReservation(reservation);
+    await vi.waitFor(() =>
+      expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(true),
+    );
+    socket.message({
+      type: 'session.ticket',
+      sessionId: 'session_example',
+      ticket: 'ticket_example',
+      expiresAt: Date.now() + 60_000,
+      capability: 'remote-control-v1',
+    });
+    await vi.waitFor(() =>
+      expect(reservation.attach).toHaveBeenCalledWith(
+        'ticket_example',
+        expect.any(Number),
+        expect.any(AbortSignal),
+      ),
+    );
+    socket.message({ type: 'session.cancelled', sessionId: 'session_example', code: 'cancelled' });
+    await vi.waitFor(() => expect(reservation.release).toHaveBeenCalledTimes(1));
+    await client.stop();
+  });
+
+  it('does not accept a reservation that completes after cancellation', async () => {
+    let completeReservation!: (value: RemoteConnectorReservation) => void;
+    const reservation = { attach: vi.fn(async () => undefined), release: vi.fn() };
+    const { client, socket } = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: () =>
+        new Promise<RemoteConnectorReservation>((resolve) => (completeReservation = resolve)),
+    });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    socket.message({ type: 'session.cancelled', sessionId: 'session_example', code: 'cancelled' });
+    await flush();
+    completeReservation(reservation);
+    await vi.waitFor(() => expect(reservation.release).toHaveBeenCalledTimes(1));
+    expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(false);
+    expect(reservation.attach).not.toHaveBeenCalled();
+    await client.stop();
+  });
+
+  it('does not release a replacement when an old reservation finishes late', async () => {
+    const completions: Array<(value: RemoteConnectorReservation) => void> = [];
+    const reserveRemoteConnector = vi.fn(
+      () => new Promise<RemoteConnectorReservation>((resolve) => completions.push(resolve)),
+    );
+    const first = { attach: vi.fn(async () => undefined), release: vi.fn() };
+    const replacement = { attach: vi.fn(async () => undefined), release: vi.fn() };
+    const { client, socket } = setup({ offerRemoteControl: true, reserveRemoteConnector });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    const request = {
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    };
+    socket.message(request);
+    await vi.waitFor(() => expect(completions).toHaveLength(1));
+    socket.message({ type: 'session.cancelled', sessionId: 'session_example', code: 'cancelled' });
+    await flush();
+    socket.message({ ...request, requestId: 'request_retry' });
+    await vi.waitFor(() => expect(completions).toHaveLength(2));
+    completions[0]!(first);
+    await vi.waitFor(() => expect(first.release).toHaveBeenCalledTimes(1));
+    completions[1]!(replacement);
+    await vi.waitFor(() =>
+      expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(true),
+    );
+    expect(replacement.release).not.toHaveBeenCalled();
+    await client.stop();
+    expect(replacement.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses when connector capacity does not resolve before the decision deadline', async () => {
+    vi.useFakeTimers();
+    let completeReservation!: (value: RemoteConnectorReservation) => void;
+    const reservation = { attach: vi.fn(async () => undefined), release: vi.fn() };
+    const { client, socket } = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: () =>
+        new Promise<RemoteConnectorReservation>((resolve) => (completeReservation = resolve)),
+    });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(socket.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>)).toContainEqual({
+      type: 'session.refuse',
+      sessionId: 'session_example',
+      code: 'unavailable',
+    });
+    completeReservation(reservation);
+    await flush();
+    expect(reservation.release).toHaveBeenCalledTimes(1);
+    expect(socket.sent.some((raw) => raw.includes('session.accept'))).toBe(false);
+    await client.stop();
+    vi.useRealTimers();
+  });
+
+  it('bounds a far-future ticket expiry timer without immediate teardown', async () => {
+    vi.useFakeTimers();
+    const reservation = {
+      attach: vi.fn(() => new Promise<void>(() => undefined)),
+      release: vi.fn(),
+    };
+    const { client, socket } = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => reservation,
+    });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    socket.message({
+      type: 'session.request',
+      requestId: 'request_example',
+      sessionId: 'session_example',
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15_000,
+    });
+    await flush();
+    socket.message({
+      type: 'session.ticket',
+      sessionId: 'session_example',
+      ticket: 'ticket_example',
+      expiresAt: Date.now() + 30 * 24 * 60 * 60_000,
+      capability: 'remote-control-v1',
+    });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(reservation.attach).toHaveBeenCalledTimes(1);
+    expect(reservation.release).not.toHaveBeenCalled();
+    await client.stop();
+    vi.useRealTimers();
   });
 
   it.each([
