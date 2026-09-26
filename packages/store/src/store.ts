@@ -71,6 +71,9 @@ export interface PendingSessionLinkMessage {
   invocationId: string;
   sourceSessionId: string;
   targetSessionId: string;
+  sourceProjectId: string;
+  requestMac: string;
+  macKeyId: string;
   message: string;
   approvedAt: Date | null;
   createdAt: Date;
@@ -1446,6 +1449,9 @@ export class EventStore implements EventSink {
     invocationId: string;
     sourceSessionId: string;
     targetSessionId: string;
+    sourceProjectId: string;
+    requestMac: string;
+    macKeyId: string;
     message: string;
   }): Promise<boolean> {
     const [sessionA, sessionB] = [input.sourceSessionId, input.targetSessionId].sort() as [
@@ -1453,6 +1459,15 @@ export class EventStore implements EventSink {
       string,
     ];
     return this.db.transaction().execute(async (trx) => {
+      // Several links may share one source. Lock that session before counting so
+      // concurrent requests to different peers cannot each fill the last slot.
+      const source = await trx
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('session_id', '=', input.sourceSessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!source) return false;
       const link = await trx
         .selectFrom('session_links')
         .select('session_a')
@@ -1476,6 +1491,9 @@ export class EventStore implements EventSink {
           session_b: sessionB,
           source_session_id: input.sourceSessionId,
           target_session_id: input.targetSessionId,
+          source_project_id: input.sourceProjectId,
+          request_mac: input.requestMac,
+          mac_key_id: input.macKeyId,
           message: input.message,
           approved_at: null,
         })
@@ -1500,6 +1518,9 @@ export class EventStore implements EventSink {
       invocationId: row.invocation_id,
       sourceSessionId: row.source_session_id,
       targetSessionId: row.target_session_id,
+      sourceProjectId: row.source_project_id,
+      requestMac: row.request_mac,
+      macKeyId: row.mac_key_id,
       message: row.message,
       approvedAt: row.approved_at,
       createdAt: row.created_at,
@@ -1541,6 +1562,9 @@ export class EventStore implements EventSink {
           invocationId: row.invocation_id,
           sourceSessionId: row.source_session_id,
           targetSessionId: row.target_session_id,
+          sourceProjectId: row.source_project_id,
+          requestMac: row.request_mac,
+          macKeyId: row.mac_key_id,
           message: row.message,
           approvedAt: row.approved_at,
           createdAt: row.created_at,

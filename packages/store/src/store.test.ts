@@ -66,6 +66,20 @@ describe('EventStore — linked session allowance', () => {
       projectId: 'p2',
     });
     await ctx.store.createSessionLink('s1', 's2');
+    await ctx.store.upsertProject({
+      id: 'p3',
+      owner: 'local',
+      repo: 'p3',
+      containerName: 'test-p3',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's3',
+      worktree: '/wt/agent-s3',
+      model: session.model,
+      projectId: 'p3',
+    });
+    await ctx.store.createSessionLink('s1', 's3');
     for (let index = 0; index < 6; index += 1) {
       expect(
         await ctx.store.createPendingSessionLinkMessage({
@@ -73,6 +87,9 @@ describe('EventStore — linked session allowance', () => {
           invocationId: `call-${index}`,
           sourceSessionId: 's1',
           targetSessionId: 's2',
+          sourceProjectId: 'p1',
+          requestMac: 'a'.repeat(64),
+          macKeyId: 'key-1',
           message: `Question ${index}`,
         }),
       ).toBe(true);
@@ -87,6 +104,9 @@ describe('EventStore — linked session allowance', () => {
         invocationId: 'overflow',
         sourceSessionId: 's1',
         targetSessionId: 's2',
+        sourceProjectId: 'p1',
+        requestMac: 'a'.repeat(64),
+        macKeyId: 'key-1',
         message: 'Another question',
       }),
     ).rejects.toThrow('too many linked messages awaiting approval');
@@ -96,8 +116,32 @@ describe('EventStore — linked session allowance', () => {
     ).toBeInstanceOf(Date);
     expect(await restarted.deletePendingSessionLinkMessage('s1', 'card-0')).toBe(true);
     expect((await restarted.pendingSessionLinkMessageIds(['s1'])).get('s1')).toHaveLength(5);
+    const race = await Promise.allSettled([
+      ctx.store.createPendingSessionLinkMessage({
+        id: 'peer-two',
+        invocationId: 'peer-two',
+        sourceSessionId: 's1',
+        targetSessionId: 's2',
+        sourceProjectId: 'p1',
+        requestMac: 'a'.repeat(64),
+        macKeyId: 'key-1',
+        message: 'First peer',
+      }),
+      ctx.store.createPendingSessionLinkMessage({
+        id: 'peer-three',
+        invocationId: 'peer-three',
+        sourceSessionId: 's1',
+        targetSessionId: 's3',
+        sourceProjectId: 'p1',
+        requestMac: 'a'.repeat(64),
+        macKeyId: 'key-1',
+        message: 'Second peer',
+      }),
+    ]);
+    expect(race.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect((await restarted.pendingSessionLinkMessageIds(['s1'])).get('s1')).toHaveLength(6);
     await ctx.store.deleteSessionLink('s1', 's2');
-    expect(await restarted.listPendingSessionLinkMessages('s1')).toEqual([]);
+    expect((await restarted.listPendingSessionLinkMessages('s1')).length).toBeLessThanOrEqual(1);
   });
 
   it('serializes concurrent acceptance so the pool cannot be exhausted', async () => {

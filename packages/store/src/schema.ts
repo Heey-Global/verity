@@ -75,6 +75,9 @@ interface SessionLinkPendingMessagesTable {
   session_b: string;
   source_session_id: string;
   target_session_id: string;
+  source_project_id: string;
+  request_mac: string;
+  mac_key_id: string;
   message: string;
   approved_at: Date | null;
   created_at: ColumnType<Date, string | undefined, never>;

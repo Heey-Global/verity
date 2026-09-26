@@ -94,7 +94,15 @@ export function registerSessionControlRoutes(
       throw error;
     }
     if (!decided && deps.decidePendingLinkedMessage !== undefined) {
-      decided = await deps.decidePendingLinkedMessage(id, toolUseId, decision);
+      try {
+        decided = await deps.decidePendingLinkedMessage(id, toolUseId, decision);
+      } catch (error) {
+        if (error instanceof PermissionDecisionInProgressError) {
+          reply.code(409);
+          return { error: error.message };
+        }
+        throw error;
+      }
     }
     if (!decided) {
       reply.code(404);

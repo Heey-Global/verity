@@ -369,14 +369,11 @@ it('delivers linked agent messages automatically until a renewal card is needed'
         });
         expect(retry.status).toBe(200);
         expect(harness.approvals).toHaveLength(0);
+        expect(harness.dispatches).toHaveLength(6);
       }
     }
   });
-  // The harness records attempts; the real conductor deduplicates the retry by clientReplyId.
-  expect(harness.dispatches).toHaveLength(8);
-  expect(harness.dispatches[6]?.dispatchOpts.clientReplyId).toBe(
-    harness.dispatches[5]?.dispatchOpts.clientReplyId,
-  );
+  expect(harness.dispatches).toHaveLength(7);
   expect(
     harness.approvals.filter((approval) => approval.toolName === 'verity_send_session_message'),
   ).toHaveLength(1);
@@ -514,6 +511,14 @@ it('keeps an expired linked-message approval until a later decision sends it onc
     expect(harness.dispatches).toMatchObject([
       { sessionId: 's2', dispatchOpts: { peer: { message: 'Please answer later' } } },
     ]);
+    expect(harness.records).toContainEqual(
+      expect.objectContaining({
+        kind: 'gateway_call_served',
+        callId: id,
+        toolName: 'verity_send_session_message',
+        decision: 'card',
+      }),
+    );
     expect(await harness.store.listPendingSessionLinkMessages('s1')).toEqual([]);
     expect(
       (
@@ -524,11 +529,37 @@ it('keeps an expired linked-message approval until a later decision sends it onc
         })
       ).statusCode,
     ).toBe(404);
+    // A crash or DB error after acceptance can leave the approval row behind.
+    // Its durable delivery record must make a later tap a cleanup, not a second turn.
+    await harness.store.createPendingSessionLinkMessage({
+      id: 'already-delivered',
+      invocationId: 'prior-0',
+      sourceSessionId: 's1',
+      targetSessionId: 's2',
+      sourceProjectId: 'p1',
+      requestMac: 'a'.repeat(64),
+      macKeyId: 'key-1',
+      message: 'Already sent',
+    });
+    expect(
+      (
+        await harness.app.inject({
+          method: 'POST',
+          url: '/sessions/s1/permissions/already-delivered',
+          payload: { behavior: 'allow' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(harness.dispatches).toHaveLength(1);
+    expect(await harness.store.listPendingSessionLinkMessages('s1')).toEqual([]);
     await harness.store.createPendingSessionLinkMessage({
       id: 'declined',
       invocationId: 'declined-invocation',
       sourceSessionId: 's1',
       targetSessionId: 's2',
+      sourceProjectId: 'p1',
+      requestMac: 'a'.repeat(64),
+      macKeyId: 'key-1',
       message: 'Do not send',
     });
     expect(
@@ -547,6 +578,9 @@ it('keeps an expired linked-message approval until a later decision sends it onc
       invocationId: 'unlinked-invocation',
       sourceSessionId: 's1',
       targetSessionId: 's2',
+      sourceProjectId: 'p1',
+      requestMac: 'a'.repeat(64),
+      macKeyId: 'key-1',
       message: 'No link, no delivery',
     });
     await harness.store.deleteSessionLink('s1', 's2');
