@@ -78,7 +78,7 @@ export interface CodexCredentialUpdate {
 }
 /**
  * A short-lived Codex access token plus its account scope, handed back to the
- * Server so a non-agent consumer — today only the account-global usage probe —
+ * Server so non-agent consumers — the usage probe and image transcription —
  * can call the ChatGPT backend without holding the rotating refresh token. The
  * gateway remains the single refresh authority (ADR 0010): this frame reads what
  * the authority already holds, it never mints a login of its own.

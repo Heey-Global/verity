@@ -10,6 +10,7 @@ import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
+import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { publishSharedInsight } from './knowledge-publish.js';
@@ -6119,12 +6120,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
   }
   // Chat images get their text read by the project's default model in the
-  // background, through the same stateless query the task refiner uses.
+  // background. Codex and OpenCode use direct model requests without agent tools.
   const imageTextExtractor =
     deps.refineCwd === undefined
       ? undefined
       : createImageTextExtractor({
-          query: (input) => conductor.query(input),
+          query: createKnowledgeImageQuery({
+            fallback: (input) => conductor.query(input),
+            codexCredential: deps.codexGatewayCredentialProvider,
+            codexDefaultModel: async () =>
+              (await availableModels()).modelOrder?.find(
+                (id) => id.startsWith('codex/') && id !== CODEX_DEFAULT_MODEL,
+              ),
+            openCode: async () => {
+              const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
+              const baseUrl = settings?.opencodeBaseUrl?.trim();
+              const apiKey = settings?.opencodeApiKey?.trim();
+              return baseUrl && apiKey ? { baseUrl, apiKey } : undefined;
+            },
+          }),
           cwd: deps.refineCwd,
           modelFor: async (projectId) =>
             (await projectSettingsStore(deps.eventStore).getProjectSettings(projectId))
