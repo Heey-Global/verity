@@ -151,6 +151,34 @@ describe('pinned native file transport', () => {
     expect(mockRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('cancels the direct retry when its fetch signal aborts', async () => {
+    mockRemotePort.mockResolvedValue(4_321);
+    let rejectDirect: ((error: Error) => void) | undefined;
+    mockRequest
+      .mockRejectedValueOnce(new Error('Pinned TLS transport failed'))
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectDirect = reject;
+          }),
+      );
+    mockCancelRequest.mockImplementation(() => {
+      rejectDirect?.(new Error('Cancelled'));
+      return Promise.resolve();
+    });
+    const controller = new AbortController();
+    const pending = createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)(
+      'https://verity.example/sessions',
+      { signal: controller.signal },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockCancelRequest).toHaveBeenCalledWith(mockRequest.mock.calls[1]?.[0]);
+  });
+
   it('reports both failed routes when a remote read cannot recover directly', async () => {
     mockRemotePort.mockResolvedValue(4_321);
     mockRequest.mockRejectedValue(
