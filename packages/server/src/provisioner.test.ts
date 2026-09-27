@@ -7038,14 +7038,14 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         `{
           "image": "node:24-bookworm",
           "remoteUser": "node",
-          "workspaceFolder": "/workspaces/cl-saikandi-website",
+          "workspaceFolder": "/workspaces/example-app",
           "forwardPorts": [3000],
           "appPort": [3000],
           "portsAttributes": {
             "3000": { "label": "Next.js dev server", "onAutoForward": "notify" }
           },
           "mounts": [
-            "source=cl-saikandi-node-modules,target=\${containerWorkspaceFolder}/node_modules,type=volume"
+            "source=example-app-node-modules,target=\${containerWorkspaceFolder}/node_modules,type=volume"
           ],
           "postCreateCommand": "sudo chown node:node node_modules && npm ci"
         }`,
@@ -7076,7 +7076,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const created = dockerCalls.find((c) => c.method === 'createContainer');
       const spec = created?.payload as ContainerSpec;
       expect(spec.user).toBe('node');
-      expect(spec.binds).toContain('cl-saikandi-node-modules:/work/node_modules');
+      expect(spec.binds).toContain('example-app-node-modules:/work/node_modules');
       expect(spec.binds).toContain(`${clonePath}:/work`);
       expect(command).toHaveBeenCalledWith(
         expect.objectContaining({
