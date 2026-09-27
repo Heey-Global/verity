@@ -3733,6 +3733,31 @@ describe('server image CI smoke', () => {
   const cleanInstall = job.steps.find(
     (step) => step.name === 'Verify clean Compose installation on an empty Docker host',
   );
+  // The shell spelling of the path the build step's docker exporter writes.
+  const archive = String(build?.with?.outputs ?? '')
+    .replace(/^type=docker,dest=/, '')
+    .replace('${{ runner.temp }}', '$RUNNER_TEMP')
+    .replace(/\$\{\{ env\.(\w+) \}\}/g, '$$$1');
+
+  it('exports the image once and loads that archive into every daemon that runs it', () => {
+    // `load: true` next to the archive would export the image twice, and a
+    // `docker save` anywhere re-packs what was just unpacked — each a minute or
+    // more of the slowest PR check, and neither fails anything.
+    expect(archive).toBe('$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE');
+    expect(job.env.VERITY_CI_IMAGE_ARCHIVE).toContain('${{ github.run_attempt }}');
+    expect(build?.with?.load).toBeUndefined();
+    expect(job.steps.some((step) => step.run?.includes('docker save'))).toBe(false);
+    const loads = job.steps.filter((step) => step.run?.includes(`load --input "${archive}"`));
+    // The host daemon only in the leg that runs the image checks on the host:
+    // the image smoke, and the steps before it, would otherwise find no image.
+    const hostLoad = loads.find((step) => !step.run?.includes('--host'));
+    expect(hostLoad?.if).toBe(smoke?.if);
+    expect(job.steps.indexOf(hostLoad!)).toBeLessThan(
+      job.steps.findIndex((step) => step.run?.includes('"$VERITY_CI_IMAGE"')),
+    );
+    expect(loads).toContain(cleanInstall);
+    expect(job.steps.at(-1)?.run).toContain(`rm -f "${archive}"`);
+  });
 
   it('runs every leg-gated step in a leg the matrix actually has', () => {
     // A step gated on a leg that was renamed or dropped is skipped, and a skipped
@@ -3795,11 +3820,7 @@ describe('server image CI smoke', () => {
     expect(job.env.VERITY_CI_CLEAN_DIND).toContain('${{ github.run_attempt }}');
     expect(job.env.VERITY_CI_CLEAN_DIND_VOLUME).toContain('${{ github.run_id }}');
     expect(job.env.VERITY_CI_CLEAN_DIND_VOLUME).toContain('${{ github.run_attempt }}');
-    expect(cleanInstall?.run).toContain(
-      'docker save "$VERITY_CI_IMAGE" | docker --host "$isolated" load',
-    );
-    expect(cleanInstall?.run).not.toContain('verity-clean-install-server.tar');
-    expect(cleanInstall?.run).not.toContain('load --input');
+    expect(cleanInstall?.run).toContain(`docker --host "$isolated" load --input "${archive}"`);
     expect(cleanInstall?.run).toContain('--volume "$socket_dir:$socket_dir"');
     expect(cleanInstall?.run).toContain('--host="unix://$socket_path"');
     expect(cleanInstall?.run).toContain(
@@ -3865,6 +3886,12 @@ describe('managed installer CI acceptance', () => {
     };
   };
   const job = workflow.jobs['server-image'];
+  const archive = String(
+    job.steps.find((entry) => entry.name === 'Build Verity server image')?.with?.outputs ?? '',
+  )
+    .replace(/^type=docker,dest=/, '')
+    .replace('${{ runner.temp }}', '$RUNNER_TEMP')
+    .replace(/\$\{\{ env\.(\w+) \}\}/g, '$$$1');
   const step = job.steps.find((entry) =>
     entry.run?.includes('deploy/bin/verity-managed-install-smoke '),
   );
@@ -3889,7 +3916,7 @@ describe('managed installer CI acceptance', () => {
     expect(run).toContain('--build-arg "VERITY_GVISOR_CI_IMAGE=$gvisor_image"');
     expect(run).toContain('--add-host ghcr.io:127.0.0.1');
     expect(run).toContain('--insecure-registry ghcr.io');
-    expect(run).toContain('docker save "$VERITY_CI_IMAGE" | docker --host "$isolated" load');
+    expect(run).toContain(`docker --host "$isolated" load --input "${archive}"`);
     expect(run).toContain(
       'VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated"',
     );
