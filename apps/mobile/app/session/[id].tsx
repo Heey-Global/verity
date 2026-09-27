@@ -7261,8 +7261,9 @@ function PermissionPrompt({
             </View>
           ) : null}
           <Text style={styles.permissionHttpMeta}>
-            Gmail sends exactly this text and HTML snapshot once. The original draft remains in
-            Gmail so a concurrent edit cannot change what is sent or be deleted by this action.
+            Gmail sends exactly this text and HTML snapshot once. After sending, Verity deletes the
+            original draft if the final check still matches this preview. A change during cleanup
+            may be lost.
           </Text>
         </View>
       ) : brokeredRequestDetails !== null ? (

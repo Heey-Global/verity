@@ -3778,6 +3778,25 @@ describe('server image CI smoke', () => {
     expect(job.strategy['fail-fast']).toBe(false);
   });
 
+  it('runs every leg-gated step in a leg the matrix actually has', () => {
+    // A step gated on a leg that was renamed or dropped is skipped, and a skipped
+    // step is green: the installer acceptance, or the only cache export, would
+    // stop running without anything failing.
+    const gated = [
+      ...job.steps.map((step) => step.if ?? ''),
+      String(build?.with?.['cache-to'] ?? ''),
+    ].flatMap((condition) => [...condition.matchAll(/matrix\.installer == '([^']*)'/g)]);
+    expect(gated.length).toBeGreaterThan(0);
+    for (const [, leg] of gated) expect(legs).toContain(leg);
+    expect(cleanInstall?.if).toBe("matrix.installer == 'compose'");
+    // Dropping a gate is silent too: the step runs in both legs, and the managed
+    // leg repeats the smokes it was split off to avoid.
+    expect(smoke?.if).toBe("matrix.installer == 'compose'");
+    // With fail-fast, one leg's failure cancels the other, hiding whether the
+    // second installer path works at all.
+    expect(job.strategy['fail-fast']).toBe(false);
+  });
+
   // The gha cache invariants for this step (scope, `ignore-error`, no write from
   // a PR ref) are asserted for every build step in the repo by the
   // `Actions cache budget` block above.
