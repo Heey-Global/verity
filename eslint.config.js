@@ -83,6 +83,21 @@ export default tseslint.config(
     },
   },
   {
+    // The staging probe consumes untyped WebSocket frames and runs as a direct
+    // Node script, with its protocol guards exercised by a local WSS fixture.
+    files: ['scripts/remote-control-staging/**/*.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+      },
+    },
+  },
+  {
     // The sandbox toolkit ships this Node entrypoint directly rather than through
     // a package build. It is covered by a typed integration test in packages/server.
     files: ['features/**/*.{mjs,mts}'],

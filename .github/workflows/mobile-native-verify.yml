@@ -30,6 +30,7 @@ on:
       - 'scripts/ios-pinned-tls-smoke.swift'
       - 'scripts/ios-pinned-tls-smoke-app.swift'
       - 'scripts/remote-control-tunnel/**'
+      - 'scripts/remote-control-staging/**'
       - 'scripts/enrollment-proof/**'
       - 'docs/protocols/uplink-enrollment-v1.md'
       - 'docs/protocols/uplink-enrollment-storage-v1.md'
@@ -39,6 +40,22 @@ on:
         description: Branch, tag, or commit to compile
         required: false
         default: ''
+        type: string
+      uplink_origin:
+        description: HTTPS origin of the Staging Uplink
+        required: false
+        type: string
+      installation_handle:
+        description: Existing installation's public routing handle
+        required: false
+        type: string
+      core_url:
+        description: Paired logical HTTPS Core URL
+        required: false
+        type: string
+      core_pin:
+        description: Paired Core SPKI pin (sha256-...)
+        required: false
         type: string
 
 permissions:
@@ -92,7 +109,7 @@ jobs:
           if ! git diff --quiet "$BASE_SHA" HEAD -- 'scripts/ios-pinned-tls-smoke*'; then
             tls=true
           fi
-          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel; then
+          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel scripts/remote-control-staging; then
             tunnel=true
           fi
           native_changes="$(node scripts/mobile-native-compatibility.mjs "$BASE_SHA" HEAD)"
@@ -173,8 +190,23 @@ jobs:
         timeout-minutes: 10
         run: |
           node --test scripts/remote-control-tunnel/mock.test.mjs
+          node --test scripts/remote-control-staging/probe.test.mjs
+          xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+            apps/mobile/native/CertificatePinDelegate.swift \
+            apps/mobile/native/RemoteSmokeTunnel.swift \
+            scripts/remote-control-staging/StagingProbe.swift
           bash scripts/remote-control-tunnel/run-apple.sh macos
           bash scripts/remote-control-tunnel/run-apple.sh ios
+
+      - name: Probe Staging Remote Control through the native tunnel
+        if: github.event_name == 'workflow_dispatch' && inputs.installation_handle != ''
+        timeout-minutes: 5
+        env:
+          VERITY_REMOTE_UPLINK_ORIGIN: ${{ inputs.uplink_origin }}
+          VERITY_REMOTE_INSTALLATION_HANDLE: ${{ inputs.installation_handle }}
+          VERITY_REMOTE_CORE_URL: ${{ inputs.core_url }}
+          VERITY_REMOTE_CORE_PIN: ${{ inputs.core_pin }}
+        run: bash scripts/remote-control-staging/run.sh
 
       - name: Install CocoaPods
         if: needs.changes.outputs.compile == 'true'
