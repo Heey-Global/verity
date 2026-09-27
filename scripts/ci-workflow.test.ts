@@ -3721,7 +3721,7 @@ describe('server image CI smoke', () => {
     jobs: {
       'server-image': {
         env: Record<string, string>;
-        strategy: { matrix: { include: { installer: string }[] } };
+        strategy: { 'fail-fast': boolean; matrix: { include: { installer: string }[] } };
         steps: WorkflowStep[];
       };
     };
@@ -3745,6 +3745,12 @@ describe('server image CI smoke', () => {
     expect(gated.length).toBeGreaterThan(0);
     for (const [, leg] of gated) expect(legs).toContain(leg);
     expect(cleanInstall?.if).toBe("matrix.installer == 'compose'");
+    // Dropping a gate is silent too: the step runs in both legs, and the managed
+    // leg repeats the smokes it was split off to avoid.
+    expect(smoke?.if).toBe("matrix.installer == 'compose'");
+    // With fail-fast, one leg's failure cancels the other, hiding whether the
+    // second installer path works at all.
+    expect(job.strategy['fail-fast']).toBe(false);
   });
 
   // The gha cache invariants for this step (scope, `ignore-error`, no write from
