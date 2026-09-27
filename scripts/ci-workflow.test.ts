@@ -971,13 +971,17 @@ describe('native iOS compile gate', () => {
     expect(named('Verify iOS enrollment Keychain persistence')?.if).toContain(
       "outputs.enrollment == 'true'",
     );
-    expect(named('Generate the iOS project')?.if).toContain("outputs.tls == 'true'");
+    const prebuild = named('Generate the iOS project');
+    const tunnel = named('Verify native Remote Control tunnel prototype');
+    expect(prebuild?.if).toContain("outputs.tls == 'true'");
+    // The iOS tunnel smoke reads Info.plist from the generated app; a tunnel-only
+    // change must not run it without prebuild.
+    expect(prebuild?.if).toContain("outputs.tunnel == 'true'");
+    expect(steps.indexOf(prebuild!)).toBeLessThan(steps.indexOf(tunnel!));
     expect(named('Verify pinned TLS against a self-signed server')?.if).toContain(
       "outputs.tls == 'true'",
     );
-    expect(named('Verify native Remote Control tunnel prototype')?.if).toContain(
-      "outputs.tunnel == 'true'",
-    );
+    expect(tunnel?.if).toContain("outputs.tunnel == 'true'");
     for (const name of [
       'Verify the mobile sources',
       'Install CocoaPods',
