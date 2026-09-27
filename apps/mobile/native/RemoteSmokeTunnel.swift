@@ -9,7 +9,7 @@ enum RemoteSmokeError: Error {
   case limitReached
 }
 
-private func matchesIP(_ bytes: Data, host: String, family: Int32) -> Bool {
+func matchesIP(_ bytes: Data, host: String, family: Int32) -> Bool {
   if family == AF_INET {
     var address = in_addr()
     guard host.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else { return false }

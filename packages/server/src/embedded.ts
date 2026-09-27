@@ -3950,6 +3950,9 @@ export async function buildEmbeddedServer(
       : {}),
     ...(previewShareManager !== undefined ? { previewShareManager } : {}),
     ...(uplinkControl !== undefined
+      ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
+      : {}),
+    ...(uplinkControl !== undefined
       ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }
       : {}),
     onOpenCodeSettingsChanged: async (settings) => {

@@ -1,4 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
+import { remoteControlPortForUrl } from './remoteControlTransport';
 
 interface NativeResponse {
   status: number;
@@ -14,12 +15,14 @@ interface NativePinnedTransport {
     headers: Record<string, string>,
     bodyBase64: string | null,
     tlsPin: string,
+    proxyPort: number,
   ): Promise<NativeResponse>;
   download(
     url: string,
     headers: Record<string, string>,
     destination: string,
     tlsPin: string,
+    proxyPort: number,
   ): Promise<{ status: number; uri: string }>;
   upload(
     requestId: string,
@@ -28,6 +31,7 @@ interface NativePinnedTransport {
     headers: Record<string, string>,
     source: string,
     tlsPin: string,
+    proxyPort: number,
   ): Promise<NativeResponse>;
   cancelRequest(requestId: string): Promise<void>;
   verifyIdentity(
@@ -36,7 +40,12 @@ interface NativePinnedTransport {
     challenge: string,
     signature: string,
   ): Promise<boolean>;
-  openWebSocket(url: string, tlsPin: string, protocols: string[]): Promise<string>;
+  openWebSocket(
+    url: string,
+    tlsPin: string,
+    protocols: string[],
+    proxyPort: number,
+  ): Promise<string>;
   closeWebSocket(id: string): Promise<void>;
   addListener(
     event: 'onWebSocketEvent',
@@ -53,12 +62,15 @@ export async function downloadPinnedFile(input: {
   headers?: Record<string, string>;
   destination: string;
   tlsPin: string;
+  useRemote?: boolean;
 }): Promise<string> {
+  const port = input.useRemote ? await remoteControlPortForUrl(input.url) : 0;
   const response = await native().download(
     input.url,
     input.headers ?? {},
     input.destination,
     input.tlsPin,
+    port,
   );
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`File download failed with status ${String(response.status)}.`);
@@ -125,7 +137,7 @@ async function encodeBody(body: BodyInit | null | undefined): Promise<string | n
   throw new Error('This request body is not supported by the pinned transport.');
 }
 
-export function createPinnedFetch(tlsPin: string): typeof fetch {
+export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fetch {
   return (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     if (input instanceof Request)
       throw new Error('Request objects are not supported by the pinned transport.');
@@ -149,11 +161,20 @@ export function createPinnedFetch(tlsPin: string): typeof fetch {
     let response: NativeResponse;
     try {
       const encodedBody = fileUri ? null : await encodeBody(init.body);
+      const port = useRemote ? await remoteControlPortForUrl(url) : 0;
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
       response = fileUri
-        ? await transport.upload(requestId, url, init.method ?? 'POST', headers, fileUri, tlsPin)
+        ? await transport.upload(
+            requestId,
+            url,
+            init.method ?? 'POST',
+            headers,
+            fileUri,
+            tlsPin,
+            port,
+          )
         : await transport.request(
             requestId,
             url,
@@ -161,6 +182,7 @@ export function createPinnedFetch(tlsPin: string): typeof fetch {
             headers,
             encodedBody,
             tlsPin,
+            port,
           );
     } catch (error) {
       if (init.signal?.aborted) {
@@ -205,6 +227,7 @@ export function createPinnedWebSocket(
   url: string,
   tlsPin: string,
   protocols: string | string[] = [],
+  useRemote = false,
 ) {
   const listeners = new Map<'message' | 'close' | 'error', Set<SocketListener>>();
   let socketId: string | null = null;
@@ -217,8 +240,15 @@ export function createPinnedWebSocket(
     }
     if (event.type === 'close') subscription.remove();
   });
-  void native()
-    .openWebSocket(url, tlsPin, typeof protocols === 'string' ? [protocols] : protocols)
+  void (async () => {
+    const port = useRemote ? await remoteControlPortForUrl(url) : 0;
+    return native().openWebSocket(
+      url,
+      tlsPin,
+      typeof protocols === 'string' ? [protocols] : protocols,
+      port,
+    );
+  })()
     .then((id) => {
       socketId = id;
       if (closed) void native().closeWebSocket(id);

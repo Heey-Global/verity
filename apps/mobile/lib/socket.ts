@@ -14,6 +14,6 @@ export const createWebSocket: StreamSocketFactory = (url, protocols) => {
     return endpointUrl === socketOrigin;
   });
   return endpoint?.transport === 'direct'
-    ? createPinnedWebSocket(url, endpoint.tlsPin!, protocols)
+    ? createPinnedWebSocket(url, endpoint.tlsPin!, protocols, true)
     : new WebSocket(url, protocols);
 };

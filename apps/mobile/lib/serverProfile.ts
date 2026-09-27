@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 
 import type { VerityPairingPayload } from './pairing';
+import type { RemoteControlDescriptor } from '@verity/mobile';
 
 const PROFILE_KEY = 'verity.serverProfile.v1';
 const TOKEN = /^[A-Za-z0-9_-]+$/;
@@ -19,6 +20,12 @@ export interface VerityServerProfile {
   identityKey: string;
   activeUrl: string;
   endpoints: VerityServerEndpoint[];
+  remoteControl?: {
+    version: 1;
+    installationId: string;
+    installationHandle: string;
+    uplinkOrigin: string;
+  };
 }
 
 let currentProfile: VerityServerProfile | null = null;
@@ -27,6 +34,21 @@ function origin(value: string): string {
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.username || url.password) {
     throw new Error('A paired server endpoint must use HTTPS.');
+  }
+  return url.origin;
+}
+
+function remoteControlOrigin(value: string): string {
+  const url = new URL(value);
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('Invalid Uplink origin.');
   }
   return url.origin;
 }
@@ -70,12 +92,36 @@ function validateServerProfile(value: unknown): VerityServerProfile {
   }
   const activeUrl = origin(candidate.activeUrl ?? '');
   if (!endpoints.some(({ url }) => url === activeUrl)) throw new Error('Unknown active endpoint.');
+  const remote = candidate.remoteControl;
+  if (
+    remote !== undefined &&
+    (remote.version !== 1 ||
+      typeof remote.installationId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
+        remote.installationId,
+      ) ||
+      typeof remote.installationHandle !== 'string' ||
+      !/^[A-Za-z0-9_-]{21}[AQgw]$/u.test(remote.installationHandle) ||
+      typeof remote.uplinkOrigin !== 'string')
+  ) {
+    throw new Error('Invalid remote control descriptor.');
+  }
   return {
     version: 1,
     serverId: candidate.serverId,
     identityKey: candidate.identityKey,
     activeUrl,
     endpoints,
+    ...(remote === undefined
+      ? {}
+      : {
+          remoteControl: {
+            version: 1,
+            installationId: remote.installationId,
+            installationHandle: remote.installationHandle,
+            uplinkOrigin: remoteControlOrigin(remote.uplinkOrigin),
+          },
+        }),
   };
 }
 
@@ -141,6 +187,29 @@ export async function addServerEndpoint(
 export async function selectServerEndpoint(url: string): Promise<VerityServerProfile> {
   if (currentProfile === null) throw new Error('No paired server profile.');
   const updated = validateServerProfile({ ...currentProfile, activeUrl: origin(url) });
+  await saveServerProfile(updated);
+  return updated;
+}
+
+/** Store only routing metadata learned from the authenticated, pinned Core API. */
+export async function saveRemoteControlDescriptor(
+  descriptor: RemoteControlDescriptor,
+): Promise<VerityServerProfile> {
+  if (currentProfile === null) throw new Error('No paired server profile.');
+  const { remoteControl: _previous, ...profile } = currentProfile;
+  const updated = validateServerProfile({
+    ...profile,
+    ...(descriptor.enabled
+      ? {
+          remoteControl: {
+            version: 1,
+            installationId: descriptor.installationId,
+            installationHandle: descriptor.installationHandle,
+            uplinkOrigin: descriptor.uplinkOrigin,
+          },
+        }
+      : {}),
+  });
   await saveServerProfile(updated);
   return updated;
 }

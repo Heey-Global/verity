@@ -1,6 +1,7 @@
 internal import ExpoModulesCore
 import CryptoKit
 import Foundation
+import Network
 
 private enum PinnedTransportError: Error {
   case invalidURL
@@ -23,6 +24,21 @@ class VerityPinnedTransport: Module {
   private let webSocketsLock = NSLock()
   private var requests: [String: URLSession] = [:]
   private let requestsLock = NSLock()
+
+  private func configuration(proxyPort: Int) throws -> URLSessionConfiguration {
+    guard proxyPort >= 0 && proxyPort <= 65_535 else { throw PinnedTransportError.invalidURL }
+    let configuration = URLSessionConfiguration.ephemeral
+    if proxyPort > 0 {
+      guard #available(iOS 17.0, macOS 14.0, *) else { throw PinnedTransportError.invalidURL }
+      guard let port = NWEndpoint.Port(rawValue: UInt16(proxyPort)) else {
+        throw PinnedTransportError.invalidURL
+      }
+      configuration.proxyConfigurations = [
+        ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: port))
+      ]
+    }
+    return configuration
+  }
 
   private func storeRequest(_ session: URLSession, id: String) {
     requestsLock.lock()
@@ -66,7 +82,7 @@ class VerityPinnedTransport: Module {
     Events("onWebSocketEvent")
 
     AsyncFunction("request") {
-      (requestId: String, url: String, method: String, headers: [String: String], bodyBase64: String?, tlsPin: String) async throws
+      (requestId: String, url: String, method: String, headers: [String: String], bodyBase64: String?, tlsPin: String, proxyPort: Int) async throws
         -> [String: Any] in
       guard let target = URL(string: url), target.scheme == "https", target.user == nil, target.password == nil else {
         throw PinnedTransportError.invalidURL
@@ -79,7 +95,7 @@ class VerityPinnedTransport: Module {
         request.httpBody = body
       }
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
-      let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+      let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
       self.storeRequest(session, id: requestId)
       defer {
         self.finishRequest(requestId)
@@ -111,7 +127,7 @@ class VerityPinnedTransport: Module {
     }
 
     AsyncFunction("download") {
-      (url: String, headers: [String: String], destination: String, tlsPin: String) async throws
+      (url: String, headers: [String: String], destination: String, tlsPin: String, proxyPort: Int) async throws
         -> [String: Any] in
       guard
         let target = URL(string: url), target.scheme == "https", target.user == nil,
@@ -121,7 +137,7 @@ class VerityPinnedTransport: Module {
       var request = URLRequest(url: target)
       for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
-      let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+      let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
       defer { session.finishTasksAndInvalidate() }
       let (temporaryURL, response) = try await session.download(for: request)
       guard let http = response as? HTTPURLResponse else { throw PinnedTransportError.nonHTTPResponse }
@@ -137,7 +153,7 @@ class VerityPinnedTransport: Module {
     }
 
     AsyncFunction("upload") {
-      (requestId: String, url: String, method: String, headers: [String: String], source: String, tlsPin: String) async throws
+      (requestId: String, url: String, method: String, headers: [String: String], source: String, tlsPin: String, proxyPort: Int) async throws
         -> [String: Any] in
       guard
         let target = URL(string: url), target.scheme == "https", target.user == nil,
@@ -147,7 +163,7 @@ class VerityPinnedTransport: Module {
       request.httpMethod = method
       for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
-      let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+      let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
       self.storeRequest(session, id: requestId)
       defer {
         self.finishRequest(requestId)
@@ -190,7 +206,7 @@ class VerityPinnedTransport: Module {
       return key.isValidSignature(signatureData, for: transcript)
     }
 
-    AsyncFunction("openWebSocket") { (url: String, tlsPin: String, protocols: [String]) throws -> String in
+    AsyncFunction("openWebSocket") { (url: String, tlsPin: String, protocols: [String], proxyPort: Int) throws -> String in
       guard let target = URL(string: url), target.scheme == "wss", target.user == nil, target.password == nil else {
         throw PinnedTransportError.invalidURL
       }
@@ -201,7 +217,7 @@ class VerityPinnedTransport: Module {
         self?.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "data": reason ?? ""])
         self?.removeSocket(id)?.0.finishTasksAndInvalidate()
       }
-      let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+      let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
       var request = URLRequest(url: target)
       if !protocols.isEmpty {
         request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")

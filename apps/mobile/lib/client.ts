@@ -3,7 +3,11 @@ import { VerityClient, normalizeServerUrl } from '@verity/mobile';
 import { fetch as expoFetch } from 'expo/fetch';
 import { clearAuthToken, getAuthToken } from './authToken';
 import { createPinnedFetch } from './pinnedTransport';
-import { getServerProfile, hydrateServerProfile } from './serverProfile';
+import {
+  getServerProfile,
+  hydrateServerProfile,
+  saveRemoteControlDescriptor,
+} from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
@@ -16,6 +20,8 @@ const STORAGE_KEY = 'verity.serverUrl';
 // (re)configures the server.
 let currentBaseUrl: string | null = null;
 let configuredBaseUrl = false;
+let lastDescriptorToken: string | null = null;
+let lastDescriptorAttempt = 0;
 
 /**
  * Load the persisted base URL from AsyncStorage into module state. Call ONCE at
@@ -88,8 +94,8 @@ export function createVerityClient(): VerityClient | null {
   if (!currentBaseUrl) return null;
   const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === currentBaseUrl);
   const pinnedFetch =
-    endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!) : undefined;
-  return new VerityClient({
+    endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, true) : undefined;
+  const client = new VerityClient({
     baseUrl: currentBaseUrl,
     // expo-file-system File implements Blob through Expo's native networking
     // stack. Keep ordinary API calls on the global fetch and route only uploads
@@ -102,4 +108,31 @@ export function createVerityClient(): VerityClient | null {
       void clearAuthToken(currentBaseUrl);
     },
   });
+  const token = getAuthToken(currentBaseUrl);
+  if (
+    token !== null &&
+    endpoint?.transport === 'direct' &&
+    (token !== lastDescriptorToken || Date.now() - lastDescriptorAttempt > 60_000)
+  ) {
+    lastDescriptorToken = token;
+    lastDescriptorAttempt = Date.now();
+    const expectedServerId = getServerProfile()?.serverId;
+    const expectedUrl = currentBaseUrl;
+    void client
+      .getRemoteControlDescriptor()
+      .then(async (descriptor) => {
+        const profile = getServerProfile();
+        if (
+          profile?.serverId === expectedServerId &&
+          profile?.activeUrl === expectedUrl &&
+          getAuthToken(expectedUrl) === token
+        ) {
+          await saveRemoteControlDescriptor(descriptor);
+        }
+      })
+      .catch(() => {
+        // Keep the last authenticated descriptor during a transient direct outage.
+      });
+  }
+  return client;
 }

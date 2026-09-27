@@ -11,6 +11,7 @@ import {
   getServerProfile,
   profileFromPairing,
   saveServerProfile,
+  saveRemoteControlDescriptor,
   selectServerEndpoint,
   addServerEndpoint,
 } from './serverProfile';
@@ -125,6 +126,11 @@ export async function establishPairing(
         getToken: () => enrolled.token,
       });
       const status = await authenticatedClient.fetchOnboardingStatus();
+      try {
+        await saveRemoteControlDescriptor(await authenticatedClient.getRemoteControlDescriptor());
+      } catch {
+        // Pairing succeeded; Uplink metadata can be refreshed on a later direct request.
+      }
       enrollment = null;
       enrollmentAttempt = null;
       await SecureStore.deleteItemAsync(ENROLLMENT_ATTEMPT_KEY);
