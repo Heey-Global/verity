@@ -161,55 +161,29 @@ it('publishes an explicitly requested project insight to Shared', async () => {
   }
 });
 
-it('uses project grants without per-call approval and attributes writes to the trusted turn', async () => {
+it('refuses the retired managed-library operations even where a grant would allow them', async () => {
   const h = await setup();
   try {
-    const folderResponse = await h.app.inject({
-      method: 'POST',
-      url: '/knowledge/folders',
-      headers: { authorization: 'Bearer device-token' },
-      payload: { name: 'Shared', parentId: null },
-    });
-    expect(folderResponse.statusCode).toBe(200);
-    const { folder } = folderResponse.json();
-    const grantResponse = await h.app.inject({
-      method: 'PUT',
-      url: '/projects/p/knowledge-grants',
-      headers: { authorization: 'Bearer device-token' },
-      payload: { grants: [{ folderId: folder.id, mode: 'read_write' }] },
-    });
-    expect(grantResponse.statusCode).toBe(200);
-    const created = await h.agent({
-      operation: 'create',
+    const folder = await ctx.store.knowledge.createFolder({ name: 'Shared' });
+    await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read_write' }]);
+    const document = await ctx.store.knowledge.createDocument({
       folderId: folder.id,
       title: 'Notes.md',
       bodyMarkdown: '# Shared',
     });
-    expect(created.isError).toBeUndefined();
-    const doc = JSON.parse(created.content[0]!.text) as { id: string; currentRevisionId: string };
-    const revisions = await ctx.store.knowledge.listRevisions(doc.id);
-    expect(revisions[0]).toMatchObject({ projectId: 'p', sessionId: 's', turnId: 't' });
-    await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read' }]);
-    expect((await h.agent({ operation: 'read', documentId: doc.id })).isError).toBeUndefined();
-    expect(
-      (
-        await h.agent({
-          operation: 'edit',
-          documentId: doc.id,
-          expectedRevisionId: doc.currentRevisionId,
-          title: 'Changed',
-          bodyMarkdown: 'changed',
-        })
-      ).isError,
-    ).toBe(true);
-    expect((await ctx.store.knowledge.getDocument(doc.id)).bodyMarkdown).toBe('# Shared');
-    expect(h.permission).not.toHaveBeenCalled();
+    for (const request of [
+      { operation: 'list' },
+      { operation: 'read', documentId: document.id },
+      { operation: 'create', folderId: folder.id, title: 'New.md', bodyMarkdown: 'text' },
+    ]) {
+      // An unknown operation fails argument validation, which the gateway answers
+      // as a JSON-RPC error carrying no tool result at all.
+      const result = (await h.agent(request)) as { isError?: boolean } | undefined;
+      expect(result === undefined || result.isError === true).toBe(true);
+    }
+    expect(await ctx.store.knowledge.listDocuments({ folderId: folder.id })).toHaveLength(1);
+    expect(await ctx.store.knowledge.hasSessionKnowledgeExposure('s')).toBe(false);
     expect(h.fallback).not.toHaveBeenCalled();
-    await ctx.store.knowledge.setGrants('p', []);
-    await expect(h.agent({ operation: 'read', documentId: doc.id })).rejects.toMatchObject({
-      statusCode: 401,
-    });
-    expect(await ctx.store.knowledge.isSessionInvalidated('s')).toBe(true);
   } finally {
     await h.close();
   }
@@ -237,22 +211,14 @@ it('keeps management APIs behind device authentication and returns bounded valid
     });
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json()).toMatchObject({ code: 'invalid' });
-    const folder = await ctx.store.knowledge.createFolder({ name: 'Shared' });
-    await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read_write' }]);
-    const agentError = await h.agent({
-      operation: 'create',
-      folderId: folder.id,
-      title: 'bad/name',
-      bodyMarkdown: '',
-    });
-    expect(agentError.isError).toBe(true);
-    expect(agentError.content[0]!.text).toContain('Names must');
     const forged = h.tokens.issue({
       projectId: 'p',
       sessionId: 'nonexistent-session',
       turnId: 'forged-turn',
     });
-    expect((await h.agent({ operation: 'list' }, forged)).isError).toBe(true);
+    expect(
+      (await h.agent({ operation: 'publish_shared', path: 'profile.md' }, forged)).isError,
+    ).toBe(true);
   } finally {
     await h.close();
   }

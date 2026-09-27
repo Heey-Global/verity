@@ -5,7 +5,6 @@ import {
   moveGit,
   SessionMoveError,
 } from './session-move-files.js';
-import { knowledgeSourceToolResult } from './knowledge-source-tool-result.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
@@ -5749,22 +5748,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         if (input.toolName === 'verity_knowledge') {
           const request = knowledgeToolRequestSchema.parse(input.request);
-          if (request.operation === 'publish_shared') {
-            if (deps.dataRoot === undefined) throw new Error('Knowledge storage is unavailable');
-            return publishSharedInsight(deps.dataRoot, input.projectId, request);
-          }
-          const value = await deps.eventStore.knowledge.runAgent(
-            {
-              projectId: input.projectId,
-              sessionId: input.sessionId,
-              turnId: input.turnId,
-            },
-            request.operation,
-            request,
-          );
-          return request.operation === 'read_original'
-            ? knowledgeSourceToolResult(request, value)
-            : value;
+          if (deps.dataRoot === undefined) throw new Error('Knowledge storage is unavailable');
+          return publishSharedInsight(deps.dataRoot, input.projectId, request);
         }
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);

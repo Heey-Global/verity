@@ -68,7 +68,6 @@ function build(
     wire?: boolean;
     allow?: boolean;
     trustedCli?: boolean;
-    knowledge?: boolean;
     /** Compose the deployment's network-origin gate, so `/internal/*` behaves on the
      *  operator-facing listener the way a real deployment makes it behave. */
     internalGuard?: boolean;
@@ -94,13 +93,11 @@ function build(
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
-      options.knowledge === true
-        ? ['verity_knowledge']
-        : options.trustedCli === true
-          ? ['verity_http_request', 'verity_secret_run']
-          : options.linkedTools === true
-            ? ['verity_send_session_message', 'verity_list_linked_sessions']
-            : ['verity_http_request'],
+      options.trustedCli === true
+        ? ['verity_http_request', 'verity_secret_run']
+        : options.linkedTools === true
+          ? ['verity_send_session_message', 'verity_list_linked_sessions']
+          : ['verity_http_request'],
     ...(options.sessionTools === true
       ? {
           extraToolsForProject: () =>
@@ -599,18 +596,24 @@ it('keeps an expired linked-message approval until a later decision sends it onc
 });
 
 describe('POST /internal/mcp (loopback MCP gateway)', () => {
-  it('accepts an escaped Markdown document within the stored byte limit', async () => {
-    const harness = build({ knowledge: true, allow: true });
+  it('accepts an escaped 256 KiB payload within the route byte limit', async () => {
+    const harness = build({ allow: true });
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
     await withListener(harness, async (socketPath) => {
-      const bodyMarkdown = '\u0001'.repeat(256 * 1024);
+      const text = '\u0001'.repeat(256 * 1024);
       const res = await postUnix(socketPath, `Bearer ${token}`, {
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
         params: {
-          name: 'verity_knowledge',
-          arguments: { operation: 'create', folderId: 'folder', title: 'Notes', bodyMarkdown },
+          name: 'verity_http_request',
+          arguments: {
+            method: 'POST',
+            url: 'https://api.example.com/documents',
+            secretAlias: 'API_TOKEN',
+            auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+            body: { text },
+          },
         },
       });
       expect(res.status).toBe(200);
