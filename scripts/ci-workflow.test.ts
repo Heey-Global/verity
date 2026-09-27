@@ -985,6 +985,20 @@ describe('native iOS compile gate', () => {
     ]) {
       expect(named(name)?.if).toBe("needs.changes.outputs.compile == 'true'");
     }
+    const swift = named('Typecheck native Remote Control tunnel');
+    const pods = named('Install CocoaPods');
+    const build = named('Compile the iOS simulator app');
+    const cache = named('Restore native compiler cache');
+    expect(swift?.run).toContain('apps/mobile/native/RemoteAppTunnel.swift');
+    expect(steps.indexOf(swift!)).toBeLessThan(
+      steps.indexOf(named('Verify iOS enrollment Keychain persistence')!),
+    );
+    expect(steps.indexOf(cache!)).toBeLessThan(steps.indexOf(pods!));
+    expect(steps.indexOf(pods!)).toBeLessThan(steps.indexOf(build!));
+    expect(named('Configure native compiler cache')?.run).toContain('USE_CCACHE=1');
+    expect(cache?.with?.path).toBe('${{ runner.temp }}/verity-mobile-ccache');
+    expect(cache?.with?.key).toContain("hashFiles('package-lock.json'");
+    expect(cache?.with?.['restore-keys']).toContain('mobile-ci-ccache-');
   });
 
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
