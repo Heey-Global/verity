@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.0](https://github.com/Heey-Global/verity/compare/v2.10.0...v2.11.0) (2026-09-27)
+
+
+### Features
+
+* **workspace:** allow all Docs and Sheets updates ([#817](https://github.com/Heey-Global/verity/issues/817)) ([4f1d7c2](https://github.com/Heey-Global/verity/commit/4f1d7c220ce30170e34c92270ac705fa7f017553))
+
 ## [2.10.0](https://github.com/Heey-Global/verity/compare/v2.9.1...v2.10.0) (2026-09-27)
 
 
