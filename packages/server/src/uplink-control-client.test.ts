@@ -221,6 +221,52 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('publishes the current routing handle only while remote admission is usable', async () => {
+    const handle = Buffer.alloc(16, 7).toString('base64url');
+    const { client, socket } = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: vi.fn(async () => 'unavailable' as const),
+    });
+    expect(client.remoteControlDescriptor()).toEqual({
+      version: 1,
+      enabled: false,
+      reason: 'unavailable',
+    });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      handle,
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    expect(client.remoteControlDescriptor()).toEqual({
+      version: 1,
+      enabled: true,
+      installationId: 'installation-1',
+      installationHandle: handle,
+      uplinkOrigin: 'https://uplink.verity.build',
+      capabilities: ['remote-control-v1'],
+    });
+    socket.message({
+      type: 'renewed',
+      features: [],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    expect(client.remoteControlDescriptor()).toEqual({
+      version: 1,
+      enabled: false,
+      reason: 'disabled',
+    });
+    await client.stop();
+  });
+
   it('refuses a negotiated personal session while no connector is wired', async () => {
     const { client, socket } = setup({ offerRemoteControl: true });
     client.start();

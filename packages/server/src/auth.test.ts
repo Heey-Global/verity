@@ -100,6 +100,40 @@ describe('paired device management', () => {
   afterAll(async () => ctx.close());
   beforeEach(async () => truncateAll(ctx.db));
 
+  it('serves the remote descriptor only to a paired device', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('iPad');
+    const descriptor = {
+      version: 1 as const,
+      enabled: true as const,
+      installationId: 'installation-1',
+      installationHandle: Buffer.alloc(16, 7).toString('base64url'),
+      uplinkOrigin: 'https://uplink.verity.build',
+      capabilities: ['remote-control-v1'] as const,
+    };
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+      remoteControlDescriptor: () => descriptor,
+    });
+    try {
+      const path = '/api/remote-control/descriptor';
+      expect((await app.inject({ method: 'GET', url: path })).statusCode).toBe(401);
+      const response = await app.inject({
+        method: 'GET',
+        url: path,
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(descriptor);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('binds only a verified device token to the request user', async () => {
     const store = new EventStore(ctx.db);
     const registry = await createAuthTokenRegistry(store, { enabled: true });

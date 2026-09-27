@@ -262,6 +262,7 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerHealthRoute } from './health-route.js';
+import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
@@ -1034,6 +1035,7 @@ export interface ServerDeps {
   serverUpdateNotifierStatePath?: string | undefined;
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: PreviewShareManager | undefined;
+  remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: (() => void) | undefined;
   /** Rewrite the OpenCode config directory after its central settings change. */
@@ -4111,6 +4113,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.secretJobRuntimeReadiness !== undefined
       ? { secretJobRuntimeReadiness: deps.secretJobRuntimeReadiness }
       : {}),
+  });
+  app.get('/api/remote-control/descriptor', async (request, reply) => {
+    // This route is only for an authenticated paired device. Headless deployments
+    // can run without the global bearer gate, but have no paired device to serve.
+    if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });
+    return deps.remoteControlDescriptor?.() ?? { version: 1, enabled: false, reason: 'disabled' };
   });
   registerDiagnosticsMemoryRoute(app);
 

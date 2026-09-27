@@ -4544,6 +4544,7 @@ function SessionFilesSheet({
                   url,
                   destination: destination.uri,
                   tlsPin: directTlsPin,
+                  useRemote: true,
                   ...(headers ? { headers } : {}),
                 }),
               )
@@ -8162,6 +8163,7 @@ function useAttachmentImageSource(a: {
       url: `${baseUrl}/attachments/${a.id}`,
       destination: destination.uri,
       tlsPin: endpoint.tlsPin,
+      useRemote: true,
       ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
     })
       .then((uri) => {

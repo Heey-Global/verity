@@ -405,6 +405,7 @@ export {
 export { secretStatusSchema, type SecretStatus } from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export { healthSchema, type Health } from './api.js';
+export { remoteControlDescriptorSchema, type RemoteControlDescriptor } from './api.js';
 export { canCreatePublicPreviewTarget, type PublicPreviewTargetKind } from './publicPreview.js';
 export { secretUnlockedSchema, type SecretUnlocked } from './api.js';
 export { type PairedDevice, type PairingInvitation } from './api.js';

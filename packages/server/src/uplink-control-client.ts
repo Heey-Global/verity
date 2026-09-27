@@ -104,6 +104,17 @@ export interface UplinkControlClientOptions {
   log?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
+export type RemoteControlDescriptor =
+  | { readonly version: 1; readonly enabled: false; readonly reason: 'disabled' | 'unavailable' }
+  | {
+      readonly version: 1;
+      readonly enabled: true;
+      readonly installationId: string;
+      readonly installationHandle: string;
+      readonly uplinkOrigin: string;
+      readonly capabilities: readonly ['remote-control-v1'];
+    };
+
 /** Long-lived fail-closed client for the paid Uplink control plane. Credentials
  * are read from the encrypted settings store only. No environment/file fallback
  * is accepted by this class. */
@@ -118,6 +129,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private renewalTimer: NodeJS.Timeout | undefined;
   private features = new Set<string>();
   private remoteNegotiated = false;
+  private remoteInstallation:
+    { readonly installationId: string; readonly installationHandle: string } | undefined;
   private remoteSessions = new Map<string, RemoteSession>();
   private pending = new Map<string, Pending>();
   private abandonedCreates = new Map<string, NodeJS.Timeout>();
@@ -184,6 +197,34 @@ export class UplinkControlClient implements PreviewEdgeControl {
     return (
       this.welcomed && this.socket?.readyState === WebSocket.OPEN && this.features.has('sharing')
     );
+  }
+
+  remoteControlDescriptor(): RemoteControlDescriptor {
+    if (
+      this.options.offerRemoteControl !== true ||
+      this.options.reserveRemoteConnector === undefined
+    ) {
+      return { version: 1, enabled: false, reason: 'disabled' };
+    }
+    if (
+      !this.welcomed ||
+      this.socket?.readyState !== WebSocket.OPEN ||
+      this.remoteInstallation === undefined
+    ) {
+      return { version: 1, enabled: false, reason: 'unavailable' };
+    }
+    if (!this.remoteNegotiated || !this.features.has('remote-control')) {
+      return { version: 1, enabled: false, reason: 'disabled' };
+    }
+    const uplinkUrl = new URL(this.options.url);
+    uplinkUrl.protocol = 'https:';
+    return {
+      version: 1,
+      enabled: true,
+      ...this.remoteInstallation,
+      uplinkOrigin: uplinkUrl.origin,
+      capabilities: ['remote-control-v1'],
+    };
   }
 
   async create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
@@ -431,6 +472,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (frame.type === 'welcome') {
       const installationId = stringField(frame, 'installationId');
+      const installationHandle = validInstallationHandle(frame.handle) ? frame.handle : undefined;
       const negotiation = remoteNegotiation(frame);
       this.retryMs = 1_000;
       this.retryCeilingMs = RECONNECT_MAX_MS;
@@ -477,6 +519,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
           this.options.offerRemoteControl === true &&
           negotiation.capabilities.has(REMOTE_CAPABILITY) &&
           negotiation.channels.has(REMOTE_CHANNEL);
+        this.remoteInstallation =
+          installationHandle === undefined ? undefined : { installationId, installationHandle };
         this.welcomed = true;
         this.startHeartbeat();
         if (!this.features.has('sharing')) {
@@ -704,6 +748,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private clearAuthority(reason: string, notify = true): void {
     this.features.clear();
     this.remoteNegotiated = false;
+    this.remoteInstallation = undefined;
     this.clearRemoteSessions(reason);
     this.welcomed = false;
     this.controlReady = false;
@@ -929,6 +974,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
     this.retryTimer.unref();
     this.retryMs = Math.min(this.retryCeilingMs, this.retryMs * 2);
   }
+}
+
+function validInstallationHandle(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[A-Za-z0-9_-]{22}$/u.test(value) &&
+    Buffer.from(value, 'base64url').length === 16 &&
+    Buffer.from(value, 'base64url').toString('base64url') === value
+  );
 }
 
 function stringField(frame: Record<string, unknown>, key: string): string {

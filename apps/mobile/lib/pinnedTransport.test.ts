@@ -2,6 +2,11 @@ const mockRequest = jest.fn();
 const mockUpload = jest.fn();
 const mockDownload = jest.fn();
 const mockCancelRequest = jest.fn();
+const mockRemotePort = jest.fn();
+
+jest.mock('./remoteControlTransport', () => ({
+  remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
+}));
 
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: () => ({
@@ -50,6 +55,7 @@ describe('pinned native file transport', () => {
     mockUpload.mockReset();
     mockDownload.mockReset();
     mockCancelRequest.mockReset();
+    mockRemotePort.mockReset();
   });
 
   it('streams a file-backed Blob through the native upload API', async () => {
@@ -69,6 +75,7 @@ describe('pinned native file transport', () => {
       {},
       'file:///tmp/large.mov',
       `sha256-${'a'.repeat(43)}`,
+      0,
     );
     expect(mockRequest).not.toHaveBeenCalled();
   });
@@ -83,6 +90,24 @@ describe('pinned native file transport', () => {
     controller.abort();
     expect(mockCancelRequest).toHaveBeenCalledWith(expect.any(String));
     void pending.catch(() => undefined);
+  });
+
+  it('sends a normal request through the shared remote proxy while retaining its pin', async () => {
+    mockRemotePort.mockResolvedValue(4_321);
+    mockRequest.mockResolvedValue({ status: 200, headers: {}, bodyBase64: 'e30=' });
+
+    await createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://192.0.2.1/status');
+
+    expect(mockRemotePort).toHaveBeenCalledWith('https://192.0.2.1/status');
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.any(String),
+      'https://192.0.2.1/status',
+      'GET',
+      {},
+      null,
+      `sha256-${'a'.repeat(43)}`,
+      4_321,
+    );
   });
 
   it.each([204, 205, 304])('constructs a bodyless response for status %s', async (status) => {

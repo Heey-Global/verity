@@ -4,6 +4,7 @@ import {
   addServerEndpoint,
   hydrateServerProfile,
   profileFromPairing,
+  saveRemoteControlDescriptor,
   saveServerProfile,
 } from './serverProfile';
 
@@ -58,5 +59,25 @@ describe('server profile', () => {
       }),
     );
     await expect(hydrateServerProfile()).rejects.toThrow(/paired server profile/u);
+  });
+
+  it('keeps a routing handle during a control outage and removes it on disablement', async () => {
+    await saveServerProfile(profileFromPairing(pairing, pairing.suggestedUrl));
+    const enabled = await saveRemoteControlDescriptor({
+      version: 1,
+      enabled: true,
+      installationId: '27ad741c-d58c-4b37-ab3b-e32068176c32',
+      installationHandle: 'STO_txvEudnAmaYQdCpu2A',
+      uplinkOrigin: 'https://uplink.verity.build',
+      capabilities: ['remote-control-v1'],
+    });
+    const writes = (SecureStore.setItemAsync as jest.Mock).mock.calls.length;
+    expect(
+      await saveRemoteControlDescriptor({ version: 1, enabled: false, reason: 'unavailable' }),
+    ).toEqual(enabled);
+    expect((SecureStore.setItemAsync as jest.Mock).mock.calls).toHaveLength(writes);
+    expect(
+      await saveRemoteControlDescriptor({ version: 1, enabled: false, reason: 'disabled' }),
+    ).not.toHaveProperty('remoteControl');
   });
 });

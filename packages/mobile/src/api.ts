@@ -961,6 +961,27 @@ export const healthSchema = z.object({
 });
 export type Health = z.infer<typeof healthSchema>;
 
+export const remoteControlDescriptorSchema = z.discriminatedUnion('enabled', [
+  z
+    .object({
+      version: z.literal(1),
+      enabled: z.literal(false),
+      reason: z.enum(['disabled', 'unavailable']),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      enabled: z.literal(true),
+      installationId: z.string().min(1),
+      installationHandle: z.string().regex(/^[A-Za-z0-9_-]{22}$/u),
+      uplinkOrigin: z.string().url(),
+      capabilities: z.tuple([z.literal('remote-control-v1')]),
+    })
+    .strict(),
+]);
+export type RemoteControlDescriptor = z.infer<typeof remoteControlDescriptorSchema>;
+
 /** First-run onboarding gate (#320): the server's `GET /onboarding/status`. Each
  *  flag is derived from a NON-decrypting store read, so the endpoint (and this
  *  client method) work while the secret store is still sealed — it IS the gate.
@@ -2740,6 +2761,11 @@ export class VerityClient {
   async getHealth(): Promise<Health> {
     const res = await this.request('/healthz', { method: 'GET' });
     return healthSchema.parse(await res.json());
+  }
+
+  async getRemoteControlDescriptor(): Promise<RemoteControlDescriptor> {
+    const res = await this.request('/api/remote-control/descriptor', { method: 'GET' });
+    return remoteControlDescriptorSchema.parse(await res.json());
   }
 
   /** First-run onboarding gate (#320): whether setup is complete and, if not, the
