@@ -54,23 +54,25 @@ if (source.includes(MARKER)) {
 
 source = replaceOnce(
   source,
-  `sessionUpdate: "usage_update",
+  `update: attachUsageModel({
+                                        sessionUpdate: "usage_update",
                                         used: lastAssistantTotalUsage,
                                         size: session.contextWindowSize,
-                                    },
+                                    }),
                                 });
                                 break;
                             }
-                            case "local_command_output":`,
-  `sessionUpdate: "usage_update",
+                            case "local_command_output": {`,
+  `update: attachUsageModel({
+                                        sessionUpdate: "usage_update",
                                         used: lastAssistantTotalUsage,
                                         size: session.contextWindowSize,
                                         _meta: { verity: { lifecycle: { type: "compaction" } } }, // ${MARKER}
-                                    },
+                                    }),
                                 });
                                 break;
                             }
-                            case "local_command_output":`,
+                            case "local_command_output": {`,
   'compact_boundary',
 );
 
