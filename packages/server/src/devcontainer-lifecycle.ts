@@ -61,6 +61,10 @@ export const defaultContainerCommandRunner: ContainerCommandRunner = async ({
 /** How long a postCreateCommand waits for the dependency install it shares
  *  node_modules with before failing the provision with a message that says so. */
 export const NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS = 1800;
+/** The lock wait left for a postCreateCommand once the provisioner's own wait for
+ *  the install already ran out: that install is wedged, and waiting the full bound
+ *  a second time would only double how long the provision hangs before it says so. */
+export const NODE_MODULES_INSTALL_LOCK_WAIT_AFTER_TIMEOUT_SECONDS = 60;
 /** flock's exit code when that wait runs out, picked to be distinguishable from
  *  any exit code the postCreateCommand itself plausibly returns. */
 const NODE_MODULES_INSTALL_LOCK_TIMEOUT_EXIT = 75;
@@ -92,12 +96,20 @@ function shellQuote(value: string): string {
  *
  * A successful command that reinstalled (npm's hidden lockfile is there) also
  * emptied the install's completion marker with the rest of the tree; it is put
- * back, or the next start would reinstall a tree that is already complete.
+ * back, or the next start would reinstall a tree that is already complete. Only
+ * if it was there before the command: npm writes that hidden lockfile before
+ * lifecycle scripts run, so after a failed install it is present without the
+ * marker, and a command that never touched node_modules must not certify that
+ * half-written tree as complete — no later start would ever repair it.
  *
  * Without a real node_modules directory or without flock (the install script
  * cannot run then either) the command runs as before.
  */
-export function underNodeModulesInstallLock(command: string, nodeModules: string): string {
+export function underNodeModulesInstallLock(
+  command: string,
+  nodeModules: string,
+  waitSeconds: number = NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS,
+): string {
   const dir = shellQuote(nodeModules);
   const inner = `sh -c ${shellQuote(command)}`;
   const exit = String(NODE_MODULES_INSTALL_LOCK_TIMEOUT_EXIT);
@@ -105,8 +117,9 @@ export function underNodeModulesInstallLock(command: string, nodeModules: string
   const hiddenLockfile = shellQuote(`${nodeModules}/.package-lock.json`);
   return [
     `if [ -d ${dir} ] && [ ! -L ${dir} ] && command -v flock >/dev/null 2>&1; then`,
-    `  flock -w ${String(NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS)} -E ${exit} ${dir} sh -c ${shellQuote(
-      `${inner} || exit; if [ -e ${hiddenLockfile} ] && [ ! -e ${marker} ]; then touch ${marker} || true; fi`,
+    `  flock -w ${String(waitSeconds)} -E ${exit} ${dir} sh -c ${shellQuote(
+      `completed=0; if [ -e ${marker} ]; then completed=1; fi; ${inner} || exit; ` +
+        `if [ "$completed" = 1 ] && [ -e ${hiddenLockfile} ] && [ ! -e ${marker} ]; then touch ${marker} || true; fi`,
     )}; rc=$?;`,
     `  if [ "$rc" -eq ${exit} ]; then echo "timed out waiting for the dependency install holding ${nodeModules}" >&2; fi;`,
     `  exit "$rc";`,

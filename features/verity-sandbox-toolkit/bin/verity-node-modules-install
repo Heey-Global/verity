@@ -17,6 +17,7 @@ set -uo pipefail
 WORK="${VERITY_NODE_MODULES_WORK:-/work}"
 MODULES="$WORK/node_modules"
 STATE_DIR="${VERITY_NODE_MODULES_STATE_DIR:-/tmp/verity-node-modules}"
+MOUNTINFO="${VERITY_NODE_MODULES_MOUNTINFO:-/proc/self/mountinfo}"
 STATUS="$STATE_DIR/status"
 LOG="$STATE_DIR/install.log"
 COMPLETE="$MODULES/.verity-install-complete"
@@ -34,6 +35,14 @@ if [ "${VERITY_NODE_MODULES_INSTALL:-1}" = '0' ]; then
   exit 0
 fi
 
+# Only ever install into a volume mounted over node_modules. Without one, the
+# directory is the clone's own on the host bind mount, or absent; the launcher
+# only starts this over a mount, but the provisioner's --wait runs regardless.
+if ! awk -v target="$MODULES" '$5 == target { found = 1 } END { exit !found }' "$MOUNTINFO"; then
+  report "skipped: nothing is mounted at $MODULES"
+  exit 0
+fi
+
 # A wake and a Server restart both re-run the stack launcher; a second install
 # racing the first would have `npm ci` empty the tree the first is writing. The
 # provisioner runs a devcontainer postCreateCommand under the same lock
@@ -46,7 +55,10 @@ if ! command -v flock >/dev/null 2>&1; then
   report 'manual: flock is not installed; run npm ci in /work'
   exit 0
 fi
-exec 9<"$MODULES" || exit 1
+if ! exec 9<"$MODULES"; then
+  report "failed: cannot open $MODULES to lock it; run npm ci in /work"
+  exit 1
+fi
 # --wait is the provisioner's call before a devcontainer postCreateCommand: that
 # command must find finished dependencies, so it waits for an install already
 # running instead of leaving it to the background one.

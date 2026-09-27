@@ -66,6 +66,7 @@ import {
 } from './provisioner.js';
 import {
   NODE_MODULES_INSTALL_ENV,
+  NODE_MODULES_INSTALL_LOCK_WAIT_AFTER_TIMEOUT_SECONDS,
   NODE_MODULES_INSTALL_WAIT_COMMAND,
   underNodeModulesInstallLock,
 } from './devcontainer-lifecycle.js';
@@ -3060,6 +3061,33 @@ describe('ProvisionerImpl (#174)', () => {
       // As the agent the background install runs as, or its tree is unwritable.
       expect(calls[wait]?.user).toBe(`${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`);
       expect(commands).not.toContain('npm ci');
+    });
+
+    it('waits for a wedged install only once before the postCreateCommand gives up on it', async () => {
+      // The wait and the postCreateCommand's lock share one bound. Once the wait
+      // has run out, the install is wedged, and paying the bound a second time
+      // under the lock only doubled how long the provision hung before saying so.
+      const containerCommand = vi.fn<ContainerCommandRunner>(async ({ command }) => {
+        if (command === NODE_MODULES_INSTALL_WAIT_COMMAND) {
+          throw Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' });
+        }
+        return { stdout: '', stderr: '' };
+      });
+      const { error } = await recreateDevcontainerProject(
+        false,
+        { containerCommand },
+        JSON.stringify({ image: 'node:24', remoteUser: 'vscode', postCreateCommand: 'npm ci' }),
+      );
+
+      expect(error).toBeUndefined();
+      const commands = containerCommand.mock.calls.map(([args]) => args.command);
+      expect(commands).toContain(
+        underNodeModulesInstallLock(
+          'npm ci',
+          NODE_MODULES_TARGET,
+          NODE_MODULES_INSTALL_LOCK_WAIT_AFTER_TIMEOUT_SECONDS,
+        ),
+      );
     });
 
     it('enables the supervisor for an image Verity did not build once it proves the boundary', async () => {
