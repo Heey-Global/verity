@@ -4118,7 +4118,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // This route is only for an authenticated paired device. Headless deployments
     // can run without the global bearer gate, but have no paired device to serve.
     if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });
-    return deps.remoteControlDescriptor?.() ?? { version: 1, enabled: false };
+    return deps.remoteControlDescriptor?.() ?? { version: 1, enabled: false, reason: 'disabled' };
   });
   registerDiagnosticsMemoryRoute(app);
 

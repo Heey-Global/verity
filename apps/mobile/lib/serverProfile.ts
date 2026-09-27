@@ -196,6 +196,7 @@ export async function saveRemoteControlDescriptor(
   descriptor: RemoteControlDescriptor,
 ): Promise<VerityServerProfile> {
   if (currentProfile === null) throw new Error('No paired server profile.');
+  if (!descriptor.enabled && descriptor.reason === 'unavailable') return currentProfile;
   const { remoteControl: _previous, ...profile } = currentProfile;
   const updated = validateServerProfile({
     ...profile,

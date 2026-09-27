@@ -962,7 +962,13 @@ export const healthSchema = z.object({
 export type Health = z.infer<typeof healthSchema>;
 
 export const remoteControlDescriptorSchema = z.discriminatedUnion('enabled', [
-  z.object({ version: z.literal(1), enabled: z.literal(false) }).strict(),
+  z
+    .object({
+      version: z.literal(1),
+      enabled: z.literal(false),
+      reason: z.enum(['disabled', 'unavailable']),
+    })
+    .strict(),
   z
     .object({
       version: z.literal(1),

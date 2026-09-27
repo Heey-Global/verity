@@ -227,7 +227,11 @@ describe('UplinkControlClient', () => {
       offerRemoteControl: true,
       reserveRemoteConnector: vi.fn(async () => 'unavailable' as const),
     });
-    expect(client.remoteControlDescriptor()).toEqual({ version: 1, enabled: false });
+    expect(client.remoteControlDescriptor()).toEqual({
+      version: 1,
+      enabled: false,
+      reason: 'unavailable',
+    });
     client.start();
     await flush();
     socket.open();
@@ -255,7 +259,11 @@ describe('UplinkControlClient', () => {
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
     });
     await flush();
-    expect(client.remoteControlDescriptor()).toEqual({ version: 1, enabled: false });
+    expect(client.remoteControlDescriptor()).toEqual({
+      version: 1,
+      enabled: false,
+      reason: 'disabled',
+    });
     await client.stop();
   });
 

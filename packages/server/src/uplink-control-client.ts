@@ -105,7 +105,7 @@ export interface UplinkControlClientOptions {
 }
 
 export type RemoteControlDescriptor =
-  | { readonly version: 1; readonly enabled: false }
+  | { readonly version: 1; readonly enabled: false; readonly reason: 'disabled' | 'unavailable' }
   | {
       readonly version: 1;
       readonly enabled: true;
@@ -201,14 +201,20 @@ export class UplinkControlClient implements PreviewEdgeControl {
 
   remoteControlDescriptor(): RemoteControlDescriptor {
     if (
+      this.options.offerRemoteControl !== true ||
+      this.options.reserveRemoteConnector === undefined
+    ) {
+      return { version: 1, enabled: false, reason: 'disabled' };
+    }
+    if (
       !this.welcomed ||
       this.socket?.readyState !== WebSocket.OPEN ||
-      !this.remoteNegotiated ||
-      this.options.reserveRemoteConnector === undefined ||
-      !this.features.has('remote-control') ||
       this.remoteInstallation === undefined
     ) {
-      return { version: 1, enabled: false };
+      return { version: 1, enabled: false, reason: 'unavailable' };
+    }
+    if (!this.remoteNegotiated || !this.features.has('remote-control')) {
+      return { version: 1, enabled: false, reason: 'disabled' };
     }
     const uplinkUrl = new URL(this.options.url);
     uplinkUrl.protocol = 'https:';

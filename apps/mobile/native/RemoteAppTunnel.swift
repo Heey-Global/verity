@@ -33,6 +33,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var outgoingSequence = 0
     var incomingEnded = false
     var outgoingEnded = false
+    var pendingBytes = 0
+    var incomingWrite: Task<Void, Never>?
+    var closed = false
     var worker: Task<Void, Never>?
 
     init(_ connection: NWConnection) { self.connection = connection }
@@ -49,6 +52,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var reader: Task<Void, Never>?
   private var streams: [String: Stream] = [:]
   private var usedIds = Set<String>()
+  private var sessionPendingBytes = 0
   private var pendingLocal = 0
   private var stopped = false
 
@@ -145,7 +149,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
     guard !stopped else { lock.unlock(); return }
     stopped = true
     let connections = streams.values.map(\.connection)
+    for stream in streams.values { stream.closed = true }
     streams.removeAll()
+    sessionPendingBytes = 0
     pendingLocal = 0
     listener?.cancel()
     listener = nil
@@ -205,18 +211,25 @@ final class RemoteAppTunnel: @unchecked Sendable {
         data.count <= 64 * 1024
       else { throw RemoteSmokeError.invalidFrame }
       stream.incomingSequence += 1
-      do { try await write(data, to: stream.connection) }
-      catch { await reset(id, code: "upstream_error") }
-    case "stream.end":
-      guard Set(frame.keys) == Set(["type", "streamId"]), !stream.incomingEnded
-      else { throw RemoteSmokeError.invalidFrame }
-      stream.incomingEnded = true
-      do { try await write(Data(), to: stream.connection, complete: true) }
-      catch {
+      let accepted = lock.withLock {
+        guard !stream.closed,
+          stream.pendingBytes + data.count <= 256 * 1024,
+          sessionPendingBytes + data.count <= 1024 * 1024
+        else { return false }
+        stream.pendingBytes += data.count
+        sessionPendingBytes += data.count
+        return true
+      }
+      if !accepted {
         await reset(id, code: "upstream_error")
         return
       }
-      finish(id, stream)
+      enqueue(data, to: stream, id: id)
+    case "stream.end":
+      guard Set(frame.keys) == Set(["type", "streamId"]), !stream.incomingEnded
+      else { throw RemoteSmokeError.invalidFrame }
+      lock.withLock { stream.incomingEnded = true }
+      enqueue(Data(), to: stream, id: id, complete: true)
     case "stream.reset":
       guard Set(frame.keys) == Set(["type", "streamId", "code"]),
         let code = frame["code"] as? String,
@@ -228,13 +241,40 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   private func finish(_ id: String, _ stream: Stream) {
-    if stream.incomingEnded && stream.outgoingEnded { drop(id) }
+    if lock.withLock({ stream.incomingEnded && stream.outgoingEnded }) { drop(id) }
+  }
+
+  private func enqueue(_ data: Data, to stream: Stream, id: String, complete: Bool = false) {
+    let previous = stream.incomingWrite
+    stream.incomingWrite = Task {
+      if let previous { await previous.value }
+      guard !Task.isCancelled else { return }
+      let watchdog = Task { [weak self] in
+        try? await Task.sleep(nanoseconds: 30_000_000_000)
+        if !Task.isCancelled { await self?.reset(id, code: "timeout") }
+      }
+      defer { watchdog.cancel() }
+      do {
+        try await write(data, to: stream.connection, complete: complete)
+        lock.withLock {
+          if !stream.closed {
+            stream.pendingBytes -= data.count
+            sessionPendingBytes -= data.count
+          }
+        }
+        if complete { finish(id, stream) }
+      } catch { await reset(id, code: "upstream_error") }
+    }
   }
 
   @discardableResult
   private func drop(_ id: String) -> Bool {
     lock.lock()
     let stream = streams.removeValue(forKey: id)
+    if let stream {
+      stream.closed = true
+      sessionPendingBytes -= stream.pendingBytes
+    }
     let exhausted = stream != nil && usedIds.count >= 4_096 && streams.isEmpty
     lock.unlock()
     stream?.worker?.cancel()
@@ -312,7 +352,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     while !Task.isCancelled {
       let bytes = try await receive(stream.connection, maximum: 16 * 1024)
       if bytes.isEmpty {
-        stream.outgoingEnded = true
+        lock.withLock { stream.outgoingEnded = true }
         try await writer.send(["type": "stream.end", "streamId": id])
         finish(id, stream)
         return
