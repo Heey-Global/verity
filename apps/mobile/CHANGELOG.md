@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.36.0](https://github.com/Heey-Global/verity/compare/mobile-v1.35.0...mobile-v1.36.0) (2026-09-27)
+
+
+### Features
+
+* **mobile:** connect paired devices through Uplink remote control ([#821](https://github.com/Heey-Global/verity/issues/821)) ([aa14320](https://github.com/Heey-Global/verity/commit/aa143201dd9338caa3238aba615fa572ced8a29f))
+
+
+### Bug Fixes
+
+* **gmail:** remove unchanged draft after approved send ([#808](https://github.com/Heey-Global/verity/issues/808)) ([5a0f2a2](https://github.com/Heey-Global/verity/commit/5a0f2a29469cf7654611f861319729abdf34d1a0))
+* **mobile:** queue local sockets for remote stream capacity ([#824](https://github.com/Heey-Global/verity/issues/824)) ([1a8eb68](https://github.com/Heey-Global/verity/commit/1a8eb68c97d924df1b4a2b0ee02ba58254368963))
+
 ## [1.35.0](https://github.com/Heey-Global/verity/compare/mobile-v1.34.0...mobile-v1.35.0) (2026-09-27)
 
 
