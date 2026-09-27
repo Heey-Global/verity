@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   NODE_MODULES_INSTALL_COMPLETE_MARKER,
+  NODE_MODULES_INSTALL_ENV,
   underNodeModulesInstallLock,
 } from './devcontainer-lifecycle.js';
 
@@ -21,7 +22,12 @@ const LAUNCHER = 'features/verity-sandbox-toolkit/bin/verity-runner-stack-start'
 
 /** A /work stand-in plus an `npm` on PATH that records how it was called and
  *  behaves like `npm ci`: it empties node_modules first, then installs. */
-function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean }) {
+function sandbox(opts: {
+  lockfile: boolean;
+  npmExit?: number;
+  flock?: boolean;
+  extraEnv?: Record<string, string>;
+}) {
   const root = mkdtempSync(join(tmpdir(), 'verity-nm-install-'));
   const work = join(root, 'work');
   const state = join(root, 'state');
@@ -50,6 +56,7 @@ function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean })
     HOME: root,
     VERITY_NODE_MODULES_WORK: work,
     VERITY_NODE_MODULES_STATE_DIR: state,
+    ...opts.extraEnv,
   };
   const run = () => execFileSync('bash', [SCRIPT], { env });
   /** Runs the script inside a postCreateCommand holding the lock the
@@ -127,6 +134,18 @@ describe('verity-node-modules-install', () => {
     const box = sandbox({ lockfile: true });
     box.runLocked();
     expect(box.npmCalls()).toEqual([]);
+  });
+
+  it('stays out of a node_modules volume the devcontainer mounts itself', () => {
+    // That project installs in its own postCreateCommand; a second install into the
+    // same volume raced it into ENOTEMPTY on every start and repair.
+    for (const wait of [false, true]) {
+      const box = sandbox({ lockfile: true, extraEnv: { [NODE_MODULES_INSTALL_ENV]: '0' } });
+      if (wait) box.runWaitingBehindInstall();
+      else box.run();
+      expect(box.npmCalls().filter((call) => call !== 'held')).toEqual([]);
+      expect(box.status()).toMatch(/^skipped: the devcontainer mounts node_modules itself/);
+    }
   });
 
   it('with --wait, installs only after an install in progress has let go', () => {

@@ -26,6 +26,14 @@ report() {
   printf '%s\n' "$1" >"$STATUS.$$" && mv -f "$STATUS.$$" "$STATUS"
 }
 
+# The provisioner sets this when the devcontainer mounts node_modules itself: the
+# project installs into its own volume, and a second install here would only race
+# it (ENOTEMPTY) or repeat it.
+if [ "${VERITY_NODE_MODULES_INSTALL:-1}" = '0' ]; then
+  report 'skipped: the devcontainer mounts node_modules itself and installs into it'
+  exit 0
+fi
+
 # A wake and a Server restart both re-run the stack launcher; a second install
 # racing the first would have `npm ci` empty the tree the first is writing. The
 # provisioner runs a devcontainer postCreateCommand under the same lock

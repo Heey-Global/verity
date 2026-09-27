@@ -100,6 +100,7 @@ import {
 } from './docker.js';
 import {
   defaultContainerCommandRunner,
+  NODE_MODULES_INSTALL_ENV,
   NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS,
   NODE_MODULES_INSTALL_WAIT_COMMAND,
   underNodeModulesInstallLock,
@@ -5310,6 +5311,12 @@ export class ProvisionerImpl implements Provisioner {
     // pnpm project recreated onto it would lose working dependencies until someone
     // noticed and installed by hand.
     let nodeModules: { volume: string; annotations: Record<string, string> } | undefined;
+    // A devcontainer that mounts node_modules itself owns what goes in there, and
+    // installs it in its own postCreateCommand; the Runner's install stays out of
+    // that volume instead of writing the same tree a second time.
+    const devcontainerOwnsNodeModules =
+      runnerRuntimePath !== undefined &&
+      hasMountAtTarget(specBinds, volumeMounts, NODE_MODULES_TARGET);
     if (
       runnerRuntimePath !== undefined &&
       this.opts.docker.ensureVolume !== undefined &&
@@ -5377,6 +5384,7 @@ export class ProvisionerImpl implements Provisioner {
               `VERITY_AGENT_GID=${String(RUNNER_AGENT_GID)}`,
             ]
           : []),
+        ...(devcontainerOwnsNodeModules ? [`${NODE_MODULES_INSTALL_ENV}=0`] : []),
         // Claude Code: ask it to skip its own bubblewrap bash sandbox since THIS
         // container already is the sandbox. NOTE: in practice this hint is not
         // honored reliably — wherever `bwrap` is on PATH, Claude spawns it before

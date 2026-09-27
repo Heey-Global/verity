@@ -65,6 +65,7 @@ import {
   type ContainerCommandRunner,
 } from './provisioner.js';
 import {
+  NODE_MODULES_INSTALL_ENV,
   NODE_MODULES_INSTALL_WAIT_COMMAND,
   underNodeModulesInstallLock,
 } from './devcontainer-lifecycle.js';
@@ -2740,6 +2741,10 @@ describe('ProvisionerImpl (#174)', () => {
         volume: projectNodeModulesVolumeName(id),
         target: NODE_MODULES_TARGET,
       });
+      // Nothing else fills this volume: switching the install off here leaves it empty.
+      expect(spec.env ?? []).not.toContainEqual(
+        expect.stringMatching(/^VERITY_NODE_MODULES_INSTALL=/),
+      );
       // The hint has to name what the daemon reported, not a path derived from the
       // volume name: data-root is a daemon setting the Server cannot see.
       expect(spec.annotations).toEqual({
@@ -3010,6 +3015,9 @@ describe('ProvisionerImpl (#174)', () => {
         spec.volumeMounts?.filter((mount) => mount.target === NODE_MODULES_TARGET) ?? [],
       ).toEqual([]);
       expect(ensureVolume).not.toHaveBeenCalled();
+      // The volume is the project's, and so is installing into it: the Runner's
+      // install stays out rather than writing the same tree a second time.
+      expect(spec.env).toContain(`${NODE_MODULES_INSTALL_ENV}=0`);
     });
 
     it('runs the postCreateCommand under the node_modules install lock the stack start uses', async () => {

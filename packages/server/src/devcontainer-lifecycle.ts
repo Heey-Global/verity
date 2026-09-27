@@ -64,6 +64,11 @@ export const NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS = 1800;
 /** flock's exit code when that wait runs out, picked to be distinguishable from
  *  any exit code the postCreateCommand itself plausibly returns. */
 const NODE_MODULES_INSTALL_LOCK_TIMEOUT_EXIT = 75;
+/** Container env that turns `verity-node-modules-install` off (`=0`). Set when
+ *  the devcontainer mounts node_modules itself: that volume is the project's, and
+ *  so is installing into it. Opt-out, so a Sandbox created before it existed
+ *  keeps installing into the managed volume it has. */
+export const NODE_MODULES_INSTALL_ENV = 'VERITY_NODE_MODULES_INSTALL';
 /** The file `verity-node-modules-install` writes into node_modules once an install
  *  finished, and checks on every start before installing again. */
 export const NODE_MODULES_INSTALL_COMPLETE_MARKER = '.verity-install-complete';
