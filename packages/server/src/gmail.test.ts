@@ -252,7 +252,7 @@ describe('Gmail API', () => {
     expect(sentRaw).not.toContain('â€“');
   });
 
-  it('sends only the exact plain-text draft snapshot that was approved', async () => {
+  it('sends only the approved snapshot and deletes its unchanged draft', async () => {
     const snapshot = {
       draftId: 'd1',
       messageId: 'm1',
@@ -265,12 +265,29 @@ describe('Gmail API', () => {
     };
     const fetch = vi
       .fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(response({ id: 'sent-message', threadId: 't1' }));
+      .mockResolvedValueOnce(response({ id: 'sent-message', threadId: 't1' }))
+      .mockResolvedValueOnce(
+        response({
+          id: 'd1',
+          message: {
+            id: 'm1',
+            payload: {
+              mimeType: 'text/plain',
+              headers: [
+                { name: 'To', value: 'friend@example.test' },
+                { name: 'Subject', value: 'Hello' },
+              ],
+              body: { data: Buffer.from('Approved body').toString('base64url') },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
     await expect(sendGmailDraft('token', snapshot, fetch)).resolves.toEqual({
       messageId: 'sent-message',
       threadId: 't1',
-      draftRetained: true,
+      draftRetained: false,
     });
     expect(fetch.mock.calls[0]?.[0]).toBe(
       'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
@@ -281,7 +298,89 @@ describe('Gmail API', () => {
     expect(raw).toContain('To: friend@example.test');
     expect(raw).toContain('Subject: Hello');
     expect(raw).toContain('\r\n\r\nApproved body');
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[2]?.[0]).toBe(
+      'https://gmail.googleapis.com/gmail/v1/users/me/drafts/d1',
+    );
+    expect(fetch.mock.calls[2]?.[1]?.method).toBe('DELETE');
+  });
+
+  it('keeps an edited draft after sending and reports the cleanup result', async () => {
+    const snapshot = {
+      draftId: 'd1',
+      messageId: 'm1',
+      to: ['friend@example.test'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Approved body',
+      externalUrls: [],
+    };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response({ id: 'sent-message' }))
+      .mockResolvedValueOnce(
+        response({
+          id: 'd1',
+          message: {
+            id: 'm2',
+            payload: {
+              mimeType: 'text/plain',
+              headers: [
+                { name: 'To', value: 'friend@example.test' },
+                { name: 'Subject', value: 'Hello' },
+              ],
+              body: { data: Buffer.from('Edited body').toString('base64url') },
+            },
+          },
+        }),
+      );
+    await expect(sendGmailDraft('token', snapshot, fetch)).resolves.toEqual({
+      messageId: 'sent-message',
+      threadId: undefined,
+      draftRetained: true,
+      draftCleanup: 'changed',
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a cleanup failure without treating the sent message as failed', async () => {
+    const snapshot = {
+      draftId: 'd1',
+      messageId: 'm1',
+      to: ['friend@example.test'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Approved body',
+      externalUrls: [],
+    };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response({ id: 'sent-message' }))
+      .mockResolvedValueOnce(
+        response({
+          id: 'd1',
+          message: {
+            id: 'm1',
+            payload: {
+              mimeType: 'text/plain',
+              headers: [
+                { name: 'To', value: 'friend@example.test' },
+                { name: 'Subject', value: 'Hello' },
+              ],
+              body: { data: Buffer.from('Approved body').toString('base64url') },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await expect(sendGmailDraft('token', snapshot, fetch)).resolves.toEqual({
+      messageId: 'sent-message',
+      threadId: undefined,
+      draftRetained: true,
+      draftCleanup: 'failed',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it('does not truncate the body shown for send approval', async () => {
