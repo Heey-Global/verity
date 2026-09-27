@@ -2076,6 +2076,50 @@ describe('GitHub-hosted runner boundary', () => {
     expect(action).not.toContain('$GITHUB_WORKSPACE');
   });
 
+  it('reclaims hosted-runner disk only when the free-space floor is not already met', async () => {
+    const action = parse(
+      readFileSync('.github/actions/reclaim-runner-disk/action.yml', 'utf8'),
+    ) as {
+      runs: { steps: { run?: string }[] };
+    };
+    const script = action.runs.steps[0]?.run ?? 'exit 1';
+    const dir = await mkdtemp(join(tmpdir(), 'reclaim-disk-'));
+    try {
+      // Stubs: `df` reports whatever free space the case needs, independent of
+      // the host, and `sudo` records the deletion instead of performing it, so
+      // the test sees whether the two minutes of SDK removal would be paid.
+      const log = join(dir, 'sudo.log');
+      await writeFile(join(dir, 'sudo'), `#!/bin/sh\necho "$@" >> '${log}'\n`, { mode: 0o755 });
+      await writeFile(join(dir, 'df'), '#!/bin/sh\necho Avail\necho "$FAKE_AVAIL_MIB"\n', {
+        mode: 0o755,
+      });
+      const run = (freeGib: number) =>
+        spawnSync('bash', ['-c', script], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${dir}:${process.env.PATH ?? ''}`,
+            RUNNER_KIND: 'github-hosted',
+            RUNNER_TEMP: dir,
+            MINIMUM_FREE_GIB: '25',
+            FAKE_AVAIL_MIB: String(freeGib * 1024),
+          },
+        });
+
+      const met = run(25);
+      expect(met.status).toBe(0);
+      expect(existsSync(log)).toBe(false);
+
+      // Below the floor it deletes, and still fails when that was not enough.
+      const unmet = run(24);
+      expect(readFileSync(log, 'utf8')).toContain('/usr/local/lib/android');
+      expect(unmet.status).toBe(1);
+      expect(unmet.stderr).toContain('Only 24 GiB free; need 25 GiB.');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('loads the Verity sandbox image without a duplicate archive export', () => {
     const sandbox = parse(readFileSync('.github/workflows/verity-sandbox.yml', 'utf8')) as {
       jobs: Record<string, Job>;
