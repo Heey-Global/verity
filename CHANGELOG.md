@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.1](https://github.com/Heey-Global/verity/compare/v2.9.0...v2.9.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **server:** stop racing the node_modules install against postCreateCommand ([#804](https://github.com/Heey-Global/verity/issues/804)) ([cb9e9d4](https://github.com/Heey-Global/verity/commit/cb9e9d4a7d34db63c3d1742d76d13700e76649bb))
+
 ## [2.9.0](https://github.com/Heey-Global/verity/compare/v2.8.0...v2.9.0) (2026-09-26)
 
 
