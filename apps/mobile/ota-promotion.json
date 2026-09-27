@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.35.1",
-  "runtime": "1.35.0",
+  "version": "1.36.1",
+  "runtime": "1.36.0",
   "channel": "testflight",
-  "commit": "29e62c2b87d8642e2109258aed32c47605deda9a",
-  "tag": "mobile-v1.35.1",
-  "branch": "staging-mobile-v1.35.1-29e62c2b87d8642e2109258aed32c47605deda9a",
-  "baseline": "mobile-v1.35.0",
-  "group": "7285a630-b30a-412b-b8e0-40e14fff8f2d",
+  "commit": "f4a5e7c509fe3a146e02ac24c7f60af25e376771",
+  "tag": "mobile-v1.36.1",
+  "branch": "staging-mobile-v1.36.1-f4a5e7c509fe3a146e02ac24c7f60af25e376771",
+  "baseline": "mobile-v1.36.0",
+  "group": "bf07c0c2-840f-401a-a80d-92a9d0e542ef",
   "notes": [
-    "retire managed-library operations from verity\\_knowledge (#813)",
-    "remove unchanged draft after approved send (#808)"
+    "validate remote routing and expose connection failures (#830)",
+    "prefetch chat history earlier during scrolling (#827)"
   ]
 }
