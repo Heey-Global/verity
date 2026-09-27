@@ -33,6 +33,18 @@ describe('agentEventDescriptor', () => {
     });
   });
 
+  it.each([
+    'rate limit exceeded',
+    'Your weekly quota has been reached. Internal error: request rejected',
+    'Too many requests',
+  ])('shows a compact system notice for a provider limit: %s', (message) => {
+    expect(agentEventDescriptor({ t: 'error', kind: 'run_failed', message })).toEqual({
+      kind: 'limit-reached',
+      label: 'Usage limit reached',
+      tone: 'neutral',
+    });
+  });
+
   it('describes an interrupted event without assuming who stopped it', () => {
     expect(agentEventDescriptor({ t: 'interrupted' })).toEqual({
       kind: 'interrupted',

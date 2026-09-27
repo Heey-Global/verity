@@ -24,6 +24,8 @@ export interface AgentEventDescriptor {
 }
 
 const CLAUDE_OAUTH_FAILURE = /failed to authenticate:.*oauth.*(?:expired|refresh)/i;
+const LIMIT_REACHED =
+  /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded))\b/i;
 
 /**
  * Project a canonical event into a render descriptor. Only the lifecycle events
@@ -48,6 +50,9 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
           tone: 'danger',
           action: 'claude-login',
         };
+      }
+      if (LIMIT_REACHED.test(event.message)) {
+        return { kind: 'limit-reached', label: 'Usage limit reached', tone: 'neutral' };
       }
       return { kind: 'error', label: event.message, detail: event.kind, tone: 'danger' };
     case 'raw': {
