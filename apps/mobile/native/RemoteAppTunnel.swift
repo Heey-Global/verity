@@ -388,7 +388,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   private func write(_ bytes: Data, to connection: NWConnection, complete: Bool = false) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-      connection.send(content: complete ? nil : bytes, contentContext: .defaultMessage,
+      connection.send(content: complete ? nil : bytes,
+        contentContext: complete ? .finalMessage : .defaultMessage,
         isComplete: complete, completion: .contentProcessed { error in
           if let error { continuation.resume(throwing: error) }
           else { continuation.resume() }
