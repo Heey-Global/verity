@@ -101,6 +101,7 @@ import {
 import {
   defaultContainerCommandRunner,
   NODE_MODULES_INSTALL_ENV,
+  NODE_MODULES_INSTALL_LOCK_WAIT_AFTER_TIMEOUT_SECONDS,
   NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS,
   NODE_MODULES_INSTALL_WAIT_COMMAND,
   underNodeModulesInstallLock,
@@ -5671,11 +5672,13 @@ export class ProvisionerImpl implements Provisioner {
             provisionWarning,
           )) as ProjectRecord;
         }
+        let installLockWaitSeconds = NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS;
         if (runnerRuntimePath !== undefined) {
           // The Runner stack start above may have left the node_modules install
           // running in the background. Let it finish (or run it) first, as the
           // agent it installs as. Dependencies are a convenience and never fail
-          // the provision; a wedged install surfaces as the lock timeout below.
+          // the provision; a wedged install surfaces as the lock timeout below,
+          // after a short wait only once this one has already used the full bound.
           await this.containerCommand({
             containerName: dirs.containerName,
             command: NODE_MODULES_INSTALL_WAIT_COMMAND,
@@ -5683,7 +5686,11 @@ export class ProvisionerImpl implements Provisioner {
             user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
             workdir: '/work',
             timeoutMs: NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS * 1000,
-          }).catch(() => undefined);
+          }).catch((error: unknown) => {
+            if ((error as { killed?: unknown } | null)?.killed === true) {
+              installLockWaitSeconds = NODE_MODULES_INSTALL_LOCK_WAIT_AFTER_TIMEOUT_SECONDS;
+            }
+          });
         }
         lifecycleFailureLabel = 'postCreateCommand';
         await this.containerCommand({
@@ -5695,6 +5702,7 @@ export class ProvisionerImpl implements Provisioner {
               ? underNodeModulesInstallLock(
                   devcontainerRuntime.postCreateCommand,
                   NODE_MODULES_TARGET,
+                  installLockWaitSeconds,
                 )
               : devcontainerRuntime.postCreateCommand,
           dockerHost: this.opts.dockerHostForBuild,

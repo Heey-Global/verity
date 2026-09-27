@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -26,6 +26,7 @@ function sandbox(opts: {
   lockfile: boolean;
   npmExit?: number;
   flock?: boolean;
+  mounted?: boolean;
   extraEnv?: Record<string, string>;
 }) {
   const root = mkdtempSync(join(tmpdir(), 'verity-nm-install-'));
@@ -36,6 +37,15 @@ function sandbox(opts: {
   mkdirSync(bin);
   writeFileSync(join(work, 'package.json'), '{}');
   if (opts.lockfile) writeFileSync(join(work, 'package-lock.json'), '{}');
+  // A mountinfo stand-in: the volume over node_modules, unless the case is about
+  // a node_modules that is the clone's own directory.
+  const mountinfo = join(root, 'mountinfo');
+  writeFileSync(
+    mountinfo,
+    opts.mounted === false
+      ? '1 0 0:1 / / rw - overlay overlay rw\n'
+      : `1 0 0:1 / / rw - overlay overlay rw\n2 1 0:2 / ${join(work, 'node_modules')} rw - ext4 /dev/vdb rw\n`,
+  );
   const calls = join(root, 'npm-calls');
   writeFileSync(
     join(bin, 'npm'),
@@ -56,6 +66,7 @@ function sandbox(opts: {
     HOME: root,
     VERITY_NODE_MODULES_WORK: work,
     VERITY_NODE_MODULES_STATE_DIR: state,
+    VERITY_NODE_MODULES_MOUNTINFO: mountinfo,
     ...opts.extraEnv,
   };
   const run = () => execFileSync('bash', [SCRIPT], { env });
@@ -94,7 +105,18 @@ function sandbox(opts: {
 function isolatedPath(root: string, bin: string): string {
   const tools = join(root, 'tools');
   mkdirSync(tools);
-  for (const tool of ['bash', 'mkdir', 'mv', 'cat', 'getent', 'cut', 'id', 'find', 'touch']) {
+  for (const tool of [
+    'bash',
+    'awk',
+    'mkdir',
+    'mv',
+    'cat',
+    'getent',
+    'cut',
+    'id',
+    'find',
+    'touch',
+  ]) {
     const resolved = execFileSync('bash', ['-c', `command -v ${tool}`], {
       encoding: 'utf8',
     }).trim();
@@ -146,6 +168,15 @@ describe('verity-node-modules-install', () => {
       expect(box.npmCalls().filter((call) => call !== 'held')).toEqual([]);
       expect(box.status()).toMatch(/^skipped: the devcontainer mounts node_modules itself/);
     }
+  });
+
+  it('never installs into a node_modules nothing is mounted over', () => {
+    // The provisioner's --wait runs whether or not the launcher found a mount;
+    // without one, node_modules is the clone's own directory on the host.
+    const box = sandbox({ lockfile: true, mounted: false });
+    box.run();
+    expect(box.npmCalls()).toEqual([]);
+    expect(box.status()).toBe(`skipped: nothing is mounted at ${box.work}/node_modules`);
   });
 
   it('with --wait, installs only after an install in progress has let go', () => {
@@ -323,6 +354,7 @@ describe('underNodeModulesInstallLock', () => {
     // without it back, the next start reinstalls a complete tree.
     const outcome = (command: string) => {
       const { root, modules } = dirs();
+      writeFileSync(join(modules, NODE_MODULES_INSTALL_COMPLETE_MARKER), '');
       try {
         execFileSync('sh', ['-c', underNodeModulesInstallLock(command, modules)], { cwd: root });
       } catch {
@@ -330,9 +362,44 @@ describe('underNodeModulesInstallLock', () => {
       }
       return existsSync(join(modules, NODE_MODULES_INSTALL_COMPLETE_MARKER));
     };
-    expect(outcome('touch node_modules/.package-lock.json')).toBe(true);
-    expect(outcome('touch node_modules/.package-lock.json; exit 1')).toBe(false);
-    expect(outcome('true')).toBe(false);
+    const reinstall = `find node_modules -mindepth 1 -delete; touch node_modules/.package-lock.json`;
+    expect(outcome(reinstall)).toBe(true);
+    expect(outcome(`${reinstall}; exit 1`)).toBe(false);
+    expect(outcome('find node_modules -mindepth 1 -delete')).toBe(false);
+  });
+
+  it('never certifies an install that failed before the command ran', () => {
+    // npm writes its hidden lockfile before lifecycle scripts run, so a failed
+    // postinstall leaves it without the marker. A command that never touches
+    // node_modules must leave it that way, or no later start repairs the tree.
+    const { root, modules } = dirs();
+    writeFileSync(join(modules, '.package-lock.json'), '{}');
+    execFileSync('sh', ['-c', underNodeModulesInstallLock('true', modules)], { cwd: root });
+    expect(existsSync(join(modules, NODE_MODULES_INSTALL_COMPLETE_MARKER))).toBe(false);
+  });
+
+  it('gives up after the wait it is given, and says why', () => {
+    const { root, modules, log } = dirs();
+    const wrapped = join(root, 'post-create.sh');
+    writeFileSync(wrapped, underNodeModulesInstallLock(`echo command >>'${log}'`, modules, 1));
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          `flock '${modules}' sleep 3 &`,
+          'sleep 0.2',
+          `sh '${wrapped}'`,
+          'rc=$?',
+          'wait',
+          'exit $rc',
+        ].join('\n'),
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(75);
+    expect(result.stderr).toContain('timed out waiting for the dependency install');
+    expect(existsSync(log)).toBe(false);
   });
 
   it('runs the command as before when there is no node_modules directory', () => {
