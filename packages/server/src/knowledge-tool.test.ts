@@ -12,48 +12,38 @@ describe('knowledge tool boundary', () => {
       }),
     ).toMatchObject({ operation: 'publish_shared', path: 'coaching/profile.md' });
   });
-  it('requires a revision for edits and refuses caller-supplied authority', () => {
-    const edit = { operation: 'edit', documentId: 'doc', title: 'Notes', bodyMarkdown: 'text' };
-    expect(knowledgeToolRequestSchema.safeParse(edit).success).toBe(false);
-    expect(
-      knowledgeToolRequestSchema.safeParse({ ...edit, expectedRevisionId: 'rev' }).success,
-    ).toBe(true);
-    expect(
-      knowledgeToolRequestSchema.safeParse({ operation: 'list', projectId: 'other' }).success,
-    ).toBe(false);
+
+  it('refuses caller-supplied authority', () => {
     expect(
       knowledgeToolRequestSchema.safeParse({
-        operation: 'read',
-        documentId: 'doc',
-        sessionId: 'other',
+        operation: 'publish_shared',
+        path: 'profile.md',
+        projectId: 'other',
       }).success,
     ).toBe(false);
   });
 
-  it('does not expose hierarchy or destructive operations to agents', () => {
-    for (const operation of ['delete', 'move', 'restore', 'create_folder', 'grant']) {
-      expect(knowledgeToolRequestSchema.safeParse({ operation, documentId: 'doc' }).success).toBe(
-        false,
-      );
+  // The retired database library answered these with Wiki-era errors that sent
+  // agents looking for a Wiki action which no longer exists. Knowledge is the
+  // `/knowledge` directory now; none of them may come back through this tool.
+  it('does not expose the retired managed-library operations', () => {
+    // Each payload is one the retired schema accepted, so only the missing
+    // operation, not a stray field, can make it fail.
+    for (const request of [
+      { operation: 'list' },
+      { operation: 'search', query: 'notes' },
+      { operation: 'read', documentId: 'doc' },
+      { operation: 'read_original', documentId: 'doc' },
+      { operation: 'create', folderId: 'folder', title: 'Notes', bodyMarkdown: 'text' },
+      {
+        operation: 'edit',
+        documentId: 'doc',
+        expectedRevisionId: 'rev',
+        title: 'Notes',
+        bodyMarkdown: 'text',
+      },
+    ]) {
+      expect(knowledgeToolRequestSchema.safeParse(request).success).toBe(false);
     }
   });
-});
-
-it('bounds pagination while accepting a selected folder for search', () => {
-  expect(
-    knowledgeToolRequestSchema.safeParse({
-      operation: 'search',
-      query: 'notes',
-      folderId: 'folder',
-      offset: 100,
-      limit: 100,
-    }).success,
-  ).toBe(true);
-  expect(knowledgeToolRequestSchema.safeParse({ operation: 'list', limit: 101 }).success).toBe(
-    false,
-  );
-  expect(
-    knowledgeToolRequestSchema.safeParse({ operation: 'search', query: 'notes', offset: -1 })
-      .success,
-  ).toBe(false);
 });
