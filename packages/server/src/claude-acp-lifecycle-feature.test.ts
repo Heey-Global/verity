@@ -14,15 +14,16 @@ const SCRIPT = fileURLToPath(
   ),
 );
 
-/** Exact 0.76.0 seams, reduced to the statements the build-time patch owns. */
-const PINNED_ADAPTER = `sessionUpdate: "usage_update",
+/** Exact 0.81.2 seams, reduced to the statements the build-time patch owns. */
+const PINNED_ADAPTER = `update: attachUsageModel({
+                                        sessionUpdate: "usage_update",
                                         used: lastAssistantTotalUsage,
                                         size: session.contextWindowSize,
-                                    },
+                                    }),
                                 });
                                 break;
                             }
-                            case "local_command_output":
+                            case "local_command_output": {
                             case "task_progress":
                                 await asyncTasks.taskProgress({
                                     task_id: message.task_id,
