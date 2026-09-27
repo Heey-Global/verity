@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tlsFromEnvironment, managedClientIdentitySecret } from './deployment-tls.js';
-import { remoteControlIngressFromEnv } from './remote-control-deployment.js';
+import { remoteControlIngressForTls } from './remote-control-deployment.js';
 import {
   buildEmbeddedServer,
   parseByteSize,
@@ -789,8 +789,7 @@ async function main(): Promise<void> {
     built: { server?: EmbeddedServer; internal?: InternalListener };
   }): Promise<ServingStack> => {
     const { controlPlane, adoptedSecretKeyMaterial } = context;
-    const remoteControlIngress = remoteControlIngressFromEnv(
-      process.env.VERITY_REMOTE_CONTROL_ENABLED,
+    const remoteControlIngress = remoteControlIngressForTls(
       backendTls ? 'backend' : 'direct',
       https !== undefined,
       port,

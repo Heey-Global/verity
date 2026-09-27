@@ -1202,10 +1202,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
   });
 });
 
-it('keeps remote control admission behind the deployment opt-in', () => {
+it('offers remote control only through the paired TLS ingress', () => {
   const main = readFileSync(new URL('./server-main.ts', import.meta.url), 'utf8');
   expect(main).toMatch(
-    /remoteControlIngressFromEnv\(\s*process\.env\.VERITY_REMOTE_CONTROL_ENABLED/u,
+    /const remoteControlIngress = remoteControlIngressForTls\(\s*backendTls \? 'backend' : 'direct'/u,
   );
   expect(main).toMatch(
     /remoteControlIngress === undefined \? \{\} : \{ remoteControl: remoteControlIngress \}/u,
