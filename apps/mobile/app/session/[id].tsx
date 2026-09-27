@@ -1324,7 +1324,10 @@ export function SessionChat({
         }
         const settledAtBottom = atBottomRef.current;
         if (wasManualGesture && settledAtBottom) readingAwayFromBottomRef.current = false;
-        const oldestRowViewable = isOldestRowViewable(
+        const nearHistoryEdge = isHistoryEdgeVisible(
+          lastScrollYRef.current,
+          lastContentHeightRef.current,
+          lastViewportHeightRef.current,
           oldestVisibleIndexRef.current,
           dataRef.current.length,
         );
@@ -1333,12 +1336,12 @@ export function SessionChat({
           terminal,
           settledAtBottom,
           wasManualGesture,
-          oldestRowViewable,
+          nearHistoryEdge,
         });
         // The gesture is over, so a page withheld by the append-settle window or by
-        // the gesture guard can run now. Nothing else would trigger it: a list whose
-        // last row is still viewable is one that produced no further scroll events.
-        if (oldestRowViewable) loadOlderNearStartRef.current();
+        // the gesture guard can run now. A gesture can stop inside the prefetch
+        // buffer without producing another scroll event.
+        if (nearHistoryEdge) loadOlderNearStartRef.current();
         // This is the moment a manual scroll that ended at the newest edge starts
         // following again (`readingAwayFromBottomRef` was just cleared above), and it
         // publishes no state — so resume the live tail from here rather than waiting
@@ -2031,7 +2034,7 @@ export function SessionChat({
       return;
     initialHistoryPrefetchRef.current = true;
     // A single extra page starts behind the initial render. Subsequent pages are
-    // governed by the measured two-viewport buffer, so opening a long session
+    // governed by the measured four-viewport buffer, so opening a long session
     // cannot pull its whole transcript into memory.
     loadOlderNearStartRef.current();
   }, [loaded, restoring, hasOlder, loadingOlder]);
@@ -2068,7 +2071,7 @@ export function SessionChat({
         nearHistoryEdge,
       });
       // Clearing a ref renders nothing, so re-check the measured buffer here. A page
-      // containing little visible content may still leave less than two screens ready;
+      // containing little visible content may still leave less than four screens ready;
       // content-size updates keep this check current after FlashList measures the rows.
       // Never during an active gesture — the settle-idle handler re-checks the same
       // condition once the finger is up.
