@@ -27,6 +27,15 @@ interface NativePinnedTransport {
 let active: { key: string; port: number } | null = null;
 let operation: Promise<unknown> = Promise.resolve();
 let retryAfter = 0;
+let lastFailure: { key: string; stage: 'setup' | 'admission' | 'attachment' | 'probe' } | null =
+  null;
+
+export function remoteControlFailureForUrl(url: string): string | null {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  return key !== null && lastFailure?.key === key ? lastFailure.stage : null;
+}
 
 async function probeCore(coreUrl: string, tlsPin: string, port: number): Promise<void> {
   const transport = requireNativeModule<NativePinnedTransport>('VerityPinnedTransport');
@@ -131,18 +140,22 @@ async function open(coreUrl: string, key: string): Promise<number> {
   if (descriptor === undefined || tlsPin === undefined) return 0;
   let admission: Awaited<ReturnType<typeof requestRemoteControlAdmission>> | undefined;
   let tunnelStarted = false;
+  let stage: 'setup' | 'admission' | 'attachment' | 'probe' = 'setup';
   try {
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     if (!(await native.isSupported())) return 0;
+    stage = 'admission';
     admission = await requestRemoteControlAdmission({
       uplinkOrigin: descriptor.uplinkOrigin,
       installationHandle: descriptor.installationHandle,
     });
+    stage = 'attachment';
     const dataUrl = new URL(descriptor.uplinkOrigin);
     dataUrl.protocol = 'wss:';
     dataUrl.pathname = '/data';
     const port = await native.start(dataUrl.href, admission.ticket, admission.sessionId, coreUrl);
     tunnelStarted = true;
+    stage = 'probe';
     admission.finish();
     admission = undefined;
     if (port < 1 || port > 65_535 || keyFor(coreUrl) !== key) {
@@ -156,8 +169,10 @@ async function open(coreUrl: string, key: string): Promise<number> {
       return 0;
     }
     active = { key, port };
+    lastFailure = null;
     return port;
   } catch {
+    lastFailure = { key, stage };
     admission?.cancel();
     if (tunnelStarted) {
       try {

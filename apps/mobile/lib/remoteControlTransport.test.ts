@@ -32,7 +32,7 @@ Object.defineProperty(globalThis, 'fetch', {
   value: jest.fn(),
 });
 
-import { remoteControlPortForUrl } from './remoteControlTransport';
+import { remoteControlFailureForUrl, remoteControlPortForUrl } from './remoteControlTransport';
 
 const coreUrl = 'https://verity.example';
 const descriptor = {
@@ -149,6 +149,7 @@ describe('shared remote control transport', () => {
     mockRequest.mockRejectedValue(new Error('Pinned TLS transport failed'));
 
     expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
+    expect(remoteControlFailureForUrl(`${coreUrl}/api/sessions`)).toBe('probe');
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 });
