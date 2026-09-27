@@ -83,4 +83,39 @@ describe('shared remote control transport', () => {
     expect(await remoteControlPortForUrl(`${coreUrl}/api/more`)).toBe(0);
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
+
+  it('finishes a stale admission before starting a replacement profile', async () => {
+    const next = {
+      ...profile,
+      serverId: 'replacement-core',
+      remoteControl: { ...descriptor, installationHandle: 'AAAAAAAAAAAAAAAAAAAAAA' },
+    };
+    mockProfile.mockReturnValue(profile);
+    mockToken.mockReturnValue('device-bearer');
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    mockAdmission.mockReset();
+    mockAdmission
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)))
+      .mockResolvedValue({
+        ticket: 'second',
+        sessionId: 'second',
+        finish: jest.fn(),
+        cancel: jest.fn(),
+      });
+    mockStart.mockClear().mockResolvedValue(4_321);
+    mockStop.mockClear();
+
+    const first = remoteControlPortForUrl(`${coreUrl}/api/first`);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolveFirst).toBeDefined();
+    mockProfile.mockReturnValue(next);
+    const second = remoteControlPortForUrl(`${coreUrl}/api/second`);
+    resolveFirst?.({ ticket: 'first', sessionId: 'first', finish: jest.fn(), cancel: jest.fn() });
+
+    expect(await first).toBe(0);
+    expect(await second).toBe(4_321);
+    expect(mockStart).toHaveBeenCalledTimes(2);
+    expect(mockStop).toHaveBeenCalledTimes(1);
+  });
 });

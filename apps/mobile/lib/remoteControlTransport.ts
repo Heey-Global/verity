@@ -12,7 +12,7 @@ interface NativeTunnel {
 }
 
 let active: { key: string; port: number } | null = null;
-let pending: { key: string; promise: Promise<number> } | null = null;
+let operation: Promise<unknown> = Promise.resolve();
 let retryAfter = 0;
 
 function keyFor(url: string): string | null {
@@ -31,6 +31,15 @@ function keyFor(url: string): string | null {
 
 /** Return zero for a direct pinned connection. Admission failure never replays an API request. */
 export async function remoteControlPortForUrl(url: string): Promise<number> {
+  const selected = operation.then(() => selectPort(url));
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  return selected;
+}
+
+async function selectPort(url: string): Promise<number> {
   const targetUrl = new URL(url);
   if (targetUrl.protocol === 'wss:') targetUrl.protocol = 'https:';
   const target = targetUrl.origin;
@@ -46,24 +55,38 @@ export async function remoteControlPortForUrl(url: string): Promise<number> {
     }
     return 0;
   }
-  if (active?.key === key) {
+  if (active !== null && active.key !== key) {
+    active = null;
     try {
-      if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive())
-        return active.port;
+      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+    } catch {
+      // A missing native module leaves the direct route usable.
+    }
+  }
+  const attachment = active;
+  if (attachment?.key === key) {
+    try {
+      if (
+        (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) &&
+        active === attachment &&
+        keyFor(target) === key
+      )
+        return attachment.port;
     } catch {
       // A native module unavailable on this platform leaves the direct route usable.
     }
-    active = null;
+    if (active === attachment) active = null;
   }
-  if (pending?.key === key) return pending.promise;
+  if (keyFor(target) !== key) {
+    try {
+      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+    } catch {
+      // A missing native module leaves the direct route usable.
+    }
+    return 0;
+  }
   if (Date.now() < retryAfter) return 0;
-  const promise = open(target, key);
-  pending = { key, promise };
-  try {
-    return await promise;
-  } finally {
-    if (pending?.promise === promise) pending = null;
-  }
+  return open(target, key);
 }
 
 async function open(coreUrl: string, key: string): Promise<number> {
