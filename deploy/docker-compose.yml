@@ -80,6 +80,7 @@ services:
       # would turn this public TLS endpoint into the private HTTP backend.
       VERITY_MANAGED_DEPLOYMENT_ID: ''
       VERITY_TLS_MODE: direct
+      VERITY_REMOTE_CONTROL_ENABLED: ${VERITY_REMOTE_CONTROL_ENABLED:-0}
       VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
       VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
       VERITY_PAIRING_IDENTITY_KEY_PATH: /run/verity-pairing/pairing-identity.pem

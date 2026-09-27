@@ -5,6 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tlsFromEnvironment, managedClientIdentitySecret } from './deployment-tls.js';
+import { remoteControlIngressFromEnv } from './remote-control-deployment.js';
 import {
   buildEmbeddedServer,
   parseByteSize,
@@ -788,6 +789,12 @@ async function main(): Promise<void> {
     built: { server?: EmbeddedServer; internal?: InternalListener };
   }): Promise<ServingStack> => {
     const { controlPlane, adoptedSecretKeyMaterial } = context;
+    const remoteControlIngress = remoteControlIngressFromEnv(
+      process.env.VERITY_REMOTE_CONTROL_ENABLED,
+      backendTls ? 'backend' : 'direct',
+      https !== undefined,
+      port,
+    );
     const serverPromise = buildEmbeddedServer({
       databaseUrl,
       ...(managedTls === undefined
@@ -832,6 +839,7 @@ async function main(): Promise<void> {
           ).catch(() => undefined),
         uplinkUrl: UPLINK_CONTROL_URL,
         serverVersion: SERVER_VERSION,
+        ...(remoteControlIngress === undefined ? {} : { remoteControl: remoteControlIngress }),
       },
       secretJobRuntimeRequired: true,
       // Optional private-registry auth for base-image pulls (ADR 0003 R6 / #299):
