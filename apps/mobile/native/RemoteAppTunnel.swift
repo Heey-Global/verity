@@ -60,7 +60,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   var isActive: Bool {
     lock.lock()
     defer { lock.unlock() }
-    return !stopped && listener != nil && usedIds.count < 4_096
+    return !stopped && listener != nil
   }
 
   init(dataURL: URL, coreURL: URL) throws {
@@ -279,6 +279,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       stream.closed = true
       sessionPendingBytes -= stream.pendingBytes
     }
+    // Retire only after existing WebSockets and transfers have drained.
     let exhausted = stream != nil && usedIds.count >= 4_096 && streams.isEmpty
     lock.unlock()
     stream?.worker?.cancel()
