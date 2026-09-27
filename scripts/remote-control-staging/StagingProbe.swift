@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Network
 
 @available(macOS 14.0, *)
 @main
@@ -16,13 +17,37 @@ enum StagingProbe {
         let coreURL = URL(string: coreURLText),
         let corePin = environment["VERITY_REMOTE_CORE_PIN"]
       else { throw RemoteSmokeError.invalidInput }
-      let (status, _) = try await RemoteSmokeTunnel.requestOnce(
-        dataURL: dataURL, ticket: ticket, sessionId: sessionId, coreURL: coreURL,
-        corePin: corePin,
-        onAttached: {
-          print("attached")
-          fflush(stdout)
-        })
+      let status: Int
+      if environment["VERITY_REMOTE_PROBE_MODE"] == "app" {
+        let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: coreURL)
+        let port = try await tunnel.start(ticket: ticket, sessionId: sessionId)
+        defer { tunnel.stop() }
+        print("attached")
+        fflush(stdout)
+        guard (1...65_535).contains(port),
+          let localPort = NWEndpoint.Port(rawValue: UInt16(port))
+        else { throw RemoteSmokeError.invalidInput }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 12
+        config.proxyConfigurations = [
+          ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: localPort))
+        ]
+        let delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL)
+        let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        defer { client.invalidateAndCancel() }
+        let (_, response) = try await client.data(from: coreURL)
+        guard let http = response as? HTTPURLResponse else { throw RemoteSmokeError.invalidFrame }
+        status = http.statusCode
+      } else {
+        let response = try await RemoteSmokeTunnel.requestOnce(
+          dataURL: dataURL, ticket: ticket, sessionId: sessionId, coreURL: coreURL,
+          corePin: corePin,
+          onAttached: {
+            print("attached")
+            fflush(stdout)
+          })
+        status = response.0
+      }
       print("Core HTTPS status: \(status)")
     } catch {
       fputs("Remote Control staging probe failed: \(error)\n", stderr)

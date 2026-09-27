@@ -203,7 +203,7 @@ jobs:
           bash scripts/remote-control-tunnel/run-apple.sh macos
           bash scripts/remote-control-tunnel/run-apple.sh ios
 
-      - name: Probe Staging Remote Control through the native tunnel
+      - name: Probe Staging Remote Control through the native tunnels
         if: github.event_name == 'workflow_dispatch' && inputs.installation_handle != ''
         timeout-minutes: 5
         env:
@@ -211,7 +211,9 @@ jobs:
           VERITY_REMOTE_INSTALLATION_HANDLE: ${{ inputs.installation_handle }}
           VERITY_REMOTE_CORE_URL: ${{ inputs.core_url }}
           VERITY_REMOTE_CORE_PIN: ${{ inputs.core_pin }}
-        run: bash scripts/remote-control-staging/run.sh
+        run: |
+          bash scripts/remote-control-staging/run.sh
+          VERITY_REMOTE_PROBE_MODE=app bash scripts/remote-control-staging/run.sh
 
       - name: Configure native compiler cache
         if: needs.changes.outputs.compile == 'true'
