@@ -4,6 +4,8 @@ const mockToken = jest.fn();
 const mockStart = jest.fn();
 const mockIsActive = jest.fn();
 const mockStop = jest.fn();
+const mockRequest = jest.fn();
+const mockCancelRequest = jest.fn();
 
 jest.mock('./remoteControlAdmission', () => ({
   requestRemoteControlAdmission: (...args: unknown[]) => mockAdmission(...args),
@@ -11,12 +13,10 @@ jest.mock('./remoteControlAdmission', () => ({
 jest.mock('./serverProfile', () => ({ getServerProfile: () => mockProfile() }));
 jest.mock('./authToken', () => ({ getAuthToken: (...args: unknown[]) => mockToken(...args) }));
 jest.mock('expo-modules-core', () => ({
-  requireNativeModule: () => ({
-    isSupported: async () => true,
-    start: mockStart,
-    isActive: mockIsActive,
-    stop: mockStop,
-  }),
+  requireNativeModule: (name: string) =>
+    name === 'VerityPinnedTransport'
+      ? { request: mockRequest, cancelRequest: mockCancelRequest }
+      : { isSupported: async () => true, start: mockStart, isActive: mockIsActive, stop: mockStop },
 }));
 
 Object.defineProperty(globalThis, 'Response', {
@@ -49,6 +49,11 @@ const profile = {
 };
 
 describe('shared remote control transport', () => {
+  beforeEach(() => {
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockCancelRequest.mockReset().mockResolvedValue(undefined);
+  });
+
   it('admits once for concurrent API connections and reuses the native data attachment', async () => {
     const finish = jest.fn();
     mockProfile.mockReturnValue(profile);
@@ -75,6 +80,15 @@ describe('shared remote control transport', () => {
       coreUrl,
     );
     expect(finish).toHaveBeenCalledTimes(1);
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.stringMatching(/^remote-probe-/),
+      `${coreUrl}/healthz`,
+      'GET',
+      {},
+      null,
+      profile.endpoints[0]?.tlsPin,
+      4_321,
+    );
     expect(await remoteControlPortForUrl(`${coreUrl}/api/more`)).toBe(4_321);
     expect(mockAdmission).toHaveBeenCalledTimes(1);
 
@@ -116,6 +130,25 @@ describe('shared remote control transport', () => {
     expect(await first).toBe(0);
     expect(await second).toBe(4_321);
     expect(mockStart).toHaveBeenCalledTimes(2);
+    expect(mockStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to direct when the attached tunnel cannot reach the pinned Core', async () => {
+    mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
+    await remoteControlPortForUrl(`${coreUrl}/api/reset`);
+    mockProfile.mockReturnValue(profile);
+    mockToken.mockReturnValue('device-bearer');
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4_321);
+    mockStop.mockClear();
+    mockRequest.mockRejectedValue(new Error('Pinned TLS transport failed'));
+
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 });
