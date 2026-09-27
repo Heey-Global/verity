@@ -1240,6 +1240,18 @@ jobs:
     # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
     # every step in the repo that reads or writes a gha cache.
     timeout-minutes: 45
+    # Two legs, one per installer acceptance. Each boots its own empty Docker
+    # host and loads the whole image into it, which is minutes of work apiece;
+    # serialized on one runner they were the bulk of the slowest PR check. Each
+    # leg builds the image itself from the shared cache — cheaper than moving a
+    # multi-GB image between runners — and the quick image checks run once, in
+    # the compose leg. Not fail-fast: each leg is a separate verdict.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - installer: compose
+          - installer: managed
     # Namespace every mutable smoke-test resource. This remains useful for local
     # reproduction and protects against future runner-layout changes.
     env:
@@ -1372,8 +1384,12 @@ jobs:
           # <sha>` before failing, while the cache was over its limit and GitHub
           # was evicting the very blobs being written.
           cache-from: type=gha,scope=verity-server-amd64
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
+          #
+          # One writer per run: both matrix legs build the same image, and two
+          # exports into one scope only race each other for the same index.
+          cache-to: ${{ github.event_name != 'pull_request' && matrix.installer == 'compose' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
       - name: Verify the bundled installer payload
+        if: matrix.installer == 'compose'
         run: |
           docker run --rm --entrypoint /bin/sh "$VERITY_CI_IMAGE" -c '
             test -x /opt/verity-install/deploy/bin/verity-install
@@ -1383,6 +1399,7 @@ jobs:
             test -f /opt/verity-install/deploy/docker-compose.runner-supervisor.yml
           '
       - name: Verify immutable Server version stamp
+        if: matrix.installer == 'compose'
         shell: bash
         run: |
           set -euo pipefail
@@ -1394,6 +1411,7 @@ jobs:
             -e "import { runtimeServerVersion } from '/app/packages/server/dist/runtime-version.js'; process.stdout.write(runtimeServerVersion());"; } 2>/dev/null)"
           test "$reported" = 99.0.0
       - name: Verify Runner anti-forgery boundary
+        if: matrix.installer == 'compose'
         shell: bash
         run: |
           set -euo pipefail
@@ -1401,6 +1419,7 @@ jobs:
             --mount "type=bind,src=$PWD/scripts/test-runner-forgery-boundary.mjs,dst=/test-runner-forgery-boundary.mjs,readonly" \
             "$VERITY_CI_IMAGE" /test-runner-forgery-boundary.mjs
       - name: Smoke-test Verity server image
+        if: matrix.installer == 'compose'
         shell: bash
         run: |
           set -euo pipefail
@@ -1477,10 +1496,12 @@ jobs:
           exit 1
 
       - name: Verify standalone agent gateway deployment lifecycle
+        if: matrix.installer == 'compose'
         shell: bash
         run: deploy/bin/verity-agent-gateway-deployment-smoke "$VERITY_CI_IMAGE"
 
       - name: Verify isolated control-plane Runner lifecycle
+        if: matrix.installer == 'compose'
         shell: bash
         run: deploy/bin/verity-control-plane-runner-deployment-smoke "$VERITY_CI_IMAGE"
 
@@ -1489,6 +1510,7 @@ jobs:
           minimum-free-gib: '25'
 
       - name: Verify clean Compose installation on an empty Docker host
+        if: matrix.installer == 'compose'
         shell: bash
         run: |
           set -euo pipefail
@@ -1542,6 +1564,7 @@ jobs:
           VERITY_CLEAN_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" deploy/bin/verity-clean-install-smoke "$VERITY_CI_IMAGE"
 
       - name: Verify managed installer on an empty Docker host
+        if: matrix.installer == 'managed'
         shell: bash
         run: |
           set -euo pipefail
@@ -1559,7 +1582,6 @@ jobs:
           }
           trap cleanup_managed_install EXIT
 
-          # Run after the Compose smoke has removed its daemon and image store.
           # The installer owns /etc/verity and /srv inside this disposable host.
           mkdir -p "$socket_dir"
           docker volume create "$VERITY_CI_MANAGED_DIND_VOLUME" >/dev/null
