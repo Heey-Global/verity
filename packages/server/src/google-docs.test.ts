@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { GoogleFetch, GoogleHttpResponse } from './google-drive.js';
-import {
-  docsRequestsAreSupported,
-  docsRequestsNeedRevision,
-  getDocsDocument,
-  getDocsDocumentMetadata,
-  updateDocsDocument,
-} from './google-docs.js';
+import { getDocsDocument, getDocsDocumentMetadata, updateDocsDocument } from './google-docs.js';
 
 function response(body: unknown, status = 200): GoogleHttpResponse {
   return {
@@ -103,17 +97,6 @@ describe('Google Docs client', () => {
       requests: [{ insertText: { text: 'Hello' } }],
       writeControl: { requiredRevisionId: 'rev-1' },
     });
-  });
-
-  it('allows safe edits and classifies position-sensitive edits', () => {
-    expect(docsRequestsAreSupported([{ insertText: {} }, { updateTextStyle: {} }])).toBe(true);
-    expect(docsRequestsAreSupported([{ insertInlineImage: { uri: 'https://example.com' } }])).toBe(
-      false,
-    );
-    expect(docsRequestsAreSupported([{ insertText: {}, deleteContentRange: {} }])).toBe(false);
-    expect(docsRequestsNeedRevision([{ insertText: { endOfSegmentLocation: {} } }])).toBe(false);
-    expect(docsRequestsNeedRevision([{ insertText: { location: { index: 2 } } }])).toBe(true);
-    expect(docsRequestsNeedRevision([{ replaceAllText: { replaceText: 'new' } }])).toBe(true);
   });
 
   it('redacts upstream error details', async () => {

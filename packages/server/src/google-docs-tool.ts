@@ -3,12 +3,7 @@ import type {
   SessionWorkspaceFile,
   WorkspaceInvocationInput,
 } from './google-workspace-tool-types.js';
-import {
-  docsRequestsAreSupported,
-  getDocsDocument,
-  getDocsDocumentMetadata,
-  updateDocsDocument,
-} from './google-docs.js';
+import { getDocsDocument, getDocsDocumentMetadata, updateDocsDocument } from './google-docs.js';
 
 const MAX_REQUESTS = 100;
 const MAX_REQUEST_BYTES = 1_000_000;
@@ -43,16 +38,6 @@ function parseRequest(value: unknown): DocsRequest {
   return value as DocsRequest;
 }
 
-function hasExplicitTabId(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasExplicitTabId);
-  if (typeof value !== 'object' || value === null) return false;
-  return Object.entries(value).some(
-    ([key, nested]) =>
-      (key === 'tabId' && typeof nested === 'string' && nested.length > 0) ||
-      hasExplicitTabId(nested),
-  );
-}
-
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -66,31 +51,14 @@ function validateEdit(requests: unknown): asserts requests is Record<string, unk
   const candidates: unknown[] = requests;
   const validated: Record<string, unknown>[] = [];
   for (const candidate of candidates) {
-    if (!isUnknownRecord(candidate)) throw new Error('edit contains an unsupported request');
-    validated.push(candidate);
-  }
-  if (!docsRequestsAreSupported(validated)) {
-    throw new Error('edit contains an unsupported request');
-  }
-  for (const request of validated) {
-    const keys = Object.keys(request);
-    const operation = request[keys[0]!];
+    if (!isUnknownRecord(candidate) || Object.keys(candidate).length !== 1) {
+      throw new Error('edit requires one Google request operation per entry');
+    }
+    const operation = candidate[Object.keys(candidate)[0]!];
     if (!isUnknownRecord(operation)) {
-      throw new Error('edit contains an unsupported request');
+      throw new Error('edit requires Google request operation objects');
     }
-    if (keys[0] === 'replaceAllText') {
-      const criteria = operation.tabsCriteria;
-      const tabIds = isUnknownRecord(criteria) ? criteria.tabIds : undefined;
-      if (
-        !Array.isArray(tabIds) ||
-        tabIds.length === 0 ||
-        tabIds.some((tabId) => typeof tabId !== 'string' || tabId.length === 0)
-      ) {
-        throw new Error('replaceAllText requires explicit tabsCriteria.tabIds');
-      }
-    } else if (!hasExplicitTabId(operation)) {
-      throw new Error('edit requests require an explicit tabId');
-    }
+    validated.push(candidate);
   }
 }
 

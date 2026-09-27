@@ -7,7 +7,6 @@ import {
   clearSheetsValues,
   getSheetsSpreadsheet,
   getSheetsValues,
-  sheetsRequestsAreSupported,
   updateSheetsSpreadsheet,
   updateSheetsValues,
 } from './google-sheets.js';
@@ -84,78 +83,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function boundedIndexRange(
-  value: unknown,
-  startKey: 'startIndex' | 'startRowIndex' | 'startColumnIndex',
-  endKey: 'endIndex' | 'endRowIndex' | 'endColumnIndex',
-): number | undefined {
-  if (!isRecord(value)) return undefined;
-  const start = value[startKey];
-  const end = value[endKey];
-  if (
-    typeof start !== 'number' ||
-    !Number.isInteger(start) ||
-    typeof end !== 'number' ||
-    !Number.isInteger(end) ||
-    start < 0 ||
-    end <= start
-  ) {
-    return undefined;
-  }
-  return end - start;
-}
-
-function validateStructuralBounds(kind: string, operation: unknown): void {
-  if (!isRecord(operation)) throw new Error('structural_edit contains an unsupported request');
-  if (kind === 'sortRange') {
-    const range = operation.range;
-    if (!isRecord(range) || typeof range.sheetId !== 'number') {
-      throw new Error('sortRange requires a bounded grid range');
-    }
-    const rows = boundedIndexRange(range, 'startRowIndex', 'endRowIndex');
-    const columns = boundedIndexRange(range, 'startColumnIndex', 'endColumnIndex');
-    if (rows === undefined || columns === undefined || rows * columns > MAX_CELLS) {
-      throw new Error('sortRange requires a bounded grid range of at most 10,000 cells');
-    }
-  }
-  if (
-    kind === 'insertDimension' ||
-    kind === 'deleteDimension' ||
-    kind === 'moveDimension' ||
-    kind === 'autoResizeDimensions'
-  ) {
-    const range =
-      kind === 'moveDimension'
-        ? operation.source
-        : kind === 'autoResizeDimensions'
-          ? operation.dimensions
-          : operation.range;
-    const length = boundedIndexRange(range, 'startIndex', 'endIndex');
-    if (
-      !isRecord(range) ||
-      typeof range.sheetId !== 'number' ||
-      (range.dimension !== 'ROWS' && range.dimension !== 'COLUMNS') ||
-      length === undefined ||
-      length > MAX_CELLS
-    ) {
-      throw new Error(`${kind} requires a bounded dimension range`);
-    }
-  }
-  if (kind === 'appendDimension') {
-    const length = operation.length;
-    if (
-      typeof operation.sheetId !== 'number' ||
-      (operation.dimension !== 'ROWS' && operation.dimension !== 'COLUMNS') ||
-      typeof length !== 'number' ||
-      !Number.isInteger(length) ||
-      length <= 0 ||
-      length > MAX_CELLS
-    ) {
-      throw new Error('appendDimension requires a bounded dimension count');
-    }
-  }
-}
-
 function validateStructural(requests: unknown): asserts requests is Record<string, unknown>[] {
   if (!Array.isArray(requests) || requests.length === 0)
     throw new Error('structural_edit requires requests');
@@ -164,15 +91,14 @@ function validateStructural(requests: unknown): asserts requests is Record<strin
   const candidates: unknown[] = requests;
   const validated: Record<string, unknown>[] = [];
   for (const request of candidates) {
-    if (!isRecord(request)) throw new Error('structural_edit contains an unsupported request');
+    if (!isRecord(request) || Object.keys(request).length !== 1) {
+      throw new Error('structural_edit requires one Google request operation per entry');
+    }
+    const operation = request[Object.keys(request)[0]!];
+    if (!isRecord(operation)) {
+      throw new Error('structural_edit requires Google request operation objects');
+    }
     validated.push(request);
-  }
-  if (!sheetsRequestsAreSupported(validated)) {
-    throw new Error('structural_edit contains an unsupported request');
-  }
-  for (const request of validated) {
-    const keys = Object.keys(request);
-    validateStructuralBounds(keys[0]!, request[keys[0]!]);
   }
   if (Buffer.byteLength(JSON.stringify(requests)) > MAX_VALUE_BYTES)
     throw new Error('structural_edit payload exceeds 1 MB');

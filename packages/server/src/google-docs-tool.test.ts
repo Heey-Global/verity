@@ -40,7 +40,7 @@ describe('Google Docs session tool', () => {
     expect(docs.inspect).not.toHaveBeenCalled();
   });
 
-  it('requires a revision and rejects unallowlisted Docs requests', async () => {
+  it('requires a revision for every Docs edit', async () => {
     const { tool, docs } = setup();
     await expect(
       tool.invoke({
@@ -51,16 +51,10 @@ describe('Google Docs session tool', () => {
         },
       }),
     ).rejects.toThrow('requires revisionId');
-    await expect(
-      tool.invoke({
-        ...input,
-        request: { action: 'edit', revisionId: 'r1', requests: [{ createHeader: {} }] },
-      }),
-    ).rejects.toThrow('unsupported request');
     expect(docs.update).not.toHaveBeenCalled();
   });
 
-  it('requires every edit to name the inspected tab', async () => {
+  it('passes any single-operation Google Docs request through', async () => {
     const { tool, docs } = setup();
 
     await expect(
@@ -69,20 +63,31 @@ describe('Google Docs session tool', () => {
         request: {
           action: 'edit',
           revisionId: 'r1',
-          requests: [{ replaceAllText: { containsText: { text: 'a' }, replaceText: 'b' } }],
+          requests: [{ createHeader: { type: 'DEFAULT', sectionBreakLocation: { index: 1 } } }],
         },
       }),
-    ).rejects.toThrow('tabsCriteria.tabIds');
+    ).resolves.toEqual({ result: { replies: [] }, revisionId: 'r2' });
+    expect(docs.update).toHaveBeenCalledWith(
+      'token',
+      'doc1',
+      [{ createHeader: { type: 'DEFAULT', sectionBreakLocation: { index: 1 } } }],
+      'r1',
+    );
+  });
+
+  it('rejects malformed Docs request envelopes before calling Google', async () => {
+    const { tool, docs } = setup();
+
     await expect(
       tool.invoke({
         ...input,
         request: {
           action: 'edit',
           revisionId: 'r1',
-          requests: [{ insertText: { text: 'x', location: { index: 1 } } }],
+          requests: [{ insertText: {}, deleteContentRange: {} }],
         },
       }),
-    ).rejects.toThrow('explicit tabId');
+    ).rejects.toThrow('one Google request operation per entry');
     expect(docs.update).not.toHaveBeenCalled();
   });
 

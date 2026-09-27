@@ -80,18 +80,43 @@ describe('Google Sheets session tool', () => {
     expect(sheets.structuralUpdate).toHaveBeenCalledOnce();
   });
 
-  it('rejects structural requests outside the allowlist', async () => {
+  it('passes any single-operation Google Sheets request through', async () => {
     const { tool, sheets } = setup();
+    const request = { addChart: { chart: { spec: {}, position: {} } } };
     await expect(
       tool.invoke({
         ...input,
-        request: { action: 'structural_edit', requests: [{ updateCells: {} }] },
+        request: { action: 'structural_edit', requests: [request] },
       }),
-    ).rejects.toThrow('unsupported request');
-    expect(sheets.structuralUpdate).not.toHaveBeenCalled();
+    ).resolves.toEqual({ result: { replies: [] } });
+    expect(sheets.structuralUpdate).toHaveBeenCalledWith('token', 'sheet1', [request]);
   });
 
-  it('rejects unbounded structural ranges', async () => {
+  it('allows structural operations to affect more than the direct value-transfer limit', async () => {
+    const { tool, sheets } = setup();
+    const request = {
+      sortRange: {
+        range: {
+          sheetId: 0,
+          startRowIndex: 0,
+          endRowIndex: 100_000,
+          startColumnIndex: 0,
+          endColumnIndex: 30,
+        },
+        sortSpecs: [{ dimensionIndex: 0, sortOrder: 'ASCENDING' }],
+      },
+    };
+
+    await expect(
+      tool.invoke({
+        ...input,
+        request: { action: 'structural_edit', requests: [request] },
+      }),
+    ).resolves.toEqual({ result: { replies: [] } });
+    expect(sheets.structuralUpdate).toHaveBeenCalledWith('token', 'sheet1', [request]);
+  });
+
+  it('rejects malformed Sheets request envelopes before calling Google', async () => {
     const { tool, sheets } = setup();
 
     await expect(
@@ -99,10 +124,10 @@ describe('Google Sheets session tool', () => {
         ...input,
         request: {
           action: 'structural_edit',
-          requests: [{ sortRange: { range: { sheetId: 0 } } }],
+          requests: [{ addSheet: {}, deleteSheet: {} }],
         },
       }),
-    ).rejects.toThrow('bounded grid range');
+    ).rejects.toThrow('one Google request operation per entry');
     expect(sheets.structuralUpdate).not.toHaveBeenCalled();
   });
 
@@ -121,6 +146,35 @@ describe('Google Sheets session tool', () => {
       }),
     ).resolves.toEqual({ result: { replies: [] } });
     expect(sheets.structuralUpdate).toHaveBeenCalledWith('token', 'sheet1', [request]);
+  });
+
+  it('sets and clears a basic filter on a bounded sheet range', async () => {
+    const { tool, sheets } = setup();
+    const setFilter = {
+      setBasicFilter: {
+        filter: {
+          range: {
+            sheetId: 0,
+            startRowIndex: 0,
+            endRowIndex: 28,
+            startColumnIndex: 0,
+            endColumnIndex: 31,
+          },
+        },
+      },
+    };
+    const clearFilter = { clearBasicFilter: { sheetId: 0 } };
+
+    await expect(
+      tool.invoke({
+        ...input,
+        request: { action: 'structural_edit', requests: [setFilter, clearFilter] },
+      }),
+    ).resolves.toEqual({ result: { replies: [] } });
+    expect(sheets.structuralUpdate).toHaveBeenCalledWith('token', 'sheet1', [
+      setFilter,
+      clearFilter,
+    ]);
   });
 
   it('rechecks assignment and kind after claiming a write', async () => {

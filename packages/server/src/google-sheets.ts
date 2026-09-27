@@ -167,23 +167,3 @@ export async function updateSheetsSpreadsheet(
     opts,
   );
 }
-
-const SUPPORTED_STRUCTURAL_REQUESTS = new Set([
-  'addSheet',
-  'deleteSheet',
-  'duplicateSheet',
-  'updateSheetProperties',
-  'insertDimension',
-  'deleteDimension',
-  'appendDimension',
-  'moveDimension',
-  'autoResizeDimensions',
-  'sortRange',
-]);
-
-export function sheetsRequestsAreSupported(requests: readonly Record<string, unknown>[]): boolean {
-  return requests.every((request) => {
-    const keys = Object.keys(request);
-    return keys.length === 1 && SUPPORTED_STRUCTURAL_REQUESTS.has(keys[0] ?? '');
-  });
-}
