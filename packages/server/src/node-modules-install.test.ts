@@ -10,8 +10,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  defaultContainerCommandRunner,
   NODE_MODULES_INSTALL_COMPLETE_MARKER,
   NODE_MODULES_INSTALL_ENV,
   underNodeModulesInstallLock,
@@ -387,8 +388,9 @@ describe('underNodeModulesInstallLock', () => {
       [
         '-c',
         [
-          `flock '${modules}' sleep 3 &`,
-          'sleep 0.2',
+          // Held for certain before the command starts, however loaded the host.
+          `flock '${modules}' sh -c "touch '${root}/held'; sleep 3" &`,
+          `until [ -e '${root}/held' ]; do sleep 0.05; done`,
           `sh '${wrapped}'`,
           'rc=$?',
           'wait',
@@ -409,5 +411,27 @@ describe('underNodeModulesInstallLock', () => {
     execFileSync('sh', ['-c', underNodeModulesInstallLock(`echo ran >>'${log}'`, missing)]);
     expect(readFileSync(log, 'utf8').trim()).toBe('ran');
     expect(existsSync(missing)).toBe(false);
+  });
+});
+
+describe('defaultContainerCommandRunner', () => {
+  it('reports a timeout as killed, which the provisioner reads as a wedged install', async () => {
+    // The provisioner shortens the postCreateCommand's lock wait only on
+    // `killed`; a runner that lost the flag would silently restore the doubled
+    // half-hour hang.
+    const bin = mkdtempSync(join(tmpdir(), 'verity-fake-docker-'));
+    writeFileSync(join(bin, 'docker'), '#!/bin/sh\nsleep 5\n', { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    try {
+      const outcome = await defaultContainerCommandRunner({
+        containerName: 'sandbox',
+        command: 'true',
+        dockerHost: 'unix:///nonexistent.sock',
+        timeoutMs: 100,
+      }).catch((error: unknown) => error);
+      expect((outcome as { killed?: unknown }).killed).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
