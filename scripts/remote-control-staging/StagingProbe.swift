@@ -48,6 +48,7 @@ enum StagingProbe {
           })
         status = response.0
       }
+      guard status == 200 else { throw RemoteSmokeError.invalidFrame }
       print("Core HTTPS status: \(status)")
     } catch {
       fputs("Remote Control staging probe failed: \(error)\n", stderr)
