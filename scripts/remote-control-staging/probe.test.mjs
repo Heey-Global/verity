@@ -10,7 +10,7 @@ import { WebSocketServer } from 'ws';
 
 const probe = fileURLToPath(new URL('./probe.mjs', import.meta.url));
 
-async function fixture(t, response) {
+async function fixture(t, response, status = 200) {
   const directory = mkdtempSync(join(tmpdir(), 'verity-staging-probe-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const key = join(directory, 'key.pem');
@@ -57,7 +57,7 @@ async function fixture(t, response) {
   const binary = join(directory, 'fake-probe');
   writeFileSync(
     binary,
-    '#!/usr/bin/env node\nif (process.env.VERITY_REMOTE_TICKET !== "test_ticket") process.exit(2);\nconsole.log("attached"); console.log("Core HTTPS status: 200");\n',
+    `#!/usr/bin/env node\nif (process.env.VERITY_REMOTE_TICKET !== "test_ticket") process.exit(2);\nconsole.log("attached"); console.log("Core HTTPS status: ${status}");\n`,
     { mode: 0o755 },
   );
   const address = server.address();
@@ -118,4 +118,22 @@ test('a ticket for a different request never reaches the native runner', async (
   const result = await runProbe(input);
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Invalid admission response/u);
+});
+
+test('an attached tunnel with an unsuccessful Core response fails the probe', async (t) => {
+  const input = await fixture(
+    t,
+    (connect) => ({
+      type: 'connect.ready',
+      requestId: connect.requestId,
+      sessionId: 'test_session',
+      ticket: 'test_ticket',
+      expiresAt: Date.now() + 60_000,
+      capability: 'remote-control-v1',
+    }),
+    503,
+  );
+  const result = await runProbe(input);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /did not complete an attached Core HTTPS GET/u);
 });

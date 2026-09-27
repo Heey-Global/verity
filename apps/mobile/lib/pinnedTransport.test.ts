@@ -3,9 +3,11 @@ const mockUpload = jest.fn();
 const mockDownload = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockRemotePort = jest.fn();
+const mockRemoteFailure = jest.fn();
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
+  remoteControlFailureForUrl: (...args: unknown[]) => mockRemoteFailure(...args),
 }));
 
 jest.mock('expo-modules-core', () => ({
@@ -56,6 +58,7 @@ describe('pinned native file transport', () => {
     mockDownload.mockReset();
     mockCancelRequest.mockReset();
     mockRemotePort.mockReset();
+    mockRemoteFailure.mockReset().mockReturnValue(null);
   });
 
   it('streams a file-backed Blob through the native upload API', async () => {
@@ -108,6 +111,24 @@ describe('pinned native file transport', () => {
       `sha256-${'a'.repeat(43)}`,
       4_321,
     );
+  });
+
+  it('reports which route failed when the tunnel and direct Core request both fail', async () => {
+    mockRemotePort.mockResolvedValue(0);
+    mockRemoteFailure.mockReturnValue('probe');
+    mockRequest.mockRejectedValue(
+      new Error(
+        'Call rejected: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE].',
+      ),
+    );
+
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions'),
+    ).rejects.toMatchObject({
+      name: 'VerityConnectionError',
+      message:
+        'Uplink probe and direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
+    });
   });
 
   it.each([204, 205, 304])('constructs a bodyless response for status %s', async (status) => {

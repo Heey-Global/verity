@@ -110,7 +110,7 @@ try {
         if (finished) return;
         finished = true;
         socket.close();
-        if (code !== 0 || !attached || !/Core HTTPS status: [1-5][0-9][0-9]/u.test(stdout)) {
+        if (code !== 0 || !attached || !/Core HTTPS status: 200(?:\r?\n|$)/u.test(stdout)) {
           reject(new Error('Native staging probe did not complete an attached Core HTTPS GET.'));
           return;
         }

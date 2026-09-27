@@ -1,5 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
-import { remoteControlPortForUrl } from './remoteControlTransport';
+import { remoteControlFailureForUrl, remoteControlPortForUrl } from './remoteControlTransport';
 
 interface NativeResponse {
   status: number;
@@ -165,25 +165,44 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
-      response = fileUri
-        ? await transport.upload(
-            requestId,
-            url,
-            init.method ?? 'POST',
-            headers,
-            fileUri,
-            tlsPin,
-            port,
-          )
-        : await transport.request(
-            requestId,
-            url,
-            init.method ?? 'GET',
-            headers,
-            encodedBody,
-            tlsPin,
-            port,
-          );
+      try {
+        response = fileUri
+          ? await transport.upload(
+              requestId,
+              url,
+              init.method ?? 'POST',
+              headers,
+              fileUri,
+              tlsPin,
+              port,
+            )
+          : await transport.request(
+              requestId,
+              url,
+              init.method ?? 'GET',
+              headers,
+              encodedBody,
+              tlsPin,
+              port,
+            );
+      } catch (error) {
+        const failure = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
+        const route =
+          port > 0
+            ? 'Uplink Core request'
+            : failure === null
+              ? 'Direct Core request'
+              : `Uplink ${failure} and direct Core request`;
+        const reason =
+          error instanceof Error
+            ? (error.message.match(
+                /Pinned TLS (?:transport|verification) failed \[[^\]]{1,150}\]/u,
+              )?.[0] ?? 'native transport error')
+            : 'native transport error';
+        const diagnostic = new Error(`${route} failed: ${reason}`);
+        diagnostic.name = 'VerityConnectionError';
+        throw diagnostic;
+      }
     } catch (error) {
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');

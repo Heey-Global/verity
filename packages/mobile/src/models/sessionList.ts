@@ -164,7 +164,11 @@ export class SessionListModel {
       this._error = undefined;
     } catch (error) {
       if (req !== this.reqSeq) return;
-      this._error = error instanceof VerityApiError ? error.message : 'failed to load sessions';
+      this._error =
+        error instanceof VerityApiError ||
+        (error instanceof Error && error.name === 'VerityConnectionError')
+          ? error.message
+          : 'failed to load sessions';
     } finally {
       if (req === this.reqSeq) {
         this._loading = false;

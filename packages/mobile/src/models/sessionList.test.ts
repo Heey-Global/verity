@@ -167,7 +167,7 @@ describe('SessionListModel.refresh', () => {
     expect(states.at(-1)?.loading).toBe(false);
   });
 
-  it('surfaces a VerityApiError message, a generic message otherwise, and clears on success', async () => {
+  it('surfaces API and transport errors, hides unrelated errors, and clears on success', async () => {
     const { client, listSessions } = makeClient();
     const model = new SessionListModel({ client });
 
@@ -179,6 +179,12 @@ describe('SessionListModel.refresh', () => {
     listSessions.mockRejectedValueOnce(new Error('boom'));
     await model.refresh();
     expect(model.state.error).toBe('failed to load sessions');
+
+    const transportError = new Error('Uplink probe and direct Core request failed');
+    transportError.name = 'VerityConnectionError';
+    listSessions.mockRejectedValueOnce(transportError);
+    await model.refresh();
+    expect(model.state.error).toBe(transportError.message);
 
     listSessions.mockResolvedValueOnce([session('a', 'idle')]);
     await model.refresh();
