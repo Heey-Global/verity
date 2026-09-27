@@ -1,19 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { remoteControlIngressFromEnv } from './remote-control-deployment.js';
+import { remoteControlIngressForTls } from './remote-control-deployment.js';
 
-describe('remoteControlIngressFromEnv', () => {
-  it('leaves remote admission disabled until explicitly enabled', () => {
-    expect(remoteControlIngressFromEnv(undefined, 'backend', false, 8082)).toBeUndefined();
-    expect(remoteControlIngressFromEnv('0', 'direct', true, 8082)).toBeUndefined();
+describe('remoteControlIngressForTls', () => {
+  it('does not offer a plaintext direct listener', () => {
+    expect(remoteControlIngressForTls('direct', false, 8082)).toBeUndefined();
   });
 
   it('dials only the local listener presenting the paired certificate', () => {
-    expect(remoteControlIngressFromEnv('1', 'direct', true, 8082)).toEqual({
+    expect(remoteControlIngressForTls('direct', true, 8082)).toEqual({
       localHost: '127.0.0.1',
       localPort: 8082,
     });
-    expect(remoteControlIngressFromEnv('1', 'backend', false, 8787)).toEqual({
+    expect(remoteControlIngressForTls('backend', false, 8787)).toEqual({
       localHost: 'verity',
       localPort: 8082,
     });
@@ -28,18 +27,14 @@ describe('remoteControlIngressFromEnv', () => {
     expect(gateway).toBeDefined();
     const alias = /aliases: \[([^\]]+)\]/u.exec(gateway!)?.[1];
     const port = /\$\{VERITY_API_HOST_PORT:-\d+\}:(\d+)/u.exec(gateway!)?.[1];
-    expect(remoteControlIngressFromEnv('1', 'backend', false, 8787)).toEqual({
+    expect(remoteControlIngressForTls('backend', false, 8787)).toEqual({
       localHost: alias,
       localPort: Number(port),
     });
-    expect(compose).toContain('VERITY_REMOTE_CONTROL_ENABLED: ${VERITY_REMOTE_CONTROL_ENABLED:-0}');
+    expect(compose).not.toContain('VERITY_REMOTE_CONTROL_ENABLED');
   });
 
-  it('rejects an insecure or ambiguous opt-in', () => {
-    expect(() => remoteControlIngressFromEnv('yes', 'direct', true, 8082)).toThrow(
-      'must be 0 or 1',
-    );
-    expect(() => remoteControlIngressFromEnv('1', 'direct', false, 8082)).toThrow('TLS listener');
-    expect(() => remoteControlIngressFromEnv('1', 'direct', true, 0)).toThrow('fixed TLS port');
+  it('rejects an ambiguous direct TLS target', () => {
+    expect(() => remoteControlIngressForTls('direct', true, 0)).toThrow('fixed TLS port');
   });
 });
