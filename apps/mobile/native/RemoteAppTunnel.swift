@@ -32,6 +32,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var incomingSequence = 0
     var outgoingSequence = 0
     var incomingEnded = false
+    var incomingFlushed = false
     var outgoingEnded = false
     var pendingBytes = 0
     var incomingWrite: Task<Void, Never>?
@@ -241,7 +242,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   private func finish(_ id: String, _ stream: Stream) {
-    if lock.withLock({ stream.incomingEnded && stream.outgoingEnded }) { drop(id) }
+    if lock.withLock({ stream.incomingFlushed && stream.outgoingEnded }) { drop(id) }
   }
 
   private func enqueue(_ data: Data, to stream: Stream, id: String, complete: Bool = false) {
@@ -262,7 +263,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
             sessionPendingBytes -= data.count
           }
         }
-        if complete { finish(id, stream) }
+        if complete {
+          lock.withLock { stream.incomingFlushed = true }
+          finish(id, stream)
+        }
       } catch { await reset(id, code: "upstream_error") }
     }
   }
