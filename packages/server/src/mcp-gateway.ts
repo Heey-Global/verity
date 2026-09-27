@@ -395,9 +395,9 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_google_slides:
     'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit accepts any structurally valid Google Slides batchUpdate request and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested; insert_image accepts either a Verity session attachmentId or a public HTTP(S) imageUrl.',
   verity_google_docs:
-    'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; every edit requires the revisionId returned by the read.',
+    'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; edit accepts any structurally valid Google Docs batchUpdate request and requires the revisionId returned by the read.',
   verity_google_sheets:
-    'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or structural operations.',
+    'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or any structurally valid Google Sheets batchUpdate request.',
   verity_gmail:
     'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:

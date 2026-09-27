@@ -5,7 +5,6 @@ import {
   clearSheetsValues,
   getSheetsSpreadsheet,
   getSheetsValues,
-  sheetsRequestsAreSupported,
   updateSheetsSpreadsheet,
   updateSheetsValues,
 } from './google-sheets.js';
@@ -90,18 +89,7 @@ describe('Google Sheets client', () => {
     expect(calls[1]?.url).toContain('Data!B%3AB:clear');
   });
 
-  it('limits structural batches to conservative request kinds', async () => {
-    expect(
-      sheetsRequestsAreSupported([
-        { addSheet: {} },
-        { deleteDimension: {} },
-        { appendDimension: {} },
-      ]),
-    ).toBe(true);
-    expect(sheetsRequestsAreSupported([{ mergeCells: {} }])).toBe(false);
-    expect(sheetsRequestsAreSupported([{ findReplace: { find: 'secret' } }])).toBe(false);
-    expect(sheetsRequestsAreSupported([{ addSheet: {}, deleteSheet: {} }])).toBe(false);
-
+  it('sends structural batches to the Google batchUpdate endpoint', async () => {
     let body = '';
     const fetch: GoogleFetch = (_url, init) => {
       body = String(init?.body);

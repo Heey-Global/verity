@@ -31,23 +31,23 @@ flow can narrow authorization to files selected under `drive.file`.
 
 ### Docs
 
-The Docs tool exposes document inspection, bounded reads, and an allowlisted batch-edit vocabulary
-for text, paragraph styles, lists, page breaks, and tables. Docs content uses UTF-16 indices, so
-edits planned from document state require the revision returned by the preceding read. Google
-rejects the batch if the document changed before the write.
+The Docs tool exposes document inspection, bounded reads, and Google's full batch-edit vocabulary.
+Docs content uses UTF-16 indices, so edits require the revision returned by the preceding read.
+Google rejects the batch if the document changed before the write.
 
 ### Sheets
 
 The Sheets tool reads metadata first and only reads or writes explicit bounded A1 ranges. It
-supports value replacement, range clearing, and an allowlisted set of sheet and dimension changes.
+supports value replacement, range clearing, and Google's full structural batch-update vocabulary.
 Google's append API can place values outside the supplied lookup range when it detects an offset
-table, so table appends are deliberately excluded. Payload size, range size, and request count are
-capped.
+table, so table appends are deliberately excluded. Direct value payloads and ranges, batch payload
+size, and request count are capped. Structural operations may address larger areas because their
+effect is represented by a small Google request rather than transferring every affected cell.
 
 Sheets has no revision guard equivalent to Slides or Docs. The tool therefore rechecks the active
-assignment immediately before each mutation, uses an invocation fence for retries, and limits its
-vocabulary to explicit range operations and stable sheet identifiers. Concurrent changes inside
-the same target range can still race; Verity does not claim serializable spreadsheet edits.
+assignment immediately before each mutation and uses an invocation fence for retries. Concurrent
+changes inside the same target range can still race; Verity does not claim serializable spreadsheet
+edits.
 
 ### User interface
 
