@@ -55,7 +55,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   var isActive: Bool {
     lock.lock()
     defer { lock.unlock() }
-    return !stopped && listener != nil
+    return !stopped && listener != nil && usedIds.count < 4_096
   }
 
   init(dataURL: URL, coreURL: URL) throws {
@@ -205,12 +205,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
         data.count <= 64 * 1024
       else { throw RemoteSmokeError.invalidFrame }
       stream.incomingSequence += 1
-      try await write(data, to: stream.connection)
+      do { try await write(data, to: stream.connection) }
+      catch { await reset(id, code: "upstream_error") }
     case "stream.end":
       guard Set(frame.keys) == Set(["type", "streamId"]), !stream.incomingEnded
       else { throw RemoteSmokeError.invalidFrame }
       stream.incomingEnded = true
-      try await write(Data(), to: stream.connection, complete: true)
+      do { try await write(Data(), to: stream.connection, complete: true) }
+      catch {
+        await reset(id, code: "upstream_error")
+        return
+      }
       finish(id, stream)
     case "stream.reset":
       guard Set(frame.keys) == Set(["type", "streamId", "code"]),
@@ -226,12 +231,21 @@ final class RemoteAppTunnel: @unchecked Sendable {
     if stream.incomingEnded && stream.outgoingEnded { drop(id) }
   }
 
-  private func drop(_ id: String) {
+  @discardableResult
+  private func drop(_ id: String) -> Bool {
     lock.lock()
     let stream = streams.removeValue(forKey: id)
+    let exhausted = stream != nil && usedIds.count >= 4_096 && streams.isEmpty
     lock.unlock()
     stream?.worker?.cancel()
     stream?.connection.cancel()
+    if exhausted { stop() }
+    return stream != nil
+  }
+
+  private func reset(_ id: String, code: String) async {
+    guard drop(id) else { return }
+    try? await writer.send(["type": "stream.reset", "streamId": id, "code": code])
   }
 
   private func accept(_ connection: NWConnection) async {
@@ -286,11 +300,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       stream.worker = Task { [weak self] in
         guard let self else { return }
         do { try await self.pumpLocal(stream, id: id) }
-        catch {
-          self.drop(id)
-          try? await self.writer.send(["type": "stream.reset", "streamId": id,
-            "code": "upstream_error"])
-        }
+        catch { await self.reset(id, code: "upstream_error") }
       }
     } catch {
       if let openedId { drop(openedId) }
