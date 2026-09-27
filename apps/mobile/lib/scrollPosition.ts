@@ -26,8 +26,8 @@ const LATEST_EDGE_TOLERANCE_PX = 8;
 /** A visible row's top may sit a hair below the scroll offset because of fractional
  * layout rounding; anything beyond that means the index is not the visible row. */
 const ANCHOR_CAPTURE_TOLERANCE_PX = 1;
-/** Keep two screens of older history ready before the reader reaches the edge. */
-const HISTORY_PREFETCH_VIEWPORTS = 2;
+/** Keep four screens of older history ready before the reader reaches the edge. */
+const HISTORY_PREFETCH_VIEWPORTS = 4;
 
 /** Marks anchors written in the newest-first system, so anchors persisted by the
  * previous chronological layout are recognised and repositioned by row identity
@@ -106,7 +106,7 @@ export function isOldestRowViewable(oldestVisibleIndex: number, rowCount: number
 }
 
 /**
- * Whether fewer than two screens of older history remain. Before layout measurements
+ * Whether fewer than four screens of older history remain. Before layout measurements
  * arrive, the oldest viewable index is the reliable fallback.
  */
 export function isHistoryEdgeVisible(
