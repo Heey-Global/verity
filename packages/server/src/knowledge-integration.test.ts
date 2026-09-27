@@ -1,6 +1,6 @@
 import { createAuthTokenRegistry } from './auth.js';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -119,8 +119,13 @@ async function setup() {
         statusCode: response.statusCode,
       });
     const envelope = JSON.parse(response.body) as {
-      result: { isError?: boolean; content: { text: string }[] };
+      result?: { isError?: boolean; content: { text: string }[] };
+      error?: { code: number; message: string };
     };
+    if (envelope.result === undefined)
+      throw Object.assign(new Error(envelope.error?.message ?? 'Missing tool result'), {
+        rpcCode: envelope.error?.code,
+      });
     return envelope.result;
   };
   return {
@@ -177,9 +182,8 @@ it('refuses the retired managed-library operations even where a grant would allo
       { operation: 'create', folderId: folder.id, title: 'New.md', bodyMarkdown: 'text' },
     ]) {
       // An unknown operation fails argument validation, which the gateway answers
-      // as a JSON-RPC error carrying no tool result at all.
-      const result = (await h.agent(request)) as { isError?: boolean } | undefined;
-      expect(result === undefined || result.isError === true).toBe(true);
+      // as a JSON-RPC invalid-params error rather than a tool result.
+      await expect(h.agent(request)).rejects.toMatchObject({ rpcCode: -32602 });
     }
     expect(await ctx.store.knowledge.listDocuments({ folderId: folder.id })).toHaveLength(1);
     expect(await ctx.store.knowledge.hasSessionKnowledgeExposure('s')).toBe(false);
@@ -211,14 +215,18 @@ it('keeps management APIs behind device authentication and returns bounded valid
     });
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json()).toMatchObject({ code: 'invalid' });
+    // The insight exists, so the publication could only fail on the caller.
+    const projectInsights = join(h.dataRoot, 'knowledge/p/insights');
+    mkdirSync(projectInsights, { recursive: true });
+    writeFileSync(join(projectInsights, 'profile.md'), '# Distilled profile\n');
     const forged = h.tokens.issue({
       projectId: 'p',
       sessionId: 'nonexistent-session',
       turnId: 'forged-turn',
     });
-    expect(
-      (await h.agent({ operation: 'publish_shared', path: 'profile.md' }, forged)).isError,
-    ).toBe(true);
+    const refused = await h.agent({ operation: 'publish_shared', path: 'profile.md' }, forged);
+    expect(refused.isError).toBe(true);
+    expect(existsSync(join(h.dataRoot, 'knowledge/shared/insights/profile.md'))).toBe(false);
   } finally {
     await h.close();
   }

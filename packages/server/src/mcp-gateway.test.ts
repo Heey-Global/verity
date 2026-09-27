@@ -947,7 +947,7 @@ describe('MCP gateway — the session handoff cannot bypass the card', () => {
   });
 });
 
-it('serves knowledge through standing grants with trusted caller identity and no permission card', async () => {
+it('serves Shared publication with trusted caller identity and no permission card', async () => {
   const h = harness({
     servedTools: ['verity_knowledge'],
     hasStandingAuthorization: async ({ toolName }) => toolName === 'verity_knowledge',
