@@ -100,6 +100,10 @@ import {
 } from './docker.js';
 import {
   defaultContainerCommandRunner,
+  NODE_MODULES_INSTALL_ENV,
+  NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS,
+  NODE_MODULES_INSTALL_WAIT_COMMAND,
+  underNodeModulesInstallLock,
   type ContainerCommandRunner,
 } from './devcontainer-lifecycle.js';
 export {
@@ -5307,6 +5311,12 @@ export class ProvisionerImpl implements Provisioner {
     // pnpm project recreated onto it would lose working dependencies until someone
     // noticed and installed by hand.
     let nodeModules: { volume: string; annotations: Record<string, string> } | undefined;
+    // A devcontainer that mounts node_modules itself owns what goes in there, and
+    // installs it in its own postCreateCommand; the Runner's install stays out of
+    // that volume instead of writing the same tree a second time.
+    const devcontainerOwnsNodeModules =
+      runnerRuntimePath !== undefined &&
+      hasMountAtTarget(specBinds, volumeMounts, NODE_MODULES_TARGET);
     if (
       runnerRuntimePath !== undefined &&
       this.opts.docker.ensureVolume !== undefined &&
@@ -5374,6 +5384,7 @@ export class ProvisionerImpl implements Provisioner {
               `VERITY_AGENT_GID=${String(RUNNER_AGENT_GID)}`,
             ]
           : []),
+        ...(devcontainerOwnsNodeModules ? [`${NODE_MODULES_INSTALL_ENV}=0`] : []),
         // Claude Code: ask it to skip its own bubblewrap bash sandbox since THIS
         // container already is the sandbox. NOTE: in practice this hint is not
         // honored reliably — wherever `bwrap` is on PATH, Claude spawns it before
@@ -5660,10 +5671,32 @@ export class ProvisionerImpl implements Provisioner {
             provisionWarning,
           )) as ProjectRecord;
         }
+        if (runnerRuntimePath !== undefined) {
+          // The Runner stack start above may have left the node_modules install
+          // running in the background. Let it finish (or run it) first, as the
+          // agent it installs as. Dependencies are a convenience and never fail
+          // the provision; a wedged install surfaces as the lock timeout below.
+          await this.containerCommand({
+            containerName: dirs.containerName,
+            command: NODE_MODULES_INSTALL_WAIT_COMMAND,
+            dockerHost: this.opts.dockerHostForBuild,
+            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
+            workdir: '/work',
+            timeoutMs: NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS * 1000,
+          }).catch(() => undefined);
+        }
         lifecycleFailureLabel = 'postCreateCommand';
         await this.containerCommand({
           containerName: dirs.containerName,
-          command: devcontainerRuntime.postCreateCommand,
+          // Held against an install a later stack start (a wake, a Server
+          // restart) could begin meanwhile; see underNodeModulesInstallLock.
+          command:
+            runnerRuntimePath !== undefined
+              ? underNodeModulesInstallLock(
+                  devcontainerRuntime.postCreateCommand,
+                  NODE_MODULES_TARGET,
+                )
+              : devcontainerRuntime.postCreateCommand,
           dockerHost: this.opts.dockerHostForBuild,
           user: devcontainerRuntime.remoteUser,
           workdir: '/work',

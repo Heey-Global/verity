@@ -11,13 +11,23 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  NODE_MODULES_INSTALL_COMPLETE_MARKER,
+  NODE_MODULES_INSTALL_ENV,
+  underNodeModulesInstallLock,
+} from './devcontainer-lifecycle.js';
 
 const SCRIPT = 'features/verity-sandbox-toolkit/bin/verity-node-modules-install';
 const LAUNCHER = 'features/verity-sandbox-toolkit/bin/verity-runner-stack-start';
 
 /** A /work stand-in plus an `npm` on PATH that records how it was called and
  *  behaves like `npm ci`: it empties node_modules first, then installs. */
-function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean }) {
+function sandbox(opts: {
+  lockfile: boolean;
+  npmExit?: number;
+  flock?: boolean;
+  extraEnv?: Record<string, string>;
+}) {
   const root = mkdtempSync(join(tmpdir(), 'verity-nm-install-'));
   const work = join(root, 'work');
   const state = join(root, 'state');
@@ -46,16 +56,38 @@ function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean })
     HOME: root,
     VERITY_NODE_MODULES_WORK: work,
     VERITY_NODE_MODULES_STATE_DIR: state,
+    ...opts.extraEnv,
   };
   const run = () => execFileSync('bash', [SCRIPT], { env });
-  /** Runs the script while another holder already has its lock. */
+  /** Runs the script inside a postCreateCommand holding the lock the
+   *  provisioner wraps it in, which is also what a second install sees. */
   const runLocked = () => {
-    mkdirSync(state, { recursive: true });
-    execFileSync('flock', [join(state, 'lock'), 'bash', SCRIPT], { env });
+    execFileSync(
+      'sh',
+      ['-c', underNodeModulesInstallLock(`bash ${SCRIPT}`, join(work, 'node_modules'))],
+      { env },
+    );
+  };
+  /** Runs `--wait` while another install holds node_modules for a moment. */
+  const runWaitingBehindInstall = () => {
+    const modules = join(work, 'node_modules');
+    execFileSync(
+      'bash',
+      [
+        '-c',
+        [
+          `flock '${modules}' sh -c "sleep 1; echo held >>'${calls}'" &`,
+          'sleep 0.2',
+          `bash '${SCRIPT}' --wait`,
+          'wait',
+        ].join('\n'),
+      ],
+      { env },
+    );
   };
   const status = () => readFileSync(join(state, 'status'), 'utf8').trim();
   const npmCalls = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []);
-  return { work, state, run, runLocked, status, npmCalls };
+  return { work, state, run, runLocked, runWaitingBehindInstall, status, npmCalls };
 }
 
 /** A PATH directory with just the tools the script uses, minus flock. */
@@ -94,11 +126,44 @@ describe('verity-node-modules-install', () => {
   });
 
   it('never runs a second install beside one already in progress', () => {
-    // A wake and a Server restart both re-run the launcher. Two concurrent `npm ci`
-    // runs each start by emptying the tree the other is writing.
+    // A wake and a Server restart both re-run the launcher, and the provisioner runs
+    // a devcontainer postCreateCommand (usually `npm ci`) right after it. Two
+    // concurrent `npm ci` runs each start by emptying the tree the other is writing,
+    // and fail with ENOTEMPTY. Held through the provisioner's own wrapper, so the
+    // two cannot drift onto different locks.
     const box = sandbox({ lockfile: true });
     box.runLocked();
     expect(box.npmCalls()).toEqual([]);
+  });
+
+  it('stays out of a node_modules volume the devcontainer mounts itself', () => {
+    // That project installs in its own postCreateCommand; a second install into the
+    // same volume raced it into ENOTEMPTY on every start and repair.
+    for (const wait of [false, true]) {
+      const box = sandbox({ lockfile: true, extraEnv: { [NODE_MODULES_INSTALL_ENV]: '0' } });
+      if (wait) box.runWaitingBehindInstall();
+      else box.run();
+      expect(box.npmCalls().filter((call) => call !== 'held')).toEqual([]);
+      expect(box.status()).toMatch(/^skipped: the devcontainer mounts node_modules itself/);
+    }
+  });
+
+  it('with --wait, installs only after an install in progress has let go', () => {
+    // The provisioner's call before a postCreateCommand: stepping aside like the
+    // background start does would hand that command an empty node_modules.
+    const box = sandbox({ lockfile: true });
+    box.runWaitingBehindInstall();
+    expect(box.npmCalls()).toEqual(['held', `${box.work}|ci --no-audit --no-fund`]);
+    expect(box.status()).toBe('ready');
+  });
+
+  it('writes the completion marker the postCreateCommand wrapper restores', () => {
+    // Two spellings of one file name: a drift would reinstall on every start.
+    const box = sandbox({ lockfile: true });
+    box.run();
+    expect(existsSync(join(box.work, 'node_modules', NODE_MODULES_INSTALL_COMPLETE_MARKER))).toBe(
+      true,
+    );
   });
 
   it('starts over after an install that never finished', () => {
@@ -208,5 +273,74 @@ describe('verity-runner-stack-start node_modules hand-over', () => {
         '/usr/local/bin/verity-node-modules-install',
       );
     }
+  });
+});
+
+describe('underNodeModulesInstallLock', () => {
+  function dirs() {
+    const root = mkdtempSync(join(tmpdir(), 'verity-nm-lock-'));
+    const modules = join(root, 'node_modules');
+    mkdirSync(modules);
+    return { root, modules, log: join(root, 'log') };
+  }
+
+  it('waits for an install still holding node_modules before running', () => {
+    // The Runner stack start returns while its `npm ci` is still running; the
+    // postCreateCommand must start only after it has finished.
+    const { root, modules, log } = dirs();
+    const wrapped = join(root, 'post-create.sh');
+    writeFileSync(wrapped, underNodeModulesInstallLock(`echo command >>'${log}'`, modules));
+    execFileSync('bash', [
+      '-c',
+      [
+        `flock '${modules}' sh -c "sleep 1; echo install >>'${log}'" &`,
+        'sleep 0.2',
+        `sh '${wrapped}'`,
+        'wait',
+      ].join('\n'),
+    ]);
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['install', 'command']);
+  });
+
+  it('passes the command through unchanged, exit code included', () => {
+    const { modules } = dirs();
+    const run = (command: string) => {
+      try {
+        execFileSync('sh', ['-c', underNodeModulesInstallLock(command, modules)], {
+          encoding: 'utf8',
+        });
+        return 0;
+      } catch (error) {
+        return (error as { status: number }).status;
+      }
+    };
+    expect(run("test \"$(printf '%s' 'a b')\" = 'a b'")).toBe(0);
+    expect(run('exit 42')).toBe(42);
+  });
+
+  it('restores the completion marker only after a command that reinstalled and succeeded', () => {
+    // `npm ci` in the command empties node_modules, the install's marker included;
+    // without it back, the next start reinstalls a complete tree.
+    const outcome = (command: string) => {
+      const { root, modules } = dirs();
+      try {
+        execFileSync('sh', ['-c', underNodeModulesInstallLock(command, modules)], { cwd: root });
+      } catch {
+        // The exit code is covered above; only the marker matters here.
+      }
+      return existsSync(join(modules, NODE_MODULES_INSTALL_COMPLETE_MARKER));
+    };
+    expect(outcome('touch node_modules/.package-lock.json')).toBe(true);
+    expect(outcome('touch node_modules/.package-lock.json; exit 1')).toBe(false);
+    expect(outcome('true')).toBe(false);
+  });
+
+  it('runs the command as before when there is no node_modules directory', () => {
+    // flock would otherwise create a plain file named node_modules in its place.
+    const { root, log } = dirs();
+    const missing = join(root, 'absent');
+    execFileSync('sh', ['-c', underNodeModulesInstallLock(`echo ran >>'${log}'`, missing)]);
+    expect(readFileSync(log, 'utf8').trim()).toBe('ran');
+    expect(existsSync(missing)).toBe(false);
   });
 });

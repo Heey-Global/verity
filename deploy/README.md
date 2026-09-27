@@ -862,7 +862,16 @@ exclusivity is sound because nothing outside the Sandbox writes that volume.
   `/tmp/verity-node-modules/status` and the npm output in
   `/tmp/verity-node-modules/install.log` inside the Sandbox. Anything the script
   cannot do itself (no `npm` or `flock` in the image) is reported there as
-  `manual:`.
+  `manual:`. With a devcontainer `postCreateCommand`, the provisioner first
+  lets that install finish (`verity-node-modules-install --wait`), then runs the
+  command under the same lock (a `flock` on `/work/node_modules` itself). One
+  that installs too, such as `npm ci`, therefore never races the install into
+  `ENOTEMPTY`, and one that does not still finds dependencies in place.
+- **A devcontainer's own `node_modules` volume is left to it.** When
+  `devcontainer.json` mounts something at `node_modules` itself, Verity creates
+  no volume and sets `VERITY_NODE_MODULES_INSTALL=0` in the Sandbox, so
+  `verity-node-modules-install` reports `skipped:` and the project's
+  `postCreateCommand` is the only install into that volume.
 - **Requires Engine API 1.43+** (Docker 24+) for `HostConfig.Annotations`, which
   carries the hint. The default unversioned `unix:///var/run/docker.sock` uses the
   daemon's newest API. A `VERITY_DOCKER_BASE_URL` pinned to an older API version drops the

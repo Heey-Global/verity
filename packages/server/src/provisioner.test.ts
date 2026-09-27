@@ -42,6 +42,8 @@ import {
   projectNetworkName,
   projectNodeModulesVolumeName,
   NODE_MODULES_TARGET,
+  RUNNER_AGENT_GID,
+  RUNNER_AGENT_UID,
   devcontainerBuildArgs,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
@@ -62,6 +64,11 @@ import {
   type DevcontainerBuildSpawner,
   type ContainerCommandRunner,
 } from './provisioner.js';
+import {
+  NODE_MODULES_INSTALL_ENV,
+  NODE_MODULES_INSTALL_WAIT_COMMAND,
+  underNodeModulesInstallLock,
+} from './devcontainer-lifecycle.js';
 import {
   DockerError,
   type DockerClient,
@@ -2734,6 +2741,10 @@ describe('ProvisionerImpl (#174)', () => {
         volume: projectNodeModulesVolumeName(id),
         target: NODE_MODULES_TARGET,
       });
+      // Nothing else fills this volume: switching the install off here leaves it empty.
+      expect(spec.env ?? []).not.toContainEqual(
+        expect.stringMatching(/^VERITY_NODE_MODULES_INSTALL=/),
+      );
       // The hint has to name what the daemon reported, not a path derived from the
       // volume name: data-root is a daemon setting the Server cannot see.
       expect(spec.annotations).toEqual({
@@ -3004,6 +3015,51 @@ describe('ProvisionerImpl (#174)', () => {
         spec.volumeMounts?.filter((mount) => mount.target === NODE_MODULES_TARGET) ?? [],
       ).toEqual([]);
       expect(ensureVolume).not.toHaveBeenCalled();
+      // The volume is the project's, and so is installing into it: the Runner's
+      // install stays out rather than writing the same tree a second time.
+      expect(spec.env).toContain(`${NODE_MODULES_INSTALL_ENV}=0`);
+    });
+
+    it('runs the postCreateCommand under the node_modules install lock the stack start uses', async () => {
+      // verity-runner-stack-start leaves `npm ci` running in the background over a
+      // mounted node_modules and returns; a postCreateCommand that installs as well
+      // raced it into ENOTEMPTY and failed every provision and every repair. The
+      // devcontainer's own volume is the reported case, and gets no managed one.
+      const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+        stdout: '',
+        stderr: '',
+      }));
+      const { error, warning } = await recreateDevcontainerProject(
+        false,
+        { containerCommand },
+        JSON.stringify({
+          image: 'node:24',
+          remoteUser: 'vscode',
+          mounts: [
+            'source=project-dependencies,target=${containerWorkspaceFolder}/node_modules,type=volume',
+          ],
+          postCreateCommand: 'npm ci',
+        }),
+      );
+
+      expect(error).toBeUndefined();
+      expect(warning).toBeNull();
+      const calls = containerCommand.mock.calls.map(([args]) => args);
+      const commands = calls.map((args) => args.command);
+      const stackStart = commands.indexOf('verity-runner-stack-start');
+      const wait = commands.indexOf(NODE_MODULES_INSTALL_WAIT_COMMAND);
+      const postCreate = commands.indexOf(
+        underNodeModulesInstallLock('npm ci', NODE_MODULES_TARGET),
+      );
+      // The dependencies are in place before the command runs, whatever it does
+      // itself: one that only holds the lock would otherwise make the background
+      // install step aside and leave node_modules empty.
+      expect(stackStart).toBeGreaterThanOrEqual(0);
+      expect(wait).toBeGreaterThan(stackStart);
+      expect(postCreate).toBeGreaterThan(wait);
+      // As the agent the background install runs as, or its tree is unwritable.
+      expect(calls[wait]?.user).toBe(`${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`);
+      expect(commands).not.toContain('npm ci');
     });
 
     it('enables the supervisor for an image Verity did not build once it proves the boundary', async () => {
@@ -6982,14 +7038,14 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         `{
           "image": "node:24-bookworm",
           "remoteUser": "node",
-          "workspaceFolder": "/workspaces/cl-saikandi-website",
+          "workspaceFolder": "/workspaces/example-app",
           "forwardPorts": [3000],
           "appPort": [3000],
           "portsAttributes": {
             "3000": { "label": "Next.js dev server", "onAutoForward": "notify" }
           },
           "mounts": [
-            "source=cl-saikandi-node-modules,target=\${containerWorkspaceFolder}/node_modules,type=volume"
+            "source=example-app-node-modules,target=\${containerWorkspaceFolder}/node_modules,type=volume"
           ],
           "postCreateCommand": "sudo chown node:node node_modules && npm ci"
         }`,
@@ -7020,7 +7076,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const created = dockerCalls.find((c) => c.method === 'createContainer');
       const spec = created?.payload as ContainerSpec;
       expect(spec.user).toBe('node');
-      expect(spec.binds).toContain('cl-saikandi-node-modules:/work/node_modules');
+      expect(spec.binds).toContain('example-app-node-modules:/work/node_modules');
       expect(spec.binds).toContain(`${clonePath}:/work`);
       expect(command).toHaveBeenCalledWith(
         expect.objectContaining({

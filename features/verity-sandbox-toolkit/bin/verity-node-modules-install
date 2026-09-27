@@ -26,16 +26,35 @@ report() {
   printf '%s\n' "$1" >"$STATUS.$$" && mv -f "$STATUS.$$" "$STATUS"
 }
 
+# The provisioner sets this when the devcontainer mounts node_modules itself: the
+# project installs into its own volume, and a second install here would only race
+# it (ENOTEMPTY) or repeat it.
+if [ "${VERITY_NODE_MODULES_INSTALL:-1}" = '0' ]; then
+  report 'skipped: the devcontainer mounts node_modules itself and installs into it'
+  exit 0
+fi
+
 # A wake and a Server restart both re-run the stack launcher; a second install
-# racing the first would have `npm ci` empty the tree the first is writing.
+# racing the first would have `npm ci` empty the tree the first is writing. The
+# provisioner runs a devcontainer postCreateCommand under the same lock
+# (underNodeModulesInstallLock), because that command usually installs too. The
+# lock is node_modules itself: the mount point, so `npm ci` never removes it, and
+# openable by that command whichever user it runs as.
 # Checked first: `flock -n` failing with 127 would read as "held" and end every
 # start silently, which is the one outcome this script exists to prevent.
 if ! command -v flock >/dev/null 2>&1; then
   report 'manual: flock is not installed; run npm ci in /work'
   exit 0
 fi
-exec 9>"$STATE_DIR/lock" || exit 1
-flock -n 9 || exit 0
+exec 9<"$MODULES" || exit 1
+# --wait is the provisioner's call before a devcontainer postCreateCommand: that
+# command must find finished dependencies, so it waits for an install already
+# running instead of leaving it to the background one.
+if [ "${1:-}" = '--wait' ]; then
+  flock 9 || exit 1
+else
+  flock -n 9 || exit 0
+fi
 
 # npm can write its hidden lockfile before lifecycle scripts finish. Our marker is
 # written only after the whole command succeeds, so an interrupted prepare or

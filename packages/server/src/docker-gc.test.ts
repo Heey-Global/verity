@@ -211,19 +211,19 @@ describe('planImageSweep', () => {
   });
 
   it('matches the tags the provisioner actually mints', () => {
-    const tag = devcontainerImageTag('Heey-Global', 'cl-saikandi-website', 'abcdef123456');
+    const tag = devcontainerImageTag('Example-Org', 'example-app', 'abcdef123456');
     const images = [
       image({ id: 'sha256:keep', repoTags: [tag], created: 200 }),
       image({
         id: 'sha256:drop',
-        repoTags: [devcontainerImageTag('Heey-Global', 'cl-saikandi-website', '0123456789ab')],
+        repoTags: [devcontainerImageTag('Example-Org', 'example-app', '0123456789ab')],
         created: 100,
       }),
     ];
     const plan = planImageSweep({ images, inUseImageIds: new Set(), keepPerRepo: 1 });
     expect(tag.startsWith(DEVCONTAINER_IMAGE_PREFIX)).toBe(true);
     expect(plan.map((entry) => entry.ref)).toEqual([
-      devcontainerImageTag('Heey-Global', 'cl-saikandi-website', '0123456789ab'),
+      devcontainerImageTag('Example-Org', 'example-app', '0123456789ab'),
     ]);
   });
 
@@ -271,7 +271,7 @@ describe('planVolumeSweep', () => {
     const volumes = [
       volume({ name: 'verity-data', createdAt: '2026-01-01T00:00:00Z' }),
       volume({ name: 'verity_verity-db', createdAt: '2026-01-01T00:00:00Z' }),
-      volume({ name: 'cl-saikandi-node-modules', createdAt: '2026-01-01T00:00:00Z' }),
+      volume({ name: 'example-app-node-modules', createdAt: '2026-01-01T00:00:00Z' }),
       volume({ name: anonName('e').toUpperCase(), createdAt: '2026-01-01T00:00:00Z' }),
     ];
     expect(planVolumeSweep({ volumes, nowMs, minAgeMs: 0 })).toEqual([]);
