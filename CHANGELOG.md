@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.12.0](https://github.com/Heey-Global/verity/compare/v2.11.0...v2.12.0) (2026-09-27)
+
+
+### Features
+
+* **mobile:** connect paired devices through Uplink remote control ([#821](https://github.com/Heey-Global/verity/issues/821)) ([aa14320](https://github.com/Heey-Global/verity/commit/aa143201dd9338caa3238aba615fa572ced8a29f))
+
 ## [2.11.0](https://github.com/Heey-Global/verity/compare/v2.10.0...v2.11.0) (2026-09-27)
 
 
