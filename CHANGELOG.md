@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.0](https://github.com/Heey-Global/verity/compare/v2.12.0...v2.13.0) (2026-09-27)
+
+
+### Features
+
+* **slides:** insert images from session worktree ([#829](https://github.com/Heey-Global/verity/issues/829)) ([4d5c457](https://github.com/Heey-Global/verity/commit/4d5c457099b18349df3c4d75bff6b80965c7d768))
+
 ## [2.12.0](https://github.com/Heey-Global/verity/compare/v2.11.0...v2.12.0) (2026-09-27)
 
 
