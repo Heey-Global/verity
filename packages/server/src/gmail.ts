@@ -720,7 +720,54 @@ export async function sendGmailDraft(
     },
     fetchImpl,
   );
-  return { messageId: sent.id, threadId: sent.threadId, draftRetained: true };
+  // The approved snapshot is sent independently of the mutable Gmail draft. Only remove
+  // the draft if a fresh read still matches what was approved.
+  let draftRetained = true;
+  let draftCleanup: 'changed' | 'failed' | undefined;
+  try {
+    const current = await readGmailDraftForSend(accessToken, approved.draftId, fetchImpl);
+    const fields: (keyof GmailDraftSendSnapshot)[] = [
+      'draftId',
+      'messageId',
+      'to',
+      'cc',
+      'bcc',
+      'subject',
+      'body',
+      'from',
+      'replyTo',
+      'htmlBody',
+      'externalUrls',
+      'threadId',
+      'inReplyTo',
+      'references',
+    ];
+    if (
+      fields.some((field) => JSON.stringify(current[field]) !== JSON.stringify(approved[field]))
+    ) {
+      draftCleanup = 'changed';
+    } else {
+      const response = await fetchImpl(
+        `${GMAIL_API}/drafts/${encodeURIComponent(approved.draftId)}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+      if (!response.ok && response.status !== 404)
+        throw new GmailError('Gmail draft deletion failed', response.status);
+      draftRetained = false;
+    }
+  } catch (error) {
+    if (error instanceof GmailError && error.status === 404) draftRetained = false;
+    else draftCleanup = 'failed';
+  }
+  return {
+    messageId: sent.id,
+    threadId: sent.threadId,
+    draftRetained,
+    ...(draftCleanup === undefined ? {} : { draftCleanup }),
+  };
 }
 import { createHash } from 'node:crypto';
 import sanitizeHtml from 'sanitize-html';

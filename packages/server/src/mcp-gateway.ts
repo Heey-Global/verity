@@ -378,7 +378,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or structural operations.',
   verity_gmail:
-    'Search and read Gmail, create drafts, or send the approved plain-text snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. The original Gmail draft is retained after sending. Use Gmail search syntax; read the thread before drafting a reply.',
+    'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:
     'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
 };
