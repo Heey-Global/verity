@@ -3380,7 +3380,9 @@ describe('Actions cache budget', () => {
         (site) =>
           site.triggers.includes('pull_request') &&
           site.to !== '' &&
-          !site.to.includes("github.event_name != 'pull_request' && 'type=gha"),
+          // Further `&&` conditions may narrow it (server-image exports from one
+          // matrix leg only); an `||` before the cache string would bypass it.
+          !/github\.event_name != 'pull_request' &&[^|]*'type=gha/.test(site.to),
       )
       .map((site) => site.id);
     expect(offenders).toEqual([]);
@@ -3719,16 +3721,31 @@ describe('server image CI smoke', () => {
     jobs: {
       'server-image': {
         env: Record<string, string>;
+        strategy: { matrix: { include: { installer: string }[] } };
         steps: WorkflowStep[];
       };
     };
   };
   const job = workflow.jobs['server-image'];
+  const legs = job.strategy.matrix.include.map((leg) => leg.installer);
   const build = job.steps.find((step) => step.name === 'Build Verity server image');
   const smoke = job.steps.find((step) => step.name === 'Smoke-test Verity server image');
   const cleanInstall = job.steps.find(
     (step) => step.name === 'Verify clean Compose installation on an empty Docker host',
   );
+
+  it('runs every leg-gated step in a leg the matrix actually has', () => {
+    // A step gated on a leg that was renamed or dropped is skipped, and a skipped
+    // step is green: the installer acceptance, or the only cache export, would
+    // stop running without anything failing.
+    const gated = [
+      ...job.steps.map((step) => step.if ?? ''),
+      String(build?.with?.['cache-to'] ?? ''),
+    ].flatMap((condition) => [...condition.matchAll(/matrix\.installer == '([^']*)'/g)]);
+    expect(gated.length).toBeGreaterThan(0);
+    for (const [, leg] of gated) expect(legs).toContain(leg);
+    expect(cleanInstall?.if).toBe("matrix.installer == 'compose'");
+  });
 
   // The gha cache invariants for this step (scope, `ignore-error`, no write from
   // a PR ref) are asserted for every build step in the repo by the
@@ -3834,7 +3851,12 @@ describe('server image CI smoke', () => {
 
 describe('managed installer CI acceptance', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
-    jobs: { 'server-image': WorkflowJob & { env: Record<string, string> } };
+    jobs: {
+      'server-image': WorkflowJob & {
+        env: Record<string, string>;
+        strategy: { matrix: { include: { installer: string }[] } };
+      };
+    };
   };
   const job = workflow.jobs['server-image'];
   const step = job.steps.find((entry) =>
@@ -3843,9 +3865,10 @@ describe('managed installer CI acceptance', () => {
 
   it('runs the candidate through the installer in a separate disposable daemon', () => {
     // A green legacy Compose smoke does not exercise the managed installer.
-    // Keep its acceptance call unconditional in the candidate image job.
+    // It gets its own matrix leg of the candidate image job, and no other gate.
     expect(step).toBeDefined();
-    expect(step?.if).toBeUndefined();
+    expect(step?.if).toBe("matrix.installer == 'managed'");
+    expect(job.strategy.matrix.include.map((leg) => leg.installer)).toContain('managed');
     const run = step?.run ?? '';
     const legacyIndex = job.steps.findIndex((entry) =>
       entry.run?.includes('deploy/bin/verity-clean-install-smoke '),
