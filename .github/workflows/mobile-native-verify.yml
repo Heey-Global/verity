@@ -153,6 +153,15 @@ jobs:
           npm run -w @verity/mobile build
           npm run -w @verity/mobile-app typecheck
 
+      - name: Typecheck native Remote Control tunnel
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        run: |
+          xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+            apps/mobile/native/CertificatePinDelegate.swift \
+            apps/mobile/native/RemoteSmokeTunnel.swift \
+            apps/mobile/native/RemoteAppTunnel.swift \
+            scripts/remote-control-staging/StagingProbe.swift
+
       - name: Verify enrollment reference model and macOS Keychain probe
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.enrollment == 'true'
         timeout-minutes: 5
@@ -191,11 +200,6 @@ jobs:
         run: |
           node --test scripts/remote-control-tunnel/mock.test.mjs
           node --test scripts/remote-control-staging/probe.test.mjs
-          xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
-            apps/mobile/native/CertificatePinDelegate.swift \
-            apps/mobile/native/RemoteSmokeTunnel.swift \
-            apps/mobile/native/RemoteAppTunnel.swift \
-            scripts/remote-control-staging/StagingProbe.swift
           bash scripts/remote-control-tunnel/run-apple.sh macos
           bash scripts/remote-control-tunnel/run-apple.sh ios
 
@@ -208,6 +212,37 @@ jobs:
           VERITY_REMOTE_CORE_URL: ${{ inputs.core_url }}
           VERITY_REMOTE_CORE_PIN: ${{ inputs.core_pin }}
         run: bash scripts/remote-control-staging/run.sh
+
+      - name: Configure native compiler cache
+        if: needs.changes.outputs.compile == 'true'
+        id: compiler-cache
+        run: |
+          set -euo pipefail
+          command -v ccache >/dev/null || brew install ccache
+          toolchain="$( { xcodebuild -version; ccache --version; } | shasum -a 256 | cut -d ' ' -f 1)"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          {
+            echo "USE_CCACHE=1"
+            echo "CCACHE_DIR=$RUNNER_TEMP/verity-mobile-ccache"
+            echo "CCACHE_CONFIGPATH=$GITHUB_WORKSPACE/apps/mobile/build/ccache.conf"
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+          } >> "$GITHUB_ENV"
+
+      # Store compiler objects only. A fresh run id rolls the snapshot forward
+      # while the restore prefix still reuses objects from the previous run.
+      # renovate: datasource=github-actions depName=actions/cache
+      - name: Restore native compiler cache
+        if: needs.changes.outputs.compile == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/verity-mobile-ccache
+          key: mobile-ci-ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('package-lock.json', 'apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs', 'apps/mobile/app.config.ts') }}-${{ github.run_id }}
+          restore-keys: |
+            mobile-ci-ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('package-lock.json', 'apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs', 'apps/mobile/app.config.ts') }}-
+
+      - name: Reset native compiler cache statistics
+        if: needs.changes.outputs.compile == 'true'
+        run: ccache --zero-stats
 
       - name: Install CocoaPods
         if: needs.changes.outputs.compile == 'true'
@@ -231,3 +266,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      - name: Report native compiler cache statistics
+        if: needs.changes.outputs.compile == 'true'
+        run: ccache --show-stats --verbose >> "$GITHUB_STEP_SUMMARY"
