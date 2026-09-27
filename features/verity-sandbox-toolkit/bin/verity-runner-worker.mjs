@@ -3345,15 +3345,15 @@ var require_schemas = __commonJS({
         const syms = normalized.symbolKeys;
         const doc = new doc_js_1.Doc(["payload", "ctx"], { shape, inst, memo, syms });
         const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
-        const prefixStr = (id2, k) => `
-          let ${id2}_ab = false;
-          for (let i = 0; i < ${id2}.issues.length; i++) {
-            const iss = ${id2}.issues[i];
+        const prefixStr = (id, k) => `
+          let ${id}_ab = false;
+          for (let i = 0; i < ${id}.issues.length; i++) {
+            const iss = ${id}.issues[i];
             iss.path = iss.path ? [${k}, ...iss.path] : [${k}];
             payload.issues.push(iss);
-            if (iss.continue !== true) ${id2}_ab = true;
+            if (iss.continue !== true) ${id}_ab = true;
           }
-          if (${id2}_ab && ctx && ctx.abortEarly) {
+          if (${id}_ab && ctx && ctx.abortEarly) {
             payload.value = newResult;
             return payload;
           }`;
@@ -3367,34 +3367,34 @@ var require_schemas = __commonJS({
         for (const key of normalized.allKeys) {
           if (key === "__proto__")
             continue;
-          const id2 = ids[key];
+          const id = ids[key];
           const k = typeof key === "symbol" ? `syms[${syms.indexOf(key)}]` : util.esc(key);
           const isPresent = `${k} in input`;
           const schema = shape[key];
           const optin = schema?._zod?.optin;
           const isOptionalIn = optin !== void 0;
           const isOptionalOut = schema?._zod?.optout === "optional";
-          doc.write(`const ${id2} = ${parseStr(k)};`);
+          doc.write(`const ${id} = ${parseStr(k)};`);
           if (isOptionalIn && isOptionalOut) {
-            const assign = optin === "optional" ? `${id2}_present` : `${id2}.value !== undefined || ${id2}_present`;
+            const assign = optin === "optional" ? `${id}_present` : `${id}.value !== undefined || ${id}_present`;
             doc.write(`
-        const ${id2}_present = ${isPresent};
-        if (!${id2}.issues.length || ${id2}_present) {
-          if (${id2}.issues.length) {${prefixStr(id2, k)}
+        const ${id}_present = ${isPresent};
+        if (!${id}.issues.length || ${id}_present) {
+          if (${id}.issues.length) {${prefixStr(id, k)}
           }
 
           if (${assign}) {
-            newResult[${k}] = ${id2}.value;
+            newResult[${k}] = ${id}.value;
           }
         }
 
       `);
           } else if (!isOptionalIn) {
             doc.write(`
-        const ${id2}_present = ${isPresent};
-        if (${id2}.issues.length) {${prefixStr(id2, k)}
+        const ${id}_present = ${isPresent};
+        if (${id}.issues.length) {${prefixStr(id, k)}
         }
-        if (!${id2}_present && !${id2}.issues.length) {
+        if (!${id}_present && !${id}.issues.length) {
           payload.issues.push({
             code: "invalid_type",
             expected: "nonoptional",
@@ -3407,22 +3407,22 @@ var require_schemas = __commonJS({
           }
         }
 
-        if (${id2}_present) {
-          newResult[${k}] = ${id2}.value;
+        if (${id}_present) {
+          newResult[${k}] = ${id}.value;
         }
 
       `);
           } else {
             doc.write(`
-        if (${id2}.issues.length) {${prefixStr(id2, k)}
+        if (${id}.issues.length) {${prefixStr(id, k)}
         }
       `);
             if (optin === "defaulted") {
-              doc.write(`newResult[${k}] = ${id2}.value;`);
+              doc.write(`newResult[${k}] = ${id}.value;`);
             } else {
               doc.write(`
-        if (${id2}.value !== undefined || ${isPresent}) {
-          newResult[${k}] = ${id2}.value;
+        if (${id}.value !== undefined || ${isPresent}) {
+          newResult[${k}] = ${id}.value;
         }
       `);
             }
@@ -18224,26 +18224,26 @@ var require_to_json_schema = __commonJS({
         return;
       const idToSchema = /* @__PURE__ */ new Map();
       for (const entry of ctx.seen.entries()) {
-        const id2 = ctx.metadataRegistry.get(entry[0])?.id;
-        if (id2) {
-          const existing = idToSchema.get(id2);
+        const id = ctx.metadataRegistry.get(entry[0])?.id;
+        if (id) {
+          const existing = idToSchema.get(id);
           if (existing && existing !== entry[0]) {
-            throw new Error(`Duplicate schema id "${id2}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
+            throw new Error(`Duplicate schema id "${id}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
           }
-          idToSchema.set(id2, entry[0]);
+          idToSchema.set(id, entry[0]);
         }
       }
       const makeURI = (entry) => {
         const defsSegment = ctx.target === "draft-2020-12" ? "$defs" : "definitions";
         if (ctx.external) {
           const externalId = ctx.external.registry.get(entry[0])?.id;
-          const uriGenerator = ctx.external.uri ?? ((id3) => id3);
+          const uriGenerator = ctx.external.uri ?? ((id2) => id2);
           if (externalId) {
             return { ref: uriGenerator(externalId) };
           }
-          const id2 = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
-          entry[1].defId = id2;
-          return { defId: id2, ref: `${uriGenerator("__shared")}#/${defsSegment}/${encodeJSONPointerSegment(id2)}` };
+          const id = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
+          entry[1].defId = id;
+          return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${encodeJSONPointerSegment(id)}` };
         }
         const uriPrefix = `#`;
         const defUriPrefix = `${uriPrefix}/${defsSegment}/`;
@@ -18291,8 +18291,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
             continue;
           }
         }
-        const id2 = ctx.metadataRegistry.get(entry[0])?.id;
-        if (id2) {
+        const id = ctx.metadataRegistry.get(entry[0])?.id;
+        if (id) {
           extractToDef(entry);
           continue;
         }
@@ -18525,10 +18525,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       } else {
       }
       if (ctx.external?.uri) {
-        const id2 = ctx.external.registry.get(schema)?.id;
-        if (!id2)
+        const id = ctx.external.registry.get(schema)?.id;
+        if (!id)
           throw new Error("Schema is missing an `id` property");
-        result2.$id = ctx.external.uri(id2);
+        result2.$id = ctx.external.uri(id);
       }
       assignProps(result2, root.defId ? root.schema : root.def ?? root.schema);
       const rootMetaId = ctx.metadataRegistry.get(schema)?.id;
@@ -19220,7 +19220,7 @@ var require_json_schema_processors = __commonJS({
       const values = json.enum ?? (json.const !== void 0 ? [json.const] : void 0);
       if (!numericType && !values?.some((v) => typeof v === "number"))
         return json;
-      const { minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, format, id: id2, ...rest } = json;
+      const { minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, format, id, ...rest } = json;
       if (rest.enum)
         rest.enum = rest.enum.map((v) => typeof v === "number" ? String(v) : v);
       else if (typeof rest.const === "number")
@@ -24617,37 +24617,7 @@ var FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
 
 // node_modules/@verity/events/dist/knowledge-tool.js
 var import_zod4 = __toESM(require_zod(), 1);
-var id = import_zod4.z.string().min(1).max(256);
-var title = import_zod4.z.string().trim().min(1).max(160);
-var bodyMarkdown = import_zod4.z.string().max(262144);
-var pagination = {
-  offset: import_zod4.z.number().int().min(0).optional(),
-  limit: import_zod4.z.number().int().min(1).max(100).optional()
-};
 var knowledgeToolRequestSchema = import_zod4.z.discriminatedUnion("operation", [
-  import_zod4.z.object({ operation: import_zod4.z.literal("list"), folderId: id.optional(), ...pagination }).strict(),
-  import_zod4.z.object({
-    operation: import_zod4.z.literal("search"),
-    query: import_zod4.z.string().trim().min(1).max(200),
-    folderId: id.optional(),
-    ...pagination
-  }).strict(),
-  import_zod4.z.object({ operation: import_zod4.z.literal("read"), documentId: id, revisionId: id.optional() }).strict(),
-  import_zod4.z.object({
-    operation: import_zod4.z.literal("read_original"),
-    documentId: id,
-    revisionId: id.optional(),
-    view: import_zod4.z.enum(["metadata", "preview", "original"]).optional(),
-    previewIndex: import_zod4.z.number().int().min(0).max(19).optional()
-  }).strict(),
-  import_zod4.z.object({ operation: import_zod4.z.literal("create"), folderId: id, title, bodyMarkdown }).strict(),
-  import_zod4.z.object({
-    operation: import_zod4.z.literal("edit"),
-    documentId: id,
-    expectedRevisionId: id,
-    title,
-    bodyMarkdown
-  }).strict(),
   import_zod4.z.object({
     operation: import_zod4.z.literal("publish_shared"),
     path: import_zod4.z.string().trim().min(1).max(512),
@@ -26556,8 +26526,8 @@ var RequestResponder = class {
   signal;
   finishRequest;
   didRespond = false;
-  constructor(id2, sendResult, signal = new AbortController().signal, finishRequest) {
-    this.id = id2;
+  constructor(id, sendResult, signal = new AbortController().signal, finishRequest) {
+    this.id = id;
     this.sendResult = sendResult;
     this.signal = signal;
     this.finishRequest = finishRequest;
@@ -26849,7 +26819,7 @@ var Connection = class {
     return this.sendWireMessage({ jsonrpc: "2.0", method, params });
   }
   prepareRequest(method, params, mapResponse, options = {}) {
-    const id2 = this.nextRequestId++;
+    const id = this.nextRequestId++;
     let cancel = () => {
     };
     const response = new Promise((resolve3, reject) => {
@@ -26869,7 +26839,7 @@ var Connection = class {
         }
         pendingResponse.cancellationSent = true;
         pendingResponse.cleanup?.();
-        void this.sendCancelRequest(id2).catch(() => {
+        void this.sendCancelRequest(id).catch(() => {
         });
       };
       options.cancellationSignal?.addEventListener("abort", cancel, {
@@ -26878,12 +26848,12 @@ var Connection = class {
       pendingResponse.cleanup = () => {
         options.cancellationSignal?.removeEventListener("abort", cancel);
       };
-      this.pendingResponses.set(id2, pendingResponse);
+      this.pendingResponses.set(id, pendingResponse);
     });
     response.catch(() => {
     });
     return {
-      message: { jsonrpc: "2.0", id: id2, method, params },
+      message: { jsonrpc: "2.0", id, method, params },
       response,
       cancel: () => cancel()
     };
@@ -28435,14 +28405,14 @@ function lifecycleSignalsFromMeta(meta) {
       continue;
     switch (value["type"]) {
       case "compaction": {
-        const id2 = nonEmptyString(value["id"]);
-        signals.push({ type: "compaction", ...id2 !== void 0 ? { id: id2 } : {} });
+        const id = nonEmptyString(value["id"]);
+        signals.push({ type: "compaction", ...id !== void 0 ? { id } : {} });
         break;
       }
       case "task": {
-        const id2 = nonEmptyString(value["id"]);
+        const id = nonEmptyString(value["id"]);
         const phase = value["phase"];
-        if (id2 === void 0 || phase !== "started" && phase !== "progress" && phase !== "ended") {
+        if (id === void 0 || phase !== "started" && phase !== "progress" && phase !== "ended") {
           break;
         }
         const toolUseId = nonEmptyString(value["toolUseId"]);
@@ -28450,7 +28420,7 @@ function lifecycleSignalsFromMeta(meta) {
         const status = nonEmptyString(value["status"]);
         signals.push({
           type: "task",
-          id: id2,
+          id,
           phase,
           ...toolUseId !== void 0 ? { toolUseId } : {},
           ...description !== void 0 ? { description } : {},
@@ -28683,31 +28653,31 @@ var AcpEventAdapter = class {
     return this.resolveToolName?.(tool) ?? toolName(tool, this.metaNamespace);
   }
   tool(tool) {
-    const id2 = tool.toolCallId;
-    const previous = this.snapshots.get(id2);
+    const id = tool.toolCallId;
+    const previous = this.snapshots.get(id);
     const snapshot = {
       ...previous,
       ...tool,
       _meta: tool._meta ?? previous?._meta
     };
-    this.snapshots.set(id2, snapshot);
-    const seen = this.emitted.get(id2) ?? /* @__PURE__ */ new Set();
-    this.emitted.set(id2, seen);
+    this.snapshots.set(id, snapshot);
+    const seen = this.emitted.get(id) ?? /* @__PURE__ */ new Set();
+    this.emitted.set(id, seen);
     const name = this.name(snapshot);
     const parent = this.parent(snapshot._meta);
     const events = [];
     if (!seen.has("start")) {
       seen.add("start");
-      events.push({ t: "tool_call_start", id: id2, name, parentToolId: parent });
+      events.push({ t: "tool_call_start", id, name, parentToolId: parent });
     }
     if (!seen.has("call") && snapshot.rawInput !== void 0) {
       seen.add("call");
-      events.push({ t: "tool_call", id: id2, name, input: snapshot.rawInput, parentToolId: parent });
+      events.push({ t: "tool_call", id, name, input: snapshot.rawInput, parentToolId: parent });
     }
     if (snapshot.status === "completed" || snapshot.status === "failed") {
-      this.pendingTerminal.add(id2);
+      this.pendingTerminal.add(id);
       if (hasToolOutput(snapshot, this.metaNamespace))
-        events.push(...this.finishTool(id2));
+        events.push(...this.finishTool(id));
     }
     return events;
   }
@@ -28723,13 +28693,13 @@ var AcpEventAdapter = class {
   }
   /** Emit terminal snapshots that never received a separate payload update. */
   flush() {
-    return [...this.pendingTerminal].flatMap((id2) => this.finishTool(id2));
+    return [...this.pendingTerminal].flatMap((id) => this.finishTool(id));
   }
-  finishTool(id2) {
-    const tool = this.snapshots.get(id2);
+  finishTool(id) {
+    const tool = this.snapshots.get(id);
     if (tool === void 0)
       return [];
-    const seen = this.emitted.get(id2) ?? /* @__PURE__ */ new Set();
+    const seen = this.emitted.get(id) ?? /* @__PURE__ */ new Set();
     if (seen.has("result"))
       return [];
     const name = this.name(tool);
@@ -28737,13 +28707,13 @@ var AcpEventAdapter = class {
     const events = [];
     if (!seen.has("call")) {
       seen.add("call");
-      events.push({ t: "tool_call", id: id2, name, input: tool.rawInput ?? {}, parentToolId: parent });
+      events.push({ t: "tool_call", id, name, input: tool.rawInput ?? {}, parentToolId: parent });
     }
     seen.add("result");
-    this.pendingTerminal.delete(id2);
+    this.pendingTerminal.delete(id);
     events.push({
       t: "tool_result",
-      id: id2,
+      id,
       output: toolOutput(tool, this.metaNamespace),
       isError: tool.status === "failed",
       parentToolId: parent
@@ -29449,8 +29419,8 @@ async function runAcpTurn(opts, profile) {
     timeout = setTimeout(() => stop(false), opts.timeoutMs);
   const onPermission = async (request2) => {
     await drainUpdates().catch(() => void 0);
-    const id2 = request2.toolCall.toolCallId;
-    const name = adapter.knownToolName(id2) ?? toolName(request2.toolCall, metaNamespace);
+    const id = request2.toolCall.toolCallId;
+    const name = adapter.knownToolName(id) ?? toolName(request2.toolCall, metaNamespace);
     const modePicker = isModePicker(request2, sessionModes, name, profile.modePickerTool);
     const adopt = (response) => {
       if (modePicker && response.outcome.outcome === "selected") {
@@ -29778,8 +29748,8 @@ var AcpClaudeBackend = class {
 };
 
 // packages/session/dist/acp-session-config.js
-function selectOption(options, id2) {
-  return options?.find((option) => option.id === id2 && option.type === "select");
+function selectOption(options, id) {
+  return options?.find((option) => option.id === id && option.type === "select");
 }
 function selectValues(option) {
   return option.options.flatMap((entry) => "value" in entry ? [entry.value] : entry.options.map((grouped) => grouped.value));
@@ -29826,10 +29796,10 @@ function parseCodexModel(model) {
   if (!model.startsWith(CODEX_MODEL_PREFIX)) {
     throw new Error(`Codex model must start with "${CODEX_MODEL_PREFIX}"; got "${model}"`);
   }
-  const id2 = model.slice(CODEX_MODEL_PREFIX.length);
-  if (id2.length === 0)
+  const id = model.slice(CODEX_MODEL_PREFIX.length);
+  if (id.length === 0)
     throw new Error(`Codex model must not be empty; got "${model}"`);
-  return id2;
+  return id;
 }
 
 // packages/session/dist/acp-codex-backend.js
@@ -30885,8 +30855,8 @@ var FileEventSink = class {
     this.seq += 1;
     return { seq: this.seq, ts: Date.now() };
   }
-  async bindSession(id2) {
-    await this.writer.write({ kind: "session", id: id2 });
+  async bindSession(id) {
+    await this.writer.write({ kind: "session", id });
     const event = this.pendingSessionEvent;
     this.pendingSessionEvent = void 0;
     if (event !== void 0)
@@ -30954,9 +30924,9 @@ var RunnerServer = class {
     await persistState(true);
     const outstandingPermissions = /* @__PURE__ */ new Map();
     const turn2 = this.client.startTurn(runnerOptions, {
-      onSession: async (id2) => {
-        await sink.bindSession(id2);
-        state.sessionId = id2;
+      onSession: async (id) => {
+        await sink.bindSession(id);
+        state.sessionId = id;
         void persistState();
       },
       onPermissionRequest: (request2) => {
