@@ -3,6 +3,7 @@ import Foundation
 
 class VerityRemoteControlTunnel: Module {
   private var tunnel: AnyObject?
+  private var retired: [AnyObject] = []
 
   public func definition() -> ModuleDefinition {
     Name("VerityRemoteControlTunnel")
@@ -18,7 +19,16 @@ class VerityRemoteControlTunnel: Module {
       guard #available(iOS 17.0, macOS 14.0, *) else { throw RemoteSmokeError.invalidInput }
       guard let dataURL = URL(string: dataURLText), let coreURL = URL(string: coreURLText)
       else { throw RemoteSmokeError.invalidInput }
-      (self.tunnel as? RemoteAppTunnel)?.stop()
+      self.retired.removeAll { ($0 as? RemoteAppTunnel)?.isStopped == true }
+      if let previous = self.tunnel as? RemoteAppTunnel {
+        if previous.isExhausted && !previous.isStopped {
+          // Existing streams keep their original listener until they drain.
+          if self.retired.count >= 3 {
+            (self.retired.removeFirst() as? RemoteAppTunnel)?.stop()
+          }
+          self.retired.append(previous)
+        } else { previous.stop() }
+      }
       let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: coreURL)
       self.tunnel = tunnel
       do { return try await tunnel.start(ticket: ticket, sessionId: sessionId) }
@@ -37,6 +47,8 @@ class VerityRemoteControlTunnel: Module {
       guard #available(iOS 17.0, macOS 14.0, *) else { return }
       (self.tunnel as? RemoteAppTunnel)?.stop()
       self.tunnel = nil
+      for old in self.retired { (old as? RemoteAppTunnel)?.stop() }
+      self.retired.removeAll()
     }
   }
 }

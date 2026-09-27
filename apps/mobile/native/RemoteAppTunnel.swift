@@ -60,8 +60,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
   var isActive: Bool {
     lock.lock()
     defer { lock.unlock() }
-    return !stopped && listener != nil
+    return !stopped && listener != nil && usedIds.count < 4_096
   }
+
+  var isExhausted: Bool { lock.withLock { usedIds.count >= 4_096 } }
+  var isStopped: Bool { lock.withLock { stopped } }
 
   init(dataURL: URL, coreURL: URL) throws {
     guard dataURL.scheme == "wss", dataURL.path == "/data", dataURL.query == nil,
