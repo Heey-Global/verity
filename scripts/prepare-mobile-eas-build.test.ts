@@ -172,6 +172,10 @@ describe('EAS archive preparation', () => {
     expect(cache!.with.key).toContain('steps.compiler-cache.outputs.toolchain');
     expect(cache!.with.key).toContain('package-lock.json');
     expect(cache!.with.key).toContain('patch-mobile-native-deps.mjs');
+    // A release-please version bump changes app.config.ts on every native
+    // release; including it silently turns this into a permanently cold cache.
+    expect(readFileSync('apps/mobile/app.config.ts', 'utf8')).toContain('x-release-please-version');
+    expect(cache!.with.key).not.toContain('apps/mobile/app.config.ts');
     expect(setup!.run).toContain('USE_CCACHE=1');
     expect(setup!.run).toContain(
       'CCACHE_CONFIGPATH=$GITHUB_WORKSPACE/apps/mobile/build/ccache.conf',

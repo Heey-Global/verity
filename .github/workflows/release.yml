@@ -875,12 +875,15 @@ jobs:
 
       # Reuse only compiler objects, never credentials, IPAs, or EAS work directories.
       # No broad restore prefix: compiler, dependencies and patch policy must agree.
+      # app.config.ts contains the release version, which changes for every native
+      # release. ccache validates source content and compiler arguments itself;
+      # hashing that file here would discard reusable objects at every release.
       # renovate: datasource=github-actions depName=actions/cache
       - name: Restore native compiler cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/verity-mobile-ccache
-          key: mobile-ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('package-lock.json', 'apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs', 'apps/mobile/app.config.ts') }}
+          key: mobile-ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('package-lock.json', 'apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}
 
       - name: Reset native compiler cache statistics
         run: ccache --zero-stats
