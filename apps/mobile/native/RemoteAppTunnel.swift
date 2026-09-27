@@ -55,6 +55,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var usedIds = Set<String>()
   private var sessionPendingBytes = 0
   private var pendingLocal = 0
+  private var reservedSlots = 0
   private var stopped = false
 
   var isActive: Bool {
@@ -127,7 +128,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in
           guard let self else { connection.cancel(); return }
           let admitted = self.lock.withLock {
-            if self.stopped || self.pendingLocal >= 8 { return false }
+            if self.stopped || self.pendingLocal >= 16 { return false }
             self.pendingLocal += 1
             return true
           }
@@ -298,13 +299,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   private func accept(_ connection: NWConnection) async {
     var openedId: String?
+    var reserved = false
     let timeout = Task {
       try? await Task.sleep(nanoseconds: 10_000_000_000)
       if !Task.isCancelled { connection.cancel() }
     }
     defer {
       timeout.cancel()
-      lock.withLock { pendingLocal = max(0, pendingLocal - 1) }
+      lock.withLock {
+        pendingLocal = max(0, pendingLocal - 1)
+        if reserved { reservedSlots -= 1 }
+      }
     }
     do {
       let greeting = try await read(connection, count: 2)
@@ -331,9 +336,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let port = try await read(connection, count: 2)
       guard matches, (Int(port[0]) << 8) | Int(port[1]) == expectedPort
       else { throw RemoteSmokeError.invalidInput }
+      timeout.cancel()
+      try await reserveStreamSlot()
+      reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let stream = Stream(connection)
       let available = lock.withLock {
+        reservedSlots -= 1
+        reserved = false
         let available = !stopped && streams.count < 8 && usedIds.count < 4_096
         if available {
           streams[id] = stream
@@ -354,6 +364,24 @@ final class RemoteAppTunnel: @unchecked Sendable {
       if let openedId { drop(openedId) }
       connection.cancel()
     }
+  }
+
+  private func reserveStreamSlot() async throws {
+    let deadline = Date().addingTimeInterval(30)
+    while Date() < deadline {
+      let result = lock.withLock { () -> Int in
+        if stopped { return -1 }
+        if usedIds.count + reservedSlots >= 4_096 { return -2 }
+        if streams.count + reservedSlots >= 8 { return 0 }
+        reservedSlots += 1
+        return 1
+      }
+      if result == 1 { return }
+      if result == -1 { throw RemoteSmokeError.closed }
+      if result == -2 { throw RemoteSmokeError.limitReached }
+      try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    throw RemoteSmokeError.limitReached
   }
 
   private func pumpLocal(_ stream: Stream, id: String) async throws {
