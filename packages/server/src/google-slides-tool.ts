@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { open, realpath, type FileHandle } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
 import type { EventStore, GoogleSlideImageCleanupRecord } from '@verity/store';
 
 import {
@@ -29,12 +32,70 @@ type SlidesToolRequest = {
   revisionId?: string;
   attachmentId?: string;
   imageUrl?: string;
+  imagePath?: string;
   asBackground?: boolean;
   x?: number;
   y?: number;
   width?: number;
   height?: number;
 };
+
+function imageMediaType(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/gif' {
+  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return 'image/png';
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  const signature = bytes.subarray(0, 6).toString('ascii');
+  if (signature === 'GIF87a' || signature === 'GIF89a') return 'image/gif';
+  throw new Error('insert_image imagePath must contain a PNG, JPEG, or GIF image');
+}
+
+async function readBoundedImage(handle: FileHandle): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+    if (bytesRead === 0) return Buffer.concat(chunks, total);
+    total += bytesRead;
+    if (total > MAX_IMAGE_BYTES) throw new Error('image exceeds 50 MB');
+    chunks.push(chunk.subarray(0, bytesRead));
+  }
+}
+
+async function readWorktreeImage(
+  worktree: string,
+  imagePath: string,
+): Promise<{ mediaType: 'image/png' | 'image/jpeg' | 'image/gif'; bytes: Buffer }> {
+  if (isAbsolute(imagePath)) throw new Error('insert_image imagePath must be relative');
+  const worktreeReal = await realpath(worktree);
+  const handle = await open(
+    resolve(worktreeReal, imagePath),
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch(() => undefined);
+  if (handle === undefined) throw new Error('insert_image imagePath does not exist');
+  try {
+    // Validate the opened object, not the pathname: an agent process may replace a
+    // path component after resolution, while this descriptor continues to identify
+    // the exact bytes we inspect and upload.
+    const openedReal = await realpath(`/proc/self/fd/${handle.fd}`);
+    const fromWorktree = relative(worktreeReal, openedReal);
+    if (fromWorktree === '' || fromWorktree.startsWith('..') || isAbsolute(fromWorktree)) {
+      throw new Error('insert_image imagePath must stay inside the session worktree');
+    }
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error('insert_image imagePath must name a file');
+    if (metadata.size > MAX_IMAGE_BYTES) throw new Error('image exceeds 50 MB');
+    const bytes = await readBoundedImage(handle);
+    const mediaType = imageMediaType(bytes);
+    assertImageLimits(bytes, mediaType);
+    return { mediaType, bytes };
+  } finally {
+    await handle.close();
+  }
+}
 
 interface GoogleSlidesToolDeps {
   eventStore: EventStore;
@@ -285,8 +346,13 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       if (request.slideId === undefined) {
         throw new Error('insert_image requires slideId');
       }
-      if ((request.attachmentId === undefined) === (request.imageUrl === undefined)) {
-        throw new Error('insert_image requires exactly one of attachmentId or imageUrl');
+      const imageSources = [request.attachmentId, request.imageUrl, request.imagePath].filter(
+        (value) => value !== undefined,
+      );
+      if (imageSources.length !== 1) {
+        throw new Error(
+          'insert_image requires exactly one of attachmentId, imageUrl, or imagePath',
+        );
       }
       let publicImageUrl: string | undefined;
       let attachment:
@@ -312,8 +378,8 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
         };
         assertImageLimits(supportedAttachment.bytes, supportedAttachment.mediaType);
         attachment = supportedAttachment;
-      } else {
-        const url = new URL(request.imageUrl as string);
+      } else if (request.imageUrl !== undefined) {
+        const url = new URL(request.imageUrl);
         if (
           !['http:', 'https:'].includes(url.protocol) ||
           url.username !== '' ||
@@ -323,6 +389,13 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
           throw new Error('insert_image imageUrl must be a public HTTP(S) URL without credentials');
         }
         publicImageUrl = url.href;
+      } else {
+        const session = await deps.eventStore.getSession(input.sessionId);
+        if (session === undefined) {
+          throw new Error('Google Slides is restricted to the calling session');
+        }
+        if (request.imagePath === undefined) throw new Error('insert_image requires imagePath');
+        attachment = await readWorktreeImage(session.worktree, request.imagePath);
       }
       if (request.asBackground === true && request.revisionId === undefined) {
         throw new Error('a background image requires revisionId');
@@ -338,7 +411,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
         attachment === undefined
           ? undefined
           : await drive.upload(token, {
-              name: `verity-slide-${request.attachmentId!.slice(0, 12)}`,
+              name: `verity-slide-${(request.attachmentId ?? request.imagePath ?? 'image').slice(0, 40)}`,
               mimeType: attachment.mediaType,
               bytes: attachment.bytes,
             });

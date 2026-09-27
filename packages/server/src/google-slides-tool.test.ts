@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EventStore } from '@verity/store';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { isRichMcpToolResult } from './mcp-tool-result.js';
@@ -82,6 +86,88 @@ function dependencies(eventStore: EventStore) {
 }
 
 describe('Google Slides agent tool', () => {
+  it('inserts an agent-created image from the session worktree', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-slide-image-'));
+    try {
+      await writeFile(join(worktree, 'generated.png'), png);
+      const eventStore = store({
+        getSession: vi
+          .fn()
+          .mockResolvedValue({ sessionId: 'session-1', projectId: 'project-1', worktree }),
+      });
+      const { tool, drive } = dependencies(eventStore);
+
+      await tool.invoke({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        request: { action: 'insert_image', slideId: 'slide-1', imagePath: 'generated.png' },
+      });
+
+      expect(drive.upload).toHaveBeenCalledWith('token', {
+        name: 'verity-slide-generated.png',
+        mimeType: 'image/png',
+        bytes: png,
+      });
+      tool.close();
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an image path that escapes the session worktree through a symlink', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'verity-slide-image-'));
+    const worktree = join(parent, 'worktree');
+    const outside = join(parent, 'outside.png');
+    try {
+      await mkdir(worktree);
+      await writeFile(outside, png);
+      await symlink(outside, join(worktree, 'generated.png'));
+      const eventStore = store({
+        getSession: vi
+          .fn()
+          .mockResolvedValue({ sessionId: 'session-1', projectId: 'project-1', worktree }),
+      });
+      const { tool, drive } = dependencies(eventStore);
+
+      await expect(
+        tool.invoke({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          request: { action: 'insert_image', slideId: 'slide-1', imagePath: 'generated.png' },
+        }),
+      ).rejects.toThrow('imagePath does not exist');
+      expect(drive.upload).not.toHaveBeenCalled();
+      tool.close();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a named pipe without waiting for a writer', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-slide-image-'));
+    try {
+      execFileSync('mkfifo', [join(worktree, 'generated.png')]);
+      const eventStore = store({
+        getSession: vi
+          .fn()
+          .mockResolvedValue({ sessionId: 'session-1', projectId: 'project-1', worktree }),
+      });
+      const { tool, drive } = dependencies(eventStore);
+
+      await expect(
+        tool.invoke({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          request: { action: 'insert_image', slideId: 'slide-1', imagePath: 'generated.png' },
+        }),
+      ).rejects.toThrow('imagePath must name a file');
+      expect(drive.upload).not.toHaveBeenCalled();
+      tool.close();
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a session without an assigned deck', async () => {
     const eventStore = store({ getSessionSlideDeck: vi.fn().mockResolvedValue(undefined) });
     const { tool } = dependencies(eventStore);
