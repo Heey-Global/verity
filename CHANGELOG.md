@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.10.0](https://github.com/Heey-Global/verity/compare/v2.9.1...v2.10.0) (2026-09-27)
+
+
+### Features
+
+* **server:** offer remote control through paired TLS by default ([#816](https://github.com/Heey-Global/verity/issues/816)) ([8ac307c](https://github.com/Heey-Global/verity/commit/8ac307c6d67ecc870c98b84d73c512fda7c7d781))
+* **server:** opt in to Uplink remote control through TLS gateway ([#814](https://github.com/Heey-Global/verity/issues/814)) ([cae3afb](https://github.com/Heey-Global/verity/commit/cae3afb853b5619cbdc4a4d0104e16038df133d8))
+
+
+### Bug Fixes
+
+* **gmail:** remove unchanged draft after approved send ([#808](https://github.com/Heey-Global/verity/issues/808)) ([5a0f2a2](https://github.com/Heey-Global/verity/commit/5a0f2a29469cf7654611f861319729abdf34d1a0))
+* **knowledge:** retire managed-library operations from verity_knowledge ([#813](https://github.com/Heey-Global/verity/issues/813)) ([29e62c2](https://github.com/Heey-Global/verity/commit/29e62c2b87d8642e2109258aed32c47605deda9a))
+* **server:** stop certifying failed node_modules installs and bound the lock wait ([#809](https://github.com/Heey-Global/verity/issues/809)) ([72f4785](https://github.com/Heey-Global/verity/commit/72f4785a3a2d4e912f21a28cb2b5c92ccb288db7))
+
 ## [2.9.1](https://github.com/Heey-Global/verity/compare/v2.9.0...v2.9.1) (2026-09-27)
 
 
