@@ -215,9 +215,9 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # renovate: datasource=npm depName=@devcontainers/cli
 RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.280
+RUN npm install -g @anthropic-ai/claude-code@2.1.282
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.81.0
+RUN npm install -g @agentclientprotocol/claude-agent-acp@0.81.2
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —
@@ -233,7 +233,7 @@ RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifec
 # renovate: datasource=npm depName=@openai/codex
 RUN npm install -g @openai/codex@0.156.1
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-RUN npm install -g @agentclientprotocol/codex-acp@1.13.0
+RUN npm install -g @agentclientprotocol/codex-acp@1.13.1
 # renovate: datasource=npm depName=opencode-ai
 RUN npm install -g opencode-ai@1.18.32
 # OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
