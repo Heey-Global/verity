@@ -25,8 +25,19 @@ runs:
           exit 1
         fi
 
+        free_mib() {
+          df --output=avail --block-size=1M "$RUNNER_TEMP" | tail -1 | tr -dc '0-9'
+        }
         echo 'Disk usage before hosted-image cleanup:'
         df -h "$RUNNER_TEMP"
+        # The floor is the whole contract. Deleting the SDKs takes over two
+        # minutes on the critical path of every job that calls this, and hosted
+        # images have so far arrived with roughly three times the floor free, so
+        # only pay for the deletion when the floor is actually not met.
+        if (( $(free_mib) >= MINIMUM_FREE_GIB * 1024 )); then
+          echo "$(( $(free_mib) / 1024 )) GiB already free; floor of ${MINIMUM_FREE_GIB} GiB met, skipping cleanup"
+          exit 0
+        fi
 
         # Exact image-owned paths only. Never accept caller-provided deletion paths.
         sudo rm -rf -- \
@@ -38,7 +49,7 @@ runs:
 
         echo 'Disk usage after hosted-image cleanup:'
         df -h "$RUNNER_TEMP"
-        avail_mib="$(df --output=avail --block-size=1M "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')"
+        avail_mib="$(free_mib)"
         echo "$((avail_mib / 1024)) GiB free on the filesystem holding \$RUNNER_TEMP"
         if (( avail_mib < MINIMUM_FREE_GIB * 1024 )); then
           echo "::error::Only $((avail_mib / 1024)) GiB free; need ${MINIMUM_FREE_GIB} GiB." >&2
