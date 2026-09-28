@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.39.0](https://github.com/Heey-Global/verity/compare/mobile-v1.38.0...mobile-v1.39.0) (2026-09-28)
+
+
+### Bug Fixes
+
+* **mobile:** repair live STT runtime and interim updates ([#850](https://github.com/Heey-Global/verity/issues/850)) ([b90836a](https://github.com/Heey-Global/verity/commit/b90836a2d1f1119a9a6789a60c6ce4b4cc572343))
+* **remote-control:** stop dropping idle and long-lived sessions ([#849](https://github.com/Heey-Global/verity/issues/849)) ([1883b3a](https://github.com/Heey-Global/verity/commit/1883b3a0af37b615e898906f4147882602202f41))
+
 ## [1.38.0](https://github.com/Heey-Global/verity/compare/mobile-v1.37.0...mobile-v1.38.0) (2026-09-28)
 
 
