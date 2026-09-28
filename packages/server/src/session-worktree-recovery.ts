@@ -8,14 +8,26 @@ const SESSION_ROOT_SEGMENT = `${sep}.verity-sessions${sep}`;
 // needs for mode 000 directories. Verity server deployments are Linux containers.
 const LINUX_O_PATH = 0o10000000;
 
+// The Runner uid is neither owner nor group member of these inodes; see below.
+const RUNNER_TRAVERSE = 0o001;
+
 export interface SessionWorktreeRecoveryResult {
   repaired: Array<'project-root' | 'sessions-root' | 'worktree'>;
 }
 
 /**
- * Restore only the owner bits required to traverse and use one Verity-created
- * session worktree. This deliberately does not recurse: repository contents are
+ * Restore only the bits required to traverse and use one Verity-created session
+ * worktree. This deliberately does not recurse: repository contents are
  * agent-owned data, while these three directory inodes are the spawn boundary.
+ *
+ * Owner access alone is not enough. The Runner supervisor spawns the turn's worker
+ * with this worktree as its cwd under its own uid (1101, `--clear-groups`), so it is
+ * judged by the "other" bits — and `assertSpawnBoundary` fails every turn with
+ * `EACCES` (`cwd-traverse`) while any of these inodes lacks `o+x`. Restoring only
+ * `0700` therefore reported success on a session that still could not start a turn.
+ * Traverse (`--x`) is all that is added for others — every non-owner uid, since
+ * `--clear-groups` rules out a group grant — with no listing and no write. That is
+ * no more than a freshly created worktree chain already has (0755).
  *
  * Every component is checked without following symlinks and must still be owned
  * by the Server uid. An ownership change therefore fails closed instead of
@@ -74,9 +86,10 @@ export async function repairSessionWorktreePermissions(
         await handle.close();
         throw new Error(`${kind} changed during permission recovery`);
       }
-      // Preserve setuid/setgid/sticky bits; recovery adds owner access and removes nothing.
+      // Preserve setuid/setgid/sticky bits; recovery adds owner access plus the Runner's
+      // traverse bit and removes nothing.
       const mode = current.mode & 0o7777;
-      const desired = mode | 0o700;
+      const desired = mode | 0o700 | RUNNER_TRAVERSE;
       validated.push({ kind, handle, mode, desired });
       if (desired !== mode) {
         await chmod(`/proc/self/fd/${String(handle.fd)}`, desired);

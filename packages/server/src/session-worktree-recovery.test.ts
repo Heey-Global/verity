@@ -32,10 +32,32 @@ describe('repairSessionWorktreePermissions', () => {
     ).resolves.toEqual({
       repaired: ['project-root', 'sessions-root', 'worktree'],
     });
-    expect((await lstat(root)).mode & 0o777).toBe(0o700);
-    expect((await lstat(sessions)).mode & 0o7777).toBe(0o2700);
-    expect((await lstat(worktree)).mode & 0o777).toBe(0o700);
+    expect((await lstat(root)).mode & 0o777).toBe(0o701);
+    expect((await lstat(sessions)).mode & 0o7777).toBe(0o2701);
+    expect((await lstat(worktree)).mode & 0o777).toBe(0o701);
     expect((await lstat(nested)).mode & 0o777).toBe(0o600);
+  });
+
+  // The Runner supervisor spawns the worker as a uid that owns none of these inodes,
+  // so an owner-only repair leaves `access(cwd, X_OK)` failing with EACCES for it and
+  // the session still cannot start a turn — while this endpoint reports success.
+  it('restores the traverse bit a non-owner Runner needs, even when the owner bits are intact', async () => {
+    root = await mkdtemp(join(tmpdir(), 'verity-worktree-recovery-'));
+    const sessions = join(root, '.verity-sessions');
+    const worktree = join(sessions, 'agent-safe');
+    await mkdir(worktree, { recursive: true });
+    await chmod(worktree, 0o700);
+    await chmod(sessions, 0o700);
+    await chmod(root, 0o755);
+
+    await expect(
+      repairSessionWorktreePermissions(worktree, process.getuid?.(), tmpdir()),
+    ).resolves.toEqual({ repaired: ['sessions-root', 'worktree'] });
+    for (const path of [root, sessions, worktree]) {
+      expect((await lstat(path)).mode & 0o001).toBe(0o001);
+      // Traverse only: recovery must not grant others a listing.
+      expect((await lstat(path)).mode & 0o004).toBe(path === root ? 0o004 : 0);
+    }
   });
 
   it('rejects nested targets and symlinked boundary components', async () => {

@@ -1066,6 +1066,27 @@ function boundedSpawnError(value) {
     : `runner worker spawn failed with error code ${errorCode}`;
 }
 
+/**
+ * Name the refused stage and path in the error the Server reports. Without it an
+ * operator sees only "error code EACCES" and cannot tell a worktree the Runner uid
+ * may not traverse from a worker binary it may not execute — the diagnostic above
+ * existed only in this container's state and log. Both parts are values this file
+ * derived itself (a fixed stage name and the requested cwd or worker path), never
+ * exception text, so the credential guarantee of {@link boundedSpawnError} holds.
+ */
+function describeSpawnFailure(message, diagnostic) {
+  if (diagnostic.stage === 'spawn' && diagnostic.path === undefined) return message;
+  if (diagnostic.path === undefined) return `${message} (${diagnostic.stage})`;
+  // The path is request data: keep it one line and well inside the state's error budget.
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point.
+  const path = diagnostic.path.replace(/[\u0000-\u001f\u007f]/g, '?');
+  const shown =
+    path.length > MAX_SPAWN_FAILURE_PATH ? `${path.slice(0, MAX_SPAWN_FAILURE_PATH)}…` : path;
+  return `${message} (${diagnostic.stage}: ${shown})`;
+}
+
+const MAX_SPAWN_FAILURE_PATH = 512;
+
 function spawnFailureDiagnostic(error, request, workerCommand) {
   const code =
     typeof error?.code === 'string' && /^E[A-Z]{2,20}$/.test(error.code) ? error.code : undefined;
@@ -1841,8 +1862,11 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
         child.once('error', rejectSpawn);
       });
     } catch (error) {
-      const workerError = boundedSpawnError(error instanceof Error ? error.message : String(error));
       const workerSpawnFailure = spawnFailureDiagnostic(error, request, workerCommand);
+      const workerError = describeSpawnFailure(
+        boundedSpawnError(error instanceof Error ? error.message : String(error)),
+        workerSpawnFailure,
+      );
       logTelemetry({
         event: 'worker-spawn-failed',
         turnId: request.turnId,
