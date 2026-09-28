@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.36.2",
-  "runtime": "1.36.0",
+  "version": "1.40.1",
+  "runtime": "1.40.0",
   "channel": "testflight",
-  "commit": "709404afceb68779f3a1fa936ffd28dcb4d7ee93",
-  "tag": "mobile-v1.36.2",
-  "branch": "staging-mobile-v1.36.2-709404afceb68779f3a1fa936ffd28dcb4d7ee93",
-  "baseline": "mobile-v1.36.1",
-  "group": "5001dc1c-fd9f-461b-b032-dee138c4bd06",
+  "commit": "6cd14527ec31256745cd12191e4da06f604847f6",
+  "tag": "mobile-v1.40.1",
+  "branch": "staging-mobile-v1.40.1-6cd14527ec31256745cd12191e4da06f604847f6",
+  "baseline": "mobile-v1.40.0",
+  "group": "7c675da6-3639-42af-9a9d-9db0b1179c5c",
   "notes": [
-    "recover failed Uplink reads through direct route (#832)"
+    "add continuous voice dictation (#860)"
   ]
 }
