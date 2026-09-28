@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.13.3](https://github.com/Heey-Global/verity/compare/v2.13.2...v2.13.3) (2026-09-28)
+
+
+### Bug Fixes
+
+* **mobile:** avoid reset after remote stream completion ([#843](https://github.com/Heey-Global/verity/issues/843)) ([213085e](https://github.com/Heey-Global/verity/commit/213085ef169620be0c26457014f540030980ee68))
+* **server:** allow standard mounts in public previews ([#842](https://github.com/Heey-Global/verity/issues/842)) ([3af16a9](https://github.com/Heey-Global/verity/commit/3af16a9fee80db187f073b058055a32a89ea4a6c))
+
 ## [2.13.2](https://github.com/Heey-Global/verity/compare/v2.13.1...v2.13.2) (2026-09-28)
 
 
