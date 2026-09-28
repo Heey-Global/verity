@@ -1,5 +1,7 @@
 import * as acp from '@agentclientprotocol/sdk';
 import { createHash } from 'node:crypto';
+import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { join, sep } from 'node:path';
 import type {
   ContentBlock,
   McpServer,
@@ -174,12 +176,78 @@ export interface AcpBackendProfile {
   configureSession?(setup: AcpSessionSetup, opts: RunTurnOptions): Promise<void>;
 }
 
-function processStream(process: SpawnedProcess): acp.Stream {
+const MAX_ACP_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_FRAME_BYTES = 64 * 1024 * 1024;
+
+// codex-acp repeats generated image bytes in content and rawOutput; a normal
+// image can exceed the ACP frame limit before the event adapter sees it.
+async function externalizeImageFrame(line: string, worktree: string): Promise<string> {
+  const frame = JSON.parse(line) as Record<string, unknown>;
+  const params = frame['params'] as Record<string, unknown> | undefined;
+  const update = params?.['update'] as Record<string, unknown> | undefined;
+  const content = update?.['content'];
+  const rawOutput = update?.['rawOutput'] as Record<string, unknown> | undefined;
+  if (
+    frame['method'] !== 'session/update' ||
+    !Array.isArray(content) ||
+    typeof rawOutput?.['result'] !== 'string'
+  )
+    throw new Error('ACP frame is too large');
+  const image = content.find((entry: unknown) => {
+    const block = (entry as Record<string, unknown>)?.['content'] as
+      Record<string, unknown> | undefined;
+    return (
+      block?.['type'] === 'image' &&
+      block['mimeType'] === 'image/png' &&
+      block['data'] === rawOutput['result']
+    );
+  }) as Record<string, unknown> | undefined;
+  const encoded = rawOutput['result'];
+  if (!image || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error('ACP frame is too large');
+  const bytes = Buffer.from(encoded, 'base64');
+  if (
+    bytes.toString('base64') !== encoded ||
+    !bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+  )
+    throw new Error('ACP frame is too large');
+  const id = createHash('sha256').update(bytes).digest('hex');
+  const directory = join(worktree, '.agents', 'generated-images');
+  const agentDirectory = join(worktree, '.agents');
+  for (const path of [agentDirectory, directory]) {
+    try {
+      await mkdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    if (!(await lstat(path)).isDirectory())
+      throw new Error('ACP image directory is not a directory');
+  }
+  const [realWorktree, realDirectory] = await Promise.all([
+    realpath(worktree),
+    realpath(directory),
+  ]);
+  if (!realDirectory.startsWith(`${realWorktree}${sep}`))
+    throw new Error('ACP image directory escapes the worktree');
+  const path = join(directory, `${id}.png`);
+  await writeFile(path, bytes, { flag: 'wx' }).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== 'EEXIST') throw error;
+    const stat = await lstat(path);
+    if (!stat.isFile() || !(await readFile(path)).equals(bytes))
+      throw new Error('ACP image file collision');
+  });
+  image['content'] = { type: 'resource_link', name: `${id}.png`, uri: path };
+  rawOutput['result'] = path;
+  rawOutput['savedPath'] = path;
+  const reduced = JSON.stringify(frame);
+  if (Buffer.byteLength(reduced) > MAX_ACP_FRAME_BYTES) throw new Error('ACP frame is too large');
+  return reduced;
+}
+
+function processStream(process: SpawnedProcess, worktree: string): acp.Stream {
   if (process.writeStdin === undefined) throw new Error('ACP agent requires writable stdin');
   const encoder = new TextEncoder();
   const stdinDecoder = new TextDecoder();
   const iterator = process.stdout[Symbol.asyncIterator]();
-  const maxFrameBytes = 8 * 1024 * 1024;
   let buffered = '';
   return acp.ndJsonStream(
     new WritableStream<Uint8Array>({
@@ -201,9 +269,13 @@ function processStream(process: SpawnedProcess): acp.Stream {
         while (true) {
           const newline = buffered.indexOf('\n');
           if (newline >= 0) {
-            const line = buffered.slice(0, newline).replace(/\r$/u, '');
+            let line = buffered.slice(0, newline).replace(/\r$/u, '');
             buffered = buffered.slice(newline + 1);
-            if (Buffer.byteLength(line) > maxFrameBytes) throw new Error('ACP frame is too large');
+            if (Buffer.byteLength(line) > MAX_ACP_FRAME_BYTES) {
+              if (Buffer.byteLength(line) > MAX_IMAGE_FRAME_BYTES)
+                throw new Error('ACP frame is too large');
+              line = await externalizeImageFrame(line, worktree);
+            }
             try {
               JSON.parse(line);
             } catch {
@@ -214,7 +286,7 @@ function processStream(process: SpawnedProcess): acp.Stream {
             controller.enqueue(encoder.encode(`${line}\n`));
             return;
           }
-          if (Buffer.byteLength(buffered) > maxFrameBytes)
+          if (Buffer.byteLength(buffered) > MAX_IMAGE_FRAME_BYTES)
             throw new Error('ACP frame is too large');
           const next = await iterator.next();
           if (next.done) {
@@ -710,7 +782,7 @@ export async function runAcpTurn(
         if (isAgentContent(params.update)) turnHasAgentContent = true;
         return queueUpdate(params.update);
       })
-      .connectWith(processStream(child), async (agent) => {
+      .connectWith(processStream(child, opts.worktree), async (agent) => {
         const initialized = await agent.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
           ...(profile.clientCapabilitiesMeta !== undefined

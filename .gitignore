@@ -46,6 +46,7 @@ coverage
 # Scratch copies of `verity-code-review` output, which the tool writes to a temp dir it
 # deletes on exit. Staged in the worktree only so a session can read its own findings.
 .agents/review-capture/
+.agents/generated-images/
 
 # Worktree re-registration sidecar: a per-checkout copy of the facts needed to
 # rebuild `.git/worktrees/<name>` after a cross-namespace `git worktree prune`
