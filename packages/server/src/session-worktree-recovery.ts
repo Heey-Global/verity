@@ -25,7 +25,9 @@ export interface SessionWorktreeRecoveryResult {
  * judged by the "other" bits — and `assertSpawnBoundary` fails every turn with
  * `EACCES` (`cwd-traverse`) while any of these inodes lacks `o+x`. Restoring only
  * `0700` therefore reported success on a session that still could not start a turn.
- * Traverse (`--x`) is all that is added for others: no listing, no write.
+ * Traverse (`--x`) is all that is added for others — every non-owner uid, since
+ * `--clear-groups` rules out a group grant — with no listing and no write. That is
+ * no more than a freshly created worktree chain already has (0755).
  *
  * Every component is checked without following symlinks and must still be owned
  * by the Server uid. An ownership change therefore fails closed instead of

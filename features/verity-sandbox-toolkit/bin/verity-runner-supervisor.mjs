@@ -1076,10 +1076,16 @@ function boundedSpawnError(value) {
  */
 function describeSpawnFailure(message, diagnostic) {
   if (diagnostic.stage === 'spawn' && diagnostic.path === undefined) return message;
-  return diagnostic.path === undefined
-    ? `${message} (${diagnostic.stage})`
-    : `${message} (${diagnostic.stage}: ${diagnostic.path})`;
+  if (diagnostic.path === undefined) return `${message} (${diagnostic.stage})`;
+  // The path is request data: keep it one line and well inside the state's error budget.
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point.
+  const path = diagnostic.path.replace(/[\u0000-\u001f\u007f]/g, '?');
+  const shown =
+    path.length > MAX_SPAWN_FAILURE_PATH ? `${path.slice(0, MAX_SPAWN_FAILURE_PATH)}…` : path;
+  return `${message} (${diagnostic.stage}: ${shown})`;
 }
+
+const MAX_SPAWN_FAILURE_PATH = 512;
 
 function spawnFailureDiagnostic(error, request, workerCommand) {
   const code =
