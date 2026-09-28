@@ -1,10 +1,9 @@
 const { withPodfile } = require('@expo/config-plugins');
 
 // Inline Swift modules compile in the app target, so the FluidAudio pod must be
-// declared in that target's Podfile. Pin the source tag until a native build has
-// explicitly validated a newer SDK against our Swift bridge.
-const FLUID_AUDIO_POD =
-  "  pod 'FluidAudio/Core', :git => 'https://github.com/FluidInference/FluidAudio.git', :tag => 'v0.17.4'";
+// declared in that target's Podfile. The local podspec pins the source tag and
+// excludes TTS files that CocoaPods cannot compile without SwiftPM resources.
+const FLUID_AUDIO_POD = "  pod 'FluidAudio/Core', :podspec => '../plugins/FluidAudio.podspec'";
 
 module.exports = function withFluidAudio(config) {
   return withPodfile(config, (mod) => {
