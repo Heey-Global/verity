@@ -9,7 +9,6 @@ export interface UseVoiceInput {
   state: VoiceState;
   autoMode: boolean;
   countdown: number | null;
-  countdownPaused: boolean;
   /** Last failure (permission denied / recognizer error), cleared on next start. */
   error: string | undefined;
   /** Toggle dictation: start listening (idle) or stop it (recording). */
@@ -92,7 +91,6 @@ export function useVoiceInput(
   const [error, setError] = useState<string | undefined>(undefined);
   const [autoMode, setAutoMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [countdownPaused, setCountdownPaused] = useState(false);
   const autoModeRef = useRef(false);
   const disposedRef = useRef(false);
   const pausedRef = useRef(false);
@@ -171,7 +169,7 @@ export function useVoiceInput(
           sendingRef.current = false;
           if (!disposedRef.current && finalReadyRef.current) startCountdown();
         });
-    }, 1000);
+    }, 1800);
   }, [cancelCountdown]);
 
   useSpeechRecognitionEvent('result', (event) => {
@@ -189,7 +187,6 @@ export function useVoiceInput(
       cancelCountdown();
       if (!event.isFinal || transcript !== lastFinalTranscriptRef.current) {
         pausedRef.current = false;
-        setCountdownPaused(false);
       }
     }
     if (!event.isFinal) {
@@ -293,14 +290,12 @@ export function useVoiceInput(
   const startAuto = useCallback(() => {
     autoModeRef.current = true;
     pausedRef.current = false;
-    setCountdownPaused(false);
     setAutoMode(true);
     if (!listeningRef.current) start();
   }, [start]);
 
   const pauseCountdown = useCallback(() => {
     pausedRef.current = true;
-    setCountdownPaused(true);
     cancelCountdown();
   }, [cancelCountdown]);
 
@@ -323,7 +318,6 @@ export function useVoiceInput(
   const abort = useCallback(() => {
     autoModeRef.current = false;
     pausedRef.current = false;
-    setCountdownPaused(false);
     setAutoMode(false);
     cancelCountdown();
     if (!listeningRef.current) return;
@@ -354,7 +348,6 @@ export function useVoiceInput(
     error,
     autoMode,
     countdown,
-    countdownPaused,
     toggle,
     startAuto,
     pauseCountdown,

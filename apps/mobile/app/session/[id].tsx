@@ -91,6 +91,7 @@ import {
   type ToolImage,
 } from '@verity/mobile';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
+import * as Haptics from 'expo-haptics';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   createContext,
@@ -3806,7 +3807,6 @@ export function SessionChat({
         voiceState={voice.state}
         voiceAutoMode={voice.autoMode}
         voiceCountdown={voice.countdown}
-        voiceCountdownPaused={voice.countdownPaused}
         onMic={voice.toggle}
         onMicLongPress={voice.startAuto}
         onPauseVoiceCountdown={voice.pauseCountdown}
@@ -7634,7 +7634,6 @@ function InputBar({
   voiceState,
   voiceAutoMode,
   voiceCountdown,
-  voiceCountdownPaused,
   onMic,
   onMicLongPress,
   onPauseVoiceCountdown,
@@ -7676,7 +7675,6 @@ function InputBar({
   voiceState: VoiceState;
   voiceAutoMode: boolean;
   voiceCountdown: number | null;
-  voiceCountdownPaused: boolean;
   onMic: () => void;
   onMicLongPress: () => void;
   onPauseVoiceCountdown: () => void;
@@ -7712,16 +7710,6 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
-  const [showAutoIntro, setShowAutoIntro] = useState(false);
-  useEffect(() => {
-    if (!voiceAutoMode) {
-      setShowAutoIntro(false);
-      return;
-    }
-    setShowAutoIntro(true);
-    const timer = setTimeout(() => setShowAutoIntro(false), 2400);
-    return () => clearTimeout(timer);
-  }, [voiceAutoMode]);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useCallback(() => {
     const node = attachBtnRef.current;
@@ -7834,17 +7822,6 @@ function InputBar({
           keyboardAppearance="dark"
           accessibilityLabel="Message input"
         />
-        {voiceAutoMode ? (
-          <Text style={styles.voiceAutoHint} accessibilityLiveRegion="polite">
-            {voiceCountdown !== null
-              ? `Sending in ${String(voiceCountdown)} · tap countdown to wait`
-              : showAutoIntro
-                ? 'Continuous dictation on · tap mic to stop'
-                : voiceCountdownPaused
-                  ? 'Waiting for your next words · tap mic to stop'
-                  : 'Continuous dictation · tap mic to stop'}
-          </Text>
-        ) : null}
         <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
           {/* Left: attach + the engine/model chip (moved here from the header, like
               the Claude app — it sits with the composer instead of the nav bar). */}
@@ -8270,8 +8247,22 @@ function MicButton({
   return (
     <Pressable
       style={styles.iconButton}
-      onPress={countdown !== null ? onPauseCountdown : onMic}
-      onLongPress={onLongPress}
+      onPress={() => {
+        if (countdown !== null) {
+          onPauseCountdown();
+          return;
+        }
+        if (autoMode) {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+        }
+        onMic();
+      }}
+      onLongPress={() => {
+        if (!autoMode) {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+        }
+        onLongPress();
+      }}
       delayLongPress={600}
       disabled={disabled}
       hitSlop={8}
@@ -9965,11 +9956,6 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     justifyContent: 'flex-start',
     gap: theme.spacing.sm,
-  },
-  voiceAutoHint: {
-    color: theme.colors.textMuted,
-    fontSize: 12,
-    marginBottom: theme.spacing.xs,
   },
   actionRowLeft: {
     flexDirection: 'row',
