@@ -113,6 +113,90 @@ describe('pinned native file transport', () => {
     );
   });
 
+  it('retries a failed remote read directly with the same paired pin', async () => {
+    const pin = `sha256-${'a'.repeat(43)}`;
+    mockRemotePort.mockResolvedValue(4_321);
+    mockRequest
+      .mockRejectedValueOnce(new Error('Pinned TLS transport failed'))
+      .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
+
+    await expect(
+      createPinnedFetch(pin, true)('https://verity.example/sessions'),
+    ).resolves.toMatchObject({
+      status: 200,
+    });
+    expect(mockRequest).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      'https://verity.example/sessions',
+      'GET',
+      {},
+      null,
+      pin,
+      0,
+    );
+    expect(mockRequest.mock.calls[1]?.[0]).toBe(mockRequest.mock.calls[0]?.[0]);
+  });
+
+  it('never replays a failed remote mutation on the direct route', async () => {
+    mockRemotePort.mockResolvedValue(4_321);
+    mockRequest.mockRejectedValue(new Error('Pinned TLS transport failed'));
+
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions', {
+        method: 'POST',
+        body: '{}',
+      }),
+    ).rejects.toMatchObject({ name: 'VerityConnectionError' });
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels the direct retry when its fetch signal aborts', async () => {
+    mockRemotePort.mockResolvedValue(4_321);
+    let rejectDirect: ((error: Error) => void) | undefined;
+    mockRequest
+      .mockRejectedValueOnce(new Error('Pinned TLS transport failed'))
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectDirect = reject;
+          }),
+      );
+    mockCancelRequest.mockImplementation(() => {
+      rejectDirect?.(new Error('Cancelled'));
+      return Promise.resolve();
+    });
+    const controller = new AbortController();
+    const pending = createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)(
+      'https://verity.example/sessions',
+      { signal: controller.signal },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockCancelRequest).toHaveBeenCalledWith(mockRequest.mock.calls[1]?.[0]);
+  });
+
+  it('reports both failed routes when a remote read cannot recover directly', async () => {
+    mockRemotePort.mockResolvedValue(4_321);
+    mockRequest.mockRejectedValue(
+      new Error(
+        'Pinned TLS transport failed [NSURLErrorDomain:-1004:PIN_AND_CHAIN_TRUST_ACCEPTED]',
+      ),
+    );
+
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions'),
+    ).rejects.toMatchObject({
+      name: 'VerityConnectionError',
+      message:
+        'Uplink and direct Core requests failed: Pinned TLS transport failed [NSURLErrorDomain:-1004:PIN_AND_CHAIN_TRUST_ACCEPTED]',
+    });
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
   it('reports which route failed when the tunnel and direct Core request both fail', async () => {
     mockRemotePort.mockResolvedValue(0);
     mockRemoteFailure.mockReturnValue('probe');

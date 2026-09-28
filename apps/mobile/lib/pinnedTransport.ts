@@ -186,10 +186,35 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               port,
             );
       } catch (error) {
+        if (
+          port > 0 &&
+          !fileUri &&
+          (init.method ?? 'GET').toUpperCase() === 'GET' &&
+          encodedBody === null &&
+          !init.signal?.aborted
+        ) {
+          try {
+            // A failed read has no uncertain mutation to replay. Keep the same
+            // paired URL and pin when a reachable direct route can recover it.
+            response = await transport.request(requestId, url, 'GET', headers, null, tlsPin, 0);
+            if (init.signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError');
+            }
+            return new Response(utf8ResponseBody(response), {
+              status: response.status,
+              headers: response.headers,
+            });
+          } catch (directError) {
+            if (init.signal?.aborted) throw directError;
+            error = directError;
+          }
+        }
         const failure = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
         const route =
           port > 0
-            ? 'Uplink Core request'
+            ? (init.method ?? 'GET').toUpperCase() === 'GET' && !fileUri && encodedBody === null
+              ? 'Uplink and direct Core requests'
+              : 'Uplink Core request'
             : failure === null
               ? 'Direct Core request'
               : `Uplink ${failure} and direct Core request`;
