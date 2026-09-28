@@ -1,14 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { SettingsScaffold } from '../../components/settings/SettingsChrome';
 import { liveMeetingSTT, type STTEngine, type STTEngineId } from '../../lib/liveMeetingSTT';
 import {
   applySTTEvent,
@@ -102,96 +95,94 @@ export default function LiveMeetingSTTScreen() {
 
   if (!liveMeetingSTT) {
     return (
-      <View style={styles.screen}>
+      <SettingsScaffold title="Live STT test" detail>
         <Text style={styles.message}>
           This test needs a new iOS build with the live STT module.
         </Text>
-      </View>
+      </SettingsScaffold>
     );
   }
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.title}>Live STT test</Text>
-      <Text style={styles.caption}>
-        Choose one engine and speak. This test does not save audio or transcript.
-      </Text>
-      <Text style={styles.label}>Engine</Text>
-      {loadingEngines ? <ActivityIndicator color={ACCENT} /> : null}
-      {!loadingEngines && engines.length === 0 ? (
-        <Text style={styles.caption}>This prototype requires iOS 26 or later.</Text>
-      ) : null}
-      {engines.map((engine) => (
+    <SettingsScaffold title="Live STT test" detail>
+      <View style={styles.content}>
+        <Text style={styles.title}>Live STT test</Text>
+        <Text style={styles.caption}>
+          Choose one engine and speak. This test does not save audio or transcript.
+        </Text>
+        <Text style={styles.label}>Engine</Text>
+        {loadingEngines ? <ActivityIndicator color={ACCENT} /> : null}
+        {!loadingEngines && engines.length === 0 ? (
+          <Text style={styles.caption}>This prototype requires iOS 26 or later.</Text>
+        ) : null}
+        {engines.map((engine) => (
+          <Pressable
+            key={engine.id}
+            accessibilityRole="radio"
+            accessibilityState={{
+              selected: selected === engine.id,
+              disabled: !engine.available || busy || listening,
+            }}
+            disabled={!engine.available || busy || listening}
+            onPress={() => setSelected(engine.id)}
+            style={[styles.engine, selected === engine.id && styles.selected]}
+          >
+            <Text style={styles.engineName}>{engine.name}</Text>
+            <Text style={styles.caption}>
+              {engine.available ? 'Select to test' : 'Unavailable on this device'}
+            </Text>
+          </Pressable>
+        ))}
+        <Text style={styles.label}>Language</Text>
+        <TextInput
+          style={styles.input}
+          value={locale}
+          onChangeText={setLocale}
+          autoCapitalize="none"
+          editable={!busy && !listening}
+          accessibilityLabel="Recognition locale"
+        />
+        <Text style={styles.label}>Names and terms (comma separated)</Text>
+        <TextInput
+          style={styles.input}
+          value={terms}
+          onChangeText={setTerms}
+          editable={!busy && !listening}
+          accessibilityLabel="Names and project terms"
+        />
+        <Text style={styles.caption}>
+          Term hints apply to Apple Dictation and Nemotron. Other engines receive no vocabulary
+          hints.
+        </Text>
         <Pressable
-          key={engine.id}
-          accessibilityRole="radio"
-          accessibilityState={{
-            selected: selected === engine.id,
-            disabled: !engine.available || busy || listening,
-          }}
-          disabled={!engine.available || busy || listening}
-          onPress={() => setSelected(engine.id)}
-          style={[styles.engine, selected === engine.id && styles.selected]}
+          style={[styles.button, (busy || (!listening && !canStart)) && styles.disabled]}
+          disabled={busy || (!listening && !canStart)}
+          onPress={() => void (listening ? stop() : start())}
+          accessibilityRole="button"
         >
-          <Text style={styles.engineName}>{engine.name}</Text>
-          <Text style={styles.caption}>
-            {engine.available ? 'Select to test' : 'Unavailable on this device'}
-          </Text>
+          {busy ? (
+            <ActivityIndicator color="#160d25" />
+          ) : (
+            <Text style={styles.buttonText}>{listening ? 'Stop test' : 'Start test'}</Text>
+          )}
         </Pressable>
-      ))}
-      <Text style={styles.label}>Language</Text>
-      <TextInput
-        style={styles.input}
-        value={locale}
-        onChangeText={setLocale}
-        autoCapitalize="none"
-        editable={!busy && !listening}
-        accessibilityLabel="Recognition locale"
-      />
-      <Text style={styles.label}>Names and terms (comma separated)</Text>
-      <TextInput
-        style={styles.input}
-        value={terms}
-        onChangeText={setTerms}
-        editable={!busy && !listening}
-        accessibilityLabel="Names and project terms"
-      />
-      <Text style={styles.caption}>
-        Term hints apply to Apple Dictation and Nemotron. Other engines receive no vocabulary hints.
-      </Text>
-      <Pressable
-        style={[styles.button, (busy || (!listening && !canStart)) && styles.disabled]}
-        disabled={busy || (!listening && !canStart)}
-        onPress={() => void (listening ? stop() : start())}
-        accessibilityRole="button"
-      >
-        {busy ? (
-          <ActivityIndicator color="#160d25" />
-        ) : (
-          <Text style={styles.buttonText}>{listening ? 'Stop test' : 'Start test'}</Text>
-        )}
-      </Pressable>
-      <Text style={styles.status}>Status: {status}</Text>
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      <Text style={styles.label}>Transcript</Text>
-      <View style={styles.transcript}>
-        <Text style={styles.transcriptText}>{text || 'Recognized speech appears here.'}</Text>
+        <Text style={styles.status}>Status: {status}</Text>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <Text style={styles.label}>Transcript</Text>
+        <View style={styles.transcript}>
+          <Text style={styles.transcriptText}>{text || 'Recognized speech appears here.'}</Text>
+        </View>
       </View>
-    </ScrollView>
+    </SettingsScaffold>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#0c0913' },
-  content: { padding: 20, paddingBottom: 48, gap: 10 },
+  content: { gap: 10 },
   title: { color: TEXT, fontSize: 24, fontWeight: '700' },
   label: { color: TEXT, fontSize: 15, fontWeight: '600', marginTop: 10 },
   caption: { color: MUTED, fontSize: 13 },
-  message: { color: TEXT, padding: 20 },
+  message: { color: TEXT },
   engine: { padding: 12, borderWidth: 1, borderColor: '#393046', borderRadius: 10 },
   selected: { borderColor: ACCENT, backgroundColor: '#24152f' },
   engineName: { color: TEXT, fontSize: 15, fontWeight: '600' },
