@@ -35,9 +35,15 @@ enum StagingProbe {
         let delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL)
         let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { client.invalidateAndCancel() }
-        let (_, response) = try await client.data(from: coreURL)
-        guard let http = response as? HTTPURLResponse else { throw RemoteSmokeError.invalidFrame }
-        status = http.statusCode
+        var lastStatus = 0
+        for _ in 0..<3 {
+          let (_, response) = try await client.data(from: coreURL)
+          guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+            tunnel.isActive
+          else { throw RemoteSmokeError.invalidFrame }
+          lastStatus = http.statusCode
+        }
+        status = lastStatus
       } else {
         let response = try await RemoteSmokeTunnel.requestOnce(
           dataURL: dataURL, ticket: ticket, sessionId: sessionId, coreURL: coreURL,
