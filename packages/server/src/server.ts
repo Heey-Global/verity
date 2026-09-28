@@ -4106,6 +4106,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     done();
   });
 
+  // A ticket request can fail before its handler runs; record only the route
+  // pattern and status so bearer tokens and single-use tickets never enter logs.
+  app.addHook('onResponse', (request, reply, done) => {
+    const route = request.routeOptions.url;
+    if (route === '/sessions/:id/stream-ticket' || route === '/api/remote-control/descriptor') {
+      request.log.info(
+        {
+          stage: route === '/sessions/:id/stream-ticket' ? 'stream_ticket' : 'descriptor',
+          statusCode: reply.statusCode,
+          elapsedMs: reply.elapsedTime,
+        },
+        'mobile connection diagnostic request completed',
+      );
+    }
+    done();
+  });
+
   registerHealthRoute(app, {
     version: SERVER_VERSION,
     pushEnabled: deps.pushEnabled === true,

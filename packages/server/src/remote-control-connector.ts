@@ -378,14 +378,31 @@ class ConnectorSession implements RemoteConnectorReservation {
         outgoingSeq: 0,
         incomingEnded: false,
         outgoingEnded: false,
-        dialTimer: setTimeout(() => this.reset(id, 'upstream_error'), LOCAL_DIAL_TIMEOUT_MS),
+        dialTimer: setTimeout(() => {
+          this.options.log?.warn(
+            {
+              stage: 'local_ingress',
+              sessionId: this.request.sessionId,
+              streamId: id,
+              code: 'dial_timeout',
+            },
+            'remote connector could not reach local TLS ingress',
+          );
+          this.reset(id, 'upstream_error');
+        }, LOCAL_DIAL_TIMEOUT_MS),
         stallTimer: undefined,
         outgoingStallTimer: undefined,
         outgoingPaused: false,
       };
       stream.dialTimer.unref();
       this.streams.set(id, stream);
-      socket.on('connect', () => clearTimeout(stream.dialTimer));
+      socket.on('connect', () => {
+        clearTimeout(stream.dialTimer);
+        this.options.log?.info(
+          { stage: 'local_ingress', sessionId: this.request.sessionId, streamId: id },
+          'remote connector reached local TLS ingress',
+        );
+      });
       socket.on('data', (chunk: Buffer) => {
         if (this.terminated || !this.streams.has(id)) return;
         for (let offset = 0; offset < chunk.length; offset += MAX_CHUNK_BYTES) {
@@ -416,7 +433,25 @@ class ConnectorSession implements RemoteConnectorReservation {
         this.finishStreamIfComplete(id, stream);
       });
       socket.on('finish', () => this.finishStreamIfComplete(id, stream));
-      socket.on('error', () => this.reset(id, 'upstream_error'));
+      socket.on('error', (error: NodeJS.ErrnoException) => {
+        // Error messages may contain addresses. Keep only known OS failure codes.
+        const code = [
+          'ECONNREFUSED',
+          'ECONNRESET',
+          'ETIMEDOUT',
+          'ENOTFOUND',
+          'EHOSTUNREACH',
+          'ENETUNREACH',
+          'EPIPE',
+        ].includes(error.code ?? '')
+          ? error.code
+          : 'socket_error';
+        this.options.log?.warn(
+          { stage: 'local_ingress', sessionId: this.request.sessionId, streamId: id, code },
+          'remote connector local TLS ingress failed',
+        );
+        this.reset(id, 'upstream_error');
+      });
       socket.on('close', () => {
         if (this.streams.has(id)) this.reset(id, 'upstream_error');
       });

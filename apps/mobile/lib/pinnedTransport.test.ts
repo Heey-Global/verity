@@ -4,10 +4,12 @@ const mockDownload = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockRemotePort = jest.fn();
 const mockRemoteFailure = jest.fn();
+const mockReportDirectFailure = jest.fn();
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
   remoteControlFailureForUrl: (...args: unknown[]) => mockRemoteFailure(...args),
+  reportDirectRouteFailure: (...args: unknown[]) => mockReportDirectFailure(...args),
 }));
 
 jest.mock('expo-modules-core', () => ({
@@ -59,6 +61,7 @@ describe('pinned native file transport', () => {
     mockCancelRequest.mockReset();
     mockRemotePort.mockReset();
     mockRemoteFailure.mockReset().mockReturnValue(null);
+    mockReportDirectFailure.mockReset();
   });
 
   it('streams a file-backed Blob through the native upload API', async () => {
@@ -149,6 +152,8 @@ describe('pinned native file transport', () => {
       }),
     ).rejects.toMatchObject({ name: 'VerityConnectionError' });
     expect(mockRequest).toHaveBeenCalledTimes(1);
+    // The direct route was never tried, so nothing is known about it.
+    expect(mockReportDirectFailure).not.toHaveBeenCalled();
   });
 
   it('cancels the direct retry when its fetch signal aborts', async () => {
@@ -195,6 +200,7 @@ describe('pinned native file transport', () => {
         'Uplink and direct Core requests failed: Pinned TLS transport failed [NSURLErrorDomain:-1004:PIN_AND_CHAIN_TRUST_ACCEPTED]',
     });
     expect(mockRequest).toHaveBeenCalledTimes(2);
+    expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
   });
 
   it('reports which route failed when the tunnel and direct Core request both fail', async () => {
@@ -213,6 +219,9 @@ describe('pinned native file transport', () => {
       message:
         'Uplink probe and direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
     });
+    // Without this the next request is routed directly again, into the same
+    // dead address, instead of through Uplink.
+    expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
   });
 
   it.each([204, 205, 304])('constructs a bodyless response for status %s', async (status) => {

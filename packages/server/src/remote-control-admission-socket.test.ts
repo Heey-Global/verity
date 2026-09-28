@@ -59,7 +59,9 @@ async function fixture(options?: {
   });
   const reservations: { closed?: Promise<void> }[] = [];
   const attachedSessions: string[] = [];
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const client = new UplinkControlClient({
+    log,
     url: 'wss://uplink.example/control',
     store: store as unknown as EventStore & typeof store,
     serverVersion: 'test',
@@ -89,7 +91,7 @@ async function fixture(options?: {
     },
   });
   client.start();
-  return { peers, dataPeers, reservations, attachedSessions, client };
+  return { peers, dataPeers, reservations, attachedSessions, client, log };
 }
 
 async function nextPeer(peers: ControlPeer[], index: number): Promise<ControlPeer> {
@@ -122,6 +124,33 @@ function request(peer: ControlPeer, sessionId: string, leaseMs = 60_000): void {
 }
 
 describe('real control socket with connector reservation', () => {
+  it('distinguishes unavailable control from missing installation routing without logging credentials', async () => {
+    const f = await fixture();
+    f.client.remoteControlDescriptor();
+    f.client.remoteControlDescriptor();
+    expect(
+      f.log.info.mock.calls.filter((call) => call[1] === 'remote control availability changed'),
+    ).toEqual([
+      [
+        { stage: 'descriptor', state: 'control_unavailable' },
+        'remote control availability changed',
+      ],
+    ]);
+    const peer = await nextPeer(f.peers, 0);
+    request(peer, 'diagnostic_session');
+    await vi.waitFor(() =>
+      expect(peer.received).toContainEqual({
+        type: 'session.accept',
+        sessionId: 'diagnostic_session',
+      }),
+    );
+    f.client.remoteControlDescriptor();
+    expect(f.log.info).toHaveBeenCalledWith(
+      { stage: 'descriptor', state: 'installation_unavailable' },
+      'remote control availability changed',
+    );
+    expect(JSON.stringify(f.log.info.mock.calls)).not.toContain('test-subscription');
+  });
   it('accepts only after reservation and releases on cancellation', async () => {
     let beginReservation!: () => void;
     const reservationStarted = new Promise<void>((resolve) => {
@@ -145,6 +174,15 @@ describe('real control socket with connector reservation', () => {
       expect(peer.received).toContainEqual({ type: 'session.accept', sessionId: 'session_one' }),
     );
     expect(f.reservations).toHaveLength(1);
+    // Acceptance without a ticket otherwise leaves no evidence of which side stalled.
+    expect(f.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: 'admission',
+        requestId: 'request_session_one',
+        sessionId: 'session_one',
+      }),
+      'remote session accepted; waiting for ticket',
+    );
     peer.socket.send(
       JSON.stringify({ type: 'session.cancelled', sessionId: 'session_one', code: 'unavailable' }),
     );

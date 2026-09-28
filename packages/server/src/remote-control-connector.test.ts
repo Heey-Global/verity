@@ -15,6 +15,7 @@ afterEach(async () => {
 async function fixture(
   connectLocal?: (host: string, port: number) => Socket,
   serviceOptions: { autoPong?: boolean } = {},
+  log?: Pick<Console, 'info' | 'warn'>,
 ): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
   received: unknown[];
@@ -55,6 +56,7 @@ async function fixture(
     });
   });
   const pool = createRemoteConnectorPool({
+    ...(log ? { log } : {}),
     dataUrl: 'wss://uplink.example/data',
     localHost: '127.0.0.1',
     localPort: address.port,
@@ -98,7 +100,8 @@ describe('remote control connector', () => {
     expect(() => remoteDataUrlForControl('wss://uplink.example/control?target=other')).toThrow();
   });
   it('attaches a ticket before forwarding opaque bytes to the fixed local TLS ingress', async () => {
-    const f = await fixture();
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(undefined, {}, log);
     const reservation = await reserve(f);
     const attached = reservation.attach(
       'installation_ticket',
@@ -136,6 +139,11 @@ describe('remote control connector', () => {
       expect(f.received).toContainEqual({ type: 'stream.end', streamId: 'stream_one' }),
     );
     expect(f.localConnections()).toBe(1);
+    expect(log.info).toHaveBeenCalledWith(
+      { stage: 'local_ingress', sessionId: 'session_one', streamId: 'stream_one' },
+      'remote connector reached local TLS ingress',
+    );
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain('installation_ticket');
     reservation.release('test complete');
   });
 

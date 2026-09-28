@@ -84,6 +84,7 @@ import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
+import { sessionLoadError } from '../lib/sessionLoadError';
 import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
 import {
   hasPendingProjectSetup,
@@ -630,7 +631,15 @@ function SessionList({ client }: { client: VerityClient }) {
     );
   }
   if (error && sessions.length === 0) {
-    return <CenteredMessage title="Couldn't load sessions" subtitle={error} onRetry={refresh} />;
+    const failure = sessionLoadError(error);
+    return (
+      <CenteredMessage
+        title="Couldn't load sessions"
+        subtitle={failure.summary}
+        details={failure.details}
+        onRetry={refresh}
+      />
+    );
   }
 
   // The list is shown as project groups. A poll error with known data is non-fatal
@@ -2060,16 +2069,35 @@ function GroupSeparator() {
 function CenteredMessage({
   title,
   subtitle,
+  details,
   onRetry,
 }: {
   title: string;
   subtitle: string;
+  details?: string;
   onRetry?: () => void;
 }) {
+  const [showDetails, setShowDetails] = useState(false);
   return (
     <View style={styles.centered}>
       <Text style={styles.emptyTitle}>{title}</Text>
       <Text style={styles.emptySubtitle}>{subtitle}</Text>
+      {details ? (
+        <>
+          <Pressable
+            onPress={() => setShowDetails((shown) => !shown)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showDetails }}
+            accessibilityLabel={showDetails ? 'Hide technical details' : 'Show technical details'}
+            style={styles.errorDetailsButton}
+          >
+            <Text style={styles.errorDetailsLabel}>
+              {showDetails ? 'Hide technical details' : 'Show technical details'}
+            </Text>
+          </Pressable>
+          {showDetails ? <Text style={styles.errorDetailsText}>{details}</Text> : null}
+        </>
+      ) : null}
       {onRetry ? (
         <Pressable style={styles.retry} onPress={onRetry} accessibilityRole="button">
           <Text style={styles.retryLabel}>Retry</Text>
@@ -2281,6 +2309,21 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'center',
     maxWidth: 300,
     lineHeight: 20 * theme.fontScale,
+  },
+  errorDetailsButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+  },
+  errorDetailsLabel: {
+    color: theme.colors.primary,
+    fontSize: theme.text.sm,
+  },
+  errorDetailsText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    textAlign: 'center',
+    maxWidth: 320,
   },
   emptyAction: {
     marginTop: theme.spacing.sm,

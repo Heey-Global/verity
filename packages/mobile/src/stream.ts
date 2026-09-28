@@ -1,3 +1,4 @@
+import { VerityApiError } from './api.js';
 import { type AgentEvent, decodeStreamMessage, type StreamEventFrame } from './wire.js';
 import { SessionReducer, type SessionState } from './reducer.js';
 
@@ -12,6 +13,50 @@ export interface StreamSocket {
     listener: (event: { data: unknown }) => void,
   ): void;
   close(): void;
+}
+
+// Ticket issuance is an HTTP request; a transport failure is not evidence of
+// invalid credentials. Never forward an arbitrary server body or native message.
+function streamTicketFailure(error: unknown): string {
+  if (
+    error instanceof VerityApiError &&
+    Number.isInteger(error.status) &&
+    error.status >= 400 &&
+    error.status <= 599
+  ) {
+    if (error.status === 401 || error.status === 403) {
+      return `Could not open the session: Core rejected this device's authorization (HTTP ${error.status}). Sign in again and retry.`;
+    }
+    return `Could not open the session: Core could not issue a stream ticket (HTTP ${error.status}). Retry in a moment.`;
+  }
+  if (error instanceof Error && error.name === 'VerityConnectionError') {
+    const stage = error.message.match(
+      /^Uplink (routing|setup|admission|attachment|probe)(?: | and)/u,
+    )?.[1];
+    const admissionCode = error.message.match(
+      /^Uplink admission \(Remote admission failed: (unavailable|rate_limited|limit_reached|protocol_unsupported|timeout|cancelled|internal)\.\)/u,
+    )?.[1];
+    const missingDescriptor = error.message.startsWith(
+      'Uplink routing (no remote descriptor saved)',
+    );
+    const missingAuth = error.message.startsWith('Uplink routing (missing device authentication)');
+    const directAlsoFailed = / and direct Core requests? failed:/u.test(error.message);
+    if (missingAuth) {
+      return 'Could not open the session: this device is not signed in. Connect to Core and sign in again.';
+    }
+    if (missingDescriptor) {
+      return 'Could not open the session: Remote Control is not configured on this device and the direct Core connection failed. Connect to Core through VPN once, then retry without VPN. (Uplink routing)';
+    }
+    if (error.message.startsWith('Uplink ')) {
+      const diagnosis = `Uplink ${stage ?? 'connection'} failed${admissionCode ? ` (${admissionCode})` : ''}`;
+      return `Could not open the session: ${diagnosis}${directAlsoFailed ? ', and Core was unreachable directly' : ''}. Check your connection and retry.`;
+    }
+    if (error.message.startsWith('Direct Core request failed:')) {
+      return 'Could not open the session: Core is unreachable at the paired address. Connect through VPN or enable Remote Control, then retry. (Direct Core)';
+    }
+    return 'Could not open the session: the connection failed. Check your connection and retry.';
+  }
+  return 'Could not open the session: the connection failed before Core could authorize the stream. Retry in a moment.';
 }
 
 export type StreamSocketFactory = (url: string, protocols?: string | string[]) => StreamSocket;
@@ -268,10 +313,10 @@ export class SessionStream {
           this.opening = false;
           this.openSocket(`verity-stream-ticket.${ticket}`);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (this.stopped || generation !== this.reconnectGeneration) return;
           this.opening = false;
-          this.opts.onError?.('stream authorization failed');
+          this.opts.onError?.(streamTicketFailure(error));
           this.reconnectAttempt += 1;
           this.setConnectionState('reconnecting');
           const delayMs = Math.min(
