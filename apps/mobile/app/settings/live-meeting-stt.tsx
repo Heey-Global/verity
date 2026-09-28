@@ -50,6 +50,7 @@ export default function LiveMeetingSTTScreen() {
       if (!mounted) return;
       if (event.kind === 'status') {
         setStatus(event.state);
+        setListening(event.state === 'listening');
         if (event.message) setError(event.message);
       } else setTranscript((current) => applySTTEvent(current, event));
     });
@@ -71,7 +72,6 @@ export default function LiveMeetingSTTScreen() {
         .map((word) => word.trim())
         .filter(Boolean);
       await liveMeetingSTT.start(selected, locale.trim(), vocabulary);
-      setListening(true);
     } catch (reason) {
       setError(String(reason));
       setStatus('Failed to start');
