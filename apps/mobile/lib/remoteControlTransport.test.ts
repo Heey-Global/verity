@@ -7,6 +7,7 @@ const mockStop = jest.fn();
 const mockRequest = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockLastStopReason = jest.fn();
+const mockDiagnosticSummary = jest.fn();
 
 jest.mock('./remoteControlAdmission', () => ({
   requestRemoteControlAdmission: (...args: unknown[]) => mockAdmission(...args),
@@ -23,6 +24,7 @@ jest.mock('expo-modules-core', () => ({
           isActive: mockIsActive,
           stop: mockStop,
           lastStopReason: mockLastStopReason,
+          diagnosticSummary: mockDiagnosticSummary,
         },
 }));
 
@@ -69,6 +71,7 @@ describe('shared remote control transport', () => {
       );
     mockCancelRequest.mockReset().mockResolvedValue(undefined);
     mockLastStopReason.mockReset().mockResolvedValue(null);
+    mockDiagnosticSummary.mockReset().mockResolvedValue(null);
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 
@@ -427,12 +430,49 @@ describe('remote diagnostics', () => {
     mockStart.mockReset().mockResolvedValue(4_321);
     mockIsActive.mockReset().mockResolvedValue(true);
     expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
-    mockRequest.mockRejectedValue(new Error('Core probe failed'));
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
     expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
       ready: false,
-      detail: 'probe (Core did not answer)',
+      detail: 'probe (Remote Core probe failed.)',
     });
     expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows local tunnel stream progress after a failed Core probe', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4_321);
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
+    mockDiagnosticSummary.mockResolvedValue('local=1, opened=1, received=0, last=stream_opened');
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail:
+        'probe (Remote Core probe failed.; tunnel local=1, opened=1, received=0, last=stream_opened)',
+    });
+  });
+
+  it('does not display arbitrary native diagnostic text', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4_321);
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
+    mockDiagnosticSummary.mockResolvedValue('ticket=private-value');
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: 'probe (Remote Core probe failed.)',
+    });
   });
 
   it('explains why Uplink was not attempted without a saved descriptor', () => {

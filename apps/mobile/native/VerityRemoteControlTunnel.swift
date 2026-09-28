@@ -47,6 +47,11 @@ class VerityRemoteControlTunnel: Module {
       return self.lastStartFailure
     }
 
+    AsyncFunction("diagnosticSummary") { () -> String? in
+      guard #available(iOS 17.0, macOS 14.0, *) else { return nil }
+      return (self.tunnel as? RemoteAppTunnel)?.diagnosticSummary
+    }
+
     AsyncFunction("isActive") { () -> Bool in
       guard #available(iOS 17.0, macOS 14.0, *) else { return false }
       return (self.tunnel as? RemoteAppTunnel)?.isActive == true

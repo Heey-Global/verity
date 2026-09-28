@@ -11,6 +11,8 @@ interface NativeTunnel {
   stop(): Promise<void>;
   /** Absent in native builds older than the JavaScript bundle. */
   lastStopReason?(): Promise<string | null>;
+  /** Available in builds with native stream diagnostics. */
+  diagnosticSummary?(): Promise<string | null>;
 }
 
 interface NativePinnedTransport {
@@ -70,6 +72,20 @@ async function tunnelStopReason(): Promise<string | null> {
     const reason = await native.lastStopReason();
     if (typeof reason !== 'string' || reason.length === 0) return null;
     return reason.replace(/\s+/gu, ' ').slice(0, 160);
+  } catch {
+    return null;
+  }
+}
+
+async function tunnelDiagnosticSummary(): Promise<string | null> {
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (typeof native.diagnosticSummary !== 'function') return null;
+    const summary = await native.diagnosticSummary();
+    return typeof summary === 'string' &&
+      /^local=\d+, opened=\d+, received=\d+, last=[a-z_.]+$/u.test(summary)
+      ? summary
+      : null;
   } catch {
     return null;
   }
@@ -156,9 +172,10 @@ export async function testRemoteControlForUrl(
         }
       } catch (error) {
         // A diagnostic must not replace a tunnel that may be carrying transfers.
+        const summary = await tunnelDiagnosticSummary();
         return {
           ready: false,
-          detail: `probe (${safeRemoteFailure(error) ?? 'Core did not answer'})`,
+          detail: `probe (${safeRemoteFailure(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
         };
       }
     }
@@ -322,7 +339,12 @@ async function open(coreUrl: string, key: string): Promise<number> {
   } catch (error) {
     const detail =
       (stage === 'attachment' ? await tunnelStopReason() : null) ?? safeRemoteFailure(error);
-    lastFailure = { key, stage, detail };
+    const summary = stage === 'probe' ? await tunnelDiagnosticSummary() : null;
+    lastFailure = {
+      key,
+      stage,
+      detail: summary ? `${detail ?? 'unclassified failure'}; tunnel ${summary}` : detail,
+    };
     console.warn(`Remote Control ${stage} failed: ${detail ?? 'unclassified failure'}`);
     admission?.cancel();
     if (tunnelStarted) {
