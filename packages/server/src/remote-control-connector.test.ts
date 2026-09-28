@@ -12,7 +12,10 @@ afterEach(async () => {
   open.clear();
 });
 
-async function fixture(connectLocal?: (host: string, port: number) => Socket): Promise<{
+async function fixture(
+  connectLocal?: (host: string, port: number) => Socket,
+  serviceOptions: { autoPong?: boolean } = {},
+): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
   received: unknown[];
   peer: () => WebSocket;
@@ -31,7 +34,7 @@ async function fixture(connectLocal?: (host: string, port: number) => Socket): P
   open.add({ close: () => closeServer(local) });
   const address = local.address();
   if (!address || typeof address === 'string') throw new Error('no local address');
-  const service = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  const service = new WebSocketServer({ port: 0, host: '127.0.0.1', ...serviceOptions });
   await new Promise<void>((resolve) => service.once('listening', resolve));
   open.add({
     close: () =>
@@ -378,6 +381,67 @@ describe('remote control connector', () => {
       streamId: 'stream_one',
       code: 'timeout',
     });
+    reservation.release('test complete');
+  });
+
+  it('ends an attached session whose data socket stops answering pings', async () => {
+    // Without the heartbeat a half-open /data socket keeps its reservation
+    // and local sockets forever now that attached sessions have no deadline.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'], shouldAdvanceTime: true });
+    const f = await fixture(undefined, { autoPong: false });
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'installation_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    let closed = false;
+    void reservation.closed!.then(() => {
+      closed = true;
+    });
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await reservation.closed;
+  });
+
+  it('keeps an attached session whose data socket answers pings', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'], shouldAdvanceTime: true });
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'installation_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    let closed = false;
+    void reservation.closed!.then(() => {
+      closed = true;
+    });
+    for (let tick = 0; tick < 12; tick += 1) {
+      await vi.advanceTimersByTimeAsync(15_000);
+      // Real pong delivery over the loopback socket.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(closed).toBe(false);
     reservation.release('test complete');
   });
 

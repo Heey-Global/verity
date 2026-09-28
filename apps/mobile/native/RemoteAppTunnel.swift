@@ -166,7 +166,6 @@ final class RemoteAppTunnel: @unchecked Sendable {
     guard !stopped else { lock.unlock(); return }
     stopped = true
     stopReasonText = reason
-    NSLog("Verity remote tunnel stopped: %@", reason)
     let connections = streams.values.map(\.connection)
     for stream in streams.values { stream.closed = true }
     streams.removeAll()
@@ -175,9 +174,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     listener?.cancel()
     listener = nil
     lock.unlock()
+    NSLog("Verity remote tunnel stopped: %@", reason)
     for connection in connections { connection.cancel() }
     reader?.cancel()
-    heartbeat?.cancel()
+    lock.withLock { heartbeat }?.cancel()
     socket.cancel(with: .goingAway, reason: nil)
     outer.invalidateAndCancel()
   }
@@ -200,11 +200,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   // Mirrors the Uplink side of the data heartbeat: one outstanding ping, and the
-  // attachment ends 45 seconds after the oldest unanswered one. Measured from the
+  // attachment ends once it has gone unanswered for more than 45 seconds, noticed
+  // on the next 15-second tick (so within 60 seconds). Measured from the
   // ping rather than the last pong, so a suspension in the background does not
   // by itself count as a dead socket.
   private func startHeartbeat() {
-    heartbeat = Task { [weak self] in
+    let task = Task { [weak self] in
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 15_000_000_000)
         guard !Task.isCancelled, let self else { return }
@@ -228,6 +229,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
         }
       }
     }
+    // The reader may already have stopped the tunnel; that stop could not see this task.
+    let alreadyStopped = lock.withLock { () -> Bool in
+      if stopped { return true }
+      heartbeat = task
+      return false
+    }
+    if alreadyStopped { task.cancel() }
   }
 
   private func handle(_ frame: [String: Any]) async throws {

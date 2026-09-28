@@ -14,6 +14,8 @@ const MAX_STREAM_QUEUE_BYTES = 256 * 1_024;
 const MAX_SOCKET_QUEUE_BYTES = 1_024 * 1_024;
 const LOCAL_DIAL_TIMEOUT_MS = 10_000;
 const STALLED_QUEUE_TIMEOUT_MS = 30_000;
+const DATA_PING_INTERVAL_MS = 15_000;
+const DATA_PONG_DEADLINE_MS = 45_000;
 const ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const TICKET = /^[A-Za-z0-9_-]{1,512}$/u;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
@@ -112,6 +114,8 @@ class ConnectorSession implements RemoteConnectorReservation {
   private retiredIds = new Set<string>();
   private attachReject: ((error: Error) => void) | undefined;
   private attachTimer: NodeJS.Timeout | undefined;
+  private heartbeat: NodeJS.Timeout | undefined;
+  private unansweredPingSince: number | undefined;
 
   constructor(
     private readonly options: RemoteConnectorPoolOptions,
@@ -177,6 +181,7 @@ class ConnectorSession implements RemoteConnectorReservation {
             if (this.attachTimer) clearTimeout(this.attachTimer);
             this.attachTimer = undefined;
             this.attachReject = undefined;
+            this.startHeartbeat(ws);
             resolve();
             return;
           }
@@ -208,9 +213,31 @@ class ConnectorSession implements RemoteConnectorReservation {
     }
   }
 
+  // An attached session has no wall-clock limit, so a data socket that went
+  // half-open without a close would otherwise hold its reservation and local
+  // sockets indefinitely. A ping unanswered for more than 45 seconds ends the
+  // session on the next 15-second tick, so within 60 seconds.
+  private startHeartbeat(ws: WebSocket): void {
+    ws.on('pong', () => {
+      this.unansweredPingSince = undefined;
+    });
+    this.heartbeat = setInterval(() => {
+      if (this.terminated || ws.readyState !== WebSocket.OPEN) return;
+      if (this.unansweredPingSince === undefined) {
+        this.unansweredPingSince = Date.now();
+        ws.ping();
+      } else if (Date.now() - this.unansweredPingSince > DATA_PONG_DEADLINE_MS) {
+        ws.terminate();
+        this.release('remote data heartbeat timeout');
+      }
+    }, DATA_PING_INTERVAL_MS);
+    this.heartbeat.unref();
+  }
+
   release(reason: string): void {
     if (this.terminated) return;
     this.terminated = true;
+    if (this.heartbeat) clearInterval(this.heartbeat);
     this.options.log?.info(
       {
         sessionId: this.request.sessionId,
