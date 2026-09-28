@@ -11,6 +11,7 @@ interface ControlPeer {
 
 const fixtures: { close: () => Promise<void> }[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.close()));
 });
 
@@ -88,7 +89,7 @@ async function fixture(options?: {
     },
   });
   client.start();
-  return { peers, dataPeers, reservations, attachedSessions };
+  return { peers, dataPeers, reservations, attachedSessions, client };
 }
 
 async function nextPeer(peers: ControlPeer[], index: number): Promise<ControlPeer> {
@@ -98,13 +99,13 @@ async function nextPeer(peers: ControlPeer[], index: number): Promise<ControlPee
   return peers[index]!;
 }
 
-function request(peer: ControlPeer, sessionId: string): void {
+function request(peer: ControlPeer, sessionId: string, leaseMs = 60_000): void {
   peer.socket.send(
     JSON.stringify({
       type: 'welcome',
       installationId: 'installation-one',
       features: ['sharing', 'remote-control'],
-      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      leaseUntil: new Date(Date.now() + leaseMs).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
     }),
@@ -207,5 +208,79 @@ describe('real control socket with connector reservation', () => {
     expect(f.reservations[0]?.closed).toBeInstanceOf(Promise);
     await f.reservations[0]!.closed;
     await vi.waitFor(() => expect(f.dataPeers[0]?.socket.readyState).toBe(WebSocket.CLOSED));
+  });
+
+  it('keeps an attached session open past any wall-clock limit', async () => {
+    // Only timeouts are faked: the control heartbeat interval and the real
+    // sockets keep running, so the only thing the jump can end is a session
+    // deadline. A cap here severs every stream the app has open - its live
+    // event socket included - and shows up on the phone as a random drop.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+    const f = await fixture({ dataSocket: true });
+    const peer = await nextPeer(f.peers, 0);
+    request(peer, 'session_one', 2 * 60 * 60_000);
+    await vi.waitFor(() =>
+      expect(peer.received).toContainEqual({ type: 'session.accept', sessionId: 'session_one' }),
+    );
+    peer.socket.send(
+      JSON.stringify({
+        type: 'session.ticket',
+        sessionId: 'session_one',
+        ticket: 'installation_ticket',
+        expiresAt: Date.now() + 60_000,
+        capability: 'remote-control-v1',
+      }),
+    );
+    await vi.waitFor(() => expect(f.dataPeers[0]?.received[0]?.type).toBe('attach'));
+    f.dataPeers[0]!.socket.send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await vi.waitFor(() => expect(f.attachedSessions).toEqual(['session_one']));
+    let closed = false;
+    void f.reservations[0]!.closed!.then(() => {
+      closed = true;
+    });
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toBe(false);
+    expect(f.dataPeers[0]!.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('fails only the affected session on a late ticket', async () => {
+    const f = await fixture({ dataSocket: true });
+    const peer = await nextPeer(f.peers, 0);
+    request(peer, 'session_one');
+    await vi.waitFor(() =>
+      expect(peer.received).toContainEqual({ type: 'session.accept', sessionId: 'session_one' }),
+    );
+    // A ticket for a session Core never accepted (or already released) must
+    // not close the control socket: that would drop every other remote
+    // session and all preview shares with it.
+    peer.socket.send(
+      JSON.stringify({
+        type: 'session.ticket',
+        sessionId: 'session_unknown',
+        ticket: 'installation_ticket',
+        expiresAt: Date.now() + 60_000,
+        capability: 'remote-control-v1',
+      }),
+    );
+    peer.socket.send(
+      JSON.stringify({
+        type: 'session.ticket',
+        sessionId: 'session_one',
+        ticket: 'installation_ticket',
+        expiresAt: Date.now() - 1,
+        capability: 'remote-control-v1',
+      }),
+    );
+    await f.reservations[0]!.closed;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(peer.socket.readyState).toBe(WebSocket.OPEN);
+    expect(f.peers).toHaveLength(1);
   });
 });

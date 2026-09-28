@@ -9,6 +9,8 @@ interface NativeTunnel {
   start(dataUrl: string, ticket: string, sessionId: string, coreUrl: string): Promise<number>;
   isActive(): Promise<boolean>;
   stop(): Promise<void>;
+  /** Absent in native builds older than the JavaScript bundle. */
+  lastStopReason?(): Promise<string | null>;
 }
 
 interface NativePinnedTransport {
@@ -27,14 +29,36 @@ interface NativePinnedTransport {
 let active: { key: string; port: number } | null = null;
 let operation: Promise<unknown> = Promise.resolve();
 let retryAfter = 0;
-let lastFailure: { key: string; stage: 'setup' | 'admission' | 'attachment' | 'probe' } | null =
-  null;
+let lastFailure: {
+  key: string;
+  stage: 'setup' | 'admission' | 'attachment' | 'probe';
+  detail: string | null;
+} | null = null;
 
 export function remoteControlFailureForUrl(url: string): string | null {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
-  return key !== null && lastFailure?.key === key ? lastFailure.stage : null;
+  if (key === null || lastFailure?.key !== key) return null;
+  return lastFailure.detail === null
+    ? lastFailure.stage
+    : `${lastFailure.stage} (${lastFailure.detail})`;
+}
+
+// The native tunnel's own account of why it ended. Without it every drop reads
+// as the same "native transport error", which is how an idle timeout went
+// unnoticed for several releases. Clipped and flattened: it lands in an error
+// message shown on screen.
+async function tunnelStopReason(): Promise<string | null> {
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (typeof native.lastStopReason !== 'function') return null;
+    const reason = await native.lastStopReason();
+    if (typeof reason !== 'string' || reason.length === 0) return null;
+    return reason.replace(/\s+/gu, ' ').slice(0, 160);
+  } catch {
+    return null;
+  }
 }
 
 async function probeCore(coreUrl: string, tlsPin: string, port: number): Promise<void> {
@@ -119,7 +143,11 @@ async function selectPort(url: string): Promise<number> {
     } catch {
       // A native module unavailable on this platform leaves the direct route usable.
     }
-    if (active === attachment) active = null;
+    if (active === attachment) {
+      active = null;
+      const reason = await tunnelStopReason();
+      console.warn(`Remote Control tunnel ended: ${reason ?? 'no reason reported'}`);
+    }
   }
   if (keyFor(target) !== key) {
     try {
@@ -171,8 +199,12 @@ async function open(coreUrl: string, key: string): Promise<number> {
     active = { key, port };
     lastFailure = null;
     return port;
-  } catch {
-    lastFailure = { key, stage };
+  } catch (error) {
+    const detail = stage === 'attachment' ? await tunnelStopReason() : null;
+    lastFailure = { key, stage, detail };
+    console.warn(
+      `Remote Control ${stage} failed: ${detail ?? (error instanceof Error ? error.message : 'unknown error')}`,
+    );
     admission?.cancel();
     if (tunnelStarted) {
       try {

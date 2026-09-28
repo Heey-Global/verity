@@ -633,10 +633,26 @@ export class UplinkControlClient implements PreviewEdgeControl {
         throw new Error('unnegotiated remote ticket');
       if (!validRemoteSessionTicket(frame)) throw new Error('invalid remote ticket');
       const session = this.remoteSessions.get(frame.sessionId as string);
-      if (!session?.reservation || session.ticketReceived)
-        throw new Error('ticket without accepted reservation');
+      // A well-formed ticket for a session this side already released is a
+      // race with its own deadline, not a hostile peer. Closing the control
+      // socket for it would take every other remote session and the preview
+      // shares down with it, so only the affected session fails.
+      if (!session?.reservation) {
+        this.options.log?.warn(
+          { sessionId: frame.sessionId },
+          'ignoring remote ticket without accepted reservation',
+        );
+        return;
+      }
+      if (session.ticketReceived) {
+        this.releaseRemoteSession(frame.sessionId as string, 'duplicate remote ticket');
+        return;
+      }
       const expiresAt = frame.expiresAt as number;
-      if (expiresAt <= Date.now()) throw new Error('expired remote ticket');
+      if (expiresAt <= Date.now()) {
+        this.releaseRemoteSession(frame.sessionId as string, 'remote ticket arrived expired');
+        return;
+      }
       session.ticketReceived = true;
       clearTimeout(session.deadlineTimer);
       session.deadlineTimer = setTimeout(
@@ -648,15 +664,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
         .attach(frame.ticket as string, expiresAt, session.controller.signal)
         .then(() => {
           if (this.remoteSessions.get(frame.sessionId as string) !== session) return;
+          // An active session has no wall-clock limit: the protocol keeps it
+          // while the lease and the data heartbeat hold, and it ends through
+          // control loss, cancellation or the data socket closing. A fixed
+          // cap here severed every open stream, the app's live event socket
+          // included, mid-use.
           clearTimeout(session.deadlineTimer);
-          session.deadlineTimer = setTimeout(() => {
-            if (this.remoteSessions.get(frame.sessionId as string) === session)
-              this.releaseRemoteSession(
-                frame.sessionId as string,
-                'remote session duration reached',
-              );
-          }, 5 * 60_000);
-          session.deadlineTimer.unref();
+          this.options.log?.info({ sessionId: frame.sessionId }, 'remote session attached');
         })
         .catch((error: unknown) => {
           this.options.log?.warn({ error }, 'remote connector attachment failed');
@@ -856,6 +870,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     const session = this.remoteSessions.get(sessionId);
     if (!session) return;
     this.remoteSessions.delete(sessionId);
+    this.options.log?.info({ sessionId, reason }, 'remote session released');
     clearTimeout(session.deadlineTimer);
     session.controller.abort();
     session.reservation?.release(reason);

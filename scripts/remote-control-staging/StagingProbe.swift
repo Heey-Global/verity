@@ -2,6 +2,10 @@ import Darwin
 import Foundation
 import Network
 
+enum ProbeFailure: Error {
+  case tunnelStopped(String)
+}
+
 @available(macOS 14.0, *)
 @main
 enum StagingProbe {
@@ -35,12 +39,23 @@ enum StagingProbe {
         let delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL)
         let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { client.invalidateAndCancel() }
+        // A pause longer than the data heartbeat interval is the case a
+        // few-second probe never saw: an attachment that dies while idle.
+        let idleSeconds = UInt64(environment["VERITY_REMOTE_PROBE_IDLE_SECONDS"] ?? "0") ?? 0
         var lastStatus = 0
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
+          if attempt == 2 && idleSeconds > 0 {
+            print("idling \(idleSeconds)s")
+            fflush(stdout)
+            try await Task.sleep(nanoseconds: idleSeconds * 1_000_000_000)
+          }
+          guard tunnel.isActive else {
+            throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "unknown")
+          }
           let (_, response) = try await client.data(from: coreURL)
           guard let http = response as? HTTPURLResponse, http.statusCode == 200,
             tunnel.isActive
-          else { throw RemoteSmokeError.invalidFrame }
+          else { throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "bad response") }
           lastStatus = http.statusCode
         }
         status = lastStatus

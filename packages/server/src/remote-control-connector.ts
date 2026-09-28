@@ -14,6 +14,8 @@ const MAX_STREAM_QUEUE_BYTES = 256 * 1_024;
 const MAX_SOCKET_QUEUE_BYTES = 1_024 * 1_024;
 const LOCAL_DIAL_TIMEOUT_MS = 10_000;
 const STALLED_QUEUE_TIMEOUT_MS = 30_000;
+const DATA_PING_INTERVAL_MS = 15_000;
+const DATA_PONG_DEADLINE_MS = 45_000;
 const ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const TICKET = /^[A-Za-z0-9_-]{1,512}$/u;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
@@ -41,6 +43,8 @@ export interface RemoteConnectorPoolOptions {
   localPort: number;
   webSocketFactory?: (url: string, options: { maxPayload: number }) => WebSocket;
   connectLocal?: (host: string, port: number) => Socket;
+  /** Records why sessions end and streams reset; otherwise a failure only surfaces as a generic app error. */
+  log?: Pick<Console, 'info' | 'warn'>;
 }
 
 export function remoteDataUrlForControl(controlUrl: string): string {
@@ -110,6 +114,8 @@ class ConnectorSession implements RemoteConnectorReservation {
   private retiredIds = new Set<string>();
   private attachReject: ((error: Error) => void) | undefined;
   private attachTimer: NodeJS.Timeout | undefined;
+  private heartbeat: NodeJS.Timeout | undefined;
+  private unansweredPingSince: number | undefined;
 
   constructor(
     private readonly options: RemoteConnectorPoolOptions,
@@ -152,14 +158,14 @@ class ConnectorSession implements RemoteConnectorReservation {
         ws.on('message', (data, isBinary) => {
           if (this.terminated) return;
           if (isBinary || !Buffer.isBuffer(data) || data.byteLength > MAX_FRAME_BYTES) {
-            this.failProtocol();
+            this.failProtocol({ type: isBinary ? '(binary)' : '(oversize)' });
             return;
           }
           let frame: unknown;
           try {
             frame = JSON.parse(data.toString('utf8'));
           } catch {
-            this.failProtocol();
+            this.failProtocol({ type: '(unparseable)' });
             return;
           }
           if (!this.ready) {
@@ -168,33 +174,80 @@ class ConnectorSession implements RemoteConnectorReservation {
               frame.sessionId !== this.request.sessionId ||
               frame.capability !== 'remote-control-v1'
             ) {
-              this.failProtocol();
+              this.failProtocol(frame);
               return;
             }
             this.ready = true;
             if (this.attachTimer) clearTimeout(this.attachTimer);
             this.attachTimer = undefined;
             this.attachReject = undefined;
+            this.startHeartbeat(ws);
             resolve();
             return;
           }
           try {
             this.handleFrame(frame);
-          } catch {
+          } catch (error) {
+            this.options.log?.warn(
+              { sessionId: this.request.sessionId, error },
+              'remote connector stream handling failed',
+            );
             this.release('remote stream failed');
           }
         });
-        ws.on('error', () => this.release('remote data connection failed'));
-        ws.on('close', () => this.release('remote data connection closed'));
+        ws.on('error', (error) => {
+          this.options.log?.warn(
+            { sessionId: this.request.sessionId, error },
+            'remote data connection error',
+          );
+          this.release('remote data connection failed');
+        });
+        ws.on('close', (code, reason) =>
+          this.release(
+            `remote data connection closed (${String(code)}${reason.length ? `: ${reason.toString('utf8').slice(0, 64)}` : ''})`,
+          ),
+        );
       });
     } finally {
       signal.removeEventListener('abort', onAbort);
     }
   }
 
+  // An attached session has no wall-clock limit, so a data socket that went
+  // half-open without a close would otherwise hold its reservation and local
+  // sockets indefinitely. A ping unanswered for more than 45 seconds ends the
+  // session on the next 15-second tick, so within 60 seconds.
+  private startHeartbeat(ws: WebSocket): void {
+    ws.on('pong', () => {
+      this.unansweredPingSince = undefined;
+    });
+    this.heartbeat = setInterval(() => {
+      if (this.terminated || ws.readyState !== WebSocket.OPEN) return;
+      if (this.unansweredPingSince === undefined) {
+        this.unansweredPingSince = Date.now();
+        ws.ping();
+      } else if (Date.now() - this.unansweredPingSince > DATA_PONG_DEADLINE_MS) {
+        ws.terminate();
+        this.release('remote data heartbeat timeout');
+      }
+    }, DATA_PING_INTERVAL_MS);
+    this.heartbeat.unref();
+  }
+
   release(reason: string): void {
     if (this.terminated) return;
     this.terminated = true;
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.options.log?.info(
+      {
+        sessionId: this.request.sessionId,
+        reason,
+        attached: this.ready,
+        openStreams: this.streams.size,
+        usedStreamIds: this.usedIds.size,
+      },
+      'remote connector session ended',
+    );
     if (this.attachTimer) clearTimeout(this.attachTimer);
     this.attachReject?.(new Error(reason));
     this.attachReject = undefined;
@@ -205,7 +258,16 @@ class ConnectorSession implements RemoteConnectorReservation {
     this.resolveClosed();
   }
 
-  private failProtocol(): void {
+  private failProtocol(frame?: unknown): void {
+    // Only the frame type: payloads are inner TLS records and stream IDs are enough to correlate.
+    const type =
+      frame && typeof frame === 'object' && !Array.isArray(frame)
+        ? String((frame as Frame).type).slice(0, 32)
+        : typeof frame;
+    this.options.log?.warn(
+      { sessionId: this.request.sessionId, frameType: type, attached: this.ready },
+      'remote connector rejected an invalid data frame',
+    );
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.close(1008, 'invalid remote frame');
     this.release('invalid remote frame');
   }
@@ -240,6 +302,10 @@ class ConnectorSession implements RemoteConnectorReservation {
 
   private reset(id: string, code: ResetCode): void {
     if (!this.streams.has(id)) return;
+    this.options.log?.warn(
+      { sessionId: this.request.sessionId, streamId: id, code },
+      'remote connector reset a stream',
+    );
     this.dropStream(id);
     this.send({ type: 'stream.reset', streamId: id, code });
   }
@@ -278,7 +344,8 @@ class ConnectorSession implements RemoteConnectorReservation {
   }
 
   private handleFrame(value: unknown): void {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return this.failProtocol();
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return this.failProtocol(value);
     const frame = value as Frame;
     if (frame.type === 'stream.open') {
       if (
@@ -291,7 +358,7 @@ class ConnectorSession implements RemoteConnectorReservation {
         Object.keys(frame.meta).length !== 0 ||
         this.usedIds.has(frame.streamId)
       )
-        return this.failProtocol();
+        return this.failProtocol(frame);
       const id = frame.streamId;
       if (this.usedIds.size >= MAX_STREAM_IDS)
         return this.release('remote stream ID limit reached');
@@ -355,12 +422,12 @@ class ConnectorSession implements RemoteConnectorReservation {
       });
       return;
     }
-    if (!validId(frame.streamId)) return this.failProtocol();
+    if (!validId(frame.streamId)) return this.failProtocol(frame);
     const id = frame.streamId;
     const stream = this.streams.get(id);
     if (!stream) {
       if (this.retiredIds.has(id) && validIgnoredFrame(frame)) return;
-      return this.failProtocol();
+      return this.failProtocol(frame);
     }
     if (frame.type === 'stream.data') {
       if (
@@ -371,10 +438,10 @@ class ConnectorSession implements RemoteConnectorReservation {
         typeof frame.payload !== 'string' ||
         !BASE64.test(frame.payload)
       )
-        return this.failProtocol();
+        return this.failProtocol(frame);
       const bytes = Buffer.from(frame.payload, 'base64');
       if (bytes.length > MAX_CHUNK_BYTES || bytes.toString('base64') !== frame.payload)
-        return this.failProtocol();
+        return this.failProtocol(frame);
       stream.incomingSeq++;
       if (bytes.length === 0) return;
       stream.socket.write(bytes, () => {
@@ -386,7 +453,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     }
     if (frame.type === 'stream.end') {
       if (!isFrame(frame, 'stream.end', ['streamId']) || stream.incomingEnded)
-        return this.failProtocol();
+        return this.failProtocol(frame);
       stream.incomingEnded = true;
       stream.socket.end();
       this.finishStreamIfComplete(id, stream);
@@ -399,11 +466,15 @@ class ConnectorSession implements RemoteConnectorReservation {
           String(frame.code),
         )
       )
-        return this.failProtocol();
+        return this.failProtocol(frame);
+      this.options.log?.info(
+        { sessionId: this.request.sessionId, streamId: id, code: frame.code },
+        'remote app reset a stream',
+      );
       this.dropStream(id);
       return;
     }
-    this.failProtocol();
+    this.failProtocol(frame);
   }
 }
 

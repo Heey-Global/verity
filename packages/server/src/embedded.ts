@@ -2476,6 +2476,7 @@ export async function buildEmbeddedServer(
     ? createRemoteConnectorPool({
         dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
         ...config.publicPreviews.remoteControl,
+        log: uplinkLog,
       })
     : undefined;
   const uplinkControl =

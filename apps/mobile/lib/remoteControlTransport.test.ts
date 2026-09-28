@@ -6,6 +6,7 @@ const mockIsActive = jest.fn();
 const mockStop = jest.fn();
 const mockRequest = jest.fn();
 const mockCancelRequest = jest.fn();
+const mockLastStopReason = jest.fn();
 
 jest.mock('./remoteControlAdmission', () => ({
   requestRemoteControlAdmission: (...args: unknown[]) => mockAdmission(...args),
@@ -16,7 +17,13 @@ jest.mock('expo-modules-core', () => ({
   requireNativeModule: (name: string) =>
     name === 'VerityPinnedTransport'
       ? { request: mockRequest, cancelRequest: mockCancelRequest }
-      : { isSupported: async () => true, start: mockStart, isActive: mockIsActive, stop: mockStop },
+      : {
+          isSupported: async () => true,
+          start: mockStart,
+          isActive: mockIsActive,
+          stop: mockStop,
+          lastStopReason: mockLastStopReason,
+        },
 }));
 
 Object.defineProperty(globalThis, 'Response', {
@@ -52,6 +59,12 @@ describe('shared remote control transport', () => {
   beforeEach(() => {
     mockRequest.mockReset().mockResolvedValue({ status: 200 });
     mockCancelRequest.mockReset().mockResolvedValue(undefined);
+    mockLastStopReason.mockReset().mockResolvedValue(null);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('admits once for concurrent API connections and reuses the native data attachment', async () => {
@@ -151,5 +164,51 @@ describe('shared remote control transport', () => {
     expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
     expect(remoteControlFailureForUrl(`${coreUrl}/api/sessions`)).toBe('probe');
     expect(mockStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports why the native attachment ended', async () => {
+    // The previous failure armed the 15 s direct-only back-off.
+    const now = Date.now() + 60_000;
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    mockProfile.mockReturnValue(profile);
+    mockToken.mockReturnValue('device-bearer');
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockRejectedValue(new Error('native start failed'));
+    mockLastStopReason.mockResolvedValue('data socket failed:\n  timed out');
+
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
+    // Without the native reason every drop reads as a bare stage name and the
+    // cause stays invisible on the phone.
+    expect(remoteControlFailureForUrl(`${coreUrl}/api/sessions`)).toBe(
+      'attachment (data socket failed: timed out)',
+    );
+  });
+
+  it('logs the reason when an established attachment has ended', async () => {
+    const now = Date.now() + 120_000;
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockProfile.mockReturnValue(profile);
+    mockToken.mockReturnValue('device-bearer');
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockResolvedValue(true);
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/first`)).toBe(4_321);
+
+    mockIsActive.mockResolvedValue(false);
+    mockLastStopReason.mockResolvedValue('heartbeat timeout');
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/second`)).toBe(4_321);
+    expect(warn).toHaveBeenCalledWith('Remote Control tunnel ended: heartbeat timeout');
+    expect(mockStart).toHaveBeenCalledTimes(2);
   });
 });

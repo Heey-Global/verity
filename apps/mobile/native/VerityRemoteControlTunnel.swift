@@ -4,6 +4,7 @@ import Foundation
 class VerityRemoteControlTunnel: Module {
   private var tunnel: AnyObject?
   private var retired: [AnyObject] = []
+  private var lastStartFailure: String?
 
   public func definition() -> ModuleDefinition {
     Name("VerityRemoteControlTunnel")
@@ -31,11 +32,19 @@ class VerityRemoteControlTunnel: Module {
       }
       let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: coreURL)
       self.tunnel = tunnel
+      self.lastStartFailure = nil
       do { return try await tunnel.start(ticket: ticket, sessionId: sessionId) }
       catch {
         self.tunnel = nil
+        self.lastStartFailure = tunnel.stopReason ?? "attachment failed: \(error)"
         throw error
       }
+    }
+
+    AsyncFunction("lastStopReason") { () -> String? in
+      guard #available(iOS 17.0, macOS 14.0, *) else { return nil }
+      if let tunnel = self.tunnel as? RemoteAppTunnel { return tunnel.stopReason }
+      return self.lastStartFailure
     }
 
     AsyncFunction("isActive") { () -> Bool in
