@@ -17,10 +17,13 @@ async function fixture(connectLocal?: (host: string, port: number) => Socket): P
   received: unknown[];
   peer: () => WebSocket;
   localConnections: () => number;
+  localCloses: () => number;
 }> {
   let localConnections = 0;
+  let localCloses = 0;
   const local = createServer({ allowHalfOpen: true }, (socket) => {
     localConnections += 1;
+    socket.on('close', () => (localCloses += 1));
     socket.on('data', (chunk) => socket.write(chunk));
     socket.on('end', () => socket.end());
   });
@@ -63,6 +66,7 @@ async function fixture(connectLocal?: (host: string, port: number) => Socket): P
       return peer;
     },
     localConnections: () => localConnections,
+    localCloses: () => localCloses,
   };
 }
 
@@ -255,6 +259,52 @@ describe('remote control connector', () => {
     f.peer().send(JSON.stringify({ type: 'stream.end', streamId: 'stream_one' }));
     f.peer().send(
       JSON.stringify({ type: 'stream.reset', streamId: 'stream_one', code: 'protocol_error' }),
+    );
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'stream_two', channel: 'remote', meta: {} }),
+    );
+    f.peer().send(
+      JSON.stringify({ type: 'stream.data', streamId: 'stream_two', seq: 0, payload: 'AQID' }),
+    );
+    await vi.waitFor(() =>
+      expect(f.received).toContainEqual({
+        type: 'stream.data',
+        streamId: 'stream_two',
+        seq: 0,
+        payload: 'AQID',
+      }),
+    );
+    expect(f.peer().readyState).toBe(WebSocket.OPEN);
+    reservation.release('test complete');
+  });
+
+  it('keeps the data socket alive when a reset follows both stream ends', async () => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'installation_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'stream_one', channel: 'remote', meta: {} }),
+    );
+    f.peer().send(JSON.stringify({ type: 'stream.end', streamId: 'stream_one' }));
+    await vi.waitFor(() =>
+      expect(f.received).toContainEqual({ type: 'stream.end', streamId: 'stream_one' }),
+    );
+    await vi.waitFor(() => expect(f.localCloses()).toBe(1));
+    f.peer().send(
+      JSON.stringify({ type: 'stream.reset', streamId: 'stream_one', code: 'upstream_error' }),
     );
     f.peer().send(
       JSON.stringify({ type: 'stream.open', streamId: 'stream_two', channel: 'remote', meta: {} }),
