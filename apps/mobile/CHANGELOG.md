@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.41.0](https://github.com/Heey-Global/verity/compare/mobile-v1.40.0...mobile-v1.41.0) (2026-09-28)
+
+
+### Features
+
+* **mobile:** add continuous voice dictation ([#860](https://github.com/Heey-Global/verity/issues/860)) ([6cd1452](https://github.com/Heey-Global/verity/commit/6cd14527ec31256745cd12191e4da06f604847f6))
+* **mobile:** add iPad microphone shortcut ([#863](https://github.com/Heey-Global/verity/issues/863)) ([6a9f835](https://github.com/Heey-Global/verity/commit/6a9f835be4c9cc617a79440ceefe9cfcc714dcfe))
+* **mobile:** add local live meeting capture with Nemotron ([#868](https://github.com/Heey-Global/verity/issues/868)) ([552764b](https://github.com/Heey-Global/verity/commit/552764b6ee199a9de7482108f356bd56b6256ac5))
+* **uplink:** add connection diagnostics to public preview settings ([#865](https://github.com/Heey-Global/verity/issues/865)) ([701b1d9](https://github.com/Heey-Global/verity/commit/701b1d9c0887f2589531ec6391530c62f11cfef2))
+
+
+### Bug Fixes
+
+* **mobile:** ease continuous dictation countdown ([#862](https://github.com/Heey-Global/verity/issues/862)) ([5093884](https://github.com/Heey-Global/verity/commit/50938848cc0f41ba06deb3bd3a3df8830692f9e1))
+* **mobile:** expose remote tunnel stream diagnostics ([#872](https://github.com/Heey-Global/verity/issues/872)) ([d739442](https://github.com/Heey-Global/verity/commit/d739442a15216f6152a1b44a2afd69919e292972))
+* **preview:** use shared explorer rows in preview sheet ([#864](https://github.com/Heey-Global/verity/issues/864)) ([1e0dda2](https://github.com/Heey-Global/verity/commit/1e0dda2e81bce05d0b3b545eb4e4dc0abffc2c28))
+
 ## [1.40.0](https://github.com/Heey-Global/verity/compare/mobile-v1.39.0...mobile-v1.40.0) (2026-09-28)
 
 
