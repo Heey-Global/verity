@@ -60,6 +60,8 @@ const config: ExpoConfig = {
   // Shared iOS and Android application identifier (reverse-DNS of verity.build).
   ios: {
     bundleIdentifier: 'build.verity.app',
+    // Keep the generated app target and Podfile on the same iOS minimum.
+    deploymentTarget: '26.0',
     // GitHub's manifest code has no PKCE protection, so its callback must use a
     // claimed HTTPS link rather than a custom scheme another app could steal.
     // ASWebAuthenticationSession validates HTTPS callbacks through the
@@ -155,6 +157,9 @@ const config: ExpoConfig = {
         androidSpeechServicePackages: ['com.google.android.googlequicksearchbox'],
       },
     ],
+    // The live STT prototype's inline Swift module uses FluidAudio for the two
+    // selectable on-device models. The local plugin pins its native pod.
+    './plugins/withFluidAudio',
     // Efficient image rendering (chat attachments + previews).
     'expo-image',
     // Native share-sheet integration for exporting session content and files.
