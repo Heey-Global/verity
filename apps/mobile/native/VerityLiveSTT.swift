@@ -252,7 +252,7 @@ private final class LiveSTTService {
     try await analyzer.start(inputSequence: stream)
     try ensureActive(generation)
     try startMicrophone { microphoneStream in
-      let converter = FluidAudio.AudioConverter(sampleRate: format.sampleRate)
+      let converter = AudioConverter(sampleRate: format.sampleRate)
       self.processingTask = Task {
         defer { continuation.finish() }
         do {
