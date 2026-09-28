@@ -155,6 +155,9 @@ const config: ExpoConfig = {
         androidSpeechServicePackages: ['com.google.android.googlequicksearchbox'],
       },
     ],
+    // The live STT prototype's inline Swift module uses FluidAudio for the two
+    // selectable on-device models. The local plugin pins its native pod.
+    './plugins/withFluidAudio',
     // Efficient image rendering (chat attachments + previews).
     'expo-image',
     // Native share-sheet integration for exporting session content and files.

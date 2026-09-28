@@ -242,6 +242,7 @@ function HydratedRoot() {
                 options={{ title: 'Matrix account' }}
               />
               <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
+              <Stack.Screen name="settings/live-meeting-stt" options={{ title: 'Live STT test' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
               <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
               <Stack.Screen name="unlock-device" options={{ headerShown: false }} />

@@ -21,6 +21,15 @@ separately by `TRADEMARKS.md`.
   Their source availability does not grant trademark rights; see
   `TRADEMARKS.md`.
 
+## Native speech components
+
+- The iOS live STT prototype links [FluidAudio 0.17.4](https://github.com/FluidInference/FluidAudio/tree/v0.17.4),
+  licensed under Apache-2.0.
+- Its optional, on-demand [Nemotron 3.5 multilingual Core ML model](https://huggingface.co/FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML)
+  is licensed under OpenMDW-1.1.
+- Its optional, on-demand [Parakeet Ultra Core ML model](https://huggingface.co/FluidInference/parakeet-ultra-coreml)
+  is licensed under CC-BY-4.0.
+
 ## Packages with separate or reciprocal terms
 
 - `@anthropic-ai/claude-agent-sdk` and its platform packages are distributed

@@ -218,6 +218,14 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       </SettingsGroup>
 
       <SettingsGroup title="Advanced">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="mic"
+            title="Live STT test"
+            onPress={() => router.push('/settings/live-meeting-stt')}
+            accessibilityLabel="Test live meeting transcription engines"
+          />
+        </SettingsListPanel>
         <SettingsPanel>
           <Text style={styles.disclosureTitle}>Verity Control</Text>
           <Text style={styles.reproSubtitle}>

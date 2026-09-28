@@ -1,0 +1,30 @@
+import { requireOptionalNativeModule } from 'expo-modules-core';
+import { Platform } from 'react-native';
+
+export type STTEngineId = 'apple-speech' | 'apple-dictation' | 'fluid-nemotron' | 'fluid-parakeet';
+
+export interface STTEngine {
+  id: STTEngineId;
+  name: string;
+  available: boolean;
+}
+
+export type STTEvent =
+  | {
+      kind: 'status';
+      state: 'preparing' | 'downloading' | 'listening' | 'stopped' | 'failed';
+      engine?: string;
+      message?: string;
+    }
+  | { kind: 'segment'; text: string; final: boolean; start: number; end: number }
+  | { kind: 'snapshot'; text: string; final: boolean };
+
+interface NativeLiveSTT {
+  engines(): Promise<STTEngine[]>;
+  start(engine: STTEngineId, locale: string, vocabulary: string[]): Promise<void>;
+  stop(): Promise<void>;
+  addListener(event: 'onSTTEvent', listener: (event: STTEvent) => void): { remove(): void };
+}
+
+export const liveMeetingSTT =
+  Platform.OS === 'ios' ? requireOptionalNativeModule<NativeLiveSTT>('VerityLiveSTT') : null;
