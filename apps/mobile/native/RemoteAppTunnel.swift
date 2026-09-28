@@ -60,6 +60,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var stopReasonText: String?
   private var heartbeat: Task<Void, Never>?
   private var unansweredPingSince: Date?
+  private var localConnections = 0
+  private var openedStreams = 0
+  private var receivedStreamFrames = 0
+  private var lastStreamEvent = "none"
+
+  // Counts and a fixed event name only: diagnostics must not expose URLs, tickets, or stream data.
+  var diagnosticSummary: String {
+    lock.withLock {
+      "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent)"
+    }
+  }
 
   var isActive: Bool {
     lock.lock()
@@ -141,6 +152,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
           let admitted = self.lock.withLock {
             if self.stopped || self.pendingLocal >= 16 { return false }
             self.pendingLocal += 1
+            self.localConnections += 1
+            self.lastStreamEvent = "local_connected"
             return true
           }
           guard admitted else { connection.cancel(); return }
@@ -297,6 +310,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
       drop(id)
     default: throw RemoteSmokeError.invalidFrame
     }
+    lock.withLock {
+      receivedStreamFrames += 1
+      lastStreamEvent = "remote_\(type)"
+    }
   }
 
   private func finish(_ id: String, _ stream: Stream) {
@@ -417,12 +434,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
       guard available else { throw RemoteSmokeError.limitReached }
       try await write(Data([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]), to: connection)
       try await writer.send(["type": "stream.open", "streamId": id, "channel": "remote", "meta": [:]])
+      lock.withLock {
+        openedStreams += 1
+        lastStreamEvent = "stream_opened"
+      }
       stream.worker = Task { [weak self] in
         guard let self else { return }
         do { try await self.pumpLocal(stream, id: id) }
         catch { await self.reset(id, code: "upstream_error") }
       }
     } catch {
+      lock.withLock { lastStreamEvent = "local_rejected" }
       if let openedId { drop(openedId) }
       connection.cancel()
     }
