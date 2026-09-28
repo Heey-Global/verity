@@ -145,33 +145,6 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
   }));
 }
 
-export async function getMeeting(id: string): Promise<MeetingRecord | null> {
-  const row = await (
-    await db()
-  ).getFirstAsync<{
-    id: string;
-    session_id: string;
-    engine: STTEngineId;
-    started_at: number;
-    ended_at: number | null;
-    state: MeetingRecord['state'];
-    transcript: string;
-    error: string | null;
-  }>('SELECT * FROM meetings WHERE id = ?', id);
-  return row
-    ? {
-        id: row.id,
-        sessionId: row.session_id,
-        engine: row.engine,
-        startedAt: row.started_at,
-        endedAt: row.ended_at,
-        state: row.state,
-        transcript: row.transcript,
-        error: row.error,
-      }
-    : null;
-}
-
 export async function listNotes(meetingId: string): Promise<MeetingNote[]> {
   const rows = await (
     await db()

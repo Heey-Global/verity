@@ -7,7 +7,6 @@ import {
 } from './liveMeetingSTTTranscript';
 import {
   createMeeting,
-  getMeeting,
   setMeetingState,
   saveTranscript,
   touchMeeting,
@@ -247,9 +246,4 @@ export async function endMeeting(): Promise<void> {
     subscription = null;
     publish();
   }
-}
-
-export async function loadMeeting(id: string): Promise<MeetingRecord | null> {
-  if (active?.id === id) return active;
-  return getMeeting(id);
 }

@@ -60,7 +60,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 1 |
 | ISC | 61 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 967 |
+| MIT | 969 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -522,6 +522,7 @@ separately by `TRADEMARKS.md`.
 | asynckit | MIT | [source](https://www.npmjs.com/package/asynckit) |
 | atomic-sleep | MIT | [source](https://www.npmjs.com/package/atomic-sleep) |
 | avvio | MIT | [source](https://www.npmjs.com/package/avvio) |
+| await-lock | MIT | [source](https://www.npmjs.com/package/await-lock) |
 | babel-jest | MIT | [source](https://www.npmjs.com/package/babel-jest) |
 | babel-plugin-istanbul | BSD-3-Clause | [source](https://www.npmjs.com/package/babel-plugin-istanbul) |
 | babel-plugin-jest-hoist | MIT | [source](https://www.npmjs.com/package/babel-plugin-jest-hoist) |
@@ -705,6 +706,7 @@ separately by `TRADEMARKS.md`.
 | expo-sharing | MIT | [source](https://www.npmjs.com/package/expo-sharing) |
 | expo-speech-recognition | MIT | [source](https://www.npmjs.com/package/expo-speech-recognition) |
 | expo-splash-screen | MIT | [source](https://www.npmjs.com/package/expo-splash-screen) |
+| expo-sqlite | MIT | [source](https://www.npmjs.com/package/expo-sqlite) |
 | expo-structured-headers | MIT | [source](https://www.npmjs.com/package/expo-structured-headers) |
 | expo-symbols | MIT | [source](https://www.npmjs.com/package/expo-symbols) |
 | expo-updates-interface | MIT | [source](https://www.npmjs.com/package/expo-updates-interface) |

@@ -26,7 +26,6 @@ jest.mock('./liveMeetingStore', () => ({
   saveTranscript: jest.fn().mockResolvedValue(undefined),
   setMeetingState: jest.fn().mockResolvedValue(undefined),
   touchMeeting: jest.fn().mockResolvedValue(undefined),
-  getMeeting: jest.fn(),
 }));
 
 beforeEach(() => jest.clearAllMocks());
