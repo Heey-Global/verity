@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.36.1",
+  "version": "1.36.2",
   "runtime": "1.36.0",
   "channel": "testflight",
-  "commit": "f4a5e7c509fe3a146e02ac24c7f60af25e376771",
-  "tag": "mobile-v1.36.1",
-  "branch": "staging-mobile-v1.36.1-f4a5e7c509fe3a146e02ac24c7f60af25e376771",
-  "baseline": "mobile-v1.36.0",
-  "group": "bf07c0c2-840f-401a-a80d-92a9d0e542ef",
+  "commit": "709404afceb68779f3a1fa936ffd28dcb4d7ee93",
+  "tag": "mobile-v1.36.2",
+  "branch": "staging-mobile-v1.36.2-709404afceb68779f3a1fa936ffd28dcb4d7ee93",
+  "baseline": "mobile-v1.36.1",
+  "group": "5001dc1c-fd9f-461b-b032-dee138c4bd06",
   "notes": [
-    "validate remote routing and expose connection failures (#830)",
-    "prefetch chat history earlier during scrolling (#827)"
+    "recover failed Uplink reads through direct route (#832)"
   ]
 }
