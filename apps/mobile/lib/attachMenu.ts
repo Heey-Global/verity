@@ -15,6 +15,7 @@ export interface AttachMenuHandlers {
   onPickPhotos: () => void;
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
+  onLiveMeeting: () => void;
   onConnectGmail: () => void;
 }
 
@@ -37,7 +38,12 @@ export function attachMenuRows(
     ...(meetingAudioEnabled
       ? [
           { divider: true } as const,
-          { icon: 'mic' as IconName, label: 'Meeting audio', onPress: handlers.onPickMeetingAudio },
+          {
+            icon: 'mic' as IconName,
+            label: 'Transcribe audio file',
+            onPress: handlers.onPickMeetingAudio,
+          },
+          { icon: 'mic' as IconName, label: 'Live Meeting', onPress: handlers.onLiveMeeting },
         ]
       : []),
     { divider: true },

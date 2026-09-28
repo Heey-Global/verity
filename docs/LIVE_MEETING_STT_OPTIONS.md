@@ -1,6 +1,6 @@
 # Live Meeting: speech-to-text options
 
-**Status:** Investigation, 2026-09-28. Companion to [LIVE_MEETING_CONCEPT.md](LIVE_MEETING_CONCEPT.md)
+**Status:** Investigation, 2026-09-28. Initial device feedback led to Nemotron as the provisional live-meeting default; this comparison is not a final ranking. Companion to [LIVE_MEETING_CONCEPT.md](LIVE_MEETING_CONCEPT.md)
 and [LIVE_MEETING_CONCEPT_REVIEW.md](LIVE_MEETING_CONCEPT_REVIEW.md).
 **Question:** What does Apple provide natively on iOS 26/27, where must Verity add components, is
 FluidAudio the right complement, and are there better alternatives?
@@ -110,10 +110,10 @@ Do not assume Nemotron is the best FluidAudio model solely because it streams so
 
 ## 5. Recommendation
 
-1. **Transcription engine interface with Apple and FluidAudio implementations.** Apple
-   `SpeechTranscriber` is the first implementation for V1: no download, no app memory cost, German
-   quality evidence, designed for long sessions. Test FluidAudio Nemotron for low-latency updates
-   and Parakeet Ultra for potentially better text quality before choosing the FluidAudio default.
+1. **Transcription engine interface with Apple and FluidAudio implementations.** Select Nemotron
+   initially for the live-meeting prototype based on its responsive partial results in the first
+   device test. Keep Apple `SpeechTranscriber` and Parakeet Ultra selectable, and compare their
+   completed transcripts and long-session behavior before confirming a V1 default.
 2. **FluidAudio for diarization in V2**, fed from the same audio tap, with Sortformer for up to four
    speakers and LS-EEND for larger groups, and the speaker limit shown to the person.
 3. **One benchmark before V1 commits.** The same German meeting recordings on the iPhone 15 Pro
@@ -124,11 +124,10 @@ Do not assume Nemotron is the best FluidAudio model solely because it streams so
    button, and post-correction of participant names on the server. Revisit
    `DictationTranscriber` or the FluidAudio path only if this proves inadequate.
 
-This changes the concept's stated direction from "FluidAudio for transcription in V1" to
-"Apple first for transcription, FluidAudio for diarization, FluidAudio transcription as the
-measured alternative". The reasons are the iOS 27 background Neural Engine restriction, the in-app
-model footprint, the thin iOS validation of the German streaming path, and the German quality
-evidence for Apple's engine.
+The earlier Apple-first recommendation remains relevant evidence about memory, background
+inference and German recognition. Initial device feedback favored Nemotron's live updates, so
+the first local meeting version selects it by default while retaining engine choice. This does
+not resolve the long-session accuracy or reliability comparison.
 
 ## 6. Sources
 
