@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.1](https://github.com/Heey-Global/verity/compare/v2.13.0...v2.13.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **server:** retain remote data socket after peer stream reset ([#836](https://github.com/Heey-Global/verity/issues/836)) ([6e40d06](https://github.com/Heey-Global/verity/commit/6e40d06539951be4c83c33ee4870fe2bb97f679c))
+
 ## [2.13.0](https://github.com/Heey-Global/verity/compare/v2.12.0...v2.13.0) (2026-09-27)
 
 
