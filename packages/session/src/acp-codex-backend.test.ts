@@ -1,4 +1,9 @@
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { createHash, randomBytes } from 'node:crypto';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AcpCodexBackend } from './acp-codex-backend.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
@@ -28,6 +33,43 @@ const MODEL_OPTION = {
   ],
 };
 
+function largePng(): Buffer {
+  const width = 1600;
+  const height = 1500;
+  const pixels = randomBytes(width * height * 3);
+  const scanlines = Buffer.alloc(height * (width * 3 + 1));
+  for (let row = 0; row < height; row++)
+    pixels.copy(scanlines, row * (width * 3 + 1) + 1, row * width * 3, (row + 1) * width * 3);
+  const crc = (bytes: Buffer): number => {
+    let value = 0xffffffff;
+    for (const byte of bytes) {
+      value ^= byte;
+      for (let bit = 0; bit < 8; bit++)
+        value = value & 1 ? (value >>> 1) ^ 0xedb88320 : value >>> 1;
+    }
+    return (value ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const length = Buffer.alloc(4);
+    const checksum = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    checksum.writeUInt32BE(crc(body));
+    return Buffer.concat([length, body, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(scanlines, { level: 0 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
 function acpSpawner(
   behavior: {
     loadSession?: boolean;
@@ -45,6 +87,8 @@ function acpSpawner(
     /** Advertise HTTP MCP support in the adapter's initialize response. */
     httpMcp?: boolean;
     cancel?: { operator?: AbortController };
+    generatedImage?: string;
+    fragmentImageFrame?: boolean;
   } = {},
 ): {
   spawner: Spawner;
@@ -54,11 +98,17 @@ function acpSpawner(
   const queue: string[] = [];
   const waiters: Array<(value: IteratorResult<string>) => void> = [];
   let closed = false;
-  const push = (message: unknown): void => {
-    const value = `${JSON.stringify(message)}\n`;
+  const enqueue = (value: string): void => {
     const waiter = waiters.shift();
     if (waiter === undefined) queue.push(value);
     else waiter({ value, done: false });
+  };
+  const push = (message: unknown, fragmentAt?: number): void => {
+    const value = `${JSON.stringify(message)}\n`;
+    if (fragmentAt !== undefined) {
+      enqueue(value.slice(0, fragmentAt));
+      enqueue(value.slice(fragmentAt));
+    } else enqueue(value);
   };
   const close = (): void => {
     if (closed) return;
@@ -163,6 +213,39 @@ function acpSpawner(
             behavior.cancel.operator?.abort();
             push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            if (behavior.generatedImage) {
+              push(
+                {
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'tool_call_update',
+                      toolCallId: 'image_1',
+                      status: 'completed',
+                      ...(behavior.fragmentImageFrame
+                        ? { rawOutput: { status: 'completed', result: behavior.generatedImage } }
+                        : {}),
+                      content: [
+                        {
+                          type: 'content',
+                          content: {
+                            type: 'image',
+                            data: behavior.generatedImage,
+                            mimeType: 'image/png',
+                          },
+                        },
+                      ],
+                      ...(!behavior.fragmentImageFrame
+                        ? { rawOutput: { status: 'completed', result: behavior.generatedImage } }
+                        : {}),
+                    },
+                  },
+                },
+                behavior.fragmentImageFrame ? 9 * 1024 * 1024 : undefined,
+              );
+            }
             // codex-acp sets no tool `name` — only ACP's `kind` and a `title`
             // that for a command execution IS the command line.
             push({
@@ -216,6 +299,76 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
+  it('externalizes an image generation notification larger than the ACP frame limit', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-acp-image-'));
+    const png = largePng();
+    try {
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-large-image',
+        worktree,
+        cwd: worktree,
+        prompt: 'Generate an image',
+        spawner: acpSpawner({ generatedImage: png.toString('base64'), fragmentImageFrame: true })
+          .spawner,
+      });
+      expect(result.exitCode).toBe(0);
+      const event = (await ctx.store.getEvents('verity-large-image')).find(
+        (item) => item.t === 'tool_result',
+      );
+      expect(event?.t).toBe('tool_result');
+      if (event?.t !== 'tool_result') return;
+      const path = (event.output as { savedPath: string }).savedPath;
+      expect(await readFile(path)).toEqual(png);
+      expect(JSON.stringify(event)).not.toContain(png.toString('base64'));
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
+  }, 60_000);
+  it('rejects a preexisting generated-image path with different bytes', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-acp-image-'));
+    const png = largePng();
+    const id = createHash('sha256').update(png).digest('hex');
+    const path = join(worktree, '.agents', 'generated-images', `${id}.png`);
+    try {
+      await mkdir(join(worktree, '.agents', 'generated-images'), { recursive: true });
+      await writeFile(path, 'different bytes');
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-image-collision',
+        worktree,
+        cwd: worktree,
+        prompt: 'Generate an image',
+        spawner: acpSpawner({ generatedImage: png.toString('base64') }).spawner,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(await readFile(path, 'utf8')).toBe('different bytes');
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
+  }, 60_000);
+  it('does not create image directories through a worktree symlink', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-acp-image-'));
+    const outside = await mkdtemp(join(tmpdir(), 'verity-acp-outside-'));
+    try {
+      await symlink(outside, join(worktree, '.agents'));
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-image-symlink',
+        worktree,
+        cwd: worktree,
+        prompt: 'Generate an image',
+        spawner: acpSpawner({ generatedImage: largePng().toString('base64') }).spawner,
+      });
+      expect(result.exitCode).toBe(1);
+      await expect(access(join(outside, 'generated-images'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  }, 60_000);
   it('runs a Codex turn through ACP, carrying the system directives in the prompt', async () => {
     const fake = acpSpawner();
     let steer: ((message: { text: string }) => boolean) | undefined;
