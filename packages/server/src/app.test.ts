@@ -7,6 +7,7 @@ import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/te
 import type { ProjectRecord } from '@verity/store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildControlPlane } from './app.js';
+import { createAuthTokenRegistry } from './auth.js';
 import { createProjectEgressCa, issueGatewayServerCertificate } from './claude-egress-ca.js';
 import type { GitHubTaskService } from './github-tasks.js';
 
@@ -73,6 +74,34 @@ function oneShotBackend(reply: string, prompts: string[] = []): Backend {
 }
 
 describe('buildControlPlane', () => {
+  it('serves live Uplink diagnostics through the composed control plane', async () => {
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const device = await registry.mint('iPhone');
+    const diagnostics = {
+      control: 'connected' as const,
+      sharing: 'ready' as const,
+      remoteControl: 'ready' as const,
+    };
+    // The route alone can pass while composition silently reports Uplink disabled.
+    const app = buildControlPlane({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      authRegistry: registry,
+      uplinkDiagnostics: () => diagnostics,
+    });
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/uplink/diagnostics',
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(diagnostics);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('reports public previews when the forwarded Uplink manager is available', async () => {
     const previewShareManager = {
       isAvailable: vi.fn(() => true),
