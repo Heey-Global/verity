@@ -17,6 +17,17 @@ Pod::Spec.new do |spec|
   spec.osx.deployment_target = "14.0"
 
   spec.source       = { :git => "https://github.com/FluidInference/FluidAudio.git", :tag => "v#{spec.version}" }
+  # SwiftPM synthesizes Bundle.module for TTS sources included in Core, but
+  # CocoaPods does not. STT does not load those TTS resources; this shim lets
+  # the shared FluidAudio module compile without changing upstream sources.
+  spec.prepare_command = <<~CMD
+    cat > Sources/FluidAudio/CocoaPodsBundle.swift <<'SWIFT'
+    import Foundation
+    extension Bundle {
+      static var module: Bundle { .main }
+    }
+    SWIFT
+  CMD
   # CocoaPods sets SWIFT_VERSION based on this list; use values Xcode recognizes.
   spec.swift_versions = ["6.0"]
 
@@ -58,9 +69,6 @@ Pod::Spec.new do |spec|
     core.dependency "#{spec.name}/FastClusterWrapper"
     core.dependency "#{spec.name}/MachTaskSelfWrapper"
     core.source_files = "Sources/FluidAudio/**/*.swift"
-    # The v0.17.4 Core glob includes TTS sources that require SwiftPM's Bundle.module.
-    # This app only uses ASR; CocoaPods cannot compile those TTS resources.
-    core.exclude_files = "Sources/FluidAudio/TTS/**/*.swift"
 
     # iOS Configuration
     # TTS sources are moved under `Sources/FluidAudioTTS` and are not part of the Core subspec.
