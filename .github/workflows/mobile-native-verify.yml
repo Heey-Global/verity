@@ -239,7 +239,8 @@ jobs:
 
       - name: Verify iOS enrollment Keychain persistence
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.enrollment == 'true'
-        timeout-minutes: 10
+        # A cold macOS-26 simulator can take several minutes to launch the first app.
+        timeout-minutes: 20
         run: bash scripts/enrollment-proof/run-ios.sh
 
       # Runs after prebuild: the harness reads the App Transport Security
