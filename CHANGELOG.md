@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.15.0](https://github.com/Heey-Global/verity/compare/v2.14.2...v2.15.0) (2026-09-28)
+
+
+### Features
+
+* **uplink:** add connection diagnostics to public preview settings ([#865](https://github.com/Heey-Global/verity/issues/865)) ([701b1d9](https://github.com/Heey-Global/verity/commit/701b1d9c0887f2589531ec6391530c62f11cfef2))
+
 ## [2.14.2](https://github.com/Heey-Global/verity/compare/v2.14.1...v2.14.2) (2026-09-28)
 
 
