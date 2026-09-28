@@ -563,6 +563,7 @@ export interface PublicPreviewShareRecord {
   targetPort: number | null;
   targetKind?: 'dev-server' | 'static-folder';
   staticPath?: string | null;
+  sessionId?: string | null;
   state: PublicPreviewShareState;
   publicOrigin: string;
   edgeUrl: string;
@@ -586,6 +587,7 @@ export interface PublicPreviewShareCreateInput {
   targetPort: number | null;
   targetKind?: 'dev-server' | 'static-folder';
   staticPath?: string | null;
+  sessionId?: string | null;
   publicOrigin: string;
   edgeUrl: string;
   pinHash: string;
@@ -6338,6 +6340,7 @@ export class EventStore implements EventSink {
       targetPort: row.target_port,
       targetKind: row.target_kind,
       staticPath: row.static_path,
+      sessionId: row.session_id,
       state: row.state as PublicPreviewShareState,
       publicOrigin: row.public_origin,
       edgeUrl: row.edge_url,
@@ -6367,6 +6370,7 @@ export class EventStore implements EventSink {
         target_port: input.targetPort,
         target_kind: input.targetKind ?? 'dev-server',
         static_path: input.staticPath ?? null,
+        session_id: input.sessionId ?? null,
         state: 'creating',
         public_origin: input.publicOrigin,
         edge_url: input.edgeUrl,

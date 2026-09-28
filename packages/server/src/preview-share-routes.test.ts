@@ -5,6 +5,7 @@ import {
   PreviewShareConflictError,
   PreviewShareInputError,
   PreviewShareNotFoundError,
+  PreviewShareUpstreamError,
   type PreviewShareManager,
   type PublicPreviewShare,
 } from './preview-share-manager.js';
@@ -85,12 +86,14 @@ describe('public preview share route refusals', () => {
   function appFor(deps: {
     manager?: Partial<PreviewShareManager>;
     getProject?: () => Promise<unknown>;
+    getSession?: () => Promise<unknown>;
   }) {
     const app = Fastify({ logger: false });
     apps.push(app);
     registerPreviewShareRoutes(app, {
       eventStore: {
         getProject: deps.getProject ?? (async () => ({ id: 'p1' })),
+        getSession: deps.getSession ?? (async () => undefined),
       } as unknown as EventStore,
       ...(deps.manager === undefined
         ? {}
@@ -186,6 +189,53 @@ describe('public preview share route refusals', () => {
       pin: '123456',
       ttlSeconds: 3600,
       staticPath: 'dist',
+    });
+  });
+
+  it('uses the session id for folder browsing and share creation', async () => {
+    const listStaticDirectories = vi.fn(async () => ['dist']);
+    const create = vi.fn(
+      async () => ({ id: 'session-share', sessionId: 's1' }) as PublicPreviewShare,
+    );
+    const app = appFor({
+      manager: { listStaticDirectories, create },
+      getSession: async () => ({ sessionId: 's1', projectId: 'p1' }),
+    });
+    const browsed = await app.inject({
+      method: 'GET',
+      url: '/sessions/s1/public-static-directories?path=site',
+    });
+    expect(browsed.json()).toEqual({ directories: ['dist'] });
+    expect(listStaticDirectories).toHaveBeenCalledWith('p1', 'site', 's1');
+    const created = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/public-static-shares',
+      payload: { staticPath: 'site/dist', pin: '123456', ttlSeconds: 3600 },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(create).toHaveBeenCalledWith({
+      sessionId: 's1',
+      staticPath: 'site/dist',
+      pin: '123456',
+      ttlSeconds: 3600,
+    });
+  });
+
+  it('shows an Uplink protocol refusal on static share creation', async () => {
+    const response = await appFor({
+      manager: {
+        create: vi.fn(() =>
+          Promise.reject(
+            new PreviewShareUpstreamError(
+              'Uplink closed the control connection (1002: protocol_error)',
+            ),
+          ),
+        ),
+      },
+    }).inject(staticCreate);
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      error: 'Uplink closed the control connection (1002: protocol_error)',
     });
   });
 

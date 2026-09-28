@@ -6,6 +6,7 @@ import type {
   PreviewEdgeControl,
   PreviewEdgeCreate,
 } from './preview-share-manager.js';
+import { PreviewShareUpstreamError } from './preview-share-manager.js';
 
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
@@ -234,8 +235,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
       pinHash: input.pinHash,
     });
     if (response.type === 'share.error') {
-      throw new Error(
-        `Uplink refused public preview: ${optionalString(response.code, 'internal')}`,
+      const code = optionalString(response.code, 'internal');
+      throw new PreviewShareUpstreamError(
+        `Uplink refused public preview: ${/^[a-z_]+$/u.test(code) ? code : 'unknown error'}`,
       );
     }
     if (response.type !== 'share.ready') throw new Error('unexpected Uplink share response');
@@ -412,7 +414,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
         { code, reason: String(reason ?? ''), welcomed: this.welcomed },
         'Uplink control connection closed',
       );
-      this.clearAuthority('Uplink disconnected', !this.stopped);
+      const closeReason = String(reason ?? '');
+      const detail = /^[a-z_]+$/u.test(closeReason) ? `: ${closeReason}` : '';
+      this.clearAuthority(
+        `Uplink closed the control connection (${String(code)}${detail})`,
+        !this.stopped,
+      );
       this.scheduleReconnect();
     });
   }
@@ -863,7 +870,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
     for (const [requestId, pending] of this.pending) {
       clearTimeout(pending.timer);
       if (pending.type === 'share.create') this.rememberAbandonedCreate(requestId);
-      pending.reject(new Error(reason));
+      pending.reject(
+        pending.type === 'share.create' && reason.startsWith('Uplink closed the control connection')
+          ? new PreviewShareUpstreamError(reason)
+          : new Error(reason),
+      );
     }
     this.pending.clear();
   }

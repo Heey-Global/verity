@@ -56,6 +56,7 @@ function fixture(
     listMovePreviewRestarts: vi.fn(async () => [] as { source_project_id: string }[]),
     listDevServers: vi.fn(async () => [{ ...devServer, previewSessionId: 'moving' }]),
     getDevServer: vi.fn(async () => devServer),
+    getSession: vi.fn<EventStore['getSession']>(async () => undefined),
     getProject: vi.fn(async () => project),
     createPublicPreviewShare: vi.fn<EventStore['createPublicPreviewShare']>(async (input) => ({
       ...record,
@@ -134,6 +135,79 @@ function fixture(
 }
 
 describe('PreviewShareManager', () => {
+  it('mounts the selected session worktree folder and records the session source', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-preview-session-'));
+    const worktree = join(root, 'repo', 'sessions', 's1');
+    await mkdir(join(worktree, 'site', 'dist'), { recursive: true });
+    await mkdir(join(worktree, '.private'));
+    await symlink(join(worktree, '.private'), join(worktree, 'linked'));
+    const { manager, store, docker } = fixture();
+    store.getProject.mockResolvedValue({ ...project, cloneDir: 'repo' } as typeof project);
+    store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree,
+      model: 'test',
+      name: null,
+      kind: 'normal',
+      lastSeenEventCount: null,
+    });
+    const options = (
+      manager as unknown as { options: { hostCloneRoot: string; dataVolumeRoot: string } }
+    ).options;
+    options.hostCloneRoot = root;
+    options.dataVolumeRoot = root;
+    await expect(manager.listStaticDirectories('p1', '', 's1')).resolves.toEqual(['site']);
+    await expect(manager.listStaticDirectories('p1', 'site', 's1')).resolves.toEqual(['dist']);
+    await expect(manager.listStaticDirectories('p1', 'linked', 's1')).rejects.toThrow(/not safe/);
+    await manager.create({
+      sessionId: 's1',
+      staticPath: 'site/dist',
+      pin: '123456',
+      ttlSeconds: 3600,
+    });
+    expect(store.createPublicPreviewShare).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 's1', staticPath: 'site/dist' }),
+    );
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        volumeMounts: [
+          {
+            volume: 'verity-data',
+            subpath: 'repo/sessions/s1/site/dist',
+            target: '/preview-workspace/public',
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+  });
+  it('rejects a session worktree outside its project before contacting Uplink', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-preview-outside-'));
+    await mkdir(join(root, 'repo'), { recursive: true });
+    const outside = join(root, 'other', 's1');
+    await mkdir(join(outside, 'dist'), { recursive: true });
+    const { manager, store, edge } = fixture();
+    store.getProject.mockResolvedValue({ ...project, cloneDir: 'repo' } as typeof project);
+    store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree: outside,
+      model: 'test',
+      name: null,
+      kind: 'normal',
+      lastSeenEventCount: null,
+    });
+    const options = (
+      manager as unknown as { options: { hostCloneRoot: string; dataVolumeRoot: string } }
+    ).options;
+    options.hostCloneRoot = root;
+    options.dataVolumeRoot = root;
+    await expect(
+      manager.create({ sessionId: 's1', staticPath: 'dist', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow('outside the project checkout');
+    expect(edge.create).not.toHaveBeenCalled();
+  });
   it('resolves the connector image only after edge authority is available', async () => {
     const { manager, edge, resolveConnectorImage } = fixture();
     edge.isAvailable.mockReturnValueOnce(false);
@@ -859,7 +933,7 @@ describe('PreviewShareManager', () => {
     edge.create.mockRejectedValueOnce(new Error('edge create failed'));
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
-    ).rejects.toThrow('edge create failed');
+    ).rejects.toThrow('Uplink could not create the preview');
     expect(store.createPublicPreviewShare).not.toHaveBeenCalled();
   });
 
@@ -1099,6 +1173,97 @@ describe('PreviewShareManager', () => {
     const { manager, store, isDevServerRunning, edge, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([{ ...record, state: 'active' }]);
     isDevServerRunning.mockResolvedValueOnce(false);
+    await manager.reconcile();
+    expect(edge.remove).toHaveBeenCalledWith(record.id);
+  });
+
+  it('revokes a session preview after its worktree is removed', async () => {
+    const { manager, store, edge, record } = fixture();
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      {
+        ...record,
+        state: 'active',
+        targetKind: 'static-folder',
+        devServerId: null,
+        targetPort: null,
+        staticPath: 'dist',
+        sessionId: 's1',
+        connectorContainerId: 'connector-id',
+      },
+    ]);
+    store.getSession.mockResolvedValueOnce(undefined);
+    await manager.reconcile();
+    expect(edge.remove).toHaveBeenCalledWith(record.id);
+  });
+  it('revokes a static session link before moving its worktree', async () => {
+    const { manager, store, edge, record } = fixture();
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      {
+        ...record,
+        state: 'active',
+        targetKind: 'static-folder',
+        sessionId: 's1',
+        devServerId: null,
+        targetPort: null,
+        staticPath: 'dist',
+      },
+    ]);
+    await manager.revokeSessionShares('p1', 's1');
+    expect(edge.remove).toHaveBeenCalledWith(record.id);
+  });
+
+  it('keeps a session preview only while the connector mounts that exact worktree folder', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-preview-reconcile-'));
+    const worktree = join(root, 'repo', 'sessions', 's1');
+    await mkdir(join(worktree, 'dist'), { recursive: true });
+    const { manager, store, docker, edge, inspect, record } = fixture();
+    store.getProject.mockResolvedValue({ ...project, cloneDir: 'repo' } as typeof project);
+    store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree,
+      model: 'test',
+      name: null,
+      kind: 'normal',
+      lastSeenEventCount: null,
+    });
+    const options = (
+      manager as unknown as { options: { hostCloneRoot: string; dataVolumeRoot: string } }
+    ).options;
+    options.hostCloneRoot = root;
+    options.dataVolumeRoot = root;
+    const active = {
+      ...record,
+      state: 'active' as const,
+      targetKind: 'static-folder' as const,
+      devServerId: null,
+      targetPort: null,
+      staticPath: 'dist',
+      sessionId: 's1',
+      connectorContainerId: 'connector-id',
+    };
+    store.listPublicPreviewShares.mockResolvedValue([active]);
+    const connector = {
+      ...inspect,
+      id: 'connector-id',
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          subpath: 'repo/sessions/s1/dist',
+          destination: '/preview-workspace/public',
+          readWrite: false,
+        },
+      ],
+    };
+    docker.inspectContainer.mockResolvedValueOnce(inspect).mockResolvedValueOnce(connector);
+    await manager.reconcile();
+    expect(edge.remove).not.toHaveBeenCalled();
+
+    docker.inspectContainer.mockResolvedValueOnce(inspect).mockResolvedValueOnce({
+      ...connector,
+      mounts: [{ ...connector.mounts[0], subpath: 'repo/sessions/other/dist' }],
+    });
     await manager.reconcile();
     expect(edge.remove).toHaveBeenCalledWith(record.id);
   });

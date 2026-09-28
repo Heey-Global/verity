@@ -41,6 +41,27 @@ const create = async (suffix = '1', expiresAt = new Date('2030-01-01T00:00:00Z')
 };
 
 describe('EventStore — public preview shares', () => {
+  it('persists the session source of a static share for recovery', async () => {
+    const share = await ctx.store.createPublicPreviewShare({
+      id: 'session-static',
+      projectId: 'p1',
+      devServerId: null,
+      containerGeneration: 'generation-1',
+      targetPort: null,
+      targetKind: 'static-folder',
+      staticPath: 'dist',
+      sessionId: 'session-1',
+      publicOrigin: 'https://static.preview.example',
+      edgeUrl: 'wss://static.preview.example/__verity/connector',
+      pinHash: 'scrypt:salt:hash',
+      connectorToken: 'connector-secret',
+      sessionSecret: 'session-secret',
+      connectorContainerName: 'verity-preview-session-static',
+      expiresAt: new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(share.sessionId).toBe('session-1');
+    expect((await ctx.store.getPublicPreviewShare(share.id))?.sessionId).toBe('session-1');
+  });
   it('durably records idempotent pending Uplink removals', async () => {
     await ctx.store.addPendingUplinkShareRemoval('orphan-1');
     await ctx.store.addPendingUplinkShareRemoval('orphan-1');
