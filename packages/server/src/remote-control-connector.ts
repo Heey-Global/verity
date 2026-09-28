@@ -107,7 +107,7 @@ class ConnectorSession implements RemoteConnectorReservation {
   private ready = false;
   private streams = new Map<string, Stream>();
   private usedIds = new Set<string>();
-  private locallyResetIds = new Set<string>();
+  private retiredIds = new Set<string>();
   private attachReject: ((error: Error) => void) | undefined;
   private attachTimer: NodeJS.Timeout | undefined;
 
@@ -240,7 +240,7 @@ class ConnectorSession implements RemoteConnectorReservation {
 
   private reset(id: string, code: ResetCode): void {
     if (!this.streams.has(id)) return;
-    this.locallyResetIds.add(id);
+    this.retiredIds.add(id);
     this.dropStream(id);
     this.send({ type: 'stream.reset', streamId: id, code });
   }
@@ -295,7 +295,7 @@ class ConnectorSession implements RemoteConnectorReservation {
         return this.release('remote stream ID limit reached');
       this.usedIds.add(id);
       if (this.streams.size >= MAX_STREAMS) {
-        this.locallyResetIds.add(id);
+        this.retiredIds.add(id);
         this.send({ type: 'stream.reset', streamId: id, code: 'concurrency_limit' });
         return;
       }
@@ -357,7 +357,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     const id = frame.streamId;
     const stream = this.streams.get(id);
     if (!stream) {
-      if (this.locallyResetIds.has(id) && validIgnoredFrame(frame)) return;
+      if (this.retiredIds.has(id) && validIgnoredFrame(frame)) return;
       return this.failProtocol();
     }
     if (frame.type === 'stream.data') {
@@ -398,6 +398,9 @@ class ConnectorSession implements RemoteConnectorReservation {
         )
       )
         return this.failProtocol();
+      // Frames already in flight for this peer-reset stream must not close the
+      // entire data socket and interrupt unrelated streams.
+      this.retiredIds.add(id);
       this.dropStream(id);
       return;
     }

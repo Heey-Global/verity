@@ -228,6 +228,52 @@ describe('remote control connector', () => {
     reservation.release('test complete');
   });
 
+  it('keeps the data socket alive when a retired peer-reset stream receives a late frame', async () => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'installation_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'stream_one', channel: 'remote', meta: {} }),
+    );
+    await vi.waitFor(() => expect(f.localConnections()).toBe(1));
+    f.peer().send(
+      JSON.stringify({ type: 'stream.reset', streamId: 'stream_one', code: 'upstream_error' }),
+    );
+    f.peer().send(JSON.stringify({ type: 'stream.end', streamId: 'stream_one' }));
+    f.peer().send(
+      JSON.stringify({ type: 'stream.reset', streamId: 'stream_one', code: 'protocol_error' }),
+    );
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'stream_two', channel: 'remote', meta: {} }),
+    );
+    f.peer().send(
+      JSON.stringify({ type: 'stream.data', streamId: 'stream_two', seq: 0, payload: 'AQID' }),
+    );
+    await vi.waitFor(() =>
+      expect(f.received).toContainEqual({
+        type: 'stream.data',
+        streamId: 'stream_two',
+        seq: 0,
+        payload: 'AQID',
+      }),
+    );
+    expect(f.peer().readyState).toBe(WebSocket.OPEN);
+    reservation.release('test complete');
+  });
+
   it('times out a blocked local write despite empty incoming frames', async () => {
     let writeStarted!: () => void;
     const wrote = new Promise<void>((resolve) => (writeStarted = resolve));
