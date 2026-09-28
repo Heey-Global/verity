@@ -179,6 +179,7 @@ import { getAuthToken } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
+import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { runGmailAuth } from '../../lib/googleDrive';
 import {
@@ -2173,6 +2174,15 @@ export function SessionChat({
   // A dead session (worktree gone) can't take turns — disable sending proactively
   // (`resumable === false`); `undefined` (detail still loading) stays enabled.
   const dead = resumable === false;
+  useFocusEffect(
+    useCallback(
+      () =>
+        subscribeVoiceShortcut(() => {
+          if (!dead) voice.toggle();
+        }),
+      [dead, voice.toggle],
+    ),
+  );
   const checkedSecretFailuresRef = useRef(new Set<string>());
   const retriedSecretFailuresRef = useRef(new Set<string>());
 

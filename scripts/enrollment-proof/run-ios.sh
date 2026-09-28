@@ -65,12 +65,14 @@ result="$container/Documents/result.txt"
 service="verity.enrollment.ios.$(uuidgen)"
 for phase in create verify; do
   rm -f "$result"
+  echo "Launching enrollment proof ($phase)"
   if ! SIMCTL_CHILD_VERITY_PROOF_PHASE="$phase" SIMCTL_CHILD_VERITY_PROOF_SERVICE="$service" \
     xcrun simctl launch "$simulator" app.verity.enrollment-proof; then
     xcrun simctl spawn "$simulator" log show --last 2m --style compact \
       --predicate 'eventMessage CONTAINS "app.verity.enrollment-proof"' || true
     exit 1
   fi
+  echo "Waiting for enrollment proof result ($phase)"
   for _ in {1..60}; do
     [[ -f "$result" ]] && break
     sleep 1

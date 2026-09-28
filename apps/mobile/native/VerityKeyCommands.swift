@@ -12,7 +12,7 @@ import UIKit
 class VerityKeyCommands: Module {
   public func definition() -> ModuleDefinition {
     View(VerityKeyCommandsView.self) {
-      Events("onZoom", "onSearch")
+      Events("onZoom", "onSearch", "onVoice")
     }
   }
 }
@@ -20,6 +20,7 @@ class VerityKeyCommands: Module {
 class VerityKeyCommandsView: ExpoView {
   let onZoom = EventDispatcher()
   let onSearch = EventDispatcher()
+  let onVoice = EventDispatcher()
 
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
@@ -71,6 +72,7 @@ class VerityKeyCommandsView: ExpoView {
       UIKeyCommand(input: "0", modifierFlags: .command, action: #selector(zoomReset)),
       UIKeyCommand(input: "f", modifierFlags: .command, action: #selector(searchContext)),
       UIKeyCommand(input: "f", modifierFlags: [.command, .shift], action: #selector(searchGlobal)),
+      UIKeyCommand(input: "<", modifierFlags: .control, action: #selector(toggleVoice)),
       UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(closeSearch)),
     ]
     for command in commands {
@@ -85,6 +87,7 @@ class VerityKeyCommandsView: ExpoView {
   @objc private func searchContext() { onSearch(["action": "context"]) }
   @objc private func searchGlobal() { onSearch(["action": "global"]) }
   @objc private func closeSearch() { onSearch(["action": "close"]) }
+  @objc private func toggleVoice() { onVoice(["action": "toggle"]) }
 }
 
 // Reading the live first responder without private API: `sendAction(to: nil)` routes
