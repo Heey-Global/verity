@@ -266,7 +266,7 @@ jobs:
 
       - name: Probe Staging Remote Control through the native tunnels
         if: github.event_name == 'workflow_dispatch' && inputs.installation_handle != ''
-        timeout-minutes: 5
+        timeout-minutes: 8
         env:
           VERITY_REMOTE_UPLINK_ORIGIN: ${{ inputs.uplink_origin }}
           VERITY_REMOTE_INSTALLATION_HANDLE: ${{ inputs.installation_handle }}
@@ -275,3 +275,7 @@ jobs:
         run: |
           bash scripts/remote-control-staging/run.sh
           VERITY_REMOTE_PROBE_MODE=app bash scripts/remote-control-staging/run.sh
+          # Longer than the 15 s ping interval and the old 15 s request timeout
+          # that ended idle app attachments.
+          VERITY_REMOTE_PROBE_MODE=app VERITY_REMOTE_PROBE_IDLE_SECONDS=40 \
+            bash scripts/remote-control-staging/run.sh

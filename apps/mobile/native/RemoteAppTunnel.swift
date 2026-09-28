@@ -57,6 +57,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var pendingLocal = 0
   private var reservedSlots = 0
   private var stopped = false
+  private var stopReasonText: String?
+  private var heartbeat: Task<Void, Never>?
+  private var unansweredPingSince: Date?
 
   var isActive: Bool {
     lock.lock()
@@ -66,6 +69,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   var isExhausted: Bool { lock.withLock { usedIds.count >= 4_096 } }
   var isStopped: Bool { lock.withLock { stopped } }
+  /// Why the attachment ended. Without it a dropped tunnel reaches the user only as a generic
+  /// transport error on whichever request happened to run next.
+  var stopReason: String? { lock.withLock { stopReasonText } }
 
   init(dataURL: URL, coreURL: URL) throws {
     guard dataURL.scheme == "wss", dataURL.path == "/data", dataURL.query == nil,
@@ -77,7 +83,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
       ? String(host.dropFirst().dropLast()) : host
     expectedPort = coreURL.port ?? 443
     let configuration = URLSessionConfiguration.ephemeral
-    configuration.timeoutIntervalForRequest = 15
+    // On a WebSocket task the request timeout is an idle timeout: a receive that
+    // waits longer fails and ends the whole attachment. The tunnel is idle for as
+    // long as the user reads, so liveness comes from the ping loop below instead.
+    // `start` bounds the attachment itself.
+    configuration.timeoutIntervalForRequest = 7 * 24 * 60 * 60
+    configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
     outer = URLSession(configuration: configuration)
     socket = outer.webSocketTask(with: dataURL)
     socket.maximumMessageSize = 96 * 1024
@@ -91,7 +102,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     socket.resume()
     let timeout = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 15_000_000_000)
-      if !Task.isCancelled { self?.stop() }
+      if !Task.isCancelled { self?.stop(reason: "attachment timed out") }
     }
     defer { timeout.cancel() }
     do {
@@ -142,17 +153,20 @@ final class RemoteAppTunnel: @unchecked Sendable {
         guard let self else { return }
         await self.readFrames()
       }
+      startHeartbeat()
       return port
     } catch {
-      stop()
+      stop(reason: "attachment failed: \(error)")
       throw error
     }
   }
 
-  func stop() {
+  func stop(reason: String = "stopped by app") {
     lock.lock()
     guard !stopped else { lock.unlock(); return }
     stopped = true
+    stopReasonText = reason
+    NSLog("Verity remote tunnel stopped: %@", reason)
     let connections = streams.values.map(\.connection)
     for stream in streams.values { stream.closed = true }
     streams.removeAll()
@@ -163,6 +177,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.unlock()
     for connection in connections { connection.cancel() }
     reader?.cancel()
+    heartbeat?.cancel()
     socket.cancel(with: .goingAway, reason: nil)
     outer.invalidateAndCancel()
   }
@@ -181,7 +196,38 @@ final class RemoteAppTunnel: @unchecked Sendable {
         let frame = try await receiveFrame()
         try await handle(frame)
       }
-    } catch { stop() }
+    } catch { stop(reason: "data socket failed: \(error)") }
+  }
+
+  // Mirrors the Uplink side of the data heartbeat: one outstanding ping, and the
+  // attachment ends 45 seconds after the oldest unanswered one. Measured from the
+  // ping rather than the last pong, so a suspension in the background does not
+  // by itself count as a dead socket.
+  private func startHeartbeat() {
+    heartbeat = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 15_000_000_000)
+        guard !Task.isCancelled, let self else { return }
+        let now = Date()
+        let (expired, due) = self.lock.withLock { () -> (Bool, Bool) in
+          guard let since = self.unansweredPingSince else {
+            self.unansweredPingSince = now
+            return (false, true)
+          }
+          return (now.timeIntervalSince(since) > 45, false)
+        }
+        if expired {
+          self.stop(reason: "heartbeat timeout")
+          return
+        }
+        guard due else { continue }
+        self.socket.sendPing { [weak self] error in
+          guard let self else { return }
+          if let error { self.stop(reason: "heartbeat failed: \(error)") }
+          else { self.lock.withLock { self.unansweredPingSince = nil } }
+        }
+      }
+    }
   }
 
   private func handle(_ frame: [String: Any]) async throws {
@@ -296,7 +342,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.unlock()
     stream?.worker?.cancel()
     stream?.connection.cancel()
-    if exhausted { stop() }
+    if exhausted { stop(reason: "stream IDs exhausted") }
     return stream != nil
   }
 
