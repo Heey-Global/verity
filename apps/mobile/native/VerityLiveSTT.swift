@@ -345,7 +345,9 @@ private final class LiveSTTService {
     emit?(["kind": "status", "state": "downloading"])
     let models = try await AsrModels.downloadAndLoad(version: .ultra)
     try ensureActive(generation)
-    let manager = SlidingWindowAsrManager()
+    // The default 11 s chunk plus 2 s lookahead leaves short test recordings blank.
+    let manager = SlidingWindowAsrManager(config: SlidingWindowAsrConfig(
+      chunkSeconds: 3.0, leftContextSeconds: 2.0, rightContextSeconds: 0.5))
     try await manager.loadModels(models)
     try await manager.startStreaming()
     try ensureActive(generation)
