@@ -14,7 +14,7 @@ import { useGlobalSearchParams, usePathname, useSegments } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { getAuthToken } from '../lib/authToken';
+import { getAuthToken, hasStoredAuthToken } from '../lib/authToken';
 import { createVerityClient, getVerityBaseUrl, hasConfiguredVerityBaseUrl } from '../lib/client';
 
 export type OnboardingGateState = { status: 'checking' } | { status: 'done'; redirectTo?: string };
@@ -77,6 +77,22 @@ export function useOnboardingGate(): OnboardingGateState {
             return;
           }
           setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
+          return;
+        }
+
+        // Remote Control cannot fetch Core status until the local bearer is unlocked.
+        // A network-first gate skips Face ID whenever the direct address is unreachable.
+        if (
+          !inOnboarding &&
+          getAuthToken(getVerityBaseUrl()) === null &&
+          (await hasStoredAuthToken(getVerityBaseUrl()))
+        ) {
+          if (!active) return;
+          setState(
+            inUnlockDevice
+              ? { status: 'done' }
+              : { status: 'done', redirectTo: unlockRoute(currentReturnTo()) },
+          );
           return;
         }
 

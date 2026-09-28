@@ -92,6 +92,7 @@ export interface ControlPlaneDeps {
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: ServerDeps['previewShareManager'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
+  uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
   /** Invalidate cached access tokens after shared Google OAuth credentials change. */
@@ -353,6 +354,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.remoteControlDescriptor !== undefined
       ? { remoteControlDescriptor: deps.remoteControlDescriptor }
       : {}),
+    ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
       : {}),

@@ -43,8 +43,10 @@ const mockCreateVerityClient = jest.fn<VerityClient | null, []>();
 const mockGetVerityBaseUrl = jest.fn<string | null, []>();
 const mockHasConfiguredVerityBaseUrl = jest.fn<boolean, []>();
 const mockGetAuthToken = jest.fn<string | null, []>();
+const mockHasStoredAuthToken = jest.fn<Promise<boolean>, []>();
 jest.mock('../lib/authToken', () => ({
   getAuthToken: () => mockGetAuthToken(),
+  hasStoredAuthToken: () => mockHasStoredAuthToken(),
 }));
 jest.mock('../lib/client', () => ({
   createVerityClient: () => mockCreateVerityClient(),
@@ -103,6 +105,8 @@ beforeEach(() => {
   mockGetVerityBaseUrl.mockReset();
   mockHasConfiguredVerityBaseUrl.mockReset();
   mockGetAuthToken.mockReset();
+  mockHasStoredAuthToken.mockReset();
+  mockHasStoredAuthToken.mockResolvedValue(false);
   // Default: a base URL IS configured, so the gate proceeds to the status-driven
   // flow. The server-url precondition tests override this to null.
   mockGetVerityBaseUrl.mockReturnValue('http://verity.test:8082');
@@ -197,6 +201,44 @@ describe('onboarding first-run gate', () => {
     ).toBeOnTheScreen();
     expect(mockReplace).not.toHaveBeenCalledWith('/onboarding/github');
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('unlocks a stored device credential before trying an unreachable Core', async () => {
+    mockGetAuthToken.mockReturnValue(null);
+    mockHasStoredAuthToken.mockResolvedValue(true);
+    mockPathname = '/session/offline';
+    const status = jest.fn().mockRejectedValue(new Error('Core unreachable'));
+    const secret = jest.fn().mockRejectedValue(new Error('Core unreachable'));
+    mockCreateVerityClient.mockReturnValue(makeClient(status, secret));
+    render(<GateProbe />);
+
+    // Remote Control needs the bearer; fetching Core first silently skips Face ID offline.
+    expect(
+      await screen.findByText('gate:done:/unlock-device?returnTo=%2Fsession%2Foffline'),
+    ).toBeOnTheScreen();
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+  });
+
+  it('lets the local device unlock screen run without contacting Core', async () => {
+    mockGetAuthToken.mockReturnValue(null);
+    mockHasStoredAuthToken.mockResolvedValue(true);
+    mockSegments = ['unlock-device'];
+    render(<GateProbe />);
+
+    expect(await screen.findByText('gate:done')).toBeOnTheScreen();
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+  });
+
+  it('preserves onboarding with a stored but unloaded device credential', async () => {
+    mockGetAuthToken.mockReturnValue(null);
+    mockHasStoredAuthToken.mockResolvedValue(true);
+    mockSegments = ['onboarding', 'github'];
+    const fetchStatus = jest.fn().mockResolvedValue(makeStatus({ sealed: false }));
+    mockCreateVerityClient.mockReturnValue(makeClient(fetchStatus));
+    render(<GateProbe />);
+
+    expect(await screen.findByText('gate:done')).toBeOnTheScreen();
+    expect(fetchStatus).toHaveBeenCalled();
   });
 
   it('returns to the app after unlocking a redacted post-setup status', async () => {
