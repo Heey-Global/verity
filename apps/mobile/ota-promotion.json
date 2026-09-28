@@ -1,14 +1,16 @@
 {
   "schema": 1,
-  "version": "1.40.1",
+  "version": "1.40.2",
   "runtime": "1.40.0",
   "channel": "testflight",
-  "commit": "6cd14527ec31256745cd12191e4da06f604847f6",
-  "tag": "mobile-v1.40.1",
-  "branch": "staging-mobile-v1.40.1-6cd14527ec31256745cd12191e4da06f604847f6",
-  "baseline": "mobile-v1.40.0",
-  "group": "7c675da6-3639-42af-9a9d-9db0b1179c5c",
+  "commit": "1e0dda2e81bce05d0b3b545eb4e4dc0abffc2c28",
+  "tag": "mobile-v1.40.2",
+  "branch": "staging-mobile-v1.40.2-1e0dda2e81bce05d0b3b545eb4e4dc0abffc2c28",
+  "baseline": "mobile-v1.40.1",
+  "group": "8b6b75ef-d873-4e1f-b75f-02ce4ad234a5",
   "notes": [
-    "add continuous voice dictation (#860)"
+    "use shared explorer rows in preview sheet (#864)",
+    "ease continuous dictation countdown (#862)",
+    "add connection diagnostics to public preview settings (#865)"
   ]
 }
