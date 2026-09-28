@@ -1,13 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
-import LiveMeetingSTTScreen from './live-meeting-stt';
-import { liveMeetingSTT, type STTEvent } from '../../lib/liveMeetingSTT';
+import LiveMeetingSTTScreen from '../app/settings/live-meeting-stt';
+import { liveMeetingSTT, type STTEvent } from '../lib/liveMeetingSTT';
 
-jest.mock('../../components/settings/SettingsChrome', () => ({
+jest.mock('../components/settings/SettingsChrome', () => ({
   SettingsScaffold: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-jest.mock('../../lib/liveMeetingSTT', () => ({
+jest.mock('../lib/liveMeetingSTT', () => ({
   liveMeetingSTT: {
     engines: jest
       .fn()
