@@ -777,7 +777,8 @@ export function SessionChat({
     [sessionId],
   );
   // Live dictation writes recognized speech straight into the draft as it streams.
-  const voice = useVoiceInput(draft, setDraft);
+  const voiceAutoSendRef = useRef<(text: string) => Promise<boolean>>(async () => false);
+  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
   const branches = useBranches(client, sessionId);
@@ -1113,9 +1114,10 @@ export function SessionChat({
   const onDraftChange = useCallback(
     (text: string) => {
       clearSearchHighlight();
+      voice.onComposerEdit(text);
       setDraft(text);
     },
-    [clearSearchHighlight],
+    [clearSearchHighlight, voice.onComposerEdit, setDraft],
   );
   // Auto-fade for the message-nav stack. It stays HIDDEN until the operator ACTIVELY
   // scrolls (onScrollBeginDrag — a real finger drag, NOT programmatic/content-driven
@@ -2321,6 +2323,14 @@ export function SessionChat({
     return branches.saveToProject();
   }, [branches.saveToProject, scrollToLatest]);
   const voiceAbort = voice.abort;
+  voiceAutoSendRef.current = async (text) => {
+    if (!text || sending || dead || attachments.length > 0) return false;
+    const accepted = await sendTurn(text);
+    if (!accepted) return false;
+    scrollToLatest(true);
+    Keyboard.dismiss();
+    return true;
+  };
   const onSend = useCallback(() => {
     const prompt = draft.trim();
     // Enforce the cap here as well as through `canSend`: hardware Enter invokes
@@ -3794,7 +3804,12 @@ export function SessionChat({
         onStop={onStop}
         dead={dead}
         voiceState={voice.state}
+        voiceAutoMode={voice.autoMode}
+        voiceCountdown={voice.countdown}
+        voiceCountdownPaused={voice.countdownPaused}
         onMic={voice.toggle}
+        onMicLongPress={voice.startAuto}
+        onPauseVoiceCountdown={voice.pauseCountdown}
         engineLabel={modelDisplayName(effectiveModel)}
         engineBusy={switchingModel}
         onEnginePress={() => {
@@ -7617,7 +7632,12 @@ function InputBar({
   onStop,
   dead,
   voiceState,
+  voiceAutoMode,
+  voiceCountdown,
+  voiceCountdownPaused,
   onMic,
+  onMicLongPress,
+  onPauseVoiceCountdown,
   engineLabel,
   engineBusy,
   onEnginePress,
@@ -7654,7 +7674,12 @@ function InputBar({
   /** Session can't be resumed (worktree gone) — lock the input, no send/mic. */
   dead: boolean;
   voiceState: VoiceState;
+  voiceAutoMode: boolean;
+  voiceCountdown: number | null;
+  voiceCountdownPaused: boolean;
   onMic: () => void;
+  onMicLongPress: () => void;
+  onPauseVoiceCountdown: () => void;
   /** Current engine/model label shown on the chip in the action row. */
   engineLabel: string;
   /** An engine switch is in flight — the chip shows a spinner and is disabled. */
@@ -7687,6 +7712,16 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
+  const [showAutoIntro, setShowAutoIntro] = useState(false);
+  useEffect(() => {
+    if (!voiceAutoMode) {
+      setShowAutoIntro(false);
+      return;
+    }
+    setShowAutoIntro(true);
+    const timer = setTimeout(() => setShowAutoIntro(false), 2400);
+    return () => clearTimeout(timer);
+  }, [voiceAutoMode]);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useCallback(() => {
     const node = attachBtnRef.current;
@@ -7799,6 +7834,17 @@ function InputBar({
           keyboardAppearance="dark"
           accessibilityLabel="Message input"
         />
+        {voiceAutoMode ? (
+          <Text style={styles.voiceAutoHint} accessibilityLiveRegion="polite">
+            {voiceCountdown !== null
+              ? `Sending in ${String(voiceCountdown)} · tap countdown to wait`
+              : showAutoIntro
+                ? 'Continuous dictation on · tap mic to stop'
+                : voiceCountdownPaused
+                  ? 'Waiting for your next words · tap mic to stop'
+                  : 'Continuous dictation · tap mic to stop'}
+          </Text>
+        ) : null}
         <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
           {/* Left: attach + the engine/model chip (moved here from the header, like
               the Claude app — it sits with the composer instead of the nav bar). */}
@@ -7832,7 +7878,15 @@ function InputBar({
             {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
                 dictation is tap-to-toggle; recording gets its own active treatment.
                 A separate button keeps it from ever "mutating" into Send/Stop. */}
-            <MicButton voiceState={voiceState} onMic={onMic} disabled={dead} />
+            <MicButton
+              voiceState={voiceState}
+              autoMode={voiceAutoMode}
+              countdown={voiceCountdown}
+              onMic={onMic}
+              onLongPress={onMicLongPress}
+              onPauseCountdown={onPauseVoiceCountdown}
+              disabled={dead}
+            />
             {running && !canSend && !sending && !dead ? (
               // Empty field while a turn runs → Stop is available, while the top
               // activity line carries the "agent is working" cue.
@@ -8190,29 +8244,65 @@ function StopButton({ onStop }: { onStop: () => void }) {
 // fixed active surface matching Stop; there is no size change or pulsing effect.
 function MicButton({
   voiceState,
+  autoMode,
+  countdown,
   onMic,
+  onLongPress,
+  onPauseCountdown,
   disabled,
 }: {
   voiceState: VoiceState;
+  autoMode: boolean;
+  countdown: number | null;
   onMic: () => void;
+  onLongPress: () => void;
+  onPauseCountdown: () => void;
   disabled?: boolean;
 }) {
   const { theme } = useUnistyles();
   const recording = voiceState === 'recording';
+  const activationScale = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!autoMode) return;
+    activationScale.setValue(0.82);
+    Animated.spring(activationScale, { toValue: 1, useNativeDriver: true }).start();
+  }, [activationScale, autoMode]);
   return (
     <Pressable
       style={styles.iconButton}
-      onPress={onMic}
+      onPress={countdown !== null ? onPauseCountdown : onMic}
+      onLongPress={onLongPress}
+      delayLongPress={600}
       disabled={disabled}
       hitSlop={8}
       accessibilityRole="button"
       accessibilityState={{ disabled: Boolean(disabled), busy: recording }}
-      accessibilityLabel={recording ? 'Stop dictation' : 'Start voice dictation'}
+      accessibilityLabel={
+        countdown !== null
+          ? 'Pause automatic send'
+          : autoMode
+            ? 'Stop continuous dictation'
+            : recording
+              ? 'Stop dictation'
+              : 'Start voice dictation; hold for continuous dictation'
+      }
     >
       {recording ? (
-        <View style={styles.activeActionFill}>
-          <Icon name="check" size={20} color={theme.colors.background} />
-        </View>
+        <Animated.View
+          style={[
+            styles.activeActionFill,
+            autoMode && styles.voiceAutoActionFill,
+            { transform: [{ scale: activationScale }] },
+          ]}
+        >
+          {countdown !== null ? (
+            <Text style={{ color: theme.colors.background, fontWeight: '700' }}>{countdown}</Text>
+          ) : autoMode ? (
+            <Icon name="mic" size={20} color={theme.colors.background} />
+          ) : (
+            <Icon name="check" size={20} color={theme.colors.background} />
+          )}
+        </Animated.View>
       ) : (
         <Icon
           name="mic"
@@ -8220,6 +8310,7 @@ function MicButton({
           color={disabled ? theme.colors.textFaint : theme.colors.textMuted}
         />
       )}
+      {autoMode && recording ? <View style={styles.voiceAutoDot} /> : null}
     </Pressable>
   );
 }
@@ -8371,6 +8462,20 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.text,
+  },
+  voiceAutoActionFill: {
+    backgroundColor: theme.colors.primary,
+  },
+  voiceAutoDot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    width: 9,
+    height: 9,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.primary,
+    borderWidth: 1,
+    borderColor: theme.colors.background,
   },
   stopSquare: {
     width: 11,
@@ -9860,6 +9965,11 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     justifyContent: 'flex-start',
     gap: theme.spacing.sm,
+  },
+  voiceAutoHint: {
+    color: theme.colors.textMuted,
+    fontSize: 12,
+    marginBottom: theme.spacing.xs,
   },
   actionRowLeft: {
     flexDirection: 'row',

@@ -1,0 +1,143 @@
+import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { useVoiceInput } from './useVoiceInput';
+
+const handlers: Record<
+  string,
+  (event: { results?: { transcript: string }[]; isFinal?: boolean }) => void
+> = {};
+
+jest.mock('expo-localization', () => ({ getLocales: () => [{ languageTag: 'en-US' }] }));
+jest.mock('expo-speech-recognition', () => ({
+  useSpeechRecognitionEvent: (name: string, handler: (event: never) => void) => {
+    handlers[name] = handler as unknown as (typeof handlers)[string];
+  },
+  ExpoSpeechRecognitionModule: {
+    requestPermissionsAsync: jest.fn().mockResolvedValue({ granted: true }),
+    getSupportedLocales: jest.fn().mockResolvedValue({ installedLocales: ['en-US'] }),
+    start: jest.fn(),
+    stop: jest.fn(),
+    abort: jest.fn(),
+  },
+}));
+
+it('lets a tap cancel automatic send until more speech arrives', async () => {
+  jest.useFakeTimers();
+  const onChangeText = jest.fn();
+  const onAutoSend = jest.fn().mockResolvedValue(true);
+  const { result } = renderHook(() => useVoiceInput('', onChangeText, onAutoSend));
+
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'First thought' }], isFinal: true }));
+  expect(result.current.countdown).toBe(3);
+  act(() => result.current.pauseCountdown());
+  act(() => jest.advanceTimersByTime(4000));
+  expect(onAutoSend).not.toHaveBeenCalled();
+  expect(onChangeText).toHaveBeenLastCalledWith('First thought');
+
+  act(() => handlers.result({ results: [{ transcript: 'second thought' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: 'second thought' }], isFinal: true }));
+  expect(result.current.countdown).toBe(3);
+  act(() => jest.advanceTimersByTime(3000));
+  expect(onAutoSend).toHaveBeenCalledWith('First thought second thought');
+  await act(async () => Promise.resolve());
+  expect(result.current.state).toBe('recording');
+  act(() => handlers.result({ results: [{ transcript: 'Next message' }], isFinal: true }));
+  act(() => jest.advanceTimersByTime(3000));
+  expect(onAutoSend).toHaveBeenLastCalledWith('Next message');
+  jest.useRealTimers();
+});
+
+it('schedules the next dictated message when the previous send finishes', async () => {
+  jest.useFakeTimers();
+  let acceptFirst!: (accepted: boolean) => void;
+  const firstSend = new Promise<boolean>((resolve) => {
+    acceptFirst = resolve;
+  });
+  const onAutoSend = jest
+    .fn<Promise<boolean>, [string]>()
+    .mockReturnValueOnce(firstSend)
+    .mockResolvedValue(true);
+  const { result } = renderHook(() => useVoiceInput('', jest.fn(), onAutoSend));
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'First' }], isFinal: true }));
+  act(() => jest.advanceTimersByTime(3000));
+  act(() => handlers.result({ results: [{ transcript: 'Second' }], isFinal: true }));
+  expect(onAutoSend).toHaveBeenCalledTimes(1);
+  await act(async () => acceptFirst(true));
+  act(() => jest.advanceTimersByTime(3000));
+  expect(onAutoSend).toHaveBeenLastCalledWith('Second');
+  jest.useRealTimers();
+});
+
+it('does not send a draft changed during the countdown', async () => {
+  jest.useFakeTimers();
+  const onAutoSend = jest.fn().mockResolvedValue(true);
+  const { result } = renderHook(() => useVoiceInput('', jest.fn(), onAutoSend));
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Original' }], isFinal: true }));
+  act(() => result.current.onComposerEdit('Corrected'));
+  act(() => jest.advanceTimersByTime(4000));
+  expect(onAutoSend).not.toHaveBeenCalled();
+  act(() => handlers.result({ results: [{ transcript: 'Next words' }], isFinal: true }));
+  act(() => jest.advanceTimersByTime(3000));
+  expect(onAutoSend).toHaveBeenCalledWith('Corrected Next words');
+  jest.useRealTimers();
+});
+
+it('keeps a manual edit made during interim recognition without duplicating speech', async () => {
+  jest.useFakeTimers();
+  const onChangeText = jest.fn();
+  const onAutoSend = jest.fn().mockResolvedValue(true);
+  const { result } = renderHook(() => useVoiceInput('', onChangeText, onAutoSend));
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Partial' }], isFinal: false }));
+  act(() => result.current.onComposerEdit('Edited'));
+  act(() => handlers.result({ results: [{ transcript: 'Partial phrase' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: 'Partial phrase' }], isFinal: true }));
+  expect(onChangeText).toHaveBeenLastCalledWith('Partial');
+  act(() => jest.advanceTimersByTime(4000));
+  expect(onAutoSend).not.toHaveBeenCalled();
+  act(() => handlers.result({ results: [{ transcript: 'New words' }], isFinal: true }));
+  act(() => jest.advanceTimersByTime(3000));
+  expect(onAutoSend).toHaveBeenCalledWith('Edited New words');
+  jest.useRealTimers();
+});
+
+it('does not restart a countdown after the screen closes during a send', async () => {
+  jest.useFakeTimers();
+  let accept!: (accepted: boolean) => void;
+  const onAutoSend = jest.fn(() => new Promise<boolean>((resolve) => (accept = resolve)));
+  const { result, unmount } = renderHook(() => useVoiceInput('', jest.fn(), onAutoSend));
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'First' }], isFinal: true }));
+  act(() => jest.advanceTimersByTime(3000));
+  act(() => handlers.result({ results: [{ transcript: 'Second' }], isFinal: true }));
+  unmount();
+  await act(async () => accept(true));
+  act(() => jest.advanceTimersByTime(4000));
+  expect(onAutoSend).toHaveBeenCalledTimes(1);
+  jest.useRealTimers();
+});
+
+it('preserves manual edits after dictation stops if an in-flight send fails', async () => {
+  jest.useFakeTimers();
+  let rejectSend!: (accepted: boolean) => void;
+  const onAutoSend = jest.fn(() => new Promise<boolean>((resolve) => (rejectSend = resolve)));
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText, onAutoSend));
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Submitted' }], isFinal: true }));
+  act(() => jest.advanceTimersByTime(3000));
+  act(() => handlers.end({}));
+  act(() => result.current.onComposerEdit('My correction'));
+  const writesBeforeRejection = onChangeText.mock.calls.length;
+  await act(async () => rejectSend(false));
+  expect(onChangeText).toHaveBeenCalledTimes(writesBeforeRejection);
+  jest.useRealTimers();
+});

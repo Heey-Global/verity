@@ -7,10 +7,16 @@ export type VoiceState = 'idle' | 'recording';
 
 export interface UseVoiceInput {
   state: VoiceState;
+  autoMode: boolean;
+  countdown: number | null;
+  countdownPaused: boolean;
   /** Last failure (permission denied / recognizer error), cleared on next start. */
   error: string | undefined;
   /** Toggle dictation: start listening (idle) or stop it (recording). */
   toggle: () => void;
+  startAuto: () => void;
+  pauseCountdown: () => void;
+  onComposerEdit: (text: string) => void;
   /**
    * Cancel dictation immediately, swallowing any trailing result (#133). Unlike
    * `toggle`/`stop` — which resolve to a FINAL result that would write back into the
@@ -77,9 +83,33 @@ async function resolveRecognitionLocale(): Promise<{ lang: string; onDevice: boo
  * snapshots `value` at start and appends the running transcript onto that base,
  * committing each finalized segment so a continuous dictation accumulates.
  */
-export function useVoiceInput(value: string, onChangeText: (next: string) => void): UseVoiceInput {
+export function useVoiceInput(
+  value: string,
+  onChangeText: (next: string) => void,
+  onAutoSend?: (text: string) => Promise<boolean>,
+): UseVoiceInput {
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string | undefined>(undefined);
+  const [autoMode, setAutoMode] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [countdownPaused, setCountdownPaused] = useState(false);
+  const autoModeRef = useRef(false);
+  const disposedRef = useRef(false);
+  const pausedRef = useRef(false);
+  const sendingRef = useRef(false);
+  const editedDuringSendRef = useRef(false);
+  const finalReadyRef = useRef(false);
+  const interimActiveRef = useRef(false);
+  const ignoreCurrentUtteranceRef = useRef(false);
+  const lastFinalTranscriptRef = useRef('');
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoSendRef = useRef(onAutoSend);
+  autoSendRef.current = onAutoSend;
+  const cancelCountdown = useCallback(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+    setCountdown(null);
+  }, []);
 
   // Text in the field when dictation began + each finalized segment appended to
   // it. The live (interim) transcript is composed onto this without mutating it,
@@ -94,23 +124,104 @@ export function useVoiceInput(value: string, onChangeText: (next: string) => voi
   const onChangeRef = useRef(onChangeText);
   onChangeRef.current = onChangeText;
 
+  const startCountdown = useCallback(() => {
+    if (
+      disposedRef.current ||
+      !autoModeRef.current ||
+      pausedRef.current ||
+      sendingRef.current ||
+      !baseRef.current.trim()
+    )
+      return;
+    cancelCountdown();
+    let remaining = 3;
+    setCountdown(remaining);
+    timerRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setCountdown(remaining);
+        return;
+      }
+      cancelCountdown();
+      if (disposedRef.current || !autoModeRef.current || sendingRef.current) return;
+      const send = autoSendRef.current;
+      if (!send) return;
+      sendingRef.current = true;
+      editedDuringSendRef.current = false;
+      finalReadyRef.current = false;
+      const submitted = baseRef.current.trim();
+      baseRef.current = '';
+      onChangeRef.current('');
+      void send(submitted)
+        .then((accepted) => {
+          if (disposedRef.current) return;
+          if (!accepted && !editedDuringSendRef.current) {
+            baseRef.current = composeTranscript(submitted, baseRef.current);
+            onChangeRef.current(baseRef.current);
+          }
+        })
+        .catch(() => {
+          if (disposedRef.current) return;
+          if (!editedDuringSendRef.current) {
+            baseRef.current = composeTranscript(submitted, baseRef.current);
+            onChangeRef.current(baseRef.current);
+          }
+        })
+        .finally(() => {
+          sendingRef.current = false;
+          if (!disposedRef.current && finalReadyRef.current) startCountdown();
+        });
+    }, 1000);
+  }, [cancelCountdown]);
+
   useSpeechRecognitionEvent('result', (event) => {
     if (!listeningRef.current) return; // ignore stray/late results after stop
     const transcript = event.results[0]?.transcript ?? '';
+    if (ignoreCurrentUtteranceRef.current) {
+      if (event.isFinal) {
+        ignoreCurrentUtteranceRef.current = false;
+        interimActiveRef.current = false;
+        lastFinalTranscriptRef.current = transcript;
+      }
+      return;
+    }
+    if (transcript.trim()) {
+      cancelCountdown();
+      if (!event.isFinal || transcript !== lastFinalTranscriptRef.current) {
+        pausedRef.current = false;
+        setCountdownPaused(false);
+      }
+    }
+    if (!event.isFinal) {
+      finalReadyRef.current = false;
+      interimActiveRef.current = true;
+    }
     const next = composeTranscript(baseRef.current, transcript);
     onChangeRef.current(next);
     // A finalized segment becomes the new base so the next segment appends after
     // it (continuous mode emits one final result per utterance/pause).
-    if (event.isFinal) baseRef.current = next;
+    if (event.isFinal) {
+      interimActiveRef.current = false;
+      lastFinalTranscriptRef.current = transcript;
+      baseRef.current = next;
+      finalReadyRef.current = true;
+      startCountdown();
+    }
   });
 
   useSpeechRecognitionEvent('end', () => {
     listeningRef.current = false;
+    autoModeRef.current = false;
+    setAutoMode(false);
+    cancelCountdown();
     setState('idle');
   });
 
   useSpeechRecognitionEvent('error', (event) => {
     listeningRef.current = false;
+    autoModeRef.current = false;
+    setAutoMode(false);
+    cancelCountdown();
     // `aborted` fires when recognition is cancelled (e.g. abort()) rather than
     // finished — not a user-facing failure, so swallow it.
     if (event.error === 'aborted') return;
@@ -128,18 +239,26 @@ export function useVoiceInput(value: string, onChangeText: (next: string) => voi
     void (async () => {
       try {
         const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (disposedRef.current) return;
         if (!permission.granted) {
           listeningRef.current = false;
+          autoModeRef.current = false;
+          setAutoMode(false);
           setError('Microphone / speech-recognition permission denied');
           return;
         }
         baseRef.current = value.trim();
+        finalReadyRef.current = false;
+        interimActiveRef.current = false;
+        ignoreCurrentUtteranceRef.current = false;
+        lastFinalTranscriptRef.current = '';
         // Resolve a locale that has an on-device model INSTALLED, matched to the
         // operator's preferred languages — so recognition stays on-device (private,
         // offline) AND we never request an invalid locale (the `en-DE` failure). If
         // the device has no on-device models at all, fall back to the network
         // recognizer for the first preferred tag.
         const { lang, onDevice } = await resolveRecognitionLocale();
+        if (disposedRef.current) return;
         ExpoSpeechRecognitionModule.start({
           lang,
           // Stream partial results so the field fills in live as we speak.
@@ -151,6 +270,8 @@ export function useVoiceInput(value: string, onChangeText: (next: string) => voi
         setState('recording');
       } catch {
         listeningRef.current = false;
+        autoModeRef.current = false;
+        setAutoMode(false);
         setError('Could not start dictation');
         setState('idle');
       }
@@ -159,23 +280,57 @@ export function useVoiceInput(value: string, onChangeText: (next: string) => voi
 
   const toggle = useCallback(() => {
     if (state === 'recording') {
+      autoModeRef.current = false;
+      setAutoMode(false);
+      cancelCountdown();
       // Resolves to a final `result` then `end` → state flips to idle there.
       ExpoSpeechRecognitionModule.stop();
     } else {
       start();
     }
-  }, [state, start]);
+  }, [state, start, cancelCountdown]);
+
+  const startAuto = useCallback(() => {
+    autoModeRef.current = true;
+    pausedRef.current = false;
+    setCountdownPaused(false);
+    setAutoMode(true);
+    if (!listeningRef.current) start();
+  }, [start]);
+
+  const pauseCountdown = useCallback(() => {
+    pausedRef.current = true;
+    setCountdownPaused(true);
+    cancelCountdown();
+  }, [cancelCountdown]);
+
+  const onComposerEdit = useCallback(
+    (text: string) => {
+      if (!listeningRef.current && !sendingRef.current) return;
+      if (sendingRef.current) editedDuringSendRef.current = true;
+      if (interimActiveRef.current) ignoreCurrentUtteranceRef.current = true;
+      baseRef.current = text;
+      finalReadyRef.current = false;
+      if (autoModeRef.current) pauseCountdown();
+    },
+    [pauseCountdown],
+  );
 
   // End dictation NOW without a trailing final result (#133). Drops the listening
   // gate first so any late `result` is ignored, then cancels the recognizer and
   // flips to idle immediately (don't wait on the native `aborted`/`end` event). A
   // no-op when no session is active, so callers can fire it unconditionally.
   const abort = useCallback(() => {
+    autoModeRef.current = false;
+    pausedRef.current = false;
+    setCountdownPaused(false);
+    setAutoMode(false);
+    cancelCountdown();
     if (!listeningRef.current) return;
     listeningRef.current = false;
     ExpoSpeechRecognitionModule.abort();
     setState('idle');
-  }, []);
+  }, [cancelCountdown]);
 
   // Tear down a live session if the screen unmounts mid-recording (e.g. the new-
   // agent screen navigates away on start). The event listeners auto-detach, but
@@ -184,12 +339,26 @@ export function useVoiceInput(value: string, onChangeText: (next: string) => voi
   // `aborted` rather than a user-facing error.
   useEffect(() => {
     return () => {
+      disposedRef.current = true;
+      autoModeRef.current = false;
       if (listeningRef.current) {
         listeningRef.current = false;
         ExpoSpeechRecognitionModule.abort();
       }
+      if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
 
-  return { state, error, toggle, abort };
+  return {
+    state,
+    error,
+    autoMode,
+    countdown,
+    countdownPaused,
+    toggle,
+    startAuto,
+    pauseCountdown,
+    onComposerEdit,
+    abort,
+  };
 }
