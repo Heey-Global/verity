@@ -29,6 +29,13 @@ interface NativePinnedTransport {
 let active: { key: string; port: number } | null = null;
 let operation: Promise<unknown> = Promise.resolve();
 let retryAfter = 0;
+// Uplink is the fallback for when the paired address cannot be reached, not a
+// replacement for it: relaying every request through the hosted service made
+// the app far slower on the very network (VPN, LAN) where it used to be fast.
+const DIRECT_PROBE_TIMEOUT_MS = 3_000;
+const DIRECT_ROUTE_TTL_MS = 30_000;
+let directRoute: { key: string; reachable: boolean; checkedAt: number } | null = null;
+let directProbe: { key: string; promise: Promise<boolean> } | null = null;
 let lastFailure: {
   key: string;
   stage: 'setup' | 'admission' | 'attachment' | 'probe';
@@ -39,7 +46,14 @@ export function remoteControlFailureForUrl(url: string): string | null {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
-  if (key === null || lastFailure?.key !== key) return null;
+  if (key === null) {
+    const profile = getServerProfile();
+    if (profile?.activeUrl !== target.origin) return 'routing (no matching paired endpoint)';
+    if (getAuthToken(target.origin) === null) return 'routing (missing device authentication)';
+    if (profile.remoteControl === undefined) return 'routing (no remote descriptor saved)';
+    return 'routing (no direct pinned endpoint)';
+  }
+  if (lastFailure?.key !== key) return null;
   return lastFailure.detail === null
     ? lastFailure.stage
     : `${lastFailure.stage} (${lastFailure.detail})`;
@@ -61,7 +75,20 @@ async function tunnelStopReason(): Promise<string | null> {
   }
 }
 
-async function probeCore(coreUrl: string, tlsPin: string, port: number): Promise<void> {
+/** A direct request failed at the network level; route the next ones through Uplink. */
+export function reportDirectRouteFailure(url: string): void {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  if (key !== null) directRoute = { key, reachable: false, checkedAt: Date.now() };
+}
+
+async function probeCore(
+  coreUrl: string,
+  tlsPin: string,
+  port: number,
+  timeoutMs = 12_000,
+): Promise<void> {
   const transport = requireNativeModule<NativePinnedTransport>('VerityPinnedTransport');
   const requestId = `remote-probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -74,7 +101,7 @@ async function probeCore(coreUrl: string, tlsPin: string, port: number): Promise
             .then(() => transport.cancelRequest(requestId))
             .catch(() => undefined);
           reject(new Error('Remote Core probe timed out.'));
-        }, 12_000);
+        }, timeoutMs);
       }),
     ]);
     if (response.status !== 200) throw new Error('Remote Core probe failed.');
@@ -123,6 +150,17 @@ async function selectPort(url: string): Promise<number> {
     }
     return 0;
   }
+  if (await directRouteReachable(target, key)) {
+    if (active !== null && active.key !== key) {
+      active = null;
+      try {
+        await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+      } catch {
+        // A missing native module leaves the direct route usable.
+      }
+    }
+    return 0;
+  }
   if (active !== null && active.key !== key) {
     active = null;
     try {
@@ -161,6 +199,46 @@ async function selectPort(url: string): Promise<number> {
   return open(target, key);
 }
 
+async function directRouteReachable(coreUrl: string, key: string): Promise<boolean> {
+  const known = directRoute?.key === key ? directRoute : null;
+  if (known !== null && Date.now() - known.checkedAt < DIRECT_ROUTE_TTL_MS) return known.reachable;
+  const probe =
+    directProbe?.key === key
+      ? directProbe.promise
+      : probeDirect(coreUrl, key).finally(() => {
+          if (directProbe?.key === key) directProbe = null;
+        });
+  if (directProbe?.key !== key) directProbe = { key, promise: probe };
+  // While a live tunnel carries traffic, look for the direct route without
+  // stalling requests on it; the next request after it answers switches back.
+  if (known?.reachable === false && active?.key === key) return false;
+  return probe;
+}
+
+async function probeDirect(coreUrl: string, key: string): Promise<boolean> {
+  const previousRoute = directRoute;
+  const tlsPin = getServerProfile()?.endpoints.find((entry) => entry.url === coreUrl)?.tlsPin;
+  let reachable = false;
+  let reason: string | null = null;
+  const startedAt = Date.now();
+  if (tlsPin !== undefined) {
+    try {
+      await probeCore(coreUrl, tlsPin, 0, DIRECT_PROBE_TIMEOUT_MS);
+      reachable = true;
+    } catch (error) {
+      reason = safeRemoteFailure(error) ?? 'direct probe failed';
+    }
+  }
+  if (keyFor(coreUrl) === key && directRoute === previousRoute)
+    directRoute = { key, reachable, checkedAt: Date.now() };
+  console.info('Remote Control direct probe', {
+    reachable,
+    reason,
+    elapsedMs: Date.now() - startedAt,
+  });
+  return reachable;
+}
+
 async function open(coreUrl: string, key: string): Promise<number> {
   const profile = getServerProfile();
   const descriptor = profile?.remoteControl;
@@ -168,10 +246,11 @@ async function open(coreUrl: string, key: string): Promise<number> {
   if (descriptor === undefined || tlsPin === undefined) return 0;
   let admission: Awaited<ReturnType<typeof requestRemoteControlAdmission>> | undefined;
   let tunnelStarted = false;
+  const startedAt = Date.now();
   let stage: 'setup' | 'admission' | 'attachment' | 'probe' = 'setup';
   try {
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
-    if (!(await native.isSupported())) return 0;
+    if (!(await native.isSupported())) throw new Error('Remote tunnel unsupported.');
     stage = 'admission';
     admission = await requestRemoteControlAdmission({
       uplinkOrigin: descriptor.uplinkOrigin,
@@ -198,13 +277,13 @@ async function open(coreUrl: string, key: string): Promise<number> {
     }
     active = { key, port };
     lastFailure = null;
+    console.info('Remote Control ready', { elapsedMs: Date.now() - startedAt });
     return port;
   } catch (error) {
-    const detail = stage === 'attachment' ? await tunnelStopReason() : null;
+    const detail =
+      (stage === 'attachment' ? await tunnelStopReason() : null) ?? safeRemoteFailure(error);
     lastFailure = { key, stage, detail };
-    console.warn(
-      `Remote Control ${stage} failed: ${detail ?? (error instanceof Error ? error.message : 'unknown error')}`,
-    );
+    console.warn(`Remote Control ${stage} failed: ${detail ?? 'unclassified failure'}`);
     admission?.cancel();
     if (tunnelStarted) {
       try {
@@ -216,4 +295,27 @@ async function open(coreUrl: string, key: string): Promise<number> {
     retryAfter = Date.now() + 15_000;
     return 0;
   }
+}
+
+/** Only transport codes and local fixed messages may enter diagnostics. */
+function safeRemoteFailure(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const message = error.message;
+  if (
+    /^Remote admission failed: (unavailable|rate_limited|limit_reached|protocol_unsupported|timeout|cancelled|internal)\.$/u.test(
+      message,
+    )
+  )
+    return message;
+  if (
+    /^(Remote admission (timed out|connection failed|connection closed|cancelled)|Invalid remote admission response|Remote Core probe (timed out|failed)|Remote tunnel unsupported)\.$/u.test(
+      message,
+    )
+  )
+    return message;
+  return (
+    message.match(
+      /Pinned TLS (?:transport|verification) failed \[[A-Za-z0-9_:.-]{1,150}\]/u,
+    )?.[0] ?? null
+  );
 }

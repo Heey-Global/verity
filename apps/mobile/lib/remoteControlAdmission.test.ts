@@ -41,6 +41,11 @@ function start(signal?: AbortSignal) {
 }
 
 describe('remote admission', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'info').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
   it('keeps admission open until the data attachment completes', async () => {
     const { socket, pending, connect } = start();
     expect(connect).toMatchObject({
@@ -63,6 +68,12 @@ describe('remote admission', () => {
     const admission = await pending;
     expect(socket.closed).toBe(false);
     expect(admission).toMatchObject({ sessionId: 'session_one', ticket: 'app_ticket' });
+    expect(console.info).toHaveBeenCalledWith('Remote Control admission ready', {
+      requestId: connect.requestId,
+      sessionId: 'session_one',
+      elapsedMs: expect.any(Number),
+    });
+    expect(JSON.stringify((console.info as jest.Mock).mock.calls)).not.toContain('app_ticket');
     admission.finish();
     expect(socket.closed).toBe(true);
     expect(socket.sent).toHaveLength(1);
@@ -103,6 +114,12 @@ describe('remote admission', () => {
       JSON.stringify({ type: 'connect.error', requestId: connect.requestId, code: 'unavailable' }),
     );
     await expect(pending).rejects.toThrow('Remote admission failed: unavailable');
+    expect(console.warn).toHaveBeenCalledWith('Remote Control admission failed', {
+      requestId: connect.requestId,
+      opened: true,
+      elapsedMs: expect.any(Number),
+      reason: 'Remote admission failed: unavailable.',
+    });
     expect(socket.closed).toBe(true);
   });
 

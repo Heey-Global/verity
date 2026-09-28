@@ -1,3 +1,4 @@
+import { VerityApiError } from './api.js';
 import type { AgentEvent } from '@verity/events';
 import { describe, expect, it, vi } from 'vitest';
 import { SessionStream, type StreamSocket } from './stream.js';
@@ -462,6 +463,71 @@ describe('SessionStream', () => {
     sockets[2]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
     sockets[2]?.emitClose();
     expect(delays).toEqual([1_000, 2_000, 1_000]);
+    stream.stop();
+  });
+
+  it.each([
+    [
+      new VerityApiError(401, 'secret server body'),
+      "Could not open the session: Core rejected this device's authorization (HTTP 401). Sign in again and retry.",
+    ],
+    [
+      new VerityApiError(503, 'secret server body'),
+      'Could not open the session: Core could not issue a stream ticket (HTTP 503). Retry in a moment.',
+    ],
+    [
+      Object.assign(new Error('Uplink attachment and direct Core request failed: secret'), {
+        name: 'VerityConnectionError',
+      }),
+      'Could not open the session: Uplink attachment failed, and Core was unreachable directly. Check your connection and retry.',
+    ],
+    [
+      Object.assign(new Error('Direct Core request failed: secret'), {
+        name: 'VerityConnectionError',
+      }),
+      'Could not open the session: Core is unreachable at the paired address. Connect through VPN or enable Remote Control, then retry. (Direct Core)',
+    ],
+    [
+      Object.assign(
+        new Error(
+          'Uplink admission (Remote admission failed: unavailable.) and direct Core request failed: secret',
+        ),
+        { name: 'VerityConnectionError' },
+      ),
+      'Could not open the session: Uplink admission failed (unavailable), and Core was unreachable directly. Check your connection and retry.',
+    ],
+    [
+      Object.assign(
+        new Error(
+          'Uplink routing (no remote descriptor saved) and direct Core request failed: secret',
+        ),
+        { name: 'VerityConnectionError' },
+      ),
+      'Could not open the session: Remote Control is not configured on this device and the direct Core connection failed. Connect to Core through VPN once, then retry without VPN. (Uplink routing)',
+    ],
+    [
+      new Error('secret'),
+      'Could not open the session: the connection failed before Core could authorize the stream. Retry in a moment.',
+    ],
+  ])('reports a safe ticket failure classification for %s', async (error, expected) => {
+    const { connect, sockets } = recordingConnect();
+    const onError = vi.fn();
+    const scheduleReconnect = vi.fn();
+    const stream = new SessionStream({
+      baseUrl: 'http://host',
+      sessionId: 's1',
+      connect,
+      onError,
+      scheduleReconnect,
+      getStreamTicket: async () => {
+        throw error;
+      },
+    });
+    stream.start();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expected));
+    expect(sockets).toHaveLength(0);
+    expect(scheduleReconnect).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(onError.mock.calls)).not.toContain('secret');
     stream.stop();
   });
 

@@ -130,6 +130,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private renewalTimer: NodeJS.Timeout | undefined;
   private features = new Set<string>();
   private remoteNegotiated = false;
+  private lastRemoteDescriptorState: string | undefined;
   private remoteInstallation:
     { readonly installationId: string; readonly installationHandle: string } | undefined;
   private remoteSessions = new Map<string, RemoteSession>();
@@ -201,6 +202,22 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   remoteControlDescriptor(): RemoteControlDescriptor {
+    const state =
+      this.options.offerRemoteControl !== true || this.options.reserveRemoteConnector === undefined
+        ? 'connector_disabled'
+        : !this.welcomed || this.socket?.readyState !== WebSocket.OPEN
+          ? 'control_unavailable'
+          : this.remoteInstallation === undefined
+            ? 'installation_unavailable'
+            : !this.remoteNegotiated
+              ? 'capability_not_negotiated'
+              : !this.features.has('remote-control')
+                ? 'feature_not_granted'
+                : 'available';
+    if (state !== this.lastRemoteDescriptorState) {
+      this.lastRemoteDescriptorState = state;
+      this.options.log?.info({ stage: 'descriptor', state }, 'remote control availability changed');
+    }
     if (
       this.options.offerRemoteControl !== true ||
       this.options.reserveRemoteConnector === undefined
@@ -653,6 +670,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.releaseRemoteSession(frame.sessionId as string, 'remote ticket arrived expired');
         return;
       }
+      this.options.log?.info(
+        { stage: 'attachment', requestId: session.requestId, sessionId: frame.sessionId },
+        'remote ticket received; attaching data socket',
+      );
       session.ticketReceived = true;
       clearTimeout(session.deadlineTimer);
       session.deadlineTimer = setTimeout(
@@ -672,8 +693,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
           clearTimeout(session.deadlineTimer);
           this.options.log?.info({ sessionId: frame.sessionId }, 'remote session attached');
         })
-        .catch((error: unknown) => {
-          this.options.log?.warn({ error }, 'remote connector attachment failed');
+        .catch(() => {
+          this.options.log?.warn(
+            { stage: 'attachment', requestId: session.requestId, sessionId: frame.sessionId },
+            'remote connector attachment failed',
+          );
           if (this.remoteSessions.get(frame.sessionId as string) === session)
             this.releaseRemoteSession(frame.sessionId as string, 'remote connector attach failed');
         });
@@ -786,7 +810,22 @@ export class UplinkControlClient implements PreviewEdgeControl {
 
   private async handleRemoteSessionRequest(request: RemoteConnectorRequest): Promise<void> {
     const socket = this.socket;
+    const startedAt = Date.now();
+    this.options.log?.info(
+      { stage: 'admission', requestId: request.requestId, sessionId: request.sessionId },
+      'remote session requested',
+    );
     const refuse = (code: 'unavailable' | 'limit_reached'): void => {
+      this.options.log?.warn(
+        {
+          stage: 'admission',
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          code,
+          elapsedMs: Date.now() - startedAt,
+        },
+        'remote session refused',
+      );
       if (this.socket === socket && socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: 'session.refuse', sessionId: request.sessionId, code }));
       }
@@ -863,6 +902,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
       60_000,
     );
     session.deadlineTimer.unref();
+    this.options.log?.info(
+      {
+        stage: 'admission',
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        elapsedMs: Date.now() - startedAt,
+      },
+      'remote session accepted; waiting for ticket',
+    );
     socket?.send(JSON.stringify({ type: 'session.accept', sessionId: request.sessionId }));
   }
 

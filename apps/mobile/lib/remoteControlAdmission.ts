@@ -69,6 +69,7 @@ export function requestRemoteControlAdmission(
   if (options.signal?.aborted) return Promise.reject(new Error('Remote admission cancelled.'));
 
   const id = requestId();
+  const startedAt = Date.now();
   const socket = (options.socketFactory ?? ((target) => new WebSocket(target)))(url);
   let state: 'pending' | 'ready' | 'done' = 'pending';
   let opened = false;
@@ -91,6 +92,12 @@ export function requestRemoteControlAdmission(
     };
     const fail = (error: Error): void => {
       if (state !== 'pending') return;
+      console.warn('Remote Control admission failed', {
+        requestId: id,
+        opened,
+        elapsedMs: Date.now() - startedAt,
+        reason: error.message,
+      });
       close(false);
       reject(error);
     };
@@ -169,6 +176,11 @@ export function requestRemoteControlAdmission(
         return;
       }
       state = 'ready';
+      console.info('Remote Control admission ready', {
+        requestId: id,
+        sessionId: frame.sessionId,
+        elapsedMs: Date.now() - startedAt,
+      });
       clearTimeout(timer);
       resolve({
         sessionId: frame.sessionId as string,

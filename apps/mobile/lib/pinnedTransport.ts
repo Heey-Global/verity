@@ -1,5 +1,9 @@
 import { requireNativeModule } from 'expo-modules-core';
-import { remoteControlFailureForUrl, remoteControlPortForUrl } from './remoteControlTransport';
+import {
+  remoteControlFailureForUrl,
+  remoteControlPortForUrl,
+  reportDirectRouteFailure,
+} from './remoteControlTransport';
 
 interface NativeResponse {
   status: number;
@@ -186,6 +190,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               port,
             );
       } catch (error) {
+        let directFailed = port === 0;
         if (
           port > 0 &&
           !fileUri &&
@@ -207,8 +212,10 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           } catch (directError) {
             if (init.signal?.aborted) throw directError;
             error = directError;
+            directFailed = true;
           }
         }
+        if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
         const failure = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
         const route =
           port > 0

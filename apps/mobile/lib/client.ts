@@ -128,10 +128,17 @@ export function createVerityClient(): VerityClient | null {
           getAuthToken(expectedUrl) === token
         ) {
           await saveRemoteControlDescriptor(descriptor);
+          console.info('Remote Control descriptor refreshed', {
+            enabled: descriptor.enabled,
+            reason: descriptor.enabled ? 'available' : descriptor.reason,
+            saved: getServerProfile()?.remoteControl !== undefined,
+          });
         }
       })
       .catch(() => {
-        // Keep the last authenticated descriptor during a transient direct outage.
+        console.warn('Remote Control descriptor refresh failed; retaining saved route', {
+          saved: getServerProfile()?.remoteControl !== undefined,
+        });
       });
   }
   return client;
