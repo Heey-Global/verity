@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.1](https://github.com/Heey-Global/verity/compare/v2.14.0...v2.14.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **remote-control:** stop dropping idle and long-lived sessions ([#849](https://github.com/Heey-Global/verity/issues/849)) ([1883b3a](https://github.com/Heey-Global/verity/commit/1883b3a0af37b615e898906f4147882602202f41))
+
 ## [2.14.0](https://github.com/Heey-Global/verity/compare/v2.13.3...v2.14.0) (2026-09-28)
 
 
