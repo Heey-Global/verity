@@ -1,16 +1,14 @@
 {
   "schema": 1,
-  "version": "1.40.2",
-  "runtime": "1.40.0",
+  "version": "1.41.1",
+  "runtime": "1.41.0",
   "channel": "testflight",
-  "commit": "1e0dda2e81bce05d0b3b545eb4e4dc0abffc2c28",
-  "tag": "mobile-v1.40.2",
-  "branch": "staging-mobile-v1.40.2-1e0dda2e81bce05d0b3b545eb4e4dc0abffc2c28",
-  "baseline": "mobile-v1.40.1",
-  "group": "8b6b75ef-d873-4e1f-b75f-02ce4ad234a5",
+  "commit": "abcbfce2682572df66a75c07375e9a7e511a0285",
+  "tag": "mobile-v1.41.1",
+  "branch": "staging-mobile-v1.41.1-abcbfce2682572df66a75c07375e9a7e511a0285",
+  "baseline": "mobile-v1.41.0",
+  "group": "3c0aaebc-c95b-4af2-bcf0-218e6d31227c",
   "notes": [
-    "use shared explorer rows in preview sheet (#864)",
-    "ease continuous dictation countdown (#862)",
-    "add connection diagnostics to public preview settings (#865)"
+    "unlock mobile credentials before remote startup (#874)"
   ]
 }
