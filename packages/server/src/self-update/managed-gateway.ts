@@ -91,6 +91,20 @@ const HOP_BY_HOP = new Set([
 // time to cover the approval window and return the tool result afterwards.
 const INTERNAL_MCP_TIMEOUT_MS = MCP_GATEWAY_APPROVAL_TIMEOUT_MS + 30_000;
 const INTERNAL_MCP_PATHS = new Set(['/internal/mcp', '/internal/control-plane/mcp']);
+// A share.create response may take 120 seconds; the proxy must outlive it so
+// the app receives the actual result instead of an ambiguous 502.
+const PUBLIC_PREVIEW_CREATE_TIMEOUT_MS = 150_000;
+
+function publicRequestTimeout(
+  method: string | undefined,
+  url: string | undefined,
+  defaultTimeoutMs: number,
+): number {
+  const path = (url ?? '/').split('?', 1)[0] ?? '/';
+  return method === 'POST' && /^\/sessions\/[^/]+\/public-static-shares$/.test(path)
+    ? Math.max(defaultTimeoutMs, PUBLIC_PREVIEW_CREATE_TIMEOUT_MS)
+    : defaultTimeoutMs;
+}
 
 function internalRequestTimeout(url: string | undefined, defaultTimeoutMs: number): number {
   const path = (url ?? '/').split('?', 1)[0] ?? '/';
@@ -402,7 +416,12 @@ export async function startManagedGateway(
       response.writeHead(404).end();
       return;
     }
-    route(request, response, (value) => value.publicPort);
+    route(
+      request,
+      response,
+      (value) => value.publicPort,
+      publicRequestTimeout(request.method, request.url, timeoutMs),
+    );
   };
   const publicServer =
     config.tls === undefined
