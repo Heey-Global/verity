@@ -983,6 +983,15 @@ export const remoteControlDescriptorSchema = z.discriminatedUnion('enabled', [
 ]);
 export type RemoteControlDescriptor = z.infer<typeof remoteControlDescriptorSchema>;
 
+export const uplinkDiagnosticsSchema = z.object({
+  control: z.enum(['connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
+  sharing: z.enum(['ready', 'unavailable']),
+  remoteControl: z.enum(['ready', 'unavailable']),
+  reason: z.enum(['unknown_key', 'revoked', 'expired']).optional(),
+  lastCloseCode: z.number().int().min(0).max(4999).optional(),
+});
+export type UplinkDiagnostics = z.infer<typeof uplinkDiagnosticsSchema>;
+
 /** First-run onboarding gate (#320): the server's `GET /onboarding/status`. Each
  *  flag is derived from a NON-decrypting store read, so the endpoint (and this
  *  client method) work while the secret store is still sealed — it IS the gate.
@@ -2767,6 +2776,11 @@ export class VerityClient {
   async getRemoteControlDescriptor(): Promise<RemoteControlDescriptor> {
     const res = await this.request('/api/remote-control/descriptor', { method: 'GET' });
     return remoteControlDescriptorSchema.parse(await res.json());
+  }
+
+  async getUplinkDiagnostics(): Promise<UplinkDiagnostics> {
+    const res = await this.request('/api/uplink/diagnostics', { method: 'GET' });
+    return uplinkDiagnosticsSchema.parse(await res.json());
   }
 
   /** First-run onboarding gate (#320): whether setup is complete and, if not, the

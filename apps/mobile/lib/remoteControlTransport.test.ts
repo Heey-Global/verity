@@ -367,6 +367,74 @@ describe('remote diagnostics', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it('tests Uplink through Core health even when the direct route is reachable', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4_321);
+    expect(await transport.testRemoteControlForUrl(`${coreUrl}/api/sessions`)).toEqual({
+      ready: true,
+      detail: 'Core health check passed through Uplink',
+    });
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.stringMatching(/^remote-probe-/),
+      `${coreUrl}/healthz`,
+      'GET',
+      {},
+      null,
+      profile.endpoints[0]?.tlsPin,
+      4_321,
+    );
+    expect(mockRequest).not.toHaveBeenCalledWith(
+      expect.anything(),
+      `${coreUrl}/healthz`,
+      'GET',
+      {},
+      null,
+      profile.endpoints[0]?.tlsPin,
+      0,
+    );
+  });
+
+  it('explains why an explicit Remote Control test cannot start', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockClear();
+    mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
+    expect(await transport.testRemoteControlForUrl(`${coreUrl}/api/sessions`)).toEqual({
+      ready: false,
+      detail: 'routing (no remote descriptor saved)',
+    });
+    expect(mockAdmission).not.toHaveBeenCalled();
+  });
+
+  it('does not replace an active tunnel when its health check fails', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    mockRequest.mockRejectedValue(new Error('Core probe failed'));
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: 'probe (Core did not answer)',
+    });
+    expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
   it('explains why Uplink was not attempted without a saved descriptor', () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');

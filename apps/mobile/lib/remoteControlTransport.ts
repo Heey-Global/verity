@@ -134,6 +134,46 @@ export async function remoteControlPortForUrl(url: string): Promise<number> {
   return selected;
 }
 
+/** An explicit diagnostic uses Uplink even when the direct route is healthy. */
+export async function testRemoteControlForUrl(
+  url: string,
+): Promise<{ ready: boolean; detail: string }> {
+  const selected = operation.then(async () => {
+    const target = new URL(url).origin;
+    const key = keyFor(target);
+    if (key === null) {
+      return { ready: false, detail: remoteControlFailureForUrl(target) ?? 'route unavailable' };
+    }
+    const attachment = active;
+    if (attachment?.key === key) {
+      try {
+        if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
+          const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
+          if (pin !== undefined) {
+            await probeCore(target, pin, attachment.port);
+            return { ready: true, detail: 'Core health check passed through Uplink' };
+          }
+        }
+      } catch (error) {
+        // A diagnostic must not replace a tunnel that may be carrying transfers.
+        return {
+          ready: false,
+          detail: `probe (${safeRemoteFailure(error) ?? 'Core did not answer'})`,
+        };
+      }
+    }
+    const port = await open(target, key);
+    return port > 0
+      ? { ready: true, detail: 'Core health check passed through Uplink' }
+      : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
+  });
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  return selected;
+}
+
 async function selectPort(url: string): Promise<number> {
   const targetUrl = new URL(url);
   if (targetUrl.protocol === 'wss:') targetUrl.protocol = 'https:';

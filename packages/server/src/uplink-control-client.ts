@@ -116,6 +116,14 @@ export type RemoteControlDescriptor =
       readonly capabilities: readonly ['remote-control-v1'];
     };
 
+export interface UplinkDiagnostics {
+  control: 'connected' | 'connecting' | 'reconnecting' | 'rejected' | 'disabled';
+  sharing: 'ready' | 'unavailable';
+  remoteControl: 'ready' | 'unavailable';
+  reason?: 'unknown_key' | 'revoked' | 'expired';
+  lastCloseCode?: number;
+}
+
 /** Long-lived fail-closed client for the paid Uplink control plane. Credentials
  * are read from the encrypted settings store only. No environment/file fallback
  * is accepted by this class. */
@@ -140,6 +148,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   /** The key an identity-class rejection named, with the reason, so the reason
    * reaches the app instead of a guess about which one it was. */
   private lastReject: { key: string; reason: string } | undefined;
+  private lastCloseCode: number | undefined;
   private unansweredPings = 0;
   private generation = 0;
   private authorityLossNotified = false;
@@ -183,6 +192,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
    * than waiting for an unrelated network reconnect. */
   refreshCredentials(): void {
     this.lastReject = undefined;
+    this.lastCloseCode = undefined;
     this.retryMs = 1_000;
     this.retryCeilingMs = RECONNECT_MAX_MS;
     this.generation += 1;
@@ -199,6 +209,31 @@ export class UplinkControlClient implements PreviewEdgeControl {
     return (
       this.welcomed && this.socket?.readyState === WebSocket.OPEN && this.features.has('sharing')
     );
+  }
+
+  diagnostics(): UplinkDiagnostics {
+    const connected = this.welcomed && this.socket?.readyState === WebSocket.OPEN;
+    const control = this.stopped
+      ? 'disabled'
+      : connected
+        ? 'connected'
+        : this.lastReject !== undefined
+          ? 'rejected'
+          : this.socket?.readyState === WebSocket.OPEN
+            ? 'connecting'
+            : 'reconnecting';
+    const reason = this.lastReject?.reason;
+    return {
+      control,
+      sharing: this.isAvailable() ? 'ready' : 'unavailable',
+      remoteControl: this.remoteControlDescriptor().enabled ? 'ready' : 'unavailable',
+      ...(reason === 'unknown_key' || reason === 'revoked' || reason === 'expired'
+        ? { reason }
+        : {}),
+      ...(this.lastCloseCode !== undefined && !connected
+        ? { lastCloseCode: this.lastCloseCode }
+        : {}),
+    };
   }
 
   remoteControlDescriptor(): RemoteControlDescriptor {
@@ -418,6 +453,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     socket.once('close', (code: number, reason?: Buffer) => {
       if (this.socket !== socket) return;
       this.socket = undefined;
+      this.lastCloseCode = code;
       // Without the code and reason a refusal that closes before `reject` is
       // indistinguishable from a network drop, and both just look like silence.
       //

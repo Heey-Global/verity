@@ -1036,6 +1036,7 @@ export interface ServerDeps {
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: PreviewShareManager | undefined;
   remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
+  uplinkDiagnostics?: (() => import('./uplink-control-client.js').UplinkDiagnostics) | undefined;
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: (() => void) | undefined;
   /** Rewrite the OpenCode config directory after its central settings change. */
@@ -4136,6 +4137,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // can run without the global bearer gate, but have no paired device to serve.
     if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });
     return deps.remoteControlDescriptor?.() ?? { version: 1, enabled: false, reason: 'disabled' };
+  });
+  app.get('/api/uplink/diagnostics', async (request, reply) => {
+    if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });
+    return (
+      deps.uplinkDiagnostics?.() ?? {
+        control: 'disabled',
+        sharing: 'unavailable',
+        remoteControl: 'unavailable',
+      }
+    );
   });
   registerDiagnosticsMemoryRoute(app);
 
