@@ -134,6 +134,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
+import { SessionFolderRow } from '../../components/SessionFolderRow';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
@@ -4964,17 +4965,12 @@ function SessionFilesSheet({
                     the modifiers it reported have to be withdrawn here too. */}
                 <ScrollView style={styles.filesList} onScrollBeginDrag={forgetModifiers}>
                   {path ? (
-                    <Pressable
+                    <SessionFolderRow
+                      name=".."
+                      parent
                       onPress={() => setPath(parentPath(path))}
-                      accessibilityRole="button"
-                      style={({ pressed }) => [
-                        styles.fileRow,
-                        pressed ? styles.sheetRowPressed : null,
-                      ]}
-                    >
-                      <Icon name="corner-up-left" size={18} color={theme.colors.textMuted} />
-                      <Text style={styles.sheetRowLabel}>..</Text>
-                    </Pressable>
+                      accessibilityLabel="Back to parent folder"
+                    />
                   ) : null}
                   {entries.length === 0 ? (
                     <Text style={styles.sheetEmpty}>No files</Text>
@@ -5008,57 +5004,73 @@ function SessionFilesSheet({
                           onDelivered={selecting && picked ? endSelection : undefined}
                           onModifiers={rememberModifiers}
                         >
-                          <Pressable
-                            onPress={() => {
-                              pressFileRow(entry);
-                            }}
-                            disabled={inert}
-                            accessibilityRole={selecting ? 'checkbox' : 'button'}
-                            accessibilityLabel={entry.name}
-                            accessibilityState={selecting ? { checked: picked } : undefined}
-                            style={({ pressed }) => [
-                              styles.fileRow,
-                              pressed || picked ? styles.sheetRowPressed : null,
-                              inert ? styles.sheetRowDisabled : null,
-                            ]}
-                          >
-                            <Icon name={fileIcon(entry)} size={18} color={theme.colors.textMuted} />
-                            <View style={styles.fileMain}>
-                              <Text
-                                style={[styles.sheetRowLabel, styles.fileName]}
-                                numberOfLines={2}
-                                ellipsizeMode="tail"
-                              >
-                                {entry.name}
-                              </Text>
-                              {meta.length > 0 ? (
-                                <Text style={styles.fileMeta} numberOfLines={1}>
-                                  {meta}
+                          {entry.kind === 'directory' && !selecting ? (
+                            <SessionFolderRow
+                              name={entry.name}
+                              onPress={() => pressFileRow(entry)}
+                              accessibilityLabel={entry.name}
+                            />
+                          ) : (
+                            <Pressable
+                              onPress={() => {
+                                pressFileRow(entry);
+                              }}
+                              disabled={inert}
+                              accessibilityRole={selecting ? 'checkbox' : 'button'}
+                              accessibilityLabel={entry.name}
+                              accessibilityState={selecting ? { checked: picked } : undefined}
+                              style={({ pressed }) => [
+                                styles.fileRow,
+                                pressed || picked ? styles.sheetRowPressed : null,
+                                inert ? styles.sheetRowDisabled : null,
+                              ]}
+                            >
+                              <Icon
+                                name={fileIcon(entry)}
+                                size={18}
+                                color={theme.colors.textMuted}
+                              />
+                              <View style={styles.fileMain}>
+                                <Text
+                                  style={[styles.sheetRowLabel, styles.fileName]}
+                                  numberOfLines={2}
+                                  ellipsizeMode="tail"
+                                >
+                                  {entry.name}
                                 </Text>
-                              ) : null}
-                            </View>
-                            {selecting ? (
-                              <View style={styles.fileDownload}>
-                                <Icon
-                                  name={picked ? 'check-square' : 'square'}
-                                  size={18}
-                                  color={picked ? theme.colors.primary : theme.colors.textFaint}
-                                />
+                                {meta.length > 0 ? (
+                                  <Text style={styles.fileMeta} numberOfLines={1}>
+                                    {meta}
+                                  </Text>
+                                ) : null}
                               </View>
-                            ) : entry.kind === 'file' ? (
-                              <Pressable
-                                onPress={() => openWith(entry.path)}
-                                hitSlop={8}
-                                accessibilityRole="button"
-                                accessibilityLabel={`Open ${entry.name} with another app`}
-                                style={styles.fileDownload}
-                              >
-                                <Icon name="share" size={17} color={theme.colors.textMuted} />
-                              </Pressable>
-                            ) : (
-                              <Icon name="chevron-right" size={17} color={theme.colors.textFaint} />
-                            )}
-                          </Pressable>
+                              {selecting ? (
+                                <View style={styles.fileDownload}>
+                                  <Icon
+                                    name={picked ? 'check-square' : 'square'}
+                                    size={18}
+                                    color={picked ? theme.colors.primary : theme.colors.textFaint}
+                                  />
+                                </View>
+                              ) : entry.kind === 'file' ? (
+                                <Pressable
+                                  onPress={() => openWith(entry.path)}
+                                  hitSlop={8}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Open ${entry.name} with another app`}
+                                  style={styles.fileDownload}
+                                >
+                                  <Icon name="share" size={17} color={theme.colors.textMuted} />
+                                </Pressable>
+                              ) : (
+                                <Icon
+                                  name="chevron-right"
+                                  size={17}
+                                  color={theme.colors.textFaint}
+                                />
+                              )}
+                            </Pressable>
+                          )}
                         </DragSource>
                       );
                     })
