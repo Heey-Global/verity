@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.37.0](https://github.com/Heey-Global/verity/compare/mobile-v1.36.0...mobile-v1.37.0) (2026-09-28)
+
+
+### Bug Fixes
+
+* **mobile:** avoid reset after remote stream completion ([#843](https://github.com/Heey-Global/verity/issues/843)) ([213085e](https://github.com/Heey-Global/verity/commit/213085ef169620be0c26457014f540030980ee68))
+* **mobile:** prefetch chat history earlier during scrolling ([#827](https://github.com/Heey-Global/verity/issues/827)) ([34271f7](https://github.com/Heey-Global/verity/commit/34271f795637d9347408f757c01de26b16015b56))
+* **mobile:** recover failed Uplink reads through direct route ([#832](https://github.com/Heey-Global/verity/issues/832)) ([709404a](https://github.com/Heey-Global/verity/commit/709404afceb68779f3a1fa936ffd28dcb4d7ee93))
+* **mobile:** validate remote routing and expose connection failures ([#830](https://github.com/Heey-Global/verity/issues/830)) ([f4a5e7c](https://github.com/Heey-Global/verity/commit/f4a5e7c509fe3a146e02ac24c7f60af25e376771))
+
 ## [1.36.0](https://github.com/Heey-Global/verity/compare/mobile-v1.35.0...mobile-v1.36.0) (2026-09-27)
 
 
