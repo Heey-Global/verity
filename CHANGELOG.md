@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.14.2](https://github.com/Heey-Global/verity/compare/v2.14.1...v2.14.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* **mobile:** prepare native 1.40.0 after failed build ([#854](https://github.com/Heey-Global/verity/issues/854)) ([95dfb18](https://github.com/Heey-Global/verity/commit/95dfb181e038499bad2032f8604ddd9f33005a47))
+* **release:** route native supersession as source change ([#856](https://github.com/Heey-Global/verity/issues/856)) ([44b38a5](https://github.com/Heey-Global/verity/commit/44b38a5fa489ac3218e6630c368680f82d194a33))
+* **remote-control:** clarify mobile failures and trace connection stages ([#855](https://github.com/Heey-Global/verity/issues/855)) ([a6371e3](https://github.com/Heey-Global/verity/commit/a6371e31d9b1a0d544572398516a84e4f5a24bb9))
+* **session:** externalize oversized ACP image updates ([#858](https://github.com/Heey-Global/verity/issues/858)) ([fd3609e](https://github.com/Heey-Global/verity/commit/fd3609e2252d7e6f9d6537e01afe45b276d75e97))
+
 ## [2.14.1](https://github.com/Heey-Global/verity/compare/v2.14.0...v2.14.1) (2026-09-28)
 
 
