@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.16.0](https://github.com/Heey-Global/verity/compare/v2.15.0...v2.16.0) (2026-09-28)
+
+
+### Features
+
+* **mobile:** add iPad microphone shortcut ([#863](https://github.com/Heey-Global/verity/issues/863)) ([6a9f835](https://github.com/Heey-Global/verity/commit/6a9f835be4c9cc617a79440ceefe9cfcc714dcfe))
+* **mobile:** add local live meeting capture with Nemotron ([#868](https://github.com/Heey-Global/verity/issues/868)) ([552764b](https://github.com/Heey-Global/verity/commit/552764b6ee199a9de7482108f356bd56b6256ac5))
+
+
+### Bug Fixes
+
+* **preview:** allow share creation beyond gateway timeout ([#869](https://github.com/Heey-Global/verity/issues/869)) ([669eb71](https://github.com/Heey-Global/verity/commit/669eb71d9c8145692661dbc6bf810d825244f8d5))
+* **runner:** let worktree recovery restore Runner traverse and name refused spawn paths ([#873](https://github.com/Heey-Global/verity/issues/873)) ([3e7f9b7](https://github.com/Heey-Global/verity/commit/3e7f9b7d2e63fff7194fccb36d404cb0c7e337d0))
+
 ## [2.15.0](https://github.com/Heey-Global/verity/compare/v2.14.2...v2.15.0) (2026-09-28)
 
 
