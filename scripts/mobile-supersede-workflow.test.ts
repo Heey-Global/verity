@@ -15,7 +15,8 @@ it('routes the native supersession request through the mobile release train', ()
     (step) => step.id === 'release-trains',
   );
 
-  expect(selector?.run).toContain(`${requestPath}) mobile=true`);
+  expect(selector?.run).toContain(`${requestPath})`);
+  expect(selector?.run).toContain('supersede_changed=true');
   expect(request.draft).toMatch(/^mobile-v\d+\.\d+\.0$/);
   expect(request.next).toMatch(/^mobile-v\d+\.\d+\.0$/);
   const current = request.draft.match(/^mobile-v(\d+)\.(\d+)\.0$/)!;
