@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.2](https://github.com/Heey-Global/verity/compare/v2.13.1...v2.13.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* **server:** tolerate reset after remote stream completion ([#839](https://github.com/Heey-Global/verity/issues/839)) ([e4370c3](https://github.com/Heey-Global/verity/commit/e4370c397efc1598d64622d533d135dfb2e46833))
+
 ## [2.13.1](https://github.com/Heey-Global/verity/compare/v2.13.0...v2.13.1) (2026-09-28)
 
 
