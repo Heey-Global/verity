@@ -3,6 +3,9 @@ export function sessionLoadError(message: string): { summary: string; details: s
   const directFailed = /Direct Core request failed|direct Core requests? failed/u.test(message);
   const uplinkStage = message.match(/Uplink (routing|setup|admission|attachment|probe)/u)?.[1];
   const noDescriptor = message.includes('no remote descriptor saved');
+  const missingAuth = message.includes('routing (missing device authentication)');
+  const wrongEndpoint = message.includes('routing (no matching paired endpoint)');
+  const noPinnedEndpoint = message.includes('routing (no direct pinned endpoint)');
   const nativeCode = message.match(/NSURLErrorDomain:-?\d+:[A-Z_]+/u)?.[0];
   const admissionCode = message.match(
     /Remote admission failed: (unavailable|rate_limited|limit_reached|protocol_unsupported|timeout|cancelled|internal)/u,
@@ -10,6 +13,9 @@ export function sessionLoadError(message: string): { summary: string; details: s
   const details = [
     uplinkStage ? `Uplink ${uplinkStage}` : null,
     noDescriptor ? 'No saved Remote Control route' : null,
+    missingAuth ? 'Device authentication unavailable' : null,
+    wrongEndpoint ? 'Request does not match the paired endpoint' : null,
+    noPinnedEndpoint ? 'No pinned direct endpoint' : null,
     admissionCode ? `Admission: ${admissionCode}` : null,
     directFailed ? 'Direct Core request failed' : null,
     nativeCode,
@@ -21,6 +27,20 @@ export function sessionLoadError(message: string): { summary: string; details: s
     return {
       summary:
         'Core is unreachable and this device has no saved Remote Control route. Connect through VPN once to refresh it, then retry.',
+      details,
+    };
+  }
+  if (missingAuth && directFailed) {
+    return {
+      summary:
+        'Core is unreachable at the paired address. Remote Control was not started because this device is not signed in. Unlock Verity and retry.',
+      details,
+    };
+  }
+  if ((wrongEndpoint || noPinnedEndpoint) && directFailed) {
+    return {
+      summary:
+        'Core is unreachable at the paired address. Remote Control could not use this saved server address. Check the paired server in Settings, then retry.',
       details,
     };
   }

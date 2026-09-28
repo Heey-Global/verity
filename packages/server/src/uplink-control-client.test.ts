@@ -182,6 +182,25 @@ async function flush(): Promise<void> {
 describe('UplinkControlClient', () => {
   beforeEach(() => vi.useRealTimers());
 
+  it('reports control and sharing readiness from the live socket and granted features', async () => {
+    const fixture = setup();
+    expect(fixture.client.diagnostics()).toEqual({
+      control: 'disabled',
+      sharing: 'unavailable',
+      remoteControl: 'unavailable',
+    });
+    await welcomed(fixture);
+    expect(fixture.client.diagnostics()).toEqual({
+      control: 'connected',
+      sharing: 'ready',
+      remoteControl: 'unavailable',
+    });
+    fixture.socket.close(1006, 'network lost');
+    expect(fixture.client.diagnostics().control).toBe('reconnecting');
+    expect(fixture.client.diagnostics().lastCloseCode).toBe(1006);
+    await fixture.client.stop();
+  });
+
   it('offers remote negotiation only when the RC-B probe is enabled', async () => {
     const defaultFixture = setup();
     defaultFixture.client.start();
@@ -1210,6 +1229,7 @@ describe('UplinkControlClient', () => {
       sockets[0]!.open();
       sockets[0]!.message({ type: 'reject', reason });
       await flush();
+      expect(client.diagnostics()).toMatchObject({ control: 'rejected', reason });
 
       // Verbatim, per the protocol: three of these four are not about the key,
       // and a message naming the key sends the reader to the wrong setting.

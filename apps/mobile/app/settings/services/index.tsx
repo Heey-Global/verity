@@ -16,6 +16,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../../components/AgentLoginPanel';
 import { SecretStoreSection } from '../../../components/settings/SecretStoreSection';
+import { PublicPreviewDiagnostics } from '../../../components/settings/PublicPreviewDiagnostics';
 import {
   SecretPasteField,
   SettingsDisclosure,
@@ -379,6 +380,10 @@ function ServicesSettingsView({
             {!writable ? (
               <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
             ) : null}
+            <PublicPreviewDiagnostics
+              client={client}
+              keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
+            />
           </SettingsDisclosure>
         </SettingsGroup>
       ) : null}

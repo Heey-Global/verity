@@ -19,6 +19,24 @@ describe('session load errors', () => {
     expect(JSON.stringify(result)).not.toContain('secret-token');
   });
 
+  it.each([
+    ['missing device authentication', 'not signed in', 'Device authentication unavailable'],
+    [
+      'no matching paired endpoint',
+      'saved server address',
+      'Request does not match the paired endpoint',
+    ],
+    ['no direct pinned endpoint', 'saved server address', 'No pinned direct endpoint'],
+  ])('explains why remote routing was skipped: %s', (reason, summary, detail) => {
+    const result = sessionLoadError(
+      `Uplink routing (${reason}) and direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]`,
+    );
+    expect(result.summary).toContain(summary);
+    expect(result.summary).not.toContain('Both Uplink');
+    expect(result.details).toContain(detail);
+    expect(result.details).toContain('NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE');
+  });
+
   it('distinguishes an attempted Uplink admission from a direct-only failure', () => {
     const result = sessionLoadError(
       'Uplink admission (Remote admission failed: unavailable.) and direct Core request failed: secret',

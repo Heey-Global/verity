@@ -118,6 +118,11 @@ describe('paired device management', () => {
       conductor,
       authRegistry: registry,
       remoteControlDescriptor: () => descriptor,
+      uplinkDiagnostics: () => ({
+        control: 'connected',
+        sharing: 'ready',
+        remoteControl: 'ready',
+      }),
     });
     try {
       const path = '/api/remote-control/descriptor';
@@ -129,6 +134,19 @@ describe('paired device management', () => {
       });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual(descriptor);
+      const diagnosticsPath = '/api/uplink/diagnostics';
+      expect((await app.inject({ method: 'GET', url: diagnosticsPath })).statusCode).toBe(401);
+      const diagnostics = await app.inject({
+        method: 'GET',
+        url: diagnosticsPath,
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(diagnostics.statusCode).toBe(200);
+      expect(diagnostics.json()).toEqual({
+        control: 'connected',
+        sharing: 'ready',
+        remoteControl: 'ready',
+      });
     } finally {
       await app.close();
     }
