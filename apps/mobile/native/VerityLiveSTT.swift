@@ -177,7 +177,7 @@ private final class LiveSTTService {
       throw LiveSTTError.unavailable("Apple SpeechTranscriber does not support this device or locale.")
     }
     let transcriber = SpeechTranscriber(locale: supported, preset: .timeIndexedProgressiveTranscription)
-    try await prepareApple(transcriber)
+    try await prepareApple(transcriber, generation: generation)
     try ensureActive(generation)
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     self.analyzer = analyzer
@@ -204,7 +204,7 @@ private final class LiveSTTService {
       transcriptionOptions: [.punctuation],
       reportingOptions: [.volatileResults, .frequentFinalization],
       attributeOptions: [.audioTimeRange])
-    try await prepareApple(transcriber)
+    try await prepareApple(transcriber, generation: generation)
     try ensureActive(generation)
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     if !vocabulary.isEmpty {
@@ -224,21 +224,28 @@ private final class LiveSTTService {
       analyzer: analyzer, module: transcriber, generation: generation)
   }
 
-  private func prepareApple(_ module: any SpeechModule) async throws {
-    let status = await AssetInventory.status(forModules: [module])
-    switch status {
-    case .installed: return
-    case .supported, .downloading:
-      emit?(["kind": "status", "state": "downloading"])
-      guard let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) else {
-        throw LiveSTTError.unavailable("Apple could not prepare the language assets.")
+  private func prepareApple(_ module: any SpeechModule, generation: Int) async throws {
+    for _ in 0..<300 {
+      try ensureActive(generation)
+      switch await AssetInventory.status(forModules: [module]) {
+      case .installed: return
+      case .supported:
+        emit?(["kind": "status", "state": "downloading"])
+        // A nil request means the asset was installed after the status check.
+        guard let request = try await AssetInventory.assetInstallationRequest(supporting: [module])
+        else { return }
+        try await request.downloadAndInstall()
+        return
+      case .downloading:
+        emit?(["kind": "status", "state": "downloading"])
+      case .unsupported:
+        throw LiveSTTError.unavailable("The selected Apple language assets are unavailable.")
+      @unknown default:
+        throw LiveSTTError.unavailable("Unknown Apple language asset state.")
       }
-      try await request.downloadAndInstall()
-    case .unsupported:
-      throw LiveSTTError.unavailable("The selected Apple language assets are unavailable.")
-    @unknown default:
-      throw LiveSTTError.unavailable("Unknown Apple language asset state.")
+      try await Task.sleep(for: .seconds(1))
     }
+    throw LiveSTTError.unavailable("The Apple language assets did not finish downloading.")
   }
 
   private func startAppleMicrophone(
@@ -252,25 +259,42 @@ private final class LiveSTTService {
     try await analyzer.start(inputSequence: stream)
     try ensureActive(generation)
     try startMicrophone { microphoneStream in
-      let converter = AudioConverter(sampleRate: format.sampleRate)
       self.processingTask = Task {
         defer { continuation.finish() }
+        var converter: AVAudioConverter?
         do {
           for await buffer in microphoneStream {
-            let samples = try converter.resampleBuffer(buffer)
-            if samples.isEmpty { continue }
-            guard let converted = AVAudioPCMBuffer(
-              pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
-              let channel = converted.floatChannelData?[0]
-            else { throw LiveSTTError.audioFormat }
-            converted.frameLength = AVAudioFrameCount(samples.count)
-            samples.withUnsafeBufferPointer { source in
-              if let base = source.baseAddress { channel.update(from: base, count: samples.count) }
+            if converter?.inputFormat.isEqual(buffer.format) != true {
+              converter = AVAudioConverter(from: buffer.format, to: format)
             }
-            continuation.yield(AnalyzerInput(buffer: converted))
+            guard let converter else { throw LiveSTTError.audioFormat }
+            let capacity = AVAudioFrameCount(
+              ceil(Double(buffer.frameLength) * format.sampleRate / buffer.format.sampleRate) + 1024)
+            var suppliedInput = false
+            while true {
+              guard let converted = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+                throw LiveSTTError.audioFormat
+              }
+              var conversionError: NSError?
+              let result = converter.convert(to: converted, error: &conversionError) {
+                _, inputStatus in
+                guard !suppliedInput else {
+                  inputStatus.pointee = .noDataNow
+                  return nil
+                }
+                suppliedInput = true
+                inputStatus.pointee = .haveData
+                return buffer
+              }
+              if let conversionError { throw conversionError }
+              if converted.frameLength > 0 {
+                continuation.yield(AnalyzerInput(buffer: converted))
+              }
+              if result != .haveData || converted.frameLength == 0 { break }
+            }
           }
         } catch {
-          self.failCapture(error)
+          await self.failCapture(error)
           throw error
         }
       }
@@ -310,7 +334,7 @@ private final class LiveSTTService {
             }
           }
         } catch {
-          self.failCapture(error)
+          await self.failCapture(error)
           throw error
         }
       }
@@ -321,7 +345,9 @@ private final class LiveSTTService {
     emit?(["kind": "status", "state": "downloading"])
     let models = try await AsrModels.downloadAndLoad(version: .ultra)
     try ensureActive(generation)
-    let manager = SlidingWindowAsrManager()
+    // The default 11 s chunk plus 2 s lookahead leaves short test recordings blank.
+    let manager = SlidingWindowAsrManager(config: SlidingWindowAsrConfig(
+      chunkSeconds: 3.0, leftContextSeconds: 2.0, rightContextSeconds: 0.5))
     try await manager.loadModels(models)
     try await manager.startStreaming()
     try ensureActive(generation)
@@ -359,7 +385,7 @@ private final class LiveSTTService {
         Task { @MainActor [weak self] in
           guard let self, !self.reportedOverflow else { return }
           self.reportedOverflow = true
-          self.failCapture(LiveSTTError.unavailable("Audio capture fell behind and part of the test was lost."))
+          await self.failCapture(LiveSTTError.unavailable("Audio capture fell behind and part of the test was lost."))
         }
       }
     }
@@ -393,9 +419,16 @@ private final class LiveSTTService {
     try? AVAudioSession.sharedInstance().setActive(false)
   }
 
-  private func failCapture(_ error: Error) {
+  private func failCapture(_ error: Error) async {
+    generation += 1
     stopMicrophone()
     emit?(["kind": "status", "state": "failed", "message": error.localizedDescription])
+    let analyzer = analyzer
+    let parakeet = parakeet
+    resultsTask?.cancel()
+    clear()
+    await analyzer?.cancelAndFinishNow()
+    await parakeet?.cancel()
   }
 
   private func ensureActive(_ expectedGeneration: Int) throws {
