@@ -7,7 +7,7 @@
 /** Header task icon and the `/plan` GitHub Projects backlog it opens. */
 export const TASKS_ENABLED: boolean = false;
 
-/** "Meeting audio" row in the composer's attach menu (audio transcription).
+/** "Transcribe audio file" and "Live Meeting" rows in the composer's attach menu.
  * Enabled: the upload → transcription → `docs/meetings/*.md` round trip is wired
  * end to end (server route, bundled transcriber client). Transcription needs a
  * remote OpenAI-compatible backend configured on the server; when none is, the

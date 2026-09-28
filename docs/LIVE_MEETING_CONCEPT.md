@@ -1,6 +1,6 @@
 # Live Meeting
 
-**Status:** Product concept; not implemented or validated on devices.
+**Status:** Product concept; a local Nemotron meeting prototype is in progress. Long-session device validation and server synchronization remain open.
 **Scope:** Session-bound mobile meetings, durable transcripts and notes, and project knowledge export.
 **Related:** [Concept review](LIVE_MEETING_CONCEPT_REVIEW.md) and
 [speech-to-text options](LIVE_MEETING_STT_OPTIONS.md), both from 2026-09-28. The engine direction
@@ -14,29 +14,31 @@ and notes together. Preserve their origin when storing them in the knowledge bas
 
 | Stage | Included | Explicitly deferred |
 | --- | --- | --- |
-| Version 1 | Local live transcription with Apple's `SpeechTranscriber`, timestamped notes, minimize/restore, durable recovery and knowledge export | Speaker separation, speaker names, calendar integration, LLM assistance and lock-screen continuation as a promised capability |
+| Version 1 | Local live transcription with a selectable engine (Nemotron initially selected), timestamped notes, minimize/restore, durable recovery and knowledge export | Speaker separation, speaker names, calendar integration, LLM assistance and lock-screen continuation as a promised capability |
 | Version 2 | Local speaker separation with FluidAudio, editable names and optional confirmed name suggestions | Automatic identification across meetings and calendar integration |
 | Later, separately scoped | Optional meeting assistant, research, factual checks and critical questions | Not a prerequisite for either version above |
 
-### Engine direction: Apple first, FluidAudio for speakers
+### Engine direction: Nemotron initially, FluidAudio for speakers
 
-Transcription in V1 uses Apple's `SpeechAnalyzer` framework with the `SpeechTranscriber` module
-(iOS 26 and later). Speaker diarization in V2 uses FluidAudio, fed from the same microphone tap.
+The first local meeting version selects FluidAudio Nemotron by default because its partial results
+have worked best in the initial device test. This is a provisional product choice, not a measured
+accuracy result for hour-long German meetings. Apple `SpeechTranscriber` and Parakeet Ultra remain
+selectable. Speaker diarization in V2 uses FluidAudio, fed from the same microphone tap.
 Both sit behind a transcription engine interface with Apple and FluidAudio implementations.
 FluidAudio's Nemotron multilingual model provides short-interval streaming; Parakeet Ultra
 processes overlapping audio windows of about 15 seconds and is a second FluidAudio candidate
-when transcription quality outweighs update latency. Test both on meeting speech before choosing
+when transcription quality outweighs update latency. Test both on meeting speech before confirming
 a FluidAudio default. Within the Apple implementation, `DictationTranscriber` is a
 configuration candidate alongside `SpeechTranscriber` because it is the only Apple module that
 accepts custom vocabulary; see section 6.
 
-Reasons for Apple first: no model download inside the app, model memory outside the app process,
+Reasons to retain Apple as an option: no model download inside the app, model memory outside the app process,
 a design built for unlimited session length, documented German support, and third-party benchmark
 evidence that Apple's engine is strong on German speech. Reasons to keep FluidAudio: custom
 vocabulary boosting, iOS 17 support, open models, and evidence that the Parakeet family handles
-disfluent speech better. Reasons not to make FluidAudio the V1 default: the iOS 27 restriction on
-background Neural Engine access for in-app models, the in-app model footprint, and thin upstream
-iOS validation of the German streaming path on the target chips.
+disfluent speech better. Risks to validate before confirming Nemotron as the V1 default: the iOS 27
+restriction on background Neural Engine access for in-app models, the in-app model footprint, and
+thin upstream iOS validation of the German streaming path on the target chips.
 
 The ordinary microphone dictation feature remains unchanged for V1 and V2. As a later,
 separately scoped follow-up, iOS dictation may migrate onto the same native module and Apple
@@ -127,11 +129,11 @@ Show pending synchronization explicitly; local completion is not proof of server
 
 ## 4. Version 1: transcription, notes and durability
 
-Transcribe with Apple's `SpeechTranscriber` for the meeting locale, with volatile results and
-word-level audio time ranges enabled. Check module availability and device support at runtime,
-ensure the locale's language assets are installed through `AssetInventory` before declaring the
-meeting ready, and expose asset download progress and failures. Do not fall back silently to
-network recognition or to another engine; a fallback is a visible choice.
+Transcribe with the selected local engine. Nemotron is initially selected, with partial snapshots
+and final text. Check module availability and device support at runtime and expose model download
+progress and failures. For the Apple option, check locale assets through `AssetInventory` and use
+volatile results with word-level audio time ranges. Do not fall back silently to network recognition
+or another engine; a fallback is a visible choice.
 
 Live microphone audio reaches the engine through a Verity Expo module in Swift, following the
 existing inline-module path in `apps/mobile/native/`. The module owns the audio session, the

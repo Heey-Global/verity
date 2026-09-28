@@ -6,6 +6,7 @@
 import '../unistyles';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
@@ -35,6 +36,8 @@ import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
+import { subscribeMeeting } from '../lib/liveMeetingSession';
+import type { MeetingRecord } from '../lib/liveMeetingStore';
 
 // The app is dark-only. Force the native interface style to dark AT RUNTIME so all
 // system chrome — keyboard, photo picker, action sheets, alerts — renders dark
@@ -198,6 +201,7 @@ function HydratedRoot() {
                 options={{ presentation: 'fullScreenModal', headerShown: false }}
               />
               <Stack.Screen name="session/[id]" options={{ title: 'Session' }} />
+              <Stack.Screen name="meeting/[sessionId]" options={{ title: 'Live Meeting' }} />
               <Stack.Screen name="project/[id]/index" options={{ title: 'Project' }} />
               <Stack.Screen name="project/[id]/dev-server" options={{ title: 'Dev Server' }} />
               <Stack.Screen name="project/[id]/automations" options={{ title: 'Automations' }} />
@@ -250,10 +254,51 @@ function HydratedRoot() {
               {/* The onboarding wizard renders its own header/progress (#320). */}
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             </Stack>
+            <ActiveMeetingBar />
           </KeyboardProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>
     </KeyCommands>
+  );
+}
+
+function ActiveMeetingBar() {
+  const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
+  const pathname = usePathname();
+  const insets = useSafeAreaInsets();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => subscribeMeeting(setMeeting), []);
+  useEffect(() => {
+    if (meeting?.state !== 'active') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [meeting?.state]);
+  useEffect(() => {
+    if (meeting?.state !== 'active') return;
+    void activateKeepAwakeAsync('verity-live-meeting').catch(() => undefined);
+    return () => {
+      void deactivateKeepAwake('verity-live-meeting').catch(() => undefined);
+    };
+  }, [meeting?.state]);
+  if (meeting?.state !== 'active' || pathname.startsWith('/meeting/')) return null;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Return to live meeting"
+      onPress={() =>
+        router.push({ pathname: '/meeting/[sessionId]', params: { sessionId: meeting.sessionId } })
+      }
+      style={{
+        backgroundColor: '#272035',
+        paddingHorizontal: 16,
+        paddingTop: 10,
+        paddingBottom: Math.max(insets.bottom, 10),
+      }}
+    >
+      <Text style={{ color: '#eee9f7', fontWeight: '700' }}>
+        ● Live Meeting · {Math.floor((now - meeting.startedAt) / 60000)} min · Return to transcript
+      </Text>
+    </Pressable>
   );
 }
 

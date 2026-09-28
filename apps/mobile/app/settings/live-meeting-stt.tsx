@@ -17,7 +17,7 @@ const ACCENT = '#bd8bff';
 export default function LiveMeetingSTTScreen() {
   const [engines, setEngines] = useState<STTEngine[]>([]);
   const [loadingEngines, setLoadingEngines] = useState(true);
-  const [selected, setSelected] = useState<STTEngineId>('apple-speech');
+  const [selected, setSelected] = useState<STTEngineId>('fluid-nemotron');
   const [locale, setLocale] = useState('de-DE');
   const [terms, setTerms] = useState('Verity');
   const [status, setStatus] = useState('Ready');

@@ -6,6 +6,7 @@ const handlers = {
   onPickPhotos: jest.fn(),
   onPickFiles: jest.fn(),
   onPickMeetingAudio: jest.fn(),
+  onLiveMeeting: jest.fn(),
   onConnectGmail: jest.fn(),
 };
 
@@ -22,7 +23,8 @@ describe('attachMenuRows', () => {
       'Choose photo',
       'Choose file',
       '—',
-      'Meeting audio',
+      'Transcribe audio file',
+      'Live Meeting',
       '—',
       '[Connect]',
       'Gmail',
@@ -48,7 +50,7 @@ describe('attachMenuRows', () => {
   it('routes the meeting-audio row to the upload handler', () => {
     const row = attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
       (candidate): candidate is Extract<AttachMenuRow, { label: string }> =>
-        'label' in candidate && candidate.label === 'Meeting audio',
+        'label' in candidate && candidate.label === 'Transcribe audio file',
     );
     expect(row?.icon).toBe('mic');
     row?.onPress();
@@ -57,6 +59,6 @@ describe('attachMenuRows', () => {
 
   it('is reachable in this build — meeting audio ships enabled', () => {
     expect(MEETING_AUDIO_ENABLED).toBe(true);
-    expect(labels(attachMenuRows(handlers))).toContain('Meeting audio');
+    expect(labels(attachMenuRows(handlers))).toContain('Transcribe audio file');
   });
 });

@@ -2741,6 +2741,11 @@ export function SessionChat({
     if (Platform.OS === 'ios') pendingMeetingAudioRef.current = true;
     else uploadMeetingAudio();
   }, [uploadMeetingAudio]);
+  const onLiveMeeting = useCallback(() => {
+    setAttachMenuOpen(false);
+    voice.abort();
+    router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
+  }, [sessionId, voice]);
   const onConnectGmail = useCallback(() => {
     setAttachMenuOpen(false);
     void (async () => {
@@ -3846,6 +3851,7 @@ export function SessionChat({
         onPickPhotos={onPickPhotos}
         onPickFiles={onPickFiles}
         onPickMeetingAudio={onPickMeetingAudio}
+        onLiveMeeting={onLiveMeeting}
         onConnectGmail={onConnectGmail}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
@@ -7930,6 +7936,7 @@ function AttachMenu({
   onPickPhotos,
   onPickFiles,
   onPickMeetingAudio,
+  onLiveMeeting,
   onConnectGmail,
   onClose,
   onDismiss,
@@ -7940,6 +7947,7 @@ function AttachMenu({
   onPickPhotos: () => void;
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
+  onLiveMeeting: () => void;
   onConnectGmail: () => void;
   onClose: () => void;
   onDismiss: () => void;
@@ -7951,6 +7959,7 @@ function AttachMenu({
     onPickPhotos,
     onPickFiles,
     onPickMeetingAudio,
+    onLiveMeeting,
     onConnectGmail,
   });
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
