@@ -58,9 +58,10 @@ async function get(
   port: number,
   path: string,
   headers?: Record<string, string>,
+  method = 'GET',
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    request({ host: '127.0.0.1', port, path, headers }, (response) => {
+    request({ host: '127.0.0.1', port, path, headers, method }, (response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk));
       response.on('end', () =>
@@ -227,6 +228,42 @@ describe('managed gateway foundation', () => {
       });
     },
   );
+
+  it('waits for a static preview create response beyond the ordinary proxy timeout', async () => {
+    const sockets = new Set<import('node:net').Socket>();
+    const server = createServer((_request, response) => {
+      setTimeout(() => response.end('created'), 75);
+    });
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('error', () => undefined);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = (server.address() as { port: number }).port;
+    closers.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    const runtime = await startManagedGateway({
+      publicPort: 0,
+      internalPort: 0,
+      backend: { host: '127.0.0.1', publicPort: port, internalPort: port },
+      allowedBackendHosts: ['127.0.0.1'],
+      requestTimeoutMs: 20,
+    });
+    closers.push(() => runtime.close());
+
+    expect(await get(runtime.publicPort, '/sessions/s1/public-static-shares', {}, 'POST')).toEqual({
+      status: 200,
+      body: 'created',
+    });
+    expect(await get(runtime.publicPort, '/sessions/s1/public-static-shares')).toEqual({
+      status: 502,
+      body: '{"error":"upstream unavailable"}',
+    });
+  });
 
   it('does not accumulate close listeners on a kept-alive upstream socket', async () => {
     const upstream = await backend('keepalive');
