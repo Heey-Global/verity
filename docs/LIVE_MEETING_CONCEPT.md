@@ -22,10 +22,11 @@ and notes together. Preserve their origin when storing them in the knowledge bas
 
 Transcription in V1 uses Apple's `SpeechAnalyzer` framework with the `SpeechTranscriber` module
 (iOS 26 and later). Speaker diarization in V2 uses FluidAudio, fed from the same microphone tap.
-Both sit behind a transcription engine interface with two implementations: Apple as the first, and
-FluidAudio's Nemotron multilingual streaming model as the second, retained for devices or locales
-where Apple's module is unavailable and as the measured alternative if Apple falls short on
-conversational meeting speech. Within the Apple implementation, `DictationTranscriber` is a
+Both sit behind a transcription engine interface with Apple and FluidAudio implementations.
+FluidAudio's Nemotron multilingual model provides short-interval streaming; Parakeet Ultra
+processes overlapping audio windows of about 15 seconds and is a second FluidAudio candidate
+when transcription quality outweighs update latency. Test both on meeting speech before choosing
+a FluidAudio default. Within the Apple implementation, `DictationTranscriber` is a
 configuration candidate alongside `SpeechTranscriber` because it is the only Apple module that
 accepts custom vocabulary; see section 6.
 
@@ -224,7 +225,7 @@ content hints such as far-field speech. The long-form `SpeechTranscriber` has ne
 option nor a language-model option in its initializers, and iOS 27 added no Speech framework
 symbols and no WWDC26 session that changes this.
 
-The engine benchmark in section 8 therefore compares three Apple-side and FluidAudio-side
+The engine benchmark in section 8 therefore compares four Apple-side and FluidAudio-side
 candidates for vocabulary handling:
 
 - `DictationTranscriber` with contextual strings and the far-field hint: vocabulary boosting on
@@ -233,6 +234,8 @@ candidates for vocabulary handling:
   on the device, the Ask Verity button as the reliable path, and server-side post-correction of
   participant and project names against a supplied list.
 - FluidAudio Nemotron with decode-time vocabulary boosting.
+- FluidAudio Parakeet Ultra, measuring name accuracy and whether the added latency is acceptable
+  for a live transcript. Validate vocabulary support separately before promising it.
 
 Choose by measured recognition of names and project terms on meeting speech, not by feature list.
 
@@ -290,8 +293,8 @@ Verify the exact installed OS/build, `SpeechTranscriber` device support and loca
 the selected FluidAudio model requirements on each device.
 
 Before V1 commits to an engine, run the same German meeting recordings through
-`SpeechTranscriber`, `DictationTranscriber` with contextual strings, and FluidAudio Nemotron with
-vocabulary boosting on both devices and compare: word error rate overall and on names and project
+`SpeechTranscriber`, `DictationTranscriber` with contextual strings, FluidAudio Nemotron and
+Parakeet Ultra on both devices and compare: word error rate overall and on names and project
 terms, delay behind speech, memory, heat over 60 minutes, and behavior on a locked screen.
 
 ### In-app engine selection for testing
@@ -300,9 +303,9 @@ The engine is user-selectable inside the app during the test phase, so that the 
 run on the real devices without rebuilding:
 
 - A meeting settings entry lists the available engines with their state: Apple `SpeechTranscriber`,
-  Apple `DictationTranscriber` with contextual strings, and FluidAudio Nemotron, each showing
-  device support, installed assets or models, and download size. Selection applies to the next
-  meeting and can be overridden per meeting from the start screen.
+  Apple `DictationTranscriber` with contextual strings, FluidAudio Nemotron and FluidAudio
+  Parakeet Ultra, each showing device support, installed assets or models, and download size.
+  Selection applies to the next meeting and can be overridden per meeting from the start screen.
 - Every meeting records which engine, model revision and settings produced it, so results stay
   comparable and the choice is visible in the meeting card.
 

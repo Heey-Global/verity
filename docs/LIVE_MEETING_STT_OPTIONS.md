@@ -68,6 +68,13 @@ limits are documented (Sortformer four speakers, LS-EEND up to ten, error rates 
 
 For transcription it remains a strong candidate rather than the default:
 
+FluidAudio also offers Parakeet Ultra for German. Its sliding-window pipeline transcribes
+overlapping windows of about 15 seconds and stitches the results, rather than emitting tokens
+from a cache-aware streaming encoder. FluidAudio recommends Ultra for new Parakeet integrations
+and reports better benchmark accuracy than Parakeet v3 at the same speed. That makes it a serious
+quality candidate, but its live update delay and German meeting accuracy need device testing.
+Do not assume Nemotron is the best FluidAudio model solely because it streams sooner.
+
 | | Apple `SpeechTranscriber` | FluidAudio Nemotron multilingual streaming |
 | --- | --- | --- |
 | Download inside the app | None | About 565 MB encoder plus decoder |
@@ -103,16 +110,16 @@ For transcription it remains a strong candidate rather than the default:
 
 ## 5. Recommendation
 
-1. **Transcription engine interface with two implementations.** Apple `SpeechTranscriber` as the
-   first implementation for V1: no download, no app memory cost, German quality evidence, designed
-   for long sessions. FluidAudio Nemotron as the second implementation, kept for devices or locales
-   where Apple is unavailable and as the candidate if the benchmark shows Apple losing on
-   conversational meeting speech.
+1. **Transcription engine interface with Apple and FluidAudio implementations.** Apple
+   `SpeechTranscriber` is the first implementation for V1: no download, no app memory cost, German
+   quality evidence, designed for long sessions. Test FluidAudio Nemotron for low-latency updates
+   and Parakeet Ultra for potentially better text quality before choosing the FluidAudio default.
 2. **FluidAudio for diarization in V2**, fed from the same audio tap, with Sortformer for up to four
    speakers and LS-EEND for larger groups, and the speaker limit shown to the person.
 3. **One benchmark before V1 commits.** The same German meeting recordings on the iPhone 15 Pro
-   and the M2 iPad Pro through both engines: WER overall and on names and project terms, delay
-   behind speech, memory, heat over 60 minutes, and behavior on lock. Decide by measurement.
+   and the M2 iPad Pro through `SpeechTranscriber`, `DictationTranscriber`, Nemotron and Parakeet
+   Ultra: WER overall and on names and project terms, delay behind speech, memory, heat over 60
+   minutes, and behavior on lock. Decide by measurement.
 4. **Names and "Verity" on the Apple path.** Tolerant matching of name variants plus the Ask
    button, and post-correction of participant names on the server. Revisit
    `DictationTranscriber` or the FluidAudio path only if this proves inadequate.
@@ -134,4 +141,5 @@ evidence for Apple's engine.
 - [WhisperKit](https://github.com/argmaxinc/WhisperKit), [Argmax Pro SDK 3](https://www.argmaxinc.com/blog/argmax-sdk-3), [Argmax pricing](https://www.argmaxinc.com/pricing)
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), [react-native-sherpa-onnx](https://github.com/XDcobra/react-native-sherpa-onnx)
 - [Deepgram Nova-3 German](https://deepgram.com/learn/deepgram-expands-nova-3-with-german-dutch-swedish-and-danish-support), [AssemblyAI real-time overview](https://www.assemblyai.com/blog/best-api-models-for-real-time-speech-recognition-and-transcription)
+- [FluidAudio model overview](https://github.com/FluidInference/FluidAudio/blob/main/Documentation/Models.md)
 - FluidAudio references as listed in the concept review
