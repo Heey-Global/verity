@@ -103,8 +103,18 @@ The release lifecycle makes a decision before invoking Release Please:
    one — silently, with no failed run to notice. That run can only plan. It
    refuses every recovery input and stops unless the lifecycle reaches planning
    mode, so it opens a release PR when one is due and does nothing when it is
-   not. The Mobile train is deliberately excluded: its OTA-versus-native
-   decision is derived from the push diff, which a dispatched run does not have.
+   not. The Mobile train is deliberately excluded from that planning run: its
+   OTA-versus-native decision is derived from the push diff, which a dispatched
+   run does not have. Publishing an already merged mobile release PR needs no
+   such decision, so item 6 applies to the Mobile train as well.
+6. Every run at the main head also owns each train whose merged release PR is
+   still unpublished, not only the train its own diff selected. A release
+   merge whose run is overtaken by a later push hands its publication to that
+   push; if the selection stayed diff-based, a later push that is itself
+   another train's release merge would publish only its own train and leave
+   the first one stranded with every run green. Ownership is safe because the
+   lifecycle refuses a run whose event commit is no longer the main head and
+   requires the pending merge commit to be an ancestor of it.
 
 Pending merged release PRs are read from the paginated pull-request REST API,
 not GitHub's search index. A merged PR can be absent from search while its
@@ -121,6 +131,27 @@ the gate.
 The first release of a product needs an explicit bootstrap decision rather than
 an implicit fallback from an unknown boundary. A delayed trigger must not
 replace a newer plan with an older source snapshot.
+
+## Reconciliation sweep
+
+GitHub delivers a push event at most once, not exactly once. A merge whose
+push never produced a run leaves a merged release PR, or an approved OTA
+candidate, with nothing scheduled to publish it and nothing failing.
+`release-reconcile.yml` runs every twenty minutes as the backstop for that
+case. It publishes nothing itself: for a train whose merged release PR is still
+pending and whose version has no release yet, it dispatches
+`release-dispatch.yml` with `reconcile=true`, which replays the push lifecycle
+at the main head under the same locks and gates; for an OTA candidate whose tag
+is unpublished and whose approval was followed by no promotion run, it
+dispatches `mobile-ota-promote.yml`. A reconcile run accepts no recovery or
+re-plan input, and a re-plan accepts no reconcile flag.
+
+The sweep does not retry what already ran and failed. A pending release PR
+whose draft already exists, a published tag whose PR still carries the pending
+label, or a promotion run that ended in failure each fail the sweep with the
+exact state, so that every twenty minutes there is a red run naming what a
+human has to finish. Recovery paths are unchanged: the draft recovery inputs on
+`release-dispatch.yml` and a manual run of `mobile-ota-promote.yml`.
 
 Server changes are collected from its configured root package. Website
 changes are collected from `docs/website`; its `concept.md` and `landing-copy.md`

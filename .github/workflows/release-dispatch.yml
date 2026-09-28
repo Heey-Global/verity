@@ -41,6 +41,11 @@ on:
         required: false
         default: false
         type: boolean
+      reconcile:
+        description: Publish merged release PRs that no push run reconciled
+        required: false
+        default: false
+        type: boolean
       website-version:
         description: Existing website release version to recover (X.Y.Z)
         required: false
@@ -49,6 +54,12 @@ on:
         description: Commit, branch, or tag backing the existing website release
         required: false
         type: string
+
+# The reconciliation sweep tells its own runs apart by this title, so that a
+# failed re-plan or recovery run never counts against a stranded release and a
+# reconcile run that ended green without publishing is noticed. Every other
+# trigger keeps GitHub's default title.
+run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || '' }}
 
 permissions: read-all
 
@@ -88,5 +99,6 @@ jobs:
       # as strings, while the manual form sends a real boolean. Normalize both:
       # a string reaching this boolean input fails the whole dispatched run.
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}

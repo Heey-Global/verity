@@ -69,6 +69,11 @@ describe('workflow token least privilege', () => {
       'mobile-ota.yml': {
         update: { actions: 'write', contents: 'write', 'pull-requests': 'write' },
       },
+      'release-reconcile.yml': {
+        // contents: write reads draft releases, which GitHub hides from read
+        // access; the sweep's own test forbids it every release command.
+        reconcile: { actions: 'write', contents: 'write', 'pull-requests': 'read' },
+      },
       'release.yml': {
         'release-please': {
           actions: 'write',
@@ -125,7 +130,7 @@ describe('release-please train isolation', () => {
       const action = steps.find((step) => step.id === `release-${train}`);
       expect(action?.with?.['config-file']).toBe(configFile);
       expect(action?.with?.['manifest-file']).toBe(manifestFile);
-      expect(action?.if).toContain(`steps.release-trains.outputs.${train} == 'true'`);
+      expect(action?.if).toContain(`steps.selected-trains.outputs.${train} == 'true'`);
     }
 
     expect(existsSync('release-please-config.json')).toBe(false);
@@ -1034,7 +1039,10 @@ describe('native iOS compile gate', () => {
     const job = release.jobs['publish-mobile-native'];
     expect(job?.['runs-on']).toBe('macos-26');
     expect(job?.permissions?.issues).toBe('write');
-    expect(job?.permissions?.['pull-requests']).toBe('read');
+    // Recovery moves the release PR labels through the issues endpoint, which
+    // GitHub authorizes against the pull-request scope for a PR: with read
+    // access the move 403s after the signed archive is already uploaded.
+    expect(job?.permissions?.['pull-requests']).toBe('write');
     const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
     expect(commands).toContain('eas-cli@20.3.0 build');
     expect(commands).toContain('--platform ios');
@@ -4594,7 +4602,10 @@ describe('changed-area detector', () => {
         .filter(([name]) => ciText.includes(`npm run ${name}`))
         .map(([, body]) => body)
         .join('\n');
-    const exempt = ['scripts/update-toolkit-ledger.mjs'];
+    // `scripts/release-reconcile.mjs` reads the manifests to name the release a
+    // pending PR is waiting for, and only release-reconcile.yml runs it, on a
+    // schedule; the same half-check applies.
+    const exempt = ['scripts/update-toolkit-ledger.mjs', 'scripts/release-reconcile.mjs'];
     for (const file of exempt) {
       expect(ciRuns, `${file} is exempt only for as long as no CI job runs it`).not.toContain(file);
     }

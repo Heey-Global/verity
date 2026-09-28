@@ -1,0 +1,65 @@
+name: verity-release-reconcile
+
+# Publication is event-driven: the push that merges a release PR publishes it,
+# and the push that merges an OTA promotion activates its candidate. GitHub
+# delivers those pushes at most once, not exactly once. On 2026-09-28 the
+# promotion merge for mobile 1.41.1 produced no run of any workflow, and the
+# release merge for server 2.16.1 handed its publication to that same push. Both
+# sat unpublished with every run green, and nothing would have noticed.
+#
+# This sweep is the backstop for a missed event. It only ever dispatches the
+# ordinary workflows and publishes nothing itself, so a release still passes
+# every gate it would have passed on the push. States that need a human — a
+# draft waiting on manual recovery, a promotion run that failed — turn this run
+# red instead of being retried every sweep.
+#
+# The decision of what is stranded lives in scripts/release-reconcile.mjs and is
+# tested in scripts/release-reconcile.test.ts — deliberately not inline bash,
+# because "which run is safe to dispatch" is the part that can go wrong.
+
+on:
+  schedule:
+    # Every twenty minutes, off the top and bottom of the hour: those are the
+    # minutes when every scheduled workflow on GitHub fires at once.
+    - cron: '13,33,53 * * * *'
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  # Two sweeps reading the same state would dispatch the same run twice.
+  group: release-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      # `actions: write` dispatches the release and promotion workflows.
+      # `contents: write` is only for reading: GitHub lists draft releases to
+      # push access alone, and a draft that manual recovery owns must read as
+      # exactly that rather than as a release that does not exist yet. The
+      # script issues no write; the test on it forbids every release command.
+      actions: write
+      contents: write
+      pull-requests: read
+    steps:
+      # The sweep reads the release manifests and the OTA promotion manifest
+      # at the main head, and dates the promotion approval from its history.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Dispatch publication that no push run reconciled
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/release-reconcile.mjs

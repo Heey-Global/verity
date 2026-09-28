@@ -44,6 +44,11 @@ on:
         required: false
         default: false
         type: boolean
+      reconcile:
+        description: Publish merged release PRs that no push run reconciled
+        required: false
+        default: false
+        type: boolean
       website-version:
         description: Existing website release version to recover (X.Y.Z)
         required: false
@@ -197,6 +202,7 @@ jobs:
       - name: Validate backend re-plan request
         env:
           REPLAN: ${{ inputs.backend-replan }}
+          RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
           MOBILE_TAG: ${{ inputs.mobile-tag }}
           VERSION: ${{ inputs.backend-version }}
@@ -215,8 +221,38 @@ jobs:
             # and a request that mixes both hides which mode actually ran.
             if [[ "$EVENT_NAME" != workflow_dispatch ||
                   -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
-                  "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ]]; then
+                  "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ||
+                  "${RECONCILE:-false}" == true ]]; then
               echo '::error::A backend re-plan is a manual planning run and must carry no recovery input.' >&2
+              exit 1
+            fi
+          fi
+
+      - name: Validate reconcile request
+        env:
+          RECONCILE: ${{ inputs.reconcile }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPLAN: ${{ inputs.backend-replan }}
+          MOBILE_TAG: ${{ inputs.mobile-tag }}
+          VERSION: ${{ inputs.backend-version }}
+          SOURCE_REF: ${{ inputs.backend-ref }}
+          SCHEMA_FORWARD_MAX: ${{ inputs.backend-schema-forward-max }}
+          REPUBLISH: ${{ inputs.backend-republish }}
+          ARTIFACT_ONLY: ${{ inputs.backend-artifact-only }}
+          ACCEPT_NO_ROLLBACK: ${{ inputs.backend-accept-no-rollback }}
+          WEBSITE_VERSION: ${{ inputs.website-version }}
+          WEBSITE_REF: ${{ inputs.website-ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RECONCILE" == true ]]; then
+            # A reconcile run replays the push lifecycle at the current main
+            # head. Recovery inputs pin an older source and a re-plan may never
+            # publish, so a request mixing them hides which mode actually ran.
+            if [[ "$EVENT_NAME" != workflow_dispatch || "$REPLAN" == true ||
+                  -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
+                  "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ]]; then
+              echo '::error::A reconcile run replays the push lifecycle at the main head and must carry no recovery or re-plan input.' >&2
               exit 1
             fi
           fi
@@ -262,7 +298,7 @@ jobs:
       # hiding a manifest or a file that does not belong to the selected train.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'push' || inputs.backend-replan
+        if: github.event_name == 'push' || inputs.backend-replan || inputs.reconcile
         with:
           fetch-depth: 0
 
@@ -410,10 +446,31 @@ jobs:
             echo "website=$website"
           } >> "$GITHUB_OUTPUT"
 
+      # A release PR merge publishes its own train, but when a later push lands
+      # before this run reaches the lifecycle, the lifecycle hands publication
+      # to that newer push — and if the newer push is another train's release
+      # merge, the selector above chooses only that train. Server 2.16.0 was
+      # stranded exactly so on 2026-09-28. Every run at the main head therefore
+      # also owns each train whose merged release PR is still unpublished. This
+      # cannot publish from a stale view: the lifecycle refuses a run whose
+      # event commit is no longer the main head and requires the pending merge
+      # commit to be an ancestor of it. A reconcile dispatch, which has no push
+      # diff, selects trains by this rule alone.
+      - name: Add trains with pending publications
+        id: selected-trains
+        if: github.event_name == 'push' || inputs.reconcile
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DIFF_BACKEND: ${{ steps.release-trains.outputs.backend }}
+          DIFF_MOBILE: ${{ steps.release-trains.outputs.mobile }}
+          DIFF_WEBSITE: ${{ steps.release-trains.outputs.website }}
+        run: node scripts/pending-release-trains.mjs
+
       - name: Reconcile release lifecycle
         id: lifecycle
         if: >-
-          (github.event_name == 'push' && steps.release-trains.outputs[inputs.train] == 'true') ||
+          ((github.event_name == 'push' || inputs.reconcile) && steps.selected-trains.outputs[inputs.train] == 'true') ||
           (inputs.backend-replan && inputs.train == 'backend')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -428,14 +485,14 @@ jobs:
       # release to the existing, verified tag. On-time release runs retain the
       # normal draft-without-a-tag lifecycle.
       - name: Require tags for delayed release commits
-        if: github.event_name == 'push' && steps.lifecycle.outputs.mode == 'release'
+        if: (github.event_name == 'push' || inputs.reconcile) && steps.lifecycle.outputs.mode == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.sha }}
-          BACKEND_SELECTED: ${{ inputs.train == 'backend' && steps.release-trains.outputs.backend == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
-          MOBILE_SELECTED: ${{ inputs.train == 'mobile' && steps.release-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
-          WEBSITE_SELECTED: ${{ inputs.train == 'website' && steps.release-trains.outputs.website == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
+          BACKEND_SELECTED: ${{ inputs.train == 'backend' && steps.selected-trains.outputs.backend == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
+          MOBILE_SELECTED: ${{ inputs.train == 'mobile' && steps.selected-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
+          WEBSITE_SELECTED: ${{ inputs.train == 'website' && steps.selected-trains.outputs.website == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -501,7 +558,7 @@ jobs:
         # run can never create a release the push lifecycle did not authorize.
         if: >-
           inputs.train == 'backend' &&
-          ((github.event_name == 'push' && steps.release-trains.outputs.backend == 'true' && steps.lifecycle.outputs.mode != 'skip') ||
+          (((github.event_name == 'push' || inputs.reconcile) && steps.selected-trains.outputs.backend == 'true' && steps.lifecycle.outputs.mode != 'skip') ||
           (inputs.backend-replan && steps.lifecycle.outputs.mode == 'plan'))
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -514,7 +571,7 @@ jobs:
 
       - name: Open mobile release PR or create release
         id: release-mobile
-        if: github.event_name == 'push' && inputs.train == 'mobile' && steps.release-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip'
+        if: (github.event_name == 'push' || inputs.reconcile) && inputs.train == 'mobile' && steps.selected-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -526,7 +583,7 @@ jobs:
 
       - name: Open website release PR or create release
         id: release-website
-        if: github.event_name == 'push' && inputs.train == 'website' && steps.release-trains.outputs.website == 'true' && steps.lifecycle.outputs.mode != 'skip'
+        if: (github.event_name == 'push' || inputs.reconcile) && inputs.train == 'website' && steps.selected-trains.outputs.website == 'true' && steps.lifecycle.outputs.mode != 'skip'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -767,7 +824,10 @@ jobs:
     permissions:
       contents: write
       issues: write
-      pull-requests: read
+      # The release PR labels below are moved through the issues endpoint, but
+      # GitHub authorizes labels on a pull request against this scope; with
+      # read access the move fails with 403 after every artifact is published.
+      pull-requests: write
     steps:
       - name: Resolve immutable native release source
         id: native-source
@@ -1054,6 +1114,7 @@ jobs:
       - name: Publish verified native GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECONCILE: ${{ inputs.reconcile }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1063,7 +1124,7 @@ jobs:
           # release. Recovery publishes an already-created draft without running
           # that action. Move the label first, then roll it back if publication
           # fails so either state remains retryable: pending+draft or tagged+public.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${RECONCILE:-false}" != true ]; then
             version="${MOBILE_TAG#mobile-v}"
             pr_numbers="$(gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
@@ -2922,7 +2983,10 @@ jobs:
       actions: write
       contents: write
       issues: write
-      pull-requests: read
+      # The release PR labels below are moved through the issues endpoint, but
+      # GitHub authorizes labels on a pull request against this scope; with
+      # read access the move fails with 403 after every artifact is published.
+      pull-requests: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # This job has no checkout, so gh cannot infer the repository from .git.
@@ -2930,6 +2994,8 @@ jobs:
       TAG: v${{ needs.release-please.outputs.backend-version }}
     steps:
       - name: Publish verified backend release
+        env:
+          RECONCILE: ${{ inputs.reconcile }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2940,7 +3006,7 @@ jobs:
           # release. Recovery publishes an already-created draft without running
           # that action. Move the label first, then roll it back if publication
           # fails so either state remains retryable: pending+draft or tagged+public.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.backend-artifact-only }}" != true ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.backend-artifact-only }}" != true ] && [ "${RECONCILE:-false}" != true ]; then
             version="${TAG#v}"
             pr_numbers="$(gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
@@ -3016,9 +3082,10 @@ jobs:
       # this release sit on main with no release PR until an unrelated later push
       # happens to plan one — silently, with no failed run to notice. The
       # publication above cleared the draft this planning run refuses to pass.
-      # The dispatcher only ever publishes from a push to main, so planning
-      # targets that same branch rather than this run's release tag.
+      # The dispatcher only ever publishes from a push to main or a reconcile
+      # run at its head, so planning targets that same branch rather than
+      # this run's release tag.
       - name: Plan the next backend release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.reconcile
         shell: bash
         run: gh workflow run release-dispatch.yml --ref main -f backend-replan=true

@@ -811,7 +811,10 @@ describe('signed GitHub release evidence', () => {
     expect(finalize.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(finalize.needs).toContain('publish-server-release-evidence');
     expect(finalize.permissions?.issues).toBe('write');
-    expect(finalize.permissions?.['pull-requests']).toBe('read');
+    // Recovery moves the release PR labels through the issues endpoint, which
+    // GitHub authorizes against the pull-request scope for a PR: with read
+    // access the move 403s after every artifact is published (run 36481465237).
+    expect(finalize.permissions?.['pull-requests']).toBe('write');
     const publish = finalize.steps.find((step) => step.name === 'Publish verified backend release');
     expect(publish?.run).toContain('--json isDraft');
     expect(publish?.run).toContain('--draft=false');
@@ -835,6 +838,16 @@ describe('signed GitHub release evidence', () => {
       labels: '',
       expectedStatus: 0,
       expected: '',
+    },
+    {
+      // A reconcile dispatch ran Release Please, which owns the labels; the
+      // recovery move would fail its own expectation against a still-pending
+      // label the action is about to replace.
+      name: 'a reconcile run whose labels Release Please owns',
+      reconcile: true,
+      labels: 'autorelease: pending\n',
+      expectedStatus: 0,
+      expected: 'autorelease: pending\n',
     },
     {
       name: 'pending-only',
@@ -936,6 +949,7 @@ fi
           TEST_VIEWS: views,
           FAIL_PUBLISH: scenario.failPublish ? 'true' : 'false',
           FAIL_LOOKUP: scenario.failLookup ? 'true' : 'false',
+          RECONCILE: scenario.reconcile ? 'true' : 'false',
         },
       });
       expect(result.status, result.stderr).toBe(scenario.expectedStatus);
@@ -1407,5 +1421,251 @@ describe('planning resumes after publication', () => {
       const result = spawnSync('bash', ['-c', guard!.run!], { env });
       expect(result.status === 0, JSON.stringify(overrides)).toBe(valid);
     }
+  });
+});
+
+describe('publication reconciliation', () => {
+  type Job = {
+    if?: string;
+    uses?: string;
+    'runs-on'?: string;
+    'timeout-minutes'?: number;
+    permissions?: Record<string, string>;
+    concurrency?: { group?: string; 'cancel-in-progress'?: boolean };
+    with?: Record<string, string>;
+    steps?: WorkflowStep[];
+  };
+  type Workflow = {
+    on: Record<string, unknown> & {
+      workflow_call?: { inputs?: Record<string, { type: string; default?: unknown }> };
+      workflow_dispatch?: { inputs?: Record<string, { type: string; default?: unknown }> };
+      schedule?: { cron: string }[];
+    };
+    permissions?: unknown;
+    concurrency?: { group?: string; 'cancel-in-progress'?: boolean };
+    jobs: Record<string, Job>;
+  };
+  const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as Workflow;
+  const dispatch = parse(
+    readFileSync('.github/workflows/release-dispatch.yml', 'utf8'),
+  ) as Workflow;
+  const sweep = parse(readFileSync('.github/workflows/release-reconcile.yml', 'utf8')) as Workflow;
+  const promote = parse(
+    readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8'),
+  ) as Workflow;
+  const metadata = release.jobs['release-please']?.steps ?? [];
+  const select = metadata.find((step) => step.id === 'selected-trains');
+  const lifecycle = metadata.find((step) => step.id === 'lifecycle');
+
+  it('lets every run at the main head own each unpublished release merge', () => {
+    // The break this guards: with selection taken from the push diff alone, a
+    // release merge overtaken by another train's release merge hands its
+    // publication to a run that never selects it. Server 2.16.0 sat unpublished
+    // behind two green runs that way on 2026-09-28.
+    const diffIndex = metadata.findIndex((step) => step.id === 'release-trains');
+    const selectIndex = metadata.findIndex((step) => step.id === 'selected-trains');
+    expect(diffIndex).toBeGreaterThan(-1);
+    expect(selectIndex).toBe(diffIndex + 1);
+    expect(select?.run).toBe('node scripts/pending-release-trains.mjs');
+    expect(select?.if).toBe("github.event_name == 'push' || inputs.reconcile");
+    expect(select?.env?.GH_TOKEN).toContain('GITHUB_TOKEN');
+    for (const train of ['backend', 'mobile', 'website']) {
+      expect(select?.env?.[`DIFF_${train.toUpperCase()}`]).toBe(
+        `\${{ steps.release-trains.outputs.${train} }}`,
+      );
+    }
+    // Every consumer reads the union; one still reading the diff selection
+    // silently narrows publication back to the diff train.
+    const consumers = metadata.filter(
+      (step) => step.id !== 'selected-trains' && JSON.stringify(step).includes('-trains.outputs'),
+    );
+    expect(consumers.map((step) => step.id ?? step.name)).toEqual([
+      'lifecycle',
+      'Require tags for delayed release commits',
+      'release-backend',
+      'release-mobile',
+      'release-website',
+    ]);
+    for (const step of consumers) {
+      expect(JSON.stringify(step), step.id ?? step.name).not.toContain(
+        'steps.release-trains.outputs',
+      );
+    }
+    // Nor may the job outputs or any other job read it: the three DIFF_* lines
+    // feeding the union are the only readers of the diff selection.
+    const source = readFileSync('.github/workflows/release.yml', 'utf8');
+    expect(source.match(/steps\.release-trains\.outputs/gu)).toHaveLength(3);
+  });
+
+  it('runs the push lifecycle for a reconcile dispatch', () => {
+    // A dispatched run has no push diff and no `push` event; each gate that
+    // keys on the event alone would skip it and the sweep would dispatch a run
+    // that publishes nothing, forever.
+    const checkout = metadata.find(
+      (step) =>
+        step.uses?.startsWith('actions/checkout@') && Number(step.with?.['fetch-depth']) === 0,
+    );
+    expect(checkout?.if).toContain('inputs.reconcile');
+    expect(lifecycle?.if).toContain("(github.event_name == 'push' || inputs.reconcile)");
+    expect(lifecycle?.if).toContain("steps.selected-trains.outputs[inputs.train] == 'true'");
+    const pretag = metadata.find(
+      (step) => step.name === 'Require tags for delayed release commits',
+    );
+    expect(pretag?.if).toBe(
+      "(github.event_name == 'push' || inputs.reconcile) && steps.lifecycle.outputs.mode == 'release'",
+    );
+    for (const train of ['backend', 'mobile', 'website']) {
+      const action = metadata.find((step) => step.id === `release-${train}`);
+      expect(action?.if, train).toContain(`(github.event_name == 'push' || inputs.reconcile) && `);
+      expect(action?.if, train).toContain(`steps.selected-trains.outputs.${train} == 'true'`);
+    }
+    // Planning after a reconcile publication is as necessary as after a push:
+    // commits merged before the release still have no release PR.
+    const replan = release.jobs['finalize-backend-release']?.steps?.find((step) =>
+      step.run?.includes('backend-replan=true'),
+    );
+    expect(replan?.if).toBe("github.event_name == 'push' || inputs.reconcile");
+    // Recovery-only label moves must not run; Release Please already moved them.
+    for (const [job, name] of [
+      ['finalize-backend-release', 'Publish verified backend release'],
+      ['publish-mobile-native', 'Publish verified native GitHub release'],
+    ] as const) {
+      const step = release.jobs[job]?.steps?.find((entry) => entry.name === name);
+      expect(step?.env?.RECONCILE, job).toBe('${{ inputs.reconcile }}');
+      expect(step?.run, job).toContain('[ "${RECONCILE:-false}" != true ]');
+    }
+  });
+
+  it('forwards a normalized reconcile flag from the dispatcher', () => {
+    expect(release.on.workflow_call?.inputs?.reconcile).toMatchObject({
+      type: 'boolean',
+      default: false,
+    });
+    expect(dispatch.on.workflow_dispatch?.inputs?.reconcile).toMatchObject({
+      type: 'boolean',
+      default: false,
+    });
+    // The sweep dispatches through the API, which carries inputs as strings.
+    expect(dispatch.jobs['release-train']?.with?.reconcile).toBe(
+      "${{ format('{0}', inputs['reconcile']) == 'true' }}",
+    );
+  });
+
+  it('refuses a reconcile run that carries recovery or re-plan input', () => {
+    const guard = metadata.find((step) => step.name === 'Validate reconcile request');
+    const replanGuard = metadata.find((step) => step.name === 'Validate backend re-plan request');
+    expect(guard?.run).toBeDefined();
+    const base: Record<string, string> = {
+      ...process.env,
+      RECONCILE: 'true',
+      EVENT_NAME: 'workflow_dispatch',
+      REPLAN: 'false',
+      MOBILE_TAG: '',
+      VERSION: '',
+      SOURCE_REF: '',
+      SCHEMA_FORWARD_MAX: '',
+      REPUBLISH: 'false',
+      ARTIFACT_ONLY: 'false',
+      ACCEPT_NO_ROLLBACK: 'false',
+      WEBSITE_VERSION: '',
+      WEBSITE_REF: '',
+    };
+    for (const [overrides, valid] of [
+      [{}, true],
+      [{ RECONCILE: 'false', EVENT_NAME: 'push' }, true],
+      [{ EVENT_NAME: 'push' }, false],
+      [{ REPLAN: 'true' }, false],
+      [{ VERSION: '1.2.3' }, false],
+      [{ SOURCE_REF: 'main' }, false],
+      [{ MOBILE_TAG: 'mobile-v1.33.0' }, false],
+      [{ WEBSITE_VERSION: '1.2.3' }, false],
+      [{ WEBSITE_REF: 'main' }, false],
+      [{ SCHEMA_FORWARD_MAX: '0042_x' }, false],
+      [{ REPUBLISH: 'true' }, false],
+      [{ ARTIFACT_ONLY: 'true' }, false],
+      [{ ACCEPT_NO_ROLLBACK: 'true' }, false],
+    ] as const) {
+      const result = spawnSync('bash', ['-c', guard!.run!], { env: { ...base, ...overrides } });
+      expect(result.status === 0, JSON.stringify(overrides)).toBe(valid);
+    }
+    // And the re-plan guard refuses the reconcile flag in turn — through the
+    // variable the workflow actually gives it, or the check is dead in Actions.
+    expect(replanGuard?.env?.RECONCILE).toBe('${{ inputs.reconcile }}');
+    const replan = spawnSync('bash', ['-c', replanGuard!.run!], {
+      env: { ...base, REPLAN: 'true', RECONCILE: 'true' },
+    });
+    expect(replan.status).not.toBe(0);
+  });
+
+  it('sweeps for missed publication events on a schedule without publishing', () => {
+    // The break this guards: a push GitHub never delivered leaves a merged
+    // release PR or an approved OTA candidate with nothing scheduled and
+    // nothing failing. Mobile 1.41.1 and server 2.16.1 sat that way on
+    // 2026-09-28 until someone asked.
+    const crons = sweep.on.schedule?.map((entry) => entry.cron) ?? [];
+    expect(crons).toHaveLength(1);
+    const [minutes, hours] = crons[0]!.split(' ');
+    expect(hours).toBe('*');
+    const fires = minutes!.split(',').map(Number);
+    expect(fires.length).toBeGreaterThanOrEqual(2);
+    expect(fires).not.toContain(0);
+    expect(fires).not.toContain(30);
+    expect(sweep.on.workflow_dispatch).toBeDefined();
+    expect(sweep.permissions).toBe('read-all');
+    expect(sweep.concurrency?.['cancel-in-progress']).toBe(false);
+    const jobs = Object.values(sweep.jobs);
+    expect(jobs).toHaveLength(1);
+    const [job] = jobs;
+    // Drafts are listed to push access only; with read access a draft that
+    // manual recovery owns reads as a release that does not exist yet.
+    expect(job?.permissions).toEqual({
+      actions: 'write',
+      contents: 'write',
+      'pull-requests': 'read',
+    });
+    expect(job?.['timeout-minutes']).toBeLessThanOrEqual(10);
+    const run = job?.steps?.find((step) => step.run?.includes('release-reconcile.mjs'));
+    expect(run?.env?.GH_TOKEN).toContain('GITHUB_TOKEN');
+    expect(run?.env?.GITHUB_REPOSITORY).toBe('${{ github.repository }}');
+    // The OTA approval is dated from the manifest's history.
+    const checkout = job?.steps?.find((step) => step.uses?.startsWith('actions/checkout@'));
+    expect(checkout?.with?.['fetch-depth']).toBe(0);
+    // It dispatches the ordinary workflows and only those; each target must
+    // accept a dispatch, and the release one must accept the reconcile flag.
+    const source = readFileSync('scripts/release-reconcile.mjs', 'utf8');
+    expect(source).toContain("'release-dispatch.yml'");
+    expect(source).toContain("'mobile-ota-promote.yml'");
+    expect(source).toContain("'reconcile=true'");
+    expect(source).not.toMatch(/gh release|release edit|release create/u);
+    // Nor any other write: the token can, the script may not.
+    expect(source).not.toMatch(/'--method'|'-X'|'--input'|'--field'|'-F'/u);
+    expect(dispatch.on.workflow_dispatch?.inputs?.reconcile).toBeDefined();
+    expect(promote.on.workflow_dispatch).toBeDefined();
+    // The sweep tells reconcile runs from re-plan and recovery runs by the
+    // title the dispatcher gives them; a renamed title would make every failed
+    // recovery run count against a stranded release, and every failed reconcile
+    // run count for nothing.
+    const [, title] = source.match(/const reconcileRunTitle = '([^']+)';/u) ?? [];
+    expect(title).toBeDefined();
+    expect((dispatch as { 'run-name'?: string })['run-name']).toBe(
+      `\${{ format('{0}', inputs.reconcile) == 'true' && '${title}' || '' }}`,
+    );
+    // The checkout is all the sweep installs; a third-party import would fail
+    // every sweep on a bare workspace.
+    const visited = new Set<string>();
+    function checkImports(file: string) {
+      if (visited.has(file)) return;
+      visited.add(file);
+      const specifiers = [
+        ...readFileSync(file, 'utf8').matchAll(/^import [^']*'([^']+)';$/gmu),
+      ].map(([, name]) => name!);
+      expect(specifiers.length, file).toBeGreaterThan(0);
+      for (const specifier of specifiers) {
+        if (specifier.startsWith('./')) checkImports(resolve(dirname(file), specifier));
+        else expect(specifier, file).toMatch(/^node:/u);
+      }
+    }
+    checkImports(resolve('scripts/release-reconcile.mjs'));
+    checkImports(resolve('scripts/pending-release-trains.mjs'));
   });
 });
