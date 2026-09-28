@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.16.1](https://github.com/Heey-Global/verity/compare/v2.16.0...v2.16.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **uplink:** unlock mobile credentials before remote startup ([#874](https://github.com/Heey-Global/verity/issues/874)) ([abcbfce](https://github.com/Heey-Global/verity/commit/abcbfce2682572df66a75c07375e9a7e511a0285))
+
 ## [2.16.0](https://github.com/Heey-Global/verity/compare/v2.15.0...v2.16.0) (2026-09-28)
 
 
