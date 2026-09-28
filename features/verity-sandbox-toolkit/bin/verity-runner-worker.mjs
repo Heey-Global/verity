@@ -23360,7 +23360,7 @@ var require_v4 = __commonJS({
 // packages/session/dist/runner-worker-entry.js
 import { constants as constants3 } from "node:fs";
 import { open as open5, unlink } from "node:fs/promises";
-import { join as join2, resolve as resolve2 } from "node:path";
+import { join as join3, resolve as resolve2 } from "node:path";
 
 // node_modules/@verity/events/dist/events.js
 var import_zod = __toESM(require_zod(), 1);
@@ -28386,6 +28386,8 @@ var legacyClientNotificationMethods = /* @__PURE__ */ new Set([
 
 // packages/session/dist/acp-backend.js
 import { createHash } from "node:crypto";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { join, sep } from "node:path";
 
 // packages/session/dist/structured-lifecycle.js
 function isRecord2(value) {
@@ -29191,13 +29193,67 @@ function killAgent(child) {
   void child.exited.then(() => clearTimeout(escalation), () => void 0);
 }
 var RESOURCE_NOT_FOUND = -32002;
-function processStream(process2) {
+var MAX_ACP_FRAME_BYTES = 8 * 1024 * 1024;
+var MAX_IMAGE_FRAME_BYTES = 64 * 1024 * 1024;
+async function externalizeImageFrame(line, worktree) {
+  const frame = JSON.parse(line);
+  const params = frame["params"];
+  const update = params?.["update"];
+  const content = update?.["content"];
+  const rawOutput = update?.["rawOutput"];
+  if (frame["method"] !== "session/update" || !Array.isArray(content) || typeof rawOutput?.["result"] !== "string")
+    throw new Error("ACP frame is too large");
+  const image = content.find((entry) => {
+    const block = entry?.["content"];
+    return block?.["type"] === "image" && block["mimeType"] === "image/png" && block["data"] === rawOutput["result"];
+  });
+  const encoded = rawOutput["result"];
+  if (!image || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
+    throw new Error("ACP frame is too large");
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded || !bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")))
+    throw new Error("ACP frame is too large");
+  const id = createHash("sha256").update(bytes).digest("hex");
+  const directory = join(worktree, ".agents", "generated-images");
+  const agentDirectory = join(worktree, ".agents");
+  for (const path2 of [agentDirectory, directory]) {
+    try {
+      await mkdir(path2);
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+    }
+    if (!(await lstat(path2)).isDirectory())
+      throw new Error("ACP image directory is not a directory");
+  }
+  const [realWorktree, realDirectory] = await Promise.all([
+    realpath(worktree),
+    realpath(directory)
+  ]);
+  if (!realDirectory.startsWith(`${realWorktree}${sep}`))
+    throw new Error("ACP image directory escapes the worktree");
+  const path = join(directory, `${id}.png`);
+  await writeFile(path, bytes, { flag: "wx" }).catch(async (error) => {
+    if (error.code !== "EEXIST")
+      throw error;
+    const stat = await lstat(path);
+    if (!stat.isFile() || !(await readFile(path)).equals(bytes))
+      throw new Error("ACP image file collision");
+  });
+  image["content"] = { type: "resource_link", name: `${id}.png`, uri: path };
+  rawOutput["result"] = path;
+  rawOutput["savedPath"] = path;
+  const reduced = JSON.stringify(frame);
+  if (Buffer.byteLength(reduced) > MAX_ACP_FRAME_BYTES)
+    throw new Error("ACP frame is too large");
+  return reduced;
+}
+function processStream(process2, worktree) {
   if (process2.writeStdin === void 0)
     throw new Error("ACP agent requires writable stdin");
   const encoder = new TextEncoder();
   const stdinDecoder = new TextDecoder();
   const iterator = process2.stdout[Symbol.asyncIterator]();
-  const maxFrameBytes = 8 * 1024 * 1024;
   let buffered = "";
   return ndJsonStream2(new WritableStream({
     write(chunk) {
@@ -29217,10 +29273,13 @@ function processStream(process2) {
       while (true) {
         const newline2 = buffered.indexOf("\n");
         if (newline2 >= 0) {
-          const line = buffered.slice(0, newline2).replace(/\r$/u, "");
+          let line = buffered.slice(0, newline2).replace(/\r$/u, "");
           buffered = buffered.slice(newline2 + 1);
-          if (Buffer.byteLength(line) > maxFrameBytes)
-            throw new Error("ACP frame is too large");
+          if (Buffer.byteLength(line) > MAX_ACP_FRAME_BYTES) {
+            if (Buffer.byteLength(line) > MAX_IMAGE_FRAME_BYTES)
+              throw new Error("ACP frame is too large");
+            line = await externalizeImageFrame(line, worktree);
+          }
           try {
             JSON.parse(line);
           } catch {
@@ -29230,7 +29289,7 @@ function processStream(process2) {
 `));
           return;
         }
-        if (Buffer.byteLength(buffered) > maxFrameBytes)
+        if (Buffer.byteLength(buffered) > MAX_IMAGE_FRAME_BYTES)
           throw new Error("ACP frame is too large");
         const next = await iterator.next();
         if (next.done) {
@@ -29478,7 +29537,7 @@ async function runAcpTurn(opts, profile) {
       if (isAgentContent(params.update))
         turnHasAgentContent = true;
       return queueUpdate(params.update);
-    }).connectWith(processStream(child), async (agent) => {
+    }).connectWith(processStream(child, opts.worktree), async (agent) => {
       const initialized = await agent.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
         ...profile.clientCapabilitiesMeta !== void 0 ? {
@@ -30183,7 +30242,7 @@ function createBrokerSpawner(socketPath) {
 
 // packages/session/dist/runner-server.js
 import { createHash as createHash3, randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
-import { mkdir as mkdir2, open as open4 } from "node:fs/promises";
+import { mkdir as mkdir3, open as open4 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
 
 // scripts/runner-worker-store-shim.mjs
@@ -30294,9 +30353,9 @@ async function writeFrame(handle, frame) {
 
 // packages/session/dist/runner-control.js
 import { constants as constants2 } from "node:fs";
-import { mkdir, mkdtemp, open as open2, rm, symlink } from "node:fs/promises";
+import { mkdir as mkdir2, mkdtemp, open as open2, rm, symlink } from "node:fs/promises";
 import { createConnection as createConnection2, createServer } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join as join2, resolve } from "node:path";
 var LF = 10;
 var MAX_CONTROL_LINE_BYTES = 1024 * 1024;
 function defaultAttachSnapshot() {
@@ -30533,7 +30592,7 @@ async function appendControlJournal(handle, record3) {
 }
 async function serveControl(socketPath, handlers, opts = {}) {
   const turnId = opts.turnId ?? socketPath;
-  await mkdir(dirname(socketPath), { recursive: true });
+  await mkdir2(dirname(socketPath), { recursive: true });
   await rm(socketPath, { force: true });
   const sockets = /* @__PURE__ */ new Set();
   let server2;
@@ -30768,12 +30827,12 @@ async function serveControl(socketPath, handlers, opts = {}) {
 }
 
 // packages/session/dist/runner-state.js
-import { chmod, open as open3, rename, readFile, writeFile } from "node:fs/promises";
+import { chmod, open as open3, rename, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname as dirname2 } from "node:path";
 async function writeRunnerState(path, state) {
   const tmp = `${path}.${randomUUID()}.tmp`;
-  await writeFile(tmp, JSON.stringify(state), "utf8");
+  await writeFile2(tmp, JSON.stringify(state), "utf8");
   await chmod(tmp, 416);
   const file = await open3(tmp, "r");
   try {
@@ -30896,7 +30955,7 @@ var RunnerServer = class {
    * operations onto that same turn; the socket is unlinked on settle.
    */
   async run(eventFilePath, opts) {
-    await mkdir2(dirname3(eventFilePath), { recursive: true });
+    await mkdir3(dirname3(eventFilePath), { recursive: true });
     const handle = await open4(eventFilePath, opts.exclusiveEventFile === true ? "wx" : "w", 416);
     try {
       await handle.chmod(416);
@@ -31168,10 +31227,10 @@ var backends = {
   "opencode-acp": () => new AcpOpenCodeBackend()
 };
 var server = new RunnerServer(backends[request.backend]());
-var turn = await server.run(join2(turnDir, "events.jsonl"), {
+var turn = await server.run(join3(turnDir, "events.jsonl"), {
   turnId: request.turnId,
   controlCapability: request.startCommandId,
-  controlSocketPath: join2(turnDir, "control.sock"),
+  controlSocketPath: join3(turnDir, "control.sock"),
   exclusiveEventFile: true,
   terminalizeErrors: true,
   worktree: request.worktree,
