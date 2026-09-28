@@ -34,6 +34,7 @@ import { TASKS_ENABLED } from '../lib/featureFlags';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
+import { dispatchVoiceShortcut } from '../lib/voiceShortcut';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
 
 // The app is dark-only. Force the native interface style to dark AT RUNTIME so all
@@ -160,7 +161,14 @@ function HydratedRoot() {
   }
 
   return (
-    <KeyCommands style={styles.root} onZoom={adjustFontScale} onSearch={handleSearchShortcut}>
+    <KeyCommands
+      style={styles.root}
+      onZoom={adjustFontScale}
+      onSearch={handleSearchShortcut}
+      onVoice={() => {
+        if (pathname === '/' || pathname.startsWith('/session/')) dispatchVoiceShortcut();
+      }}
+    >
       <ForegroundUpdateSync />
       <GestureHandlerRootView style={styles.root}>
         <SafeAreaProvider>

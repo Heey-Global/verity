@@ -11,6 +11,7 @@ interface ZoomEvent {
 interface NativeKeyCommandsProps extends ViewProps {
   onZoom?: (event: ZoomEvent) => void;
   onSearch?: (event: { nativeEvent: { action: 'context' | 'global' | 'close' } }) => void;
+  onVoice?: (event: { nativeEvent: { action: 'toggle' } }) => void;
 }
 
 // Resolve the native ⌘-shortcut view once. It only exists on iOS builds that
@@ -27,11 +28,13 @@ export function KeyCommands({
   children,
   onZoom,
   onSearch,
+  onVoice,
   ...viewProps
 }: ViewProps & {
   children: ReactNode;
   onZoom: (direction: FontZoomDirection) => void;
   onSearch?: (action: 'context' | 'global' | 'close') => void;
+  onVoice?: (action: 'toggle') => void;
 }) {
   if (!NativeKeyCommands) return <View {...viewProps}>{children}</View>;
   return (
@@ -39,6 +42,7 @@ export function KeyCommands({
       {...viewProps}
       onZoom={(event) => onZoom(event.nativeEvent.direction)}
       onSearch={(event) => onSearch?.(event.nativeEvent.action)}
+      onVoice={(event) => onVoice?.(event.nativeEvent.action)}
     >
       {children}
     </NativeKeyCommands>
