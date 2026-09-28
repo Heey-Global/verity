@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.40.0](https://github.com/Heey-Global/verity/compare/mobile-v1.39.0...mobile-v1.40.0) (2026-09-28)
+
+
+### Bug Fixes
+
+* **mobile:** prepare native 1.40.0 after failed build ([#854](https://github.com/Heey-Global/verity/issues/854)) ([95dfb18](https://github.com/Heey-Global/verity/commit/95dfb181e038499bad2032f8604ddd9f33005a47))
+* **remote-control:** clarify mobile failures and trace connection stages ([#855](https://github.com/Heey-Global/verity/issues/855)) ([a6371e3](https://github.com/Heey-Global/verity/commit/a6371e31d9b1a0d544572398516a84e4f5a24bb9))
+
 ## [1.39.0](https://github.com/Heey-Global/verity/compare/mobile-v1.38.0...mobile-v1.39.0) (2026-09-28)
 
 
