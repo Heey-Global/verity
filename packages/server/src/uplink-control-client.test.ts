@@ -1602,8 +1602,10 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     const pending = client.create({ pinHash: 'hash', durationSeconds: 900 });
-    socket.close(1006, 'lost');
-    await expect(pending).rejects.toThrow('Uplink disconnected');
+    socket.close(1002, 'protocol_error');
+    await expect(pending).rejects.toThrow(
+      'Uplink closed the control connection (1002: protocol_error)',
+    );
     await client.stop();
   });
 

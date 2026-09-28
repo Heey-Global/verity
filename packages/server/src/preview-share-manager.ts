@@ -91,6 +91,7 @@ export interface PreviewShareManagerOptions {
 
 export interface CreatePreviewShareInput {
   projectId?: string;
+  sessionId?: string;
   devServerId?: string;
   staticPath?: string;
   pin: string;
@@ -103,6 +104,7 @@ export interface PublicPreviewShare {
   devServerId: string | null;
   targetKind: 'dev-server' | 'static-folder';
   staticPath: string | null;
+  sessionId: string | null;
   state: PublicPreviewShareState;
   publicOrigin: string | null;
   expiresAt: Date;
@@ -126,6 +128,40 @@ export class PreviewShareManager {
     return this.options.edge.isAvailable?.() ?? true;
   }
 
+  async listStaticDirectories(
+    projectId: string,
+    path: string,
+    sessionId: string,
+  ): Promise<string[]> {
+    const project = await this.options.store.getProject(projectId);
+    if (!project) throw new PreviewShareNotFoundError('project not found');
+    if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    if (!this.options.hostCloneRoot) {
+      throw new PreviewShareConflictError('static preview storage is not configured');
+    }
+    const normalized = path === '' ? '' : normalizedStaticPath(path);
+    const session = await this.options.store.getSession(sessionId);
+    if (!session || session.projectId !== projectId) {
+      throw new PreviewShareNotFoundError('session not found in this project');
+    }
+    const root = await this.staticSourceRoot(project, session.worktree);
+    let directory = root;
+    for (const component of normalized ? normalized.split('/') : []) {
+      directory = join(directory, component);
+      const entry = await lstat(directory).catch(() => undefined);
+      if (!entry?.isDirectory() || entry.isSymbolicLink()) {
+        throw new PreviewShareConflictError(
+          'static publish directory does not exist or is not safe',
+        );
+      }
+    }
+    const entries = await readdir(directory, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
   async create(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
     const devServer = input.devServerId
       ? await this.options.store.getDevServer(input.devServerId)
@@ -133,8 +169,15 @@ export class PreviewShareManager {
     if (input.devServerId !== undefined && !devServer) {
       throw new PreviewShareNotFoundError('dev server not found');
     }
-    const projectId = devServer?.projectId ?? input.projectId;
+    const session = input.sessionId
+      ? await this.options.store.getSession(input.sessionId)
+      : undefined;
+    if (input.sessionId && !session) throw new PreviewShareNotFoundError('session not found');
+    const projectId = devServer?.projectId ?? input.projectId ?? session?.projectId;
     if (!projectId) throw new PreviewShareInputError('projectId is required for a static folder');
+    if (session && session.projectId !== projectId) {
+      throw new PreviewShareInputError('session does not belong to project');
+    }
     return this.withLifecycleLocks(
       [`project:${projectId}`, ...(devServer ? [`dev-server:${devServer.id}`] : [])],
       () => this.createLocked(input),
@@ -153,6 +196,9 @@ export class PreviewShareManager {
       throw new PreviewShareInputError('TTL must be between 15 minutes and 8 hours');
     }
     const isStatic = input.staticPath !== undefined;
+    if (input.sessionId && !isStatic) {
+      throw new PreviewShareInputError('session preview requires a static folder');
+    }
     if (isStatic === (input.devServerId !== undefined)) {
       throw new PreviewShareInputError('choose exactly one dev server or static folder');
     }
@@ -163,8 +209,15 @@ export class PreviewShareManager {
     if (devServer && (!devServer.containerPort || !validPort(devServer.containerPort))) {
       throw new PreviewShareConflictError('dev server has no valid container port');
     }
-    const projectId = devServer?.projectId ?? input.projectId;
+    const session = input.sessionId
+      ? await this.options.store.getSession(input.sessionId)
+      : undefined;
+    if (input.sessionId && !session) throw new PreviewShareNotFoundError('session not found');
+    const projectId = devServer?.projectId ?? input.projectId ?? session?.projectId;
     if (!projectId) throw new PreviewShareInputError('projectId is required');
+    if (session && session.projectId !== projectId) {
+      throw new PreviewShareInputError('session does not belong to project');
+    }
     const project = await this.options.store.getProject(projectId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
@@ -175,10 +228,16 @@ export class PreviewShareManager {
     const existing = (await this.options.store.listPublicPreviewShares(project.id)).some(
       (share) =>
         ACTIVE_STATES.includes(share.state) &&
-        (devServer ? share.devServerId === devServer.id : share.staticPath === staticPath),
+        (devServer
+          ? share.devServerId === devServer.id
+          : share.staticPath === staticPath &&
+            (share.sessionId ?? null) === (input.sessionId ?? null)),
     );
     if (existing) throw new PreviewShareConflictError('target already has an active public share');
-    if (staticPath) await this.validateStaticDirectory(project, staticPath);
+    const staticRoot = staticPath
+      ? await this.staticSourceRoot(project, session?.worktree)
+      : undefined;
+    if (staticPath && staticRoot) await this.validateStaticDirectory(staticRoot, staticPath);
 
     const sandbox = await this.options.docker.inspectContainer(project.containerName);
     const generation = containerGenerationOf(sandbox);
@@ -194,7 +253,8 @@ export class PreviewShareManager {
       this.options,
       isStatic,
     );
-    const staticMount = staticPath ? this.staticMount(project, staticPath) : undefined;
+    const staticMount =
+      staticPath && staticRoot ? this.staticMount(staticRoot, staticPath) : undefined;
 
     if (this.options.edge.isAvailable?.() === false) {
       throw new PreviewShareConflictError(
@@ -203,10 +263,14 @@ export class PreviewShareManager {
     }
     const connectorImage = await this.resolveConnectorImage();
     const pinHash = await hashPin(input.pin);
-    const binding = await this.options.edge.create({
-      pinHash,
-      durationSeconds: input.ttlSeconds,
-    });
+    const binding = await this.options.edge
+      .create({ pinHash, durationSeconds: input.ttlSeconds })
+      .catch((error: unknown) => {
+        if (error instanceof PreviewShareUpstreamError) throw error;
+        throw new PreviewShareUpstreamError('Uplink could not create the preview', {
+          cause: error,
+        });
+      });
     let shareId: string;
     try {
       shareId = validShareId(binding.shareId);
@@ -254,6 +318,7 @@ export class PreviewShareManager {
       targetPort: devServer ? Number(devServer.containerPort) : null,
       targetKind: devServer ? 'dev-server' : 'static-folder',
       staticPath,
+      sessionId: input.sessionId ?? null,
       publicOrigin,
       edgeUrl,
       pinHash,
@@ -296,7 +361,10 @@ export class PreviewShareManager {
       const winner = (await this.options.store.listPublicPreviewShares(project.id)).some(
         (share) =>
           ACTIVE_STATES.includes(share.state) &&
-          (devServer ? share.devServerId === devServer.id : share.staticPath === staticPath),
+          (devServer
+            ? share.devServerId === devServer.id
+            : share.staticPath === staticPath &&
+              (share.sessionId ?? null) === (input.sessionId ?? null)),
       );
       if (winner) {
         throw new PreviewShareConflictError('dev server already has an active public share', {
@@ -318,7 +386,11 @@ export class PreviewShareManager {
       // External calls above leave a race window after the initial path check.
       // Revalidate at the mount boundary so a swapped ancestor cannot be handed
       // to Docker as the connector's static source.
-      if (staticPath) await this.validateStaticDirectory(project, staticPath);
+      if (staticPath && staticRoot) {
+        const currentRoot = await this.staticSourceRoot(project, session?.worktree);
+        if (currentRoot !== staticRoot) throw new Error('static preview source changed');
+        await this.validateStaticDirectory(currentRoot, staticPath);
+      }
       connectorId = await this.createConnector(
         record,
         project.containerName,
@@ -337,6 +409,16 @@ export class PreviewShareManager {
         this.options,
         isStatic,
       );
+      if (session) {
+        const currentSession = await this.options.store.getSession(session.sessionId);
+        if (
+          !currentSession ||
+          currentSession.projectId !== project.id ||
+          currentSession.worktree !== session.worktree
+        ) {
+          throw new Error('session worktree changed while the share was being created');
+        }
+      }
       if (devServer) {
         const currentDevServer = await this.options.store.getDevServer(devServer.id);
         if (
@@ -406,6 +488,11 @@ export class PreviewShareManager {
   async revokeSessionShares(projectId: string, sessionId: string): Promise<void> {
     for (const server of await this.options.store.listDevServers(projectId)) {
       if (server.previewSessionId === sessionId) await this.stopDevServer(server.id);
+    }
+    for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
+      if (share.sessionId === sessionId && ACTIVE_STATES.includes(share.state)) {
+        await this.stop(share.id);
+      }
     }
   }
 
@@ -621,10 +708,15 @@ export class PreviewShareManager {
         const devServer = share.devServerId
           ? await this.options.store.getDevServer(share.devServerId)
           : undefined;
+        const session = share.sessionId
+          ? await this.options.store.getSession(share.sessionId)
+          : undefined;
         let matches = false;
         try {
           if (
             project?.state === 'active' &&
+            (!share.sessionId ||
+              (session?.projectId === project.id && share.staticPath !== null)) &&
             (share.targetKind === 'static-folder' ||
               (devServer?.projectId === project.id &&
                 devServer.containerPort === String(share.targetPort))) &&
@@ -640,6 +732,19 @@ export class PreviewShareManager {
             matches =
               sandbox.running && containerGenerationOf(sandbox) === share.containerGeneration;
             matches = matches && connector.running;
+            if (matches && share.sessionId && session && share.staticPath) {
+              const root = await this.staticSourceRoot(project, session.worktree);
+              await this.validateStaticDirectory(root, share.staticPath);
+              const expected = this.staticMount(root, share.staticPath);
+              matches = (connector.mounts ?? []).some(
+                (mount) =>
+                  mount.type === 'volume' &&
+                  mount.name === expected.volume &&
+                  mount.subpath === expected.subpath &&
+                  mount.destination === expected.target &&
+                  mount.readWrite === false,
+              );
+            }
           }
         } catch {
           matches = false;
@@ -743,16 +848,49 @@ export class PreviewShareManager {
     throw new Error('preview connector readiness timed out');
   }
 
-  private staticMount(
+  private async staticSourceRoot(
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
-    staticPath: string,
-  ) {
-    const { dataVolume, dataVolumeRoot, hostCloneRoot } = this.options;
-    if (!dataVolume || !dataVolumeRoot || !hostCloneRoot) {
+    worktree?: string,
+  ): Promise<string> {
+    if (!this.options.hostCloneRoot) {
       throw new PreviewShareConflictError('static preview storage is not configured');
     }
-    const clone = projectClonePath(hostCloneRoot, project);
-    const subpath = relative(dataVolumeRoot, clone).split('\\').join('/');
+    const clonePath = projectClonePath(this.options.hostCloneRoot, project);
+    const cloneSubpath = relative(this.options.hostCloneRoot, clonePath).split('\\').join('/');
+    if (
+      !cloneSubpath ||
+      cloneSubpath === '.' ||
+      cloneSubpath === '..' ||
+      cloneSubpath.startsWith('../') ||
+      posix.isAbsolute(cloneSubpath)
+    ) {
+      throw new PreviewShareConflictError('project is outside Verity storage');
+    }
+    const clone = await realpath(clonePath).catch(() => {
+      throw new PreviewShareConflictError('project checkout does not exist');
+    });
+    if (!worktree) return clone;
+    const source = resolve(worktree);
+    const canonical = await realpath(source).catch(() => undefined);
+    const within = canonical ? relative(clone, canonical).split('\\').join('/') : undefined;
+    if (
+      canonical !== source ||
+      !within ||
+      within === '..' ||
+      within.startsWith('../') ||
+      posix.isAbsolute(within)
+    ) {
+      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+    }
+    return source;
+  }
+
+  private staticMount(root: string, staticPath: string) {
+    const { dataVolume, dataVolumeRoot } = this.options;
+    if (!dataVolume || !dataVolumeRoot) {
+      throw new PreviewShareConflictError('static preview storage is not configured');
+    }
+    const subpath = relative(dataVolumeRoot, root).split('\\').join('/');
     if (
       !subpath ||
       subpath === '.' ||
@@ -769,26 +907,18 @@ export class PreviewShareManager {
     } as const;
   }
 
-  private async validateStaticDirectory(
-    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
-    staticPath: string,
-  ): Promise<void> {
-    const hostCloneRoot = this.options.hostCloneRoot;
-    if (!hostCloneRoot) {
-      throw new PreviewShareConflictError('static preview storage is not configured');
-    }
+  private async validateStaticDirectory(root: string, staticPath: string): Promise<void> {
     try {
-      const clone = await realpath(projectClonePath(hostCloneRoot, project));
-      const requested = resolve(clone, staticPath);
-      let componentPath = clone;
-      let entry = await lstat(clone);
+      const requested = resolve(root, staticPath);
+      let componentPath = root;
+      let entry = await lstat(root);
       for (const component of staticPath.split('/')) {
         componentPath = join(componentPath, component);
         entry = await lstat(componentPath);
         if (entry.isSymbolicLink()) throw new Error('static path contains a symlink');
       }
       const canonical = await realpath(requested);
-      const within = relative(clone, canonical).split('\\').join('/');
+      const within = relative(root, canonical).split('\\').join('/');
       if (
         !within ||
         within === '..' ||
@@ -873,6 +1003,7 @@ export async function sweepOrphanedPreviewShares(options: {
 export class PreviewShareInputError extends Error {}
 export class PreviewShareNotFoundError extends Error {}
 export class PreviewShareConflictError extends Error {}
+export class PreviewShareUpstreamError extends Error {}
 
 function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
   return {
@@ -881,6 +1012,7 @@ function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
     devServerId: record.devServerId,
     targetKind: record.targetKind ?? 'dev-server',
     staticPath: record.staticPath ?? null,
+    sessionId: record.sessionId ?? null,
     state: record.state,
     publicOrigin: record.publicOrigin,
     expiresAt: record.expiresAt,

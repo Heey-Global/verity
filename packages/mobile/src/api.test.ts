@@ -3082,6 +3082,49 @@ describe('VerityClient Dev Servers', () => {
       ttlSeconds: 3600,
     });
   });
+
+  it('browses a session worktree before creating a static public preview', async () => {
+    const share = {
+      id: 'static-one',
+      projectId: 'project one',
+      devServerId: null,
+      targetKind: 'static-folder',
+      staticPath: 'web/dist',
+      state: 'active',
+      publicOrigin: 'https://static.preview.example',
+      expiresAt: '2026-01-01T02:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      failure: null,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ share }),
+      json({ directories: ['dist'] }),
+      json({ share: { ...share, sessionId: 's1' } }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(
+      client.createStaticPublicPreviewShare('project one', {
+        staticPath: 'web/dist',
+        pin: '123456',
+        ttlSeconds: 3600,
+      }),
+    ).resolves.toEqual(share);
+    await expect(client.listSessionStaticPreviewDirectories('s1', 'web')).resolves.toEqual([
+      'dist',
+    ]);
+    await expect(
+      client.createSessionStaticPreviewShare('s1', {
+        staticPath: 'web/dist',
+        pin: '123456',
+        ttlSeconds: 3600,
+      }),
+    ).resolves.toEqual({ ...share, sessionId: 's1' });
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://host/projects/project%20one/public-static-shares',
+      'http://host/sessions/s1/public-static-directories?path=web',
+      'http://host/sessions/s1/public-static-shares',
+    ]);
+  });
 });
 
 describe('VerityClient Doppler binding picker (#320)', () => {

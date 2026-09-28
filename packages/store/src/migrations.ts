@@ -3213,6 +3213,28 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('session_link_pending_messages').execute();
     },
   },
+  '0115_public_preview_session_source': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('public_preview_shares').addColumn('session_id', 'text').execute();
+      await db.schema
+        .createIndex('public_preview_shares_session_idx')
+        .on('public_preview_shares')
+        .column('session_id')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      const active = await sql`
+        select 1 from public_preview_shares
+        where session_id is not null and state in ('creating', 'active', 'revoking')
+        limit 1
+      `.execute(db);
+      if (active.rows.length > 0) {
+        throw new Error('revoke active session previews before rolling back this migration');
+      }
+      await db.schema.dropIndex('public_preview_shares_session_idx').execute();
+      await db.schema.alterTable('public_preview_shares').dropColumn('session_id').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

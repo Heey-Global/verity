@@ -1006,6 +1006,7 @@ export interface PublicPreviewSharesTable {
   target_port: number | null;
   target_kind: 'dev-server' | 'static-folder';
   static_path: string | null;
+  session_id: string | null;
   state: string;
   public_origin: string;
   edge_url: string;

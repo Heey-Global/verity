@@ -6,6 +6,7 @@ import {
   PreviewShareInputError,
   type PreviewShareManager,
   PreviewShareNotFoundError,
+  PreviewShareUpstreamError,
 } from './preview-share-manager.js';
 
 const createBody = z
@@ -16,6 +17,7 @@ const createBody = z
   .strict();
 const devServerParams = z.object({ devServerId: z.string().min(1) });
 const projectParams = z.object({ projectId: z.string().min(1) });
+const sessionParams = z.object({ sessionId: z.string().min(1) });
 const shareParams = z.object({ shareId: z.string().min(1) });
 const staticCreateBody = createBody.extend({
   staticPath: z.string().trim().min(1).max(1024),
@@ -25,6 +27,68 @@ export function registerPreviewShareRoutes(
   app: FastifyInstance,
   deps: { eventStore: EventStore; manager?: PreviewShareManager },
 ): void {
+  app.get('/sessions/:sessionId/public-static-directories', async (request, reply) => {
+    if (!deps.manager) {
+      reply.code(503);
+      return { error: 'public previews are not configured' };
+    }
+    try {
+      const { sessionId } = sessionParams.parse(request.params);
+      const session = await deps.eventStore.getSession(sessionId);
+      if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
+      const { path } = z.object({ path: z.string().optional().default('') }).parse(request.query);
+      return {
+        directories: await deps.manager.listStaticDirectories(session.projectId, path, sessionId),
+      };
+    } catch (error) {
+      if (error instanceof z.ZodError || error instanceof PreviewShareInputError) {
+        reply.code(400);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareNotFoundError) {
+        reply.code(404);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareConflictError) {
+        reply.code(409);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  });
+
+  app.post('/sessions/:sessionId/public-static-shares', async (request, reply) => {
+    if (!deps.manager) {
+      reply.code(503);
+      return { error: 'public previews are not configured' };
+    }
+    try {
+      const { sessionId } = sessionParams.parse(request.params);
+      const body = staticCreateBody.parse(request.body);
+      const share = await deps.manager.create({ sessionId, ...body });
+      reply.code(201);
+      return { share };
+    } catch (error) {
+      if (error instanceof z.ZodError || error instanceof PreviewShareInputError) {
+        reply.code(400);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareNotFoundError) {
+        reply.code(404);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareConflictError) {
+        reply.code(409);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareUpstreamError) {
+        reply.code(502);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  });
+
   app.post('/dev-servers/:devServerId/public-shares', async (request, reply) => {
     if (!deps.manager) {
       reply.code(503);
@@ -47,6 +111,10 @@ export function registerPreviewShareRoutes(
       }
       if (error instanceof PreviewShareConflictError) {
         reply.code(409);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareUpstreamError) {
+        reply.code(502);
         return { error: error.message };
       }
       throw error;
@@ -75,6 +143,10 @@ export function registerPreviewShareRoutes(
       }
       if (error instanceof PreviewShareConflictError) {
         reply.code(409);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareUpstreamError) {
+        reply.code(502);
         return { error: error.message };
       }
       throw error;

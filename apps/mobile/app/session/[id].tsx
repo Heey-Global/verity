@@ -51,9 +51,7 @@ import {
   orderModels,
   partitionModels,
   publishAgentLoopMutation,
-  publishDevServerStatusMutation,
   subscribeAgentLoopMutations,
-  subscribeDevServerStatusMutations,
   parseBranchIssue,
   parseInline,
   parseMarkdownBlocks,
@@ -134,6 +132,7 @@ import {
   type ViewToken,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
@@ -696,140 +695,7 @@ export function SessionChat({
     [sessionId],
   );
 
-  // Dev-server session preview: the header button points the project's configured
-  // dev server(s) at THIS session's worktree so the branch can be previewed before
-  // merging; tapping again points them back at the main checkout. State reflects
-  // whether every configured server currently previews this session.
-  const [devServerPreview, setDevServerPreview] = useState<'off' | 'on' | 'busy'>('off');
-  const configuredDevServerIds = useRef(new Set<string>());
-  const previewReconcileGeneration = useRef(0);
-  const pendingPreviewMutations = useRef(new Map<string, string | null>());
-  useEffect(() => {
-    if (!projectId) return;
-    let active = true;
-    const generation = ++previewReconcileGeneration.current;
-    void client
-      .listDevServers(projectId)
-      .then((servers) => {
-        if (!active || generation !== previewReconcileGeneration.current) return;
-        const pending = pendingPreviewMutations.current;
-        const resolved = servers.map((server) => ({
-          ...server,
-          previewSessionId: pending.has(server.id)
-            ? (pending.get(server.id) ?? null)
-            : server.previewSessionId,
-        }));
-        pending.clear();
-        const configured = resolved.filter((server) => server.command?.trim());
-        configuredDevServerIds.current = new Set(configured.map((server) => server.id));
-        setDevServerPreview(
-          configured.length > 0 &&
-            configured.every((server) => server.previewSessionId === sessionId)
-            ? 'on'
-            : 'off',
-        );
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [client, projectId, sessionId]);
-  useEffect(
-    () =>
-      subscribeDevServerStatusMutations((mutation) => {
-        if (mutation.projectId !== projectId || mutation.previewSessionId === undefined) return;
-        pendingPreviewMutations.current.set(mutation.id, mutation.previewSessionId);
-        if (mutation.devServer !== undefined) {
-          if (mutation.devServer.command?.trim()) configuredDevServerIds.current.add(mutation.id);
-          else configuredDevServerIds.current.delete(mutation.id);
-        }
-        if (!configuredDevServerIds.current.has(mutation.id)) return;
-        const generation = ++previewReconcileGeneration.current;
-        if (mutation.previewSessionId !== sessionId) {
-          setDevServerPreview((current) => (current === 'busy' ? current : 'off'));
-          return;
-        }
-        void client
-          .listDevServers(projectId)
-          .then((servers) => {
-            if (generation !== previewReconcileGeneration.current) return;
-            const pending = pendingPreviewMutations.current;
-            const configured = servers
-              .map((server) => ({
-                ...server,
-                previewSessionId: pending.has(server.id)
-                  ? (pending.get(server.id) ?? null)
-                  : server.previewSessionId,
-              }))
-              .filter((server) => server.command?.trim());
-            pending.clear();
-            setDevServerPreview((current) =>
-              current === 'busy'
-                ? current
-                : configured.length > 0 &&
-                    configured.every((server) => server.previewSessionId === sessionId)
-                  ? 'on'
-                  : 'off',
-            );
-          })
-          .catch(() => undefined);
-      }),
-    [client, projectId, sessionId],
-  );
-
-  const toggleDevServerPreview = useCallback(async () => {
-    if (!projectId || devServerPreview === 'busy') return;
-    const wasOn = devServerPreview === 'on';
-    const changedServers: Array<{ id: string; previewSessionId: string | null }> = [];
-    setDevServerPreview('busy');
-    try {
-      const servers = (await client.listDevServers(projectId)).filter((server) =>
-        server.command?.trim(),
-      );
-      configuredDevServerIds.current = new Set(servers.map((server) => server.id));
-      if (servers.length === 0) {
-        Alert.alert('No dev server', 'This project has no configured dev server to preview with.');
-        setDevServerPreview('off');
-        return;
-      }
-      for (const server of servers) {
-        changedServers.push({ id: server.id, previewSessionId: server.previewSessionId });
-        const result = await client.setDevServerPreviewSession(server.id, wasOn ? null : sessionId);
-        publishDevServerStatusMutation({
-          id: result.devServer.id,
-          projectId: result.devServer.projectId,
-          devServer: result.devServer,
-          previewSessionId: result.devServer.previewSessionId,
-          ...(result.runtime ? { running: result.runtime.running } : {}),
-        });
-      }
-      setDevServerPreview(wasOn ? 'off' : 'on');
-    } catch (error) {
-      await Promise.allSettled(
-        changedServers.reverse().map(async (server) => {
-          const result = await client.setDevServerPreviewSession(
-            server.id,
-            server.previewSessionId,
-          );
-          publishDevServerStatusMutation({
-            id: result.devServer.id,
-            projectId: result.devServer.projectId,
-            devServer: result.devServer,
-            previewSessionId: result.devServer.previewSessionId,
-            ...(result.runtime ? { running: result.runtime.running } : {}),
-          });
-        }),
-      );
-      const refreshed = await client.listDevServers(projectId).catch(() => []);
-      const configured = refreshed.filter((server) => server.command?.trim());
-      setDevServerPreview(
-        configured.length > 0 && configured.every((server) => server.previewSessionId === sessionId)
-          ? 'on'
-          : 'off',
-      );
-      Alert.alert('Preview failed', error instanceof Error ? error.message : String(error));
-    }
-  }, [client, devServerPreview, projectId, sessionId]);
+  const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
 
   const editAgentLoop = useCallback(() => {
     if (!agentLoop || sending || busy) return;
@@ -3394,33 +3260,14 @@ export function SessionChat({
           ) : null}
           {projectId ? (
             <Pressable
-              onPress={() => void toggleDevServerPreview()}
+              onPress={() => setStaticPreviewOpen(true)}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel={
-                devServerPreview === 'on'
-                  ? 'Stop previewing this session in the dev server'
-                  : 'Preview this session in the dev server'
-              }
-              accessibilityState={{
-                selected: devServerPreview === 'on',
-                busy: devServerPreview === 'busy',
-              }}
+              accessibilityLabel="Share static preview"
               style={styles.headerBookmarkBtn}
             >
-              <Icon
-                name="monitor"
-                size={15}
-                color={devServerPreview === 'on' ? theme.colors.primary : theme.colors.textMuted}
-              />
-              <Text
-                style={[
-                  styles.headerBookmarkCount,
-                  devServerPreview === 'on' ? { color: theme.colors.primary } : null,
-                ]}
-              >
-                Preview
-              </Text>
+              <Icon name="monitor" size={15} color={theme.colors.textMuted} />
+              <Text style={styles.headerBookmarkCount}>Preview</Text>
             </Pressable>
           ) : null}
           <Pressable
@@ -3549,6 +3396,14 @@ export function SessionChat({
             jumpToBookmark(messageId);
           }}
           onClose={() => setBookmarksOpen(false)}
+        />
+      ) : null}
+      {staticPreviewOpen && projectId ? (
+        <StaticPreviewSheet
+          client={client}
+          projectId={projectId}
+          sessionId={sessionId}
+          onClose={() => setStaticPreviewOpen(false)}
         />
       ) : null}
       {filesOpen ? (

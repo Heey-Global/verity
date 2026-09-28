@@ -587,6 +587,7 @@ const publicPreviewShareSchema = z.object({
   devServerId: z.string().nullable(),
   targetKind: z.enum(['dev-server', 'static-folder']),
   staticPath: z.string().nullable(),
+  sessionId: z.string().nullable().optional(),
   state: z.enum(['creating', 'active', 'revoking', 'revoked', 'expired', 'failed']),
   publicOrigin: z.string().url().nullable(),
   expiresAt: z.string(),
@@ -3301,6 +3302,30 @@ export class VerityClient {
   ): Promise<PublicPreviewShare> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/public-static-shares`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return publicPreviewShareResponseSchema.parse(await res.json()).share;
+  }
+
+  async listSessionStaticPreviewDirectories(sessionId: string, path = ''): Promise<string[]> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : '';
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/public-static-directories${query}`,
+      { method: 'GET' },
+    );
+    return z.object({ directories: z.array(z.string()) }).parse(await res.json()).directories;
+  }
+
+  async createSessionStaticPreviewShare(
+    sessionId: string,
+    body: PublicPreviewShareCreateRequest & { staticPath: string },
+  ): Promise<PublicPreviewShare> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/public-static-shares`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

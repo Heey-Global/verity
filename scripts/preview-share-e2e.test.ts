@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { connect, type AddressInfo } from 'node:net';
+import { basename, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,6 +14,7 @@ import {
   generatePreviewSecret,
   hashPreviewSecret,
 } from '../packages/preview-tunnel/src/index.js';
+import { startStaticPreviewServer } from '../packages/preview-tunnel/src/static-server.js';
 import type { ContainerSpec, DockerClient } from '../packages/server/src/docker.js';
 import { PROJECT_RUNSC_RUNTIME } from '../packages/server/src/gvisor-runtime-config.js';
 import { PreviewShareManager } from '../packages/server/src/preview-share-manager.js';
@@ -27,7 +30,7 @@ import {
  * own, and are joined nowhere but the composition root in `embedded.ts`. This
  * test drives the seam: a share created through the real control client, with
  * the real manager launching a real connector against a real edge, answered by
- * a real dev server, and fetched the way a browser fetches it.
+ * a dev server or selected static folder, and fetched the way a browser fetches it.
  *
  * Only what this repository genuinely does not contain is simulated: the hosted
  * Uplink (`FakeUplink`), and its TLS/DNS ingress (`connectorDialUrl`). Every
@@ -246,6 +249,10 @@ function memoryStore(targetPort: number) {
       projectId: PROJECT_ID,
       containerPort: String(targetPort),
     })),
+    getSession: vi.fn(
+      async () =>
+        undefined as { sessionId: string; projectId: string; worktree: string } | undefined,
+    ),
     getProject: vi.fn(async () => ({
       id: PROJECT_ID,
       // The connector reaches the dev server over the project network, so the
@@ -254,6 +261,7 @@ function memoryStore(targetPort: number) {
       // construction under test instead of rewriting it afterwards.
       containerName: '127.0.0.1',
       state: 'active',
+      cloneDir: undefined as string | undefined,
     })),
     createPublicPreviewShare: vi.fn(async (input: Record<string, unknown>) => {
       const record = {
@@ -341,7 +349,7 @@ function connectorDialUrl(edgeUrl: string, edgePort: number): string {
 
 /** Docker, except `startContainer` really starts the connector the manager
  * asked for, built from the environment the manager put in the spec. */
-function dockerWithRealConnectors(uplink: FakeUplink) {
+function dockerWithRealConnectors(uplink: FakeUplink, dataRoot?: string) {
   const specs: ContainerSpec[] = [];
   const connectors = new Map<string, PreviewConnector>();
   const established = new Set<string>();
@@ -369,10 +377,22 @@ function dockerWithRealConnectors(uplink: FakeUplink) {
         uplink.failures.push(failure);
         throw new Error(failure);
       }
+      let targetOrigin = env.VERITY_PREVIEW_TARGET_ORIGIN;
+      if (env.VERITY_PREVIEW_STATIC_ROOT) {
+        const mount = spec.volumeMounts?.[0];
+        if (!dataRoot || !mount?.subpath || mount.readOnly !== true) {
+          throw new Error('static connector did not mount a selected read-only folder');
+        }
+        const selected = join(dataRoot, mount.subpath);
+        const staticServer = await startStaticPreviewServer(dirname(selected), basename(selected));
+        cleanups.push(() => staticServer.close());
+        targetOrigin = staticServer.origin;
+      }
+      if (!targetOrigin) throw new Error('connector has no target origin');
       const connector = new PreviewConnector({
         edgeUrl: connectorDialUrl(env.VERITY_PREVIEW_EDGE_URL!, minted[1].port),
         connectorToken: env.VERITY_PREVIEW_CONNECTOR_TOKEN!,
-        targetOrigin: env.VERITY_PREVIEW_TARGET_ORIGIN!,
+        targetOrigin,
       });
       await connector.connect();
       connectors.set(id, connector);
@@ -417,10 +437,23 @@ function dials(factory: () => WebSocket): () => WebSocket {
   };
 }
 
-async function harness() {
+async function harness(staticSource?: { dataRoot: string; worktree: string }) {
   const devServer = await startDevServer('dev server says hello');
   const uplink = new FakeUplink();
   const store = memoryStore(devServer.port);
+  if (staticSource) {
+    store.getProject.mockResolvedValue({
+      id: PROJECT_ID,
+      containerName: '127.0.0.1',
+      state: 'active',
+      cloneDir: 'repo',
+    });
+    store.getSession.mockResolvedValue({
+      sessionId: 'session-1',
+      projectId: PROJECT_ID,
+      worktree: staticSource.worktree,
+    });
+  }
   const control = new UplinkControlClient({
     url: UPLINK_CONTROL_URL,
     store,
@@ -433,7 +466,7 @@ async function harness() {
   });
   cleanups.push(() => control.stop());
   await uplink.welcome(control);
-  const { docker, specs, connectors } = dockerWithRealConnectors(uplink);
+  const { docker, specs, connectors } = dockerWithRealConnectors(uplink, staticSource?.dataRoot);
   const manager = new PreviewShareManager({
     store,
     docker: docker as unknown as DockerClient,
@@ -443,8 +476,8 @@ async function harness() {
     // the project's exact volume subpath before it evaluates entitlement, so
     // this composed fixture must model that storage boundary as well.
     dataVolume: 'verity-data',
-    dataVolumeRoot: '/data',
-    hostCloneRoot: '/data',
+    dataVolumeRoot: staticSource?.dataRoot ?? '/data',
+    hostCloneRoot: staticSource?.dataRoot ?? '/data',
     isDevServerRunning: async () => true,
     connectorReadyPollMs: 25,
     // Comfortably below the per-test timeout, so a connector that never attaches
@@ -492,6 +525,54 @@ async function login(port: number, pin: string): Promise<Response> {
 /* -------------------------------------------------------------------------- */
 
 describe('public preview sharing, composed end to end', () => {
+  it(
+    'serves only the selected session folder through the Uplink binding',
+    { timeout: 20_000 },
+    async () => {
+      const dataRoot = await mkdtemp(join(tmpdir(), 'verity-static-uplink-'));
+      const worktree = join(dataRoot, 'repo', 'sessions', 'session-1');
+      await mkdir(join(worktree, 'dist'), { recursive: true });
+      await writeFile(join(worktree, 'dist', 'index.html'), '<h1>Session preview</h1>');
+      await writeFile(join(worktree, 'private.txt'), 'private project data');
+      const { uplink, manager, specs } = await harness({ dataRoot, worktree });
+
+      const share = await manager.create({
+        sessionId: 'session-1',
+        staticPath: 'dist',
+        pin: PIN,
+        ttlSeconds: 3600,
+      });
+      expect(share.sessionId).toBe('session-1');
+      expect(specs[0]?.volumeMounts).toEqual([
+        {
+          volume: 'verity-data',
+          subpath: 'repo/sessions/session-1/dist',
+          target: '/preview-workspace/public',
+          readOnly: true,
+        },
+      ]);
+      const minted = uplink.shares.get(share.id)!;
+      expect((await login(minted.port, '000000')).status).toBe(401);
+      const anonymous = await fetch(`http://127.0.0.1:${minted.port}/`, { redirect: 'manual' });
+      expect(anonymous.status).toBe(303);
+      const loginResponse = await login(minted.port, PIN);
+      const cookie = loginResponse.headers.get('set-cookie')?.split(';')[0];
+      expect(cookie).toBeTruthy();
+      const page = await fetch(`http://127.0.0.1:${minted.port}/`, {
+        headers: { cookie: cookie! },
+      });
+      expect(page.status).toBe(200);
+      expect(await page.text()).toBe('<h1>Session preview</h1>');
+      const privateFile = await fetch(`http://127.0.0.1:${minted.port}/private.txt`, {
+        headers: { cookie: cookie! },
+      });
+      expect(privateFile.status).toBe(404);
+      expect(await privateFile.text()).not.toContain('private project data');
+      await manager.stop(share.id);
+      await expect(connectTo(minted.port)).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+    },
+  );
+
   it(
     'serves a dev server through the Uplink binding and stops serving once revoked',
     { timeout: 20_000 },
