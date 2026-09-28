@@ -1066,6 +1066,21 @@ function boundedSpawnError(value) {
     : `runner worker spawn failed with error code ${errorCode}`;
 }
 
+/**
+ * Name the refused stage and path in the error the Server reports. Without it an
+ * operator sees only "error code EACCES" and cannot tell a worktree the Runner uid
+ * may not traverse from a worker binary it may not execute — the diagnostic above
+ * existed only in this container's state and log. Both parts are values this file
+ * derived itself (a fixed stage name and the requested cwd or worker path), never
+ * exception text, so the credential guarantee of {@link boundedSpawnError} holds.
+ */
+function describeSpawnFailure(message, diagnostic) {
+  if (diagnostic.stage === 'spawn' && diagnostic.path === undefined) return message;
+  return diagnostic.path === undefined
+    ? `${message} (${diagnostic.stage})`
+    : `${message} (${diagnostic.stage}: ${diagnostic.path})`;
+}
+
 function spawnFailureDiagnostic(error, request, workerCommand) {
   const code =
     typeof error?.code === 'string' && /^E[A-Z]{2,20}$/.test(error.code) ? error.code : undefined;
@@ -1841,8 +1856,11 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
         child.once('error', rejectSpawn);
       });
     } catch (error) {
-      const workerError = boundedSpawnError(error instanceof Error ? error.message : String(error));
       const workerSpawnFailure = spawnFailureDiagnostic(error, request, workerCommand);
+      const workerError = describeSpawnFailure(
+        boundedSpawnError(error instanceof Error ? error.message : String(error)),
+        workerSpawnFailure,
+      );
       logTelemetry({
         event: 'worker-spawn-failed',
         turnId: request.turnId,

@@ -5167,7 +5167,7 @@ describe('verity-runner supervisor runtime', () => {
         }),
       ).resolves.toMatchObject({
         ok: false,
-        error: 'runner worker spawn failed with error code EACCES',
+        error: `runner worker spawn failed with error code EACCES (cwd-traverse: ${blockedCwd})`,
       });
       await expect(readTurnState(runtimeDir, 'turn-cwd-eacces')).resolves.toMatchObject({
         workerSpawnFailure: {
