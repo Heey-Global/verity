@@ -318,7 +318,7 @@ jobs:
                 fi
                 backend=true
                 ;;
-              .release-please-manifest.mobile.json) mobile=true ;;
+              .release-please-manifest.mobile.json|.release/mobile-supersede.json) mobile=true ;;
               .release-please-manifest.website.json) website=true ;;
               *) continue ;;
             esac

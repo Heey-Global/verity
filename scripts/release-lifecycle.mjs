@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { pendingReleasePrs } from './pending-release-prs.mjs';
 
 const [train, eventSha] = process.argv.slice(2);
@@ -84,6 +84,25 @@ if (main !== eventSha) {
     .filter(Boolean)
     .map(parseRelease);
   const pending = pendingReleasePrs(spec.component);
+  let supersede = false;
+  if (train === 'mobile' && existsSync('.release/mobile-supersede.json')) {
+    /** @type {unknown} */
+    const request = JSON.parse(readFileSync('.release/mobile-supersede.json', 'utf8'));
+    const [major, minor, patch] = versionParts;
+    const current = `mobile-v${version}`;
+    const next = `mobile-v${major}.${minor + 1}.0`;
+    if (
+      patch === 0 &&
+      request !== null &&
+      typeof request === 'object' &&
+      'draft' in request &&
+      request.draft === current &&
+      'next' in request &&
+      request.next === next
+    ) {
+      supersede = true;
+    }
+  }
   const drafts = releases.filter((release) => {
     if (train === 'website')
       return (
@@ -107,10 +126,12 @@ if (main !== eventSha) {
     }
     return true;
   });
-  if (drafts.length)
+  if (drafts.length && !(supersede && drafts.length === 1 && drafts[0].tag_name === tag))
     throw new Error(
       `${train} publication is pending (${drafts.map((r) => r.tag_name).join(', ')}); recover that version before planning another release`,
     );
+  if (supersede && pending.length)
+    throw new Error('Cannot supersede a native draft while a release PR is pending');
   if (pending.length) {
     const candidate = pending[0];
     if (
@@ -134,6 +155,10 @@ if (main !== eventSha) {
     if (releases.some((release) => release.tag_name === tag))
       throw new Error('Pending release label refers to an already published version');
     output('release');
+  } else if (supersede) {
+    if (!drafts.some((release) => release.tag_name === tag))
+      throw new Error(`Superseded native draft ${tag} is missing`);
+    output('plan');
   } else {
     const boundary = releases.find(
       (release) => release.tag_name === tag && !release.draft && !release.prerelease,

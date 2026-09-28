@@ -19,6 +19,7 @@ function run(state: {
   mismatchedTag?: boolean;
   historicalManifest?: unknown;
   mainManifest?: unknown;
+  supersede?: 'valid' | 'wrong-next';
 }) {
   const train = state.train ?? 'backend';
   const manifestPath =
@@ -56,6 +57,16 @@ function run(state: {
     join(cwd, manifestName),
     JSON.stringify(state.mainManifest ?? { [manifestPath]: version }),
   );
+  if (state.supersede) {
+    mkdirSync(join(cwd, '.release'));
+    writeFileSync(
+      join(cwd, '.release/mobile-supersede.json'),
+      JSON.stringify({
+        draft: tag,
+        next: state.supersede === 'valid' ? 'mobile-v1.34.0' : 'mobile-v1.35.0',
+      }),
+    );
+  }
   git('add', '.');
   git('commit', '--allow-empty', '-qm', 'chore: migrate manifest');
   const sha = git('rev-parse', 'HEAD');
@@ -176,6 +187,20 @@ describe('release lifecycle reconciliation', () => {
     const result = run({ train: 'mobile', draft: true });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('publication is pending');
+  });
+  it('plans the next native release when an exact supersession request names the failed draft', () => {
+    expect(run({ train: 'mobile', draft: true, supersede: 'valid' })).toMatchObject({
+      status: 0,
+      output: 'mode=plan\n',
+    });
+    for (const state of [
+      { train: 'mobile' as const, draft: true, supersede: 'wrong-next' as const },
+      { train: 'mobile' as const, supersede: 'valid' as const },
+      { train: 'mobile' as const, draft: true, newerDraft: true, supersede: 'valid' as const },
+      { train: 'mobile' as const, draft: true, pending: true, supersede: 'valid' as const },
+    ]) {
+      expect(run(state).status).not.toBe(0);
+    }
   });
   it('keeps lifecycle reconciliation bounded with large release metadata', () => {
     expect(run({ largeReleasePayload: true })).toMatchObject({ status: 0, output: 'mode=plan\n' });
