@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.38.0](https://github.com/Heey-Global/verity/compare/mobile-v1.37.0...mobile-v1.38.0) (2026-09-28)
+
+
+### Features
+
+* **mobile:** add live STT engine test screen ([#840](https://github.com/Heey-Global/verity/issues/840)) ([66e4954](https://github.com/Heey-Global/verity/commit/66e495472274729fdeb678c0785f099d6b1ce809))
+* **preview:** share static session worktrees via Uplink ([#848](https://github.com/Heey-Global/verity/issues/848)) ([c46928f](https://github.com/Heey-Global/verity/commit/c46928f49085fec88dd35e5e20139b85872911d9))
+
 ## [1.37.0](https://github.com/Heey-Global/verity/compare/mobile-v1.36.0...mobile-v1.37.0) (2026-09-28)
 
 
