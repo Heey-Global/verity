@@ -240,7 +240,6 @@ class ConnectorSession implements RemoteConnectorReservation {
 
   private reset(id: string, code: ResetCode): void {
     if (!this.streams.has(id)) return;
-    this.retiredIds.add(id);
     this.dropStream(id);
     this.send({ type: 'stream.reset', streamId: id, code });
   }
@@ -248,6 +247,9 @@ class ConnectorSession implements RemoteConnectorReservation {
   private dropStream(id: string): void {
     const stream = this.streams.get(id);
     if (!stream) return;
+    // A peer reset can arrive after both ends completed; keep its ID retired
+    // so it cannot close the shared data socket.
+    this.retiredIds.add(id);
     this.streams.delete(id);
     clearTimeout(stream.dialTimer);
     if (stream.stallTimer) clearTimeout(stream.stallTimer);
@@ -398,9 +400,6 @@ class ConnectorSession implements RemoteConnectorReservation {
         )
       )
         return this.failProtocol();
-      // Frames already in flight for this peer-reset stream must not close the
-      // entire data socket and interrupt unrelated streams.
-      this.retiredIds.add(id);
       this.dropStream(id);
       return;
     }
