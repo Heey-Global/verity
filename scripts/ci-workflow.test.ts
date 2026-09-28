@@ -336,6 +336,21 @@ describe('release-please train isolation', () => {
         mobile: 'true',
         website: 'false',
       });
+      const supersedePath = '.release/mobile-supersede.json';
+      for (const status of ['A', 'M']) {
+        expect(
+          run([
+            `${status}\t${supersedePath}`,
+            'A\tapps/mobile/tests/router-test-placement.test.ts',
+          ]),
+        ).toEqual({
+          backend: 'true',
+          mobile: 'true',
+          website: 'true',
+        });
+        expect(readFileSync(calls, 'utf8')).toBe('');
+      }
+      expect(() => run([`D\t${supersedePath}`])).toThrow();
 
       const foreignMobileFile = releaseFiles('mobile').find((file) => file !== manifest('mobile'));
       expect(foreignMobileFile).toBeDefined();

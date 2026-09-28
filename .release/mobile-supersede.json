@@ -1,4 +1,5 @@
 {
   "draft": "mobile-v1.39.0",
-  "next": "mobile-v1.40.0"
+  "next": "mobile-v1.40.0",
+  "reason": "Replan after correcting the failed draft's test route and release selector"
 }

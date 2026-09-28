@@ -300,6 +300,7 @@ jobs:
           backend=false
           mobile=false
           website=false
+          supersede_changed=false
           while IFS=$'\t' read -r status file; do
             case "$file" in
               .release-please-manifest.backend.json)
@@ -318,7 +319,15 @@ jobs:
                 fi
                 backend=true
                 ;;
-              .release-please-manifest.mobile.json|.release/mobile-supersede.json) mobile=true ;;
+              .release-please-manifest.mobile.json) mobile=true ;;
+              .release/mobile-supersede.json)
+                [[ "$status" == A || "$status" == M ]] || {
+                  echo "::error::Native supersession request had Git status $status rather than A or M." >&2
+                  exit 1
+                }
+                supersede_changed=true
+                continue
+                ;;
               .release-please-manifest.website.json) website=true ;;
               *) continue ;;
             esac
@@ -336,7 +345,9 @@ jobs:
             # earlier native change that has not reached TestFlight yet.
             backend=true
             website=true
-            if [[ "$TRAIN" == mobile ]]; then
+            if [[ "$supersede_changed" == true ]]; then
+              mobile=true
+            elif [[ "$TRAIN" == mobile ]]; then
               native_tag="$(git tag --merged "$HEAD_SHA" --list 'mobile-v[0-9]*.[0-9]*.0' --sort=-version:refname | head -n 1)"
               if [[ -z "$native_tag" ]]; then
                 echo '::error::No native release boundary; explicit bootstrap is required.' >&2
