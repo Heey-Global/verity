@@ -271,7 +271,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
           lock.withLock { stream.incomingFlushed = true }
           finish(id, stream)
         }
-      } catch { await reset(id, code: "upstream_error") }
+      } catch {
+        if complete && lock.withLock({ stream.outgoingEnded }) {
+          // Both peers have ended. A local socket that already closed cannot
+          // accept a final write, but the remote stream has completed.
+          drop(id)
+        } else {
+          await reset(id, code: "upstream_error")
+        }
+      }
     }
   }
 
