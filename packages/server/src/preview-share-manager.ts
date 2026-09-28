@@ -192,8 +192,9 @@ export class PreviewShareManager {
       project.id,
       workspaceSubpath,
       this.options,
+      isStatic,
     );
-    const staticMount = isStatic ? this.staticMount(project) : undefined;
+    const staticMount = staticPath ? this.staticMount(project, staticPath) : undefined;
 
     if (this.options.edge.isAvailable?.() === false) {
       throw new PreviewShareConflictError(
@@ -334,6 +335,7 @@ export class PreviewShareManager {
         project.id,
         workspaceSubpath,
         this.options,
+        isStatic,
       );
       if (devServer) {
         const currentDevServer = await this.options.store.getDevServer(devServer.id);
@@ -672,10 +674,7 @@ export class PreviewShareManager {
         `VERITY_PREVIEW_EDGE_URL=${share.edgeUrl}`,
         `VERITY_PREVIEW_CONNECTOR_TOKEN=${share.connectorToken}`,
         ...(share.targetKind === 'static-folder'
-          ? [
-              'VERITY_PREVIEW_STATIC_ROOT=/preview-workspace',
-              `VERITY_PREVIEW_STATIC_PATH=${share.staticPath}`,
-            ]
+          ? ['VERITY_PREVIEW_STATIC_ROOT=/preview-workspace', 'VERITY_PREVIEW_STATIC_PATH=public']
           : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${share.targetPort}`]),
       ],
       ...(staticMount ? { volumeMounts: [staticMount] } : {}),
@@ -744,7 +743,10 @@ export class PreviewShareManager {
     throw new Error('preview connector readiness timed out');
   }
 
-  private staticMount(project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>) {
+  private staticMount(
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    staticPath: string,
+  ) {
     const { dataVolume, dataVolumeRoot, hostCloneRoot } = this.options;
     if (!dataVolume || !dataVolumeRoot || !hostCloneRoot) {
       throw new PreviewShareConflictError('static preview storage is not configured');
@@ -759,7 +761,12 @@ export class PreviewShareManager {
       subpath.startsWith('../')
     )
       throw new PreviewShareConflictError('project is outside Verity storage');
-    return { volume: dataVolume, target: '/preview-workspace', subpath, readOnly: true } as const;
+    return {
+      volume: dataVolume,
+      target: '/preview-workspace/public',
+      subpath: `${subpath}/${staticPath}`,
+      readOnly: true,
+    } as const;
   }
 
   private async validateStaticDirectory(
@@ -912,6 +919,7 @@ async function assertEligibleSandbox(
     PreviewShareManagerOptions,
     'dataVolume' | 'dataVolumeRoot' | 'inspectArtifact' | 'listArtifactDirectory'
   >,
+  staticFolder = false,
 ): Promise<void> {
   const networks = Object.keys(sandbox.networks ?? {});
   if (networks.length !== 1 || networks[0] !== expectedNetwork) {
@@ -972,6 +980,9 @@ async function assertEligibleSandbox(
     );
   });
   if (secretEnv) throw new PreviewShareConflictError('sandbox contains direct credentials');
+  // Static shares mount only their selected directory into the connector. Other
+  // mounts on the agent sandbox cannot become visible through that connector.
+  if (staticFolder) return;
   const publicSshDestinations = new Map([
     ['/home/dev/.ssh/id_ed25519.pub', '/git/id_ed25519.pub'],
     ['/home/dev/.ssh/known_hosts', '/git/known_hosts'],
@@ -1022,17 +1033,68 @@ async function assertEligibleSandbox(
     ) {
       continue;
     }
-    if (
-      await knownPreviewArtifact(
-        mount,
-        projectId,
-        sandbox.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL],
-        options,
+    if (knownStandardPreviewMount(mount, projectId, workspaceSubpath, options)) continue;
+    if (isPreviewArtifactDestination(mount.destination)) {
+      if (
+        await knownPreviewArtifact(
+          mount,
+          projectId,
+          sandbox.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL],
+          options,
+        )
       )
-    )
-      continue;
-    throw new PreviewShareConflictError('sandbox contains mounted credentials');
+        continue;
+      throw new PreviewShareConflictError('sandbox contains mounted credentials');
+    }
+    console.warn(`verity: unsupported sandbox mount at ${JSON.stringify(mount.destination)}`);
+    throw new PreviewShareConflictError('unsupported sandbox mount');
   }
+}
+
+function isPreviewArtifactDestination(destination: string | undefined): boolean {
+  return new Set([
+    '/home/dev/.codex/auth.json',
+    '/run/verity/gh-token-capability',
+    '/run/verity/ssh/signing_broker_token',
+    '/run/verity/claude-egress/ca.crt',
+    '/run/verity/claude-egress/client.crt',
+    '/run/verity/claude-egress/client.key',
+    '/run/verity/codex/config.toml',
+    '/run/verity/opencode-config',
+  ]).has(destination ?? '');
+}
+
+function knownStandardPreviewMount(
+  mount: SandboxMount,
+  projectId: string,
+  workspaceSubpath: string,
+  options: Pick<PreviewShareManagerOptions, 'dataVolume' | 'dataVolumeRoot'>,
+): boolean {
+  if (options.dataVolumeRoot === undefined) return false;
+  const entries = [
+    ['/knowledge', `knowledge/${projectId}`, false],
+    ['/knowledge/insights', `knowledge/${projectId}/insights`, true],
+    ['/knowledge/shared', 'knowledge/shared', false],
+    ['/etc/resolv.conf', `secrets/dns/resolv.${projectId}.conf`, false],
+  ] as const;
+  for (const [destination, subpath, writable] of entries) {
+    if (
+      mount.destination === destination &&
+      mount.readWrite === writable &&
+      mountMatchesProjectData(mount, subpath, options.dataVolume, options.dataVolumeRoot)
+    )
+      return true;
+  }
+  return (
+    mount.destination === '/work/.git/config' &&
+    mount.readWrite === false &&
+    mountMatchesProjectData(
+      mount,
+      `${workspaceSubpath}/.git/config`,
+      options.dataVolume,
+      options.dataVolumeRoot,
+    )
+  );
 }
 
 function projectWorkspaceSubpath(

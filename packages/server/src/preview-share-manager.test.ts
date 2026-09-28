@@ -366,6 +366,7 @@ describe('PreviewShareManager', () => {
 
   it('blocks unrecognized mounts even when their paths look harmless', async () => {
     const { manager, docker, edge, inspect } = fixture();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
       mountCount: 1,
@@ -380,7 +381,75 @@ describe('PreviewShareManager', () => {
     });
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
-    ).rejects.toThrow(/mounted credentials/);
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith(
+      'verity: unsupported sandbox mount at "/run/config/app.conf"',
+    );
+    warning.mockRestore();
+  });
+
+  it('accepts only the project-scoped standard mounts with their expected access', async () => {
+    const { manager, docker, store, inspect } = fixture();
+    store.getProject.mockResolvedValue({ ...project, cloneDir: 'p1' } as typeof project);
+    const mounts: NonNullable<ContainerInspect['mounts']> = [
+      ['/knowledge', 'knowledge/p1', false],
+      ['/knowledge/insights', 'knowledge/p1/insights', true],
+      ['/knowledge/shared', 'knowledge/shared', false],
+      ['/etc/resolv.conf', 'secrets/dns/resolv.p1.conf', false],
+      ['/work/.git/config', 'p1/.git/config', false],
+    ].map(([destination, subpath, readWrite]) => ({
+      type: 'volume',
+      name: 'verity-data',
+      destination: String(destination),
+      subpath: String(subpath),
+      readWrite: readWrite === true,
+    }));
+    docker.inspectContainer.mockResolvedValue({ ...inspect, mountCount: mounts.length, mounts });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it('rejects a standard mount redirected to another project', async () => {
+    const { manager, docker, edge, inspect } = fixture();
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          subpath: 'knowledge/other',
+          destination: '/knowledge',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a writable shared knowledge mount', async () => {
+    const { manager, docker, edge, inspect } = fixture();
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          subpath: 'knowledge/shared',
+          destination: '/knowledge/shared',
+          readWrite: true,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
     expect(edge.create).not.toHaveBeenCalled();
   });
 
@@ -741,6 +810,48 @@ describe('PreviewShareManager', () => {
       manager.create({ projectId: 'p1', staticPath: './dist', pin: '123456', ttlSeconds: 3600 }),
     ).rejects.toBeInstanceOf(PreviewShareConflictError);
     expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('shares only the selected static directory despite other sandbox mounts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-preview-static-'));
+    await mkdir(join(root, 'repo', 'dist'), { recursive: true });
+    const { manager, store, docker, inspect } = fixture();
+    store.getProject.mockResolvedValue({ ...project, cloneDir: 'repo' } as typeof project);
+    const options = (
+      manager as unknown as {
+        options: { hostCloneRoot: string; dataVolumeRoot: string };
+      }
+    ).options;
+    options.hostCloneRoot = root;
+    options.dataVolumeRoot = root;
+    docker.inspectContainer.mockResolvedValue({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'bind',
+          source: '/private/drive',
+          destination: '/mnt/drive',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ projectId: 'p1', staticPath: 'dist', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        volumeMounts: [
+          {
+            volume: 'verity-data',
+            target: '/preview-workspace/public',
+            subpath: 'repo/dist',
+            readOnly: true,
+          },
+        ],
+        env: expect.arrayContaining(['VERITY_PREVIEW_STATIC_PATH=public']),
+      }),
+    );
   });
 
   it('does not persist a share when Uplink creation fails', async () => {
