@@ -271,6 +271,7 @@ export function subscribeMeeting(listener: Listener): () => void {
 export function startMeeting(
   sessionId: string,
   engine: STTEngineId = 'fluid-nemotron',
+  expectedParticipants: number | null = null,
 ): Promise<MeetingRecord> {
   if (startInFlight) {
     return startInFlight.then((meeting) => {
@@ -279,7 +280,7 @@ export function startMeeting(
       return meeting;
     });
   }
-  const started = startMeetingUnlocked(sessionId, engine);
+  const started = startMeetingUnlocked(sessionId, engine, expectedParticipants);
   startInFlight = started;
   const clear = () => {
     if (startInFlight === started) startInFlight = null;
@@ -291,6 +292,7 @@ export function startMeeting(
 async function startMeetingUnlocked(
   sessionId: string,
   engine: STTEngineId,
+  expectedParticipants: number | null,
 ): Promise<MeetingRecord> {
   await Promise.all([...pendingSaveSettlements]);
   if (shutdownInFlight) await shutdownInFlight;
@@ -308,7 +310,7 @@ async function startMeetingUnlocked(
   if (!engines.some((candidate) => candidate.id === engine && candidate.available)) {
     throw new Error('The selected transcription engine is unavailable on this device.');
   }
-  const meeting = await createMeeting(sessionId, engine);
+  const meeting = await createMeeting(sessionId, engine, expectedParticipants);
   active = meeting;
   transcript = emptySTTTranscript;
   stopVoiceDetector();

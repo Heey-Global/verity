@@ -14,6 +14,7 @@ export interface MeetingRecord {
   state: 'active' | 'interrupted' | 'ended';
   captureStatus?: 'preparing' | 'downloading' | 'listening' | 'paused';
   transcript: string;
+  expectedParticipants?: number | null;
   error: string | null;
   ownerToken?: string | null;
   revision?: number;
@@ -62,6 +63,7 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
       ['capture_status', "TEXT NOT NULL DEFAULT 'preparing'"],
       ['is_remote', 'INTEGER NOT NULL DEFAULT 0'],
       ['server_id', 'TEXT'],
+      ['expected_participants', 'INTEGER'],
     ]) {
       if (!meetingColumns.some((column) => column.name === name))
         await connection.execAsync(`ALTER TABLE meetings ADD COLUMN ${name} ${definition}`);
@@ -117,6 +119,7 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
 export async function createMeeting(
   sessionId: string,
   engine: STTEngineId,
+  expectedParticipants: number | null = null,
 ): Promise<MeetingRecord> {
   const meeting: MeetingRecord = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -128,6 +131,7 @@ export async function createMeeting(
     state: 'active',
     captureStatus: 'preparing',
     transcript: '',
+    expectedParticipants,
     error: null,
     ownerToken: Array.from(await getRandomBytesAsync(32), (byte) =>
       byte.toString(16).padStart(2, '0'),
@@ -137,7 +141,7 @@ export async function createMeeting(
   };
   const connection = await db();
   await connection.runAsync(
-    'INSERT INTO meetings (id, session_id, server_id, engine, started_at, last_active_at, state, transcript, owner_token, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO meetings (id, session_id, server_id, engine, started_at, last_active_at, state, transcript, owner_token, revision, expected_participants) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     meeting.id,
     meeting.sessionId,
     meeting.serverId ?? null,
@@ -148,6 +152,7 @@ export async function createMeeting(
     meeting.transcript,
     meeting.ownerToken!,
     meeting.revision!,
+    expectedParticipants,
   );
   return meeting;
 }
@@ -212,13 +217,14 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     ended_at: number | null;
     state: MeetingRecord['state'];
     transcript: string;
+    expected_participants: number | null;
     error: string | null;
     owner_token: string | null;
     revision: number;
     synced_revision: number;
     capture_status: MeetingRecord['captureStatus'];
   }>(
-    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, error, owner_token, revision, synced_revision, capture_status FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
+    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, error, owner_token, revision, synced_revision, capture_status, expected_participants FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
     sessionId,
     serverId,
   );
@@ -231,6 +237,7 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     endedAt: row.ended_at,
     state: row.state,
     transcript: row.transcript,
+    expectedParticipants: row.expected_participants,
     error: row.error,
     ownerToken: row.owner_token,
     revision: row.revision,

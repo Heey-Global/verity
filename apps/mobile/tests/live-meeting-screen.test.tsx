@@ -90,6 +90,23 @@ beforeEach(() => {
   jest.mocked(getActiveMeetingServerId).mockReturnValue(null);
 });
 
+it('passes the selected expected group size when starting a meeting', async () => {
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('3 people'));
+  expect(screen.getByLabelText('3 people').props.accessibilityState).toEqual(
+    expect.objectContaining({ selected: true }),
+  );
+  fireEvent.press(screen.getByText('Start meeting'));
+  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 3));
+});
+
+it('offers larger groups and passes their size to the recorder', async () => {
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('6 people'));
+  fireEvent.press(screen.getByText('Start meeting'));
+  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 6));
+});
+
 it('opens the complete transcript on demand and starts research in the same session', async () => {
   const meeting: MeetingRecord = {
     id: 'meeting-insight',
@@ -308,7 +325,9 @@ it('starts with Nemotron and saves a note at its first edit', async () => {
   );
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByText('Start meeting'));
-  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron'));
+  await waitFor(() =>
+    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', null),
+  );
   const input = await screen.findByLabelText('Add a meeting note');
   fireEvent.changeText(input, 'Decision: ship locally');
   await waitFor(() =>

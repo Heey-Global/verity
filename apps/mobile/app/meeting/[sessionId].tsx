@@ -86,6 +86,7 @@ export default function MeetingScreen() {
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
+  const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
   const [showNewMeeting, setShowNewMeeting] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [syncError, setSyncError] = useState(false);
@@ -350,7 +351,7 @@ export default function MeetingScreen() {
     setBusy(true);
     setError(null);
     try {
-      const next = await startMeeting(sessionId, selectedEngine);
+      const next = await startMeeting(sessionId, selectedEngine, expectedParticipants);
       setSyncError(true);
       setSelectedId(null);
       setMeeting(next);
@@ -774,6 +775,35 @@ export default function MeetingScreen() {
       ) : null}
       {!live && (!meeting || showNewMeeting) ? (
         <View>
+          <Text style={styles.section}>People in this meeting</Text>
+          <View style={styles.participantChoices}>
+            {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, null] as const).map((count) => (
+              <Pressable
+                key={count ?? 'unknown'}
+                accessibilityRole="radio"
+                accessibilityLabel={count === null ? 'Not sure' : `${count} people`}
+                accessibilityState={{ selected: expectedParticipants === count }}
+                disabled={busy}
+                onPress={() => setExpectedParticipants(count)}
+                style={[
+                  styles.participantChoice,
+                  expectedParticipants === count && styles.participantChoiceSelected,
+                ]}
+              >
+                <Text
+                  style={
+                    expectedParticipants === count ? styles.participantSelectedText : styles.muted
+                  }
+                >
+                  {count ?? 'Not sure'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ) : null}
+      {!live && (!meeting || showNewMeeting) ? (
+        <View>
           <Text style={styles.section}>Engine for next meeting</Text>
           {engines.map((engine) => (
             <Pressable
@@ -857,6 +887,16 @@ const styles = StyleSheet.create({
   title: { color: TEXT, fontSize: 28, fontWeight: '700' },
   minimize: { color: TEXT, fontSize: 28, paddingHorizontal: 8 },
   muted: { color: MUTED },
+  participantChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  participantChoice: {
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  participantChoiceSelected: { borderColor: ACCENT },
+  participantSelectedText: { color: ACCENT },
   status: { color: '#a8f4c5', fontSize: 13 },
   statusPaused: { color: '#f3c579' },
   statusError: { color: '#ffaba5' },
