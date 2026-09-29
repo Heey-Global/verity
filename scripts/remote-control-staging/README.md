@@ -55,3 +55,48 @@ A successful admission or data attachment alone does not prove that Core TLS,
 HTTP authentication, or the chat stream works. Capture the failed stage and
 its time before attributing a failure to App, Core, or hosted Uplink. These
 repository diagnostics do not provide access to hosted Uplink Kubernetes logs.
+
+### Reading the transport diagnostics
+
+The iPhone timeout includes the phase of that individual native request when
+cancellation begins: `NO_AUTH_CHALLENGE`, `AUTH_CHALLENGE_RECEIVED`, or
+`PIN_AND_CHAIN_TRUST_ACCEPTED`. The last value confirms certificate validation,
+not a completed HTTP request. Older native builds still show the plain timeout.
+A native build containing the diagnostics is required; an OTA bundle alone
+cannot add these counters or phases.
+
+The visible tunnel summary is cumulative for the attachment, not specific to
+one health probe. `received` counts data, end, and reset frames. `sentBytes`
+counts payload bytes successfully submitted to the outer WebSocket;
+`receivedBytes` counts validated incoming payload bytes; `deliveredBytes`
+counts bytes accepted by the local socket write callback. None proves that the
+receiving application processed them. `localResets` and `remoteResets` count
+terminations from each side. `lastReset` retains the latest direction and fixed
+code even after another stream opens.
+
+Native `Verity remote stream` events include the remote session and stream IDs,
+first data in either direction, first local delivery, and final byte counts.
+Core's `remote connector first bytes` and `remote connector stream ended` use
+the same session/stream IDs. Core distinguishes `receivedFromAppBytes`,
+`writtenToLocalBytes`, `receivedFromLocalBytes`, and `sentToUplinkBytes` so a
+blocked local write differs from a silent upstream. Counters describe local
+transport acceptance; a final snapshot can exclude writes still pending when
+the stream was retired. Events are bounded per stream, rather than per chunk.
+
+Managed Gateway stdout emits `gateway.tls` (`secure`, `failed`, `closed`) and
+`gateway.health_probe` (`received`, `completed`, `closed`). The random
+`connection` ID joins these Gateway events. Only the first four GET health
+probes per TLS connection are logged. `completed` means the HTTP response was
+flushed locally; it does not prove receipt on the iPhone. Gateway socket byte
+counters are Node TLSSocket counters, not relay payload totals. The connector's
+`localPort` and Gateway's `peerPort`, together with time, can help join the local
+TCP leg, but NAT and port reuse make this best-effort rather than a global ID.
+No URLs, headers, tickets, certificate contents, or payloads enter these new
+events. Gateway TLS events also cover direct connections; they alone do not
+identify an Uplink route.
+
+These changes instrument both endpoints of the hosted relay. The hosted Uplink
+service is a separate repository; its internal relay logs are not modified here.
+To isolate a failure, match native/Core stream IDs, compare directional progress,
+then check Gateway TLS and health events. Keep the above correlation limits in
+mind before assigning a failure to any hop.

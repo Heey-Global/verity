@@ -23,7 +23,15 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 type Frame = Record<string, unknown>;
 type ResetCode = 'protocol_error' | 'concurrency_limit' | 'upstream_error' | 'timeout';
 
+type ByteCounter =
+  'receivedFromAppBytes' | 'writtenToLocalBytes' | 'receivedFromLocalBytes' | 'sentToUplinkBytes';
+
 interface Stream {
+  startedAt: number;
+  receivedFromAppBytes: number;
+  writtenToLocalBytes: number;
+  receivedFromLocalBytes: number;
+  sentToUplinkBytes: number;
   socket: Socket;
   incomingSeq: number;
   outgoingSeq: number;
@@ -251,7 +259,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     if (this.attachTimer) clearTimeout(this.attachTimer);
     this.attachReject?.(new Error(reason));
     this.attachReject = undefined;
-    for (const [id] of this.streams) this.dropStream(id);
+    for (const [id] of this.streams) this.dropStream(id, 'session_ended');
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.close(1000);
     else if (this.ws?.readyState === WebSocket.CONNECTING) this.ws.terminate();
     this.onRelease();
@@ -272,7 +280,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     this.release('invalid remote frame');
   }
 
-  private send(frame: Frame): void {
+  private send(frame: Frame, onSent?: () => void): void {
     const ws = this.ws;
     if (this.terminated || !this.ready || ws?.readyState !== WebSocket.OPEN) return;
     const raw = JSON.stringify(frame);
@@ -285,7 +293,10 @@ class ConnectorSession implements RemoteConnectorReservation {
     }
     ws.send(raw, (error) => {
       if (error) this.release('remote data send failed');
-      else this.resumePausedStreams();
+      else {
+        onSent?.();
+        this.resumePausedStreams();
+      }
     });
   }
 
@@ -306,13 +317,28 @@ class ConnectorSession implements RemoteConnectorReservation {
       { sessionId: this.request.sessionId, streamId: id, code },
       'remote connector reset a stream',
     );
-    this.dropStream(id);
+    this.dropStream(id, `local_reset:${code}`);
     this.send({ type: 'stream.reset', streamId: id, code });
   }
 
-  private dropStream(id: string): void {
+  private dropStream(id: string, reason: string): void {
     const stream = this.streams.get(id);
     if (!stream) return;
+    this.options.log?.info(
+      {
+        sessionId: this.request.sessionId,
+        streamId: id,
+        reason,
+        durationMs: Date.now() - stream.startedAt,
+        receivedFromAppBytes: stream.receivedFromAppBytes,
+        writtenToLocalBytes: stream.writtenToLocalBytes,
+        receivedFromLocalBytes: stream.receivedFromLocalBytes,
+        sentToUplinkBytes: stream.sentToUplinkBytes,
+        incomingEnded: stream.incomingEnded,
+        outgoingEnded: stream.outgoingEnded,
+      },
+      'remote connector stream ended',
+    );
     // A peer reset can arrive after both ends completed; keep its ID retired
     // so it cannot close the shared data socket.
     this.retiredIds.add(id);
@@ -325,7 +351,25 @@ class ConnectorSession implements RemoteConnectorReservation {
 
   private finishStreamIfComplete(id: string, stream: Stream): void {
     if (stream.incomingEnded && stream.outgoingEnded && stream.socket.writableFinished)
-      this.dropStream(id);
+      this.dropStream(id, 'complete');
+  }
+
+  // Successful write callbacks mean local transport acceptance, not peer TLS/HTTP processing.
+  private recordBytes(id: string, stream: Stream, counter: ByteCounter, bytes: number): void {
+    if (this.streams.get(id) !== stream || bytes === 0) return;
+    const first = stream[counter] === 0;
+    stream[counter] += bytes;
+    if (first)
+      this.options.log?.info(
+        {
+          sessionId: this.request.sessionId,
+          streamId: id,
+          counter,
+          bytes,
+          durationMs: Date.now() - stream.startedAt,
+        },
+        'remote connector first bytes',
+      );
   }
 
   private updateIncomingStall(id: string, stream: Stream, progressed: boolean): void {
@@ -373,6 +417,11 @@ class ConnectorSession implements RemoteConnectorReservation {
         ((host, port) => createConnection({ host, port, allowHalfOpen: true }))
       )(this.options.localHost, this.options.localPort);
       const stream: Stream = {
+        startedAt: Date.now(),
+        receivedFromAppBytes: 0,
+        writtenToLocalBytes: 0,
+        receivedFromLocalBytes: 0,
+        sentToUplinkBytes: 0,
         socket,
         incomingSeq: 0,
         outgoingSeq: 0,
@@ -399,20 +448,29 @@ class ConnectorSession implements RemoteConnectorReservation {
       socket.on('connect', () => {
         clearTimeout(stream.dialTimer);
         this.options.log?.info(
-          { stage: 'local_ingress', sessionId: this.request.sessionId, streamId: id },
+          {
+            stage: 'local_ingress',
+            sessionId: this.request.sessionId,
+            streamId: id,
+            localPort: socket.localPort,
+          },
           'remote connector reached local TLS ingress',
         );
       });
       socket.on('data', (chunk: Buffer) => {
         if (this.terminated || !this.streams.has(id)) return;
+        this.recordBytes(id, stream, 'receivedFromLocalBytes', chunk.length);
         for (let offset = 0; offset < chunk.length; offset += MAX_CHUNK_BYTES) {
           const piece = chunk.subarray(offset, offset + MAX_CHUNK_BYTES);
-          this.send({
-            type: 'stream.data',
-            streamId: id,
-            seq: stream.outgoingSeq++,
-            payload: piece.toString('base64'),
-          });
+          this.send(
+            {
+              type: 'stream.data',
+              streamId: id,
+              seq: stream.outgoingSeq++,
+              payload: piece.toString('base64'),
+            },
+            () => this.recordBytes(id, stream, 'sentToUplinkBytes', piece.length),
+          );
           if (this.terminated) return;
         }
         if ((this.ws?.bufferedAmount ?? 0) > MAX_SOCKET_QUEUE_BYTES / 2) {
@@ -479,7 +537,10 @@ class ConnectorSession implements RemoteConnectorReservation {
         return this.failProtocol(frame);
       stream.incomingSeq++;
       if (bytes.length === 0) return;
-      stream.socket.write(bytes, () => {
+      this.recordBytes(id, stream, 'receivedFromAppBytes', bytes.length);
+      stream.socket.write(bytes, (error) => {
+        if (error) return;
+        this.recordBytes(id, stream, 'writtenToLocalBytes', bytes.length);
         if (this.streams.get(id) === stream) this.updateIncomingStall(id, stream, true);
       });
       if (stream.socket.writableLength > MAX_STREAM_QUEUE_BYTES) this.reset(id, 'upstream_error');
@@ -506,7 +567,7 @@ class ConnectorSession implements RemoteConnectorReservation {
         { sessionId: this.request.sessionId, streamId: id, code: frame.code },
         'remote app reset a stream',
       );
-      this.dropStream(id);
+      this.dropStream(id, `peer_reset:${String(frame.code)}`);
       return;
     }
     this.failProtocol(frame);

@@ -23,7 +23,9 @@ it('carries verified inner TLS through the remote connector to the managed Gatew
 
   const ca = await createProjectEgressCa({ commonName: 'Remote control test CA' });
   const certificate = await issueGatewayServerCertificate(ca, { serverName: 'core.test' });
+  const log = vi.fn<(event: Record<string, string | number>) => void>();
   const gateway = await startManagedGateway({
+    log,
     publicPort: 0,
     internalPort: 0,
     tls: { key: certificate.keyPem, cert: certificate.certPem },
@@ -118,8 +120,64 @@ it('carries verified inner TLS through the remote connector to the managed Gatew
   expect(tls.authorized).toBe(true);
   const chunks: Buffer[] = [];
   tls.on('data', (chunk: Buffer) => chunks.push(chunk));
-  tls.write('GET /remote-smoke HTTP/1.1\r\nHost: core.test\r\nConnection: close\r\n\r\n');
+  tls.write('GET /healthz?private-query HTTP/1.1\r\nHost: core.test\r\nConnection: close\r\n\r\n');
   await vi.waitFor(() =>
     expect(Buffer.concat(chunks).toString('utf8')).toContain('gateway-reached'),
   );
+  await vi.waitFor(() =>
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'gateway.health_probe',
+        action: 'completed',
+        status: 200,
+      }),
+    ),
+  );
+  const events = log.mock.calls.map(([event]) => event);
+  const secure = events.find((event) => event.event === 'gateway.tls' && event.action === 'secure');
+  expect(secure).toBeDefined();
+  expect(events.filter((event) => event.event === 'gateway.health_probe')).toEqual([
+    expect.objectContaining({ action: 'received', connection: secure!.connection }),
+    expect.objectContaining({ action: 'completed', connection: secure!.connection, status: 200 }),
+  ]);
+  expect(JSON.stringify(events)).not.toMatch(
+    /private-query|core\.test|127\.0\.0\.1|installation_ticket/,
+  );
+});
+
+it('reports failed TLS without exposing peer data or OpenSSL error text', async () => {
+  const ca = await createProjectEgressCa({ commonName: 'Remote control test CA' });
+  const certificate = await issueGatewayServerCertificate(ca, { serverName: 'core.test' });
+  const log = vi.fn<(event: Record<string, string | number>) => void>();
+  const gateway = await startManagedGateway({
+    log,
+    tls: { key: certificate.keyPem, cert: certificate.certPem },
+    publicPort: 0,
+    internalPort: 0,
+    backend: { host: '127.0.0.1', publicPort: 1, internalPort: 1 },
+    allowedBackendHosts: ['127.0.0.1'],
+  });
+  closers.push(() => gateway.close());
+  const { connect } = await import('node:net');
+  const socket = connect(gateway.publicPort, '127.0.0.1');
+  socket.on('error', () => undefined);
+  closers.push(async () => {
+    socket.destroy();
+  });
+  await once(socket, 'connect');
+  const peerPort = socket.localPort;
+  socket.write('GET /secret-path HTTP/1.1\r\nAuthorization: Bearer secret-value\r\n\r\n');
+  await vi.waitFor(() =>
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'gateway.tls',
+        action: 'failed',
+        reason: 'plaintext_http',
+        peerPort,
+      }),
+    ),
+  );
+  const events = log.mock.calls.map(([event]) => event);
+  expect(events.some((event) => event.action === 'secure')).toBe(false);
+  expect(JSON.stringify(events)).not.toMatch(/secret-path|secret-value|127\.0\.0\.1|SSL|HTTP/);
 });

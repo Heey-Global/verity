@@ -438,6 +438,71 @@ describe('remote diagnostics', () => {
     expect(mockStart).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['NO_AUTH_CHALLENGE', ' [TLS:NO_AUTH_CHALLENGE]'],
+    ['PIN_AND_CHAIN_TRUST_ACCEPTED', ' [TLS:PIN_AND_CHAIN_TRUST_ACCEPTED]'],
+    [undefined, ''],
+    ['ticket=private-value', ''],
+  ])('preserves the timed-out probe phase safely: %s', async (phase, suffix) => {
+    jest.useFakeTimers();
+    try {
+      mockProfile.mockReturnValue(profile);
+      mockToken.mockReturnValue('device-bearer');
+      mockIsActive.mockResolvedValue(true);
+      mockRequest.mockImplementation(() => new Promise(() => undefined));
+      mockCancelRequest.mockResolvedValue(phase);
+      const transport =
+        require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+      const result = transport.testRemoteControlForUrl(coreUrl);
+      await jest.advanceTimersByTimeAsync(12_500);
+      expect(await result).toEqual({
+        ready: false,
+        detail: `probe (Remote Core probe timed out${suffix}.)`,
+      });
+      const requestId = mockRequest.mock.calls.at(-1)?.[0];
+      expect(mockCancelRequest).toHaveBeenCalledWith(requestId);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(['throws', 'stalls', 'cancels request'])(
+    'keeps the probe bounded when cancellation %s',
+    async (mode) => {
+      jest.useFakeTimers();
+      try {
+        let failRequest: ((error: Error) => void) | undefined;
+        mockRequest.mockImplementation(
+          () =>
+            new Promise((_, reject) => {
+              failRequest = reject;
+            }),
+        );
+        mockCancelRequest.mockImplementation(() => {
+          if (mode === 'throws') throw new Error('private native error');
+          if (mode === 'cancels request') {
+            failRequest?.(new Error('cancelled'));
+            return Promise.resolve('NO_AUTH_CHALLENGE');
+          }
+          return new Promise(() => undefined);
+        });
+        const transport =
+          require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+        const result = transport.testRemoteControlForUrl(coreUrl);
+        await jest.advanceTimersByTimeAsync(12_500);
+        expect(await result).toEqual({
+          ready: false,
+          detail:
+            mode === 'cancels request'
+              ? 'probe (Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].)'
+              : 'probe (Remote Core probe timed out.)',
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
   it('shows local tunnel stream progress after a failed Core probe', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
@@ -454,6 +519,19 @@ describe('remote diagnostics', () => {
       ready: false,
       detail:
         'probe (Remote Core probe failed.; tunnel local=1, opened=1, received=0, last=stream_opened)',
+    });
+  });
+
+  it('shows directional bytes and sticky reset causes separately from frame counts', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
+    const summary =
+      'local=6, opened=6, received=7, last=stream_opened, sentBytes=1024, receivedBytes=64, deliveredBytes=32, localResets=1, remoteResets=2, lastReset=remote_reset_upstream_error';
+    mockDiagnosticSummary.mockResolvedValue(summary);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: `probe (Remote Core probe failed.; tunnel ${summary})`,
     });
   });
 

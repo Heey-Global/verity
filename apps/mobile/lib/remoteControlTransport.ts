@@ -25,7 +25,8 @@ interface NativePinnedTransport {
     tlsPin: string,
     proxyPort: number,
   ): Promise<{ status: number }>;
-  cancelRequest(requestId: string): Promise<void>;
+  /** Older native builds cancel without returning the request-specific TLS phase. */
+  cancelRequest(requestId: string): Promise<string | null | void>;
 }
 
 let active: { key: string; port: number } | null = null;
@@ -83,7 +84,10 @@ async function tunnelDiagnosticSummary(): Promise<string | null> {
     if (typeof native.diagnosticSummary !== 'function') return null;
     const summary = await native.diagnosticSummary();
     return typeof summary === 'string' &&
-      /^local=\d+, opened=\d+, received=\d+, last=[a-z_.]+$/u.test(summary)
+      summary.length <= 512 &&
+      /^local=\d+, opened=\d+, received=\d+, last=[a-z_.]+(?:, sentBytes=\d+, receivedBytes=\d+, deliveredBytes=\d+, localResets=\d+, remoteResets=\d+, lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout)))?$/u.test(
+        summary,
+      )
       ? summary
       : null;
   } catch {
@@ -108,12 +112,13 @@ async function probeCore(
   const transport = requireNativeModule<NativePinnedTransport>('VerityPinnedTransport');
   const requestId = `remote-probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let cancelledPhase: Promise<unknown> | undefined;
   try {
     const response = await Promise.race([
       transport.request(requestId, `${coreUrl}/healthz`, 'GET', {}, null, tlsPin, port),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
-          void Promise.resolve()
+          cancelledPhase = Promise.resolve()
             .then(() => transport.cancelRequest(requestId))
             .catch(() => undefined);
           reject(new Error('Remote Core probe timed out.'));
@@ -121,6 +126,26 @@ async function probeCore(
       }),
     ]);
     if (response.status !== 200) throw new Error('Remote Core probe failed.');
+  } catch (error) {
+    if (cancelledPhase === undefined) throw error;
+    // A stalled native bridge must not turn the bounded probe into another hang.
+    let diagnosticTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const phase = await Promise.race([
+        cancelledPhase,
+        new Promise<undefined>((resolve) => {
+          diagnosticTimeout = setTimeout(() => resolve(undefined), 250);
+        }),
+      ]);
+      const knownPhase =
+        typeof phase === 'string' &&
+        ['NO_AUTH_CHALLENGE', 'AUTH_CHALLENGE_RECEIVED', 'PIN_AND_CHAIN_TRUST_ACCEPTED'].includes(
+          phase,
+        );
+      throw new Error(`Remote Core probe timed out${knownPhase ? ` [TLS:${phase}]` : ''}.`);
+    } finally {
+      if (diagnosticTimeout !== undefined) clearTimeout(diagnosticTimeout);
+    }
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
@@ -363,6 +388,12 @@ async function open(coreUrl: string, key: string): Promise<number> {
 function safeRemoteFailure(error: unknown): string | null {
   if (!(error instanceof Error)) return null;
   const message = error.message;
+  if (
+    /^Remote Core probe timed out \[TLS:(NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)\]\.$/u.test(
+      message,
+    )
+  )
+    return message;
   if (
     /^Remote admission failed: (unavailable|rate_limited|limit_reached|protocol_unsupported|timeout|cancelled|internal)\.$/u.test(
       message,

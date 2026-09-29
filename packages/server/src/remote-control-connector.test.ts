@@ -140,9 +140,29 @@ describe('remote control connector', () => {
     );
     expect(f.localConnections()).toBe(1);
     expect(log.info).toHaveBeenCalledWith(
-      { stage: 'local_ingress', sessionId: 'session_one', streamId: 'stream_one' },
+      expect.objectContaining({
+        stage: 'local_ingress',
+        sessionId: 'session_one',
+        streamId: 'stream_one',
+        localPort: expect.any(Number),
+      }),
       'remote connector reached local TLS ingress',
     );
+    // A connected socket alone hides a one-way relay or a failed write.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamId: 'stream_one',
+        reason: 'complete',
+        receivedFromAppBytes: 3,
+        writtenToLocalBytes: 3,
+        receivedFromLocalBytes: 3,
+        sentToUplinkBytes: 3,
+      }),
+      'remote connector stream ended',
+    );
+    expect(
+      log.info.mock.calls.filter(([, message]) => message === 'remote connector first bytes'),
+    ).toHaveLength(4);
     expect(JSON.stringify(log.info.mock.calls)).not.toContain('installation_ticket');
     reservation.release('test complete');
   });
@@ -244,7 +264,8 @@ describe('remote control connector', () => {
   });
 
   it('keeps the data socket alive when a retired peer-reset stream receives a late frame', async () => {
-    const f = await fixture();
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(undefined, {}, log);
     const reservation = await reserve(f);
     const attached = reservation.attach(
       'installation_ticket',
@@ -286,7 +307,18 @@ describe('remote control connector', () => {
       }),
     );
     expect(f.peer().readyState).toBe(WebSocket.OPEN);
+    expect(
+      log.info.mock.calls.filter(([, message]) => message === 'remote connector stream ended'),
+    ).toHaveLength(1);
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'peer_reset:upstream_error' }),
+      'remote connector stream ended',
+    );
     reservation.release('test complete');
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ streamId: 'stream_two', reason: 'session_ended' }),
+      'remote connector stream ended',
+    );
   });
 
   it('keeps the data socket alive when a reset follows both stream ends', async () => {
@@ -350,10 +382,15 @@ describe('remote control connector', () => {
       writableFinished: false,
       writableLength: 1,
     }) as unknown as Socket;
-    const f = await fixture(() => {
-      queueMicrotask(() => fakeSocket.emit('connect'));
-      return fakeSocket;
-    });
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(
+      () => {
+        queueMicrotask(() => fakeSocket.emit('connect'));
+        return fakeSocket;
+      },
+      {},
+      log,
+    );
     const reservation = await reserve(f);
     const attached = reservation.attach(
       'installation_ticket',
@@ -389,6 +426,17 @@ describe('remote control connector', () => {
       streamId: 'stream_one',
       code: 'timeout',
     });
+    // Receiving a frame must not masquerade as a completed local socket write.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'local_reset:timeout',
+        receivedFromAppBytes: 3,
+        writtenToLocalBytes: 0,
+        receivedFromLocalBytes: 0,
+        sentToUplinkBytes: 0,
+      }),
+      'remote connector stream ended',
+    );
     reservation.release('test complete');
   });
 

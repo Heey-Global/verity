@@ -38,6 +38,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var incomingWrite: Task<Void, Never>?
     var closed = false
     var worker: Task<Void, Never>?
+    var sentBytes = 0
+    var receivedBytes = 0
+    var deliveredBytes = 0
 
     init(_ connection: NWConnection) { self.connection = connection }
   }
@@ -64,11 +67,18 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var openedStreams = 0
   private var receivedStreamFrames = 0
   private var lastStreamEvent = "none"
+  private var diagnosticSession = "none"
+  private var sentBytes = 0
+  private var receivedBytes = 0
+  private var deliveredBytes = 0
+  private var localResets = 0
+  private var remoteResets = 0
+  private var lastReset = "none"
 
   // Counts and a fixed event name only: diagnostics must not expose URLs, tickets, or stream data.
   var diagnosticSummary: String {
     lock.withLock {
-      "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent)"
+      "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent), sentBytes=\(sentBytes), receivedBytes=\(receivedBytes), deliveredBytes=\(deliveredBytes), localResets=\(localResets), remoteResets=\(remoteResets), lastReset=\(lastReset)"
     }
   }
 
@@ -110,6 +120,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     guard ticket.range(of: "^[A-Za-z0-9_-]{1,512}$", options: .regularExpression) != nil,
       sessionId.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil
     else { throw RemoteSmokeError.invalidInput }
+    lock.withLock { diagnosticSession = sessionId }
     socket.resume()
     let timeout = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 15_000_000_000)
@@ -180,7 +191,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     stopped = true
     stopReasonText = reason
     let connections = streams.values.map(\.connection)
-    for stream in streams.values { stream.closed = true }
+    for (id, stream) in streams {
+      logStream(id, stream, event: "session_stopped")
+      stream.closed = true
+    }
     streams.removeAll()
     sessionPendingBytes = 0
     pendingLocal = 0
@@ -282,6 +296,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
         let data = Data(base64Encoded: payload), data.base64EncodedString() == payload,
         data.count <= 64 * 1024
       else { throw RemoteSmokeError.invalidFrame }
+      lock.withLock {
+        let first = stream.receivedBytes == 0 && !data.isEmpty
+        stream.receivedBytes += data.count
+        receivedBytes += data.count
+        if first { logStream(id, stream, event: "first_remote_data") }
+      }
       stream.incomingSequence += 1
       let accepted = lock.withLock {
         guard !stream.closed,
@@ -307,7 +327,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         let code = frame["code"] as? String,
         ["protocol_error", "concurrency_limit", "upstream_error", "timeout"].contains(code)
       else { throw RemoteSmokeError.invalidFrame }
-      drop(id)
+      drop(id, reason: "remote_reset_\(code)")
     default: throw RemoteSmokeError.invalidFrame
     }
     lock.withLock {
@@ -334,6 +354,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
         try await write(data, to: stream.connection, complete: complete)
         lock.withLock {
           if !stream.closed {
+            let first = stream.deliveredBytes == 0 && !data.isEmpty
+            stream.deliveredBytes += data.count
+            deliveredBytes += data.count
+            if first { logStream(id, stream, event: "first_local_data_delivered") }
             stream.pendingBytes -= data.count
             sessionPendingBytes -= data.count
           }
@@ -354,11 +378,20 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
   }
 
+  // Called under lock; events and reset codes are fixed locally, never payload text.
+  private func logStream(_ id: String, _ stream: Stream, event: String) {
+    NSLog("Verity remote stream session=%@ stream=%@ event=%@ sentBytes=%ld receivedBytes=%ld deliveredBytes=%ld",
+      diagnosticSession, id, event, stream.sentBytes, stream.receivedBytes, stream.deliveredBytes)
+  }
+
   @discardableResult
-  private func drop(_ id: String) -> Bool {
+  private func drop(_ id: String, reason: String = "completed") -> Bool {
     lock.lock()
     let stream = streams.removeValue(forKey: id)
     if let stream {
+      if reason.hasPrefix("local_reset_") { localResets += 1; lastReset = reason }
+      if reason.hasPrefix("remote_reset_") { remoteResets += 1; lastReset = reason }
+      logStream(id, stream, event: reason)
       stream.closed = true
       sessionPendingBytes -= stream.pendingBytes
     }
@@ -372,7 +405,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   private func reset(_ id: String, code: String) async {
-    guard drop(id) else { return }
+    guard drop(id, reason: "local_reset_\(code)") else { return }
     try? await writer.send(["type": "stream.reset", "streamId": id, "code": code])
   }
 
@@ -437,6 +470,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       lock.withLock {
         openedStreams += 1
         lastStreamEvent = "stream_opened"
+        logStream(id, stream, event: "opened")
       }
       stream.worker = Task { [weak self] in
         guard let self else { return }
@@ -445,7 +479,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
     } catch {
       lock.withLock { lastStreamEvent = "local_rejected" }
-      if let openedId { drop(openedId) }
+      if let openedId { drop(openedId, reason: "local_rejected") }
       connection.cancel()
     }
   }
@@ -479,6 +513,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
+      lock.withLock {
+        let first = stream.sentBytes == 0
+        stream.sentBytes += bytes.count
+        sentBytes += bytes.count
+        if first { logStream(id, stream, event: "first_local_data_sent") }
+      }
       stream.outgoingSequence += 1
     }
   }

@@ -58,6 +58,13 @@ enum StagingProbe {
           else { throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "bad response") }
           lastStatus = http.statusCode
         }
+        // An HTTP success must also exercise the production tunnel's byte accounting.
+        let summary = tunnel.diagnosticSummary
+        for field in ["sentBytes", "receivedBytes", "deliveredBytes"] {
+          guard summary.range(of: "\(field)=[1-9][0-9]*", options: .regularExpression) != nil
+          else { throw RemoteSmokeError.invalidFrame }
+        }
+        print("App tunnel: \(summary)")
         status = lastStatus
       } else {
         let response = try await RemoteSmokeTunnel.requestOnce(
