@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 import { FlatList } from 'react-native';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
-import { createVerityClient } from '../lib/client';
+import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
   currentMeeting,
   endMeeting,
@@ -63,9 +63,11 @@ jest.mock('../lib/liveMeetingStore', () => ({
 }));
 jest.mock('../lib/liveMeetingSync', () => ({
   syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
+  followRemoteMeeting: jest.fn(),
 }));
 jest.mock('../lib/client', () => ({
   createVerityClient: jest.fn().mockReturnValue(null),
+  getActiveMeetingServerId: jest.fn().mockReturnValue(null),
 }));
 
 beforeEach(() => {
@@ -80,6 +82,7 @@ beforeEach(() => {
   jest.mocked(listNotes).mockResolvedValue([]);
   jest.mocked(saveNote).mockResolvedValue(undefined);
   jest.mocked(createVerityClient).mockReturnValue(null);
+  jest.mocked(getActiveMeetingServerId).mockReturnValue(null);
 });
 
 it.each([
@@ -91,6 +94,7 @@ it.each([
     const remote: MeetingRecord = {
       id: 'remote-meeting',
       sessionId: 'session-1',
+      serverId: 'server-1',
       engine: 'fluid-nemotron',
       startedAt: Date.now(),
       endedAt: null,
@@ -100,6 +104,7 @@ it.each([
       error: null,
     };
     const requestLiveMeetingCommand = jest.fn().mockResolvedValue('command-1');
+    jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
     jest.mocked(createVerityClient).mockReturnValue({
       getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
       requestLiveMeetingCommand,
@@ -120,6 +125,7 @@ it('explains an unreachable recorder and still lets Stop replace a pending Pause
   const remote: MeetingRecord = {
     id: 'remote-meeting',
     sessionId: 'session-1',
+    serverId: 'server-1',
     engine: 'fluid-nemotron',
     startedAt: Date.now(),
     endedAt: null,
@@ -129,6 +135,7 @@ it('explains an unreachable recorder and still lets Stop replace a pending Pause
     error: null,
   };
   const requestLiveMeetingCommand = jest.fn().mockResolvedValue('stop-1');
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
   jest.mocked(createVerityClient).mockReturnValue({
     getLiveMeetingCommands: jest.fn().mockResolvedValue({
       commands: [

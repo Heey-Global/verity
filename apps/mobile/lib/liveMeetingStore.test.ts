@@ -1,5 +1,6 @@
 import { waitFor } from '@testing-library/react-native';
 import { listMeetings, saveNote } from './liveMeetingStore';
+jest.mock('./client', () => ({ getActiveMeetingServerId: jest.fn().mockReturnValue(null) }));
 
 const mockRunAsync = jest.fn().mockResolvedValue(undefined);
 jest.mock('expo-sqlite', () => ({

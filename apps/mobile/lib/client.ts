@@ -65,6 +65,12 @@ export function getVerityBaseUrl(): string | null {
   return currentBaseUrl;
 }
 
+/** A verified installation identity shared by its direct and Uplink endpoints. */
+export function getActiveMeetingServerId(): string | null {
+  const profile = getServerProfile();
+  return profile?.activeUrl === currentBaseUrl ? profile.serverId : null;
+}
+
 /** Whether the device has explicitly selected a Verity server URL. */
 export function hasConfiguredVerityBaseUrl(): boolean {
   return configuredBaseUrl;
@@ -91,24 +97,25 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
  *  every request, and a 401 from a gated route drops the stored token so the app
  *  falls back to master-password re-auth. */
 export function createVerityClient(): VerityClient | null {
-  if (!currentBaseUrl) return null;
-  const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === currentBaseUrl);
+  const serverUrl = currentBaseUrl;
+  if (!serverUrl) return null;
+  const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === serverUrl);
   const pinnedFetch =
     endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, true) : undefined;
   const client = new VerityClient({
-    baseUrl: currentBaseUrl,
+    baseUrl: serverUrl,
     // expo-file-system File implements Blob through Expo's native networking
     // stack. Keep ordinary API calls on the global fetch and route only uploads
     // through expo/fetch so large picked files stream without a JS copy.
     ...(pinnedFetch
       ? { fetch: pinnedFetch, uploadFetch: pinnedFetch, allowBackgroundUpload: false }
       : { uploadFetch: expoFetch as typeof fetch }),
-    getToken: () => getAuthToken(currentBaseUrl),
+    getToken: () => getAuthToken(serverUrl),
     onUnauthorized: () => {
-      void clearAuthToken(currentBaseUrl);
+      void clearAuthToken(serverUrl);
     },
   });
-  const token = getAuthToken(currentBaseUrl);
+  const token = getAuthToken(serverUrl);
   if (
     token !== null &&
     endpoint?.transport === 'direct' &&
@@ -117,7 +124,7 @@ export function createVerityClient(): VerityClient | null {
     lastDescriptorToken = token;
     lastDescriptorAttempt = Date.now();
     const expectedServerId = getServerProfile()?.serverId;
-    const expectedUrl = currentBaseUrl;
+    const expectedUrl = serverUrl;
     void client
       .getRemoteControlDescriptor()
       .then(async (descriptor) => {

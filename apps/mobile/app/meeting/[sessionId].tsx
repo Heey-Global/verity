@@ -32,7 +32,7 @@ import {
   type MeetingNote,
   type MeetingRecord,
 } from '../../lib/liveMeetingStore';
-import { createVerityClient } from '../../lib/client';
+import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
 
 const ACCENT = '#bd8bff';
@@ -122,9 +122,15 @@ export default function MeetingScreen() {
     setHistory(saved);
     setMeeting((current) => {
       const local = currentMeeting();
-      if (selectedId) return saved.find((item) => item.id === selectedId) ?? current;
-      if (local?.sessionId === sessionId && local.state === 'active') return local;
-      return saved[0] ?? current;
+      const serverId = getActiveMeetingServerId();
+      if (selectedId) return saved.find((item) => item.id === selectedId) ?? null;
+      if (
+        local?.sessionId === sessionId &&
+        local.state === 'active' &&
+        (local.serverId ?? null) === serverId
+      )
+        return local;
+      return saved[0] ?? ((current?.serverId ?? null) === serverId ? current : null);
     });
   }, [sessionId, selectedId]);
 
@@ -177,7 +183,11 @@ export default function MeetingScreen() {
   useEffect(() => {
     void refresh().catch((reason) => setError(String(reason)));
     return subscribeMeeting((active) => {
-      if (active?.sessionId === sessionId && (selectedId === null || selectedId === active.id)) {
+      if (
+        active?.sessionId === sessionId &&
+        (active.serverId ?? null) === getActiveMeetingServerId() &&
+        (selectedId === null || selectedId === active.id)
+      ) {
         setMeeting(active);
       }
       if (active?.state === 'ended' || active?.state === 'interrupted') {
@@ -283,6 +293,8 @@ export default function MeetingScreen() {
     try {
       await pendingNoteWrites.get(meeting?.id ?? '');
       if (meeting && currentMeeting()?.id !== meeting.id) {
+        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
+          throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this recording.');
         await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
@@ -307,6 +319,8 @@ export default function MeetingScreen() {
         if (meeting.captureStatus === 'paused') await resumeMeeting();
         else await pauseMeeting();
       } else {
+        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
+          throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to control this recording.');
         const action = meeting.captureStatus === 'paused' ? 'resume' : 'pause';
@@ -450,22 +464,24 @@ export default function MeetingScreen() {
             : `${meeting?.state === 'interrupted' ? 'Interrupted' : 'Ended'} · note not saved`
           : live
             ? meeting.captureStatus === 'paused'
-              ? `Ⅱ Paused   ${elapsed(meeting.startedAt, now)}   ${active ? 'Saving to server' : 'Live from recording device'}`
+              ? `Ⅱ Paused   ${elapsed(meeting.startedAt, now)}   ${active ? (meeting.serverId === null ? 'Saved only on this device' : 'Saving to server') : 'Live from recording device'}`
               : meeting.captureStatus === 'downloading'
                 ? 'Preparing language model…'
                 : meeting.captureStatus === 'preparing'
                   ? 'Preparing microphone…'
-                  : `● Transcribing   ${elapsed(meeting.startedAt, now)}   ${active ? 'Saving to server' : 'Live from recording device'}`
+                  : `● Transcribing   ${elapsed(meeting.startedAt, now)}   ${active ? (meeting.serverId === null ? 'Saved only on this device' : 'Saving to server') : 'Live from recording device'}`
             : meeting
-              ? meeting.state === 'interrupted'
-                ? meeting.error?.startsWith('Local save failed')
-                  ? 'Interrupted · local save failed'
+              ? meeting.serverId === null
+                ? `${meeting.state === 'interrupted' ? 'Interrupted' : 'Ended'} · saved only on this device`
+                : meeting.state === 'interrupted'
+                  ? meeting.error?.startsWith('Local save failed')
+                    ? 'Interrupted · local save failed'
+                    : syncError
+                      ? 'Interrupted · server sync pending'
+                      : 'Interrupted · saved on server'
                   : syncError
-                    ? 'Interrupted · server sync pending'
-                    : 'Interrupted · saved on server'
-                : syncError
-                  ? 'Ended · server sync pending'
-                  : 'Ended · saved on server'
+                    ? 'Ended · server sync pending'
+                    : 'Ended · saved on server'
               : 'Ready to record'}
       </Text>
       {pendingCommand ? (
@@ -475,7 +491,7 @@ export default function MeetingScreen() {
             : 'Recording device unreachable. Open Verity there to apply this command.'}
         </Text>
       ) : null}
-      {syncError ? (
+      {syncError && meeting?.serverId !== null ? (
         <Text style={styles.statusPaused}>Saved locally · server sync pending</Text>
       ) : null}
       {meeting ? (
@@ -635,6 +651,7 @@ export default function MeetingScreen() {
                 >
                   <Text style={styles.link}>
                     {new Date(item.startedAt).toLocaleString()} · {item.state}
+                    {item.serverId === null ? ' · local only' : ''}
                   </Text>
                 </Pressable>
               ))}

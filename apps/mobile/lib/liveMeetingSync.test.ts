@@ -1,4 +1,4 @@
-import { createVerityClient } from './client';
+import { createVerityClient, getActiveMeetingServerId } from './client';
 import { waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 import { currentMeeting, endMeeting } from './liveMeetingSession';
@@ -13,7 +13,10 @@ import {
 } from './liveMeetingStore';
 import { startLiveMeetingSync, syncMeetingSession } from './liveMeetingSync';
 
-jest.mock('./client', () => ({ createVerityClient: jest.fn() }));
+jest.mock('./client', () => ({
+  createVerityClient: jest.fn(),
+  getActiveMeetingServerId: jest.fn().mockReturnValue('server-1'),
+}));
 jest.mock('./liveMeetingSession', () => ({
   currentMeeting: jest.fn().mockReturnValue(null),
   endMeeting: jest.fn().mockResolvedValue(undefined),
@@ -40,6 +43,7 @@ const client = {
 const meeting = {
   id: 'meeting-1',
   sessionId: 'session-1',
+  serverId: 'server-1',
   engine: 'fluid-nemotron' as const,
   startedAt: 1,
   endedAt: null,
@@ -61,6 +65,7 @@ beforeEach(() => {
   client.putLiveMeeting.mockResolvedValue(undefined);
   client.putLiveMeetingNote.mockResolvedValue(undefined);
   jest.mocked(currentMeeting).mockReturnValue(null);
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
 });
 
 it('does not apply a fetched command after the recording has changed', async () => {
@@ -129,11 +134,11 @@ it('uploads the meeting before its notes and acknowledges only the sent revision
   expect(client.putLiveMeeting.mock.invocationCallOrder[0]).toBeLessThan(
     client.putLiveMeetingNote.mock.invocationCallOrder[0]!,
   );
-  expect(acknowledgeMeeting).toHaveBeenCalledWith(meeting.id, 4);
-  expect(acknowledgeNote).toHaveBeenCalledWith(note.id, 3);
-  expect(getSyncCursor).toHaveBeenCalledWith('session-1');
-  expect(importChanges).toHaveBeenCalledWith('session-1', 3, [], []);
-  expect(hasPendingMeetingSync).toHaveBeenCalledWith('session-1');
+  expect(acknowledgeMeeting).toHaveBeenCalledWith('server-1', meeting.id, 4);
+  expect(acknowledgeNote).toHaveBeenCalledWith('server-1', note.id, 3);
+  expect(getSyncCursor).toHaveBeenCalledWith('server-1', 'session-1');
+  expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 3, [], []);
+  expect(hasPendingMeetingSync).toHaveBeenCalledWith('server-1', 'session-1');
 });
 
 it('keeps an unsent revision pending while still receiving remote changes', async () => {
@@ -141,7 +146,40 @@ it('keeps an unsent revision pending while still receiving remote changes', asyn
   client.putLiveMeeting.mockRejectedValueOnce(new Error('offline'));
   expect(await syncMeetingSession('session-1')).toEqual({ pending: true });
   expect(acknowledgeMeeting).not.toHaveBeenCalled();
-  expect(importChanges).toHaveBeenCalledWith('session-1', 3, [], []);
+  expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 3, [], []);
   expect(await syncMeetingSession('session-1')).toEqual({ pending: false });
-  expect(acknowledgeMeeting).toHaveBeenCalledWith(meeting.id, 4);
+  expect(acknowledgeMeeting).toHaveBeenCalledWith('server-1', meeting.id, 4);
+});
+
+it('does not upload or apply recorder commands after switching servers', async () => {
+  jest
+    .mocked(pendingMeetings)
+    .mockImplementation(async (serverId) => (serverId === 'server-1' ? [meeting] : []));
+  jest
+    .mocked(pendingNotes)
+    .mockImplementation(async (serverId) =>
+      serverId === 'server-1' ? [{ sessionId: 'session-1', note }] : [],
+    );
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-2');
+  await syncMeetingSession('session-1');
+  expect(pendingMeetings).toHaveBeenCalledWith('server-2');
+  expect(pendingNotes).toHaveBeenCalledWith('server-2');
+  expect(client.putLiveMeeting).not.toHaveBeenCalled();
+  expect(client.putLiveMeetingNote).not.toHaveBeenCalled();
+  expect(getSyncCursor).toHaveBeenCalledWith('server-2', 'session-1');
+  expect(importChanges).toHaveBeenCalledWith('server-2', 'session-1', 3, [], []);
+
+  jest.mocked(currentMeeting).mockReturnValue({ ...meeting, error: null });
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const subscription = jest
+    .spyOn(AppState, 'addEventListener')
+    .mockReturnValue({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
+  const stop = startLiveMeetingSync();
+  try {
+    await waitFor(() => expect(pendingMeetings).toHaveBeenCalledWith('server-2'));
+    expect(client.getLiveMeetingCommands).not.toHaveBeenCalled();
+  } finally {
+    stop();
+    subscription.mockRestore();
+  }
 });

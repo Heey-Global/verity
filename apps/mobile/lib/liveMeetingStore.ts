@@ -2,10 +2,12 @@ import type * as SQLite from 'expo-sqlite';
 import type { STTEngineId } from './liveMeetingSTT';
 import { getRandomBytesAsync } from 'expo-crypto';
 import type { LiveMeeting, LiveMeetingNote } from '@verity/mobile';
+import { getActiveMeetingServerId } from './client';
 
 export interface MeetingRecord {
   id: string;
   sessionId: string;
+  serverId?: string | null;
   engine: STTEngineId;
   startedAt: number;
   endedAt: number | null;
@@ -59,6 +61,7 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
       ['synced_revision', 'INTEGER NOT NULL DEFAULT 0'],
       ['capture_status', "TEXT NOT NULL DEFAULT 'preparing'"],
       ['is_remote', 'INTEGER NOT NULL DEFAULT 0'],
+      ['server_id', 'TEXT'],
     ]) {
       if (!meetingColumns.some((column) => column.name === name))
         await connection.execAsync(`ALTER TABLE meetings ADD COLUMN ${name} ${definition}`);
@@ -89,8 +92,13 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
     await connection.runAsync(
       'UPDATE meeting_notes SET revision = 1 WHERE revision = 0 AND meeting_id IN (SELECT id FROM meetings WHERE is_remote = 0)',
     );
+    const cursorColumns = await connection.getAllAsync<{ name: string }>(
+      'PRAGMA table_info(meeting_sync_cursors)',
+    );
+    if (cursorColumns.length > 0 && !cursorColumns.some((column) => column.name === 'server_id'))
+      await connection.execAsync('DROP TABLE meeting_sync_cursors');
     await connection.execAsync(
-      'CREATE TABLE IF NOT EXISTS meeting_sync_cursors (session_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0)',
+      'CREATE TABLE IF NOT EXISTS meeting_sync_cursors (server_id TEXT NOT NULL, session_id TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(server_id, session_id))',
     );
     // A process exit ends capture even when iOS has no chance to send a final status.
     await connection.runAsync(
@@ -113,6 +121,7 @@ export async function createMeeting(
   const meeting: MeetingRecord = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     sessionId,
+    serverId: getActiveMeetingServerId(),
     engine,
     startedAt: Date.now(),
     endedAt: null,
@@ -128,9 +137,10 @@ export async function createMeeting(
   };
   const connection = await db();
   await connection.runAsync(
-    'INSERT INTO meetings (id, session_id, engine, started_at, last_active_at, state, transcript, owner_token, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO meetings (id, session_id, server_id, engine, started_at, last_active_at, state, transcript, owner_token, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     meeting.id,
     meeting.sessionId,
+    meeting.serverId ?? null,
     meeting.engine,
     meeting.startedAt,
     meeting.startedAt,
@@ -190,11 +200,13 @@ export async function setCaptureStatus(
 }
 
 export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> {
+  const serverId = getActiveMeetingServerId();
   const rows = await (
     await db()
   ).getAllAsync<{
     id: string;
     session_id: string;
+    server_id: string | null;
     engine: STTEngineId;
     started_at: number;
     ended_at: number | null;
@@ -206,12 +218,14 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     synced_revision: number;
     capture_status: MeetingRecord['captureStatus'];
   }>(
-    'SELECT id, session_id, engine, started_at, ended_at, state, transcript, error, owner_token, revision, synced_revision, capture_status FROM meetings WHERE session_id = ? ORDER BY started_at DESC',
+    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, error, owner_token, revision, synced_revision, capture_status FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
     sessionId,
+    serverId,
   );
   return rows.map((row) => ({
     id: row.id,
     sessionId: row.session_id,
+    serverId: row.server_id,
     engine: row.engine,
     startedAt: row.started_at,
     endedAt: row.ended_at,
@@ -298,7 +312,9 @@ export async function finalizeNote(id: string, text: string): Promise<boolean> {
   return result.changes > 0;
 }
 
-export async function pendingMeetings(): Promise<(LiveMeeting & { ownerToken: string })[]> {
+export async function pendingMeetings(
+  serverId: string,
+): Promise<(LiveMeeting & { ownerToken: string })[]> {
   const rows = await (
     await db()
   ).getAllAsync<{
@@ -313,7 +329,8 @@ export async function pendingMeetings(): Promise<(LiveMeeting & { ownerToken: st
     owner_token: string;
     revision: number;
   }>(
-    'SELECT * FROM meetings WHERE owner_token IS NOT NULL AND revision > synced_revision ORDER BY started_at',
+    'SELECT * FROM meetings WHERE server_id = ? AND owner_token IS NOT NULL AND revision > synced_revision ORDER BY started_at',
+    serverId,
   );
   return rows.map((row) => ({
     id: row.id,
@@ -329,7 +346,9 @@ export async function pendingMeetings(): Promise<(LiveMeeting & { ownerToken: st
   }));
 }
 
-export async function pendingNotes(): Promise<{ sessionId: string; note: LiveMeetingNote }[]> {
+export async function pendingNotes(
+  serverId: string,
+): Promise<{ sessionId: string; note: LiveMeetingNote }[]> {
   const rows = await (
     await db()
   ).getAllAsync<{
@@ -340,7 +359,8 @@ export async function pendingNotes(): Promise<{ sessionId: string; note: LiveMee
     text: string;
     revision: number;
   }>(
-    'SELECT n.*, m.session_id FROM meeting_notes n JOIN meetings m ON m.id = n.meeting_id WHERE n.finalized = 1 AND n.revision > n.synced_revision ORDER BY m.started_at, n.at_seconds',
+    'SELECT n.*, m.session_id FROM meeting_notes n JOIN meetings m ON m.id = n.meeting_id WHERE m.server_id = ? AND n.finalized = 1 AND n.revision > n.synced_revision ORDER BY m.started_at, n.at_seconds',
+    serverId,
   );
   return rows.map((row) => ({
     sessionId: row.session_id,
@@ -354,55 +374,69 @@ export async function pendingNotes(): Promise<{ sessionId: string; note: LiveMee
   }));
 }
 
-export async function acknowledgeMeeting(id: string, revision: number): Promise<void> {
+export async function acknowledgeMeeting(
+  serverId: string,
+  id: string,
+  revision: number,
+): Promise<void> {
   await (
     await db()
   ).runAsync(
-    'UPDATE meetings SET synced_revision = MAX(synced_revision, ?) WHERE id = ? AND revision >= ?',
+    'UPDATE meetings SET synced_revision = MAX(synced_revision, ?) WHERE server_id = ? AND id = ? AND revision >= ?',
     revision,
+    serverId,
     id,
     revision,
   );
 }
 
-export async function acknowledgeNote(id: string, revision: number): Promise<void> {
+export async function acknowledgeNote(
+  serverId: string,
+  id: string,
+  revision: number,
+): Promise<void> {
   await (
     await db()
   ).runAsync(
-    'UPDATE meeting_notes SET synced_revision = MAX(synced_revision, ?) WHERE id = ? AND revision >= ?',
+    'UPDATE meeting_notes SET synced_revision = MAX(synced_revision, ?) WHERE id = ? AND revision >= ? AND EXISTS (SELECT 1 FROM meetings m WHERE m.id = meeting_notes.meeting_id AND m.server_id = ?)',
     revision,
     id,
     revision,
+    serverId,
   );
 }
 
-export async function getSyncCursor(sessionId: string): Promise<number> {
+export async function getSyncCursor(serverId: string, sessionId: string): Promise<number> {
   const row = await (
     await db()
   ).getFirstAsync<{ cursor: number }>(
-    'SELECT cursor FROM meeting_sync_cursors WHERE session_id = ?',
+    'SELECT cursor FROM meeting_sync_cursors WHERE server_id = ? AND session_id = ?',
+    serverId,
     sessionId,
   );
   return row?.cursor ?? 0;
 }
 
-export async function hasPendingMeetingSync(sessionId: string): Promise<boolean> {
+export async function hasPendingMeetingSync(serverId: string, sessionId: string): Promise<boolean> {
   const row = await (
     await db()
   ).getFirstAsync<{ pending: number }>(
     `SELECT EXISTS(
-      SELECT 1 FROM meetings WHERE session_id = ? AND owner_token IS NOT NULL AND revision > synced_revision
+      SELECT 1 FROM meetings WHERE server_id = ? AND session_id = ? AND owner_token IS NOT NULL AND revision > synced_revision
       UNION ALL
       SELECT 1 FROM meeting_notes n JOIN meetings m ON m.id = n.meeting_id
-        WHERE m.session_id = ? AND n.finalized = 1 AND n.revision > n.synced_revision
+        WHERE m.server_id = ? AND m.session_id = ? AND n.finalized = 1 AND n.revision > n.synced_revision
     ) AS pending`,
+    serverId,
     sessionId,
+    serverId,
     sessionId,
   );
   return row?.pending === 1;
 }
 
 export async function importChanges(
+  serverId: string,
   sessionId: string,
   cursor: number,
   meetings: LiveMeeting[],
@@ -413,14 +447,15 @@ export async function importChanges(
     for (const meeting of meetings) {
       await connection.runAsync(
         `INSERT INTO meetings
-        (id, session_id, engine, started_at, last_active_at, ended_at, state, transcript, capture_status, revision, synced_revision, is_remote)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        (id, session_id, server_id, engine, started_at, last_active_at, ended_at, state, transcript, capture_status, revision, synced_revision, is_remote)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at, state=excluded.state,
           transcript=excluded.transcript, capture_status=excluded.capture_status,
           revision=excluded.revision, synced_revision=excluded.revision
-        WHERE meetings.owner_token IS NULL AND meetings.revision < excluded.revision`,
+        WHERE meetings.server_id = excluded.server_id AND meetings.owner_token IS NULL AND meetings.revision < excluded.revision`,
         meeting.id,
         sessionId,
+        serverId,
         meeting.engine,
         meeting.startedAt,
         meeting.endedAt ?? meeting.startedAt,
@@ -431,13 +466,19 @@ export async function importChanges(
         meeting.revision,
         meeting.revision,
       );
+      const existing = await connection.getFirstAsync<{ server_id: string | null }>(
+        'SELECT server_id FROM meetings WHERE id = ?',
+        meeting.id,
+      );
+      if (existing?.server_id !== serverId)
+        throw new Error('Meeting ID belongs to another server.');
     }
     for (const note of notes) {
       await connection.runAsync(
         `INSERT INTO meeting_notes (id, meeting_id, at_seconds, text, revision, synced_revision, finalized)
         VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT(id) DO UPDATE SET text=excluded.text,
         at_seconds=excluded.at_seconds, revision=excluded.revision, synced_revision=excluded.revision
-        WHERE meeting_notes.revision <= meeting_notes.synced_revision AND meeting_notes.revision < excluded.revision`,
+        WHERE meeting_notes.meeting_id = excluded.meeting_id AND meeting_notes.revision <= meeting_notes.synced_revision AND meeting_notes.revision < excluded.revision`,
         note.id,
         note.meetingId,
         note.atSeconds,
@@ -445,9 +486,16 @@ export async function importChanges(
         note.revision,
         note.revision,
       );
+      const existing = await connection.getFirstAsync<{ meeting_id: string }>(
+        'SELECT meeting_id FROM meeting_notes WHERE id = ?',
+        note.id,
+      );
+      if (existing?.meeting_id !== note.meetingId)
+        throw new Error('Note ID belongs to another meeting.');
     }
     await connection.runAsync(
-      'INSERT INTO meeting_sync_cursors (session_id, cursor) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET cursor = MAX(cursor, excluded.cursor)',
+      'INSERT INTO meeting_sync_cursors (server_id, session_id, cursor) VALUES (?, ?, ?) ON CONFLICT(server_id, session_id) DO UPDATE SET cursor = MAX(cursor, excluded.cursor)',
+      serverId,
       sessionId,
       cursor,
     );

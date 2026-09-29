@@ -1,5 +1,5 @@
 import { AppState } from 'react-native';
-import { createVerityClient } from './client';
+import { createVerityClient, getActiveMeetingServerId } from './client';
 import { currentMeeting, endMeeting, pauseMeeting, resumeMeeting } from './liveMeetingSession';
 import {
   acknowledgeMeeting,
@@ -11,13 +11,15 @@ import {
   pendingNotes,
 } from './liveMeetingStore';
 
-let flushing: Promise<void> | null = null;
+const flushing = new Map<string, Promise<void>>();
 let handlingCommand = false;
-let followedRemote: { sessionId: string; meetingId: string } | null = null;
+let followedRemote: { serverId: string; sessionId: string; meetingId: string } | null = null;
 const followListeners = new Set<(value: typeof followedRemote) => void>();
 
 export function followRemoteMeeting(sessionId: string, meetingId: string): void {
-  followedRemote = { sessionId, meetingId };
+  const serverId = getActiveMeetingServerId();
+  if (!serverId) return;
+  followedRemote = { serverId, sessionId, meetingId };
   for (const listener of followListeners) listener(followedRemote);
 }
 
@@ -36,67 +38,79 @@ export function subscribeFollowedRemoteMeeting(
   };
 }
 
-function flushMeetingOutbox(): Promise<void> {
-  if (flushing) return flushing;
+function flushMeetingOutbox(serverId: string): Promise<void> {
+  const inFlight = flushing.get(serverId);
+  if (inFlight) return inFlight;
   const run = (async () => {
+    if (getActiveMeetingServerId() !== serverId) return;
     const client = createVerityClient();
     if (!client) return;
     let firstError: unknown = null;
-    for (const meeting of await pendingMeetings()) {
+    for (const meeting of await pendingMeetings(serverId)) {
       try {
         await client.putLiveMeeting(meeting);
-        await acknowledgeMeeting(meeting.id, meeting.revision);
+        await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
       } catch (error) {
         firstError ??= error;
       }
     }
-    for (const { sessionId, note } of await pendingNotes()) {
+    for (const { sessionId, note } of await pendingNotes(serverId)) {
       try {
         await client.putLiveMeetingNote(sessionId, note);
-        await acknowledgeNote(note.id, note.revision);
+        await acknowledgeNote(serverId, note.id, note.revision);
       } catch (error) {
         firstError ??= error;
       }
     }
     if (firstError) throw firstError;
   })();
-  flushing = run;
+  flushing.set(serverId, run);
   void run
     .finally(() => {
-      if (flushing === run) flushing = null;
+      if (flushing.get(serverId) === run) flushing.delete(serverId);
     })
     .catch(() => undefined);
   return run;
 }
 
 export async function syncMeetingSession(sessionId: string): Promise<{ pending: boolean }> {
+  const serverId = getActiveMeetingServerId();
+  if (!serverId) return { pending: true };
   let pending = false;
   try {
-    await flushMeetingOutbox();
+    await flushMeetingOutbox(serverId);
   } catch {
     pending = true;
   }
   const client = createVerityClient();
   if (!client) return { pending: true };
-  const after = await getSyncCursor(sessionId);
+  if (getActiveMeetingServerId() !== serverId) return { pending: true };
+  const after = await getSyncCursor(serverId, sessionId);
   const changes = await client.getLiveMeetingChanges(sessionId, after);
-  await importChanges(sessionId, changes.cursor, changes.meetings, changes.notes);
-  return { pending: pending || (await hasPendingMeetingSync(sessionId)) };
+  await importChanges(serverId, sessionId, changes.cursor, changes.meetings, changes.notes);
+  return { pending: pending || (await hasPendingMeetingSync(serverId, sessionId)) };
 }
 
-async function flushOwnerMeeting(id: string): Promise<void> {
+async function flushOwnerMeeting(serverId: string, id: string): Promise<void> {
+  if (getActiveMeetingServerId() !== serverId) throw new Error('Recording server changed.');
   const client = createVerityClient();
   if (!client) throw new Error('Server unavailable.');
-  for (const meeting of (await pendingMeetings()).filter((item) => item.id === id)) {
+  for (const meeting of (await pendingMeetings(serverId)).filter((item) => item.id === id)) {
     await client.putLiveMeeting(meeting);
-    await acknowledgeMeeting(meeting.id, meeting.revision);
+    await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
   }
 }
 
 async function handleOwnerCommands(): Promise<void> {
   if (handlingCommand) return;
   const meeting = currentMeeting();
-  if (!meeting || !meeting.ownerToken) return;
+  if (
+    !meeting ||
+    !meeting.ownerToken ||
+    !meeting.serverId ||
+    meeting.serverId !== getActiveMeetingServerId()
+  )
+    return;
   const client = createVerityClient();
   if (!client) return;
   handlingCommand = true;
@@ -113,6 +127,8 @@ async function handleOwnerCommands(): Promise<void> {
         const current = currentMeeting();
         if (current?.id !== meeting.id)
           throw new Error('Recording changed before the remote command was applied.');
+        if (getActiveMeetingServerId() !== meeting.serverId)
+          throw new Error('Recording server changed before the remote command was applied.');
         if (command.action !== 'stop' && current.state !== 'active')
           throw new Error('Recording already ended.');
         if (command.action === 'pause') await pauseMeeting(meeting.id);
@@ -121,7 +137,7 @@ async function handleOwnerCommands(): Promise<void> {
       } catch (reason) {
         error = String(reason);
       }
-      if (!error) await flushOwnerMeeting(meeting.id);
+      if (!error) await flushOwnerMeeting(meeting.serverId, meeting.id);
       await client.acknowledgeLiveMeetingCommand(
         meeting.sessionId,
         meeting.id,
@@ -143,7 +159,8 @@ export function startLiveMeetingSync(): () => void {
     if (!running || ticking || AppState.currentState !== 'active') return;
     ticking = true;
     try {
-      await flushMeetingOutbox().catch(() => undefined);
+      const serverId = getActiveMeetingServerId();
+      if (serverId) await flushMeetingOutbox(serverId).catch(() => undefined);
       await handleOwnerCommands();
     } catch {
       // Local SQLite remains the source of truth until the server can be reached again.

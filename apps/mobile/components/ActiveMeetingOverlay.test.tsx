@@ -39,7 +39,10 @@ jest.mock('../lib/liveMeetingSync', () => ({
   syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
   clearFollowedRemoteMeeting: jest.fn(),
 }));
-jest.mock('../lib/client', () => ({ createVerityClient: jest.fn().mockReturnValue(null) }));
+jest.mock('../lib/client', () => ({
+  createVerityClient: jest.fn().mockReturnValue(null),
+  getActiveMeetingServerId: jest.fn().mockReturnValue('server-1'),
+}));
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -85,6 +88,7 @@ it.each([
   const meeting: MeetingRecord = {
     id: 'remote-1',
     sessionId: 'session-1',
+    serverId: 'server-1',
     engine: 'fluid-nemotron',
     startedAt: Date.now(),
     endedAt: null,
@@ -98,7 +102,7 @@ it.each([
     return jest.fn();
   });
   jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
-    listener({ sessionId: 'session-1', meetingId: meeting.id });
+    listener({ serverId: 'server-1', sessionId: 'session-1', meetingId: meeting.id });
     return jest.fn();
   });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);

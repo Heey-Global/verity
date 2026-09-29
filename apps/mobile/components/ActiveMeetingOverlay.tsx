@@ -11,7 +11,7 @@ import {
   subscribeMeeting,
 } from '../lib/liveMeetingSession';
 import { listMeetings, type MeetingRecord } from '../lib/liveMeetingStore';
-import { createVerityClient } from '../lib/client';
+import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
   clearFollowedRemoteMeeting,
   subscribeFollowedRemoteMeeting,
@@ -23,7 +23,11 @@ const WIDTH = 200;
 export function ActiveMeetingOverlay() {
   const [localMeeting, setLocalMeeting] = useState<MeetingRecord | null>(null);
   const [remoteMeeting, setRemoteMeeting] = useState<MeetingRecord | null>(null);
-  const [followed, setFollowed] = useState<{ sessionId: string; meetingId: string } | null>(null);
+  const [followed, setFollowed] = useState<{
+    serverId: string;
+    sessionId: string;
+    meetingId: string;
+  } | null>(null);
   const [pendingCommand, setPendingCommand] = useState<'pause' | 'resume' | 'stop' | null>(null);
   const [recorderOnline, setRecorderOnline] = useState(true);
   const remoteStopRequested = useRef(false);
@@ -78,7 +82,13 @@ export function ActiveMeetingOverlay() {
       if (polling) return;
       polling = true;
       try {
+        if (getActiveMeetingServerId() !== followed.serverId) {
+          clearFollowedRemoteMeeting();
+          setRemoteMeeting(null);
+          return;
+        }
         await syncMeetingSession(followed.sessionId);
+        if (getActiveMeetingServerId() !== followed.serverId) return;
         const saved =
           (await listMeetings(followed.sessionId)).find((item) => item.id === followed.meetingId) ??
           null;
@@ -122,7 +132,7 @@ export function ActiveMeetingOverlay() {
       mounted = false;
       clearInterval(timer);
     };
-  }, [followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
+  }, [followed?.serverId, followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
   useEffect(() => {
     if (meeting?.state !== 'active') return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -150,6 +160,8 @@ export function ActiveMeetingOverlay() {
     setBusy(true);
     try {
       if (remote) {
+        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
+          throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to control this recording.');
         const action = meeting.captureStatus === 'paused' ? 'resume' : 'pause';
@@ -169,6 +181,8 @@ export function ActiveMeetingOverlay() {
     setBusy(true);
     try {
       if (remote) {
+        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
+          throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this recording.');
         await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
