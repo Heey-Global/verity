@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import { getRandomValues } from 'expo-crypto';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -20,11 +21,11 @@ import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 
 const DURATIONS = [
-  { label: '15 min', seconds: 900 },
-  { label: '1 hour', seconds: 3600 },
-  { label: '2 hours', seconds: 7200 },
-  { label: '4 hours', seconds: 14400 },
-  { label: '8 hours', seconds: 28800 },
+  { label: '15 min', a11y: '15 minutes', seconds: 900 },
+  { label: '1 h', a11y: '1 hour', seconds: 3600 },
+  { label: '2 h', a11y: '2 hours', seconds: 7200 },
+  { label: '4 h', a11y: '4 hours', seconds: 14400 },
+  { label: '8 h', a11y: '8 hours', seconds: 28800 },
 ] as const;
 
 /** "until 20:14", or with the day when the link outlives today. */
@@ -41,6 +42,24 @@ function remainingLabel(expiresAt: string | Date, now = new Date()): string {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest === 0 ? `${hours} h left` : `${hours} h ${rest} min left`;
+}
+
+/** A fresh 6-digit PIN. It only gates a short-lived preview, so digits suffice. */
+function generatePin(): string {
+  const [value] = getRandomValues(new Uint32Array(1));
+  return String(value! % 1_000_000).padStart(6, '0');
+}
+
+/** "482 913": groups of three are easier to read out and type. */
+function pinLabel(pin: string): string {
+  return pin.replace(/(\d{3})(?=\d)/g, '$1 ');
+}
+
+function shareMessage(share: PublicPreviewShare): string {
+  const lines = [`Preview: ${share.publicOrigin}`];
+  if (share.pin) lines.push(`PIN: ${share.pin}`);
+  lines.push(`Available ${expiryLabel(share.expiresAt)}`);
+  return lines.join('\n');
 }
 
 function folderLabel(staticPath: string | null): string {
@@ -77,13 +96,13 @@ export function StaticPreviewSheet({
   const [files, setFiles] = useState<string[]>([]);
   const [shares, setShares] = useState<PublicPreviewShare[]>([]);
   const [sharesLoading, setSharesLoading] = useState(true);
-  const [pin, setPin] = useState('');
+  const [pin, setPin] = useState(generatePin);
   const [duration, setDuration] = useState(3600);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [folderError, setFolderError] = useState<string>();
-  const [copiedId, setCopiedId] = useState<string>();
+  const [copied, setCopied] = useState<{ id: string; what: 'link' | 'pin' }>();
   // Stopping takes an Uplink round trip. Without its own state the button just
   // sat there and the sheet later jumped to the create form unannounced.
   const [stoppingId, setStoppingId] = useState<string>();
@@ -169,17 +188,23 @@ export function StaticPreviewSheet({
 
   const create = async () => {
     if (loadedPath !== path || !/^\d{6,12}$/.test(pin) || busy) return;
+    const submittedPin = pin;
     setBusy(true);
     setError(undefined);
     try {
       const share = await client.createSessionStaticPreviewShare(sessionId, {
         staticPath: path || '.',
-        pin,
+        pin: submittedPin,
         ttlSeconds: duration,
       });
       createdShareIds.current.add(share.id);
-      setShares((current) => [share, ...current]);
-      setPin('');
+      // Older Cores omit this field. Keep the PIN on the creating device until
+      // the link is closed; they cannot restore it on another device.
+      setShares((current) => [
+        { ...share, pin: share.pin === undefined ? submittedPin : share.pin },
+        ...current,
+      ]);
+      setPin(generatePin());
     } catch (caught) {
       setError(previewError(caught));
     } finally {
@@ -224,6 +249,7 @@ export function StaticPreviewSheet({
   );
   const stoppedVisible = activeShare === undefined && stoppedPath !== undefined;
   const detailsVisible = activeShare !== undefined || stoppedVisible;
+  const hasIndex = files.includes('index.html');
   const canCreate = loadedPath === path && /^\d{6,12}$/.test(pin) && !busy;
   const stopping = activeShare !== undefined && stoppingId === activeShare.id;
   // Re-render while a link is shown so "N min left" counts down and an
@@ -248,7 +274,7 @@ export function StaticPreviewSheet({
         >
           <View style={styles.handle} />
           <View style={styles.header}>
-            <Text style={styles.title}>Preview</Text>
+            <Text style={styles.title}>Share preview</Text>
             <Pressable
               onPress={onClose}
               accessibilityRole="button"
@@ -298,7 +324,11 @@ export function StaticPreviewSheet({
                             : 'Your preview is live'}
                       </Text>
                       <Text style={styles.caption}>
-                        Anyone with this link and the PIN can view the folder.
+                        {stopping || activeShare.state === 'revoking'
+                          ? 'Switching the link off. This takes a few seconds.'
+                          : activeShare.state === 'creating'
+                            ? 'The link starts working in a moment.'
+                            : 'Anyone with this link and the PIN can view the folder.'}
                       </Text>
                     </View>
                     {activeShare.publicOrigin ? (
@@ -317,12 +347,64 @@ export function StaticPreviewSheet({
                             {activeShare.publicOrigin}
                           </Text>
                         </Pressable>
+                        <View style={styles.pinBox}>
+                          <Icon name="lock" size={16} color={theme.colors.textMuted} />
+                          {activeShare.pin ? (
+                            <>
+                              <Text
+                                style={styles.pinValue}
+                                accessibilityLabel={`PIN ${activeShare.pin.split('').join(' ')}`}
+                              >
+                                {pinLabel(activeShare.pin)}
+                              </Text>
+                              <Pressable
+                                onPress={() =>
+                                  void Clipboard.setStringAsync(activeShare.pin!).then(() =>
+                                    setCopied({ id: activeShare.id, what: 'pin' }),
+                                  )
+                                }
+                                disabled={stopping}
+                                hitSlop={10}
+                                accessibilityRole="button"
+                                accessibilityLabel="Copy PIN"
+                              >
+                                <Icon
+                                  name={
+                                    copied?.id === activeShare.id && copied.what === 'pin'
+                                      ? 'check'
+                                      : 'copy'
+                                  }
+                                  size={18}
+                                  color={theme.colors.primary}
+                                />
+                              </Pressable>
+                            </>
+                          ) : (
+                            <Text style={styles.pinMissing}>PIN not stored for this link</Text>
+                          )}
+                        </View>
                         <View style={styles.actions}>
                           <Pressable
                             style={[styles.actionButton, styles.actionButtonPrimary]}
                             onPress={() =>
+                              void Share.share({ message: shareMessage(activeShare) }).catch(
+                                () => undefined,
+                              )
+                            }
+                            disabled={stopping}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              activeShare.pin ? 'Share link and PIN' : 'Share preview link'
+                            }
+                          >
+                            <Icon name="share" size={16} color={theme.colors.onPrimary} />
+                            <Text style={styles.actionTextPrimary}>Share</Text>
+                          </Pressable>
+                          <Pressable
+                            style={styles.actionButton}
+                            onPress={() =>
                               void Clipboard.setStringAsync(activeShare.publicOrigin!).then(() =>
-                                setCopiedId(activeShare.id),
+                                setCopied({ id: activeShare.id, what: 'link' }),
                               )
                             }
                             disabled={stopping}
@@ -330,27 +412,19 @@ export function StaticPreviewSheet({
                             accessibilityLabel="Copy preview link"
                           >
                             <Icon
-                              name={copiedId === activeShare.id ? 'check' : 'copy'}
+                              name={
+                                copied?.id === activeShare.id && copied.what === 'link'
+                                  ? 'check'
+                                  : 'copy'
+                              }
                               size={16}
-                              color={theme.colors.onPrimary}
+                              color={theme.colors.text}
                             />
-                            <Text style={styles.actionTextPrimary}>
-                              {copiedId === activeShare.id ? 'Copied' : 'Copy'}
+                            <Text style={styles.actionText}>
+                              {copied?.id === activeShare.id && copied.what === 'link'
+                                ? 'Copied'
+                                : 'Copy link'}
                             </Text>
-                          </Pressable>
-                          <Pressable
-                            style={styles.actionButton}
-                            onPress={() =>
-                              void Share.share({ message: activeShare.publicOrigin! }).catch(
-                                () => undefined,
-                              )
-                            }
-                            disabled={stopping}
-                            accessibilityRole="button"
-                            accessibilityLabel="Share preview link"
-                          >
-                            <Icon name="share" size={16} color={theme.colors.text} />
-                            <Text style={styles.actionText}>Share</Text>
                           </Pressable>
                           <Pressable
                             style={styles.actionButton}
@@ -381,11 +455,6 @@ export function StaticPreviewSheet({
                         <Text style={styles.factValue} numberOfLines={1}>
                           {`${remainingLabel(activeShare.expiresAt)} · ${expiryLabel(activeShare.expiresAt)}`}
                         </Text>
-                      </View>
-                      <View style={styles.fact}>
-                        <Icon name="lock" size={16} color={theme.colors.textMuted} />
-                        <Text style={styles.factLabel}>Access</Text>
-                        <Text style={styles.factValue}>PIN required</Text>
                       </View>
                     </View>
                   </View>
@@ -500,6 +569,20 @@ export function StaticPreviewSheet({
                   ) : null}
                 </ScrollView>
               </View>
+              {loadedPath === path && !loading && !folderError ? (
+                <View style={styles.entryHint}>
+                  <Icon
+                    name={hasIndex ? 'check-circle' : 'info'}
+                    size={14}
+                    color={hasIndex ? theme.colors.tone.done : theme.colors.textMuted}
+                  />
+                  <Text style={styles.entryHintText}>
+                    {hasIndex
+                      ? 'index.html opens as the start page'
+                      : 'No index.html in this folder'}
+                  </Text>
+                </View>
+              ) : null}
               <View style={styles.footer}>
                 {folderError ? <Text style={styles.error}>{folderError}</Text> : null}
                 {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -510,6 +593,7 @@ export function StaticPreviewSheet({
                       key={option.seconds}
                       onPress={() => setDuration(option.seconds)}
                       accessibilityRole="radio"
+                      accessibilityLabel={option.a11y}
                       accessibilityState={{ selected: duration === option.seconds }}
                       style={[
                         styles.duration,
@@ -528,17 +612,31 @@ export function StaticPreviewSheet({
                     </Pressable>
                   ))}
                 </View>
-                <Text style={styles.label}>PIN · 6–12 DIGITS</Text>
-                <TextInput
-                  value={pin}
-                  onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 12))}
-                  keyboardType="number-pad"
-                  secureTextEntry
-                  accessibilityLabel="Preview PIN"
-                  style={styles.input}
-                  placeholder="Enter PIN"
-                  placeholderTextColor={theme.colors.textFaint}
-                />
+                <View style={styles.pinLabelRow}>
+                  <Text style={styles.label}>PIN</Text>
+                  <Text style={styles.pinHint}>Visitors need it to open the link</Text>
+                </View>
+                <View style={styles.pinInputRow}>
+                  <TextInput
+                    value={pin}
+                    onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 12))}
+                    keyboardType="number-pad"
+                    accessibilityLabel="Preview PIN"
+                    accessibilityHint="6 to 12 digits"
+                    style={styles.pinInput}
+                    placeholder="6–12 digits"
+                    placeholderTextColor={theme.colors.textFaint}
+                  />
+                  <Pressable
+                    onPress={() => setPin(generatePin())}
+                    hitSlop={8}
+                    style={styles.pinRefresh}
+                    accessibilityRole="button"
+                    accessibilityLabel="Generate a new PIN"
+                  >
+                    <Icon name="refresh-cw" size={18} color={theme.colors.primary} />
+                  </Pressable>
+                </View>
                 <Pressable
                   onPress={() => void create()}
                   disabled={!canCreate}
@@ -631,29 +729,69 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
   },
   fileName: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.md },
-  durations: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.xs },
+  durations: {
+    flexDirection: 'row',
+    padding: 3,
+    gap: 3,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
   duration: {
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
+    flex: 1,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.sm + 1,
   },
   durationActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  durationText: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+  durationText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
   durationTextActive: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.sm,
     fontWeight: '600',
   },
-  input: {
-    color: theme.colors.text,
+  pinLabelRow: { flexDirection: 'row', alignItems: 'baseline', gap: theme.spacing.sm },
+  pinHint: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  pinInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 48,
     backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.radius.md,
-    padding: theme.spacing.sm,
+    paddingLeft: theme.spacing.md,
   },
+  pinInput: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: theme.text.lg,
+    fontWeight: '600',
+    letterSpacing: 4,
+    fontVariant: ['tabular-nums'],
+  },
+  pinRefresh: { padding: theme.spacing.md },
+  pinBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  pinValue: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: theme.text.lg,
+    fontWeight: '700',
+    letterSpacing: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  pinMissing: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.sm },
+  entryHint: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs, marginTop: -4 },
+  entryHintText: { color: theme.colors.textMuted, fontSize: theme.text.xs },
   createButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -668,14 +806,7 @@ const styles = StyleSheet.create((theme) => ({
   createText: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.md },
   centered: { textAlign: 'center' },
   error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
-  shareCard: {
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
-    gap: theme.spacing.lg,
-  },
+  shareCard: { gap: theme.spacing.lg },
   shareCardStopping: { opacity: 0.6 },
   statusPill: {
     alignSelf: 'flex-start',
@@ -699,7 +830,7 @@ const styles = StyleSheet.create((theme) => ({
     textTransform: 'uppercase',
   },
   heroText: { gap: theme.spacing.xs },
-  heroTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+  heroTitle: { color: theme.colors.text, fontSize: theme.text.xl - 4, fontWeight: '700' },
   caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
   linkBox: {
     flexDirection: 'row',
@@ -709,7 +840,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.surfaceAlt,
   },
   link: { flex: 1, minWidth: 0, color: theme.colors.primary, fontSize: theme.text.sm },
   actions: { flexDirection: 'row', gap: theme.spacing.sm },
@@ -723,16 +854,16 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.surfaceAlt,
   },
   actionButtonPrimary: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
   actionText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
   actionTextPrimary: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.sm },
   facts: {
-    gap: theme.spacing.sm,
-    paddingTop: theme.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
   },
   fact: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   factLabel: { width: 64, color: theme.colors.textMuted, fontSize: theme.text.sm },
@@ -754,10 +885,6 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.xl,
     paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
   },
   stoppedActions: { gap: theme.spacing.sm },
   secondaryButton: {

@@ -42,6 +42,7 @@ function fixture(
     publicOrigin: 'https://share-id.preview.example',
     edgeUrl: 'wss://share-id.preview.example/__verity/connector',
     pinHash: 'scrypt:salt:hash',
+    pin: null,
     connectorToken: 'connector',
     sessionSecret: 'session',
     connectorContainerName: 'verity-preview-share-id',
@@ -342,6 +343,25 @@ describe('PreviewShareManager', () => {
       'active',
       { connectorContainerId: 'connector-id' },
     );
+  });
+
+  it('keeps the PIN it was given and hands the Uplink only the hash', async () => {
+    const { manager, store, edge } = fixture();
+    await manager.create({ devServerId: 'dev-1', pin: '482913', ttlSeconds: 3600 });
+
+    expect(store.createPublicPreviewShare).toHaveBeenCalledWith(
+      expect.objectContaining({ pin: '482913' }),
+    );
+    // The Uplink verifies logins itself and must still never see the PIN.
+    expect(JSON.stringify(edge.create.mock.calls)).not.toContain('482913');
+  });
+
+  it('lists the stored PIN so another device can show it again', async () => {
+    const { manager, store } = fixture();
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      { ...(await store.getPublicPreviewShare('share-id'))!, state: 'active', pin: '482913' },
+    ]);
+    expect((await manager.list('p1')).map((share) => share.pin)).toEqual(['482913']);
   });
 
   it('attributes the time a link takes to the step that spent it', async () => {

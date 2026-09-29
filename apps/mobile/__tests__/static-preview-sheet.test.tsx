@@ -1,9 +1,73 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, Share } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
+
+it('generates a PIN that can be replaced before the link is created', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => []),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+
+  const input = await screen.findByLabelText('Preview PIN');
+  expect(input.props.value).toMatch(/^\d{6}$/);
+  fireEvent.changeText(input, '987654');
+  expect(screen.getByLabelText('Preview PIN').props.value).toBe('987654');
+  fireEvent.press(screen.getByRole('button', { name: 'Generate a new PIN' }));
+  expect(screen.getByLabelText('Preview PIN').props.value).toMatch(/^\d{6}$/);
+});
+
+it('shows and copies the saved PIN on a reopened link and shares it with the URL', async () => {
+  const shareAction = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'site',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        pin: '482913',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('482 913')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Copy PIN' }));
+    await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('482913'));
+    fireEvent.press(screen.getByRole('button', { name: 'Share link and PIN' }));
+    expect(shareAction).toHaveBeenCalledWith({
+      message: expect.stringContaining(
+        'Preview: https://existing.example\nPIN: 482913\nAvailable ',
+      ),
+    });
+  } finally {
+    shareAction.mockRestore();
+  }
+});
 
 it('creates a share for index.html in the worktree root', async () => {
   const client = {
@@ -45,6 +109,8 @@ it('creates a share for index.html in the worktree root', async () => {
       ttlSeconds: 3600,
     }),
   );
+  // Older Cores omit pin from the response; the creating device still knows it.
+  expect(await screen.findByText('123 456')).toBeTruthy();
 });
 
 it('creates and shows a static share for the folder selected in the session worktree', async () => {
@@ -572,4 +638,28 @@ it('counts the remaining time down while the sheet stays open', async () => {
   } finally {
     jest.useRealTimers();
   }
+});
+
+it('says whether the selected folder has a start page', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async (_session: string, path: string) =>
+      path === 'docs'
+        ? { directories: [], files: ['guide.md'] }
+        : { directories: ['docs'], files: ['index.html'] },
+    ),
+    listPublicPreviewShares: jest.fn(async () => []),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  expect(await screen.findByText('index.html opens as the start page')).toBeTruthy();
+
+  fireEvent.press(screen.getByLabelText('Open folder docs'));
+  expect(await screen.findByText('No index.html in this folder')).toBeTruthy();
+  expect(screen.queryByText('index.html opens as the start page')).toBeNull();
 });
