@@ -1,5 +1,8 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { router } from 'expo-router';
+import { createVerityClient } from '../lib/client';
+import { listMeetings } from '../lib/liveMeetingStore';
+import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
 
 import { ActiveMeetingOverlay } from './ActiveMeetingOverlay';
 import {
@@ -27,6 +30,23 @@ jest.mock('../lib/liveMeetingSession', () => ({
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   endMeeting: jest.fn().mockResolvedValue(undefined),
 }));
+jest.mock('../lib/liveMeetingStore', () => ({ listMeetings: jest.fn().mockResolvedValue([]) }));
+jest.mock('../lib/liveMeetingSync', () => ({
+  subscribeFollowedRemoteMeeting: jest.fn().mockImplementation((listener) => {
+    listener(null);
+    return jest.fn();
+  }),
+  syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
+  clearFollowedRemoteMeeting: jest.fn(),
+}));
+jest.mock('../lib/client', () => ({
+  createVerityClient: jest.fn().mockReturnValue(null),
+  getActiveMeetingServerId: jest.fn().mockReturnValue('server-1'),
+}));
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 
 it('pauses, resumes, and opens the full meeting after stopping', async () => {
   const meeting: MeetingRecord = {
@@ -59,4 +79,44 @@ it('pauses, resumes, and opens the full meeting after stopping', async () => {
     pathname: '/meeting/[sessionId]',
     params: { sessionId: 'session-1' },
   });
+});
+
+it.each([
+  ['Pause meeting', 'pause'],
+  ['Stop meeting', 'stop'],
+] as const)('sends remote %s from the minimized window', async (button, action) => {
+  const meeting: MeetingRecord = {
+    id: 'remote-1',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    listener(null);
+    return jest.fn();
+  });
+  jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
+    listener({ serverId: 'server-1', sessionId: 'session-1', meetingId: meeting.id });
+    return jest.fn();
+  });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const requestLiveMeetingCommand = jest.fn().mockResolvedValue('command-1');
+  jest.mocked(createVerityClient).mockReturnValue({
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    requestLiveMeetingCommand,
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<ActiveMeetingOverlay />);
+  const control = await screen.findByLabelText(button);
+  await act(async () => {
+    fireEvent.press(control);
+  });
+  expect(requestLiveMeetingCommand).toHaveBeenCalledWith('session-1', meeting.id, action);
+  expect(pauseMeeting).not.toHaveBeenCalled();
+  expect(endMeeting).not.toHaveBeenCalled();
 });

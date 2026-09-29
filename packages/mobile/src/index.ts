@@ -404,6 +404,7 @@ export {
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
+export { type LiveMeeting, type LiveMeetingNote, type LiveMeetingCommand } from './api.js';
 export { healthSchema, type Health } from './api.js';
 export {
   remoteControlDescriptorSchema,

@@ -23,6 +23,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../components/Icon';
 import { ActiveMeetingOverlay } from '../components/ActiveMeetingOverlay';
+import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
 import { WindowControlsProbe } from '../components/WindowControls';
 import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
@@ -111,6 +112,7 @@ export default function RootLayout() {
 }
 
 function HydratedRoot() {
+  useEffect(() => startLiveMeetingSync(), []);
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();

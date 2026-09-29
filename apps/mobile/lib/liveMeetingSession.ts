@@ -9,6 +9,7 @@ import {
   createMeeting,
   setMeetingState,
   saveTranscript,
+  setCaptureStatus,
   touchMeeting,
   type MeetingRecord,
 } from './liveMeetingStore';
@@ -106,8 +107,13 @@ function onEvent(event: STTEvent) {
       event.state === 'listening' ||
       event.state === 'paused'
     ) {
-      active = { ...active, captureStatus: event.state };
+      const status = event.state;
+      active = { ...active, captureStatus: status };
       publish();
+      const id = active.id;
+      void enqueueWrite(() => setCaptureStatus(id, status)).catch((error) =>
+        failLocalSave(id, error),
+      );
     } else if (event.state === 'stopped' && !ending) {
       const id = active.id;
       active = {
@@ -219,15 +225,19 @@ async function startMeetingUnlocked(
   return active;
 }
 
-export async function endMeeting(): Promise<void> {
+export async function endMeeting(expectedMeetingId?: string): Promise<void> {
   if (startInFlight) await startInFlight.catch(() => undefined);
   const meeting = active;
+  if (expectedMeetingId && meeting?.id !== expectedMeetingId)
+    throw new Error('Recording changed before the stop command was applied.');
   if (!meeting || meeting.state !== 'active') return;
   ending = true;
   stopHeartbeat();
   let nativeStopCompleted = false;
   try {
     await captureControl;
+    if (active?.id !== meeting.id)
+      throw new Error('Recording changed before the stop command was applied.');
     await liveMeetingSTT?.stop();
     nativeStopCompleted = true;
     await writeTail;
@@ -236,6 +246,7 @@ export async function endMeeting(): Promise<void> {
     await enqueueWrite(() => setMeetingState(meeting.id, 'ended'));
     active = { ...(active ?? meeting), state: 'ended', endedAt: Date.now() };
   } catch (error) {
+    if (active?.id !== meeting.id) throw error;
     if (!nativeStopCompleted) shutdownFailed = true;
     const message = nativeStopCompleted ? `Local save failed: ${String(error)}` : String(error);
     active = {
@@ -251,14 +262,18 @@ export async function endMeeting(): Promise<void> {
     throw error;
   } finally {
     ending = false;
-    subscription?.remove();
-    subscription = null;
-    publish();
+    if (active?.id === meeting.id) {
+      subscription?.remove();
+      subscription = null;
+      publish();
+    }
   }
 }
 
-export function pauseMeeting(): Promise<void> {
+export function pauseMeeting(expectedMeetingId?: string): Promise<void> {
   return queueCaptureControl(async () => {
+    if (expectedMeetingId && active?.id !== expectedMeetingId)
+      throw new Error('Recording changed before the pause command was applied.');
     if (!active || active.state !== 'active' || ending) return;
     if (active.captureStatus === 'paused') return;
     if (active.captureStatus !== 'listening')
@@ -267,18 +282,22 @@ export function pauseMeeting(): Promise<void> {
     if (active?.state === 'active') {
       active = { ...active, captureStatus: 'paused' };
       publish();
+      await enqueueWrite(() => setCaptureStatus(active!.id, 'paused'));
     }
   });
 }
 
-export function resumeMeeting(): Promise<void> {
+export function resumeMeeting(expectedMeetingId?: string): Promise<void> {
   return queueCaptureControl(async () => {
+    if (expectedMeetingId && active?.id !== expectedMeetingId)
+      throw new Error('Recording changed before the resume command was applied.');
     if (!active || active.state !== 'active' || ending) return;
     if (active.captureStatus !== 'paused') return;
     await liveMeetingSTT?.resume();
     if (active?.state === 'active') {
       active = { ...active, captureStatus: 'listening' };
       publish();
+      await enqueueWrite(() => setCaptureStatus(active!.id, 'listening'));
     }
   });
 }

@@ -34,6 +34,7 @@ jest.mock('./liveMeetingStore', () => ({
   saveTranscript: jest.fn().mockResolvedValue(undefined),
   setMeetingState: jest.fn().mockResolvedValue(undefined),
   touchMeeting: jest.fn().mockResolvedValue(undefined),
+  setCaptureStatus: jest.fn().mockResolvedValue(undefined),
 }));
 
 beforeEach(() => jest.clearAllMocks());
@@ -58,6 +59,22 @@ it('pauses native capture and can stop a paused meeting', async () => {
   await endMeeting();
   expect(native.stop).toHaveBeenCalledTimes(1);
   expect(currentMeeting()?.state).toBe('ended');
+});
+
+it('rejects a delayed control command aimed at a different recording', async () => {
+  const native = liveMeetingSTT!;
+  jest.mocked(native.addListener).mockImplementation((_name, listener) => {
+    listener({ kind: 'status', state: 'listening' });
+    return { remove: jest.fn() };
+  });
+  await startMeeting('session-1');
+  await expect(pauseMeeting('previous-meeting')).rejects.toThrow('Recording changed');
+  await expect(resumeMeeting('previous-meeting')).rejects.toThrow('Recording changed');
+  await expect(endMeeting('previous-meeting')).rejects.toThrow('Recording changed');
+  expect(native.pause).not.toHaveBeenCalled();
+  expect(native.resume).not.toHaveBeenCalled();
+  expect(native.stop).not.toHaveBeenCalled();
+  await endMeeting();
 });
 
 it('persists a Nemotron transcript and final text before ending the meeting', async () => {

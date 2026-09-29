@@ -1841,7 +1841,124 @@ const integrationSourceSchema = z.object({
 export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
 export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
 
+const liveMeetingSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  engine: z.enum(['apple-speech', 'apple-dictation', 'fluid-nemotron', 'fluid-parakeet']),
+  startedAt: z.number(),
+  endedAt: z.number().nullable(),
+  state: z.enum(['active', 'interrupted', 'ended']),
+  transcript: z.string(),
+  captureStatus: z.enum(['preparing', 'downloading', 'listening', 'paused']),
+  revision: z.number(),
+});
+const liveMeetingNoteSchema = z.object({
+  id: z.string(),
+  meetingId: z.string(),
+  atSeconds: z.number(),
+  text: z.string(),
+  revision: z.number(),
+});
+const liveMeetingCommandSchema = z.object({
+  id: z.string(),
+  meetingId: z.string(),
+  action: z.enum(['pause', 'resume', 'stop']),
+  state: z.enum(['pending', 'completed', 'failed']),
+  error: z.string().nullable(),
+  requestedAt: z.number(),
+  acknowledgedAt: z.number().nullable(),
+});
+export type LiveMeeting = z.infer<typeof liveMeetingSchema>;
+export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
+export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
+
 export class VerityClient {
+  async getLiveMeetingChanges(sessionId: string, after: number) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings?after=${after}`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        cursor: z.number(),
+        meetings: z.array(liveMeetingSchema),
+        notes: z.array(liveMeetingNoteSchema),
+      })
+      .parse(await res.json());
+  }
+
+  async putLiveMeeting(meeting: LiveMeeting & { ownerToken: string }): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(meeting.sessionId)}/live-meetings/${encodeURIComponent(meeting.id)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(meeting),
+      },
+    );
+  }
+
+  async putLiveMeetingNote(sessionId: string, note: LiveMeetingNote): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(note.meetingId)}/notes/${encodeURIComponent(note.id)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(note),
+      },
+    );
+  }
+
+  async getLiveMeetingCommands(
+    sessionId: string,
+    meetingId: string,
+    ownerToken?: string,
+  ): Promise<{ commands: LiveMeetingCommand[]; recorderOnline: boolean }> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/commands`,
+      {
+        method: 'GET',
+        ...(ownerToken ? { headers: { 'x-meeting-owner-token': ownerToken } } : {}),
+      },
+    );
+    return z
+      .object({ commands: z.array(liveMeetingCommandSchema), recorderOnline: z.boolean() })
+      .parse(await res.json());
+  }
+
+  async requestLiveMeetingCommand(
+    sessionId: string,
+    meetingId: string,
+    action: LiveMeetingCommand['action'],
+  ): Promise<string> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/commands`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action }),
+      },
+    );
+    return z.object({ commandId: z.string() }).parse(await res.json()).commandId;
+  }
+
+  async acknowledgeLiveMeetingCommand(
+    sessionId: string,
+    meetingId: string,
+    commandId: string,
+    ownerToken: string,
+    state: 'completed' | 'failed',
+    error: string | null,
+  ): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/commands/${encodeURIComponent(commandId)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-meeting-owner-token': ownerToken },
+        body: JSON.stringify({ state, error }),
+      },
+    );
+  }
   async getMatrixConfig(): Promise<{
     endpoint: string;
     username: string;

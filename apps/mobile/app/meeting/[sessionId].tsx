@@ -26,10 +26,14 @@ import { liveMeetingSTT, type STTEngine, type STTEngineId } from '../../lib/live
 import {
   listMeetings,
   listNotes,
+  loadDraftNote,
+  finalizeNote,
   saveNote,
   type MeetingNote,
   type MeetingRecord,
 } from '../../lib/liveMeetingStore';
+import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
+import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
 
 const ACCENT = '#bd8bff';
 const TEXT = '#eee9f7';
@@ -66,6 +70,9 @@ export default function MeetingScreen() {
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [showNewMeeting, setShowNewMeeting] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [syncError, setSyncError] = useState(false);
+  const [pendingCommand, setPendingCommand] = useState<'pause' | 'resume' | 'stop' | null>(null);
+  const [recorderOnline, setRecorderOnline] = useState(true);
   const noteSaveErrorRef = useRef<string | null>(null);
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
@@ -113,17 +120,74 @@ export default function MeetingScreen() {
     if (!sessionId) return;
     const saved = await listMeetings(sessionId);
     setHistory(saved);
-    setMeeting(
-      (current) =>
-        current ??
-        (currentMeeting()?.sessionId === sessionId ? currentMeeting() : (saved[0] ?? null)),
-    );
-  }, [sessionId]);
+    setMeeting((current) => {
+      const local = currentMeeting();
+      const serverId = getActiveMeetingServerId();
+      if (selectedId) return saved.find((item) => item.id === selectedId) ?? null;
+      if (
+        local?.sessionId === sessionId &&
+        local.state === 'active' &&
+        ((local.serverId ?? null) === serverId || local.serverId == null)
+      )
+        return local;
+      return saved[0] ?? ((current?.serverId ?? null) === serverId ? current : null);
+    });
+  }, [sessionId, selectedId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let mounted = true;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const sync = await syncMeetingSession(sessionId);
+        if (!mounted) return;
+        setSyncError(sync.pending);
+        await refresh();
+        const shown = displayedMeetingId.current;
+        if (shown) {
+          const saved = await listNotes(shown);
+          if (mounted && displayedMeetingId.current === shown)
+            setNotes((current) => {
+              const merged = new Map(saved.map((note) => [note.id, note]));
+              for (const note of current)
+                if (note.meetingId === shown && !merged.has(note.id)) merged.set(note.id, note);
+              return [...merged.values()].sort((a, b) => a.atSeconds - b.atSeconds);
+            });
+          const control = await createVerityClient()?.getLiveMeetingCommands(sessionId, shown);
+          if (mounted && control) {
+            setRecorderOnline(control.recorderOnline);
+            const latest = control.commands[0];
+            setPendingCommand(latest?.state === 'pending' ? latest.action : null);
+            if (latest?.state === 'failed') setError(latest.error ?? 'Meeting control failed.');
+          }
+        }
+      } catch {
+        if (mounted) setSyncError(true);
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const timer = setInterval(() => {
+      void poll();
+    }, 2000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [sessionId, refresh]);
 
   useEffect(() => {
     void refresh().catch((reason) => setError(String(reason)));
     return subscribeMeeting((active) => {
-      if (active?.sessionId === sessionId && (selectedId === null || selectedId === active.id)) {
+      if (
+        active?.sessionId === sessionId &&
+        (active.serverId == null || active.serverId === getActiveMeetingServerId()) &&
+        (selectedId === null || selectedId === active.id)
+      ) {
         setMeeting(active);
       }
       if (active?.state === 'ended' || active?.state === 'interrupted') {
@@ -153,6 +217,17 @@ export default function MeetingScreen() {
         if (current) setError(String(reason));
       });
     setDraft(pendingDrafts.get(meeting.id) ?? null);
+    if (!pendingDrafts.has(meeting.id)) {
+      void loadDraftNote(meeting.id)
+        .then((savedDraft) => {
+          if (!current || !savedDraft || pendingDrafts.has(meeting.id)) return;
+          pendingDrafts.set(meeting.id, savedDraft);
+          setDraft(savedDraft);
+        })
+        .catch((reason) => {
+          if (current) setError(String(reason));
+        });
+    }
     const noteError = pendingNoteErrors.get(meeting.id) ?? null;
     noteSaveErrorRef.current = noteError;
     setNoteSaveError(noteError ? { meetingId: meeting.id, message: noteError } : null);
@@ -199,6 +274,7 @@ export default function MeetingScreen() {
     setError(null);
     try {
       const next = await startMeeting(sessionId, selectedEngine);
+      setSyncError(true);
       setSelectedId(null);
       setMeeting(next);
       setShowNewMeeting(false);
@@ -216,7 +292,17 @@ export default function MeetingScreen() {
     setBusy(true);
     try {
       await pendingNoteWrites.get(meeting?.id ?? '');
-      await endMeeting();
+      if (meeting && currentMeeting()?.id !== meeting.id) {
+        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
+          throw new Error('This meeting belongs to another server.');
+        const client = createVerityClient();
+        if (!client) throw new Error('Connect to the server to stop this recording.');
+        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
+        setPendingCommand('stop');
+      } else {
+        await endMeeting();
+        setSyncError(true);
+      }
       await refresh();
     } catch (reason) {
       setError(String(reason));
@@ -229,8 +315,18 @@ export default function MeetingScreen() {
     if (busy || !meeting) return;
     setBusy(true);
     try {
-      if (meeting.captureStatus === 'paused') await resumeMeeting();
-      else await pauseMeeting();
+      if (currentMeeting()?.id === meeting.id) {
+        if (meeting.captureStatus === 'paused') await resumeMeeting();
+        else await pauseMeeting();
+      } else {
+        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
+          throw new Error('This meeting belongs to another server.');
+        const client = createVerityClient();
+        if (!client) throw new Error('Connect to the server to control this recording.');
+        const action = meeting.captureStatus === 'paused' ? 'resume' : 'pause';
+        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, action);
+        setPendingCommand(action);
+      }
       setError(null);
     } catch (reason) {
       setError(String(reason));
@@ -259,14 +355,13 @@ export default function MeetingScreen() {
     queueNoteSave(edited);
   };
 
-  const queueNoteSave = (note: MeetingNote, finishAfterSave = false) => {
+  const queueNoteSave = (note: MeetingNote): Promise<void> => {
     const next = saveNote(note);
     const completed = next.then(
       () => {
         const latest = pendingDrafts.get(note.meetingId);
         if (latest?.id === note.id && latest.text !== note.text) return;
         pendingNoteErrors.delete(note.meetingId);
-        if (finishAfterSave && latest?.id === note.id) pendingDrafts.delete(note.meetingId);
         publishPendingNote(note.meetingId);
       },
       (reason) => {
@@ -283,18 +378,26 @@ export default function MeetingScreen() {
     void tail.then(() => {
       if (pendingNoteWrites.get(note.meetingId) === tail) pendingNoteWrites.delete(note.meetingId);
     });
+    return tail;
   };
 
   const submitNote = () => {
     if (!draft) return;
-    if (noteUnsaved) {
-      queueNoteSave(draft, true);
+    if (!draft.text.trim() && !noteUnsaved) return;
+    if (draft.text.length > 10_000) {
+      setError('Meeting notes must be 10,000 characters or fewer.');
       return;
     }
-    if (!draft.text.trim()) return;
-    const completion = pendingNoteWrites.get(draft.meetingId) ?? Promise.resolve();
     const completing = draft;
-    void completion.then(() => {
+    if (noteUnsaved && !draft.text.trim()) {
+      void queueNoteSave(completing);
+      return;
+    }
+    void (async () => {
+      const completion = noteUnsaved
+        ? queueNoteSave(completing)
+        : (pendingNoteWrites.get(completing.meetingId) ?? Promise.resolve());
+      await completion;
       const latest = pendingDrafts.get(completing.meetingId);
       if (
         (pendingNoteWrites.get(completing.meetingId) &&
@@ -304,30 +407,49 @@ export default function MeetingScreen() {
         latest.text !== completing.text
       )
         return;
-      pendingDrafts.delete(completing.meetingId);
-      publishPendingNote(completing.meetingId);
+      if (!(await finalizeNote(completing.id, completing.text))) return;
+      setSyncError(true);
+      const currentDraft = pendingDrafts.get(completing.meetingId);
+      if (currentDraft?.id === completing.id && currentDraft.text === completing.text) {
+        pendingDrafts.delete(completing.meetingId);
+        publishPendingNote(completing.meetingId);
+      }
       setDraft((current) =>
         current?.id === completing.id && current.text === completing.text ? null : current,
       );
+    })().catch((reason) => {
+      const message = `Note could not be saved: ${String(reason)}`;
+      pendingNoteErrors.set(completing.meetingId, message);
+      publishPendingNote(completing.meetingId);
     });
   };
 
   const runningMeeting = currentMeeting();
   const active = meeting?.state === 'active' && runningMeeting?.id === meeting.id;
+  const live = meeting?.state === 'active';
   const noteUnsaved = noteSaveError?.meetingId === meeting?.id;
   return (
     <KeyboardAvoidingView
       style={[styles.root, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 12 }]}
     >
       <Stack.Screen options={{ headerShown: false }} />
-      <Pressable onPress={() => router.back()} accessibilityRole="button">
+      <Pressable
+        onPress={() => {
+          if (live && !active && meeting) followRemoteMeeting(meeting.sessionId, meeting.id);
+          router.back();
+        }}
+        accessibilityRole="button"
+      >
         <Text style={styles.back}>‹ Back to session</Text>
       </Pressable>
       <View style={styles.header}>
         <Text style={styles.title}>Live Meeting</Text>
-        {active ? (
+        {live ? (
           <Pressable
-            onPress={() => router.back()}
+            onPress={() => {
+              if (!active && meeting) followRemoteMeeting(meeting.sessionId, meeting.id);
+              router.back();
+            }}
             accessibilityRole="button"
             accessibilityLabel="Minimize meeting"
           >
@@ -347,22 +469,38 @@ export default function MeetingScreen() {
           ? active
             ? '● Recording · note not saved'
             : `${meeting?.state === 'interrupted' ? 'Interrupted' : 'Ended'} · note not saved`
-          : active
+          : live
             ? meeting.captureStatus === 'paused'
-              ? `Ⅱ Paused   ${elapsed(meeting.startedAt, now)}   Saved on this device`
+              ? `Ⅱ Paused   ${elapsed(meeting.startedAt, now)}   ${active ? (meeting.serverId === null ? 'Saved only on this device' : 'Saving to server') : 'Live from recording device'}`
               : meeting.captureStatus === 'downloading'
                 ? 'Preparing language model…'
                 : meeting.captureStatus === 'preparing'
                   ? 'Preparing microphone…'
-                  : `● Transcribing   ${elapsed(meeting.startedAt, now)}   Saving on this device`
+                  : `● Transcribing   ${elapsed(meeting.startedAt, now)}   ${active ? (meeting.serverId === null ? 'Saved only on this device' : 'Saving to server') : 'Live from recording device'}`
             : meeting
-              ? meeting.state === 'interrupted'
-                ? meeting.error?.startsWith('Local save failed')
-                  ? 'Interrupted · local save failed'
-                  : 'Interrupted · saved locally'
-                : 'Ended · saved locally'
+              ? meeting.serverId === null
+                ? `${meeting.state === 'interrupted' ? 'Interrupted' : 'Ended'} · saved only on this device`
+                : meeting.state === 'interrupted'
+                  ? meeting.error?.startsWith('Local save failed')
+                    ? 'Interrupted · local save failed'
+                    : syncError
+                      ? 'Interrupted · server sync pending'
+                      : 'Interrupted · saved on server'
+                  : syncError
+                    ? 'Ended · server sync pending'
+                    : 'Ended · saved on server'
               : 'Ready to record'}
       </Text>
+      {pendingCommand ? (
+        <Text style={styles.status}>
+          {recorderOnline
+            ? `Waiting for recording device to ${pendingCommand}… Keep Verity open there.`
+            : 'Recording device unreachable. Open Verity there to apply this command.'}
+        </Text>
+      ) : null}
+      {syncError && meeting?.serverId !== null ? (
+        <Text style={styles.statusPaused}>Saved locally · server sync pending</Text>
+      ) : null}
       {meeting ? (
         <>
           <View style={styles.card}>
@@ -401,7 +539,7 @@ export default function MeetingScreen() {
             <Text style={styles.section}>Meeting notes</Text>
             <ScrollView style={styles.notes} keyboardShouldPersistTaps="handled">
               {notes
-                .filter((note) => !(active || noteUnsaved) || note.id !== draft?.id)
+                .filter((note) => !(live || noteUnsaved || draft) || note.id !== draft?.id)
                 .map((note) => (
                   <Text key={note.id} testID="meeting-note" style={styles.note}>
                     <Text style={styles.noteTime}>{elapsed(0, note.atSeconds * 1000)} </Text>
@@ -409,10 +547,11 @@ export default function MeetingScreen() {
                   </Text>
                 ))}
             </ScrollView>
-            {active || noteUnsaved ? (
+            {live || noteUnsaved || draft ? (
               <View style={styles.composer}>
                 <TextInput
                   accessibilityLabel="Add a meeting note"
+                  maxLength={10_000}
                   placeholder="Add a note…"
                   placeholderTextColor={MUTED}
                   multiline
@@ -433,11 +572,12 @@ export default function MeetingScreen() {
               </View>
             ) : null}
           </View>
-          {active ? (
+          {live ? (
             <View style={styles.controls}>
               <Pressable
                 disabled={
                   busy ||
+                  !!pendingCommand ||
                   (meeting.captureStatus !== 'paused' && meeting.captureStatus !== 'listening')
                 }
                 onPress={togglePause}
@@ -449,7 +589,7 @@ export default function MeetingScreen() {
                 </Text>
               </Pressable>
               <Pressable
-                disabled={busy}
+                disabled={busy || pendingCommand === 'stop'}
                 onPress={end}
                 style={[styles.button, styles.endButton]}
                 accessibilityRole="button"
@@ -460,7 +600,7 @@ export default function MeetingScreen() {
           ) : null}
         </>
       ) : null}
-      {!active && (!meeting || showNewMeeting) ? (
+      {!live && (!meeting || showNewMeeting) ? (
         <View>
           <Text style={styles.section}>Engine for next meeting</Text>
           {engines.map((engine) => (
@@ -484,7 +624,7 @@ export default function MeetingScreen() {
           ))}
         </View>
       ) : null}
-      {!active && (!meeting || showNewMeeting) ? (
+      {!live && (!meeting || showNewMeeting) ? (
         <Pressable disabled={busy} onPress={start} style={[styles.button, styles.startButton]}>
           {busy ? (
             <ActivityIndicator color={TEXT} />
@@ -497,7 +637,7 @@ export default function MeetingScreen() {
           )}
         </Pressable>
       ) : null}
-      {!active && meeting && !showNewMeeting ? (
+      {!live && meeting && !showNewMeeting ? (
         <Pressable onPress={() => setShowNewMeeting(true)} accessibilityRole="button">
           <Text style={styles.link}>Start another meeting</Text>
         </Pressable>
@@ -519,6 +659,7 @@ export default function MeetingScreen() {
                 >
                   <Text style={styles.link}>
                     {new Date(item.startedAt).toLocaleString()} · {item.state}
+                    {item.serverId === null ? ' · local only' : ''}
                   </Text>
                 </Pressable>
               ))}

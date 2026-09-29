@@ -91,6 +91,11 @@ export {
 } from './store.js';
 export { TranscriptStore } from './transcript.js';
 export {
+  LiveMeetingStore,
+  type LiveMeetingSyncRecord,
+  type LiveMeetingNoteSyncRecord,
+} from './live-meetings.js';
+export {
   migrationProvider,
   latestMigrationKey,
   earliestMigrationKey,

@@ -1252,6 +1252,10 @@ interface SessionMovesTable {
 }
 
 export interface Database {
+  live_meetings: LiveMeetingsTable;
+  live_meeting_notes: LiveMeetingNotesTable;
+  live_meeting_commands: LiveMeetingCommandsTable;
+  live_meeting_sync_clock: LiveMeetingSyncClockTable;
   session_links: SessionLinksTable;
   session_link_deliveries: SessionLinkDeliveriesTable;
   session_link_pending_messages: SessionLinkPendingMessagesTable;
@@ -1325,4 +1329,44 @@ export interface Database {
   uplink_pending_share_removals: UplinkPendingShareRemovalsTable;
   claude_egress_ca: ClaudeEgressCaTable;
   claude_egress_client_certs: ClaudeEgressClientCertTable;
+}
+
+interface LiveMeetingsTable {
+  id: string;
+  session_id: string;
+  engine: string;
+  started_at: number;
+  ended_at: number | null;
+  state: 'active' | 'interrupted' | 'ended';
+  transcript: string;
+  capture_status: string;
+  owner_token_hash: string;
+  recorder_last_seen_at: number;
+  revision: number;
+  updated_seq: number;
+}
+
+interface LiveMeetingCommandsTable {
+  id: string;
+  command_order: Generated<number>;
+  meeting_id: string;
+  action: 'pause' | 'resume' | 'stop';
+  state: 'pending' | 'completed' | 'failed';
+  error: string | null;
+  requested_at: number;
+  acknowledged_at: number | null;
+}
+
+interface LiveMeetingSyncClockTable {
+  id: boolean;
+  sequence: number;
+}
+
+interface LiveMeetingNotesTable {
+  id: string;
+  meeting_id: string;
+  at_seconds: number;
+  text: string;
+  revision: number;
+  updated_seq: number;
 }
