@@ -71,5 +71,21 @@ export function expiredPage(): string {
   );
 }
 
+export function stoppedPage(): string {
+  return shell(
+    'Preview stopped',
+    'Preview stopped',
+    '<h1 id="page-title">This preview link has been stopped</h1><p class="copy">This preview is no longer available. Ask the person who shared it for a new link.</p>',
+  );
+}
+
+export function unavailablePage(): string {
+  return shell(
+    'Preview unavailable',
+    'Preview unavailable',
+    '<h1 id="page-title">This preview is unavailable</h1><p class="copy">This link is not available. Check the address or ask the person who shared it for a new link.</p>',
+  );
+}
+
 export const PREVIEW_PAGE_CSP =
   "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'";

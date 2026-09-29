@@ -14,7 +14,7 @@ import {
   reconnectDelayMs,
   supervisePreviewConnector,
 } from './index.js';
-import { expiredPage, loginPage } from './preview-page.js';
+import { expiredPage, loginPage, stoppedPage, unavailablePage } from './preview-page.js';
 
 const cleanups: Array<() => Promise<void> | void> = [];
 const sessionSecretHash = hashPreviewSecret('independent-edge-session-secret');
@@ -36,6 +36,18 @@ it('uses the code-entry page chrome for an expired preview', () => {
   expect(expired.match(/<body>(.*?)<section/s)?.[1]).toBe(loginHeader);
   expect(expired).toContain('This preview link has expired');
   expect(expired).not.toContain('<form');
+});
+it('uses the code-entry page chrome for stopped and unavailable previews', () => {
+  const login = loginPage('/');
+  const loginStyles = login.match(/<style>(.*?)<\/style>/s)?.[1];
+  const loginHeader = login.match(/<body>(.*?)<section/s)?.[1];
+  for (const page of [stoppedPage(), unavailablePage()]) {
+    expect(page.match(/<style>(.*?)<\/style>/s)?.[1]).toBe(loginStyles);
+    expect(page.match(/<body>(.*?)<section/s)?.[1]).toBe(loginHeader);
+    expect(page).not.toContain('<form');
+  }
+  expect(stoppedPage()).toContain('This preview link has been stopped');
+  expect(unavailablePage()).not.toMatch(/expired|stopped/i);
 });
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.();
