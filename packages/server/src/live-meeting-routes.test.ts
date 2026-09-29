@@ -58,6 +58,42 @@ it('publishes transcript and notes without exposing the recorder token', async (
   expect(body.meetings[0]).not.toHaveProperty('ownerTokenHash');
 });
 
+it('syncs bounded speaker turns and the expected group size', async () => {
+  const speakerTurns = [
+    { speaker: 0, start: 0.5, end: 1.25 },
+    { speaker: 1, start: 1.25, end: 2.5 },
+  ];
+  const timedWords = [{ text: 'Hello', start: 0.5, end: 1.0 }];
+  expect(
+    (
+      await app.inject({
+        method: 'PUT',
+        url,
+        payload: { ...meeting, expectedParticipants: 6, speakerTurns, timedWords },
+      })
+    ).statusCode,
+  ).toBe(200);
+  const response = await app.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' });
+  expect(response.json().meetings[0]).toMatchObject({
+    expectedParticipants: 6,
+    speakerTurns,
+    timedWords,
+  });
+  expect(
+    (
+      await app.inject({
+        method: 'PUT',
+        url: `${url}-bad`,
+        payload: {
+          ...meeting,
+          expectedParticipants: 6,
+          speakerTurns: [{ speaker: 1, start: 3, end: 2 }],
+        },
+      })
+    ).statusCode,
+  ).toBe(400);
+});
+
 it('publishes only transcript-grounded analysis to the meeting session', async () => {
   const analyzed = Fastify();
   const query = vi.fn().mockResolvedValue(

@@ -1850,6 +1850,19 @@ const liveMeetingSchema = z.object({
   endedAt: z.number().nullable(),
   state: z.enum(['active', 'interrupted', 'ended']),
   transcript: z.string(),
+  expectedParticipants: z.number().int().min(1).max(10).nullable().optional(),
+  speakerTurns: z
+    .array(
+      z.object({
+        speaker: z.number().int().nonnegative(),
+        start: z.number(),
+        end: z.number(),
+      }),
+    )
+    .optional(),
+  timedWords: z
+    .array(z.object({ text: z.string(), start: z.number(), end: z.number() }))
+    .optional(),
   captureStatus: z.enum(['preparing', 'downloading', 'listening', 'paused']),
   revision: z.number(),
 });

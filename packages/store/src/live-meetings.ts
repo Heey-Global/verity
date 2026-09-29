@@ -9,6 +9,9 @@ export interface LiveMeetingSyncRecord {
   endedAt: number | null;
   state: 'active' | 'interrupted' | 'ended';
   transcript: string;
+  expectedParticipants?: number | null | undefined;
+  speakerTurns?: Array<{ speaker: number; start: number; end: number }> | undefined;
+  timedWords?: Array<{ text: string; start: number; end: number }> | undefined;
   captureStatus: string;
   ownerTokenHash: string;
   revision: number;
@@ -131,6 +134,9 @@ export class LiveMeetingStore {
           ended_at: meeting.endedAt,
           state: meeting.state,
           transcript: meeting.transcript,
+          expected_participants: meeting.expectedParticipants ?? null,
+          speaker_turns_json: JSON.stringify(meeting.speakerTurns ?? []),
+          timed_words_json: JSON.stringify(meeting.timedWords ?? []),
           capture_status: meeting.captureStatus,
           owner_token_hash: meeting.ownerTokenHash,
           recorder_last_seen_at: Date.now(),
@@ -144,6 +150,9 @@ export class LiveMeetingStore {
               ended_at: meeting.endedAt,
               state: meeting.state,
               transcript: meeting.transcript,
+              expected_participants: meeting.expectedParticipants ?? null,
+              speaker_turns_json: JSON.stringify(meeting.speakerTurns ?? []),
+              timed_words_json: JSON.stringify(meeting.timedWords ?? []),
               capture_status: meeting.captureStatus,
               recorder_last_seen_at: Date.now(),
               revision: meeting.revision,
@@ -421,6 +430,17 @@ export class LiveMeetingStore {
         endedAt: row.ended_at == null ? null : Number(row.ended_at),
         state: row.state,
         transcript: row.transcript,
+        expectedParticipants: row.expected_participants,
+        speakerTurns: JSON.parse(row.speaker_turns_json) as Array<{
+          speaker: number;
+          start: number;
+          end: number;
+        }>,
+        timedWords: JSON.parse(row.timed_words_json) as Array<{
+          text: string;
+          start: number;
+          end: number;
+        }>,
         captureStatus: row.capture_status,
         revision: Number(row.revision),
       })),

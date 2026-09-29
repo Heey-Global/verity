@@ -71,7 +71,7 @@ export default function LiveMeetingSTTScreen() {
         .split(',')
         .map((word) => word.trim())
         .filter(Boolean);
-      await liveMeetingSTT.start(selected, locale.trim(), vocabulary);
+      await liveMeetingSTT.start(selected, locale.trim(), vocabulary, 0);
     } catch (reason) {
       setError(String(reason));
       setStatus('Failed to start');

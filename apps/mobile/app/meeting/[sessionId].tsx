@@ -42,6 +42,7 @@ import {
   meetingRequestPrompt,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
+import { speakerLines } from '../../lib/liveMeetingSpeakers';
 
 const ACCENT = '#bd8bff';
 const TEXT = '#eee9f7';
@@ -289,12 +290,18 @@ export default function MeetingScreen() {
   }, []);
 
   const chunks = useMemo(() => {
+    if (meeting?.timedWords?.length) {
+      return speakerLines(meeting.timedWords, meeting.speakerTurns ?? []).map(
+        (line) =>
+          `${line.speaker === null ? 'Unknown speaker' : `Speaker ${line.speaker + 1}`}: ${line.text}`,
+      );
+    }
     const text = meeting?.transcript ?? '';
     const result: string[] = [];
     for (let start = 0; start < text.length; start += 900)
       result.push(text.slice(start, start + 900));
     return result;
-  }, [meeting?.transcript]);
+  }, [meeting?.transcript, meeting?.timedWords, meeting?.speakerTurns]);
   const suggestedQuestion = useMemo(
     () => latestResearchQuestion(meeting?.transcript ?? ''),
     [meeting?.transcript],
@@ -508,6 +515,7 @@ export default function MeetingScreen() {
   const active = meeting?.state === 'active' && runningMeeting?.id === meeting.id;
   const live = meeting?.state === 'active';
   const noteUnsaved = noteSaveError?.meetingId === meeting?.id;
+  const speakers = [...new Set((meeting?.speakerTurns ?? []).map((turn) => turn.speaker))];
   return (
     <KeyboardAvoidingView
       style={[styles.root, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 12 }]}
@@ -584,6 +592,37 @@ export default function MeetingScreen() {
       ) : null}
       {meeting ? (
         <>
+          <View style={styles.speakerCard}>
+            <Text style={styles.section}>In the room</Text>
+            {speakers.length ? (
+              <View style={styles.participantChoices}>
+                {speakers.map((speaker) => (
+                  <View
+                    key={speaker}
+                    style={[
+                      styles.speakerBadge,
+                      meeting.activeSpeaker === speaker &&
+                        meeting.lastSpeakerAt !== undefined &&
+                        now - meeting.lastSpeakerAt < 2500 &&
+                        styles.speakerBadgeActive,
+                    ]}
+                  >
+                    <Text style={styles.speakerText}>Speaker {speaker + 1}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.muted}>
+                {active
+                  ? meeting.speakerStatus === 'unavailable'
+                    ? 'Speaker labels unavailable; transcription continues.'
+                    : meeting.speakerStatus === 'loading'
+                      ? 'Preparing speaker recognition…'
+                      : 'Listening for voices…'
+                  : 'No speaker labels yet.'}
+              </Text>
+            )}
+          </View>
           <View style={styles.transcriptCard}>
             <Pressable
               accessibilityRole="button"
@@ -897,6 +936,23 @@ const styles = StyleSheet.create({
   },
   participantChoiceSelected: { borderColor: ACCENT },
   participantSelectedText: { color: ACCENT },
+  speakerCard: {
+    backgroundColor: CARD,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    padding: 16,
+    gap: 10,
+  },
+  speakerBadge: {
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  speakerBadgeActive: { borderColor: ACCENT },
+  speakerText: { color: TEXT },
   status: { color: '#a8f4c5', fontSize: 13 },
   statusPaused: { color: '#f3c579' },
   statusError: { color: '#ffaba5' },

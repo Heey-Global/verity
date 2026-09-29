@@ -1341,6 +1341,9 @@ interface LiveMeetingsTable {
   ended_at: number | null;
   state: 'active' | 'interrupted' | 'ended';
   transcript: string;
+  expected_participants: number | null;
+  speaker_turns_json: string;
+  timed_words_json: string;
   capture_status: string;
   owner_token_hash: string;
   recorder_last_seen_at: number;

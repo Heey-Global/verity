@@ -107,6 +107,42 @@ it('offers larger groups and passes their size to the recorder', async () => {
   await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 6));
 });
 
+it('shows a listening state before speech and numbered voices as they are recognized', async () => {
+  const meeting: MeetingRecord = {
+    id: 'speaker-meeting',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+    speakerStatus: 'ready',
+    speakerTurns: [],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(currentMeeting).mockReturnValue(meeting);
+  let publish!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    publish = listener;
+    listener(meeting);
+    return jest.fn();
+  });
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Listening for voices…')).toBeOnTheScreen();
+  act(() =>
+    publish({
+      ...meeting,
+      speakerTurns: [
+        { speaker: 2, start: 1, end: 2 },
+        { speaker: 0, start: 3, end: 4 },
+      ],
+    }),
+  );
+  expect(screen.getByText('Speaker 1')).toBeOnTheScreen();
+  expect(screen.getByText('Speaker 3')).toBeOnTheScreen();
+});
+
 it('opens the complete transcript on demand and starts research in the same session', async () => {
   const meeting: MeetingRecord = {
     id: 'meeting-insight',
@@ -156,6 +192,33 @@ it('opens the complete transcript on demand and starts research in the same sess
       params: { id: 'session-1' },
     });
   });
+});
+
+it('shows timed transcript words with their speaker when attribution is unambiguous', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-speakers',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello yes',
+    error: null,
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+    timedWords: [
+      { text: 'Hello', start: 0.1, end: 0.5 },
+      { text: 'yes', start: 2, end: 2.4 },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(currentMeeting).mockReturnValue(meeting);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello yes')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByText('Speaker 1: Hello')).toBeOnTheScreen();
+  expect(screen.getByText('Unknown speaker: yes')).toBeOnTheScreen();
 });
 
 it('shows a spoken request failure without interrupting the meeting', async () => {

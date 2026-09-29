@@ -12,9 +12,12 @@ import {
   createMeeting,
   setMeetingState,
   saveTranscript,
+  saveSpeakerTurns,
+  saveTimedWords,
   setCaptureStatus,
   touchMeeting,
   type MeetingRecord,
+  type TimedWord,
 } from './liveMeetingStore';
 
 type Listener = (meeting: MeetingRecord | null) => void;
@@ -182,6 +185,81 @@ function failLocalSave(id: string, error: unknown) {
 
 function onEvent(event: STTEvent) {
   if (!active || active.state !== 'active') return;
+  const recordWords = (words: TimedWord[]) => {
+    if (!active) return;
+    const current = active.timedWords ?? [];
+    const added = words.filter(
+      (word) =>
+        word.text.trim() &&
+        Number.isFinite(word.start) &&
+        Number.isFinite(word.end) &&
+        word.start >= 0 &&
+        word.end > word.start &&
+        !current.some(
+          (entry) =>
+            entry.text === word.text && entry.start === word.start && entry.end === word.end,
+        ),
+    );
+    if (!added.length) return;
+    const next = [...current, ...added].sort((a, b) => a.start - b.start);
+    const id = active.id;
+    active = { ...active, timedWords: next };
+    publish();
+    void enqueueWrite(() => saveTimedWords(id, next)).catch(() => {
+      if (active?.id === id) {
+        active = { ...active, speakerStatus: 'unavailable' };
+        publish();
+      }
+    });
+  };
+  if (event.kind === 'speaker-status') {
+    active = { ...active, speakerStatus: event.state };
+    publish();
+    return;
+  }
+  if (event.kind === 'speaker') {
+    const limit = (active.expectedParticipants ?? 4) > 4 ? 10 : 4;
+    if (
+      !Number.isInteger(event.speaker) ||
+      event.speaker < 0 ||
+      event.speaker >= limit ||
+      !Number.isFinite(event.start) ||
+      !Number.isFinite(event.end) ||
+      event.start < 0 ||
+      event.end <= event.start
+    )
+      return;
+    const turns = active.speakerTurns ?? [];
+    if (
+      turns.some(
+        (turn) =>
+          turn.speaker === event.speaker && turn.start === event.start && turn.end === event.end,
+      )
+    )
+      return;
+    const next = [...turns, { speaker: event.speaker, start: event.start, end: event.end }].sort(
+      (a, b) => a.start - b.start,
+    );
+    const id = active.id;
+    active = {
+      ...active,
+      speakerTurns: next,
+      activeSpeaker: event.speaker,
+      lastSpeakerAt: Date.now(),
+    };
+    publish();
+    void enqueueWrite(() => saveSpeakerTurns(id, next)).catch(() => {
+      if (active?.id === id) {
+        active = { ...active, speakerStatus: 'unavailable' };
+        publish();
+      }
+    });
+    return;
+  }
+  if (event.kind === 'words') {
+    recordWords(event.words);
+    return;
+  }
   if (event.kind === 'status') {
     if (event.state === 'failed') {
       const id = active.id;
@@ -235,6 +313,8 @@ function onEvent(event: STTEvent) {
     }
     return;
   }
+  if (event.kind === 'segment' && event.final)
+    recordWords([{ text: event.text, start: event.start, end: event.end }]);
   transcript = applySTTEvent(transcript, event);
   const text = transcriptText(transcript);
   const id = active.id;
@@ -339,7 +419,7 @@ async function startMeetingUnlocked(
   subscription = liveMeetingSTT.addListener('onSTTEvent', onEvent);
   publish();
   try {
-    await liveMeetingSTT.start(engine, 'de-DE', ['Verity']);
+    await liveMeetingSTT.start(engine, 'de-DE', ['Verity'], expectedParticipants ?? 4);
     heartbeat = setInterval(() => {
       if (active?.id !== meeting.id || active.state !== 'active') return;
       void enqueueWrite(() => touchMeeting(meeting.id)).catch((error) =>
