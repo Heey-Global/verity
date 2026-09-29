@@ -41,6 +41,9 @@ test('does not end a sentence at the dots inside names, numbers and abbreviation
   expect(utterances('Verity, research Node.js compatibility.')).toEqual([
     'Verity, research Node.js compatibility.',
   ]);
+  expect(utterances('Verity, research Prof. Smith and Mrs. Jones.')).toEqual([
+    'Verity, research Prof. Smith and Mrs. Jones.',
+  ]);
 });
 
 test('joins a name spoken on its own to the sentence that follows', () => {

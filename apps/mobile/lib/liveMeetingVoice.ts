@@ -38,7 +38,14 @@ function sameUtterance(a: string, b: string): boolean {
 
 export function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
   const commands: VoiceMeetingCommand[] = [];
-  const ends = [...transcript.matchAll(SENTENCE_END)].map((match) => match.index!);
+  const ends = [...transcript.matchAll(SENTENCE_END)]
+    .filter((match) => {
+      if (match[0] !== '.') return true;
+      const before = transcript.slice(0, match.index!).match(/(?:^|\s)(\p{Lu}\p{L}*)$/u)?.[1];
+      const after = transcript.slice(match.index! + 1).match(/^\s+(\p{Lu}\p{L}*)/u)?.[1];
+      return !(before && before.length <= 4 && after && after.toLowerCase() !== 'verity');
+    })
+    .map((match) => match.index!);
   let covered = 0;
   for (const wake of transcript.matchAll(WAKE_WORD)) {
     if (wake.index! < covered) continue;
