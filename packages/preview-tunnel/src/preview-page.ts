@@ -71,14 +71,6 @@ export function expiredPage(): string {
   );
 }
 
-export function stoppedPage(): string {
-  return shell(
-    'Preview stopped',
-    'Preview stopped',
-    '<h1 id="page-title">This preview link has been stopped</h1><p class="copy">This preview is no longer available. Ask the person who shared it for a new link.</p>',
-  );
-}
-
 export function unavailablePage(): string {
   return shell(
     'Preview unavailable',
