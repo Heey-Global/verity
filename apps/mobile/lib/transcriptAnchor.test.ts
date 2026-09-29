@@ -135,6 +135,10 @@ describe('message navigation', () => {
   it('ignores unloaded bookmarks and avoids duplicate stops', () => {
     expect(navigationRowIndices(newestFirst, new Set(['text-999', 'text-50']))).toEqual([0, 4]);
   });
+
+  it('does not turn an absent bookmark into an agent text stop through restore span matching', () => {
+    expect(navigationRowIndices(newestFirst, new Set(['text-25']))).toEqual([0, 4]);
+  });
 });
 
 describe('coalesced agent text', () => {
