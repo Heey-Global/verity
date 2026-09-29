@@ -394,6 +394,29 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
   }
 });
 
+it('keeps a requested summary as a read-only answer', async () => {
+  const checked = Fastify();
+  registerLiveMeetingRoutes(checked, ctx.store, {
+    query: async () =>
+      JSON.stringify({
+        requests: [{ kind: 'opinion', request: 'write a summary of this meeting' }],
+      }),
+  });
+  await checked.ready();
+  try {
+    const response = await checked.inject({
+      method: 'POST',
+      url: `${url}/addressed`,
+      payload: { utterance: 'Verity, write a summary of this meeting.', context: '' },
+    });
+    expect(response.json().requests).toEqual([
+      { kind: 'opinion', request: 'write a summary of this meeting' },
+    ]);
+  } finally {
+    await checked.close();
+  }
+});
+
 it('checks one spoken request per session at a time', async () => {
   const checked = Fastify();
   let answer: (value: string) => void = () => undefined;
