@@ -12,21 +12,18 @@ import {
   View,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { getRandomValues } from 'expo-crypto';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
 import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
-
-const DURATIONS = [
-  { label: '15 min', a11y: '15 minutes', seconds: 900 },
-  { label: '1 h', a11y: '1 hour', seconds: 3600 },
-  { label: '2 h', a11y: '2 hours', seconds: 7200 },
-  { label: '4 h', a11y: '4 hours', seconds: 14400 },
-  { label: '8 h', a11y: '8 hours', seconds: 28800 },
-] as const;
+import {
+  generatePreviewPin,
+  LONG_PREVIEW_DURATION_SECONDS,
+  PUBLIC_PREVIEW_DURATIONS,
+  validPreviewPin,
+} from './publicPreviewShare';
 
 /** "until 20:14", or with the day when the link outlives today. */
 function expiryLabel(expiresAt: string | Date, now = new Date()): string {
@@ -38,16 +35,14 @@ function expiryLabel(expiresAt: string | Date, now = new Date()): string {
 
 function remainingLabel(expiresAt: string | Date, now = new Date()): string {
   const minutes = Math.max(0, Math.round((new Date(expiresAt).getTime() - now.getTime()) / 60_000));
+  if (minutes >= 24 * 60) {
+    const days = Math.ceil(minutes / (24 * 60));
+    return `${days} ${days === 1 ? 'day' : 'days'} left`;
+  }
   if (minutes < 60) return `${minutes} min left`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest === 0 ? `${hours} h left` : `${hours} h ${rest} min left`;
-}
-
-/** A fresh 6-digit PIN. It only gates a short-lived preview, so digits suffice. */
-function generatePin(): string {
-  const [value] = getRandomValues(new Uint32Array(1));
-  return String(value! % 1_000_000).padStart(6, '0');
 }
 
 /** "482 913": groups of three are easier to read out and type. */
@@ -93,7 +88,7 @@ export function StaticPreviewSheet({
   const [files, setFiles] = useState<string[]>([]);
   const [shares, setShares] = useState<PublicPreviewShare[]>([]);
   const [sharesLoading, setSharesLoading] = useState(true);
-  const [pin, setPin] = useState(generatePin);
+  const [pin, setPin] = useState(generatePreviewPin);
   const [duration, setDuration] = useState(3600);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -184,7 +179,7 @@ export function StaticPreviewSheet({
   }, [refresh]);
 
   const create = async () => {
-    if (loadedPath !== path || !/^\d{6,12}$/.test(pin) || busy) return;
+    if (loadedPath !== path || !validPreviewPin(pin, duration) || busy) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -195,7 +190,7 @@ export function StaticPreviewSheet({
       });
       createdShareIds.current.add(share.id);
       setShares((current) => [share, ...current]);
-      setPin(generatePin());
+      setPin(generatePreviewPin());
     } catch (caught) {
       setError(previewError(caught));
     } finally {
@@ -241,7 +236,7 @@ export function StaticPreviewSheet({
   const stoppedVisible = activeShare === undefined && stoppedPath !== undefined;
   const detailsVisible = activeShare !== undefined || stoppedVisible;
   const hasIndex = files.includes('index.html');
-  const canCreate = loadedPath === path && /^\d{6,12}$/.test(pin) && !busy;
+  const canCreate = loadedPath === path && validPreviewPin(pin, duration) && !busy;
   const stopping = activeShare !== undefined && stoppingId === activeShare.id;
   // Re-render while a link is shown so "N min left" counts down and an
   // expired link drops out of the sheet instead of staying on screen.
@@ -571,7 +566,7 @@ export function StaticPreviewSheet({
                 {error ? <Text style={styles.error}>{error}</Text> : null}
                 <Text style={styles.label}>EXPIRES AFTER</Text>
                 <View style={styles.durations}>
-                  {DURATIONS.map((option) => (
+                  {PUBLIC_PREVIEW_DURATIONS.map((option) => (
                     <Pressable
                       key={option.seconds}
                       onPress={() => setDuration(option.seconds)}
@@ -605,13 +600,17 @@ export function StaticPreviewSheet({
                     onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 12))}
                     keyboardType="number-pad"
                     accessibilityLabel="Preview PIN"
-                    accessibilityHint="6 to 12 digits"
+                    accessibilityHint={
+                      duration >= LONG_PREVIEW_DURATION_SECONDS ? '12 digits' : '6 to 12 digits'
+                    }
                     style={styles.pinInput}
-                    placeholder="6–12 digits"
+                    placeholder={
+                      duration >= LONG_PREVIEW_DURATION_SECONDS ? '12 digits' : '6–12 digits'
+                    }
                     placeholderTextColor={theme.colors.textFaint}
                   />
                   <Pressable
-                    onPress={() => setPin(generatePin())}
+                    onPress={() => setPin(generatePreviewPin())}
                     hitSlop={8}
                     style={styles.pinRefresh}
                     accessibilityRole="button"
