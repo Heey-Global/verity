@@ -2189,7 +2189,7 @@ describe('UplinkControlClient', () => {
   });
 
   it('refuses to create a share before the Uplink has granted the entitlement', async () => {
-    const { client, socket } = setup();
+    const { client, socket, log } = setup();
     client.start();
     await flush();
     socket.open();
@@ -2201,6 +2201,10 @@ describe('UplinkControlClient', () => {
     expect(socket.sent.map((value) => (JSON.parse(value) as { type: string }).type)).toEqual([
       'hello',
     ]);
+    expect(log.warn).toHaveBeenCalledWith(
+      { targetHost: new URL(UPLINK_CONTROL_URL).host, control: 'connecting' },
+      'Uplink share create not sent',
+    );
     await client.stop();
   });
 
@@ -2224,7 +2228,7 @@ describe('UplinkControlClient', () => {
     { code: 'quota_exceeded', expected: 'Uplink refused public preview: quota_exceeded' },
     { code: undefined, expected: 'Uplink refused public preview: internal' },
   ])('surfaces a refused share as $expected', async ({ code, expected }) => {
-    const { client, socket } = await welcomed(setup());
+    const { client, socket, log } = await welcomed(setup());
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
     const creatingAssertion = expect(creating).rejects.toThrow(expected);
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
@@ -2235,6 +2239,20 @@ describe('UplinkControlClient', () => {
       ...(code === undefined ? {} : { code }),
     });
     await creatingAssertion;
+    const requestLog = {
+      requestId: createFrame.requestId,
+      targetHost: new URL(UPLINK_CONTROL_URL).host,
+    };
+    expect(log.info).toHaveBeenCalledWith(requestLog, 'Uplink share create submitted');
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ...requestLog,
+        responseType: 'share.error',
+        code: code ?? 'unknown',
+      }),
+      'Uplink share create response',
+    );
+    expect(JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls])).not.toContain('hash');
     // A refusal is not a protocol violation: authority survives it.
     expect(client.isAvailable()).toBe(true);
     await client.stop();
@@ -2244,7 +2262,7 @@ describe('UplinkControlClient', () => {
   // the binding is rejected — but the object exists at the edge and its id is the
   // only handle that can revoke it.
   it('revokes the share it cannot date instead of returning an unbounded binding', async () => {
-    const { client, socket, store } = await welcomed(setup());
+    const { client, socket, store, log } = await welcomed(setup());
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
     const creatingAssertion = expect(creating).rejects.toThrow('invalid Uplink expiresAt');
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
@@ -2261,11 +2279,45 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     await creatingAssertion;
+    expect(log.warn).toHaveBeenCalledWith(
+      { reason: 'invalid Uplink expiresAt' },
+      'Uplink share binding rejected',
+    );
     expect(store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('undatable-share');
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       type: 'share.remove',
       shareId: 'undatable-share',
     });
+    await client.stop();
+  });
+
+  // A ready frame can create an edge yet omit the secret Core needs for its
+  // connector. The rejection must identify the missing field while the edge is revoked.
+  it('logs and revokes a ready share without a session secret', async () => {
+    const { client, socket, store, log } = await welcomed(setup());
+    const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    const creatingAssertion = expect(creating).rejects.toThrow('invalid Uplink sessionSecret');
+    const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
+
+    socket.message({
+      type: 'share.ready',
+      requestId: createFrame.requestId,
+      shareId: 'missing-secret-share',
+      publicOrigin: 'https://missing-secret.example',
+      edgeUrl: 'wss://missing-secret.example/__verity/connector',
+      connectorToken: 'c'.repeat(32),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    await creatingAssertion;
+    expect(log.warn).toHaveBeenCalledWith(
+      { reason: 'invalid Uplink sessionSecret' },
+      'Uplink share binding rejected',
+    );
+    expect(store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('missing-secret-share');
+    expect(JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls])).not.toContain(
+      'c'.repeat(32),
+    );
     await client.stop();
   });
 
@@ -2397,7 +2449,7 @@ describe('UplinkControlClient', () => {
   // Uplink might have received; it has to be tombstoned like a timed-out one so a
   // late `share.ready` is recognized and revoked instead of accepted.
   it('tombstones a create whose request frame failed to send', async () => {
-    const { client, socket } = await welcomed(setup());
+    const { client, socket, log } = await welcomed(setup());
     socket.send = (value: string, callback?: (error?: Error) => void): void => {
       socket.sent.push(value);
       callback?.(new Error('socket write failed'));
@@ -2412,6 +2464,10 @@ describe('UplinkControlClient', () => {
         createFrame.requestId,
       ),
     ).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: createFrame.requestId, stage: 'send' }),
+      'Uplink share create request failed',
+    );
     await client.stop();
   });
 
