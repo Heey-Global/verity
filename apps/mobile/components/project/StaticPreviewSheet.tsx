@@ -202,7 +202,7 @@ export function StaticPreviewSheet({
             .then(() => {
               stoppedShareIds.current.add(share.id);
               createdShareIds.current.delete(share.id);
-              setStoppedPath(share.staticPath);
+              setStoppedPath(share.staticPath ?? null);
               setShares((current) => current.filter((item) => item.id !== share.id));
             })
             .catch((caught: unknown) =>

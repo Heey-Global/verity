@@ -696,7 +696,7 @@ export class PreviewShareManager {
           if (!current || current.state !== 'revoking') return;
           await removeContainer(
             this.options.docker,
-            current.connectorContainerId || current.connectorContainerName,
+            current.connectorContainerId ?? current.connectorContainerName,
           );
           await this.options.edge.remove(current.id);
           await this.options.store.transitionPublicPreviewShare(
