@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
@@ -34,6 +35,11 @@ import {
 } from '../../lib/liveMeetingStore';
 import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
+import {
+  latestResearchQuestion,
+  meetingRequestPrompt,
+  researchPrompt,
+} from '../../lib/liveMeetingInsights';
 
 const ACCENT = '#bd8bff';
 const TEXT = '#eee9f7';
@@ -56,6 +62,7 @@ function elapsed(startedAt: number, now: number) {
 export default function MeetingScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<MeetingRecord[]>([]);
@@ -73,6 +80,9 @@ export default function MeetingScreen() {
   const [syncError, setSyncError] = useState(false);
   const [pendingCommand, setPendingCommand] = useState<'pause' | 'resume' | 'stop' | null>(null);
   const [recorderOnline, setRecorderOnline] = useState(true);
+  const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+  const [insightQuestion, setInsightQuestion] = useState('');
+  const [sendingInsight, setSendingInsight] = useState(false);
   const noteSaveErrorRef = useRef<string | null>(null);
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
@@ -254,6 +264,39 @@ export default function MeetingScreen() {
       result.push(text.slice(start, start + 900));
     return result;
   }, [meeting?.transcript]);
+  const suggestedQuestion = useMemo(
+    () => latestResearchQuestion(meeting?.transcript ?? ''),
+    [meeting?.transcript],
+  );
+  const transcriptPreview = useMemo(() => {
+    const text = meeting?.transcript.trim() ?? '';
+    return text.length > 180 ? `…${text.slice(-180)}` : text;
+  }, [meeting?.transcript]);
+
+  const openResearch = async (question: string, kind: 'research' | 'request' = 'research') => {
+    if (!sessionId || !meeting || !question.trim() || sendingInsight) return;
+    const client = createVerityClient();
+    if (!client) {
+      setError('Connect to the server to ask Verity about this meeting.');
+      return;
+    }
+    setSendingInsight(true);
+    setError(null);
+    try {
+      await client.sendTurn(sessionId, {
+        prompt:
+          kind === 'research'
+            ? researchPrompt(meeting.id, question.trim(), meeting.transcript)
+            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript),
+      });
+      if (live && !active) followRemoteMeeting(meeting.sessionId, meeting.id);
+      router.push({ pathname: '/session/[id]', params: { id: sessionId } });
+    } catch (reason) {
+      setError(`Could not start meeting request: ${String(reason)}`);
+    } finally {
+      setSendingInsight(false);
+    }
+  };
 
   const start = async () => {
     if (!sessionId || busy) return;
@@ -503,39 +546,100 @@ export default function MeetingScreen() {
       ) : null}
       {meeting ? (
         <>
-          <View style={styles.card}>
-            <Text style={styles.section}>Live transcript</Text>
-            <FlatList
-              ref={transcriptList}
-              testID="meeting-transcript"
-              style={styles.transcript}
-              data={chunks}
-              keyExtractor={(_, index) => String(index)}
-              renderItem={({ item }) => <Text style={styles.transcriptText}>{item}</Text>}
-              ListEmptyComponent={
-                <Text style={styles.muted}>Recognized speech will appear here.</Text>
+          <View style={styles.transcriptCard}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={
+                transcriptExpanded ? 'Collapse transcript' : 'Open full transcript'
               }
-              onScrollBeginDrag={() => {
-                transcriptAtEnd.current = false;
-              }}
-              onScrollEndDrag={({ nativeEvent }) => {
-                const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-                transcriptAtEnd.current =
-                  contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
-              }}
-              onMomentumScrollEnd={({ nativeEvent }) => {
-                const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-                transcriptAtEnd.current =
-                  contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
-              }}
-              scrollEventThrottle={100}
-              onContentSizeChange={() => {
-                if (transcriptAtEnd.current)
-                  transcriptList.current?.scrollToEnd({ animated: true });
-              }}
-            />
+              onPress={() => setTranscriptExpanded((expanded) => !expanded)}
+              style={styles.transcriptHeader}
+            >
+              <Text style={styles.listeningIcon}>{live ? '●' : '○'}</Text>
+              <View style={styles.transcriptHeaderText}>
+                <Text style={styles.section}>Live transcript</Text>
+                {!transcriptExpanded ? (
+                  <Text style={styles.preview} numberOfLines={width < 600 ? 2 : 3}>
+                    {transcriptPreview || 'Recognized speech will appear here.'}
+                  </Text>
+                ) : null}
+              </View>
+              <Text style={styles.expandLabel}>{transcriptExpanded ? 'Close' : 'Full ›'}</Text>
+            </Pressable>
+            {transcriptExpanded ? (
+              <FlatList
+                ref={transcriptList}
+                testID="meeting-transcript"
+                style={styles.transcript}
+                data={chunks}
+                keyExtractor={(_, index) => String(index)}
+                renderItem={({ item }) => <Text style={styles.transcriptText}>{item}</Text>}
+                ListEmptyComponent={
+                  <Text style={styles.muted}>Recognized speech will appear here.</Text>
+                }
+                onScrollBeginDrag={() => {
+                  transcriptAtEnd.current = false;
+                }}
+                onScrollEndDrag={({ nativeEvent }) => {
+                  const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
+                  transcriptAtEnd.current =
+                    contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+                }}
+                onMomentumScrollEnd={({ nativeEvent }) => {
+                  const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
+                  transcriptAtEnd.current =
+                    contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+                }}
+                scrollEventThrottle={100}
+                onContentSizeChange={() => {
+                  if (transcriptAtEnd.current)
+                    transcriptList.current?.scrollToEnd({ animated: true });
+                }}
+              />
+            ) : null}
           </View>
-          <View style={styles.card}>
+          <View style={styles.insightsCard}>
+            <Text style={styles.section}>Live Insights</Text>
+            {suggestedQuestion ? (
+              <View style={styles.suggestion}>
+                <Text style={styles.suggestionLabel}>QUESTION HEARD</Text>
+                <Text style={styles.suggestionText}>{suggestedQuestion}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Research meeting question"
+                  disabled={sendingInsight}
+                  onPress={() => void openResearch(suggestedQuestion)}
+                  style={styles.researchButton}
+                >
+                  <Text style={styles.researchButtonText}>Research in session ›</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Text style={styles.muted}>Questions from the conversation will appear here.</Text>
+            )}
+            <View style={styles.insightComposer}>
+              <TextInput
+                accessibilityLabel="Ask Verity about this meeting"
+                placeholder="Ask Verity or enter something to research…"
+                placeholderTextColor={MUTED}
+                value={insightQuestion}
+                onChangeText={setInsightQuestion}
+                onSubmitEditing={() => void openResearch(insightQuestion, 'request')}
+                returnKeyType="go"
+                style={styles.insightInput}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open question in session"
+                disabled={!insightQuestion.trim() || sendingInsight}
+                onPress={() => void openResearch(insightQuestion, 'request')}
+                style={styles.insightGo}
+              >
+                <Text style={styles.insightGoText}>Go ›</Text>
+              </Pressable>
+            </View>
+          </View>
+          <View style={styles.notesCard}>
             <Text style={styles.section}>Meeting notes</Text>
             <ScrollView style={styles.notes} keyboardShouldPersistTaps="handled">
               {notes
@@ -697,6 +801,55 @@ const styles = StyleSheet.create({
     borderColor: '#433a5c',
     padding: 16,
     gap: 12,
+  },
+  transcriptCard: {
+    backgroundColor: CARD,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    padding: 14,
+    gap: 10,
+    maxHeight: '42%',
+  },
+  transcriptHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  transcriptHeaderText: { flex: 1, gap: 4 },
+  listeningIcon: { color: '#7de5a7', fontSize: 22 },
+  preview: { color: TEXT, fontSize: 14, lineHeight: 20 },
+  expandLabel: { color: ACCENT, fontSize: 13 },
+  insightsCard: {
+    flex: 1,
+    minHeight: 92,
+    backgroundColor: CARD,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    padding: 14,
+    gap: 10,
+  },
+  suggestion: { backgroundColor: '#29243a', borderRadius: 12, padding: 12, gap: 8 },
+  suggestionLabel: { color: ACCENT, fontSize: 11, fontWeight: '700' },
+  suggestionText: { color: TEXT, fontSize: 15 },
+  researchButton: { alignSelf: 'flex-start', paddingVertical: 6 },
+  researchButtonText: { color: ACCENT, fontWeight: '700' },
+  insightComposer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#262238',
+    borderRadius: 12,
+    marginTop: 'auto',
+  },
+  insightInput: { flex: 1, color: TEXT, minHeight: 48, paddingHorizontal: 12 },
+  insightGo: { paddingHorizontal: 14, paddingVertical: 12 },
+  insightGoText: { color: ACCENT, fontWeight: '700' },
+  notesCard: {
+    flex: 1,
+    minHeight: 88,
+    backgroundColor: CARD,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    padding: 14,
+    gap: 10,
   },
   section: { color: TEXT, fontSize: 18, fontWeight: '700' },
   transcript: { flex: 1 },

@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { FlatList } from 'react-native';
+import { router } from 'expo-router';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
 import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
@@ -21,7 +22,7 @@ import {
 } from '../lib/liveMeetingStore';
 
 jest.mock('expo-router', () => ({
-  router: { back: jest.fn() },
+  router: { back: jest.fn(), push: jest.fn() },
   Stack: { Screen: () => null },
   useLocalSearchParams: () => ({ sessionId: 'session-1' }),
 }));
@@ -84,6 +85,77 @@ beforeEach(() => {
   jest.mocked(saveNote).mockResolvedValue(undefined);
   jest.mocked(createVerityClient).mockReturnValue(null);
   jest.mocked(getActiveMeetingServerId).mockReturnValue(null);
+});
+
+it('opens the complete transcript on demand and starts research in the same session', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-insight',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'The delivery plan changed. Is the release still Friday?',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Is the release still Friday?')).toBeOnTheScreen();
+  expect(screen.queryByTestId('meeting-transcript')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByTestId('meeting-transcript')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Research meeting question'));
+  await waitFor(() => {
+    expect(sendTurn).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ prompt: expect.stringContaining('Is the release still Friday?') }),
+    );
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/session/[id]',
+      params: { id: 'session-1' },
+    });
+  });
+});
+
+it('starts a direct meeting request and stays put when the server rejects it', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-direct',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'We need to decide today.',
+    error: null,
+  };
+  const sendTurn = jest.fn().mockRejectedValue(new Error('offline'));
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  const input = await screen.findByLabelText('Ask Verity about this meeting');
+  fireEvent.changeText(input, 'What do you think?');
+  fireEvent.press(screen.getByLabelText('Open question in session'));
+  await waitFor(() =>
+    expect(screen.getByText(/Could not start meeting request/)).toBeOnTheScreen(),
+  );
+  expect(sendTurn).toHaveBeenCalledWith(
+    'session-1',
+    expect.objectContaining({ prompt: expect.stringContaining('What do you think?') }),
+  );
+  expect(router.push).not.toHaveBeenCalled();
+  expect(input).toHaveDisplayValue('What do you think?');
 });
 
 it.each([
@@ -585,6 +657,7 @@ it('follows new transcript text until the reader scrolls away', async () => {
     .mockImplementation(() => undefined);
   try {
     render(<MeetingScreen />);
+    fireEvent.press(await screen.findByLabelText('Open full transcript'));
     const transcript = await screen.findByTestId('meeting-transcript');
     fireEvent(transcript, 'contentSizeChange', 200, 600);
     expect(scrollToEnd).toHaveBeenCalled();
