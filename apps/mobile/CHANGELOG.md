@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.44.0](https://github.com/Heey-Global/verity/compare/mobile-v1.43.0...mobile-v1.44.0) (2026-09-29)
+
+
+### Features
+
+* **meeting:** classify spoken requests and preserve note drafts ([#914](https://github.com/Heey-Global/verity/issues/914)) ([7d0446d](https://github.com/Heey-Global/verity/commit/7d0446da86ecf846ec9eb0a00961a49dcf14faeb))
+* **preview:** offer shares up to 30 days ([#912](https://github.com/Heey-Global/verity/issues/912)) ([bbe0ac5](https://github.com/Heey-Global/verity/commit/bbe0ac596a2ec3d74255294a76dc596441d86769))
+* **preview:** save and share PINs across devices ([#905](https://github.com/Heey-Global/verity/issues/905)) ([209b276](https://github.com/Heey-Global/verity/commit/209b2762f8adaccf7f9e634723f7ba91f47bec3b))
+
+
+### Bug Fixes
+
+* **mobile:** restore direct routing promptly after resume ([#907](https://github.com/Heey-Global/verity/issues/907)) ([597f508](https://github.com/Heey-Global/verity/commit/597f508cdcfe681448ec1633e32cfc24d92ec635))
+* **mobile:** stabilize chat navigation jumps ([#910](https://github.com/Heey-Global/verity/issues/910)) ([af55254](https://github.com/Heey-Global/verity/commit/af55254e5278959356ad079ff8afcd988972fec0))
+* **remote-control:** preserve native TLS causes and test production tunnel ([#904](https://github.com/Heey-Global/verity/issues/904)) ([443b6b8](https://github.com/Heey-Global/verity/commit/443b6b891e21c9c9b8daaf86e4d1a0e5aa9b1f77))
+
 ## [1.43.0](https://github.com/Heey-Global/verity/compare/mobile-v1.42.0...mobile-v1.43.0) (2026-09-29)
 
 
