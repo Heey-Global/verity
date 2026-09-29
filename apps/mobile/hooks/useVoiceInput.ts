@@ -288,11 +288,15 @@ export function useVoiceInput(
   }, [state, start, cancelCountdown]);
 
   const startAuto = useCallback(() => {
+    if (autoModeRef.current) {
+      toggle();
+      return;
+    }
     autoModeRef.current = true;
     pausedRef.current = false;
     setAutoMode(true);
     if (!listeningRef.current) start();
-  }, [start]);
+  }, [start, toggle]);
 
   const pauseCountdown = useCallback(() => {
     pausedRef.current = true;

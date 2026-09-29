@@ -8332,9 +8332,7 @@ function MicButton({
         onMic();
       }}
       onLongPress={() => {
-        if (!autoMode) {
-          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-        }
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
         onLongPress();
       }}
       delayLongPress={600}
