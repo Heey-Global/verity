@@ -1593,7 +1593,10 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
       hasMore: true,
     });
     for (const seq of [900, 800, 700, 600, 500, 400]) {
-      getHistory.mockResolvedValueOnce({ events: [metadataHistoryEvent(seq)], hasMore: true });
+      getHistory.mockResolvedValueOnce({
+        events: [metadataHistoryEvent(seq)],
+        hasMore: seq !== 400,
+      });
     }
     const model = new SessionModel({
       client: { ...stubClient(), getHistory } as unknown as VerityClient,
@@ -1613,6 +1616,11 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
     expect(model.state.olderLoadStalled).toBe(false);
     expect(model.state.olderLoadNeedsContinuation).toBe(true);
     expect(model.state.olderLoadGeneration).toBe(1);
+    // Navigation must see cursor progress even when the bounded scan added no rows.
+    expect(model.state.oldestHistorySeq).toBe(500);
+    await model.loadOlder();
+    expect(getHistory).toHaveBeenNthCalledWith(7, 's1', { beforeSeq: 500, limit: 150 });
+    expect(model.state.oldestHistorySeq).toBe(400);
   });
 
   it('keeps successful metadata pages when a later scan request fails', async () => {
