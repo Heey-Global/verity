@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.17.0](https://github.com/Heey-Global/verity/compare/v2.16.1...v2.17.0) (2026-09-29)
+
+
+### Features
+
+* **meeting:** sync live transcripts and notes across devices ([#888](https://github.com/Heey-Global/verity/issues/888)) ([3465ba7](https://github.com/Heey-Global/verity/commit/3465ba7ab3e3ad03730de1c519eeae1c2ce35c6f))
+
+
+### Bug Fixes
+
+* **preview:** trace Uplink share creation lifecycle ([#883](https://github.com/Heey-Global/verity/issues/883)) ([a70909c](https://github.com/Heey-Global/verity/commit/a70909c5a3729e410b1d5cad2eef82c5c6ffbd86))
+* **release:** reconcile unpublished releases on every run and sweep for missed pushes ([#877](https://github.com/Heey-Global/verity/issues/877)) ([4a71b37](https://github.com/Heey-Global/verity/commit/4a71b371b8a5a983949c44d53ee9c972bebd569f))
+
 ## [2.16.1](https://github.com/Heey-Global/verity/compare/v2.16.0...v2.16.1) (2026-09-28)
 
 
