@@ -23,6 +23,7 @@ import {
   resumeMeeting,
   startMeeting,
   subscribeMeeting,
+  subscribeVoiceMeetingRequest,
 } from '../../lib/liveMeetingSession';
 import { liveMeetingSTT, type STTEngine, type STTEngineId } from '../../lib/liveMeetingSTT';
 import {
@@ -85,11 +86,23 @@ export default function MeetingScreen() {
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
   const [insightQuestion, setInsightQuestion] = useState('');
   const [sendingInsight, setSendingInsight] = useState(false);
+  const [voiceSending, setVoiceSending] = useState(false);
   const noteSaveErrorRef = useRef<string | null>(null);
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
   const transcriptList = useRef<FlatList<string>>(null);
   const transcriptAtEnd = useRef(true);
+
+  useEffect(
+    () =>
+      subscribeVoiceMeetingRequest((event) => {
+        if (event.meetingId !== displayedMeetingId.current) return;
+        setVoiceSending(event.status === 'sending');
+        if (event.status === 'failed') setError(event.message ?? 'Voice request failed.');
+        else if (event.status === 'sending') setError(null);
+      }),
+    [],
+  );
 
   useEffect(() => {
     const listener = (meetingId: string) => {
@@ -514,6 +527,7 @@ export default function MeetingScreen() {
         ) : null}
       </View>
       {error || meeting?.error ? <Text style={styles.error}>{error ?? meeting?.error}</Text> : null}
+      {voiceSending ? <Text style={styles.status}>Sending voice request…</Text> : null}
       <Text
         style={[
           styles.status,
@@ -662,7 +676,7 @@ export default function MeetingScreen() {
             <View style={styles.insightComposer}>
               <TextInput
                 accessibilityLabel="Ask Verity about this meeting"
-                placeholder="Ask Verity or enter something to research…"
+                placeholder="Ask here or say “Verity, research…”"
                 placeholderTextColor={MUTED}
                 value={insightQuestion}
                 onChangeText={setInsightQuestion}

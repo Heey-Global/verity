@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { router } from 'expo-router';
+import { router, usePathname } from 'expo-router';
 import { createVerityClient } from '../lib/client';
 import { listMeetings } from '../lib/liveMeetingStore';
 import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
@@ -10,12 +10,13 @@ import {
   pauseMeeting,
   resumeMeeting,
   subscribeMeeting,
+  subscribeVoiceMeetingRequest,
 } from '../lib/liveMeetingSession';
 import type { MeetingRecord } from '../lib/liveMeetingStore';
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
-  usePathname: () => '/session/session-1',
+  usePathname: jest.fn().mockReturnValue('/session/session-1'),
 }));
 jest.mock('expo-keep-awake', () => ({
   activateKeepAwakeAsync: jest.fn().mockResolvedValue(undefined),
@@ -26,6 +27,7 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 jest.mock('../lib/liveMeetingSession', () => ({
   subscribeMeeting: jest.fn(),
+  subscribeVoiceMeetingRequest: jest.fn().mockReturnValue(jest.fn()),
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   endMeeting: jest.fn().mockResolvedValue(undefined),
@@ -46,6 +48,8 @@ jest.mock('../lib/client', () => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(usePathname).mockReturnValue('/session/session-1');
+  jest.mocked(subscribeVoiceMeetingRequest).mockReturnValue(jest.fn());
 });
 
 it('pauses, resumes, and opens the full meeting after stopping', async () => {
@@ -79,6 +83,37 @@ it('pauses, resumes, and opens the full meeting after stopping', async () => {
     pathname: '/meeting/[sessionId]',
     params: { sessionId: 'session-1' },
   });
+});
+
+it('opens the same session when a spoken request is accepted', () => {
+  jest.mocked(usePathname).mockReturnValue('/');
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    listener({
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      engine: 'fluid-nemotron',
+      startedAt: Date.now(),
+      endedAt: null,
+      state: 'active',
+      captureStatus: 'listening',
+      transcript: '',
+      error: null,
+    });
+    return jest.fn();
+  });
+  let notify!: (event: { meetingId: string; sessionId: string; status: 'sent' }) => void;
+  jest.mocked(subscribeVoiceMeetingRequest).mockImplementation((listener) => {
+    notify = listener;
+    return jest.fn();
+  });
+  render(<ActiveMeetingOverlay />);
+  act(() => notify({ meetingId: 'meeting-1', sessionId: 'session-1', status: 'sent' }));
+  act(() => notify({ meetingId: 'meeting-1', sessionId: 'session-1', status: 'sent' }));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 'session-1' },
+  });
+  expect(router.push).toHaveBeenCalledTimes(1);
 });
 
 it.each([
