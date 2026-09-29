@@ -51,6 +51,12 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+function jsonBody(call: Call | undefined): unknown {
+  const body = call?.init?.body;
+  if (typeof body !== 'string') throw new Error('Expected a JSON request body');
+  return JSON.parse(body) as unknown;
+}
+
 describe('VerityClient live meetings', () => {
   it('sends a meeting, finalized note, and recorder commands to their scoped routes', async () => {
     const meeting = {
@@ -135,12 +141,12 @@ describe('VerityClient live meetings', () => {
       [`${root}/meeting%2Fone/commands`, 'POST'],
       [`${root}/meeting%2Fone/commands/command%2Fone`, 'PUT'],
     ]);
-    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual(meeting);
-    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual(note);
+    expect(jsonBody(calls[1])).toEqual(meeting);
+    expect(jsonBody(calls[2])).toEqual(note);
     expect(calls[3]?.init?.headers).toMatchObject({ 'x-meeting-owner-token': meeting.ownerToken });
-    expect(JSON.parse(String(calls[4]?.init?.body))).toEqual({ action: 'pause' });
+    expect(jsonBody(calls[4])).toEqual({ action: 'pause' });
     expect(calls[5]?.init?.headers).toMatchObject({ 'x-meeting-owner-token': meeting.ownerToken });
-    expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({ state: 'completed', error: null });
+    expect(jsonBody(calls[5])).toEqual({ state: 'completed', error: null });
   });
 });
 

@@ -91,7 +91,11 @@ export class LiveMeetingStore {
       const accepted =
         existing?.session_id === meeting.sessionId &&
         existing.owner_token_hash === meeting.ownerTokenHash;
-      if (accepted && Number(existing.revision) === meeting.revision && existing.state !== 'active') {
+      if (
+        accepted &&
+        Number(existing.revision) === meeting.revision &&
+        existing.state !== 'active'
+      ) {
         await trx
           .updateTable('live_meeting_commands')
           .set({
