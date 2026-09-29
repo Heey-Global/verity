@@ -2,6 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 
 describe('knowledge tool boundary', () => {
+  it('accepts a bounded project source import and rejects destination traversal', () => {
+    expect(
+      knowledgeToolRequestSchema.parse({
+        operation: 'import_source',
+        sourcePath: 'docs/meetings/planning.md',
+        destination: 'meetings',
+        path: 'planning.md',
+      }),
+    ).toMatchObject({ operation: 'import_source', destination: 'meetings' });
+    for (const path of ['../planning.md', 'nested/planning.md', '.']) {
+      expect(
+        knowledgeToolRequestSchema.safeParse({
+          operation: 'import_source',
+          sourcePath: 'docs/meetings/planning.md',
+          destination: 'meetings',
+          path,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('accepts a bounded Shared insight publication', () => {
     expect(
       knowledgeToolRequestSchema.parse({

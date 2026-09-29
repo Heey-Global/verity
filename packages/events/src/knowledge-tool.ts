@@ -1,10 +1,24 @@
 import { z } from 'zod';
 
 /**
- * Agents read and write project knowledge as files under `/knowledge`; the one
- * operation left on this tool crosses into the read-only Shared root.
+ * Agents read and write project knowledge as files under `/knowledge`; this tool
+ * brokers the two writes that cross read-only knowledge mount boundaries.
  */
 export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
+  z
+    .object({
+      operation: z.literal('import_source'),
+      sourcePath: z.string().trim().min(1).max(512),
+      destination: z.enum(['meetings', 'documents']),
+      path: z
+        .string()
+        .trim()
+        .min(1)
+        .max(255)
+        .regex(/^[^/\\\0]+$/u)
+        .refine((name) => !name.startsWith('.')),
+    })
+    .strict(),
   z
     .object({
       operation: z.literal('publish_shared'),
@@ -19,6 +33,9 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
 ]);
 
 export const KNOWLEDGE_TOOL_DESCRIPTION =
+  "Import a file from this session worktree into this project's immutable Sources when the user asks to move or preserve it there. " +
+  'For import_source, sourcePath is relative to the worktree; destination is meetings or documents; path is relative to that destination folder. Existing destinations are never overwritten. ' +
+  'After verifying the imported file, remove the original from the worktree when the user asked to move it. ' +
   'Publish an insight from this project to Shared when the user explicitly asks to make it shared, global, or available to every project. ' +
   'For publish_shared, path is relative to `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
   'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
@@ -27,6 +44,7 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
   'Durable project knowledge is mounted at `/knowledge`. Immutable source material is under ' +
   '`/knowledge/sources`, with documents and meeting artifacts in separate subfolders. ' +
+  'When asked to move an existing worktree file into Sources, use `verity_knowledge` with `import_source`, verify the result, then remove the original and update references. ' +
   'Create and revise distilled project knowledge under the writable `/knowledge/insights` folder. ' +
   'When work produces a durable, reusable conclusion grounded in project sources, create or update ' +
   'a concise Markdown insight without asking first. Prefer improving an existing insight over creating ' +
