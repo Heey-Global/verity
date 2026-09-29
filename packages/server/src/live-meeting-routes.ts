@@ -59,7 +59,7 @@ function analysisPrompt(transcript: string): string {
 export function registerLiveMeetingRoutes(
   app: FastifyInstance,
   store: EventStore,
-  opts: { query?: MeetingInsightQuery; delayMs?: number } = {},
+  opts: { query?: MeetingInsightQuery; delayMs?: number; minIntervalMs?: number } = {},
 ): void {
   const queued = new Map<
     string,
@@ -71,6 +71,8 @@ export function registerLiveMeetingRoutes(
     }
   >();
   const lastAnalyzed = new Map<string, { length: number; at: number }>();
+  const lastAttemptAt = new Map<string, number>();
+  const retries = new Map<string, { revision: number; count: number }>();
   const inFlight = new Map<string, AbortController>();
   const scheduleAnalysis = (
     sessionId: string,
@@ -79,6 +81,8 @@ export function registerLiveMeetingRoutes(
     transcript: string,
   ) => {
     if (!opts.query || transcript.length < 80) return;
+    const failed = retries.get(meetingId);
+    if (failed && failed.count >= 3 && revision <= failed.revision) return;
     const last = lastAnalyzed.get(meetingId);
     if (last && transcript.length - last.length < 160) return;
     const existing = queued.get(meetingId);
@@ -94,17 +98,14 @@ export function registerLiveMeetingRoutes(
         current.timer = setTimeout(runQueued, 5_000);
         return;
       }
-      const previous = lastAnalyzed.get(meetingId);
-      if (previous && Date.now() - previous.at < 45_000) {
-        current.timer = setTimeout(runQueued, 45_000 - (Date.now() - previous.at));
+      const previousAttempt = lastAttemptAt.get(meetingId);
+      const minInterval = opts.minIntervalMs ?? 45_000;
+      if (previousAttempt && Date.now() - previousAttempt < minInterval) {
+        current.timer = setTimeout(runQueued, minInterval - (Date.now() - previousAttempt));
         return;
       }
       queued.delete(meetingId);
-      lastAnalyzed.set(meetingId, { length: current.transcript.length, at: Date.now() });
-      if (lastAnalyzed.size > 1_000) {
-        const oldest = lastAnalyzed.keys().next().value;
-        if (oldest) lastAnalyzed.delete(oldest);
-      }
+      lastAttemptAt.set(meetingId, Date.now());
       const controller = new AbortController();
       inFlight.set(meetingId, controller);
       void (async () => {
@@ -114,7 +115,9 @@ export function registerLiveMeetingRoutes(
             analysisPrompt(current.transcript),
             controller.signal,
           );
-          if (!raw || controller.signal.aborted) return;
+          if (controller.signal.aborted) return;
+          if (!raw) throw new Error('Meeting analysis returned no result');
+          if (raw.length > 1_000_000) throw new Error('Meeting analysis response exceeds limit');
           const result = analysisResult.parse(JSON.parse(raw));
           for (const candidate of result.insights) {
             if (controller.signal.aborted) return;
@@ -139,12 +142,28 @@ export function registerLiveMeetingRoutes(
               createdAt: Date.now(),
             });
           }
+          lastAnalyzed.set(meetingId, { length: current.transcript.length, at: Date.now() });
+          retries.delete(meetingId);
+          if (lastAnalyzed.size > 1_000) {
+            const oldest = lastAnalyzed.keys().next().value;
+            if (oldest) {
+              lastAnalyzed.delete(oldest);
+              lastAttemptAt.delete(oldest);
+              retries.delete(oldest);
+            }
+          }
         } catch (error) {
-          if (!controller.signal.aborted)
+          if (!controller.signal.aborted) {
             app.log.warn(
               { error: error instanceof Error ? error.name : 'unknown', meetingId },
               'verity: live meeting analysis failed',
             );
+            const prior = retries.get(meetingId);
+            const count = prior?.revision === current.revision ? prior.count + 1 : 1;
+            retries.set(meetingId, { revision: current.revision, count });
+            if (count < 3)
+              scheduleAnalysis(current.sessionId, meetingId, current.revision, current.transcript);
+          }
         } finally {
           inFlight.delete(meetingId);
         }

@@ -135,6 +135,36 @@ it('does not analyze a stale recorder upload', async () => {
   }
 });
 
+it('retries a failed analysis for the same final transcript', async () => {
+  const analyzed = Fastify();
+  const query = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('temporary provider failure'))
+    .mockResolvedValueOnce('{"insights":[]}');
+  registerLiveMeetingRoutes(analyzed, ctx.store, { query, delayMs: 1, minIntervalMs: 1 });
+  await analyzed.ready();
+  try {
+    const transcript =
+      'The final transcript is long enough for analysis. ' +
+      'The recording has stopped, so there will be no further upload to trigger a retry.';
+    await analyzed.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, transcript, state: 'ended', endedAt: 200 },
+    });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+    await analyzed.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, transcript, state: 'ended', endedAt: 200 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(query).toHaveBeenCalledTimes(2);
+  } finally {
+    await analyzed.close();
+  }
+});
+
 it('accepts remote pause but lets only the recorder acknowledge it', async () => {
   await app.inject({ method: 'PUT', url, payload: meeting });
   const requested = await app.inject({
