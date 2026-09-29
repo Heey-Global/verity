@@ -1,9 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { FlatList } from 'react-native';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
 import {
   currentMeeting,
   endMeeting,
+  pauseMeeting,
+  resumeMeeting,
   startMeeting,
   subscribeMeeting,
 } from '../lib/liveMeetingSession';
@@ -20,7 +23,9 @@ jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
   useLocalSearchParams: () => ({ sessionId: 'session-1' }),
 }));
-jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0 }),
+}));
 jest.mock('../lib/liveMeetingSTT', () => ({
   liveMeetingSTT: {
     engines: jest
@@ -45,6 +50,8 @@ jest.mock('../lib/liveMeetingSession', () => ({
     error: null,
   }),
   endMeeting: jest.fn(),
+  pauseMeeting: jest.fn().mockResolvedValue(undefined),
+  resumeMeeting: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../lib/liveMeetingStore', () => ({
   listMeetings: jest.fn().mockResolvedValue([]),
@@ -52,7 +59,18 @@ jest.mock('../lib/liveMeetingStore', () => ({
   saveNote: jest.fn().mockResolvedValue(undefined),
 }));
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.mocked(currentMeeting).mockReturnValue(null);
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    listener(null);
+    return jest.fn();
+  });
+  jest.mocked(endMeeting).mockResolvedValue(undefined);
+  jest.mocked(listMeetings).mockResolvedValue([]);
+  jest.mocked(listNotes).mockResolvedValue([]);
+  jest.mocked(saveNote).mockResolvedValue(undefined);
+});
 
 it('starts with Nemotron and saves a note at its first edit', async () => {
   jest.mocked(currentMeeting).mockImplementation(() =>
@@ -83,7 +101,7 @@ it('starts with Nemotron and saves a note at its first edit', async () => {
     ),
   );
   await act(async () => {
-    fireEvent.press(screen.getByText('Done note'));
+    fireEvent.press(screen.getByLabelText('Add note'));
   });
 });
 
@@ -113,6 +131,9 @@ it('updates a mounted meeting screen when another instance edits a note', async 
   });
   fireEvent.changeText(screen.getAllByLabelText('Add a meeting note')[1], 'Shared decision');
 
+  await act(async () => {
+    fireEvent.press(screen.getAllByLabelText('Add note')[1]);
+  });
   await waitFor(() => expect(screen.getAllByTestId('meeting-note')).toHaveLength(2));
 });
 
@@ -148,14 +169,71 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   fireEvent.press(await screen.findByText('Start meeting'));
   fireEvent.changeText(await screen.findByLabelText('Add a meeting note'), 'Unsaved decision');
   await screen.findByText('● Recording · note not saved');
-  expect(screen.getByText('Retry saving note')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Retry saving note')).toBeOnTheScreen();
 
   fireEvent.press(screen.getByText('End meeting'));
   await screen.findByText('Ended · note not saved');
+  expect(screen.queryByText('Engine for next meeting')).toBeNull();
+  fireEvent.press(screen.getByText('Start another meeting'));
+  expect(screen.getByText('Engine for next meeting')).toBeOnTheScreen();
 
-  fireEvent.press(screen.getByText('Retry saving note'));
+  fireEvent.press(screen.getByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
   await screen.findByText('Ended · saved locally');
+  expect(screen.getByText(/Unsaved decision/)).toBeOnTheScreen();
+});
+
+it('shows an autosaved draft after the meeting ends before Add note', async () => {
+  const live: MeetingRecord = {
+    id: 'meeting-autosaved',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+  };
+  let notify!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(currentMeeting).mockReturnValue(live);
+  jest.mocked(listMeetings).mockResolvedValue([live]);
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    notify = listener;
+    listener(live);
+    return jest.fn();
+  });
+  jest.mocked(endMeeting).mockImplementation(async () => {
+    live.state = 'ended';
+    live.endedAt = Date.now();
+    notify({ ...live });
+  });
+
+  render(<MeetingScreen />);
+  fireEvent.changeText(await screen.findByLabelText('Add a meeting note'), 'Draft at the end');
+  expect(screen.queryByTestId('meeting-note')).toBeNull();
+  fireEvent.press(screen.getByText('End meeting'));
+  expect(await screen.findByText(/Draft at the end/)).toBeOnTheScreen();
+});
+
+it('retries a failed save even when the edited draft contains only spaces', async () => {
+  const live: MeetingRecord = {
+    id: 'meeting-blank-retry',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(currentMeeting).mockReturnValue(live);
+  jest.mocked(listMeetings).mockResolvedValue([live]);
+  jest.mocked(saveNote).mockRejectedValueOnce(new Error('disk full'));
+  render(<MeetingScreen />);
+  fireEvent.changeText(await screen.findByLabelText('Add a meeting note'), '   ');
+  fireEvent.press(await screen.findByLabelText('Retry saving note'));
+  await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
+  await screen.findByText(/Transcribing/);
 });
 
 it('keeps a new note when an older notes read finishes afterward', async () => {
@@ -184,6 +262,10 @@ it('keeps a new note when an older notes read finishes afterward', async () => {
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByText('Start meeting'));
   fireEvent.changeText(await screen.findByLabelText('Add a meeting note'), 'New note');
+  expect(screen.queryByTestId('meeting-note')).toBeNull();
+  await act(async () => {
+    fireEvent(screen.getByLabelText('Add a meeting note'), 'submitEditing');
+  });
   await screen.findByText(/New note/);
   await act(async () => {
     releaseNotes([]);
@@ -218,14 +300,14 @@ it('does not discard edits made while Done note awaits an earlier save', async (
   fireEvent.press(await screen.findByText('Start meeting'));
   const input = await screen.findByLabelText('Add a meeting note');
   fireEvent.changeText(input, 'First version');
-  fireEvent.press(screen.getByText('Done note'));
+  fireEvent.press(screen.getByLabelText('Add note'));
   fireEvent.changeText(input, 'Revised version');
   await act(async () => {
     releaseFirst();
   });
 
   expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('Revised version');
-  expect(screen.getByText('Done note')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Add note')).toBeOnTheScreen();
   view.unmount();
   render(<MeetingScreen />);
   expect(await screen.findByLabelText('Add a meeting note')).toHaveDisplayValue('Revised version');
@@ -265,7 +347,7 @@ it('shows a late note-save failure after the meeting screen is reopened', async 
     rejectSave(new Error('disk full'));
   });
   expect(await screen.findByText('● Recording · note not saved')).toBeOnTheScreen();
-  expect(screen.getByText('Retry saving note')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Retry saving note')).toBeOnTheScreen();
 });
 
 it('keeps the retry draft when Done note is pressed after remount during a failed save', async () => {
@@ -296,10 +378,10 @@ it('keeps the retry draft when Done note is pressed after remount during a faile
   fireEvent.changeText(await screen.findByLabelText('Add a meeting note'), 'Recover me');
   first.unmount();
   render(<MeetingScreen />);
-  fireEvent.press(await screen.findByText('Done note'));
+  fireEvent.press(await screen.findByLabelText('Add note'));
   await act(async () => rejectSave(new Error('disk full')));
 
-  expect(await screen.findByText('Retry saving note')).toBeOnTheScreen();
+  expect(await screen.findByLabelText('Retry saving note')).toBeOnTheScreen();
   expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('Recover me');
 });
 
@@ -364,4 +446,62 @@ it('keeps a historical transcript open while the live meeting updates', async ()
   expect(screen.getByText(/Past note/)).toBeOnTheScreen();
   expect(screen.queryByText(/Live note/)).toBeNull();
   expect(screen.queryByText('New live words')).toBeNull();
+});
+
+it('follows new transcript text until the reader scrolls away', async () => {
+  const live: MeetingRecord = {
+    id: 'meeting-scroll',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'First words',
+    error: null,
+  };
+  jest.mocked(currentMeeting).mockReturnValue(live);
+  jest.mocked(listMeetings).mockResolvedValue([live]);
+  const scrollToEnd = jest
+    .spyOn(FlatList.prototype, 'scrollToEnd')
+    .mockImplementation(() => undefined);
+  try {
+    render(<MeetingScreen />);
+    const transcript = await screen.findByTestId('meeting-transcript');
+    fireEvent(transcript, 'contentSizeChange', 200, 600);
+    expect(scrollToEnd).toHaveBeenCalled();
+    scrollToEnd.mockClear();
+    fireEvent(transcript, 'scrollBeginDrag');
+    fireEvent(transcript, 'contentSizeChange', 200, 700);
+    expect(scrollToEnd).not.toHaveBeenCalled();
+  } finally {
+    scrollToEnd.mockRestore();
+  }
+});
+
+it('offers pause and resume on the full meeting screen', async () => {
+  const live: MeetingRecord = {
+    id: 'meeting-pause',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  let notify!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(currentMeeting).mockReturnValue(live);
+  jest.mocked(listMeetings).mockResolvedValue([live]);
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    notify = listener;
+    listener(live);
+    return jest.fn();
+  });
+  render(<MeetingScreen />);
+  await act(async () => fireEvent.press(await screen.findByText('Ⅱ  Pause')));
+  expect(pauseMeeting).toHaveBeenCalledTimes(1);
+  act(() => notify({ ...live, captureStatus: 'paused' }));
+  await act(async () => fireEvent.press(await screen.findByText('▶  Resume')));
+  expect(resumeMeeting).toHaveBeenCalledTimes(1);
 });

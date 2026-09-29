@@ -12,7 +12,7 @@ export interface STTEngine {
 export type STTEvent =
   | {
       kind: 'status';
-      state: 'preparing' | 'downloading' | 'listening' | 'stopped' | 'failed';
+      state: 'preparing' | 'downloading' | 'listening' | 'paused' | 'stopped' | 'failed';
       engine?: string;
       message?: string;
     }
@@ -23,6 +23,8 @@ interface NativeLiveSTT {
   engines(): Promise<STTEngine[]>;
   start(engine: STTEngineId, locale: string, vocabulary: string[]): Promise<void>;
   stop(): Promise<void>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
   addListener(event: 'onSTTEvent', listener: (event: STTEvent) => void): { remove(): void };
 }
 

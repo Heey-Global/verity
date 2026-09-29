@@ -45,6 +45,16 @@ class VerityLiveSTT: Module {
       guard #available(iOS 26.0, *) else { return }
       try await LiveSTTService.shared.stop()
     }
+
+    AsyncFunction("pause") { () async throws in
+      guard #available(iOS 26.0, *) else { return }
+      try await LiveSTTService.shared.pause()
+    }
+
+    AsyncFunction("resume") { () async throws in
+      guard #available(iOS 26.0, *) else { return }
+      try await LiveSTTService.shared.resume()
+    }
   }
 }
 
@@ -67,6 +77,7 @@ private final class LiveSTTService {
   private var activeEngine: String?
   private var generation = 0
   private var reportedOverflow = false
+  private var paused = false
 
   func engines() async -> [[String: Any]] {
     let appleAvailable = SpeechTranscriber.isAvailable
@@ -89,6 +100,7 @@ private final class LiveSTTService {
     generation += 1
     let startGeneration = generation
     activeEngine = engine
+    paused = false
     reportedOverflow = false
     self.emit = emit
     emit(["kind": "status", "state": "preparing", "engine": engine])
@@ -157,6 +169,38 @@ private final class LiveSTTService {
     }
   }
 
+  func pause() throws {
+    guard let engine = activeEngine, let audioEngine else {
+      throw LiveSTTError.unavailable("The microphone is not ready to pause.")
+    }
+    guard !paused else { return }
+    audioEngine.pause()
+    do {
+      try AVAudioSession.sharedInstance().setActive(false)
+    } catch {
+      try? audioEngine.start()
+      throw error
+    }
+    paused = true
+    emit?(["kind": "status", "state": "paused", "engine": engine])
+  }
+
+  func resume() throws {
+    guard let engine = activeEngine, let audioEngine else {
+      throw LiveSTTError.unavailable("The microphone is not ready to resume.")
+    }
+    guard paused else { return }
+    try AVAudioSession.sharedInstance().setActive(true)
+    do {
+      try audioEngine.start()
+    } catch {
+      try? AVAudioSession.sharedInstance().setActive(false)
+      throw error
+    }
+    paused = false
+    emit?(["kind": "status", "state": "listening", "engine": engine])
+  }
+
   private func clear() {
     audioEngine = nil
     microphoneInput = nil
@@ -167,6 +211,7 @@ private final class LiveSTTService {
     nemotron = nil
     parakeet = nil
     activeEngine = nil
+    paused = false
     emit = nil
   }
 
