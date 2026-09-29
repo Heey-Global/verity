@@ -58,9 +58,9 @@ separately by `TRADEMARKS.md`.
 | BSD-3-Clause | 26 |
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 1 |
-| ISC | 61 |
+| ISC | 60 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 969 |
+| MIT | 968 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -1118,7 +1118,6 @@ separately by `TRADEMARKS.md`.
 | side-channel-map | MIT | [source](https://www.npmjs.com/package/side-channel-map) |
 | side-channel-weakmap | MIT | [source](https://www.npmjs.com/package/side-channel-weakmap) |
 | side-channel | MIT | [source](https://www.npmjs.com/package/side-channel) |
-| siginfo | ISC | [source](https://www.npmjs.com/package/siginfo) |
 | signal-exit | ISC | [source](https://www.npmjs.com/package/signal-exit) |
 | sigstore | Apache-2.0 | [source](https://www.npmjs.com/package/sigstore) |
 | simple-plist | MIT | [source](https://www.npmjs.com/package/simple-plist) |
@@ -1140,7 +1139,6 @@ separately by `TRADEMARKS.md`.
 | ssri | ISC | [source](https://www.npmjs.com/package/ssri) |
 | stack-generator | MIT | [source](https://www.npmjs.com/package/stack-generator) |
 | stack-utils | MIT | [source](https://www.npmjs.com/package/stack-utils) |
-| stackback | MIT | [source](https://www.npmjs.com/package/stackback) |
 | stackframe | MIT | [source](https://www.npmjs.com/package/stackframe) |
 | stacktrace-gps | MIT | [source](https://www.npmjs.com/package/stacktrace-gps) |
 | stacktrace-js | MIT | [source](https://www.npmjs.com/package/stacktrace-js) |
