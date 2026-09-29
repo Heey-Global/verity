@@ -124,6 +124,24 @@ describe('parseInline', () => {
     ]);
   });
 
+  it('parses a markdown image as a link without leaving its ! in the prose', () => {
+    // Agents are told to embed images as `![alt](path)`; the `!` rendered as a
+    // stray glyph in front of the label.
+    expect(parseInline('!PIN page](x)')).toEqual([{ t: 'plain', text: '!PIN page](x)' }]);
+    expect(parseInline('![PIN page](/work/.verity-sessions/a1/.agents/pin.png)')).toEqual([
+      {
+        t: 'link',
+        text: 'PIN page',
+        url: '/work/.verity-sessions/a1/.agents/pin.png',
+        external: false,
+      },
+    ]);
+    expect(parseInline('wow! [x](y)')).toEqual([
+      { t: 'plain', text: 'wow! ' },
+      { t: 'link', text: 'x', url: 'y', external: false },
+    ]);
+  });
+
   it('recognizes a bare URL and keeps trailing punctuation as plain text', () => {
     expect(parseInline('open https://verity.dev/docs.')).toEqual([
       { t: 'plain', text: 'open ' },

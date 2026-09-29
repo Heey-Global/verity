@@ -95,8 +95,10 @@ export type InlineSpan =
 // `[label](target)`, then a bare `http(s)://…` URL. Code is matched before bare URLs
 // so a URL inside backticks stays literal code, not a link. Markdown targets may be
 // local file refs (`/work/a.ts:12`), which the renderer displays compactly without
-// trying to open through Linking.
-const INLINE = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s]+)/g;
+// trying to open through Linking. A markdown image `![alt](target)` parses as the
+// same link — its `!` is consumed so it doesn't leak into the prose; the renderer
+// previews image targets below the line.
+const INLINE = /\*\*([^*]+)\*\*|`([^`]+)`|!?\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s]+)/g;
 
 // Trailing sentence punctuation that shouldn't be swallowed into a bare URL (so
 // "see https://x.com." links "https://x.com" and keeps the period as text).

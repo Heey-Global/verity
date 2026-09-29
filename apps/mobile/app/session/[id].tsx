@@ -4188,6 +4188,10 @@ function SessionFilesSheet({
       ? getServerProfile()?.endpoints.find(({ url }) => url === baseUrl)?.tlsPin
       : undefined;
 
+  // Read by the deep-link effect below, which runs before `openWith` is declared
+  // and must not refetch whenever its identity changes.
+  const openWithRef = useRef<((filePath: string) => void) | null>(null);
+
   useEffect(() => {
     if (!initialFilePath) return;
     // Shares openFile's request token so a tap during this initial fetch wins even
@@ -4203,7 +4207,14 @@ function SessionFilesSheet({
         if (active()) setPreview({ path: file.path, content: file.content });
       })
       .catch((err) => {
-        if (active()) setError(err instanceof Error ? err.message : String(err));
+        if (!active()) return;
+        // Same hand-off as a tap in the list: a binary or oversized file opens in
+        // another app instead of dead-ending on "file is not a text file".
+        if (err instanceof VerityApiError && (err.status === 413 || err.status === 415)) {
+          openWithRef.current?.(initialFilePath);
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
         if (active()) setPreviewLoading(false);
@@ -4545,6 +4556,7 @@ function SessionFilesSheet({
     },
     [baseUrl, client, directTlsPin, root, sessionId],
   );
+  openWithRef.current = openWith;
 
   const openFile = useCallback(
     (entry: SessionFileEntry) => {
@@ -5472,6 +5484,19 @@ function AgentMarkdown({
   const openSessionFile = useContext(SessionFileOpenContext);
   const sessionFileImageSource = useContext(SessionFileImageSourceContext);
   const [viewer, setViewer] = useState<{ source: ImageSource; label: string } | null>(null);
+  const [imagePathViewer, setImagePathViewer] = useState<string | null>(null);
+  // The files sheet previews text only, so an image link opened there reads as
+  // "file is not a text file"; show the image full screen instead.
+  const openLocalFile = useMemo(() => {
+    if (openSessionFile === null) return null;
+    return (path: string) => {
+      if (sessionFileImageSource !== null && isSessionImageFilePath(path)) {
+        setImagePathViewer(path);
+      } else {
+        openSessionFile(path);
+      }
+    };
+  }, [openSessionFile, sessionFileImageSource]);
   const [showCopy, setShowCopy] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toggleCopy = useCallback(() => {
@@ -5526,7 +5551,7 @@ function AgentMarkdown({
             <MarkdownText
               key={i}
               content={block.content}
-              onOpenLocalFile={openSessionFile}
+              onOpenLocalFile={openLocalFile}
               sessionFileImageSource={sessionFileImageSource}
               onOpenImage={(source, label) => setViewer({ source, label })}
             />
@@ -5537,6 +5562,17 @@ function AgentMarkdown({
             source={viewer.source}
             label={viewer.label}
             onClose={() => setViewer(null)}
+          />
+        ) : null}
+        {imagePathViewer !== null && sessionFileImageSource !== null ? (
+          <SessionFileImageViewer
+            path={imagePathViewer}
+            sessionFileImageSource={sessionFileImageSource}
+            onClose={() => setImagePathViewer(null)}
+            onUnavailable={() => {
+              setImagePathViewer(null);
+              openSessionFile?.(imagePathViewer);
+            }}
           />
         ) : null}
         {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
@@ -5824,26 +5860,49 @@ function LocalImageLinks({
   if (links.length === 0 || sessionFileImageSource === null) return null;
   return (
     <View style={styles.localLinkImages}>
-      {links.map((link) => {
-        const source = sessionFileImageSource(link.path);
-        if (source === undefined) return null;
-        return (
-          <Pressable
-            key={link.path}
-            onPress={() => onOpenImage(source, link.label)}
-            accessibilityRole="imagebutton"
-            accessibilityLabel={`View ${link.label} full screen`}
-          >
-            <ExpoImage
-              source={source}
-              style={styles.localLinkImage}
-              contentFit="contain"
-              transition={120}
-            />
-          </Pressable>
-        );
-      })}
+      {links.map((link) => (
+        <LocalImageLink
+          key={link.path}
+          link={link}
+          sessionFileImageSource={sessionFileImageSource}
+          onOpenImage={onOpenImage}
+        />
+      ))}
     </View>
+  );
+}
+
+// A session-file image goes through the pinned downloader like a tool image: a
+// direct HTTPS URL would reach expo-image, which rejects the self-signed
+// certificate of a TLS-pinned endpoint and leaves an empty frame behind.
+function LocalImageLink({
+  link,
+  sessionFileImageSource,
+  onOpenImage,
+}: {
+  link: { path: string; label: string };
+  sessionFileImageSource: (path: string) => ImageSource | undefined;
+  onOpenImage: (source: ImageSource, label: string) => void;
+}) {
+  const immediate = useMemo(
+    () => sessionFileImageSource(link.path),
+    [sessionFileImageSource, link.path],
+  );
+  const source = usePinnedImageSource(immediate, `session-file-${link.path}`);
+  if (source === undefined) return null;
+  return (
+    <Pressable
+      onPress={() => onOpenImage(source, link.label)}
+      accessibilityRole="imagebutton"
+      accessibilityLabel={`View ${link.label} full screen`}
+    >
+      <ExpoImage
+        source={source}
+        style={styles.localLinkImage}
+        contentFit="contain"
+        transition={120}
+      />
+    </Pressable>
   );
 }
 
@@ -5857,6 +5916,23 @@ function ImageSourceViewer({
   onClose: () => void;
 }) {
   return <ImageLightbox source={source} label={label} onClose={onClose} />;
+}
+
+function SessionFileImageViewer({
+  path,
+  sessionFileImageSource,
+  onClose,
+  onUnavailable,
+}: {
+  path: string;
+  sessionFileImageSource: (path: string) => ImageSource | undefined;
+  onClose: () => void;
+  onUnavailable: () => void;
+}) {
+  const immediate = useMemo(() => sessionFileImageSource(path), [sessionFileImageSource, path]);
+  const source = usePinnedImageSource(immediate, `session-file-${path}`, onUnavailable);
+  if (source === undefined) return null;
+  return <ImageLightbox source={source} label={fileNameFromPath(path)} onClose={onClose} />;
 }
 
 // Render inline **bold** / `code` / link spans (nested Text lays them out inline).
@@ -8144,11 +8220,25 @@ function useAttachmentImageSource(a: {
   mediaType: string;
 }): ImageSource | undefined {
   const immediate = useMemo(() => attachmentSource(a), [a.data, a.id, a.mediaType]);
+  return usePinnedImageSource(immediate, a.id);
+}
+
+/** Load a server-hosted image source (`immediate`) through the pinned downloader
+ * when the active endpoint is a TLS-pinned direct connection; otherwise hand it to
+ * expo-image as-is. `cacheKey` names the downloaded copy; without one, `immediate`
+ * is not a server URL (e.g. inline base64) and is returned unchanged. */
+function usePinnedImageSource(
+  immediate: ImageSource | undefined,
+  cacheKey: string | undefined,
+  onError?: () => void,
+): ImageSource | undefined {
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   const [source, setSource] = useState<ImageSource | undefined>(
-    a.id === undefined ? immediate : undefined,
+    cacheKey === undefined ? immediate : undefined,
   );
   useEffect(() => {
-    if (a.id === undefined) {
+    if (cacheKey === undefined || immediate?.uri === undefined) {
       setSource(immediate);
       return;
     }
@@ -8163,15 +8253,14 @@ function useAttachmentImageSource(a: {
     const destination = new FsFile(
       Paths.cache,
       'verity-attachments',
-      `${a.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      `${cacheKey.replace(/[^A-Za-z0-9._-]/g, '_').slice(-80)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     );
-    const token = getAuthToken(baseUrl);
     void downloadPinnedFile({
-      url: `${baseUrl}/attachments/${a.id}`,
+      url: immediate.uri,
       destination: destination.uri,
       tlsPin: endpoint.tlsPin,
       useRemote: true,
-      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+      ...(immediate.headers ? { headers: immediate.headers } : {}),
     })
       .then((uri) => {
         if (active) {
@@ -8186,7 +8275,9 @@ function useAttachmentImageSource(a: {
         }
       })
       .catch(() => {
-        if (active) setSource(undefined);
+        if (!active) return;
+        setSource(undefined);
+        onErrorRef.current?.();
       });
     return () => {
       active = false;
@@ -8198,7 +8289,7 @@ function useAttachmentImageSource(a: {
         }
       }
     };
-  }, [a.id, immediate]);
+  }, [cacheKey, immediate]);
   return source;
 }
 
