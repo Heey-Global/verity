@@ -39,6 +39,7 @@ export interface LiveMeetingInsight {
   summary: string;
   evidenceA: string;
   evidenceB: string | null;
+  sourcePath: string | null;
   createdAt: number;
 }
 
@@ -61,6 +62,7 @@ export class LiveMeetingStore {
         summary: insight.summary,
         evidence_a: insight.evidenceA,
         evidence_b: insight.evidenceB,
+        source_path: insight.sourcePath,
         created_at: insight.createdAt,
       })
       .onConflict((conflict) => conflict.column('id').doNothing())
@@ -89,6 +91,7 @@ export class LiveMeetingStore {
       summary: row.summary,
       evidenceA: row.evidence_a,
       evidenceB: row.evidence_b,
+      sourcePath: row.source_path,
       createdAt: Number(row.created_at),
     }));
   }

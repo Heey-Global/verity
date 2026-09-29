@@ -71,7 +71,7 @@ describe('VerityClient live meetings', () => {
     const { fetch, calls } = fakeFetch(json({ insights: [insight] }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getLiveMeetingInsights('session/one', insight.meetingId)).toEqual([
-      insight,
+      { ...insight, sourcePath: null },
     ]);
     expect(calls[0]?.url).toBe(
       'http://host/sessions/session%2Fone/live-meetings/meeting%2Fone/insights',

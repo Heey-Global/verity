@@ -1379,5 +1379,6 @@ interface LiveMeetingInsightsTable {
   summary: string;
   evidence_a: string;
   evidence_b: string | null;
+  source_path: string | null;
   created_at: number;
 }
