@@ -74,6 +74,9 @@ describe('workflow token least privilege', () => {
         // access; the sweep's own test forbids it every release command.
         reconcile: { actions: 'write', contents: 'write', 'pull-requests': 'read' },
       },
+      'renovate-notices.yml': {
+        notices: { actions: 'write', contents: 'write' },
+      },
       'release.yml': {
         'release-please': {
           actions: 'write',

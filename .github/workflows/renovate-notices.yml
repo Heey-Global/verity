@@ -1,0 +1,63 @@
+name: verity-renovate-notices
+
+# THIRD_PARTY_NOTICES.md is generated from package-lock.json and committed, and
+# scripts/third-party-notices.test.ts fails the test job whenever the two
+# disagree. Renovate cannot regenerate it: postUpgradeTasks are blocked on the
+# hosted Mend app (docs.renovatebot.com/mend-hosted/faq), so a bump that adds or
+# drops a transitive package opened a red PR that waited for a human to run
+# `npm run licenses:write` (vitest 5.0.2, #880). This regenerates the file on the
+# Renovate branch instead, through scripts/renovate-notices.mjs: a GraphQL
+# commit that GitHub signs, as the branch ruleset requires, then explicit
+# dispatches of ci.yml and gitleaks-dispatch.yml, because a GITHUB_TOKEN commit
+# emits no pull_request event. renovate.json lists github-actions[bot] in
+# gitIgnoredAuthors so Renovate keeps owning the branch; a rebase drops the
+# commit and the next synchronize event puts it back.
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths: [package-lock.json]
+
+permissions: read-all
+
+concurrency:
+  # A newer head supersedes the run for the older one; the older commit would
+  # be rejected on its expectedHeadOid anyway.
+  group: renovate-notices-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  notices:
+    # Only pushes Renovate itself made to its own branches: the job holds a
+    # write token and runs the generator from the PR head. `user.login` is who
+    # opened the PR; `sender.login` is who made this push, so a collaborator's
+    # commit onto a renovate/* branch does not get run here with that token.
+    # Such a branch is theirs to fix by hand, and Renovate stops updating it.
+    if: >-
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.sender.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Nothing here pushes through git; the commit goes through gh.
+          persist-credentials: false
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+
+      # No npm ci: the generator reads package-lock.json and nothing else.
+      - name: Regenerate third-party notices and dispatch the checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/renovate-notices.mjs "$HEAD_REF" "$HEAD_SHA"
