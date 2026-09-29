@@ -1,60 +1,81 @@
+/** A sentence in which someone said "Verity". Whether it asks for something, and what, is left
+ * to the server's model, so no language's phrasing is written down here. */
 export interface VoiceMeetingCommand {
-  kind: 'research' | 'opinion';
-  request: string;
+  utterance: string;
   complete: boolean;
   start: number;
 }
 
-const WAKE_WORD = /\bVerity\b[\s,:-]*/gi;
-const RESEARCH =
-  /^(?:(?:kannst du|can you)\s+(?:mal\s+)?)?(?:recherchier\w*|prüf\w*|überprüf\w*|check\w*|verifizier\w*|finde heraus|research|look up)\b/i;
-const OPINION = /^(?:was hältst du|wie siehst du|was ist deine einschätzung|what do you think)\b/i;
-const ABBREVIATIONS = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'etc', 'vs']);
+const WAKE_WORD = /\bVerity\b/gi;
+// A period ends a sentence only before a space, after a word longer than two letters: this keeps
+// "Node.js", "3.5", "z.B." and "Dr. Müller" inside the request without a list of abbreviations.
+// Joining too much only gives the model more to read; a period before the name always splits.
+const SENTENCE_END = /[!?\n]|(?<=\p{L}{3}|\d)\.(?=\s|$)|\.(?=\s+Verity\b)/giu;
+// Partial transcripts often lack punctuation; bound the sentence so one run-on line stays small.
+const MAX_BEFORE = 200;
+const MAX_UTTERANCE = 600;
 
-function sentenceEnd(text: string): number {
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (character === '\n' || character === '?' || character === '!') return index;
-    if (character !== '.' || (index + 1 < text.length && !/\s/.test(text[index + 1]!))) continue;
-    const word = text.slice(0, index).match(/[\p{L}\p{N}]+$/u)?.[0] ?? '';
-    if (word.length > 1 && !ABBREVIATIONS.has(word.toLocaleLowerCase())) return index;
-  }
-  return -1;
+function hasWords(text: string): boolean {
+  return /\p{L}{2}/u.test(text.replace(WAKE_WORD, ''));
 }
 
-/** Only explicit, limited requests may leave the microphone as session turns. */
-function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
-  let wake: RegExpExecArray | null;
+function sameUtterance(a: string, b: string): boolean {
+  const normalize = (value: string) =>
+    value
+      .trim()
+      .replace(/[.!?]+$/, '')
+      .trim();
+  if (normalize(a) === normalize(b)) return true;
+  const words = (value: string) =>
+    new Set(
+      (value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(
+        (word) => word !== 'verity',
+      ),
+    );
+  const left = words(a);
+  const right = words(b);
+  const shared = [...left].filter((word) => right.has(word)).length;
+  return (
+    (shared >= 2 && shared / Math.min(left.size, right.size) >= 0.5) ||
+    (shared >= 1 &&
+      ([...left][0] === [...right][0] ||
+        ([...left][0]!.length >= 3 &&
+          [...right][0]!.length >= 3 &&
+          ([...left][0]!.startsWith([...right][0]!) || [...right][0]!.startsWith([...left][0]!)))))
+  );
+}
+
+export function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
   const commands: VoiceMeetingCommand[] = [];
-  WAKE_WORD.lastIndex = 0;
-  while ((wake = WAKE_WORD.exec(transcript))) {
-    const following = transcript.slice(wake.index + wake[0].length);
-    const terminator = sentenceEnd(following);
-    const request = (terminator < 0 ? following : following.slice(0, terminator)).trim();
-    if (request.length < 12 || request.length > 240) continue;
-    const research = RESEARCH.exec(request);
-    const opinion = research ? null : OPINION.exec(request);
-    const match = research ?? opinion;
-    if (match) {
-      const kind = research ? 'research' : 'opinion';
-      const remainder = request
-        .slice(match[0].length)
-        .trim()
-        .replace(/^mal\s+/i, '');
-      if (remainder.length < 3) continue;
-      commands.push({
-        kind,
-        request,
-        complete: terminator >= 0,
-        start: wake.index,
-      });
+  const ends = [...transcript.matchAll(SENTENCE_END)]
+    .filter((match) => {
+      if (match[0] !== '.') return true;
+      const before = transcript.slice(0, match.index!).match(/(?:^|\s)(\p{Lu}\p{L}*)$/u)?.[1];
+      const after = transcript.slice(match.index! + 1).match(/^\s+(\p{Lu}\p{L}*)/u)?.[1];
+      return !(before && before.length <= 4 && after && after.toLowerCase() !== 'verity');
+    })
+    .map((match) => match.index!);
+  let covered = 0;
+  for (const wake of transcript.matchAll(WAKE_WORD)) {
+    if (wake.index! < covered) continue;
+    const previousEnd = ends.filter((end) => end < wake.index!).at(-1) ?? -1;
+    const start = Math.max(previousEnd + 1, wake.index! - MAX_BEFORE);
+    // "Verity. Recherchier mal …": a name said on its own belongs to the next sentence.
+    let end = ends.find((candidate) => candidate >= wake.index!);
+    if (end !== undefined && !hasWords(transcript.slice(wake.index!, end)))
+      end = ends.find((candidate) => candidate > end!);
+    let complete = end !== undefined;
+    let utterance = transcript.slice(start, end === undefined ? undefined : end + 1);
+    if (utterance.length > MAX_UTTERANCE) {
+      utterance = utterance.slice(0, MAX_UTTERANCE);
+      complete = true;
     }
+    covered = start + utterance.length;
+    const trimmed = utterance.trim();
+    if (!hasWords(trimmed)) continue;
+    commands.push({ utterance: trimmed, complete, start: start + utterance.indexOf(trimmed) });
   }
   return commands;
-}
-
-export function latestVoiceMeetingCommand(transcript: string): VoiceMeetingCommand | null {
-  return voiceMeetingCommands(transcript).at(-1) ?? null;
 }
 
 export class VoiceMeetingCommandDetector {
@@ -85,7 +106,7 @@ export class VoiceMeetingCommandDetector {
     }
     if (
       this.pending?.start === command.start &&
-      this.pending.request === command.request &&
+      this.pending.utterance === command.utterance &&
       !final &&
       !command.complete
     )
@@ -136,23 +157,22 @@ export class VoiceMeetingCommandDetector {
             ? old.start + transcript.length - previous.length
             : old.start;
       let index = commands.findIndex(
-        (candidate, position) =>
-          !matched.has(position) && candidate.kind === old.kind && candidate.start === mappedStart,
+        (candidate, position) => !matched.has(position) && candidate.utterance === old.utterance,
       );
       if (index < 0)
         index = commands.findIndex(
           (candidate, position) =>
             !matched.has(position) &&
-            candidate.kind === old.kind &&
-            candidate.request === old.request,
+            candidate.start === mappedStart &&
+            sameUtterance(candidate.utterance, old.utterance),
         );
       if (index < 0) {
         const shiftedStart = old.start + transcript.length - previous.length;
         index = commands.findIndex(
           (candidate, position) =>
             !matched.has(position) &&
-            candidate.kind === old.kind &&
-            Math.abs(candidate.start - shiftedStart) <= 12,
+            Math.abs(candidate.start - shiftedStart) <= 12 &&
+            sameUtterance(candidate.utterance, old.utterance),
         );
       }
       if (index < 0) continue;

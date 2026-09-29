@@ -324,6 +324,47 @@ it('starts with Nemotron and saves a note at its first edit', async () => {
   });
 });
 
+it('keeps fast keystrokes before a re-render in one note', async () => {
+  jest.mocked(currentMeeting).mockImplementation(() =>
+    jest.mocked(startMeeting).mock.calls.length > 0
+      ? {
+          id: 'meeting-1',
+          sessionId: 'session-1',
+          engine: 'fluid-nemotron',
+          startedAt: Date.now(),
+          endedAt: null,
+          state: 'active',
+          transcript: '',
+          error: null,
+        }
+      : null,
+  );
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Start meeting'));
+  await waitFor(() => expect(startMeeting).toHaveBeenCalled());
+  const input = await screen.findByLabelText('Add a meeting note');
+  // A hardware keyboard can deliver both changes before the screen renders the first one.
+  act(() => {
+    input.props.onChangeText('k');
+    input.props.onChangeText('kl');
+  });
+  const ids = jest.mocked(saveNote).mock.calls.map(([note]) => note.id);
+  expect(ids).toHaveLength(2);
+  expect(new Set(ids).size).toBe(1);
+  expect(screen.getAllByLabelText('Add a meeting note')[0]).toHaveDisplayValue('kl');
+
+  // Once saved, the module draft must be gone, or the next note would overwrite this one.
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('Add note'));
+  });
+  await waitFor(() => expect(finalizeNote).toHaveBeenCalledWith(ids[0], 'kl'));
+  await waitFor(() =>
+    expect(screen.getAllByLabelText('Add a meeting note')[0]).toHaveDisplayValue(''),
+  );
+  act(() => screen.getAllByLabelText('Add a meeting note')[0]!.props.onChangeText('n'));
+  expect(jest.mocked(saveNote).mock.calls.at(-1)![0].id).not.toBe(ids[0]);
+});
+
 it('updates a mounted meeting screen when another instance edits a note', async () => {
   const live: MeetingRecord = {
     id: 'meeting-shared',
@@ -752,4 +793,31 @@ it('offers pause and resume on the full meeting screen', async () => {
   act(() => notify({ ...live, captureStatus: 'paused' }));
   await act(async () => fireEvent.press(await screen.findByText('▶  Resume')));
   expect(resumeMeeting).toHaveBeenCalledTimes(1);
+});
+
+it('stamps notes with the time of day rather than the meeting timer', async () => {
+  // A 90-second-old note in a meeting that started at 14:02 must read 14:03, not 01:30.
+  const startedAt = new Date(2026, 8, 29, 14, 2, 0).getTime();
+  const meeting: MeetingRecord = {
+    id: 'meeting-clock',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt,
+    endedAt: startedAt + 600_000,
+    state: 'ended',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest
+    .mocked(listNotes)
+    .mockResolvedValue([{ id: 'n', meetingId: meeting.id, atSeconds: 90, text: 'Budget' }]);
+  render(<MeetingScreen />);
+  const expected = new Date(startedAt + 90_000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  expect(await screen.findByTestId('meeting-note')).toHaveTextContent(`${expected} Budget`);
+  expect(expected).not.toBe('01:30');
 });

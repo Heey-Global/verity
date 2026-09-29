@@ -1915,6 +1915,27 @@ export class VerityClient {
       .parse(await res.json());
   }
 
+  /** Asks the server's model whether "Verity" in this utterance was a request, in any language. */
+  async checkSpokenMeetingRequest(
+    sessionId: string,
+    meetingId: string,
+    body: { utterance: string; context: string },
+  ): Promise<{ kind: 'research' | 'opinion'; request: string }[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/addressed`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return z
+      .object({
+        requests: z.array(z.object({ kind: z.enum(['research', 'opinion']), request: z.string() })),
+      })
+      .parse(await res.json()).requests;
+  }
+
   async putLiveMeeting(meeting: LiveMeeting & { ownerToken: string }): Promise<void> {
     await this.request(
       `/sessions/${encodeURIComponent(meeting.sessionId)}/live-meetings/${encodeURIComponent(meeting.id)}`,

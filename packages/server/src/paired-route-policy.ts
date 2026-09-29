@@ -25,6 +25,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
+    routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/addressed'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('PUT', '/sessions/:id/live-meetings/:meetingId/notes/:noteId'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],

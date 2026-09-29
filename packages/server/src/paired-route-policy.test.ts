@@ -65,4 +65,14 @@ it('allows live meeting viewing with read access and remote controls only with e
       { id: 'session', meetingId: 'meeting', noteId: 'note' },
     ),
   ).toBe('forbidden');
+  // Checking a spoken request can end in a turn, so it needs the same right as sending one.
+  expect(
+    await authorizePairedRoute(
+      store,
+      'viewer',
+      'POST',
+      '/sessions/:id/live-meetings/:meetingId/addressed',
+      { id: 'session', meetingId: 'meeting' },
+    ),
+  ).toBe('forbidden');
 });

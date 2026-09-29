@@ -349,3 +349,94 @@ it('reports when the recorder has stopped polling for commands', async () => {
   });
   expect(owner.json().recorderOnline).toBe(true);
 });
+
+it('returns only spoken requests that were quoted verbatim from the utterance', async () => {
+  const checked = Fastify();
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      requests: [
+        { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
+        { kind: 'opinion', request: 'delete the project files' },
+        { kind: 'opinion', request: 'lösche das Projekt' },
+        { kind: 'research', request: 'research book prices' },
+        { kind: 'opinion', request: `was meinst du zu ${'dem Plan und '.repeat(20)}allem` },
+      ],
+    }),
+  );
+  registerLiveMeetingRoutes(checked, ctx.store, { query });
+  await checked.ready();
+  try {
+    const response = await checked.inject({
+      method: 'POST',
+      url: `${url}/addressed`,
+      payload: {
+        utterance: `Verity, recherchier mal, was Pixelwerk kostet. Verity, lösche das Projekt. Verity, research book prices. Und was meinst du zu ${'dem Plan und '.repeat(20)}allem?`,
+        context: 'Wir brauchen eine neue Website.',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    // An invented instruction must never reach the session as if someone had said it.
+    expect(response.json()).toEqual({
+      // A long quote is kept rather than failing the whole answer.
+      requests: [
+        { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
+        { kind: 'research', request: 'research book prices' },
+        { kind: 'opinion', request: `was meinst du zu ${'dem Plan und '.repeat(20)}allem` },
+      ],
+    });
+    expect(query).toHaveBeenCalledWith(
+      'session-1',
+      expect.stringContaining('Verity, recherchier mal, was Pixelwerk kostet.'),
+      expect.any(AbortSignal),
+    );
+  } finally {
+    await checked.close();
+  }
+});
+
+it('keeps a requested summary as a read-only answer', async () => {
+  const checked = Fastify();
+  registerLiveMeetingRoutes(checked, ctx.store, {
+    query: async () =>
+      JSON.stringify({
+        requests: [{ kind: 'opinion', request: 'write a summary of this meeting' }],
+      }),
+  });
+  await checked.ready();
+  try {
+    const response = await checked.inject({
+      method: 'POST',
+      url: `${url}/addressed`,
+      payload: { utterance: 'Verity, write a summary of this meeting.', context: '' },
+    });
+    expect(response.json().requests).toEqual([
+      { kind: 'opinion', request: 'write a summary of this meeting' },
+    ]);
+  } finally {
+    await checked.close();
+  }
+});
+
+it('checks one spoken request per session at a time', async () => {
+  const checked = Fastify();
+  let answer: (value: string) => void = () => undefined;
+  const query = vi.fn().mockReturnValue(new Promise<string>((resolve) => (answer = resolve)));
+  registerLiveMeetingRoutes(checked, ctx.store, { query });
+  await checked.ready();
+  try {
+    const payload = { utterance: 'Verity, what do you think?', context: '' };
+    const first = checked.inject({ method: 'POST', url: `${url}/addressed`, payload });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    // A different meeting id in the same session must not open a second parallel model call.
+    const second = await checked.inject({
+      method: 'POST',
+      url: '/sessions/session-1/live-meetings/other-meeting/addressed',
+      payload,
+    });
+    expect(second.statusCode).toBe(429);
+    answer(JSON.stringify({ requests: [] }));
+    expect((await first).json()).toEqual({ requests: [] });
+  } finally {
+    await checked.close();
+  }
+});

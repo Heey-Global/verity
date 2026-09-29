@@ -61,6 +61,14 @@ function elapsed(startedAt: number, now: number) {
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+// Notes carry the time of day: people match them to the clock and the calendar, not to a timer.
+function noteClockTime(startedAt: number, atSeconds: number) {
+  return new Date(startedAt + atSeconds * 1000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export default function MeetingScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const insets = useSafeAreaInsets();
@@ -405,8 +413,10 @@ export default function MeetingScreen() {
   };
 
   const editNote = (value: string) => {
-    if (!meeting || (meeting.state !== 'active' && !draft)) return;
-    const note = draft ?? {
+    // Keystrokes can arrive before React re-renders; the module draft is already current then.
+    const current = meeting ? (pendingDrafts.get(meeting.id) ?? draft) : null;
+    if (!meeting || (meeting.state !== 'active' && !current)) return;
+    const note = current ?? {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       meetingId: meeting.id,
       atSeconds: (Date.now() - meeting.startedAt) / 1000,
@@ -702,7 +712,9 @@ export default function MeetingScreen() {
                 .filter((note) => !(live || noteUnsaved || draft) || note.id !== draft?.id)
                 .map((note) => (
                   <Text key={note.id} testID="meeting-note" style={styles.note}>
-                    <Text style={styles.noteTime}>{elapsed(0, note.atSeconds * 1000)} </Text>
+                    <Text style={styles.noteTime}>
+                      {noteClockTime(meeting.startedAt, note.atSeconds)}{' '}
+                    </Text>
                     {note.text}
                   </Text>
                 ))}
