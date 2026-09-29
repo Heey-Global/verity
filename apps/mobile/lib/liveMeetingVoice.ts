@@ -15,7 +15,7 @@ const MODAL = /\b(?:kannst|könntest|würdest|can|could|would) (?:du|you)\b/i;
 // and "schau mal, …" only asks when a question or object follows, not to get attention.
 // The meeting runs German speech recognition, so German phrasings matter as much as English.
 const RESEARCH =
-  /^(?:recherchier\w*|research\b(?!\s+(?:shows?|showed|says|suggests|found|finds|indicates)\b)|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b(?!-)|verifizier\w*|(?:(?:nach)?schau(?:e|en|st)?|guck(?:e|en|st)?)\b(?=(?:\s+(?:mal|bitte|doch|kurz))*[\s,]+(?:nach|ob|wie|was|wer|wo|wann|welche\w*|warum|wieso|in|im|auf|bei)\b)|such(?:e|en|st)?\b(?=\s+(?:mal|bitte|doch|nach|die|den|das|dem|ein\w*|uns|mir)\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
+  /^(?:recherchier(?:e|en|st)?\b|research\b(?!\s+(?:shows?|showed|says|suggests|found|finds|indicates)\b)|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b(?!-)|verifizier(?:e|en|st)?\b|(?:(?:nach)?schau(?:e|en|st)?|guck(?:e|en|st)?)\b(?=(?:\s+(?:mal|bitte|doch|kurz))*[\s,]+(?:nach|ob|wie|was|wer|wo|wann|welche\w*|warum|wieso|in|im|auf|bei)\b)|such(?:e|en|st)?\b(?=\s+(?:mal|bitte|doch|nach|die|den|das|dem|ein\w*|uns|mir)\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
 const OPINION =
   /^(?:was (?:hältst|meinst|denkst|sagst) du|wie (?:siehst|findest|bewertest|beurteilst|schätzt) du|(?:was ist|wie ist|gib mir) deine (?:einschätzung|meinung|sicht)|bewert(?:e)?\b|beurteil(?:e)?\b|schätz(?:e)?\b|erklär(?:e)?\b|fass(?:e)?(?:\s+(?:mal|bitte|kurz|uns|doch))*\s+zusammen\b|stimmt (?:das|es)\b|ist (?:das|es) (?:realistisch|richtig|korrekt|plausibel)\b|what do you think|what's your take|how do you see|explain\b|summari[sz]e\b|is (?:that|this|it) (?:right|correct|realistic)\b)/i;
 // After the wake word an -en verb is a statement ("Verity, prüfen wir morgen") or an idiom
@@ -43,7 +43,7 @@ function requestVerb(request: string) {
   if (INFINITIVE.test(intent) && !MODAL.test(leadIn)) return { intent, match: null };
   const research = RESEARCH.exec(intent);
   const match = research ?? OPINION.exec(intent);
-  if (match && STATEMENT_SUBJECT.test(intent.slice(match[0].length)))
+  if (match && !/\bdu\b/i.test(match[0]) && STATEMENT_SUBJECT.test(intent.slice(match[0].length)))
     return { intent, match: null };
   return { intent, match, research: Boolean(research) };
 }

@@ -76,6 +76,8 @@ test('recognizes everyday German phrasings, since meetings are transcribed in Ge
     ['Verity, such bitte nach guten Webdesignern.', 'research'],
     ['Verity, checke mal die Hosting-Kosten.', 'research'],
     ['Verity, schau mal, was Pixelwerk kostet.', 'research'],
+    ['Verity, was meinst du, wir sollten den Launch verschieben?', 'opinion'],
+    ['Verity, kannst du recherchieren, was Pixelwerk kostet?', 'research'],
     ['Verity, schau bitte nach, wann der Vertrag endet.', 'research'],
   ] as const)
     expect(latestVoiceMeetingCommand(spoken)?.kind).toBe(kind);
@@ -96,6 +98,8 @@ test('recognizes everyday German phrasings, since meetings are transcribed in Ge
     'Verity, schau mal, der Kunde hat angerufen.',
     'Verity, guck mal, das Budget ist knapp.',
     'Verity, Check-in ist um neun.',
+    'Verity recherchiert gerade die Preise.',
+    'Verity verifiziert die Rechnungen automatisch.',
   ])
     expect(latestVoiceMeetingCommand(statement)).toBeNull();
 });
