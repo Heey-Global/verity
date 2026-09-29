@@ -350,6 +350,7 @@ export class PreviewShareManager {
     }
     timer.mark('validate');
     const connectorImage = await this.resolveConnectorImage();
+    timer.mark('connectorImage');
     const pinHash = await hashPin(input.pin);
     timer.mark('pinHash');
     const binding = await this.options.edge
@@ -695,7 +696,7 @@ export class PreviewShareManager {
           if (!current || current.state !== 'revoking') return;
           await removeContainer(
             this.options.docker,
-            current.connectorContainerId ?? current.connectorContainerName,
+            current.connectorContainerId || current.connectorContainerName,
           );
           await this.options.edge.remove(current.id);
           await this.options.store.transitionPublicPreviewShare(

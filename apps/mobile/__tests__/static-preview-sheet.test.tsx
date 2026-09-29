@@ -474,6 +474,8 @@ it('shows the stop in progress and confirms it before offering a new link', asyn
 
     // While the Uplink removes the edge the sheet must say so, not sit still.
     expect(await screen.findByText('Stopping link…')).toBeTruthy();
+    expect(screen.getByText('Stopping your preview')).toBeTruthy();
+    expect(screen.queryByText('Your preview is live')).toBeNull();
     expect(screen.getByRole('button', { name: 'Stop sharing' }).props.accessibilityState.busy).toBe(
       true,
     );
@@ -531,5 +533,43 @@ it('keeps the link and explains when stopping fails', async () => {
     expect(screen.queryByText('Link stopped')).toBeNull();
   } finally {
     alert.mockRestore();
+  }
+});
+
+it('counts the remaining time down while the sheet stays open', async () => {
+  jest.useFakeTimers({ now: new Date('2030-01-01T00:15:00Z') });
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'site',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+    expect(await screen.findByText(/^45 min left/)).toBeTruthy();
+
+    // Rendered once and never again, the label would still promise time the
+    // link no longer has.
+    await act(async () => {
+      jest.advanceTimersByTime(60_000);
+    });
+    expect(screen.getByText(/^44 min left/)).toBeTruthy();
+  } finally {
+    jest.useRealTimers();
   }
 });

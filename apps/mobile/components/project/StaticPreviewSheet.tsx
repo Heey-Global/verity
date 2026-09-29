@@ -226,6 +226,15 @@ export function StaticPreviewSheet({
   const detailsVisible = activeShare !== undefined || stoppedVisible;
   const canCreate = loadedPath === path && /^\d{6,12}$/.test(pin) && !busy;
   const stopping = activeShare !== undefined && stoppingId === activeShare.id;
+  // Re-render while a link is shown so "N min left" counts down and an
+  // expired link drops out of the sheet instead of staying on screen.
+  const [, setTick] = useState(0);
+  const ticking = activeShare !== undefined;
+  useEffect(() => {
+    if (!ticking) return;
+    const timer = setInterval(() => setTick((tick) => tick + 1), 30_000);
+    return () => clearInterval(timer);
+  }, [ticking]);
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.overlay} behavior="padding" automaticOffset>
@@ -281,7 +290,13 @@ export function StaticPreviewSheet({
                       </Text>
                     </View>
                     <View style={styles.heroText}>
-                      <Text style={styles.heroTitle}>Your preview is live</Text>
+                      <Text style={styles.heroTitle}>
+                        {stopping || activeShare.state === 'revoking'
+                          ? 'Stopping your preview'
+                          : activeShare.state === 'creating'
+                            ? 'Starting your preview'
+                            : 'Your preview is live'}
+                      </Text>
                       <Text style={styles.caption}>
                         Anyone with this link and the PIN can view the folder.
                       </Text>
@@ -290,6 +305,7 @@ export function StaticPreviewSheet({
                       <>
                         <Pressable
                           style={styles.linkBox}
+                          disabled={stopping}
                           onPress={() =>
                             void Linking.openURL(activeShare.publicOrigin!).catch(() => undefined)
                           }

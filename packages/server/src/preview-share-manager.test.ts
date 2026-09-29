@@ -347,9 +347,13 @@ describe('PreviewShareManager', () => {
   it('attributes the time a link takes to the step that spent it', async () => {
     const clock = manualClock();
     try {
-      const { manager, edge, docker, log } = fixture();
+      const { manager, edge, docker, log, resolveConnectorImage } = fixture();
       // Distinct durations per step, so a mark placed one step early or late
       // moves a number onto the wrong name instead of leaving the totals intact.
+      resolveConnectorImage.mockImplementationOnce(async () => {
+        clock.advance(300);
+        return digest;
+      });
       edge.create.mockImplementationOnce(async () => {
         clock.advance(4_000);
         return await fixture().edge.create();
@@ -370,6 +374,7 @@ describe('PreviewShareManager', () => {
           targetKind: 'dev-server',
           phasesMs: {
             validate: 0,
+            connectorImage: 300,
             pinHash: 0,
             uplinkCreate: 4_000,
             persist: 0,
@@ -377,7 +382,7 @@ describe('PreviewShareManager', () => {
             connectorReady: 2_500,
             activate: 0,
           },
-          totalMs: 7_200,
+          totalMs: 7_500,
         },
         'public preview share created',
       );
@@ -385,6 +390,7 @@ describe('PreviewShareManager', () => {
       const [fields] = log.info.mock.calls.at(-1)! as [{ phasesMs: object }];
       expect(Object.keys(fields.phasesMs)).toEqual([
         'validate',
+        'connectorImage',
         'pinHash',
         'uplinkCreate',
         'persist',
