@@ -3,9 +3,9 @@ const STYLES = `
 *{box-sizing:border-box}
 body{min-height:100vh;min-height:100dvh;margin:0;display:grid;place-items:center;padding:clamp(20px,5vw,64px);background:radial-gradient(circle at 12% 4%,#152855 0,transparent 34%),radial-gradient(circle at 92% 90%,#28133d 0,transparent 30%),#050611}
 main{width:min(100%,480px)}
-.brand{display:flex;align-items:center;gap:12px;margin-bottom:32px;font-size:13px;font-weight:800;letter-spacing:.18em}
-.brand-mark{display:grid;place-items:center;width:32px;height:32px;border:1px solid #2ab0ff;border-radius:9px;color:#2ab0ff;font-size:17px;letter-spacing:0}
-.brand span:last-child{color:#b6bad5}
+.brand{display:inline-flex;align-items:center;gap:12px;margin-bottom:32px;color:#b6bad5;font-size:13px;font-weight:800;letter-spacing:.18em;text-decoration:none}
+.brand img{display:block;width:36px;height:26px;object-fit:contain}
+.brand:focus-visible,.foot a:focus-visible{outline:2px solid #2ab0ff;outline-offset:5px;border-radius:3px}
 .card{position:relative;overflow:hidden;padding:clamp(24px,6vw,40px);border:1px solid #2a2552;border-radius:20px;background:#101021;box-shadow:0 24px 80px #0008}
 .card:before{content:"";position:absolute;inset:0 0 auto;height:2px;background:linear-gradient(90deg,#2ab0ff 0 68%,#ff35da)}
 .eyebrow{margin:0 0 20px;color:#2ab0ff;font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}
@@ -21,6 +21,7 @@ button:hover{background:#70ccff}
 button:focus-visible{outline:3px solid #ff35da;outline-offset:3px}
 .error{margin:0 0 18px;padding:12px 14px;border:1px solid #a84471;border-radius:9px;background:#371a34;color:#ffd8e9;font-size:14px;line-height:1.4}
 .foot{margin:20px 0 0;color:#8589af;font-size:12px;line-height:1.5}
+.foot a{color:#9bdfff;text-decoration:underline;text-underline-offset:3px}
 @media(max-width:480px){body{display:block;padding:24px 16px}.brand{margin:12px 4px 24px}.card{border-radius:16px}.foot{padding:0 4px}}
 @media(prefers-reduced-motion:no-preference){button{transition:background .15s ease}}
 `;
@@ -43,7 +44,7 @@ function escapeHtml(value: string): string {
 }
 
 function shell(title: string, eyebrow: string, content: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#050611"><title>${escapeHtml(title)} · Verity Preview</title><style>${STYLES}</style></head><body><main><div class="brand"><span class="brand-mark" aria-hidden="true">V</span><span>VERITY</span></div><section class="card" aria-labelledby="page-title"><p class="eyebrow">${escapeHtml(eyebrow)}</p>${content}</section><p class="foot">This preview is temporary. Only open links you trust.</p></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#050611"><title>${escapeHtml(title)} · Verity Preview</title><style>${STYLES}</style></head><body><main><a class="brand" href="https://verity.build" aria-label="Visit Verity website"><img src="/__verity/logo.png" alt="" width="36" height="26"><span>VERITY</span></a><section class="card" aria-labelledby="page-title"><p class="eyebrow">${escapeHtml(eyebrow)}</p>${content}</section><p class="foot">Verity is your self-hosted workspace for coding agents. <a href="https://verity.build">Learn more at verity.build ↗</a></p></main></body></html>`;
 }
 
 export function loginPage(next: string, error?: string): string {
@@ -63,4 +64,4 @@ export function previewErrorPage(message: string): string {
 }
 
 export const PREVIEW_PAGE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'";
+  "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'";

@@ -57,6 +57,15 @@ describe('selective Docker build contexts', () => {
     }
   });
 
+  it('packages the current website mark into the public preview edge', () => {
+    const dockerfile = readFileSync('deploy/preview-edge.Dockerfile', 'utf8');
+    const asset = dockerfile.match(
+      /^COPY (packages\/preview-tunnel\/assets\/\S+) \.\/assets\/verity-mark\.png$/mu,
+    )?.[1];
+    expect(asset).toBeDefined();
+    expect(readFileSync(asset!)).toEqual(readFileSync('docs/website/site/assets/verity-mark.png'));
+  });
+
   it('installs and probes the shared libraries required by copied Python', () => {
     const dockerfile = readFileSync('deploy/verity-sandbox.Dockerfile', 'utf8');
     for (const dependency of ['libbz2-1.0', 'libexpat1', 'libffi8', 'libsqlite3-0', 'libssl3']) {
