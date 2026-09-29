@@ -83,6 +83,7 @@ it('creates a share for index.html in the worktree root', async () => {
       staticPath: '.',
       state: 'active',
       publicOrigin: 'https://root.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     })),
   } as unknown as VerityClient;
@@ -109,7 +110,6 @@ it('creates a share for index.html in the worktree root', async () => {
       ttlSeconds: 3600,
     }),
   );
-  // Older Cores omit pin from the response; the creating device still knows it.
   expect(await screen.findByText('123 456')).toBeTruthy();
 });
 
@@ -122,6 +122,7 @@ it('creates and shows a static share for the folder selected in the session work
     staticPath: 'site/dist',
     state: 'active' as const,
     publicOrigin: 'https://preview.example',
+    pin: '123456',
     expiresAt: '2030-01-01T01:00:00Z',
   };
   const client = {
@@ -202,6 +203,7 @@ it('opens directly on the active link when the sheet is reopened', async () => {
         staticPath: 'docs/presentations/site',
         state: 'active',
         publicOrigin: 'https://existing.example',
+        pin: '123456',
         expiresAt: '2030-01-01T01:00:00Z',
       },
     ]),
@@ -265,6 +267,7 @@ it('explains an Uplink internal error and permits retrying the same folder', asy
       staticPath: 'demo',
       state: 'active',
       publicOrigin: 'https://retry.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     });
   const client = {
@@ -319,6 +322,7 @@ it('keeps a newly created link when the initial share list arrives late', async 
       staticPath: 'demo',
       state: 'active',
       publicOrigin: 'https://new.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     })),
   } as unknown as VerityClient;
@@ -389,6 +393,7 @@ it('finishes loading a new folder when a link creation completes during navigati
       staticPath: 'demo',
       state: 'active',
       publicOrigin: 'https://new.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     } as PublicPreviewShare),
   );
@@ -495,6 +500,7 @@ it('shows progress while a link is being created instead of only dimming the but
       staticPath: '.',
       state: 'active',
       publicOrigin: 'https://new.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     } as unknown as PublicPreviewShare),
   );
@@ -517,6 +523,7 @@ it('shows the stop in progress and confirms it before offering a new link', asyn
         staticPath: 'site',
         state: 'active',
         publicOrigin: 'https://existing.example',
+        pin: '123456',
         expiresAt: '2030-01-01T01:00:00Z',
       },
     ]),
@@ -576,6 +583,7 @@ it('keeps the link and explains when stopping fails', async () => {
         staticPath: '.',
         state: 'active',
         publicOrigin: 'https://existing.example',
+        pin: '123456',
         expiresAt: '2030-01-01T01:00:00Z',
       },
     ]),
@@ -614,6 +622,7 @@ it('counts the remaining time down while the sheet stays open', async () => {
         staticPath: 'site',
         state: 'active',
         publicOrigin: 'https://existing.example',
+        pin: '123456',
         expiresAt: '2030-01-01T01:00:00Z',
       },
     ]),

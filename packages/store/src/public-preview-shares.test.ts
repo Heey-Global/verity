@@ -33,6 +33,7 @@ const create = async (suffix = '1', expiresAt = new Date('2030-01-01T00:00:00Z')
     publicOrigin: `https://share-${suffix}.preview.example`,
     edgeUrl: `wss://share-${suffix}.preview.example/__verity/connector`,
     pinHash: 'scrypt:salt:hash',
+    pin: '123456',
     connectorToken: 'connector-secret',
     sessionSecret: 'session-secret',
     connectorContainerName: `verity-preview-${suffix}`,
@@ -54,6 +55,7 @@ describe('EventStore — public preview shares', () => {
       publicOrigin: 'https://static.preview.example',
       edgeUrl: 'wss://static.preview.example/__verity/connector',
       pinHash: 'scrypt:salt:hash',
+      pin: '123456',
       connectorToken: 'connector-secret',
       sessionSecret: 'session-secret',
       connectorContainerName: 'verity-preview-session-static',
@@ -85,10 +87,6 @@ describe('EventStore — public preview shares', () => {
     });
     expect(share.pin).toBe('482913');
     expect((await ctx.store.listPublicPreviewShares('p1'))[0]?.pin).toBe('482913');
-  });
-
-  it('reports no PIN for a link created without one', async () => {
-    expect((await create()).pin).toBeNull();
   });
 
   it('durably records idempotent pending Uplink removals', async () => {
@@ -129,6 +127,7 @@ describe('EventStore — public preview shares', () => {
         publicOrigin: 'https://share-2.preview.example',
         edgeUrl: 'wss://share-2.preview.example/__verity/connector',
         pinHash: 'pin',
+        pin: '123456',
         connectorToken: 'connector',
         sessionSecret: 'session',
         connectorContainerName: 'verity-preview-2',
@@ -148,6 +147,7 @@ describe('EventStore — public preview shares', () => {
         publicOrigin: 'https://share-3.preview.example',
         edgeUrl: 'wss://share-3.preview.example/__verity/connector',
         pinHash: 'pin',
+        pin: '123456',
         connectorToken: 'connector',
         sessionSecret: 'session',
         connectorContainerName: 'verity-preview-3',

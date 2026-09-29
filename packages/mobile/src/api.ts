@@ -590,8 +590,7 @@ const publicPreviewShareSchema = z.object({
   sessionId: z.string().nullable().optional(),
   state: z.enum(['creating', 'active', 'revoking', 'revoked', 'expired', 'failed']),
   publicOrigin: z.string().url().nullable(),
-  // Absent on Cores that predate stored PINs; null on links created before them.
-  pin: z.string().nullable().optional(),
+  pin: z.string(),
   expiresAt: z.string(),
   createdAt: z.string(),
   failure: z.string().nullable(),

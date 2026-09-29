@@ -56,10 +56,7 @@ function pinLabel(pin: string): string {
 }
 
 function shareMessage(share: PublicPreviewShare): string {
-  const lines = [`Preview: ${share.publicOrigin}`];
-  if (share.pin) lines.push(`PIN: ${share.pin}`);
-  lines.push(`Available ${expiryLabel(share.expiresAt)}`);
-  return lines.join('\n');
+  return `Preview: ${share.publicOrigin}\nPIN: ${share.pin}\nAvailable ${expiryLabel(share.expiresAt)}`;
 }
 
 function folderLabel(staticPath: string | null): string {
@@ -188,22 +185,16 @@ export function StaticPreviewSheet({
 
   const create = async () => {
     if (loadedPath !== path || !/^\d{6,12}$/.test(pin) || busy) return;
-    const submittedPin = pin;
     setBusy(true);
     setError(undefined);
     try {
       const share = await client.createSessionStaticPreviewShare(sessionId, {
         staticPath: path || '.',
-        pin: submittedPin,
+        pin,
         ttlSeconds: duration,
       });
       createdShareIds.current.add(share.id);
-      // Older Cores omit this field. Keep the PIN on the creating device until
-      // the link is closed; they cannot restore it on another device.
-      setShares((current) => [
-        { ...share, pin: share.pin === undefined ? submittedPin : share.pin },
-        ...current,
-      ]);
+      setShares((current) => [share, ...current]);
       setPin(generatePin());
     } catch (caught) {
       setError(previewError(caught));
@@ -349,39 +340,33 @@ export function StaticPreviewSheet({
                         </Pressable>
                         <View style={styles.pinBox}>
                           <Icon name="lock" size={16} color={theme.colors.textMuted} />
-                          {activeShare.pin ? (
-                            <>
-                              <Text
-                                style={styles.pinValue}
-                                accessibilityLabel={`PIN ${activeShare.pin.split('').join(' ')}`}
-                              >
-                                {pinLabel(activeShare.pin)}
-                              </Text>
-                              <Pressable
-                                onPress={() =>
-                                  void Clipboard.setStringAsync(activeShare.pin!).then(() =>
-                                    setCopied({ id: activeShare.id, what: 'pin' }),
-                                  )
-                                }
-                                disabled={stopping}
-                                hitSlop={10}
-                                accessibilityRole="button"
-                                accessibilityLabel="Copy PIN"
-                              >
-                                <Icon
-                                  name={
-                                    copied?.id === activeShare.id && copied.what === 'pin'
-                                      ? 'check'
-                                      : 'copy'
-                                  }
-                                  size={18}
-                                  color={theme.colors.primary}
-                                />
-                              </Pressable>
-                            </>
-                          ) : (
-                            <Text style={styles.pinMissing}>PIN not stored for this link</Text>
-                          )}
+                          <Text
+                            style={styles.pinValue}
+                            accessibilityLabel={`PIN ${activeShare.pin.split('').join(' ')}`}
+                          >
+                            {pinLabel(activeShare.pin)}
+                          </Text>
+                          <Pressable
+                            onPress={() =>
+                              void Clipboard.setStringAsync(activeShare.pin).then(() =>
+                                setCopied({ id: activeShare.id, what: 'pin' }),
+                              )
+                            }
+                            disabled={stopping}
+                            hitSlop={10}
+                            accessibilityRole="button"
+                            accessibilityLabel="Copy PIN"
+                          >
+                            <Icon
+                              name={
+                                copied?.id === activeShare.id && copied.what === 'pin'
+                                  ? 'check'
+                                  : 'copy'
+                              }
+                              size={18}
+                              color={theme.colors.primary}
+                            />
+                          </Pressable>
                         </View>
                         <View style={styles.actions}>
                           <Pressable
@@ -393,9 +378,7 @@ export function StaticPreviewSheet({
                             }
                             disabled={stopping}
                             accessibilityRole="button"
-                            accessibilityLabel={
-                              activeShare.pin ? 'Share link and PIN' : 'Share preview link'
-                            }
+                            accessibilityLabel="Share link and PIN"
                           >
                             <Icon name="share" size={16} color={theme.colors.onPrimary} />
                             <Text style={styles.actionTextPrimary}>Share</Text>
@@ -789,7 +772,6 @@ const styles = StyleSheet.create((theme) => ({
     letterSpacing: 2,
     fontVariant: ['tabular-nums'],
   },
-  pinMissing: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.sm },
   entryHint: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs, marginTop: -4 },
   entryHintText: { color: theme.colors.textMuted, fontSize: theme.text.xs },
   createButton: {

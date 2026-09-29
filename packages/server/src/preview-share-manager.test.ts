@@ -42,7 +42,7 @@ function fixture(
     publicOrigin: 'https://share-id.preview.example',
     edgeUrl: 'wss://share-id.preview.example/__verity/connector',
     pinHash: 'scrypt:salt:hash',
-    pin: null,
+    pin: '123456',
     connectorToken: 'connector',
     sessionSecret: 'session',
     connectorContainerName: 'verity-preview-share-id',
@@ -360,6 +360,7 @@ describe('PreviewShareManager', () => {
     const { manager, store } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([
       { ...(await store.getPublicPreviewShare('share-id'))!, state: 'active', pin: '482913' },
+      { ...(await store.getPublicPreviewShare('share-id'))!, id: 'expired-share', pin: null },
     ]);
     expect((await manager.list('p1')).map((share) => share.pin)).toEqual(['482913']);
   });

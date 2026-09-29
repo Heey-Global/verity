@@ -140,8 +140,7 @@ export interface PublicPreviewShare {
   sessionId: string | null;
   state: PublicPreviewShareState;
   publicOrigin: string | null;
-  /** Shown again on every device; null for links created before PINs were kept. */
-  pin: string | null;
+  pin: string;
   expiresAt: Date;
   revokedAt: Date | null;
   failure: string | null;
@@ -659,7 +658,9 @@ export class PreviewShareManager {
   }
 
   async list(projectId: string): Promise<PublicPreviewShare[]> {
-    return (await this.options.store.listPublicPreviewShares(projectId)).map(publicShare);
+    return (await this.options.store.listPublicPreviewShares(projectId))
+      .filter((share) => share.pin !== null)
+      .map(publicShare);
   }
 
   async stopProject(projectId: string): Promise<void> {
@@ -1142,7 +1143,7 @@ function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
     sessionId: record.sessionId ?? null,
     state: record.state,
     publicOrigin: record.publicOrigin,
-    pin: record.pin,
+    pin: record.pin!,
     expiresAt: record.expiresAt,
     revokedAt: record.revokedAt,
     failure: record.failure,

@@ -569,7 +569,6 @@ export interface PublicPreviewShareRecord {
   publicOrigin: string;
   edgeUrl: string;
   pinHash: string;
-  /** The PIN itself, for showing it again; null on links created before it was kept. */
   pin: string | null;
   connectorToken: string;
   sessionSecret: string;
@@ -594,7 +593,7 @@ export interface PublicPreviewShareCreateInput {
   publicOrigin: string;
   edgeUrl: string;
   pinHash: string;
-  pin?: string;
+  pin: string;
   connectorToken: string;
   sessionSecret: string;
   connectorContainerName: string;
@@ -6351,7 +6350,7 @@ export class EventStore implements EventSink {
       publicOrigin: row.public_origin,
       edgeUrl: row.edge_url,
       pinHash: this.decryptSecret(row.pin_hash_secret) ?? '',
-      pin: this.decryptSecret(row.pin_secret),
+      pin: this.decryptSecret(row.pin_secret)!,
       connectorToken: this.decryptSecret(row.connector_token_secret) ?? '',
       sessionSecret: this.decryptSecret(row.session_secret) ?? '',
       connectorContainerName: row.connector_container_name,
@@ -6382,7 +6381,7 @@ export class EventStore implements EventSink {
         public_origin: input.publicOrigin,
         edge_url: input.edgeUrl,
         pin_hash_secret: this.encryptSecret(input.pinHash) ?? '',
-        pin_secret: this.encryptSecret(input.pin ?? null),
+        pin_secret: this.encryptSecret(input.pin),
         connector_token_secret: this.encryptSecret(input.connectorToken) ?? '',
         session_secret: this.encryptSecret(input.sessionSecret) ?? '',
         connector_container_name: input.connectorContainerName,

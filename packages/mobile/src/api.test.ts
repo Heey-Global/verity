@@ -3212,6 +3212,7 @@ describe('VerityClient Dev Servers', () => {
       staticPath: 'web/dist',
       state: 'active',
       publicOrigin: 'https://static.preview.example',
+      pin: '123456',
       expiresAt: '2026-01-01T02:00:00.000Z',
       createdAt: '2026-01-01T00:00:00.000Z',
       failure: null,
