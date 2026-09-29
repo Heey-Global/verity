@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
@@ -103,6 +104,13 @@ it('publishes only transcript-grounded analysis to the meeting session', async (
         expect.objectContaining({ kind: 'research', evidenceB: null }),
       ]),
     );
+    expect(
+      response.json().insights.find((item: { kind: string }) => item.kind === 'research')?.id,
+    ).toBe(
+      createHash('sha256')
+        .update('meeting-1\0research\0Growth was 40 percent last quarter.\0')
+        .digest('hex'),
+    );
     expect(query).toHaveBeenCalledOnce();
     expect(
       (
@@ -112,6 +120,60 @@ it('publishes only transcript-grounded analysis to the meeting session', async (
         })
       ).statusCode,
     ).toBe(404);
+  } finally {
+    await analyzed.close();
+  }
+});
+
+it('publishes a project contradiction only with an exact quote from its cited source', async () => {
+  const analyzed = Fastify();
+  const knowledge = vi
+    .fn()
+    .mockResolvedValue([{ path: 'insights/plan.md', text: 'The delivery date is Tuesday.' }]);
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: [
+        {
+          kind: 'contradiction',
+          summary: 'The dates may conflict.',
+          evidenceA: 'Delivery is on Friday.',
+          evidenceB: 'The delivery date is Tuesday.',
+          sourcePath: 'insights/plan.md',
+        },
+        {
+          kind: 'contradiction',
+          summary: 'False source quote.',
+          evidenceA: 'Delivery is on Friday.',
+          evidenceB: 'The delivery date is Monday.',
+          sourcePath: 'insights/plan.md',
+        },
+        {
+          kind: 'contradiction',
+          summary: 'Wrong source path.',
+          evidenceA: 'Delivery is on Friday.',
+          evidenceB: 'The delivery date is Tuesday.',
+          sourcePath: 'insights/other.md',
+        },
+      ],
+    }),
+  );
+  registerLiveMeetingRoutes(analyzed, ctx.store, { query, knowledge, delayMs: 1 });
+  await analyzed.ready();
+  try {
+    const transcript =
+      'We discussed the schedule in detail and agreed on the next steps. Delivery is on Friday. Please record this date for the project.';
+    await analyzed.inject({ method: 'PUT', url, payload: { ...meeting, transcript } });
+    await vi.waitFor(async () => {
+      const response = await analyzed.inject({ method: 'GET', url: `${url}/insights` });
+      expect(response.json().insights).toHaveLength(1);
+    });
+    const response = await analyzed.inject({ method: 'GET', url: `${url}/insights` });
+    expect(response.json().insights[0]).toMatchObject({
+      sourcePath: 'insights/plan.md',
+      evidenceB: 'The delivery date is Tuesday.',
+    });
+    expect(knowledge).toHaveBeenCalledWith('session-1', transcript);
+    expect(query.mock.calls[0]?.[1]).toContain('insights/plan.md');
   } finally {
     await analyzed.close();
   }

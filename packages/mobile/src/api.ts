@@ -1875,6 +1875,11 @@ const liveMeetingInsightSchema = z.object({
   summary: z.string(),
   evidenceA: z.string(),
   evidenceB: z.string().nullable(),
+  sourcePath: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((path) => path ?? null),
   createdAt: z.number(),
 });
 export type LiveMeeting = z.infer<typeof liveMeetingSchema>;

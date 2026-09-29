@@ -624,6 +624,9 @@ export default function MeetingScreen() {
                   {insight.evidenceB ? (
                     <Text style={styles.evidence}>“{insight.evidenceB}”</Text>
                   ) : null}
+                  {insight.sourcePath ? (
+                    <Text style={styles.evidence}>Source: {insight.sourcePath}</Text>
+                  ) : null}
                   {insight.kind === 'research' ? (
                     <Pressable
                       accessibilityRole="button"

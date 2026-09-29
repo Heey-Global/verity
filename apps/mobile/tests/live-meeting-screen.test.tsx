@@ -113,6 +113,7 @@ it('opens the complete transcript on demand and starts research in the same sess
         summary: 'The delivery dates differ.',
         evidenceA: 'Tuesday',
         evidenceB: 'Friday',
+        sourcePath: 'insights/plan.md',
         createdAt: 1,
       },
     ]),
@@ -120,6 +121,7 @@ it('opens the complete transcript on demand and starts research in the same sess
   render(<MeetingScreen />);
   expect(await screen.findByText('Is the release still Friday?')).toBeOnTheScreen();
   expect(await screen.findByText('The delivery dates differ.')).toBeOnTheScreen();
+  expect(screen.getByText('Source: insights/plan.md')).toBeOnTheScreen();
   expect(screen.queryByTestId('meeting-transcript')).toBeNull();
   fireEvent.press(screen.getByLabelText('Open full transcript'));
   expect(screen.getByTestId('meeting-transcript')).toBeOnTheScreen();

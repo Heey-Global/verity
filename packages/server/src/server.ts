@@ -249,6 +249,7 @@ import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerMeetingTranscriptRoutes } from './meeting-transcript-routes.js';
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
+import { meetingKnowledgeExcerpts } from './live-meeting-knowledge.js';
 import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerAttachmentRoute } from './attachment-route.js';
@@ -7324,6 +7325,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
   registerLiveMeetingRoutes(app, deps.eventStore, {
+    knowledge: async (sessionId, transcript) => {
+      if (!deps.dataRoot) return [];
+      const session = await deps.eventStore.getSession(sessionId);
+      return session?.projectId
+        ? meetingKnowledgeExcerpts(deps.dataRoot, session.projectId, transcript)
+        : [];
+    },
     query: async (sessionId, prompt, signal) => {
       const session = await deps.eventStore.getSession(sessionId);
       if (!session) return undefined;

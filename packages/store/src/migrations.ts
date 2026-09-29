@@ -3313,6 +3313,14 @@ const migrations: Record<string, Migration> = {
       await sql`drop table live_meeting_insights`.execute(db);
     },
   },
+  '0118_live_meeting_insight_sources': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights add column source_path text`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights drop column source_path`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
