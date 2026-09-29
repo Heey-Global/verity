@@ -10,6 +10,7 @@ import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
+import { createLiveMeetingAnalysisQuery } from './live-meeting-analysis-query.js';
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { publishSharedInsight } from './knowledge-publish.js';
@@ -7300,7 +7301,33 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  registerLiveMeetingRoutes(app, deps.eventStore);
+  const directMeetingQuery = createLiveMeetingAnalysisQuery({
+    codexCredential: deps.codexGatewayCredentialProvider,
+    codexDefaultModel: async () =>
+      (await availableModels()).modelOrder?.find(
+        (id) => id.startsWith('codex/') && id !== CODEX_DEFAULT_MODEL,
+      ),
+    openCode: async () => {
+      const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
+      const baseUrl = settings?.opencodeBaseUrl?.trim();
+      const apiKey = settings?.opencodeApiKey?.trim();
+      return baseUrl && apiKey ? { baseUrl, apiKey } : undefined;
+    },
+  });
+  registerLiveMeetingRoutes(app, deps.eventStore, {
+    query: async (sessionId, prompt, signal) => {
+      const session = await deps.eventStore.getSession(sessionId);
+      if (!session) return undefined;
+      const projectModel = session.projectId
+        ? (await projectSettingsStore(deps.eventStore).getProjectSettings(session.projectId))
+            ?.defaultModel
+        : undefined;
+      const model = projectModel ?? session.model;
+      if (model.startsWith('codex/') || model.startsWith('verity/'))
+        return directMeetingQuery({ model, prompt, signal });
+      return conductor.query({ prompt, model, signal, cwd: deps.refineCwd ?? session.worktree });
+    },
+  });
   registerMeetingTranscriptRoutes(app, {
     save: async (request, reply, id, body) => {
       const session = await deps.eventStore.getSession(id);

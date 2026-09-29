@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
 
 let ctx: TestDb;
@@ -55,6 +55,84 @@ it('publishes transcript and notes without exposing the recorder token', async (
   expect(body.notes).toEqual([expect.objectContaining({ text: 'Decision' })]);
   expect(response.body).not.toContain(ownerToken);
   expect(body.meetings[0]).not.toHaveProperty('ownerTokenHash');
+});
+
+it('publishes only transcript-grounded analysis to the meeting session', async () => {
+  const analyzed = Fastify();
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: [
+        {
+          kind: 'contradiction',
+          summary: 'Two delivery dates were mentioned.',
+          evidenceA: 'Delivery is on Tuesday.',
+          evidenceB: 'Delivery is on Friday.',
+        },
+        {
+          kind: 'research',
+          summary: 'Check the claimed growth figure.',
+          evidenceA: 'Growth was 40 percent last quarter.',
+        },
+        {
+          kind: 'research',
+          summary: 'Unquoted claim must not appear.',
+          evidenceA: 'This sentence was never spoken.',
+        },
+      ],
+    }),
+  );
+  registerLiveMeetingRoutes(analyzed, ctx.store, { query, delayMs: 1 });
+  await analyzed.ready();
+  try {
+    const transcript =
+      'Delivery is on Tuesday. Growth was 40 percent last quarter. Delivery is on Friday. ' +
+      'We should check the figures before making a decision.';
+    expect(
+      (await analyzed.inject({ method: 'PUT', url, payload: { ...meeting, transcript } }))
+        .statusCode,
+    ).toBe(200);
+    await vi.waitFor(async () => {
+      const result = await analyzed.inject({ method: 'GET', url: `${url}/insights` });
+      expect(result.statusCode).toBe(200);
+      expect(result.json().insights).toHaveLength(2);
+    });
+    const response = await analyzed.inject({ method: 'GET', url: `${url}/insights` });
+    expect(response.json().insights).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'contradiction', evidenceB: 'Delivery is on Friday.' }),
+        expect.objectContaining({ kind: 'research', evidenceB: null }),
+      ]),
+    );
+    expect(query).toHaveBeenCalledOnce();
+    expect(
+      (
+        await analyzed.inject({
+          method: 'GET',
+          url: '/sessions/session-1/live-meetings/other/insights',
+        })
+      ).statusCode,
+    ).toBe(404);
+  } finally {
+    await analyzed.close();
+  }
+});
+
+it('does not analyze a stale recorder upload', async () => {
+  const analyzed = Fastify();
+  const query = vi.fn().mockResolvedValue('{"insights":[]}');
+  registerLiveMeetingRoutes(analyzed, ctx.store, { query, delayMs: 1 });
+  await analyzed.ready();
+  try {
+    const transcript =
+      'This is a long enough transcript to trigger analysis after the recorder sends it. ' +
+      'The next sentence makes the minimum length unambiguous.';
+    await app.inject({ method: 'PUT', url, payload: { ...meeting, revision: 2, transcript } });
+    await analyzed.inject({ method: 'PUT', url, payload: { ...meeting, revision: 1, transcript } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(query).not.toHaveBeenCalled();
+  } finally {
+    await analyzed.close();
+  }
 });
 
 it('accepts remote pause but lets only the recorder acknowledge it', async () => {

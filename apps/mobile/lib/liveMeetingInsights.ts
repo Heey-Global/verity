@@ -10,7 +10,7 @@ function recentContext(transcript: string): string {
 
 export function researchPrompt(meetingId: string, question: string, transcript: string): string {
   return [
-    `Research this question raised during live meeting ${meetingId}:`,
+    `Research this point raised during live meeting ${meetingId}:`,
     question,
     `Recent meeting transcript:\n${recentContext(transcript)}`,
     'Use reliable sources. Summarize what is established, cite sources, and state any uncertainty.',

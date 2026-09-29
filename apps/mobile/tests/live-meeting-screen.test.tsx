@@ -104,9 +104,22 @@ it('opens the complete transcript on demand and starts research in the same sess
   const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'insight-1',
+        meetingId: meeting.id,
+        kind: 'contradiction',
+        summary: 'The delivery dates differ.',
+        evidenceA: 'Tuesday',
+        evidenceB: 'Friday',
+        createdAt: 1,
+      },
+    ]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
   expect(await screen.findByText('Is the release still Friday?')).toBeOnTheScreen();
+  expect(await screen.findByText('The delivery dates differ.')).toBeOnTheScreen();
   expect(screen.queryByTestId('meeting-transcript')).toBeNull();
   fireEvent.press(screen.getByLabelText('Open full transcript'));
   expect(screen.getByTestId('meeting-transcript')).toBeOnTheScreen();

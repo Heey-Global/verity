@@ -58,6 +58,26 @@ function jsonBody(call: Call | undefined): unknown {
 }
 
 describe('VerityClient live meetings', () => {
+  it('loads server-generated insights for the selected meeting', async () => {
+    const insight = {
+      id: 'insight-1',
+      meetingId: 'meeting/one',
+      kind: 'contradiction',
+      summary: 'Two dates were mentioned.',
+      evidenceA: 'Tuesday',
+      evidenceB: 'Friday',
+      createdAt: 5,
+    };
+    const { fetch, calls } = fakeFetch(json({ insights: [insight] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getLiveMeetingInsights('session/one', insight.meetingId)).toEqual([
+      insight,
+    ]);
+    expect(calls[0]?.url).toBe(
+      'http://host/sessions/session%2Fone/live-meetings/meeting%2Fone/insights',
+    );
+  });
+
   it('sends a meeting, finalized note, and recorder commands to their scoped routes', async () => {
     const meeting = {
       id: 'meeting/one',

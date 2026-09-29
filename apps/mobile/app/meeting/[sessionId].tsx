@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { LiveMeetingInsight } from '@verity/mobile';
 
 import {
   currentMeeting,
@@ -67,6 +68,7 @@ export default function MeetingScreen() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<MeetingRecord[]>([]);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
+  const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
   const [draft, setDraft] = useState<MeetingNote | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -173,6 +175,12 @@ export default function MeetingScreen() {
             setPendingCommand(latest?.state === 'pending' ? latest.action : null);
             if (latest?.state === 'failed') setError(latest.error ?? 'Meeting control failed.');
           }
+          try {
+            const found = await createVerityClient()?.getLiveMeetingInsights?.(sessionId, shown);
+            if (mounted && displayedMeetingId.current === shown && found) setInsights(found);
+          } catch {
+            // An older server can still serve the meeting without insight support.
+          }
         }
       } catch {
         if (mounted) setSyncError(true);
@@ -210,6 +218,7 @@ export default function MeetingScreen() {
     if (!meeting) return;
     let current = true;
     setNotes([]);
+    setInsights([]);
     void listNotes(meeting.id)
       .then((saved) => {
         if (!current) return;
@@ -275,6 +284,10 @@ export default function MeetingScreen() {
 
   const openResearch = async (question: string, kind: 'research' | 'request' = 'research') => {
     if (!sessionId || !meeting || !question.trim() || sendingInsight) return;
+    if (meeting.serverId && meeting.serverId !== getActiveMeetingServerId()) {
+      setError('Reconnect to this meeting’s server before asking Verity.');
+      return;
+    }
     const client = createVerityClient();
     if (!client) {
       setError('Connect to the server to ask Verity about this meeting.');
@@ -600,23 +613,49 @@ export default function MeetingScreen() {
           </View>
           <View style={styles.insightsCard}>
             <Text style={styles.section}>Live Insights</Text>
-            {suggestedQuestion ? (
-              <View style={styles.suggestion}>
-                <Text style={styles.suggestionLabel}>QUESTION HEARD</Text>
-                <Text style={styles.suggestionText}>{suggestedQuestion}</Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Research meeting question"
-                  disabled={sendingInsight}
-                  onPress={() => void openResearch(suggestedQuestion)}
-                  style={styles.researchButton}
-                >
-                  <Text style={styles.researchButtonText}>Research in session ›</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <Text style={styles.muted}>Questions from the conversation will appear here.</Text>
-            )}
+            <ScrollView style={styles.insightList} keyboardShouldPersistTaps="handled">
+              {insights.slice(0, 4).map((insight) => (
+                <View key={insight.id} style={styles.suggestion}>
+                  <Text style={styles.suggestionLabel}>
+                    {insight.kind === 'contradiction' ? 'POSSIBLE CONTRADICTION' : 'WORTH CHECKING'}
+                  </Text>
+                  <Text style={styles.suggestionText}>{insight.summary}</Text>
+                  <Text style={styles.evidence}>“{insight.evidenceA}”</Text>
+                  {insight.evidenceB ? (
+                    <Text style={styles.evidence}>“{insight.evidenceB}”</Text>
+                  ) : null}
+                  {insight.kind === 'research' ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Research insight"
+                      disabled={sendingInsight}
+                      onPress={() => void openResearch(insight.evidenceA)}
+                      style={styles.researchButton}
+                    >
+                      <Text style={styles.researchButtonText}>Research in session ›</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ))}
+              {suggestedQuestion &&
+              !insights.some((insight) => insight.evidenceA.includes(suggestedQuestion)) ? (
+                <View style={styles.suggestion}>
+                  <Text style={styles.suggestionLabel}>QUESTION HEARD</Text>
+                  <Text style={styles.suggestionText}>{suggestedQuestion}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Research meeting question"
+                    disabled={sendingInsight}
+                    onPress={() => void openResearch(suggestedQuestion)}
+                    style={styles.researchButton}
+                  >
+                    <Text style={styles.researchButtonText}>Research in session ›</Text>
+                  </Pressable>
+                </View>
+              ) : insights.length === 0 ? (
+                <Text style={styles.muted}>Questions from the conversation will appear here.</Text>
+              ) : null}
+            </ScrollView>
             <View style={styles.insightComposer}>
               <TextInput
                 accessibilityLabel="Ask Verity about this meeting"
@@ -826,9 +865,17 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 10,
   },
-  suggestion: { backgroundColor: '#29243a', borderRadius: 12, padding: 12, gap: 8 },
+  suggestion: {
+    backgroundColor: '#29243a',
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+    marginBottom: 10,
+  },
   suggestionLabel: { color: ACCENT, fontSize: 11, fontWeight: '700' },
   suggestionText: { color: TEXT, fontSize: 15 },
+  evidence: { color: MUTED, fontSize: 13 },
+  insightList: { flex: 1 },
   researchButton: { alignSelf: 'flex-start', paddingVertical: 6 },
   researchButtonText: { color: ACCENT, fontWeight: '700' },
   insightComposer: {

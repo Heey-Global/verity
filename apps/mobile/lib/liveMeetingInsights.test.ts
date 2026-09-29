@@ -14,7 +14,7 @@ test('offers only a question present in the recent transcript', () => {
 test('keeps research and direct requests in the same meeting context', () => {
   expect(
     researchPrompt('meeting-1', 'Is the deadline still Friday?', 'The schedule changed.'),
-  ).toContain('Research this question raised during live meeting meeting-1');
+  ).toContain('Research this point raised during live meeting meeting-1');
   expect(
     meetingRequestPrompt('meeting-1', 'What do you think?', 'The schedule changed.'),
   ).toContain('The schedule changed.');
