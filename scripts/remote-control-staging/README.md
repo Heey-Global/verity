@@ -100,3 +100,24 @@ service is a separate repository; its internal relay logs are not modified here.
 To isolate a failure, match native/Core stream IDs, compare directional progress,
 then check Gateway TLS and health events. Keep the above correlation limits in
 mind before assigning a failure to any hop.
+
+### Native failures before the authentication callback
+
+`NO_AUTH_CHALLENGE` means the request's pin delegate has not received an
+authentication challenge; it does not identify a pin mismatch. The app now
+preserves up to three NSError levels using known domain names and numeric codes,
+including numeric CFStream error domain/code fields when supplied by iOS. For
+example, `:underlying:NSOSStatusErrorDomain:-9802` identifies a lower-level cause;
+it is evidence to investigate, not proof of a particular certificate defect.
+Unknown domains are replaced by `OtherErrorDomain`. URLs, descriptions, headers,
+and arbitrary userInfo values are never included in this diagnostic.
+
+The local Apple tunnel smoke now also exercises the production `RemoteAppTunnel`
+with URLSession HTTPS through SOCKS, using a private CA and the production pin
+delegate. Its outer fixture connection is pinned explicitly without installing
+trust roots; the shipping tunnel still uses system trust for Uplink. Run
+`bash scripts/remote-control-tunnel/run-apple.sh macos` and
+`bash scripts/remote-control-tunnel/run-apple.sh ios` on macOS with Xcode (and the
+generated app Info.plist, as described in the tunnel README). A passing simulator test does not replace the final
+physical-device test: test Remote Control and settings loading without VPN with
+the updated native app, then correlate the stream logs with Core/Gateway logs.

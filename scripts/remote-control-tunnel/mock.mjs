@@ -60,7 +60,83 @@ export async function startFixture({ key, cert }) {
   });
   relay.on('connection', track);
   relay.on('clientError', (_error, socket) => socket.destroy());
-  const tunnels = new WebSocketServer({ server: relay, path: '/tunnel', maxPayload: 64 * 1024 });
+  const tunnels = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const data = new WebSocketServer({ noServer: true, maxPayload: 96 * 1024 });
+  relay.on('upgrade', (request, socket, head) => {
+    const server = request.url === '/tunnel' ? tunnels : request.url === '/data' ? data : null;
+    if (!server) return socket.destroy();
+    server.handleUpgrade(request, socket, head, (ws) => server.emit('connection', ws));
+  });
+  // Test-only fixed routing: exercise the production app's JSON framing without admission credentials.
+  data.on('connection', (ws) => {
+    /** @type {Map<string, { socket: net.Socket, incoming: number, outgoing: number }>} */
+    const streams = new Map();
+    let attached = false;
+    const send = (frame) => {
+      if (ws.readyState === 1) ws.send(JSON.stringify(frame));
+    };
+    ws.on('error', () => {});
+    ws.on('close', () => {
+      for (const stream of streams.values()) stream.socket.destroy();
+      streams.clear();
+    });
+    ws.on('message', (raw, binary) => {
+      try {
+        if (binary || !Buffer.isBuffer(raw)) throw new Error('binary frame');
+        /** @type {unknown} */
+        const parsed = JSON.parse(raw.toString());
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+          throw new Error('frame');
+        const frame = /** @type {Record<string, unknown>} */ (parsed);
+        if (!attached) {
+          if (frame.type !== 'attach' || frame.ticket !== 'fixture-ticket')
+            throw new Error('attach');
+          attached = true;
+          send({ type: 'attached', sessionId: 'fixture-session', capability: 'remote-control-v1' });
+          return;
+        }
+        const id = frame.streamId;
+        if (typeof id !== 'string') throw new Error('stream id');
+        if (frame.type === 'stream.open') {
+          if (streams.has(id) || streams.size >= 8) throw new Error('stream limit');
+          const socket = track(
+            net.connect({ host: '127.0.0.1', port: corePort, allowHalfOpen: true }),
+          );
+          const stream = { socket, incoming: 0, outgoing: 0 };
+          streams.set(id, stream);
+          socket.on('data', (chunk) => {
+            for (let offset = 0; offset < chunk.length; offset += 64 * 1024) {
+              send({
+                type: 'stream.data',
+                streamId: id,
+                seq: stream.outgoing++,
+                payload: chunk.subarray(offset, offset + 64 * 1024).toString('base64'),
+              });
+            }
+          });
+          socket.on('end', () => send({ type: 'stream.end', streamId: id }));
+          socket.on('error', () =>
+            send({ type: 'stream.reset', streamId: id, code: 'upstream_error' }),
+          );
+          socket.on('close', () => streams.delete(id));
+          return;
+        }
+        const stream = streams.get(id);
+        if (!stream) return;
+        if (
+          frame.type === 'stream.data' &&
+          typeof frame.payload === 'string' &&
+          frame.seq === stream.incoming++
+        ) {
+          stream.socket.write(Buffer.from(frame.payload, 'base64'));
+        } else if (frame.type === 'stream.end') stream.socket.end();
+        else if (frame.type === 'stream.reset') stream.socket.destroy();
+        else throw new Error('frame');
+      } catch {
+        ws.close(1002);
+      }
+    });
+  });
   tunnels.on('connection', (ws) => {
     stats.tunnels++;
     const target = track(net.connect({ host: '127.0.0.1', port: corePort }));
@@ -94,12 +170,14 @@ export async function startFixture({ key, cert }) {
     stats,
     async close() {
       for (const ws of tunnels.clients) ws.terminate();
+      for (const ws of data.clients) ws.terminate();
       for (const ws of echo.clients) ws.terminate();
       for (const socket of sockets) socket.destroy();
       await Promise.all(
         [core, relay].map((server) => new Promise((resolve) => server.close(resolve))),
       );
       tunnels.close();
+      data.close();
       echo.close();
     },
   };

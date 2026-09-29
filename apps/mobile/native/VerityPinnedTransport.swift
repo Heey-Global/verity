@@ -110,7 +110,7 @@ class VerityPinnedTransport: Module {
         }
         let native = error as NSError
         throw PinnedTransportException(
-          "Pinned TLS transport failed [\(native.domain):\(native.code):\(delegate.phase)].")
+          CertificatePinDelegate.transportFailure(error: native, phase: delegate.phase))
       }
       let (data, response) = result
       guard let http = response as? HTTPURLResponse else { throw PinnedTransportError.nonHTTPResponse }

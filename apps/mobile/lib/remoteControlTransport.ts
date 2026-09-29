@@ -406,9 +406,9 @@ function safeRemoteFailure(error: unknown): string | null {
     )
   )
     return message;
-  return (
-    message.match(
-      /Pinned TLS (?:transport|verification) failed \[[A-Za-z0-9_:.-]{1,150}\]/u,
-    )?.[0] ?? null
+  const nativeCause = message.match(
+    /Pinned TLS transport failed \[((?:NSURLErrorDomain|kCFErrorDomainCFNetwork|NSOSStatusErrorDomain|NSPOSIXErrorDomain|NSCocoaErrorDomain|kCFErrorDomainSSL|OtherErrorDomain):-?\d{1,20}:(?:NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED|UNKNOWN_PHASE)(?::streamDomain:-?\d{1,20})?(?::streamCode:-?\d{1,20})?(?::underlying:(?:NSURLErrorDomain|kCFErrorDomainCFNetwork|NSOSStatusErrorDomain|NSPOSIXErrorDomain|NSCocoaErrorDomain|kCFErrorDomainSSL|OtherErrorDomain):-?\d{1,20}(?::streamDomain:-?\d{1,20})?(?::streamCode:-?\d{1,20})?){0,2})\]/u,
   );
+  if (nativeCause !== null) return nativeCause[0];
+  return message.match(/Pinned TLS verification failed \[[A-Za-z0-9_:.-]{1,150}\]/u)?.[0] ?? null;
 }

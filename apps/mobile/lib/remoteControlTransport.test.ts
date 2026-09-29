@@ -572,6 +572,47 @@ describe('remote diagnostics', () => {
     );
   });
 
+  it('preserves bounded native TLS causes through the visible probe error', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4321);
+    const detail =
+      'Pinned TLS transport failed [NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE:streamDomain:3:streamCode:-9802:underlying:kCFErrorDomainCFNetwork:-1200:underlying:NSOSStatusErrorDomain:-9802]';
+    mockRequest.mockRejectedValue(new Error(detail));
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: `probe (${detail})`,
+    });
+  });
+
+  it.each([
+    'NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE:underlying:private-ticket:-9802',
+    'NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE:streamCode:https://private.example',
+    'NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE' +
+      ':underlying:NSOSStatusErrorDomain:-9802'.repeat(3),
+  ])('does not expose malformed or excessive native cause chains: %s', async (cause) => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4321);
+    mockRequest.mockRejectedValue(new Error(`Pinned TLS transport failed [${cause}]`));
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: 'probe',
+    });
+  });
+
   it('does not log arbitrary exception text containing credentials', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
