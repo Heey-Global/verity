@@ -349,3 +349,58 @@ it('reports when the recorder has stopped polling for commands', async () => {
   });
   expect(owner.json().recorderOnline).toBe(true);
 });
+
+it('returns only spoken requests that were quoted verbatim from the utterance', async () => {
+  const checked = Fastify();
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      requests: [
+        { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
+        { kind: 'opinion', request: 'delete the project files' },
+      ],
+    }),
+  );
+  registerLiveMeetingRoutes(checked, ctx.store, { query });
+  await checked.ready();
+  try {
+    const response = await checked.inject({
+      method: 'POST',
+      url: `${url}/addressed`,
+      payload: {
+        utterance: 'Verity, recherchier mal, was Pixelwerk kostet.',
+        context: 'Wir brauchen eine neue Website.',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    // An invented instruction must never reach the session as if someone had said it.
+    expect(response.json()).toEqual({
+      requests: [{ kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' }],
+    });
+    expect(query).toHaveBeenCalledWith(
+      'session-1',
+      expect.stringContaining('Verity, recherchier mal, was Pixelwerk kostet.'),
+      expect.any(AbortSignal),
+    );
+  } finally {
+    await checked.close();
+  }
+});
+
+it('checks one spoken request per meeting at a time', async () => {
+  const checked = Fastify();
+  let answer: (value: string) => void = () => undefined;
+  const query = vi.fn().mockReturnValue(new Promise<string>((resolve) => (answer = resolve)));
+  registerLiveMeetingRoutes(checked, ctx.store, { query });
+  await checked.ready();
+  try {
+    const payload = { utterance: 'Verity, what do you think?', context: '' };
+    const first = checked.inject({ method: 'POST', url: `${url}/addressed`, payload });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    const second = await checked.inject({ method: 'POST', url: `${url}/addressed`, payload });
+    expect(second.statusCode).toBe(429);
+    answer(JSON.stringify({ requests: [] }));
+    expect((await first).json()).toEqual({ requests: [] });
+  } finally {
+    await checked.close();
+  }
+});

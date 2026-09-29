@@ -1,127 +1,45 @@
+/** A sentence in which someone said "Verity". Whether it asks for something, and what, is left
+ * to the server's model, so no language's phrasing is written down here. */
 export interface VoiceMeetingCommand {
-  kind: 'research' | 'opinion';
-  request: string;
+  utterance: string;
   complete: boolean;
   start: number;
 }
 
-const WAKE_WORD = /\bVerity\b[\s,:-]*/gi;
-// Spoken requests open with hesitations and politeness before the verb:
-// "Verity, äh mach mal bitte Research …", "Verity, kannst du mal schauen, …".
-const LEAD_IN =
-  /^(?:(?:äh+m?|ähm|öh+m?|hm+|uh+m?|um+|also|okay|ok|bitte|please|mal|sag mal|hey|mach(?:e|st du)?|kannst du|könntest du|würdest du|can you|could you|would you)\b[\s,.]*)*/i;
-const MODAL = /\b(?:kannst|könntest|würdest|can|could|would) (?:du|you)\b/i;
-// Imperatives only: nouns and statements ("Recherche ergab …", "Google hat …") stay speech,
-// and "schau mal, …" only asks when a question or object follows, not to get attention.
-// The meeting runs German speech recognition, so German phrasings matter as much as English.
-const RESEARCH =
-  /^(?:recherchier(?:e|en|st)?\b|research\b(?!\s+(?:shows?|showed|says|suggests|found|finds|indicates)\b)|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b(?!-)|verifizier(?:e|en|st)?\b|(?:(?:nach)?schau(?:e|en|st)?|guck(?:e|en|st)?)\b(?=(?:\s+(?:mal|bitte|doch|kurz))*[\s,]+(?:nach|ob|wie|was|wer|wo|wann|welche\w*|warum|wieso|in|im|auf|bei)\b)|such(?:e|en|st)?\b(?=\s+(?:mal|bitte|doch|nach|die|den|das|dem|ein\w*|uns|mir)\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
-const OPINION =
-  /^(?:was (?:hältst|meinst|denkst|sagst) du|wie (?:siehst|findest|bewertest|beurteilst|schätzt) du|(?:was ist|wie ist|gib mir) deine (?:einschätzung|meinung|sicht)|bewert(?:e)?\b|beurteil(?:e)?\b|schätz(?:e)?\b|erklär(?:e)?\b|fass(?:e)?(?:\s+(?:mal|bitte|kurz|uns|doch))*\s+zusammen\b|stimmt (?:das|es)\b|ist (?:das|es) (?:realistisch|richtig|korrekt|plausibel)\b|what do you think|what's your take|how do you see|explain\b|summari[sz]e\b|is (?:that|this|it) (?:right|correct|realistic)\b)/i;
-// After the wake word an -en verb is a statement ("Verity, prüfen wir morgen") or an idiom
-// ("mal schauen, ob …"); it asks only after "kannst du …". Likewise a verb followed by ich/wir
-// is a fronted statement ("Verity schätze ich auf drei Wochen").
-const INFINITIVE =
-  /^(?:recherchieren|(?:über)?prüfen|checken|verifizieren|(?:nach)?schauen|gucken|suchen)\b/i;
-const STATEMENT_SUBJECT = /^[\s,]*(?:ich|wir)\b/i;
-const ABBREVIATIONS = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'etc', 'vs']);
+const WAKE_WORD = /\bVerity\b/gi;
+const SENTENCE_END = /[.!?\n]/g;
+// Partial transcripts often lack punctuation; bound the sentence so one run-on line stays small.
+const MAX_BEFORE = 200;
+const MAX_UTTERANCE = 600;
 
-function sentenceEnd(text: string): number {
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (character === '\n' || character === '?' || character === '!') return index;
-    if (character !== '.' || (index + 1 < text.length && !/\s/.test(text[index + 1]!))) continue;
-    const word = text.slice(0, index).match(/[\p{L}\p{N}]+$/u)?.[0] ?? '';
-    if (word.length > 1 && !ABBREVIATIONS.has(word.toLocaleLowerCase())) return index;
-  }
-  return -1;
+function hasWords(text: string): boolean {
+  return /\p{L}{2}/u.test(text.replace(WAKE_WORD, ''));
 }
 
-function requestVerb(request: string) {
-  const leadIn = LEAD_IN.exec(request)?.[0] ?? '';
-  const intent = request.slice(leadIn.length);
-  if (INFINITIVE.test(intent) && !MODAL.test(leadIn)) return { intent, match: null };
-  const research = RESEARCH.exec(intent);
-  const match = research ?? OPINION.exec(intent);
-  if (match && !/\bdu\b/i.test(match[0]) && STATEMENT_SUBJECT.test(intent.slice(match[0].length)))
-    return { intent, match: null };
-  return { intent, match, research: Boolean(research) };
-}
-
-function requestKind(request: string): VoiceMeetingCommand['kind'] | null {
-  const { intent, match, research } = requestVerb(request);
-  if (!match) return null;
-  const remainder = intent
-    .slice(match[0].length)
-    .replace(/^[\s,]*(?:mal\s+)?/i, '')
-    .trim();
-  if (remainder.length < 3 || intent.length < 12) return null;
-  return research ? 'research' : 'opinion';
-}
-
-// A request cut off at a later wake word must not end mid-clause; if it does, that "Verity"
-// is the product being talked about, not a second request.
-const DANGLING_END =
-  /(?:^|[\s,])(?:whether|if|how|what|who|why|when|where|which|about|of|for|to|with|on|in|at|the|a|an|and|or|that|ob|wie|was|wer|warum|wann|wo|welche\w*|über|von|für|mit|zu|bei|dass|der|die|das|den|dem|des|ein\w*|und|oder)$/i;
-
-function isBareStart(request: string): boolean {
-  const { intent, match } = requestVerb(request);
-  return !intent.slice(match?.[0].length ?? 0).trim();
-}
-
-/** Only explicit, limited requests may leave the microphone as session turns. */
-function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
-  const wakes = [...transcript.matchAll(WAKE_WORD)];
+export function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
   const commands: VoiceMeetingCommand[] = [];
-  // Walk backwards so a restarted request ("Verity, äh … Verity, research X") ends the
-  // abandoned one instead of sending both.
-  let nextCommandStart = transcript.length;
-  for (let position = wakes.length - 1; position >= 0; position -= 1) {
-    const wake = wakes[position]!;
-    const requestStart = wake.index! + wake[0].length;
-    const following = transcript.slice(requestStart);
-    const terminator = sentenceEnd(following);
-    let request = (terminator < 0 ? following : following.slice(0, terminator)).trim();
-    let complete = terminator >= 0;
-    if (requestStart + request.length > nextCommandStart) {
-      const before = transcript
-        .slice(requestStart, nextCommandStart)
-        .replace(/[\s,;:-]+$/, '')
-        .trim();
-      if (!requestKind(before)) {
-        // What came before the later wake was no request yet: the speaker restarted.
-        if (isBareStart(before)) nextCommandStart = wake.index!;
-        continue;
-      }
-      if (commands.length > 0 && !DANGLING_END.test(before)) {
-        // Two requests in one breath ("Verity, prüfe X Verity, recherchiere Y") both go out.
-        request = before;
-        complete = true;
-      } else {
-        // "…say about Verity" or "whether Verity summarize…" names the product mid-request.
-        const tail = transcript.slice(nextCommandStart).replace(WAKE_WORD, '').trim();
-        // A trailing "Verity äh" is the start of another request, not part of this one.
-        if (!commands.length && tail && isBareStart(tail)) request = before;
-        if (request.length > 240) continue;
-        while (commands.length && commands[0]!.start < requestStart + request.length)
-          commands.shift();
-      }
+  const ends = [...transcript.matchAll(SENTENCE_END)].map((match) => match.index!);
+  let covered = 0;
+  for (const wake of transcript.matchAll(WAKE_WORD)) {
+    if (wake.index! < covered) continue;
+    const previousEnd = ends.filter((end) => end < wake.index!).at(-1) ?? -1;
+    const start = Math.max(previousEnd + 1, wake.index! - MAX_BEFORE);
+    // "Verity. Recherchier mal …": a name said on its own belongs to the next sentence.
+    let end = ends.find((candidate) => candidate >= wake.index!);
+    if (end !== undefined && !hasWords(transcript.slice(wake.index!, end)))
+      end = ends.find((candidate) => candidate > end!);
+    let complete = end !== undefined;
+    let utterance = transcript.slice(start, end === undefined ? undefined : end + 1);
+    if (utterance.length > MAX_UTTERANCE) {
+      utterance = utterance.slice(0, MAX_UTTERANCE);
+      complete = true;
     }
-    if (request.length > 240) continue;
-    const kind = requestKind(request);
-    if (!kind) {
-      // A bare "Verity" (maybe with "äh" or just the verb) may start a restarted request.
-      if (terminator < 0 && isBareStart(request)) nextCommandStart = wake.index!;
-      continue;
-    }
-    commands.unshift({ kind, request, complete, start: wake.index! });
-    nextCommandStart = wake.index!;
+    covered = start + utterance.length;
+    const trimmed = utterance.trim();
+    if (!hasWords(trimmed)) continue;
+    commands.push({ utterance: trimmed, complete, start: start + utterance.indexOf(trimmed) });
   }
   return commands;
-}
-
-export function latestVoiceMeetingCommand(transcript: string): VoiceMeetingCommand | null {
-  return voiceMeetingCommands(transcript).at(-1) ?? null;
 }
 
 export class VoiceMeetingCommandDetector {
@@ -152,7 +70,7 @@ export class VoiceMeetingCommandDetector {
     }
     if (
       this.pending?.start === command.start &&
-      this.pending.request === command.request &&
+      this.pending.utterance === command.utterance &&
       !final &&
       !command.complete
     )
@@ -203,23 +121,17 @@ export class VoiceMeetingCommandDetector {
             ? old.start + transcript.length - previous.length
             : old.start;
       let index = commands.findIndex(
-        (candidate, position) =>
-          !matched.has(position) && candidate.kind === old.kind && candidate.start === mappedStart,
+        (candidate, position) => !matched.has(position) && candidate.start === mappedStart,
       );
       if (index < 0)
         index = commands.findIndex(
-          (candidate, position) =>
-            !matched.has(position) &&
-            candidate.kind === old.kind &&
-            candidate.request === old.request,
+          (candidate, position) => !matched.has(position) && candidate.utterance === old.utterance,
         );
       if (index < 0) {
         const shiftedStart = old.start + transcript.length - previous.length;
         index = commands.findIndex(
           (candidate, position) =>
-            !matched.has(position) &&
-            candidate.kind === old.kind &&
-            Math.abs(candidate.start - shiftedStart) <= 12,
+            !matched.has(position) && Math.abs(candidate.start - shiftedStart) <= 12,
         );
       }
       if (index < 0) continue;

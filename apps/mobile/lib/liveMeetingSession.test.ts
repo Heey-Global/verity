@@ -46,11 +46,22 @@ jest.mock('./liveMeetingStore', () => ({
 
 beforeEach(() => jest.clearAllMocks());
 
+// Stands in for the server's model: treats "Verity, <request>." as addressed to it.
+const checkSpokenMeetingRequest = jest.fn(
+  async (_sessionId: string, _meetingId: string, { utterance }: { utterance: string }) => {
+    const request = /^Verity, (.+?)[.?]?$/.exec(utterance)?.[1];
+    if (!request) return [];
+    return [{ kind: /^(research|check|recherch)/.test(request) ? 'research' : 'opinion', request }];
+  },
+);
+
 it('sends a direct spoken research request once in the recording session', async () => {
   const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
   jest
     .mocked(createVerityClient)
-    .mockReturnValue({ sendTurn } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    .mockReturnValue({ sendTurn, checkSpokenMeetingRequest } as unknown as NonNullable<
+      ReturnType<typeof createVerityClient>
+    >);
   let onEvent!: (event: STTEvent) => void;
   jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
     onEvent = listener;
@@ -82,6 +93,7 @@ it('queues two recognized requests in their spoken order', async () => {
   const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
+    checkSpokenMeetingRequest,
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   let onEvent!: (event: STTEvent) => void;
   jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
@@ -120,6 +132,7 @@ it('drops a queued spoken request when capture pauses before it can send', async
   );
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
+    checkSpokenMeetingRequest,
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   let onEvent!: (event: STTEvent) => void;
   jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
@@ -149,6 +162,7 @@ it('keeps recording and reports a rejected spoken request', async () => {
   const sendTurn = jest.fn().mockRejectedValue(new Error('offline'));
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
+    checkSpokenMeetingRequest,
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   let onEvent!: (event: STTEvent) => void;
   jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
@@ -175,6 +189,7 @@ it('does not send a pending spoken request after pausing capture', async () => {
   const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
+    checkSpokenMeetingRequest,
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   let onEvent!: (event: STTEvent) => void;
   jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
@@ -426,4 +441,100 @@ it('retries a rejected native stop before creating another meeting', async () =>
     jest.mocked(createMeeting).mock.invocationCallOrder[1],
   );
   await endMeeting();
+});
+
+it('sends nothing when the server says Verity was only talked about', async () => {
+  const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    checkSpokenMeetingRequest,
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  const events: string[] = [];
+  const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event.status));
+  try {
+    await startMeeting('session-1');
+    onEvent({ kind: 'status', state: 'listening' });
+    onEvent({
+      kind: 'snapshot',
+      text: 'Das Budget steht. Wir haben gestern Verity getestet.',
+      final: true,
+    });
+    await waitFor(() =>
+      expect(checkSpokenMeetingRequest).toHaveBeenCalledWith('session-1', 'meeting-1', {
+        utterance: 'Wir haben gestern Verity getestet.',
+        context: 'Das Budget steht.',
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A mention must stay invisible: no "sending" flash, no turn in the chat.
+    expect(events).toEqual([]);
+    expect(sendTurn).not.toHaveBeenCalled();
+  } finally {
+    unsubscribe();
+    await endMeeting();
+  }
+});
+
+it('reports a failed check and keeps recording', async () => {
+  const sendTurn = jest.fn();
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    checkSpokenMeetingRequest: jest.fn().mockRejectedValue(new Error('offline')),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  const failures: string[] = [];
+  const unsubscribe = subscribeVoiceMeetingRequest((event) => {
+    if (event.status === 'failed') failures.push(event.message ?? '');
+  });
+  try {
+    await startMeeting('session-1');
+    onEvent({ kind: 'status', state: 'listening' });
+    onEvent({ kind: 'snapshot', text: 'Verity, was meinst du?', final: true });
+    await waitFor(() => expect(failures).toEqual([expect.stringContaining('offline')]));
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(currentMeeting()?.state).toBe('active');
+  } finally {
+    unsubscribe();
+    await endMeeting();
+  }
+});
+
+it('drops a checked request when capture pauses while the server is still deciding', async () => {
+  let decide!: (requests: { kind: string; request: string }[]) => void;
+  const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    checkSpokenMeetingRequest: jest.fn(() => new Promise((resolve) => (decide = resolve))),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  const events: string[] = [];
+  const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event.status));
+  try {
+    await startMeeting('session-1');
+    onEvent({ kind: 'status', state: 'listening' });
+    onEvent({ kind: 'snapshot', text: 'Verity, prüfe das Budget.', final: true });
+    await waitFor(() => expect(decide).toBeDefined());
+    await pauseMeeting();
+    decide([{ kind: 'research', request: 'prüfe das Budget' }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A paused meeting must not flash "sending" for a request it then drops.
+    expect(events).toEqual([]);
+    expect(sendTurn).not.toHaveBeenCalled();
+  } finally {
+    unsubscribe();
+    await endMeeting();
+  }
 });
