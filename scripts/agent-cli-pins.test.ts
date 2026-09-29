@@ -17,6 +17,7 @@ import { CLAUDE_MODELS } from '../packages/server/src/server.js';
  */
 const CLAUDE_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
   'claude-opus-5-5': '2.1.280',
+  'claude-sonnet-5-5': '2.1.284',
 };
 
 /** First Codex CLI release whose bundled picker catalog lists GPT-6 Sol and Luna. */
