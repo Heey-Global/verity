@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
   CONNECTOR_MAX_RECONNECT_ATTEMPTS,
@@ -116,6 +116,33 @@ describe('connector reconnect policy', () => {
 });
 
 describe('preview tunnel', () => {
+  it('keeps a 30-day share open across Node timer limits', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date('2030-01-01T00:00:00Z'));
+    const timeout = vi.spyOn(global, 'setTimeout');
+    const edge = new PreviewEdge({
+      shareId: 'share-month',
+      pinHash: hashPreviewPin('123456789012'),
+      connectorTokenHash: hashPreviewSecret('connector'),
+      sessionSecretHash,
+      publicOrigin: 'https://share-month.preview.example.test',
+      expiresAt: '2030-01-31T00:00:00Z',
+    });
+    const reset = vi.spyOn(edge as unknown as { resetAll: (error: Error) => void }, 'resetAll');
+    try {
+      expect(timeout.mock.calls[0]?.[1]).toBeLessThanOrEqual(2_147_483_647);
+      await vi.advanceTimersByTimeAsync(25 * 24 * 60 * 60 * 1000);
+      expect(reset).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5 * 24 * 60 * 60 * 1000);
+      expect(reset).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'preview share expired' }),
+      );
+    } finally {
+      timeout.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('enforces share expiry inside the edge without depending on Verity cleanup', async () => {
     const edge = new PreviewEdge({
       shareId: 'share-expired',
