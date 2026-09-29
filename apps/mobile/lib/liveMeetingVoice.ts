@@ -28,7 +28,9 @@ function sameUtterance(a: string, b: string): boolean {
   if (normalize(a) === normalize(b)) return true;
   const words = (value: string) =>
     new Set(
-      (value.toLocaleLowerCase().match(/\p{L}+/gu) ?? []).filter((word) => word !== 'verity'),
+      (value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(
+        (word) => word !== 'verity',
+      ),
     );
   const left = words(a);
   const right = words(b);

@@ -141,6 +141,7 @@ test('does not resend a stable partial after punctuation is added', () => {
   detector.observe('Verity, research 2026', false);
   jest.advanceTimersByTime(3000);
   detector.observe('Verity, research 2026.', true);
+  detector.observe('Verity, research 2026 forecasts.', true);
   expect(dispatch).toHaveBeenCalledTimes(1);
 });
 
