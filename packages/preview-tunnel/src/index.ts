@@ -37,6 +37,7 @@ import { StreamRegistry } from './streams.js';
 import { loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
 const LOGIN_PATH = '/__verity/login';
+const MAX_TIMEOUT_MS = 2_147_483_647;
 const LOGO_PATH = '/__verity/logo.png';
 const LOGO_FILE = new URL('../assets/verity-mark.png', import.meta.url);
 let logoBytes: Buffer | undefined;
@@ -205,7 +206,7 @@ export class PreviewEdge {
   private activeStreams = 0;
   private loginVerifications = 0;
   private readonly expiresAtMs: number;
-  private readonly expiryTimer: NodeJS.Timeout | undefined;
+  private expiryTimer: NodeJS.Timeout | undefined;
 
   constructor(options: PreviewEdgeOptions) {
     validatePinHash(options.pinHash);
@@ -333,15 +334,21 @@ export class PreviewEdge {
         headers,
       );
     });
+    if (options.expiresAt !== undefined && !this.expired()) this.scheduleExpiry();
+  }
+
+  private scheduleExpiry(): void {
     const remaining = this.expiresAtMs - Date.now();
-    this.expiryTimer =
-      options.expiresAt === undefined || remaining <= 0
-        ? undefined
-        : setTimeout(() => {
-            this.connector?.close(4003, 'share expired');
-            this.resetAll(new Error('preview share expired'));
-          }, remaining);
-    this.expiryTimer?.unref?.();
+    if (remaining <= 0) {
+      this.expiryTimer = undefined;
+      this.connector?.close(4003, 'share expired');
+      this.resetAll(new Error('preview share expired'));
+      return;
+    }
+    // Node overflows larger delays and fires almost immediately. Re-arm until
+    // the actual expiry so a month-long share stays open for its full term.
+    this.expiryTimer = setTimeout(() => this.scheduleExpiry(), Math.min(remaining, MAX_TIMEOUT_MS));
+    this.expiryTimer.unref?.();
   }
 
   listen(port = 0, host = '127.0.0.1'): Promise<number> {
