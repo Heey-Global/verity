@@ -405,8 +405,11 @@ export default function MeetingScreen() {
         return;
       if (!(await finalizeNote(completing.id, completing.text))) return;
       setSyncError(true);
-      pendingDrafts.delete(completing.meetingId);
-      publishPendingNote(completing.meetingId);
+      const currentDraft = pendingDrafts.get(completing.meetingId);
+      if (currentDraft?.id === completing.id && currentDraft.text === completing.text) {
+        pendingDrafts.delete(completing.meetingId);
+        publishPendingNote(completing.meetingId);
+      }
       setDraft((current) =>
         current?.id === completing.id && current.text === completing.text ? null : current,
       );

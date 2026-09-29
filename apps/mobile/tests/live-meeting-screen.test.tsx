@@ -14,6 +14,7 @@ import {
 import {
   listMeetings,
   listNotes,
+  finalizeNote,
   saveNote,
   type MeetingNote,
   type MeetingRecord,
@@ -401,6 +402,39 @@ it('does not discard edits made while Done note awaits an earlier save', async (
   view.unmount();
   render(<MeetingScreen />);
   expect(await screen.findByLabelText('Add a meeting note')).toHaveDisplayValue('Revised version');
+});
+
+it('keeps a newer draft when finalizing an earlier version completes late', async () => {
+  const live: MeetingRecord = {
+    id: 'meeting-finalize-race',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+  };
+  let releaseFinalize!: () => void;
+  jest.mocked(finalizeNote).mockImplementationOnce(
+    () =>
+      new Promise<boolean>((resolve) => {
+        releaseFinalize = () => resolve(true);
+      }),
+  );
+  jest.mocked(currentMeeting).mockReturnValue(live);
+  jest.mocked(listMeetings).mockResolvedValue([live]);
+  render(<MeetingScreen />);
+  const input = await screen.findByLabelText('Add a meeting note');
+  fireEvent.changeText(input, 'First version');
+  fireEvent.press(screen.getByLabelText('Add note'));
+  await waitFor(() => expect(finalizeNote).toHaveBeenCalledTimes(1));
+  fireEvent.changeText(input, 'Revised version');
+  await act(async () => releaseFinalize());
+  expect(input).toHaveDisplayValue('Revised version');
+  fireEvent.press(screen.getByLabelText('Add note'));
+  await waitFor(() => expect(finalizeNote).toHaveBeenCalledTimes(2));
+  expect(jest.mocked(finalizeNote).mock.calls[1]?.[1]).toBe('Revised version');
 });
 
 it('shows a late note-save failure after the meeting screen is reopened', async () => {
