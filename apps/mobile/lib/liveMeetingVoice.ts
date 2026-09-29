@@ -59,6 +59,16 @@ function requestKind(request: string): VoiceMeetingCommand['kind'] | null {
   return research ? 'research' : 'opinion';
 }
 
+// A request cut off at a later wake word must not end mid-clause; if it does, that "Verity"
+// is the product being talked about, not a second request.
+const DANGLING_END =
+  /\b(?:whether|if|how|what|who|why|when|where|which|about|of|for|to|with|on|in|at|the|a|an|and|or|that|ob|wie|was|wer|warum|wann|wo|welche\w*|über|von|für|mit|zu|bei|dass|der|die|das|den|dem|des|ein\w*|und|oder)$/i;
+
+function isBareStart(request: string): boolean {
+  const { intent, match } = requestVerb(request);
+  return !intent.slice(match?.[0].length ?? 0).trim();
+}
+
 /** Only explicit, limited requests may leave the microphone as session turns. */
 function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
   const wakes = [...transcript.matchAll(WAKE_WORD)];
@@ -74,22 +84,30 @@ function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
     let request = (terminator < 0 ? following : following.slice(0, terminator)).trim();
     let complete = terminator >= 0;
     if (requestStart + request.length > nextCommandStart) {
-      // A later wake inside this request is a restart only if what came before it was no
-      // request yet; otherwise the speaker asked twice in one breath and both go out.
-      request = transcript
+      const before = transcript
         .slice(requestStart, nextCommandStart)
         .replace(/[\s,;:-]+$/, '')
         .trim();
-      if (!requestKind(request)) continue;
-      complete = commands[0]?.start === nextCommandStart;
+      if (!requestKind(before)) {
+        // What came before the later wake was no request yet: the speaker restarted.
+        if (isBareStart(before)) nextCommandStart = wake.index!;
+        continue;
+      }
+      if (commands.length > 0 && !DANGLING_END.test(before)) {
+        // Two requests in one breath ("Verity, prüfe X Verity, recherchiere Y") both go out.
+        request = before;
+        complete = true;
+      } else {
+        // "…say about Verity" or "whether Verity summarize…" names the product mid-request.
+        while (commands.length && commands[0]!.start < requestStart + request.length)
+          commands.shift();
+      }
     }
     if (request.length > 240) continue;
     const kind = requestKind(request);
     if (!kind) {
       // A bare "Verity" (maybe with "äh" or just the verb) may start a restarted request.
-      const { intent, match } = requestVerb(request);
-      if (terminator < 0 && !intent.slice(match?.[0].length ?? 0).trim())
-        nextCommandStart = wake.index!;
+      if (terminator < 0 && isBareStart(request)) nextCommandStart = wake.index!;
       continue;
     }
     commands.unshift({ kind, request, complete, start: wake.index! });

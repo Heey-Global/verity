@@ -104,6 +104,21 @@ test('keeps a request that mentions the product after its verb', () => {
   expect(latestVoiceMeetingCommand('Verity, research how Verity checks invoices.')).toMatchObject({
     request: 'research how Verity checks invoices',
   });
+  // Streaming recognition often has no punctuation yet.
+  expect(
+    latestVoiceMeetingCommand('Verity, research what competitors say about Verity'),
+  ).toMatchObject({ request: 'research what competitors say about Verity' });
+  expect(
+    latestVoiceMeetingCommand('Verity, research tools that are cheaper than Verity'),
+  ).toMatchObject({ request: 'research tools that are cheaper than Verity' });
+  jest.useFakeTimers();
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe('Verity, find out whether Verity summarize works on German calls.', true);
+  expect(dispatch.mock.calls.map(([command]) => command.request)).toEqual([
+    'find out whether Verity summarize works on German calls',
+  ]);
+  detector.stop();
 });
 
 test('sends both requests when the speaker asks twice in one breath', () => {
@@ -118,6 +133,14 @@ test('sends both requests when the speaker asks twice in one breath', () => {
   expect(dispatch.mock.calls.map(([command]) => [command.kind, command.request])).toEqual([
     ['research', 'research the hosting costs'],
     ['opinion', 'what do you think about the launch date'],
+  ]);
+  dispatch.mockClear();
+  detector.stop();
+  // A hesitation between them is not part of the first request.
+  detector.observe('Verity research the budget Verity äh Verity research the hosting costs', true);
+  expect(dispatch.mock.calls.map(([command]) => command.request)).toEqual([
+    'research the budget',
+    'research the hosting costs',
   ]);
   detector.stop();
 });
