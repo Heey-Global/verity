@@ -74,6 +74,7 @@ export function ActiveMeetingOverlay() {
   const meeting = localMeeting?.state === 'active' ? localMeeting : remoteMeeting;
   const remote =
     meeting !== null && meeting.id === remoteMeeting?.id && localMeeting?.id !== meeting.id;
+  const activePendingCommand = remote ? pendingCommand : null;
   useEffect(() => {
     if (!followed || pathname.startsWith('/meeting/')) return;
     let mounted = true;
@@ -153,7 +154,7 @@ export function ActiveMeetingOverlay() {
   const togglePause = async () => {
     if (
       busy ||
-      pendingCommand ||
+      activePendingCommand ||
       (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
     )
       return;
@@ -177,7 +178,7 @@ export function ActiveMeetingOverlay() {
     }
   };
   const stop = async () => {
-    if (busy || pendingCommand === 'stop') return;
+    if (busy || activePendingCommand === 'stop') return;
     setBusy(true);
     try {
       if (remote) {
@@ -234,9 +235,9 @@ export function ActiveMeetingOverlay() {
             {Math.floor((now - meeting.startedAt) / 60000)} min
           </Text>
           <Text style={{ color: '#aaa2ba', fontSize: 11 }}>
-            {pendingCommand
+            {activePendingCommand
               ? recorderOnline
-                ? `Waiting to ${pendingCommand} · keep recorder app open`
+                ? `Waiting to ${activePendingCommand} · keep recorder app open`
                 : 'Recorder unreachable · open Verity there'
               : 'Drag to move · Open meeting'}
           </Text>
@@ -247,7 +248,7 @@ export function ActiveMeetingOverlay() {
             onPress={togglePause}
             disabled={
               busy ||
-              !!pendingCommand ||
+              !!activePendingCommand ||
               (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
             }
             accessibilityRole="button"
@@ -268,7 +269,7 @@ export function ActiveMeetingOverlay() {
           </Pressable>
           <Pressable
             onPress={stop}
-            disabled={busy || pendingCommand === 'stop'}
+            disabled={busy || activePendingCommand === 'stop'}
             accessibilityRole="button"
             accessibilityLabel="Stop meeting"
             style={{

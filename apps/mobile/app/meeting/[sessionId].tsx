@@ -127,7 +127,7 @@ export default function MeetingScreen() {
       if (
         local?.sessionId === sessionId &&
         local.state === 'active' &&
-        (local.serverId ?? null) === serverId
+        ((local.serverId ?? null) === serverId || local.serverId == null)
       )
         return local;
       return saved[0] ?? ((current?.serverId ?? null) === serverId ? current : null);
