@@ -281,7 +281,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   async create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
-    if (!this.isAvailable()) throw new Error('public preview sharing is not enabled by the Uplink');
+    if (!this.isAvailable()) {
+      this.options.log?.warn(
+        { targetHost: new URL(this.options.url).host, control: this.diagnostics().control },
+        'Uplink share create not sent',
+      );
+      throw new Error('public preview sharing is not enabled by the Uplink');
+    }
     const response = await this.request('share.create', {
       duration: input.durationSeconds,
       pinHash: input.pinHash,
@@ -295,6 +301,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (response.type !== 'share.ready') throw new Error('unexpected Uplink share response');
     const rawShareId = stringField(response, 'shareId');
     if (!validUplinkShareId(rawShareId)) {
+      this.options.log?.warn({ reason: 'invalid share id' }, 'Uplink share binding rejected');
       // The Uplink created something but violated the ID contract. A bounded raw
       // string is still safe JSON and is the only handle capable of revoking it.
       if (rawShareId.length <= 256) await this.queueOrphanShare(rawShareId);
@@ -320,6 +327,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
         expiresAt,
       };
     } catch (error) {
+      this.options.log?.warn(
+        { reason: error instanceof Error ? error.message : 'invalid binding' },
+        'Uplink share binding rejected',
+      );
       // A valid raw id is sufficient to revoke an object even when every other
       // binding field is malformed. Never lose the only cleanup handle.
       await this.queueOrphanShare(rawShareId);
@@ -1007,14 +1018,38 @@ export class UplinkControlClient implements PreviewEdgeControl {
 
   private request(type: string, fields: Record<string, unknown>): Promise<Record<string, unknown>> {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN)
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      if (type === 'share.create') {
+        this.options.log?.warn(
+          { targetHost: new URL(this.options.url).host, control: this.diagnostics().control },
+          'Uplink share create not sent',
+        );
+      }
       return Promise.reject(new Error('Uplink offline'));
+    }
     const requestId = randomUUID();
+    const startedAt = Date.now();
+    const targetHost = new URL(this.options.url).host;
     return new Promise((resolve, reject) => {
+      const fail = (error: Error, stage: 'send' | 'pending' | 'timeout') => {
+        if (type === 'share.create') {
+          this.options.log?.warn(
+            {
+              requestId,
+              targetHost,
+              stage,
+              errorName: error.name,
+              elapsedMs: Date.now() - startedAt,
+            },
+            'Uplink share create request failed',
+          );
+        }
+        reject(error);
+      };
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         if (type === 'share.create') this.rememberAbandonedCreate(requestId);
-        reject(new Error(`Uplink ${type} timed out`));
+        fail(new Error(`Uplink ${type} timed out`), 'timeout');
       }, REQUEST_TIMEOUT_MS);
       this.pending.set(requestId, {
         type,
@@ -1025,17 +1060,50 @@ export class UplinkControlClient implements PreviewEdgeControl {
         ...(type === 'share.remove' && typeof fields.shareId === 'string'
           ? { expectedShareId: fields.shareId }
           : {}),
-        resolve,
-        reject,
+        resolve: (response) => {
+          if (type === 'share.create') {
+            this.options.log?.info(
+              {
+                requestId,
+                targetHost,
+                responseType: response.type,
+                ...(response.type === 'share.error'
+                  ? {
+                      code:
+                        typeof response.code === 'string' && /^[a-z_]{1,64}$/u.test(response.code)
+                          ? response.code
+                          : 'unknown',
+                    }
+                  : {}),
+                elapsedMs: Date.now() - startedAt,
+              },
+              'Uplink share create response',
+            );
+          }
+          resolve(response);
+        },
+        reject: (error) => fail(error, 'pending'),
         timer,
         inlineResponse: this.processingMessage,
       });
+      if (type === 'share.create') {
+        this.options.log?.info({ requestId, targetHost }, 'Uplink share create submitted');
+      }
       socket.send(JSON.stringify({ type, requestId, ...fields }), (error) => {
-        if (!error) return;
+        if (!this.pending.has(requestId)) return;
+        if (!error) {
+          if (type === 'share.create') {
+            this.options.log?.info(
+              { requestId, targetHost, elapsedMs: Date.now() - startedAt },
+              'Uplink share create sent',
+            );
+          }
+          return;
+        }
         clearTimeout(timer);
         this.pending.delete(requestId);
         if (type === 'share.create') this.rememberAbandonedCreate(requestId);
-        reject(error);
+        fail(error, 'send');
       });
     });
   }
