@@ -7325,7 +7325,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const model = projectModel ?? session.model;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
         return directMeetingQuery({ model, prompt, signal });
-      return conductor.query({ prompt, model, signal, cwd: deps.refineCwd ?? session.worktree });
+      return conductor.query({
+        prompt,
+        model,
+        signal,
+        toolless: true,
+        cwd: deps.refineCwd ?? session.worktree,
+      });
     },
   });
   registerMeetingTranscriptRoutes(app, {
