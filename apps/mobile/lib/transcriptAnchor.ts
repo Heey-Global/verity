@@ -167,3 +167,20 @@ function rowMatchesAnchorAt(
 export function findAnchorIndex(rows: Row[], anchor: ScrollAnchor, order: RowOrder): number {
   return rows.findIndex((_, index) => rowMatchesAnchorAt(rows, index, anchor, order));
 }
+
+/** Loaded navigation stops, newest first; a bookmarked prompt occupies one stop. */
+export function navigationRowIndices(rows: Row[], bookmarkedIds: ReadonlySet<string>): number[] {
+  const indices = new Set<number>();
+  rows.forEach((row, index) => {
+    if (row.kind === 'message' && row.message.kind === 'user-text') indices.add(index);
+  });
+  for (const messageId of bookmarkedIds) {
+    const index = findAnchorIndex(
+      rows,
+      { rowKey: null, messageId, atBottom: false, offsetY: null },
+      'newest-first',
+    );
+    if (index >= 0) indices.add(index);
+  }
+  return [...indices].sort((a, b) => a - b);
+}

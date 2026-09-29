@@ -154,6 +154,8 @@ export interface SessionModelState {
   /** True when older history exists before the loaded tail — the screen shows a
    * "load earlier" affordance / triggers {@link SessionModel.loadOlder} on scroll. */
   hasOlder: boolean;
+  /** Oldest loaded event seq, including events that produce no visible row. */
+  oldestHistorySeq: number | undefined;
   /** A `loadOlder` fetch is in flight (show a top spinner, guard re-triggers). */
   loadingOlder: boolean;
   /** The last older-history request failed or could not advance its cursor. Automatic
@@ -429,6 +431,7 @@ export class SessionModel {
       waitingMessages: this.subtractDeliveredWaiting(),
       branch: this._branch,
       hasOlder: this._hasOlder,
+      oldestHistorySeq: this.stream.oldestSeq,
       loadingOlder: this._loadingOlder,
       olderLoadStalled: this._olderLoadStalled,
       olderLoadNeedsContinuation: this._olderLoadNeedsContinuation,

@@ -218,6 +218,7 @@ import {
   isScrollTowardHistory,
   migratedAnchorOffset,
   shouldContinueOlderHistory,
+  shouldContinueUserJump,
   shouldAcceptNativeLatestState,
   shouldFollowStreamingContent,
   shouldRequestOlderHistory,
@@ -239,6 +240,7 @@ import {
 import {
   anchorFromRow,
   findAnchorIndex,
+  navigationRowIndices,
   messageSeq,
   type ScrollAnchor,
 } from '../../lib/transcriptAnchor';
@@ -637,6 +639,7 @@ export function SessionChat({
     decidePermission,
     switchModel,
     hasOlder,
+    oldestHistorySeq,
     loadingOlder,
     olderLoadStalled,
     olderLoadNeedsContinuation,
@@ -1352,18 +1355,13 @@ export function SessionChat({
     },
     [isPlausibleScrollEvent, isScrollEventAtBottom, reportScrollDebug, scheduleUserScrollSettle],
   );
-  // "Jump between MY messages" affordance: the operator's own prompts are their
-  // orientation anchors in a long transcript. `⌃`/`⌄` step to the previous/next
-  // `user-text` row instead of hunting by eye. Indices into `data` (recomputed as
-  // rows stream/prepend), plus the topmost visible index as the cursor prev/next
-  // move relative to.
-  const userRowIndices = useMemo(() => {
-    const out: number[] = [];
-    data.forEach((row, i) => {
-      if (row.kind === 'message' && row.message.kind === 'user-text') out.push(i);
-    });
-    return out;
-  }, [data]);
+  const bookmarks = useBookmarks(sessionId);
+  // Own prompts and bookmarks are orientation anchors in a long transcript.
+  // Include bookmarked messages inside grouped rows as well as standalone rows.
+  const userRowIndices = useMemo(
+    () => navigationRowIndices(data, bookmarks.ids),
+    [data, bookmarks.ids],
+  );
   // Two cursors, because the list is inverted: the SMALLEST visible index is the
   // newest visible row (visually at the bottom) and backs the saved re-entry anchor;
   // the LARGEST is the visually topmost row and drives message navigation and the
@@ -1425,7 +1423,7 @@ export function SessionChat({
   }, [userRowIndices, oldestVisibleIndex]);
   const canJumpToPreviousUser = prevUserIndex >= 0 || hasOlder;
   const scrollToUserRow = useCallback(
-    (index: number) => {
+    (index: number, animated = true) => {
       if (index < 0) return;
       cancelPendingUserScrollSettle();
       readingAwayFromBottomRef.current = true;
@@ -1433,7 +1431,7 @@ export function SessionChat({
       // layout end, which on screen is the row parked at the TOP — so the agent's
       // reply to that prompt reads downward from there.
       scrollDebugLastProgrammaticAtRef.current = Date.now();
-      listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 1 });
+      listRef.current?.scrollToIndex({ index, animated, viewPosition: 1 });
       // Nothing here publishes state, so freeze from the callback rather than waiting
       // for an unrelated render to run the pass at the end of the component.
       syncTailFreeze();
@@ -1441,7 +1439,14 @@ export function SessionChat({
     [cancelPendingUserScrollSettle, syncTailFreeze],
   );
   const [pendingUserJump, setPendingUserJump] = useState<'previous' | null>(null);
-  const userJumpRowsRef = useRef(-1);
+  const userJumpCursorRef = useRef<number | undefined>(undefined);
+  const userJumpRevealRafRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (userJumpRevealRafRef.current !== null) cancelAnimationFrame(userJumpRevealRafRef.current);
+    },
+    [],
+  );
   const jumpToPreviousUserRow = useCallback(() => {
     if (prevUserIndex >= 0) {
       scrollToUserRow(prevUserIndex);
@@ -1455,7 +1460,7 @@ export function SessionChat({
       currentData[oldestVisibleIndex] !== undefined
         ? anchorFromRow(currentData[oldestVisibleIndex], false, null)
         : visualTopAnchorRef.current;
-    userJumpRowsRef.current = -1;
+    userJumpCursorRef.current = undefined;
     setPendingUserJump('previous');
   }, [cancelPendingUserScrollSettle, hasOlder, prevUserIndex, scrollToUserRow, oldestVisibleIndex]);
   useEffect(() => {
@@ -1474,16 +1479,33 @@ export function SessionChat({
       }
     }
     if (target >= 0) {
-      setPendingUserJump(null);
-      requestAnimationFrame(() => scrollToUserRow(target));
-      return;
+      if (userJumpRevealRafRef.current !== null) return;
+      const targetAnchor = anchorFromRow(data[target], false, null);
+      // Keep the cover in place until the newly appended row is committed and the
+      // single, non-animated jump has been issued. Intermediate pages stay invisible.
+      const raf = requestAnimationFrame(() => {
+        const currentTarget = findAnchorIndex(dataRef.current, targetAnchor, 'newest-first');
+        if (currentTarget >= 0) scrollToUserRow(currentTarget, false);
+        userJumpRevealRafRef.current = requestAnimationFrame(() => {
+          userJumpRevealRafRef.current = null;
+          setPendingUserJump(null);
+        });
+      });
+      return () => cancelAnimationFrame(raf);
     }
     if (loadingOlder) return;
-    if (!hasOlder || data.length === userJumpRowsRef.current) {
+    if (
+      !shouldContinueUserJump(
+        hasOlder,
+        olderLoadStalled,
+        oldestHistorySeq,
+        userJumpCursorRef.current,
+      )
+    ) {
       setPendingUserJump(null);
       return;
     }
-    userJumpRowsRef.current = data.length;
+    userJumpCursorRef.current = oldestHistorySeq;
     loadOlder();
   }, [
     pendingUserJump,
@@ -1492,6 +1514,8 @@ export function SessionChat({
     userRowIndices,
     loadingOlder,
     hasOlder,
+    oldestHistorySeq,
+    olderLoadStalled,
     loadOlder,
     scrollToUserRow,
   ]);
@@ -1875,6 +1899,7 @@ export function SessionChat({
   // single flick from queueing page after page.
   const requestOlderHistory = useCallback(
     (allowStalledRetry = false) => {
+      if (pendingUserJump !== null) return;
       if (
         !shouldRequestOlderHistory(
           hasOlder,
@@ -1916,7 +1941,7 @@ export function SessionChat({
       });
       void loadOlder();
     },
-    [hasOlder, loadingOlder, loadOlder, olderLoadStalled, reportScrollDebug],
+    [hasOlder, loadingOlder, loadOlder, olderLoadStalled, pendingUserJump, reportScrollDebug],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
@@ -2009,7 +2034,6 @@ export function SessionChat({
   // Bookmarks (#bookmarks): per-session "dog-ears" on agent messages. Toggled from the
   // tap-revealed action row under a message (next to Copy); recalled from the header
   // sheet, which jumps back to the message.
-  const bookmarks = useBookmarks(sessionId);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
@@ -3697,12 +3721,23 @@ export function SessionChat({
                     keyboardDismissMode="interactive"
                     keyboardShouldPersistTaps="handled"
                   />
-                  {/* Opaque cover shown only while converging to a saved position that is
-                already present in the initial loaded tail. It blocks touches during the
-                measurement correction and lifts after we've scrolled to the anchor. */}
-                  {restoring ? (
+                  {/* Keep intermediate history pages hidden while resolving a jump, and
+                cover measurement correction while restoring a saved position. */}
+                  {restoring || pendingUserJump !== null ? (
                     <View style={styles.restoreCover}>
-                      <ActivityIndicator color={theme.colors.textMuted} />
+                      <ActivityIndicator
+                        color={theme.colors.textMuted}
+                        accessibilityLabel={
+                          pendingUserJump !== null
+                            ? 'Finding previous message or bookmark'
+                            : 'Restoring chat position'
+                        }
+                      />
+                      {pendingUserJump !== null ? (
+                        <Text style={styles.emptySubtitle}>
+                          Finding previous message or bookmark…
+                        </Text>
+                      ) : null}
                     </View>
                   ) : null}
                 </KnowledgeSaveContext.Provider>
@@ -3714,15 +3749,15 @@ export function SessionChat({
       {messages.length > 0 ? (
         // Gate on the transcript existing, NOT on a `user-text` row being loaded: with
         // one opening prompt + a very long agent turn, that row sits above the first
-        // loaded page, so `userRowIndices` is empty until you scroll up far enough to
-        // page it in — which made the whole stack vanish mid-transcript and only "pop
-        // back" on scroll-up. Previous stays active while older history exists and
-        // pages toward the next unloaded user row; next/latest self-disable when they
+        // loaded page, so navigation targets may be empty until you scroll up far enough
+        // to page one in — which made the whole stack vanish mid-transcript and only
+        // "pop back" on scroll-up. Previous stays active while older history exists and
+        // pages toward the next unloaded target; next/latest self-disable when they
         // have no reachable target, so the stack stays available throughout.
         //
         // Message-nav stack, hugging the right edge, DEZENT (muted icons, no pill).
-        // Icon language the operator picked: DOUBLE chevrons = "jump to my prev/next
-        // message", SINGLE arrow = "jump to the very bottom" — so the three read
+        // DOUBLE chevrons jump to the previous/next own message or bookmark;
+        // SINGLE arrow jumps to the very bottom — so the three read
         // distinctly. Generous gap + hitSlop keep the three targets easy to hit apart.
         // Vertically centred in the VISIBLE transcript: top 50% of the frame, pulled up
         // by half the stack height AND half the input bar (which the frame includes),
@@ -3742,42 +3777,54 @@ export function SessionChat({
             style={styles.msgNavBtn}
             hitSlop={12}
             onPress={jumpToPreviousUserRow}
-            disabled={!canJumpToPreviousUser}
+            disabled={pendingUserJump !== null || !canJumpToPreviousUser}
             accessibilityRole="button"
-            accessibilityLabel="Jump to my previous message"
+            accessibilityLabel="Jump to previous message or bookmark"
           >
             <Icon
               name="chevrons-up"
               size={22}
-              color={!canJumpToPreviousUser ? theme.colors.textFaint : theme.colors.textMuted}
+              color={
+                pendingUserJump !== null || !canJumpToPreviousUser
+                  ? theme.colors.textFaint
+                  : theme.colors.textMuted
+              }
             />
           </Pressable>
           <Pressable
             style={styles.msgNavBtn}
             hitSlop={12}
             onPress={() => scrollToUserRow(nextUserIndex)}
-            disabled={nextUserIndex < 0}
+            disabled={pendingUserJump !== null || nextUserIndex < 0}
             accessibilityRole="button"
-            accessibilityLabel="Jump to my next message"
+            accessibilityLabel="Jump to next message or bookmark"
           >
             <Icon
               name="chevrons-down"
               size={22}
-              color={nextUserIndex < 0 ? theme.colors.textFaint : theme.colors.textMuted}
+              color={
+                pendingUserJump !== null || nextUserIndex < 0
+                  ? theme.colors.textFaint
+                  : theme.colors.textMuted
+              }
             />
           </Pressable>
           <Pressable
             style={styles.msgNavBtn}
             hitSlop={12}
             onPress={() => scrollToLatest(true)}
-            disabled={atBottom}
+            disabled={pendingUserJump !== null || atBottom}
             accessibilityRole="button"
             accessibilityLabel="Scroll to latest"
           >
             <Icon
               name="arrow-down"
               size={22}
-              color={atBottom ? theme.colors.textFaint : theme.colors.textMuted}
+              color={
+                pendingUserJump !== null || atBottom
+                  ? theme.colors.textFaint
+                  : theme.colors.textMuted
+              }
             />
           </Pressable>
         </Animated.View>
@@ -8451,6 +8498,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: theme.spacing.sm,
   },
   emptyTitle: {
     color: theme.colors.text,

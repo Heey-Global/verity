@@ -4,6 +4,7 @@ import {
   anchorMessageId,
   findAnchorIndex,
   messageSeq,
+  navigationRowIndices,
   nextNewerTopLevelSeq,
   rowMatchesAnchor,
   type ScrollAnchor,
@@ -121,6 +122,18 @@ describe('findAnchorIndex', () => {
   it('resolves an empty anchor to no row', () => {
     const empty: ScrollAnchor = { rowKey: null, messageId: null, atBottom: true, offsetY: null };
     expect(findAnchorIndex(newestFirst, empty, 'newest-first')).toBe(-1);
+  });
+});
+
+describe('message navigation', () => {
+  it('combines own messages and bookmarked rows in transcript order', () => {
+    expect(navigationRowIndices(newestFirst, new Set(['text-20', 'tool-30']))).toEqual([
+      0, 2, 3, 4,
+    ]);
+  });
+
+  it('ignores unloaded bookmarks and avoids duplicate stops', () => {
+    expect(navigationRowIndices(newestFirst, new Set(['text-999', 'text-50']))).toEqual([0, 4]);
   });
 });
 

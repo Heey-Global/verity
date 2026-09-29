@@ -246,6 +246,21 @@ export function shouldRequestOlderHistory(
   return !appendSettling;
 }
 
+/** A message jump may cross pages that advance the event cursor without adding rows. */
+export function shouldContinueUserJump(
+  hasOlder: boolean,
+  stalled: boolean,
+  oldestHistorySeq: number | undefined,
+  requestedAtSeq: number | undefined,
+): boolean {
+  return (
+    hasOlder &&
+    (!stalled || requestedAtSeq === undefined) &&
+    oldestHistorySeq !== undefined &&
+    oldestHistorySeq !== requestedAtSeq
+  );
+}
+
 /**
  * Continue a bounded metadata-only scan after its cursor advanced without adding
  * visible rows. Network/cursor failures wait for a fresh user-driven retry.

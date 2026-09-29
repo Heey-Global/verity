@@ -9,6 +9,7 @@ import {
   migratedAnchorOffset,
   shouldAcceptNativeLatestState,
   shouldContinueOlderHistory,
+  shouldContinueUserJump,
   shouldFollowStreamingContent,
   shouldRequestOlderHistory,
   shouldRestoreToLatestEdge,
@@ -134,6 +135,14 @@ describe('history edge', () => {
 });
 
 describe('history paging', () => {
+  it('keeps a user-message jump moving across pages with no visible rows', () => {
+    expect(shouldContinueUserJump(true, false, 500, 1000)).toBe(true);
+    expect(shouldContinueUserJump(true, false, 500, 500)).toBe(false);
+    expect(shouldContinueUserJump(true, true, 500, 1000)).toBe(false);
+    expect(shouldContinueUserJump(true, true, 500, undefined)).toBe(true);
+    expect(shouldContinueUserJump(false, false, 500, 1000)).toBe(false);
+  });
+
   it('loads older rows when history exists and nothing is in flight', () => {
     expect(shouldRequestOlderHistory(true, false)).toBe(true);
   });
