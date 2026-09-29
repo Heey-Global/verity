@@ -745,7 +745,7 @@ export class PreviewShareManager {
       timed(() =>
         removeContainer(
           this.options.docker,
-          current.connectorContainerId ?? current.connectorContainerName,
+          current.connectorContainerId || current.connectorContainerName,
         ),
       ),
       timed(() => this.options.edge.remove(id)),

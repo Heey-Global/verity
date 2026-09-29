@@ -463,6 +463,18 @@ describe('PreviewShareManager', () => {
     }
   });
 
+  it('removes the connector by name when its stored id is empty', async () => {
+    const { manager, store, docker } = fixture();
+    store.transitionPublicPreviewShare.mockImplementationOnce(async (_id, _from, state) => ({
+      ...fixture().record,
+      connectorContainerId: '',
+      state,
+    }));
+
+    await expect(manager.stop('share-id')).resolves.toBe(true);
+    expect(docker.removeContainer).toHaveBeenCalledWith('verity-preview-share-id');
+  });
+
   it('logs an incomplete stop as a warning without a duration for the failed half', async () => {
     const { manager, docker, log } = fixture();
     docker.removeContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
