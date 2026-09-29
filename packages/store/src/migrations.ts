@@ -3294,6 +3294,25 @@ const migrations: Record<string, Migration> = {
       await sql`drop table live_meeting_sync_clock`.execute(db);
     },
   },
+  '0117_live_meeting_insights': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table live_meeting_insights (
+        id text primary key,
+        meeting_id text not null references live_meetings(id) on delete cascade,
+        kind text not null check (kind in ('contradiction', 'research')),
+        summary text not null,
+        evidence_a text not null,
+        evidence_b text,
+        created_at bigint not null
+      )`.execute(db);
+      await sql`create index live_meeting_insights_meeting_created on live_meeting_insights(meeting_id, created_at)`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table live_meeting_insights`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

@@ -1868,11 +1868,33 @@ const liveMeetingCommandSchema = z.object({
   requestedAt: z.number(),
   acknowledgedAt: z.number().nullable(),
 });
+const liveMeetingInsightSchema = z.object({
+  id: z.string(),
+  meetingId: z.string(),
+  kind: z.enum(['contradiction', 'research']),
+  summary: z.string(),
+  evidenceA: z.string(),
+  evidenceB: z.string().nullable(),
+  createdAt: z.number(),
+});
 export type LiveMeeting = z.infer<typeof liveMeetingSchema>;
 export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
+export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
 export class VerityClient {
+  async getLiveMeetingInsights(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<LiveMeetingInsight[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/insights`,
+      { method: 'GET' },
+    );
+    return z.object({ insights: z.array(liveMeetingInsightSchema) }).parse(await res.json())
+      .insights;
+  }
+
   async getLiveMeetingChanges(sessionId: string, after: number) {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings?after=${after}`,

@@ -32,8 +32,76 @@ export interface LiveMeetingCommand {
   acknowledgedAt: number | null;
 }
 
+export interface LiveMeetingInsight {
+  id: string;
+  meetingId: string;
+  kind: 'contradiction' | 'research';
+  summary: string;
+  evidenceA: string;
+  evidenceB: string | null;
+  createdAt: number;
+}
+
 export class LiveMeetingStore {
   constructor(private readonly db: Kysely<Database>) {}
+
+  async addInsight(sessionId: string, insight: LiveMeetingInsight): Promise<boolean> {
+    const meeting = await this.db
+      .selectFrom('live_meetings')
+      .select('session_id')
+      .where('id', '=', insight.meetingId)
+      .executeTakeFirst();
+    if (meeting?.session_id !== sessionId) return false;
+    await this.db
+      .insertInto('live_meeting_insights')
+      .values({
+        id: insight.id,
+        meeting_id: insight.meetingId,
+        kind: insight.kind,
+        summary: insight.summary,
+        evidence_a: insight.evidenceA,
+        evidence_b: insight.evidenceB,
+        created_at: insight.createdAt,
+      })
+      .onConflict((conflict) => conflict.column('id').doNothing())
+      .execute();
+    return true;
+  }
+
+  async insights(sessionId: string, meetingId: string): Promise<LiveMeetingInsight[] | null> {
+    const meeting = await this.db
+      .selectFrom('live_meetings')
+      .select('session_id')
+      .where('id', '=', meetingId)
+      .executeTakeFirst();
+    if (meeting?.session_id !== sessionId) return null;
+    const rows = await this.db
+      .selectFrom('live_meeting_insights')
+      .selectAll()
+      .where('meeting_id', '=', meetingId)
+      .orderBy('created_at', 'desc')
+      .limit(30)
+      .execute();
+    return rows.map((row) => ({
+      id: row.id,
+      meetingId: row.meeting_id,
+      kind: row.kind,
+      summary: row.summary,
+      evidenceA: row.evidence_a,
+      evidenceB: row.evidence_b,
+      createdAt: Number(row.created_at),
+    }));
+  }
+
+  async currentRevision(sessionId: string, meetingId: string): Promise<number | null> {
+    const meeting = await this.db
+      .selectFrom('live_meetings')
+      .select('revision')
+      .where('session_id', '=', sessionId)
+      .where('id', '=', meetingId)
+      .executeTakeFirst();
+    return meeting ? Number(meeting.revision) : null;
+  }
 
   private async nextUpdateSequence(db: Kysely<Database>): Promise<number> {
     // The single clock row is locked until commit. A poll can never advance past

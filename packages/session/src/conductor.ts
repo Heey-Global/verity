@@ -1644,6 +1644,8 @@ export class Conductor {
     cwd: string;
     model?: string | undefined;
     signal?: AbortSignal | undefined;
+    /** Require a supervised turn with tools disabled. */
+    toolless?: boolean | undefined;
     /** Images shown to the model with the prompt (e.g. text extraction). */
     attachments?: readonly AttachmentUpload[] | undefined;
   }): Promise<string | undefined> {
@@ -1666,6 +1668,7 @@ export class Conductor {
       cwd: string;
       model?: string | undefined;
       signal?: AbortSignal | undefined;
+      toolless?: boolean | undefined;
       attachments?: readonly AttachmentUpload[] | undefined;
     },
     context: { sessionId: string | null; projectId: string | null; worktree: string },
@@ -1673,7 +1676,7 @@ export class Conductor {
     const attachments = input.attachments ?? [];
     // Native one-shots take a prompt string only; answering an image request
     // without the image would return a confident, invented transcript.
-    if (backend.query !== undefined && attachments.length === 0) {
+    if (backend.query !== undefined && attachments.length === 0 && input.toolless !== true) {
       const direct = await backend.query({
         prompt: input.prompt,
         cwd: input.cwd,
@@ -1707,8 +1710,10 @@ export class Conductor {
           startCommandId: randomUUID(),
           storeSessionId: `query-${turnId}`,
           permissionMode: 'dontAsk',
-          // An image is content from outside; the turn that reads it gets no tools.
-          ...(attachments.length > 0 ? { attachments, toolless: true } : {}),
+          // Untrusted content must not gain project tools through a meta-query.
+          ...(attachments.length > 0 || input.toolless === true
+            ? { attachments, toolless: true }
+            : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...(input.signal !== undefined ? { signal: input.signal } : {}),
         },

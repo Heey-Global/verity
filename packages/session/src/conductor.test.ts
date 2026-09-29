@@ -1187,6 +1187,12 @@ describe('Conductor.query', () => {
     expect(nativeQuery).not.toHaveBeenCalled();
     expect(seen[0]?.attachments).toEqual([image]);
     expect(seen[0]?.toolless).toBe(true);
+    await expect(conductor.query({ prompt: 'analyze', cwd: '/wt', toolless: true })).resolves.toBe(
+      'INVOICE 42',
+    );
+    expect(nativeQuery).not.toHaveBeenCalled();
+    expect(seen[1]?.attachments).toEqual([]);
+    expect(seen[1]?.toolless).toBe(true);
   });
 });
 

@@ -1254,6 +1254,7 @@ interface SessionMovesTable {
 export interface Database {
   live_meetings: LiveMeetingsTable;
   live_meeting_notes: LiveMeetingNotesTable;
+  live_meeting_insights: LiveMeetingInsightsTable;
   live_meeting_commands: LiveMeetingCommandsTable;
   live_meeting_sync_clock: LiveMeetingSyncClockTable;
   session_links: SessionLinksTable;
@@ -1369,4 +1370,14 @@ interface LiveMeetingNotesTable {
   text: string;
   revision: number;
   updated_seq: number;
+}
+
+interface LiveMeetingInsightsTable {
+  id: string;
+  meeting_id: string;
+  kind: 'contradiction' | 'research';
+  summary: string;
+  evidence_a: string;
+  evidence_b: string | null;
+  created_at: number;
 }
