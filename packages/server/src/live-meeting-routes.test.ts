@@ -165,6 +165,34 @@ it('retries a failed analysis for the same final transcript', async () => {
   }
 });
 
+it('analyzes a changed final transcript even after a short closing remark', async () => {
+  const analyzed = Fastify();
+  const query = vi.fn().mockResolvedValue('{"insights":[]}');
+  registerLiveMeetingRoutes(analyzed, ctx.store, { query, delayMs: 1, minIntervalMs: 1 });
+  await analyzed.ready();
+  try {
+    const transcript =
+      'The team reviewed the release plan and agreed to verify the figures before the next update. ' +
+      'Everyone confirmed the current timetable.';
+    await analyzed.inject({ method: 'PUT', url, payload: { ...meeting, transcript } });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await analyzed.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        revision: 2,
+        state: 'ended',
+        endedAt: 200,
+        transcript: `${transcript} Is Friday still correct?`,
+      },
+    });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+  } finally {
+    await analyzed.close();
+  }
+});
+
 it('accepts remote pause but lets only the recorder acknowledge it', async () => {
   await app.inject({ method: 'PUT', url, payload: meeting });
   const requested = await app.inject({

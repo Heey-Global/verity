@@ -68,9 +68,10 @@ export function registerLiveMeetingRoutes(
       sessionId: string;
       revision: number;
       transcript: string;
+      terminal: boolean;
     }
   >();
-  const lastAnalyzed = new Map<string, { length: number; at: number }>();
+  const lastAnalyzed = new Map<string, { length: number; hash: string }>();
   const lastAttemptAt = new Map<string, number>();
   const retries = new Map<string, { revision: number; count: number }>();
   const inFlight = new Map<string, AbortController>();
@@ -79,16 +80,22 @@ export function registerLiveMeetingRoutes(
     meetingId: string,
     revision: number,
     transcript: string,
+    terminal: boolean,
   ) => {
     if (!opts.query || transcript.length < 80) return;
     const failed = retries.get(meetingId);
     if (failed && failed.count >= 3 && revision <= failed.revision) return;
     const last = lastAnalyzed.get(meetingId);
-    if (last && transcript.length - last.length < 160) return;
+    if (
+      last &&
+      transcript.length - last.length < 160 &&
+      (!terminal || createHash('sha256').update(transcript).digest('hex') === last.hash)
+    )
+      return;
     const existing = queued.get(meetingId);
     if (existing) {
       if (revision > existing.revision)
-        queued.set(meetingId, { ...existing, revision, transcript });
+        queued.set(meetingId, { ...existing, revision, transcript, terminal });
       return;
     }
     const runQueued = () => {
@@ -142,7 +149,10 @@ export function registerLiveMeetingRoutes(
               createdAt: Date.now(),
             });
           }
-          lastAnalyzed.set(meetingId, { length: current.transcript.length, at: Date.now() });
+          lastAnalyzed.set(meetingId, {
+            length: current.transcript.length,
+            hash: createHash('sha256').update(current.transcript).digest('hex'),
+          });
           retries.delete(meetingId);
           if (lastAnalyzed.size > 1_000) {
             const oldest = lastAnalyzed.keys().next().value;
@@ -162,7 +172,13 @@ export function registerLiveMeetingRoutes(
             const count = prior?.revision === current.revision ? prior.count + 1 : 1;
             retries.set(meetingId, { revision: current.revision, count });
             if (count < 3)
-              scheduleAnalysis(current.sessionId, meetingId, current.revision, current.transcript);
+              scheduleAnalysis(
+                current.sessionId,
+                meetingId,
+                current.revision,
+                current.transcript,
+                current.terminal,
+              );
           }
         } finally {
           inFlight.delete(meetingId);
@@ -170,7 +186,7 @@ export function registerLiveMeetingRoutes(
       })();
     };
     const timer = setTimeout(runQueued, opts.delayMs ?? 15_000);
-    queued.set(meetingId, { timer, sessionId, revision, transcript });
+    queued.set(meetingId, { timer, sessionId, revision, transcript, terminal });
   };
   app.addHook('onClose', () => {
     for (const { timer } of queued.values()) clearTimeout(timer);
@@ -208,7 +224,13 @@ export function registerLiveMeetingRoutes(
       return { error: 'meeting owner or session mismatch' };
     }
     if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision)
-      scheduleAnalysis(sessionId, meetingId, body.revision, body.transcript);
+      scheduleAnalysis(
+        sessionId,
+        meetingId,
+        body.revision,
+        body.transcript,
+        body.state !== 'active',
+      );
     return { accepted: true };
   });
 
