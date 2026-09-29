@@ -9,11 +9,16 @@ const WAKE_WORD = /\bVerity\b[\s,:-]*/gi;
 // Spoken requests open with hesitations and politeness before the verb:
 // "Verity, äh mach mal bitte Research …", "Verity, kannst du mal schauen, …".
 const LEAD_IN =
-  /^(?:(?:äh+m?|ähm|öh+m?|hm+|uh+m?|um+|also|okay|ok|bitte|please|mal|mach(?:e|st du)?|kannst du|könntest du|würdest du|can you|could you|would you)\b[\s,.]*)*/i;
+  /^(?:(?:äh+m?|ähm|öh+m?|hm+|uh+m?|um+|also|okay|ok|bitte|please|mal|sag mal|hey|mach(?:e|st du)?|kannst du|könntest du|würdest du|can you|could you|would you)\b[\s,.]*)*/i;
+const MODAL = /\b(?:kannst|könntest|würdest|can|could|would) (?:du|you)\b/i;
 // Imperatives only: nouns and statements ("Recherche ergab …", "Google hat …") stay speech.
+// The meeting runs German speech recognition, so German phrasings matter as much as English.
 const RESEARCH =
-  /^(?:recherchier\w*|research\b|(?:über)?prüf(?:e|en|st)?\b|check\b|verifizier\w*|(?:nach)?schau(?:e|en|st)?\b|guck(?:e|en|st)?\b|such(?:e|en|st)\b|finde? heraus|find out|look up|look into)/i;
-const OPINION = /^(?:was hältst du|wie siehst du|was ist deine einschätzung|what do you think)\b/i;
+  /^(?:recherchier\w*|research\b|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b|verifizier\w*|(?:nach)?schau(?:e|en|st)?\b|guck(?:e|en|st)?\b|such(?:e|en|st)?\b(?!\s+an?\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
+const OPINION =
+  /^(?:was (?:hältst|meinst|denkst|sagst) du|wie (?:siehst|findest|bewertest|beurteilst|schätzt) du|(?:was ist|wie ist|gib mir) deine (?:einschätzung|meinung|sicht)|bewert(?:e)?\b|beurteil(?:e)?\b|schätz(?:e)?\b|erklär(?:e)?\b|fass(?:e)?(?:\s+(?:mal|bitte|kurz|uns|doch))*\s+zusammen\b|stimmt (?:das|es)\b|ist (?:das|es) (?:realistisch|richtig|korrekt|plausibel)\b|what do you think|what's your take|how do you see|explain\b|summari[sz]e\b|is (?:that|this|it) (?:right|correct|realistic)\b)/i;
+// "mal schauen, ob …" is German for "we'll see", not a request; the infinitive asks only after "kannst du".
+const INFINITIVE_IDIOM = /^(?:nach)?schauen\b|^gucken\b/i;
 const ABBREVIATIONS = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'etc', 'vs']);
 
 function sentenceEnd(text: string): number {
@@ -27,10 +32,16 @@ function sentenceEnd(text: string): number {
   return -1;
 }
 
-function requestKind(request: string): VoiceMeetingCommand['kind'] | null {
-  const intent = request.slice(LEAD_IN.exec(request)?.[0].length ?? 0);
+function requestVerb(request: string) {
+  const leadIn = LEAD_IN.exec(request)?.[0] ?? '';
+  const intent = request.slice(leadIn.length);
+  if (INFINITIVE_IDIOM.test(intent) && !MODAL.test(leadIn)) return { intent, match: null };
   const research = RESEARCH.exec(intent);
-  const match = research ?? OPINION.exec(intent);
+  return { intent, match: research ?? OPINION.exec(intent), research: Boolean(research) };
+}
+
+function requestKind(request: string): VoiceMeetingCommand['kind'] | null {
+  const { intent, match, research } = requestVerb(request);
   if (!match) return null;
   const remainder = intent
     .slice(match[0].length)
@@ -53,6 +64,7 @@ function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
     const following = transcript.slice(requestStart);
     const terminator = sentenceEnd(following);
     const request = (terminator < 0 ? following : following.slice(0, terminator)).trim();
+    if (request.length > 240) continue;
     if (requestStart + request.length > nextCommandStart) {
       // A later wake inside this request is a restart only if what came before it was no
       // request yet; "research how Verity checks invoices" names the product instead.
@@ -60,11 +72,11 @@ function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
       while (commands.length && commands[0]!.start < requestStart + request.length)
         commands.shift();
     }
-    if (request.length > 240) continue;
     const kind = requestKind(request);
     if (!kind) {
-      // A bare "Verity" (maybe with "äh") may be the start of a restarted request.
-      if (terminator < 0 && !request.slice(LEAD_IN.exec(request)?.[0].length ?? 0).trim())
+      // A bare "Verity" (maybe with "äh" or just the verb) may start a restarted request.
+      const { intent, match } = requestVerb(request);
+      if (terminator < 0 && !intent.slice(match?.[0].length ?? 0).trim())
         nextCommandStart = wake.index!;
       continue;
     }

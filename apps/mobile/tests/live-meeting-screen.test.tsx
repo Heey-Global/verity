@@ -783,3 +783,30 @@ it('offers pause and resume on the full meeting screen', async () => {
   await act(async () => fireEvent.press(await screen.findByText('▶  Resume')));
   expect(resumeMeeting).toHaveBeenCalledTimes(1);
 });
+
+it('stamps notes with the time of day rather than the meeting timer', async () => {
+  // A 90-second-old note in a meeting that started at 14:02 must read 14:03, not 01:30.
+  const startedAt = new Date(2026, 8, 29, 14, 2, 0).getTime();
+  const meeting: MeetingRecord = {
+    id: 'meeting-clock',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt,
+    endedAt: startedAt + 600_000,
+    state: 'ended',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest
+    .mocked(listNotes)
+    .mockResolvedValue([{ id: 'n', meetingId: meeting.id, atSeconds: 90, text: 'Budget' }]);
+  render(<MeetingScreen />);
+  const expected = new Date(startedAt + 90_000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  expect(await screen.findByTestId('meeting-note')).toHaveTextContent(`${expected} Budget`);
+  expect(expected).not.toBe('01:30');
+});

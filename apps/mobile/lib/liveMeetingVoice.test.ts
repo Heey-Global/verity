@@ -59,6 +59,34 @@ test('accepts spoken lead-ins and sends a restarted request once', () => {
   detector.stop();
 });
 
+test('recognizes everyday German phrasings, since meetings are transcribed in German', () => {
+  for (const [spoken, kind] of [
+    ['Verity, was meinst du zu dem Angebot?', 'opinion'],
+    ['Verity, was denkst du über den Launch im Oktober?', 'opinion'],
+    ['Verity, wie findest du den Vorschlag von Anna?', 'opinion'],
+    ['Verity, sag mal, was hältst du von dem Angebot?', 'opinion'],
+    ['Verity, gib mir deine Einschätzung zum Zeitplan.', 'opinion'],
+    ['Verity, bewerte bitte das Angebot der Agentur.', 'opinion'],
+    ['Verity, fass mal kurz zusammen, was wir beschlossen haben.', 'opinion'],
+    ['Verity, erklär mal, was ein CDN ist.', 'opinion'],
+    ['Verity, stimmt das mit dem Budget von 20.000 Euro?', 'opinion'],
+    ['Verity, finde mal raus, wer das Hosting macht.', 'research'],
+    ['Verity, kannst du rausfinden, wer das Hosting macht?', 'research'],
+    ['Verity, schlag mal nach, was im Vertrag steht.', 'research'],
+    ['Verity, such bitte nach guten Webdesignern.', 'research'],
+    ['Verity, checke mal die Hosting-Kosten.', 'research'],
+  ] as const)
+    expect(latestVoiceMeetingCommand(spoken)?.kind).toBe(kind);
+  // Idioms and statements that share the verbs.
+  for (const statement of [
+    'Verity, mal schauen, ob das bis Oktober klappt.',
+    'Verity, mal gucken, was die Agentur sagt.',
+    'Verity erklärt uns das nachher.',
+    'Verity, bewertet haben wir das schon.',
+  ])
+    expect(latestVoiceMeetingCommand(statement)).toBeNull();
+});
+
 test('keeps a request that mentions the product after its verb', () => {
   // A second wake word that is not a restart must not replace the real request.
   expect(latestVoiceMeetingCommand('Verity, research how Verity check invoices.')).toMatchObject({
@@ -82,6 +110,26 @@ test('does not send a hesitation while the speaker restarts', () => {
     'Research Good Web Designers',
   ]);
   detector.stop();
+});
+
+test('does not send an abandoned request when the restart has only reached its verb', () => {
+  jest.useFakeTimers();
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe('Verity, äh mach mal bitte Research Verity Research', false);
+  jest.advanceTimersByTime(5000);
+  expect(dispatch).not.toHaveBeenCalled();
+  detector.stop();
+});
+
+test('keeps a later request when an earlier one runs past the length cap', () => {
+  // Merging must not drop a valid command just because the combined text is too long.
+  const long = `prüfe ${'den sehr langen Vertrag '.repeat(10)}`;
+  expect(latestVoiceMeetingCommand(`Verity, ${long}Verity, recherchiere den Preis.`)).toMatchObject(
+    {
+      request: 'recherchiere den Preis',
+    },
+  );
 });
 
 test('waits for a stable snapshot and sends a revised command only once', () => {
