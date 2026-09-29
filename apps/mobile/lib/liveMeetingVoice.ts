@@ -37,7 +37,11 @@ function sameUtterance(a: string, b: string): boolean {
   const shared = [...left].filter((word) => right.has(word)).length;
   return (
     (shared >= 2 && shared / Math.min(left.size, right.size) >= 0.5) ||
-    (shared >= 1 && [...left][0] === [...right][0])
+    (shared >= 1 &&
+      ([...left][0] === [...right][0] ||
+        ([...left][0]!.length >= 3 &&
+          [...right][0]!.length >= 3 &&
+          ([...left][0]!.startsWith([...right][0]!) || [...right][0]!.startsWith([...left][0]!)))))
   );
 }
 
