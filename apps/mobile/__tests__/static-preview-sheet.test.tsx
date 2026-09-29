@@ -51,6 +51,64 @@ it('creates and shows a static share for the folder selected in the session work
   );
   expect(await screen.findByText('https://preview.example')).toBeTruthy();
   expect(screen.getByText(/Available until/)).toBeTruthy();
+  expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+  expect(
+    screen.getByRole('link', { name: 'Open preview link https://preview.example' }),
+  ).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Copy preview link' })).toBeTruthy();
+  expect(screen.getByText('Stop sharing')).toBeTruthy();
+});
+
+it('shows regular files next to folders so the selected publish root can be checked', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async (_sessionId: string, path: string) =>
+      path === 'site'
+        ? { directories: [], files: ['index.html', 'zoom-v2.html'] }
+        : { directories: ['site'], files: [] },
+    ),
+    listPublicPreviewShares: jest.fn(async () => []),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.press(await screen.findByLabelText('Open folder site'));
+  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+  expect(screen.getByLabelText('File zoom-v2.html')).toBeTruthy();
+  expect(screen.getByText('Worktree / site')).toBeTruthy();
+});
+
+it('opens directly on the active link when the sheet is reopened', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'docs/presentations/site',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  expect(await screen.findByText('https://existing.example')).toBeTruthy();
+  expect(screen.getByLabelText('Active preview link')).toBeTruthy();
+  expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+  expect(screen.queryByText('Create another link')).toBeNull();
 });
 
 it('keeps the selected folder and PIN after Core is unreachable during link creation', async () => {
@@ -172,22 +230,8 @@ it('keeps a newly created link when the initial share list arrives late', async 
   );
   fireEvent.press(screen.getByText('Create link'));
   expect(await screen.findByText('https://new.example')).toBeTruthy();
-  await act(async () =>
-    resolveShares([
-      {
-        id: 'share-old',
-        projectId: 'project-one',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: 'older',
-        state: 'active',
-        publicOrigin: 'https://old.example',
-        expiresAt: '2030-01-01T01:00:00Z',
-      } as PublicPreviewShare,
-    ]),
-  );
+  await act(async () => resolveShares([]));
   expect(screen.getByText('https://new.example')).toBeTruthy();
-  expect(screen.getByText('https://old.example')).toBeTruthy();
 });
 
 it('finishes loading a new folder when a link creation completes during navigation', async () => {
@@ -240,8 +284,8 @@ it('finishes loading a new folder when a link creation completes during navigati
     } as PublicPreviewShare),
   );
   await act(async () => resolveOther([]));
-  expect(screen.getByText('Worktree / other')).toBeTruthy();
-  expect(screen.getByText('No subfolders')).toBeTruthy();
+  expect(screen.getByText('https://new.example')).toBeTruthy();
+  expect(screen.queryByText('Worktree / other')).toBeNull();
 });
 
 it('ignores a child-folder response after returning to the session root', async () => {

@@ -133,6 +133,14 @@ export class PreviewShareManager {
     path: string,
     sessionId: string,
   ): Promise<string[]> {
+    return (await this.listStaticEntries(projectId, path, sessionId)).directories;
+  }
+
+  async listStaticEntries(
+    projectId: string,
+    path: string,
+    sessionId: string,
+  ): Promise<{ directories: string[]; files: string[] }> {
     const project = await this.options.store.getProject(projectId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
@@ -156,10 +164,17 @@ export class PreviewShareManager {
       }
     }
     const entries = await readdir(directory, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-      .map((entry) => entry.name)
-      .sort((a, b) => a.localeCompare(b));
+    const visible = entries.filter((entry) => !entry.name.startsWith('.'));
+    return {
+      directories: visible
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b)),
+      files: visible
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b)),
+    };
   }
 
   async create(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
@@ -230,8 +245,10 @@ export class PreviewShareManager {
         ACTIVE_STATES.includes(share.state) &&
         (devServer
           ? share.devServerId === devServer.id
-          : share.staticPath === staticPath &&
-            (share.sessionId ?? null) === (input.sessionId ?? null)),
+          : share.staticPath !== null &&
+            (input.sessionId
+              ? share.sessionId === input.sessionId
+              : share.sessionId === null && share.staticPath === staticPath)),
     );
     if (existing) throw new PreviewShareConflictError('target already has an active public share');
     const staticRoot = staticPath

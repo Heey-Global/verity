@@ -699,6 +699,29 @@ export function SessionChat({
   );
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
+  const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
+  const refreshStaticPreview = useCallback(() => {
+    if (!projectId) return;
+    void client
+      .listPublicPreviewShares(projectId)
+      .then((shares) => {
+        setHasActiveStaticPreview(
+          shares.some(
+            (share) =>
+              share.targetKind === 'static-folder' &&
+              share.sessionId === sessionId &&
+              share.state === 'active' &&
+              new Date(share.expiresAt).getTime() > Date.now(),
+          ),
+        );
+      })
+      .catch(() => undefined);
+  }, [client, projectId, sessionId]);
+  useEffect(() => {
+    refreshStaticPreview();
+    const timer = setInterval(refreshStaticPreview, 60_000);
+    return () => clearInterval(timer);
+  }, [refreshStaticPreview]);
 
   const editAgentLoop = useCallback(() => {
     if (!agentLoop || sending || busy) return;
@@ -3287,14 +3310,31 @@ export function SessionChat({
           ) : null}
           {projectId ? (
             <Pressable
-              onPress={() => setStaticPreviewOpen(true)}
+              onPress={() => {
+                refreshStaticPreview();
+                setStaticPreviewOpen(true);
+              }}
               hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel="Share static preview"
-              style={styles.headerBookmarkBtn}
+              style={[
+                styles.headerBookmarkBtn,
+                hasActiveStaticPreview ? styles.headerPreviewActive : null,
+              ]}
             >
-              <Icon name="monitor" size={15} color={theme.colors.textMuted} />
-              <Text style={styles.headerBookmarkCount}>Preview</Text>
+              <Icon
+                name="monitor"
+                size={15}
+                color={hasActiveStaticPreview ? theme.colors.primary : theme.colors.textMuted}
+              />
+              <Text
+                style={[
+                  styles.headerBookmarkCount,
+                  hasActiveStaticPreview ? styles.headerPreviewActiveText : null,
+                ]}
+              >
+                Preview
+              </Text>
             </Pressable>
           ) : null}
           <Pressable
@@ -3430,7 +3470,10 @@ export function SessionChat({
           client={client}
           projectId={projectId}
           sessionId={sessionId}
-          onClose={() => setStaticPreviewOpen(false)}
+          onClose={() => {
+            setStaticPreviewOpen(false);
+            refreshStaticPreview();
+          }}
         />
       ) : null}
       {filesOpen ? (
@@ -8555,6 +8598,8 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 11 * theme.fontScale,
     fontWeight: '600',
   },
+  headerPreviewActive: { borderBottomWidth: 2, borderBottomColor: theme.colors.primary },
+  headerPreviewActiveText: { color: theme.colors.primary },
   headerLoopButton: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 5,
