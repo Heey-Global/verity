@@ -19,6 +19,17 @@ function hasWords(text: string): boolean {
   return /\p{L}{2}/u.test(text.replace(WAKE_WORD, ''));
 }
 
+function sameUtterance(a: string, b: string): boolean {
+  const words = (value: string) =>
+    new Set(
+      (value.toLocaleLowerCase().match(/\p{L}+/gu) ?? []).filter((word) => word !== 'verity'),
+    );
+  const left = words(a);
+  const right = words(b);
+  const shared = [...left].filter((word) => right.has(word)).length;
+  return shared >= 2 && shared / Math.min(left.size, right.size) >= 0.5;
+}
+
 export function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
   const commands: VoiceMeetingCommand[] = [];
   const ends = [...transcript.matchAll(SENTENCE_END)].map((match) => match.index!);
@@ -124,17 +135,22 @@ export class VoiceMeetingCommandDetector {
             ? old.start + transcript.length - previous.length
             : old.start;
       let index = commands.findIndex(
-        (candidate, position) => !matched.has(position) && candidate.start === mappedStart,
+        (candidate, position) => !matched.has(position) && candidate.utterance === old.utterance,
       );
       if (index < 0)
         index = commands.findIndex(
-          (candidate, position) => !matched.has(position) && candidate.utterance === old.utterance,
+          (candidate, position) =>
+            !matched.has(position) &&
+            candidate.start === mappedStart &&
+            sameUtterance(candidate.utterance, old.utterance),
         );
       if (index < 0) {
         const shiftedStart = old.start + transcript.length - previous.length;
         index = commands.findIndex(
           (candidate, position) =>
-            !matched.has(position) && Math.abs(candidate.start - shiftedStart) <= 12,
+            !matched.has(position) &&
+            Math.abs(candidate.start - shiftedStart) <= 12 &&
+            sameUtterance(candidate.utterance, old.utterance),
         );
       }
       if (index < 0) continue;

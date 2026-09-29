@@ -80,9 +80,8 @@ async function sendVoiceRequest(
       context: context.slice(0, command.start).trim().slice(-1500),
     });
   } catch (error) {
-    // Only a sentence that opens with the name is clearly spoken to Verity; a failed check of
-    // a passing mention would put an error on screen for talk that asked nothing.
-    if (/^Verity\b/i.test(command.utterance))
+    // An address can begin after a lead-in; report a failed check when the name is vocative.
+    if (/\bVerity\s*[,!:]\s*\p{L}/iu.test(command.utterance))
       failed(`Could not check what you asked Verity: ${String(error)}`);
     return;
   }

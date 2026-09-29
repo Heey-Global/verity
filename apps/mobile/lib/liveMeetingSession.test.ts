@@ -498,7 +498,11 @@ it('reports a failed check and keeps recording', async () => {
   try {
     await startMeeting('session-1');
     onEvent({ kind: 'status', state: 'listening' });
-    onEvent({ kind: 'snapshot', text: 'Verity, was meinst du?', final: true });
+    onEvent({
+      kind: 'snapshot',
+      text: 'Kurz noch: kannst du, Verity, die Preise prüfen?',
+      final: true,
+    });
     await waitFor(() => expect(failures).toEqual([expect.stringContaining('offline')]));
     expect(sendTurn).not.toHaveBeenCalled();
     expect(currentMeeting()?.state).toBe('active');

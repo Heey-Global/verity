@@ -43,9 +43,7 @@ const insightCandidate = z.discriminatedUnion('kind', [
 const analysisResult = z.object({ insights: z.array(insightCandidate).max(3) });
 
 const addressedResult = z.object({
-  requests: z
-    .array(z.object({ kind: z.enum(['research', 'opinion']), request: z.string().min(3) }))
-    .max(3),
+  requests: z.array(z.object({ kind: z.enum(['research', 'opinion']), request: z.string() })),
 });
 const addressedBody = z.object({
   utterance: z.string().min(1).max(600),
@@ -65,6 +63,14 @@ function addressedPrompt(utterance: string, context: string): string {
     `Earlier meeting context:\n${context}`,
     `Utterance:\n${utterance}`,
   ].join('\n\n');
+}
+
+// Meeting audio may be heard from anyone in the room. Keep common change requests out of
+// session turns even when the classifier returns them as verbatim speech.
+function isReadOnlyRequest(request: string): boolean {
+  return !/(?<!\p{L})(?:delete|remove|send|email|buy|purchase|book|schedule|create|edit|write|commit|push|deploy|lösche|entferne|sende|verschicke|kaufe|buche|erstelle|ändere|schreibe|veröffentliche)(?!\p{L})/iu.test(
+    request,
+  );
 }
 
 export interface MeetingInsightQuery {
@@ -314,7 +320,12 @@ export function registerLiveMeetingRoutes(
       if (!raw) throw new Error('Spoken request check returned no result');
       const { requests } = addressedResult.parse(JSON.parse(raw));
       // A paraphrase could smuggle in words nobody said; only verbatim quotes become turns.
-      return { requests: requests.filter((item) => utterance.includes(item.request)) };
+      return {
+        requests: requests
+          .filter((item) => item.request.length >= 3 && utterance.includes(item.request))
+          .filter((item) => isReadOnlyRequest(item.request))
+          .slice(0, 3),
+      };
     } catch (error) {
       app.log.warn(
         { error: error instanceof Error ? error.name : 'unknown', meetingId },

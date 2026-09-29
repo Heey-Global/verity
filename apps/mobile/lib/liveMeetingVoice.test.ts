@@ -120,6 +120,17 @@ test('does not resend a command when earlier wake-word text is revised', () => {
   detector.stop();
 });
 
+test('does not mistake a new earlier mention for an already sent request', () => {
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe('Verity, research the deadline.', true);
+  detector.observe('Someone mentioned Verity earlier. Verity, research the deadline.', true);
+  expect(dispatch.mock.calls.map(([command]) => command.utterance)).toEqual([
+    'Verity, research the deadline.',
+    'Someone mentioned Verity earlier.',
+  ]);
+});
+
 test('sends a new request after an earlier recognized request disappears', () => {
   const dispatch = jest.fn();
   const detector = new VoiceMeetingCommandDetector(dispatch);

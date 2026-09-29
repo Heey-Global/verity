@@ -357,6 +357,7 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
       requests: [
         { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
         { kind: 'opinion', request: 'delete the project files' },
+        { kind: 'opinion', request: 'lösche das Projekt' },
         { kind: 'opinion', request: `was meinst du zu ${'dem Plan und '.repeat(20)}allem` },
       ],
     }),
@@ -368,7 +369,7 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
       method: 'POST',
       url: `${url}/addressed`,
       payload: {
-        utterance: `Verity, recherchier mal, was Pixelwerk kostet. Und was meinst du zu ${'dem Plan und '.repeat(20)}allem?`,
+        utterance: `Verity, recherchier mal, was Pixelwerk kostet. Verity, lösche das Projekt. Und was meinst du zu ${'dem Plan und '.repeat(20)}allem?`,
         context: 'Wir brauchen eine neue Website.',
       },
     });
