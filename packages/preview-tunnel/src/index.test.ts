@@ -14,7 +14,7 @@ import {
   reconnectDelayMs,
   supervisePreviewConnector,
 } from './index.js';
-import { loginPage } from './preview-page.js';
+import { expiredPage, loginPage } from './preview-page.js';
 
 const cleanups: Array<() => Promise<void> | void> = [];
 const sessionSecretHash = hashPreviewSecret('independent-edge-session-secret');
@@ -23,6 +23,19 @@ it('escapes the return path in the code form', () => {
   const page = loginPage('/?next="<script>');
   expect(page).toContain('value="/?next=&quot;&lt;script&gt;"');
   expect(page).not.toContain('<script>');
+});
+
+it('uses the code-entry page chrome for an expired preview', () => {
+  const login = loginPage('/');
+  const expired = expiredPage();
+  const loginStyles = login.match(/<style>(.*?)<\/style>/s)?.[1];
+  const loginHeader = login.match(/<body>(.*?)<section/s)?.[1];
+  expect(loginStyles).toBeDefined();
+  expect(loginHeader).toBeDefined();
+  expect(expired.match(/<style>(.*?)<\/style>/s)?.[1]).toBe(loginStyles);
+  expect(expired.match(/<body>(.*?)<section/s)?.[1]).toBe(loginHeader);
+  expect(expired).toContain('This preview link has expired');
+  expect(expired).not.toContain('<form');
 });
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.();
@@ -105,6 +118,10 @@ describe('preview tunnel', () => {
     cleanups.push(() => edge.close());
     const response = await fetch(`http://127.0.0.1:${edgePort}/`);
     expect(response.status).toBe(410);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.text()).toContain(
+      '<h1 id="page-title">This preview link has expired</h1>',
+    );
   });
 
   it('tears an open stream down when the share expires under it', async () => {

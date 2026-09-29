@@ -63,5 +63,13 @@ export function previewErrorPage(message: string): string {
   );
 }
 
+export function expiredPage(): string {
+  return shell(
+    'Preview expired',
+    'Preview expired',
+    '<h1 id="page-title">This preview link has expired</h1><p class="copy">This preview is no longer available. Ask the person who shared it for a new link.</p>',
+  );
+}
+
 export const PREVIEW_PAGE_CSP =
   "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'";
