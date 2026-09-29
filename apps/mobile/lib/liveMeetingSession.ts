@@ -80,7 +80,10 @@ async function sendVoiceRequest(
       context: context.slice(0, command.start).trim().slice(-1500),
     });
   } catch (error) {
-    failed(`Could not check what you asked Verity: ${String(error)}`);
+    // Only a sentence that opens with the name is clearly spoken to Verity; a failed check of
+    // a passing mention would put an error on screen for talk that asked nothing.
+    if (/^Verity\b/i.test(command.utterance))
+      failed(`Could not check what you asked Verity: ${String(error)}`);
     return;
   }
   // Most mentions of the name are talk about Verity, not to it: nothing to show.
@@ -90,8 +93,15 @@ async function sendVoiceRequest(
     if (getVerityBaseUrl() !== serverUrl) throw new Error('Reconnect to this meeting’s server.');
     const client = createVerityClient();
     if (!client) throw new Error('Connect to the server.');
-    for (const { kind, request } of requests) {
-      if (!stillWanted()) return;
+    for (const [index, { kind, request }] of requests.entries()) {
+      if (!stillWanted()) {
+        failed(
+          index
+            ? 'Recording paused; the rest of the spoken request was not sent.'
+            : 'Recording paused before the spoken request was sent.',
+        );
+        return;
+      }
       const prompt =
         kind === 'research'
           ? researchPrompt(meeting.id, request, context)

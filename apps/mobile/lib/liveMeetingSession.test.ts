@@ -538,3 +538,67 @@ it('drops a checked request when capture pauses while the server is still decidi
     await endMeeting();
   }
 });
+
+it('stays silent when checking a passing mention fails', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn: jest.fn(),
+    checkSpokenMeetingRequest: jest.fn().mockRejectedValue(new Error('offline')),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  const events: string[] = [];
+  const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event.status));
+  try {
+    await startMeeting('session-1');
+    onEvent({ kind: 'status', state: 'listening' });
+    onEvent({ kind: 'snapshot', text: 'Wir haben gestern Verity getestet.', final: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual([]);
+  } finally {
+    unsubscribe();
+    await endMeeting();
+  }
+});
+
+it('does not leave "sending" on screen when capture pauses between two requests', async () => {
+  let releaseFirst!: () => void;
+  const sendTurn = jest
+    .fn()
+    .mockImplementationOnce(
+      () => new Promise((resolve) => (releaseFirst = () => resolve({ turnId: 'turn-1' }))),
+    );
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    checkSpokenMeetingRequest: jest.fn().mockResolvedValue([
+      { kind: 'research', request: 'research the hosting costs' },
+      { kind: 'opinion', request: 'what do you think about the launch' },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  const events: string[] = [];
+  const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event.status));
+  try {
+    await startMeeting('session-1');
+    onEvent({ kind: 'status', state: 'listening' });
+    onEvent({
+      kind: 'snapshot',
+      text: 'Verity research the hosting costs Verity what do you think about the launch.',
+      final: true,
+    });
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
+    await pauseMeeting();
+    releaseFirst();
+    await waitFor(() => expect(events).toEqual(['sending', 'failed']));
+    expect(sendTurn).toHaveBeenCalledTimes(1);
+  } finally {
+    unsubscribe();
+    await endMeeting();
+  }
+});

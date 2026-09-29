@@ -34,6 +34,15 @@ test('keeps the whole sentence around the name, bounded for run-on transcripts',
   expect(runOn.slice(command!.start)).toBe(command!.utterance);
 });
 
+test('does not end a sentence at the dots inside names, numbers and abbreviations', () => {
+  expect(
+    utterances('Verity, prüf z.B. bei Dr. Müller, ob Node.js 3.5 Lizenzen braucht. Weiter.'),
+  ).toEqual(['Verity, prüf z.B. bei Dr. Müller, ob Node.js 3.5 Lizenzen braucht.']);
+  expect(utterances('Verity, research Node.js compatibility.')).toEqual([
+    'Verity, research Node.js compatibility.',
+  ]);
+});
+
 test('joins a name spoken on its own to the sentence that follows', () => {
   expect(utterances('Verity. Recherchier mal den Preis.')).toEqual([
     'Verity. Recherchier mal den Preis.',

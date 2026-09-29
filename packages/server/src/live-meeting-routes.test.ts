@@ -357,6 +357,7 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
       requests: [
         { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
         { kind: 'opinion', request: 'delete the project files' },
+        { kind: 'opinion', request: `was meinst du zu ${'dem Plan und '.repeat(20)}allem` },
       ],
     }),
   );
@@ -367,14 +368,18 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
       method: 'POST',
       url: `${url}/addressed`,
       payload: {
-        utterance: 'Verity, recherchier mal, was Pixelwerk kostet.',
+        utterance: `Verity, recherchier mal, was Pixelwerk kostet. Und was meinst du zu ${'dem Plan und '.repeat(20)}allem?`,
         context: 'Wir brauchen eine neue Website.',
       },
     });
     expect(response.statusCode).toBe(200);
     // An invented instruction must never reach the session as if someone had said it.
     expect(response.json()).toEqual({
-      requests: [{ kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' }],
+      // A long quote is kept rather than failing the whole answer.
+      requests: [
+        { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
+        { kind: 'opinion', request: `was meinst du zu ${'dem Plan und '.repeat(20)}allem` },
+      ],
     });
     expect(query).toHaveBeenCalledWith(
       'session-1',
@@ -386,7 +391,7 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
   }
 });
 
-it('checks one spoken request per meeting at a time', async () => {
+it('checks one spoken request per session at a time', async () => {
   const checked = Fastify();
   let answer: (value: string) => void = () => undefined;
   const query = vi.fn().mockReturnValue(new Promise<string>((resolve) => (answer = resolve)));
@@ -396,7 +401,12 @@ it('checks one spoken request per meeting at a time', async () => {
     const payload = { utterance: 'Verity, what do you think?', context: '' };
     const first = checked.inject({ method: 'POST', url: `${url}/addressed`, payload });
     await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
-    const second = await checked.inject({ method: 'POST', url: `${url}/addressed`, payload });
+    // A different meeting id in the same session must not open a second parallel model call.
+    const second = await checked.inject({
+      method: 'POST',
+      url: '/sessions/session-1/live-meetings/other-meeting/addressed',
+      payload,
+    });
     expect(second.statusCode).toBe(429);
     answer(JSON.stringify({ requests: [] }));
     expect((await first).json()).toEqual({ requests: [] });

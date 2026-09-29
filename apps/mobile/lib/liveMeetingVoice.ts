@@ -7,7 +7,10 @@ export interface VoiceMeetingCommand {
 }
 
 const WAKE_WORD = /\bVerity\b/gi;
-const SENTENCE_END = /[.!?\n]/g;
+// A period ends a sentence only before a space, after a word longer than two letters: this keeps
+// "Node.js", "3.5", "z.B." and "Dr. Müller" inside the request without a list of abbreviations.
+// Joining too much only gives the model more to read; a period before the name always splits.
+const SENTENCE_END = /[!?\n]|(?<=\p{L}{3}|\d)\.(?=\s|$)|\.(?=\s+Verity\b)/giu;
 // Partial transcripts often lack punctuation; bound the sentence so one run-on line stays small.
 const MAX_BEFORE = 200;
 const MAX_UTTERANCE = 600;
