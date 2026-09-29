@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.43.0](https://github.com/Heey-Global/verity/compare/mobile-v1.42.0...mobile-v1.43.0) (2026-09-29)
+
+
+### Features
+
+* **meeting:** analyze live transcripts for shared insights ([#894](https://github.com/Heey-Global/verity/issues/894)) ([bb10291](https://github.com/Heey-Global/verity/commit/bb102914f6176a27912f7a5537b0c5ee626d1294))
+* **meeting:** compare live claims with project knowledge ([#900](https://github.com/Heey-Global/verity/issues/900)) ([08bbc2a](https://github.com/Heey-Global/verity/commit/08bbc2a475647fd33fcbd9deaddc3ad2eabf3878))
+* **meeting:** start session requests from direct speech ([#903](https://github.com/Heey-Global/verity/issues/903)) ([00918f8](https://github.com/Heey-Global/verity/commit/00918f8fea6cc33ae1165670a314620c9c8a8d34))
+
+
+### Bug Fixes
+
+* **mobile:** complete history jumps behind loading cover ([#899](https://github.com/Heey-Global/verity/issues/899)) ([88a982b](https://github.com/Heey-Global/verity/commit/88a982b27caf67695bbe830afba755db9080bb5f))
+* **mobile:** load session image links through the pinned transport ([#901](https://github.com/Heey-Global/verity/issues/901)) ([064368d](https://github.com/Heey-Global/verity/commit/064368dfd4050775a825c4bd1bb755455d5d1c56))
+* **preview:** serve session files and style public pages ([#896](https://github.com/Heey-Global/verity/issues/896)) ([a530286](https://github.com/Heey-Global/verity/commit/a530286e3b5408b2e0d6cbcc6205f9073a1ea798))
+* **remote-control:** trace tunnel bytes and TLS probe progress ([#895](https://github.com/Heey-Global/verity/issues/895)) ([6ae6b8e](https://github.com/Heey-Global/verity/commit/6ae6b8ebfc8f9fc26893256fd80ea554cd076c43))
+
 ## [1.42.0](https://github.com/Heey-Global/verity/compare/mobile-v1.41.0...mobile-v1.42.0) (2026-09-29)
 
 
