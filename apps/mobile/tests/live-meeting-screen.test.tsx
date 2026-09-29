@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 import { FlatList } from 'react-native';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
+import { createVerityClient } from '../lib/client';
 import {
   currentMeeting,
   endMeeting,
@@ -56,7 +57,15 @@ jest.mock('../lib/liveMeetingSession', () => ({
 jest.mock('../lib/liveMeetingStore', () => ({
   listMeetings: jest.fn().mockResolvedValue([]),
   listNotes: jest.fn().mockResolvedValue([]),
+  loadDraftNote: jest.fn().mockResolvedValue(null),
   saveNote: jest.fn().mockResolvedValue(undefined),
+  finalizeNote: jest.fn().mockResolvedValue(true),
+}));
+jest.mock('../lib/liveMeetingSync', () => ({
+  syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
+}));
+jest.mock('../lib/client', () => ({
+  createVerityClient: jest.fn().mockReturnValue(null),
 }));
 
 beforeEach(() => {
@@ -70,6 +79,80 @@ beforeEach(() => {
   jest.mocked(listMeetings).mockResolvedValue([]);
   jest.mocked(listNotes).mockResolvedValue([]);
   jest.mocked(saveNote).mockResolvedValue(undefined);
+  jest.mocked(createVerityClient).mockReturnValue(null);
+});
+
+it.each([
+  ['Pause', 'pause'],
+  ['End meeting', 'stop'],
+] as const)(
+  'sends %s to the recording device and waits for confirmation',
+  async (button, action) => {
+    const remote: MeetingRecord = {
+      id: 'remote-meeting',
+      sessionId: 'session-1',
+      engine: 'fluid-nemotron',
+      startedAt: Date.now(),
+      endedAt: null,
+      state: 'active',
+      captureStatus: 'listening',
+      transcript: 'Remote words',
+      error: null,
+    };
+    const requestLiveMeetingCommand = jest.fn().mockResolvedValue('command-1');
+    jest.mocked(createVerityClient).mockReturnValue({
+      getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+      requestLiveMeetingCommand,
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    jest.mocked(listMeetings).mockResolvedValue([remote]);
+    render(<MeetingScreen />);
+    fireEvent.press(await screen.findByText(new RegExp(button)));
+    await waitFor(() =>
+      expect(requestLiveMeetingCommand).toHaveBeenCalledWith('session-1', remote.id, action),
+    );
+    expect(
+      screen.getByText(new RegExp(`Waiting for recording device to ${action}`)),
+    ).toBeOnTheScreen();
+  },
+);
+
+it('explains an unreachable recorder and still lets Stop replace a pending Pause', async () => {
+  const remote: MeetingRecord = {
+    id: 'remote-meeting',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  const requestLiveMeetingCommand = jest.fn().mockResolvedValue('stop-1');
+  jest.mocked(createVerityClient).mockReturnValue({
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({
+      commands: [
+        {
+          id: 'pause-1',
+          meetingId: remote.id,
+          action: 'pause',
+          state: 'pending',
+          error: null,
+          requestedAt: 1,
+          acknowledgedAt: null,
+        },
+      ],
+      recorderOnline: false,
+    }),
+    requestLiveMeetingCommand,
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  jest.mocked(listMeetings).mockResolvedValue([remote]);
+  render(<MeetingScreen />);
+  await screen.findByText(/Recording device unreachable/);
+  fireEvent.press(screen.getByText('End meeting'));
+  await waitFor(() =>
+    expect(requestLiveMeetingCommand).toHaveBeenCalledWith('session-1', remote.id, 'stop'),
+  );
 });
 
 it('starts with Nemotron and saves a note at its first edit', async () => {
@@ -179,7 +262,7 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
 
   fireEvent.press(screen.getByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
-  await screen.findByText('Ended · saved locally');
+  await screen.findByText('Ended · server sync pending');
   expect(screen.getByText(/Unsaved decision/)).toBeOnTheScreen();
 });
 
@@ -212,7 +295,7 @@ it('shows an autosaved draft after the meeting ends before Add note', async () =
   fireEvent.changeText(await screen.findByLabelText('Add a meeting note'), 'Draft at the end');
   expect(screen.queryByTestId('meeting-note')).toBeNull();
   fireEvent.press(screen.getByText('End meeting'));
-  expect(await screen.findByText(/Draft at the end/)).toBeOnTheScreen();
+  expect((await screen.findByLabelText('Add a meeting note')).props.value).toBe('Draft at the end');
 });
 
 it('retries a failed save even when the edited draft contains only spaces', async () => {
@@ -406,20 +489,15 @@ it('keeps a historical transcript open while the live meeting updates', async ()
   };
   let resolveLiveNotes!: (notes: MeetingNote[]) => void;
   let resolvePastNotes!: (notes: MeetingNote[]) => void;
+  const liveNotes = new Promise<MeetingNote[]>((resolve) => {
+    resolveLiveNotes = resolve;
+  });
+  const pastNotes = new Promise<MeetingNote[]>((resolve) => {
+    resolvePastNotes = resolve;
+  });
   jest
     .mocked(listNotes)
-    .mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveLiveNotes = resolve;
-        }),
-    )
-    .mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolvePastNotes = resolve;
-        }),
-    );
+    .mockImplementation((meetingId) => (meetingId === 'live' ? liveNotes : pastNotes));
   let notify!: (meeting: MeetingRecord | null) => void;
   jest.mocked(currentMeeting).mockReturnValue(live);
   jest.mocked(listMeetings).mockResolvedValue([live, past]);

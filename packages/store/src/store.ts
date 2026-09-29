@@ -17,6 +17,7 @@ export {
 } from './dev-server-ports.js';
 import { KnowledgeError, KnowledgeStore } from './knowledge.js';
 import { IntegrationStore } from './integrations.js';
+import { LiveMeetingStore } from './live-meetings.js';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import { scrubNulEscapes } from './nul-scrub.js';
 import { redactSecrets } from './redact.js';
@@ -1323,10 +1324,12 @@ export class EventStore implements EventSink {
   ) {
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
+    this.liveMeetings = new LiveMeetingStore(db);
   }
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
+  readonly liveMeetings: LiveMeetingStore;
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
 

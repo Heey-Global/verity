@@ -3235,6 +3235,65 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('public_preview_shares').dropColumn('session_id').execute();
     },
   },
+  '0116_live_meetings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table live_meeting_sync_clock (
+        id boolean primary key default true check (id),
+        sequence bigint not null
+      )`.execute(db);
+      await sql`insert into live_meeting_sync_clock (id, sequence) values (true, 0)`.execute(db);
+      await sql`create table live_meetings (
+        id text primary key,
+        session_id text not null references sessions(session_id) on delete cascade,
+        engine text not null,
+        started_at bigint not null,
+        ended_at bigint,
+        state text not null check (state in ('active', 'interrupted', 'ended')),
+        transcript text not null,
+        capture_status text not null default 'preparing',
+        owner_token_hash text not null,
+        recorder_last_seen_at bigint not null,
+        revision bigint not null check (revision > 0),
+        updated_seq bigint not null
+      )`.execute(db);
+      await sql`create index live_meetings_session_updates on live_meetings(session_id, updated_seq)`.execute(
+        db,
+      );
+      await sql`create table live_meeting_notes (
+        id text primary key,
+        meeting_id text not null references live_meetings(id) on delete cascade,
+        at_seconds double precision not null,
+        text text not null,
+        revision bigint not null check (revision > 0),
+        updated_seq bigint not null
+      )`.execute(db);
+      await sql`create index live_meeting_notes_meeting_updates on live_meeting_notes(meeting_id, updated_seq)`.execute(
+        db,
+      );
+      await sql`create table live_meeting_commands (
+        id text primary key,
+        command_order bigint generated always as identity,
+        meeting_id text not null references live_meetings(id) on delete cascade,
+        action text not null check (action in ('pause', 'resume', 'stop')),
+        state text not null check (state in ('pending', 'completed', 'failed')),
+        error text,
+        requested_at bigint not null,
+        acknowledged_at bigint
+      )`.execute(db);
+      await sql`create unique index live_meeting_one_pending_command on live_meeting_commands(meeting_id) where state = 'pending'`.execute(
+        db,
+      );
+      await sql`create index live_meeting_commands_meeting on live_meeting_commands(meeting_id, requested_at desc)`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table live_meeting_commands`.execute(db);
+      await sql`drop table live_meeting_notes`.execute(db);
+      await sql`drop table live_meetings`.execute(db);
+      await sql`drop table live_meeting_sync_clock`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

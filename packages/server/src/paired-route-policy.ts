@@ -16,6 +16,30 @@ type PairedRoutePolicy =
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [routeScopeKey('GET', '/projects/:id'), { kind: 'project', parameter: 'id', permission: 'read' }],
   [routeScopeKey('GET', '/sessions/:id'), { kind: 'session', parameter: 'id', permission: 'read' }],
+  [
+    routeScopeKey('GET', '/sessions/:id/live-meetings'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/sessions/:id/live-meetings/:meetingId'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PUT', '/sessions/:id/live-meetings/:meetingId/notes/:noteId'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/live-meetings/:meetingId/commands'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/commands'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PUT', '/sessions/:id/live-meetings/:meetingId/commands/:commandId'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
 ]);
 
 const activeUserRoutes = new Set([routeScopeKey('GET', '/projects')]);

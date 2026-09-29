@@ -25,3 +25,44 @@ it('resolves project and session reads while keeping undeclared routes administr
   expect(await authorizePairedRoute(store, 'disabled', 'GET', '/projects', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'admin', 'GET', '/settings', {})).toBe('allow');
 });
+
+it('allows live meeting viewing with read access and remote controls only with execute access', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (_userId, _projectId, permission) => permission === 'read',
+    getSession: async () => ({ projectId: 'shared' }),
+  };
+  expect(
+    await authorizePairedRoute(store, 'viewer', 'GET', '/sessions/:id/live-meetings', {
+      id: 'session',
+    }),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(
+      store,
+      'viewer',
+      'GET',
+      '/sessions/:id/live-meetings/:meetingId/commands',
+      { id: 'session', meetingId: 'meeting' },
+    ),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(
+      store,
+      'viewer',
+      'POST',
+      '/sessions/:id/live-meetings/:meetingId/commands',
+      { id: 'session', meetingId: 'meeting' },
+    ),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(
+      store,
+      'viewer',
+      'PUT',
+      '/sessions/:id/live-meetings/:meetingId/notes/:noteId',
+      { id: 'session', meetingId: 'meeting', noteId: 'note' },
+    ),
+  ).toBe('forbidden');
+});

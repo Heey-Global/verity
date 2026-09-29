@@ -10,12 +10,23 @@ import {
   resumeMeeting,
   subscribeMeeting,
 } from '../lib/liveMeetingSession';
-import type { MeetingRecord } from '../lib/liveMeetingStore';
+import { listMeetings, type MeetingRecord } from '../lib/liveMeetingStore';
+import { createVerityClient } from '../lib/client';
+import {
+  clearFollowedRemoteMeeting,
+  subscribeFollowedRemoteMeeting,
+  syncMeetingSession,
+} from '../lib/liveMeetingSync';
 
 const WIDTH = 200;
 
 export function ActiveMeetingOverlay() {
-  const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
+  const [localMeeting, setLocalMeeting] = useState<MeetingRecord | null>(null);
+  const [remoteMeeting, setRemoteMeeting] = useState<MeetingRecord | null>(null);
+  const [followed, setFollowed] = useState<{ sessionId: string; meetingId: string } | null>(null);
+  const [pendingCommand, setPendingCommand] = useState<'pause' | 'resume' | 'stop' | null>(null);
+  const [recorderOnline, setRecorderOnline] = useState(true);
+  const remoteStopRequested = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -54,7 +65,64 @@ export function ActiveMeetingOverlay() {
     position.setValue(origin.current);
   }, [bottomLimit, leftLimit, position]);
 
-  useEffect(() => subscribeMeeting(setMeeting), []);
+  useEffect(() => subscribeMeeting(setLocalMeeting), []);
+  useEffect(() => subscribeFollowedRemoteMeeting(setFollowed), []);
+  const meeting = localMeeting?.state === 'active' ? localMeeting : remoteMeeting;
+  const remote =
+    meeting !== null && meeting.id === remoteMeeting?.id && localMeeting?.id !== meeting.id;
+  useEffect(() => {
+    if (!followed || pathname.startsWith('/meeting/')) return;
+    let mounted = true;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        await syncMeetingSession(followed.sessionId);
+        const saved =
+          (await listMeetings(followed.sessionId)).find((item) => item.id === followed.meetingId) ??
+          null;
+        if (!mounted) return;
+        setRemoteMeeting(saved);
+        if (saved?.state !== 'active') {
+          clearFollowedRemoteMeeting();
+          setPendingCommand(null);
+          if (remoteStopRequested.current) {
+            remoteStopRequested.current = false;
+            router.push({
+              pathname: '/meeting/[sessionId]',
+              params: { sessionId: followed.sessionId },
+            });
+          }
+          return;
+        }
+        const control = await createVerityClient()?.getLiveMeetingCommands(
+          followed.sessionId,
+          followed.meetingId,
+        );
+        if (!mounted || !control) return;
+        setRecorderOnline(control.recorderOnline);
+        const latest = control.commands[0];
+        setPendingCommand(latest?.state === 'pending' ? latest.action : null);
+        if (latest?.state === 'failed') {
+          remoteStopRequested.current = false;
+          setError(latest.error ?? 'Meeting control failed.');
+        }
+      } catch {
+        if (mounted) setError('Waiting for the recording device…');
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const timer = setInterval(() => {
+      void poll();
+    }, 2000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
   useEffect(() => {
     if (meeting?.state !== 'active') return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -73,11 +141,21 @@ export function ActiveMeetingOverlay() {
   const openMeeting = () =>
     router.push({ pathname: '/meeting/[sessionId]', params: { sessionId: meeting.sessionId } });
   const togglePause = async () => {
-    if (busy || (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused'))
+    if (
+      busy ||
+      pendingCommand ||
+      (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
+    )
       return;
     setBusy(true);
     try {
-      if (meeting.captureStatus === 'paused') await resumeMeeting();
+      if (remote) {
+        const client = createVerityClient();
+        if (!client) throw new Error('Connect to the server to control this recording.');
+        const action = meeting.captureStatus === 'paused' ? 'resume' : 'pause';
+        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, action);
+        setPendingCommand(action);
+      } else if (meeting.captureStatus === 'paused') await resumeMeeting();
       else await pauseMeeting();
       setError(null);
     } catch (reason) {
@@ -87,15 +165,21 @@ export function ActiveMeetingOverlay() {
     }
   };
   const stop = async () => {
-    if (busy) return;
+    if (busy || pendingCommand === 'stop') return;
     setBusy(true);
     try {
-      await endMeeting();
+      if (remote) {
+        const client = createVerityClient();
+        if (!client) throw new Error('Connect to the server to stop this recording.');
+        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
+        remoteStopRequested.current = true;
+        setPendingCommand('stop');
+      } else await endMeeting();
     } catch (reason) {
       setError(String(reason));
     } finally {
       setBusy(false);
-      openMeeting();
+      if (!remote) openMeeting();
     }
   };
 
@@ -135,14 +219,22 @@ export function ActiveMeetingOverlay() {
             {meeting.captureStatus === 'paused' ? 'Ⅱ Paused' : '● Live Meeting'} ·{' '}
             {Math.floor((now - meeting.startedAt) / 60000)} min
           </Text>
-          <Text style={{ color: '#aaa2ba', fontSize: 11 }}>Drag to move · Open meeting</Text>
+          <Text style={{ color: '#aaa2ba', fontSize: 11 }}>
+            {pendingCommand
+              ? recorderOnline
+                ? `Waiting to ${pendingCommand} · keep recorder app open`
+                : 'Recorder unreachable · open Verity there'
+              : 'Drag to move · Open meeting'}
+          </Text>
         </Pressable>
         {error ? <Text style={{ color: '#ffaba5', fontSize: 11 }}>{error}</Text> : null}
         <View style={{ flexDirection: 'row', gap: 8 }}>
           <Pressable
             onPress={togglePause}
             disabled={
-              busy || (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
+              busy ||
+              !!pendingCommand ||
+              (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
             }
             accessibilityRole="button"
             accessibilityLabel={
@@ -162,7 +254,7 @@ export function ActiveMeetingOverlay() {
           </Pressable>
           <Pressable
             onPress={stop}
-            disabled={busy}
+            disabled={busy || pendingCommand === 'stop'}
             accessibilityRole="button"
             accessibilityLabel="Stop meeting"
             style={{
