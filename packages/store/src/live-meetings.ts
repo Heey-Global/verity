@@ -85,22 +85,22 @@ export class LiveMeetingStore {
         .execute();
       const existing = await trx
         .selectFrom('live_meetings')
-        .select(['session_id', 'owner_token_hash'])
+        .select(['session_id', 'owner_token_hash', 'revision', 'state'])
         .where('id', '=', meeting.id)
         .executeTakeFirst();
       const accepted =
         existing?.session_id === meeting.sessionId &&
         existing.owner_token_hash === meeting.ownerTokenHash;
-      if (accepted && meeting.state !== 'active') {
+      if (accepted && Number(existing.revision) === meeting.revision && existing.state !== 'active') {
         await trx
           .updateTable('live_meeting_commands')
           .set({
             state:
-              meeting.state === 'ended'
+              existing.state === 'ended'
                 ? sql`case when action = 'stop' then 'completed' else 'failed' end`
                 : 'failed',
             error:
-              meeting.state === 'ended'
+              existing.state === 'ended'
                 ? sql`case when action = 'stop' then null else 'Recording ended.' end`
                 : 'Recording interrupted.',
             acknowledged_at: Date.now(),

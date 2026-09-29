@@ -184,6 +184,26 @@ describe('live meeting sync', () => {
     ]);
   });
 
+  it('keeps a command pending when a stale terminal revision is rejected', async () => {
+    await ctx.store.liveMeetings.putMeeting(meeting);
+    await ctx.store.liveMeetings.putMeeting({ ...meeting, revision: 3, transcript: 'Current' });
+    expect(
+      await ctx.store.liveMeetings.requestCommand('session-1', meeting.id, 'stop-stale', 'stop'),
+    ).toBe('accepted');
+    await ctx.store.liveMeetings.putMeeting({
+      ...meeting,
+      revision: 2,
+      state: 'interrupted',
+      endedAt: 200,
+    });
+    expect((await ctx.store.liveMeetings.commands('session-1', meeting.id))?.[0]?.state).toBe(
+      'pending',
+    );
+    expect((await ctx.store.liveMeetings.changes('session-1', 0)).meetings[0]?.state).toBe(
+      'active',
+    );
+  });
+
   it.skipIf(!process.env.VERITY_TEST_SHARED_POSTGRES_URL)(
     'does not insert a command after a concurrent finalization',
     async () => {

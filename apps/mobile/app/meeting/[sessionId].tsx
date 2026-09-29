@@ -185,7 +185,7 @@ export default function MeetingScreen() {
     return subscribeMeeting((active) => {
       if (
         active?.sessionId === sessionId &&
-        (active.serverId ?? null) === getActiveMeetingServerId() &&
+        (active.serverId == null || active.serverId === getActiveMeetingServerId()) &&
         (selectedId === null || selectedId === active.id)
       ) {
         setMeeting(active);
@@ -384,6 +384,10 @@ export default function MeetingScreen() {
   const submitNote = () => {
     if (!draft) return;
     if (!draft.text.trim() && !noteUnsaved) return;
+    if (draft.text.length > 10_000) {
+      setError('Meeting notes must be 10,000 characters or fewer.');
+      return;
+    }
     const completing = draft;
     if (noteUnsaved && !draft.text.trim()) {
       void queueNoteSave(completing);
@@ -547,6 +551,7 @@ export default function MeetingScreen() {
               <View style={styles.composer}>
                 <TextInput
                   accessibilityLabel="Add a meeting note"
+                  maxLength={10_000}
                   placeholder="Add a note…"
                   placeholderTextColor={MUTED}
                   multiline
