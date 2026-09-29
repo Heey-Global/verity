@@ -75,6 +75,8 @@ test('recognizes everyday German phrasings, since meetings are transcribed in Ge
     ['Verity, schlag mal nach, was im Vertrag steht.', 'research'],
     ['Verity, such bitte nach guten Webdesignern.', 'research'],
     ['Verity, checke mal die Hosting-Kosten.', 'research'],
+    ['Verity, schau mal, was Pixelwerk kostet.', 'research'],
+    ['Verity, schau bitte nach, wann der Vertrag endet.', 'research'],
   ] as const)
     expect(latestVoiceMeetingCommand(spoken)?.kind).toBe(kind);
   // Idioms and statements that share the verbs.
@@ -91,6 +93,8 @@ test('recognizes everyday German phrasings, since meetings are transcribed in Ge
     'Verity erkläre ich euch nachher im Detail.',
     'Verity, research shows churn doubled.',
     'Verity, such good news from Anna.',
+    'Verity, schau mal, der Kunde hat angerufen.',
+    'Verity, guck mal, das Budget ist knapp.',
   ])
     expect(latestVoiceMeetingCommand(statement)).toBeNull();
 });

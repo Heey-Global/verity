@@ -11,10 +11,11 @@ const WAKE_WORD = /\bVerity\b[\s,:-]*/gi;
 const LEAD_IN =
   /^(?:(?:äh+m?|ähm|öh+m?|hm+|uh+m?|um+|also|okay|ok|bitte|please|mal|sag mal|hey|mach(?:e|st du)?|kannst du|könntest du|würdest du|can you|could you|would you)\b[\s,.]*)*/i;
 const MODAL = /\b(?:kannst|könntest|würdest|can|could|would) (?:du|you)\b/i;
-// Imperatives only: nouns and statements ("Recherche ergab …", "Google hat …") stay speech.
+// Imperatives only: nouns and statements ("Recherche ergab …", "Google hat …") stay speech,
+// and "schau mal, …" only asks when a question or object follows, not to get attention.
 // The meeting runs German speech recognition, so German phrasings matter as much as English.
 const RESEARCH =
-  /^(?:recherchier\w*|research\b(?!\s+(?:shows?|showed|says|suggests|found|finds|indicates)\b)|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b|verifizier\w*|(?:nach)?schau(?:e|en|st)?\b|guck(?:e|en|st)?\b|such(?:e|en|st)?\b(?=\s+(?:mal|bitte|doch|nach|die|den|das|dem|ein\w*|uns|mir)\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
+  /^(?:recherchier\w*|research\b(?!\s+(?:shows?|showed|says|suggests|found|finds|indicates)\b)|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b|verifizier\w*|(?:(?:nach)?schau(?:e|en|st)?|guck(?:e|en|st)?)\b(?=(?:\s+(?:mal|bitte|doch|kurz))*[\s,]+(?:nach|ob|wie|was|wer|wo|wann|welche\w*|warum|wieso|in|im|auf|bei)\b)|such(?:e|en|st)?\b(?=\s+(?:mal|bitte|doch|nach|die|den|das|dem|ein\w*|uns|mir)\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
 const OPINION =
   /^(?:was (?:hältst|meinst|denkst|sagst) du|wie (?:siehst|findest|bewertest|beurteilst|schätzt) du|(?:was ist|wie ist|gib mir) deine (?:einschätzung|meinung|sicht)|bewert(?:e)?\b|beurteil(?:e)?\b|schätz(?:e)?\b|erklär(?:e)?\b|fass(?:e)?(?:\s+(?:mal|bitte|kurz|uns|doch))*\s+zusammen\b|stimmt (?:das|es)\b|ist (?:das|es) (?:realistisch|richtig|korrekt|plausibel)\b|what do you think|what's your take|how do you see|explain\b|summari[sz]e\b|is (?:that|this|it) (?:right|correct|realistic)\b)/i;
 // After the wake word an -en verb is a statement ("Verity, prüfen wir morgen") or an idiom
