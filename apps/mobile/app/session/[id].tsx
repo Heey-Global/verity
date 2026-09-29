@@ -8238,7 +8238,7 @@ function usePinnedImageSource(
     cacheKey === undefined ? immediate : undefined,
   );
   useEffect(() => {
-    if (cacheKey === undefined || immediate?.uri === undefined) {
+    if (cacheKey === undefined || !/^https?:\/\//.test(immediate?.uri ?? '')) {
       setSource(immediate);
       return;
     }
@@ -8255,12 +8255,15 @@ function usePinnedImageSource(
       'verity-attachments',
       `${cacheKey.replace(/[^A-Za-z0-9._-]/g, '_').slice(-80)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     );
+    // Read the bearer now rather than trusting the memoized source's header: a
+    // biometric unlock or token rotation can land after the source was built.
+    const token = getAuthToken(baseUrl);
     void downloadPinnedFile({
-      url: immediate.uri,
+      url: immediate!.uri!,
       destination: destination.uri,
       tlsPin: endpoint.tlsPin,
       useRemote: true,
-      ...(immediate.headers ? { headers: immediate.headers } : {}),
+      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
     })
       .then((uri) => {
         if (active) {
