@@ -1,3 +1,13 @@
+const mockAppStateListeners: Array<(state: string) => void> = [];
+jest.mock('react-native', () => ({
+  AppState: {
+    currentState: 'active',
+    addEventListener: (_event: string, listener: (state: string) => void) => {
+      mockAppStateListeners.push(listener);
+      return { remove: jest.fn() };
+    },
+  },
+}));
 const mockAdmission = jest.fn();
 const mockProfile = jest.fn();
 const mockToken = jest.fn();
@@ -41,11 +51,8 @@ Object.defineProperty(globalThis, 'fetch', {
   value: jest.fn(),
 });
 
-import {
-  remoteControlFailureForUrl,
-  remoteControlPortForUrl,
-  reportDirectRouteFailure,
-} from './remoteControlTransport';
+const { remoteControlFailureForUrl, remoteControlPortForUrl, reportDirectRouteFailure } =
+  require('./remoteControlTransport') as typeof import('./remoteControlTransport');
 
 const coreUrl = 'https://verity.example';
 const descriptor = {
@@ -622,5 +629,142 @@ describe('remote diagnostics', () => {
     expect(console.warn).toHaveBeenCalledWith(
       'Remote Control admission failed: unclassified failure',
     );
+  });
+});
+
+describe('direct routing across background and diagnostics', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    mockAppStateListeners.length = 0;
+    mockProfile.mockReturnValue(profile);
+    mockToken.mockReturnValue('device-bearer');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockStart.mockResolvedValue(4321);
+    mockIsActive.mockResolvedValue(true);
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    jest.spyOn(console, 'info').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('does not queue a healthy direct request behind a manual Uplink test', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    let finishAdmission!: (value: unknown) => void;
+    mockAdmission.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAdmission = resolve;
+        }),
+    );
+    const diagnostic = transport.testRemoteControlForUrl(coreUrl);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const route = transport.remoteControlPortForUrl(coreUrl);
+    const result = await Promise.race([
+      route,
+      new Promise((resolve) => setImmediate(() => resolve('blocked'))),
+    ]);
+    finishAdmission({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    await diagnostic;
+    await route;
+    expect(result).toBe(0);
+  });
+
+  it('reprobes direct immediately after foreground instead of reusing a negative cache', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    transport.reportDirectRouteFailure(coreUrl);
+    for (const listener of mockAppStateListeners) {
+      listener('background');
+      listener('active');
+    }
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns from a live tunnel to direct after foreground without closing active streams', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 0) throw new Error('direct offline');
+      return { status: 200 };
+    });
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
+    mockStop.mockClear();
+    mockRequest.mockResolvedValue({ status: 200 });
+    for (const listener of mockAppStateListeners) {
+      listener('background');
+      listener('active');
+    }
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).toHaveBeenCalledTimes(1);
+    expect(mockStop).not.toHaveBeenCalled();
+  });
+
+  it('does not restore an old negative probe after foreground recovery', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    let rejectOld!: (reason: Error) => void;
+    mockRequest.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectOld = reject;
+        }),
+    );
+    const oldRoute = transport.remoteControlPortForUrl(coreUrl);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    for (const listener of mockAppStateListeners) {
+      listener('background');
+      listener('active');
+    }
+    const freshRoute = transport.remoteControlPortForUrl(coreUrl);
+    const result = await Promise.race([
+      freshRoute,
+      new Promise((resolve) => setImmediate(() => resolve('blocked'))),
+    ]);
+    rejectOld(new Error('old background failure'));
+    await oldRoute;
+    await freshRoute;
+    expect(result).toBe(0);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
+  });
+  it('rechecks a failed direct route after a short VPN recovery window', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    const now = jest.spyOn(Date, 'now').mockReturnValue(100_000);
+    transport.reportDirectRouteFailure(coreUrl);
+    now.mockReturnValue(103_001);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
+  });
+
+  it('keeps direct recovery when an older direct probe later fails', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    let rejectOld!: (reason: Error) => void;
+    mockRequest.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectOld = reject;
+        }),
+    );
+    const route = transport.remoteControlPortForUrl(coreUrl);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    transport.reportDirectRouteSuccess(coreUrl);
+    rejectOld(new Error('older failure'));
+    expect(await route).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
   });
 });

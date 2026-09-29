@@ -5,10 +5,12 @@ const mockCancelRequest = jest.fn();
 const mockRemotePort = jest.fn();
 const mockRemoteFailure = jest.fn();
 const mockReportDirectFailure = jest.fn();
+const mockReportDirectSuccess = jest.fn();
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
   remoteControlFailureForUrl: (...args: unknown[]) => mockRemoteFailure(...args),
+  reportDirectRouteSuccess: (...args: unknown[]) => mockReportDirectSuccess(...args),
   reportDirectRouteFailure: (...args: unknown[]) => mockReportDirectFailure(...args),
 }));
 
@@ -62,6 +64,7 @@ describe('pinned native file transport', () => {
     mockRemotePort.mockReset();
     mockRemoteFailure.mockReset().mockReturnValue(null);
     mockReportDirectFailure.mockReset();
+    mockReportDirectSuccess.mockReset();
   });
 
   it('streams a file-backed Blob through the native upload API', async () => {
@@ -139,6 +142,22 @@ describe('pinned native file transport', () => {
       0,
     );
     expect(mockRequest.mock.calls[1]?.[0]).toBe(mockRequest.mock.calls[0]?.[0]);
+    expect(mockReportDirectSuccess).toHaveBeenCalledWith('https://verity.example/sessions');
+  });
+
+  it('restores direct reachability even when Core returns an HTTP error', async () => {
+    mockRemotePort.mockResolvedValue(0);
+    mockRequest.mockResolvedValue({ status: 503, headers: {}, bodyBase64: 'e30=' });
+    await createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions');
+    expect(mockReportDirectSuccess).toHaveBeenCalledWith('https://verity.example/sessions');
+    expect(mockReportDirectFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not classify a successful remote response as direct reachability', async () => {
+    mockRemotePort.mockResolvedValue(4321);
+    mockRequest.mockResolvedValue({ status: 200, headers: {}, bodyBase64: 'e30=' });
+    await createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions');
+    expect(mockReportDirectSuccess).not.toHaveBeenCalled();
   });
 
   it('never replays a failed remote mutation on the direct route', async () => {
