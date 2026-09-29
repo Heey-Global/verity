@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.41.1",
-  "runtime": "1.41.0",
+  "version": "1.42.1",
+  "runtime": "1.42.0",
   "channel": "testflight",
-  "commit": "abcbfce2682572df66a75c07375e9a7e511a0285",
-  "tag": "mobile-v1.41.1",
-  "branch": "staging-mobile-v1.41.1-abcbfce2682572df66a75c07375e9a7e511a0285",
-  "baseline": "mobile-v1.41.0",
-  "group": "3c0aaebc-c95b-4af2-bcf0-218e6d31227c",
+  "commit": "a530286e3b5408b2e0d6cbcc6205f9073a1ea798",
+  "tag": "mobile-v1.42.1",
+  "branch": "staging-mobile-v1.42.1-a530286e3b5408b2e0d6cbcc6205f9073a1ea798",
+  "baseline": "mobile-v1.42.0",
+  "group": "d5072116-af0f-43cb-86f4-998a6d6ecc2b",
   "notes": [
-    "unlock mobile credentials before remote startup (#874)"
+    "serve session files and style public pages (#896)",
+    "analyze live transcripts for shared insights (#894)"
   ]
 }
