@@ -104,9 +104,8 @@ it('publishes only transcript-grounded analysis to the meeting session', async (
         expect.objectContaining({ kind: 'research', evidenceB: null }),
       ]),
     );
-    expect(
-      response.json().insights.find((item: { kind: string }) => item.kind === 'research')?.id,
-    ).toBe(
+    const { insights } = response.json<{ insights: Array<{ kind: string; id: string }> }>();
+    expect(insights.find((item) => item.kind === 'research')?.id).toBe(
       createHash('sha256')
         .update('meeting-1\0research\0Growth was 40 percent last quarter.\0')
         .digest('hex'),
