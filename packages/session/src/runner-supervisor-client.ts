@@ -3,7 +3,7 @@ import type { TrustedCliEntryScript } from '@verity/secret-contracts';
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import type { PermissionRequest } from '@verity/adapter-claude';
 import {
   isRunnerSupervisorBackend,
@@ -676,6 +676,10 @@ export class RunnerWorkerStartFailure extends Error {
   }
 }
 
+// @types/node renames this type between releases (IntervalHistogram in 24.13,
+// ELDHistogram in 24.19). Derive it from the factory so a rename cannot break the build.
+type EventLoopDelayHistogram = ReturnType<typeof monitorEventLoopDelay>;
+
 /**
  * Sample this process's libuv event-loop delay.
  *
@@ -693,7 +697,7 @@ export class RunnerWorkerStartFailure extends Error {
  * still starved.
  */
 class EventLoopDelaySampler {
-  private histogram: IntervalHistogram | undefined;
+  private histogram: EventLoopDelayHistogram | undefined;
 
   /**
    * Start measuring, so the first record already has an interval behind it — the
