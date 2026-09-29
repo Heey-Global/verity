@@ -1422,31 +1422,51 @@ export function SessionChat({
     return found;
   }, [userRowIndices, oldestVisibleIndex]);
   const canJumpToPreviousUser = prevUserIndex >= 0 || hasOlder;
+  const [jumpTarget, setJumpTarget] = useState<ScrollAnchor | null>(null);
   const scrollToUserRow = useCallback(
-    (index: number, animated = true) => {
+    (index: number) => {
       if (index < 0) return;
       cancelPendingUserScrollSettle();
       readingAwayFromBottomRef.current = true;
-      // Inverted list: viewPosition 1 aligns the row's layout END with the viewport's
-      // layout end, which on screen is the row parked at the TOP — so the agent's
-      // reply to that prompt reads downward from there.
-      scrollDebugLastProgrammaticAtRef.current = Date.now();
-      listRef.current?.scrollToIndex({ index, animated, viewPosition: 1 });
-      // Nothing here publishes state, so freeze from the callback rather than waiting
-      // for an unrelated render to run the pass at the end of the component.
+      setJumpTarget(anchorFromRow(dataRef.current[index], false, null));
       syncTailFreeze();
     },
     [cancelPendingUserScrollSettle, syncTailFreeze],
   );
   const [pendingUserJump, setPendingUserJump] = useState<'previous' | null>(null);
   const userJumpCursorRef = useRef<number | undefined>(undefined);
-  const userJumpRevealRafRef = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (userJumpRevealRafRef.current !== null) cancelAnimationFrame(userJumpRevealRafRef.current);
-    },
-    [],
-  );
+  useEffect(() => {
+    if (jumpTarget === null) return;
+    let cancelled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let revealFrame: number | null = null;
+    const steps = [0, 60, 150, 300, 500];
+    const step = (pass: number) => {
+      if (cancelled) return;
+      const index = findAnchorIndex(dataRef.current, jumpTarget, 'newest-first');
+      if (index < 0) {
+        setJumpTarget(null);
+        return;
+      }
+      // Variable-height rows make FlashList's first offset an estimate. Reposition
+      // while covered as layout measurements arrive, as the restore path does.
+      scrollDebugLastProgrammaticAtRef.current = Date.now();
+      void listRef.current
+        ?.scrollToIndex({ index, animated: false, viewPosition: 1 })
+        .catch(() => undefined);
+      if (pass + 1 < steps.length) {
+        timers.push(setTimeout(() => step(pass + 1), steps[pass + 1] - steps[pass]));
+      } else {
+        revealFrame = requestAnimationFrame(() => setJumpTarget(null));
+      }
+    };
+    step(0);
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+    };
+  }, [jumpTarget]);
   const jumpToPreviousUserRow = useCallback(() => {
     if (prevUserIndex >= 0) {
       scrollToUserRow(prevUserIndex);
@@ -1479,19 +1499,9 @@ export function SessionChat({
       }
     }
     if (target >= 0) {
-      if (userJumpRevealRafRef.current !== null) return;
-      const targetAnchor = anchorFromRow(data[target], false, null);
-      // Keep the cover in place until the newly appended row is committed and the
-      // single, non-animated jump has been issued. Intermediate pages stay invisible.
-      const raf = requestAnimationFrame(() => {
-        const currentTarget = findAnchorIndex(dataRef.current, targetAnchor, 'newest-first');
-        if (currentTarget >= 0) scrollToUserRow(currentTarget, false);
-        userJumpRevealRafRef.current = requestAnimationFrame(() => {
-          userJumpRevealRafRef.current = null;
-          setPendingUserJump(null);
-        });
-      });
-      return () => cancelAnimationFrame(raf);
+      setJumpTarget(anchorFromRow(data[target], false, null));
+      setPendingUserJump(null);
+      return;
     }
     if (loadingOlder) return;
     if (
@@ -3723,19 +3733,21 @@ export function SessionChat({
                   />
                   {/* Keep intermediate history pages hidden while resolving a jump, and
                 cover measurement correction while restoring a saved position. */}
-                  {restoring || pendingUserJump !== null ? (
+                  {restoring || pendingUserJump !== null || jumpTarget !== null ? (
                     <View style={styles.restoreCover}>
                       <ActivityIndicator
                         color={theme.colors.textMuted}
                         accessibilityLabel={
-                          pendingUserJump !== null
-                            ? 'Finding previous message or bookmark'
+                          pendingUserJump !== null || jumpTarget !== null
+                            ? 'Jumping to message or bookmark'
                             : 'Restoring chat position'
                         }
                       />
-                      {pendingUserJump !== null ? (
+                      {pendingUserJump !== null || jumpTarget !== null ? (
                         <Text style={styles.emptySubtitle}>
-                          Finding previous message or bookmark…
+                          {pendingUserJump !== null
+                            ? 'Finding previous message or bookmark…'
+                            : 'Jumping to message or bookmark…'}
                         </Text>
                       ) : null}
                     </View>
@@ -3777,7 +3789,7 @@ export function SessionChat({
             style={styles.msgNavBtn}
             hitSlop={12}
             onPress={jumpToPreviousUserRow}
-            disabled={pendingUserJump !== null || !canJumpToPreviousUser}
+            disabled={pendingUserJump !== null || jumpTarget !== null || !canJumpToPreviousUser}
             accessibilityRole="button"
             accessibilityLabel="Jump to previous message or bookmark"
           >
@@ -3785,7 +3797,7 @@ export function SessionChat({
               name="chevrons-up"
               size={22}
               color={
-                pendingUserJump !== null || !canJumpToPreviousUser
+                pendingUserJump !== null || jumpTarget !== null || !canJumpToPreviousUser
                   ? theme.colors.textFaint
                   : theme.colors.textMuted
               }
@@ -3795,7 +3807,7 @@ export function SessionChat({
             style={styles.msgNavBtn}
             hitSlop={12}
             onPress={() => scrollToUserRow(nextUserIndex)}
-            disabled={pendingUserJump !== null || nextUserIndex < 0}
+            disabled={pendingUserJump !== null || jumpTarget !== null || nextUserIndex < 0}
             accessibilityRole="button"
             accessibilityLabel="Jump to next message or bookmark"
           >
@@ -3803,7 +3815,7 @@ export function SessionChat({
               name="chevrons-down"
               size={22}
               color={
-                pendingUserJump !== null || nextUserIndex < 0
+                pendingUserJump !== null || jumpTarget !== null || nextUserIndex < 0
                   ? theme.colors.textFaint
                   : theme.colors.textMuted
               }
@@ -3813,7 +3825,7 @@ export function SessionChat({
             style={styles.msgNavBtn}
             hitSlop={12}
             onPress={() => scrollToLatest(true)}
-            disabled={pendingUserJump !== null || atBottom}
+            disabled={pendingUserJump !== null || jumpTarget !== null || atBottom}
             accessibilityRole="button"
             accessibilityLabel="Scroll to latest"
           >
@@ -3821,7 +3833,7 @@ export function SessionChat({
               name="arrow-down"
               size={22}
               color={
-                pendingUserJump !== null || atBottom
+                pendingUserJump !== null || jumpTarget !== null || atBottom
                   ? theme.colors.textFaint
                   : theme.colors.textMuted
               }

@@ -175,11 +175,10 @@ export function navigationRowIndices(rows: Row[], bookmarkedIds: ReadonlySet<str
     if (row.kind === 'message' && row.message.kind === 'user-text') indices.add(index);
   });
   for (const messageId of bookmarkedIds) {
-    const index = findAnchorIndex(
-      rows,
-      { rowKey: null, messageId, atBottom: false, offsetY: null },
-      'newest-first',
-    );
+    // Navigation requires the bookmarked message itself. The restore matcher also
+    // accepts a seq span in agent text, which can match an unrelated bookmark.
+    const anchor = { rowKey: null, messageId, atBottom: false, offsetY: null };
+    const index = rows.findIndex((row) => rowMatchesAnchor(row, anchor));
     if (index >= 0) indices.add(index);
   }
   return [...indices].sort((a, b) => a - b);
