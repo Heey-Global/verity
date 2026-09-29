@@ -14,9 +14,16 @@ import {
   reconnectDelayMs,
   supervisePreviewConnector,
 } from './index.js';
+import { loginPage } from './preview-page.js';
 
 const cleanups: Array<() => Promise<void> | void> = [];
 const sessionSecretHash = hashPreviewSecret('independent-edge-session-secret');
+
+it('escapes the return path in the code form', () => {
+  const page = loginPage('/?next="<script>');
+  expect(page).toContain('value="/?next=&quot;&lt;script&gt;"');
+  expect(page).not.toContain('<script>');
+});
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.();
 });
@@ -716,6 +723,39 @@ describe('preview tunnel', () => {
     const response = await fetch(`http://127.0.0.1:${edgePort}/stream`, { headers: { cookie } });
     expect(await rogueClosed).toBe(1008);
     await expect(response.text()).rejects.toThrow();
+  });
+
+  it('renders a responsive code form and keeps invalid-code errors on that form', async () => {
+    const token = generatePreviewSecret();
+    const edge = new PreviewEdge({
+      shareId: 'share-login-page',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret(token),
+      sessionSecretHash,
+      publicOrigin: 'https://share-login-page.preview.example.test',
+    });
+    const edgePort = await edge.listen();
+    cleanups.push(() => edge.close());
+    const origin = `http://127.0.0.1:${edgePort}`;
+    const loginPage = await fetch(`${origin}/__verity/login?next=%2Findex.html`);
+    expect(loginPage.status).toBe(200);
+    expect(loginPage.headers.get('content-security-policy')).toContain("default-src 'none'");
+    const form = await loginPage.text();
+    expect(form).toContain('name="pin"');
+    expect(form).toContain('value="/index.html"');
+    expect(form).toContain('@media(max-width:480px)');
+
+    const rejected = await fetch(`${origin}/__verity/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ pin: '000000', next: '/index.html' }),
+    });
+    expect(rejected.status).toBe(401);
+    expect(rejected.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    const retry = await rejected.text();
+    expect(retry).toContain('Invalid code. Please try again.');
+    expect(retry).toContain('value="/index.html"');
   });
 
   it('does not rate-limit repeated successful PIN logins', async () => {

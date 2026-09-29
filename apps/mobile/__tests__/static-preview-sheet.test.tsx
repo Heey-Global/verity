@@ -4,6 +4,48 @@ import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
 
+it('creates a share for index.html in the worktree root', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({
+      directories: [],
+      files: ['index.html'],
+    })),
+    listPublicPreviewShares: jest.fn(async () => []),
+    createSessionStaticPreviewShare: jest.fn(async () => ({
+      id: 'root-share',
+      sessionId: 'session-one',
+      targetKind: 'static-folder',
+      staticPath: '.',
+      state: 'active',
+      publicOrigin: 'https://root.example',
+      expiresAt: '2030-01-01T01:00:00Z',
+    })),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
+    ).toBe(false),
+  );
+  fireEvent.press(screen.getByText('Create link'));
+  await waitFor(() =>
+    expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
+      staticPath: '.',
+      pin: '123456',
+      ttlSeconds: 3600,
+    }),
+  );
+});
+
 it('creates and shows a static share for the folder selected in the session worktree', async () => {
   const share = {
     id: 'share-one',

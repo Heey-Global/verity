@@ -239,7 +239,11 @@ export class PreviewShareManager {
     if (devServer && !(await this.options.isDevServerRunning({ project, devServer }))) {
       throw new PreviewShareConflictError('dev server is not running');
     }
-    const staticPath = isStatic ? normalizedStaticPath(input.staticPath!) : null;
+    const staticPath = isStatic
+      ? input.sessionId && input.staticPath?.trim() === '.'
+        ? '.'
+        : normalizedStaticPath(input.staticPath!)
+      : null;
     const existing = (await this.options.store.listPublicPreviewShares(project.id)).some(
       (share) =>
         ACTIVE_STATES.includes(share.state) &&
@@ -785,6 +789,9 @@ export class PreviewShareManager {
     const spec = {
       image: connectorImage,
       name: share.connectorContainerName,
+      ...(share.targetKind === 'static-folder'
+        ? { user: `${RUNNER_AGENT_UID}:${RUNNER_AGENT_UID}` }
+        : {}),
       labels: {
         [COMPONENT_LABEL]: 'public-preview-connector',
         [SHARE_LABEL]: share.id,
@@ -919,7 +926,7 @@ export class PreviewShareManager {
     return {
       volume: dataVolume,
       target: '/preview-workspace/public',
-      subpath: `${subpath}/${staticPath}`,
+      subpath: staticPath === '.' ? subpath : `${subpath}/${staticPath}`,
       readOnly: true,
     } as const;
   }
@@ -929,7 +936,7 @@ export class PreviewShareManager {
       const requested = resolve(root, staticPath);
       let componentPath = root;
       let entry = await lstat(root);
-      for (const component of staticPath.split('/')) {
+      for (const component of staticPath === '.' ? [] : staticPath.split('/')) {
         componentPath = join(componentPath, component);
         entry = await lstat(componentPath);
         if (entry.isSymbolicLink()) throw new Error('static path contains a symlink');
@@ -937,7 +944,7 @@ export class PreviewShareManager {
       const canonical = await realpath(requested);
       const within = relative(root, canonical).split('\\').join('/');
       if (
-        !within ||
+        (staticPath !== '.' && !within) ||
         within === '..' ||
         within.startsWith('../') ||
         posix.isAbsolute(within) ||

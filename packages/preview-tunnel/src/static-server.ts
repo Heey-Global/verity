@@ -1,7 +1,8 @@
 import { constants } from 'node:fs';
 import { lstat, open, realpath, stat } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { extname, join, relative, resolve, sep } from 'node:path';
+import { PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
 const MIME: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -81,7 +82,7 @@ async function serve(
     return;
   }
   if (pathname.split('/').some((part) => part.startsWith('.') && part.length > 1)) {
-    response.writeHead(404).end();
+    sendNotFound(response, method);
     return;
   }
   let candidate = resolve(root, `.${pathname}`);
@@ -119,8 +120,24 @@ async function serve(
       stream.pipe(response);
     }
   } catch {
-    response.writeHead(404).end();
+    sendNotFound(response, method);
   }
+}
+
+function sendNotFound(response: ServerResponse, method: string): void {
+  response.writeHead(404, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': PREVIEW_PAGE_CSP,
+    'X-Frame-Options': 'DENY',
+  });
+  response.end(
+    method === 'HEAD'
+      ? undefined
+      : previewErrorPage(
+          'The file is missing or cannot be read. Check the folder selected for this link.',
+        ),
+  );
 }
 
 function assertPublicPath(value: string): void {

@@ -199,10 +199,52 @@ describe('PreviewShareManager', () => {
     );
     expect(docker.createContainer).toHaveBeenCalledWith(
       expect.objectContaining({
+        user: '1000:1000',
         volumeMounts: [
           {
             volume: 'verity-data',
             subpath: 'repo/sessions/s1/site/dist',
+            target: '/preview-workspace/public',
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+  });
+  it('mounts the session worktree root when it is selected', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-preview-session-root-'));
+    const worktree = join(root, 'repo', 'sessions', 's1');
+    await mkdir(worktree, { recursive: true });
+    await writeFile(join(worktree, 'index.html'), '<h1>preview</h1>');
+    const { manager, store, docker } = fixture();
+    store.getProject.mockResolvedValue({ ...project, cloneDir: 'repo' } as typeof project);
+    store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree,
+      model: 'test',
+      name: null,
+      kind: 'normal',
+      lastSeenEventCount: null,
+    });
+    const options = (
+      manager as unknown as {
+        options: { hostCloneRoot: string; dataVolumeRoot: string };
+      }
+    ).options;
+    options.hostCloneRoot = root;
+    options.dataVolumeRoot = root;
+    await manager.create({ sessionId: 's1', staticPath: '.', pin: '123456', ttlSeconds: 3600 });
+    expect(store.createPublicPreviewShare).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 's1', staticPath: '.' }),
+    );
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user: '1000:1000',
+        volumeMounts: [
+          {
+            volume: 'verity-data',
+            subpath: 'repo/sessions/s1',
             target: '/preview-workspace/public',
             readOnly: true,
           },

@@ -200,6 +200,7 @@ function SessionList({ client }: { client: VerityClient }) {
     refresh: refreshProjects,
     devServersByProject,
     detectionsByProject,
+    previewSessionIds,
   } = useProjects(client);
   const {
     issues,
@@ -565,6 +566,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onRepairProject={(projectId) => void repairProjectRow(projectId)}
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
+          previewSessionIds={previewSessionIds}
           selectedId={wide ? selectedId : null}
           renamingId={renaming?.sessionId ?? null}
           updatingProjectIds={updatingProjectIds}
@@ -581,6 +583,7 @@ function SessionList({ client }: { client: VerityClient }) {
       wide,
       selectedId,
       unread,
+      previewSessionIds,
       onOpenSession,
       createSessionInPane,
       renaming,
@@ -858,6 +861,7 @@ function useProjects(client: VerityClient) {
   const [detectionsByProject, setDetectionsByProject] = useState<Map<string, DevServerDetection>>(
     () => new Map(),
   );
+  const [previewSessionIds, setPreviewSessionIds] = useState<ReadonlySet<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
@@ -932,16 +936,20 @@ function useProjects(client: VerityClient) {
       if (!opts?.silent) setLoading(true);
       try {
         const nextProjects = await client.listProjects();
-        const devServerResults = await Promise.allSettled(
-          nextProjects
-            .filter((project) => project.state === 'active')
-            .map(async (project) => [project.id, await client.listDevServers(project.id)] as const),
+        const activeProjects = nextProjects.filter((project) => project.state === 'active');
+        const devServerResultsPromise = Promise.allSettled(
+          activeProjects.map(
+            async (project) => [project.id, await client.listDevServers(project.id)] as const,
+          ),
+        );
+        const previewResultsPromise = Promise.allSettled(
+          activeProjects.map((project) => client.listPublicPreviewShares(project.id)),
         );
         const projectsToAnalyze = nextProjects.filter(
           ({ id, state }) => state === 'active' && !detectionAttemptedProjectIds.current.has(id),
         );
         for (const { id } of projectsToAnalyze) detectionAttemptedProjectIds.current.add(id);
-        const detectionResults = await Promise.allSettled(
+        const detectionResultsPromise = Promise.allSettled(
           projectsToAnalyze.map(async (project) => {
             try {
               return [project.id, await client.getDevServerDetection(project.id)] as const;
@@ -951,7 +959,28 @@ function useProjects(client: VerityClient) {
             }
           }),
         );
+        const [devServerResults, previewResults, detectionResults] = await Promise.all([
+          devServerResultsPromise,
+          previewResultsPromise,
+          detectionResultsPromise,
+        ]);
         if (generation !== loadGeneration.current) return;
+        if (previewResults.every((result) => result.status === 'fulfilled')) {
+          const next = new Set<string>();
+          for (const result of previewResults) {
+            if (result.status !== 'fulfilled') continue;
+            for (const share of result.value) {
+              if (
+                share.sessionId &&
+                share.targetKind === 'static-folder' &&
+                share.state === 'active' &&
+                new Date(share.expiresAt).getTime() > Date.now()
+              )
+                next.add(share.sessionId);
+            }
+          }
+          setPreviewSessionIds(next);
+        }
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -1063,6 +1092,7 @@ function useProjects(client: VerityClient) {
     projects,
     devServersByProject,
     detectionsByProject,
+    previewSessionIds,
     loading,
     error,
     refresh: () => load(),
@@ -1194,6 +1224,7 @@ function ProjectGroup({
   onRepairProject,
   defaultNewSessionProject,
   unread,
+  previewSessionIds,
   selectedId,
   renamingId,
   updatingProjectIds,
@@ -1220,6 +1251,7 @@ function ProjectGroup({
   onRepairProject?: ((projectId: string) => void) | undefined;
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
+  previewSessionIds: ReadonlySet<string>;
   selectedId?: string | null;
   renamingId?: string | null;
   updatingProjectIds?: ReadonlySet<string>;
@@ -1495,6 +1527,7 @@ function ProjectGroup({
                     }
                     onOpen={() => onOpenSession(session)}
                     unread={unread.has(session.sessionId)}
+                    previewActive={previewSessionIds.has(session.sessionId)}
                     selected={selectedId === session.sessionId}
                     renaming={renamingId === session.sessionId}
                   />
@@ -1912,6 +1945,7 @@ function SessionRow({
   onSelect,
   onOpen,
   unread,
+  previewActive,
   selected,
   renaming,
 }: {
@@ -1920,6 +1954,7 @@ function SessionRow({
   onSelect?: () => void;
   onOpen?: () => void;
   unread?: boolean;
+  previewActive?: boolean;
   selected?: boolean;
   renaming?: boolean;
 }) {
@@ -1977,9 +2012,12 @@ function SessionRow({
       <View style={styles.colChevron} />
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
       <View style={styles.titleBlock}>
-        <Text style={styles.sessionTitle} numberOfLines={1}>
-          {label}
-        </Text>
+        <View style={styles.sessionTitleLine}>
+          {previewActive ? <Icon name="monitor" size={14} color={theme.colors.primary} /> : null}
+          <Text style={styles.sessionTitle} numberOfLines={1}>
+            {label}
+          </Text>
+        </View>
         <Text
           style={[styles.rowSub, notice ? { color: theme.colors.tone.danger } : null]}
           numberOfLines={1}
@@ -2666,11 +2704,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   sessionTitle: {
     minWidth: 0,
+    flexShrink: 1,
     color: theme.colors.text,
     fontSize: theme.text.sm,
     fontWeight: '600',
     lineHeight: 19 * theme.fontScale,
   },
+  sessionTitleLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   statusPill: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 2,
