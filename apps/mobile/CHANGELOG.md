@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.42.0](https://github.com/Heey-Global/verity/compare/mobile-v1.41.0...mobile-v1.42.0) (2026-09-29)
+
+
+### Features
+
+* **meeting:** sync live transcripts and notes across devices ([#888](https://github.com/Heey-Global/verity/issues/888)) ([3465ba7](https://github.com/Heey-Global/verity/commit/3465ba7ab3e3ad03730de1c519eeae1c2ce35c6f))
+* **mobile:** add movable live meeting controls ([#884](https://github.com/Heey-Global/verity/issues/884)) ([eefd514](https://github.com/Heey-Global/verity/commit/eefd51452d593534f192570782b127e9a63c6749))
+
+
+### Bug Fixes
+
+* **uplink:** unlock mobile credentials before remote startup ([#874](https://github.com/Heey-Global/verity/issues/874)) ([abcbfce](https://github.com/Heey-Global/verity/commit/abcbfce2682572df66a75c07375e9a7e511a0285))
+
 ## [1.41.0](https://github.com/Heey-Global/verity/compare/mobile-v1.40.0...mobile-v1.41.0) (2026-09-28)
 
 
