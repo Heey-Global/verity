@@ -83,18 +83,39 @@ test('recognizes everyday German phrasings, since meetings are transcribed in Ge
     'Verity, mal gucken, was die Agentur sagt.',
     'Verity erklärt uns das nachher.',
     'Verity, bewertet haben wir das schon.',
+    'Verity prüfen wir nächste Woche.',
+    'Verity, also checken wir das morgen.',
+    'Verity, suchen wir uns einen Termin.',
+    'Verity, recherchieren müssen wir das noch.',
+    'Verity schätze ich auf drei Wochen Arbeit.',
+    'Verity erkläre ich euch nachher im Detail.',
+    'Verity, research shows churn doubled.',
+    'Verity, such good news from Anna.',
   ])
     expect(latestVoiceMeetingCommand(statement)).toBeNull();
 });
 
 test('keeps a request that mentions the product after its verb', () => {
-  // A second wake word that is not a restart must not replace the real request.
-  expect(latestVoiceMeetingCommand('Verity, research how Verity check invoices.')).toMatchObject({
-    request: 'research how Verity check invoices',
+  // A second wake word that is not a request must not replace the real one.
+  expect(latestVoiceMeetingCommand('Verity, research how Verity checks invoices.')).toMatchObject({
+    request: 'research how Verity checks invoices',
   });
-  expect(
-    latestVoiceMeetingCommand('Verity, prüfe den Vertrag, Verity recherchiere den Preis.'),
-  ).toMatchObject({ request: 'prüfe den Vertrag, Verity recherchiere den Preis' });
+});
+
+test('sends both requests when the speaker asks twice in one breath', () => {
+  // Streaming recognition often drops the full stop between two requests.
+  jest.useFakeTimers();
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe(
+    'Verity research the hosting costs Verity what do you think about the launch date',
+    true,
+  );
+  expect(dispatch.mock.calls.map(([command]) => [command.kind, command.request])).toEqual([
+    ['research', 'research the hosting costs'],
+    ['opinion', 'what do you think about the launch date'],
+  ]);
+  detector.stop();
 });
 
 test('does not send a hesitation while the speaker restarts', () => {

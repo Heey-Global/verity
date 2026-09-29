@@ -352,6 +352,17 @@ it('keeps fast keystrokes before a re-render in one note', async () => {
   expect(ids).toHaveLength(2);
   expect(new Set(ids).size).toBe(1);
   expect(screen.getAllByLabelText('Add a meeting note')[0]).toHaveDisplayValue('kl');
+
+  // Once saved, the module draft must be gone, or the next note would overwrite this one.
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('Add note'));
+  });
+  await waitFor(() => expect(finalizeNote).toHaveBeenCalledWith(ids[0], 'kl'));
+  await waitFor(() =>
+    expect(screen.getAllByLabelText('Add a meeting note')[0]).toHaveDisplayValue(''),
+  );
+  act(() => screen.getAllByLabelText('Add a meeting note')[0]!.props.onChangeText('n'));
+  expect(jest.mocked(saveNote).mock.calls.at(-1)![0].id).not.toBe(ids[0]);
 });
 
 it('updates a mounted meeting screen when another instance edits a note', async () => {

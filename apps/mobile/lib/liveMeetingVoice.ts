@@ -14,11 +14,15 @@ const MODAL = /\b(?:kannst|könntest|würdest|can|could|would) (?:du|you)\b/i;
 // Imperatives only: nouns and statements ("Recherche ergab …", "Google hat …") stay speech.
 // The meeting runs German speech recognition, so German phrasings matter as much as English.
 const RESEARCH =
-  /^(?:recherchier\w*|research\b|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b|verifizier\w*|(?:nach)?schau(?:e|en|st)?\b|guck(?:e|en|st)?\b|such(?:e|en|st)?\b(?!\s+an?\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
+  /^(?:recherchier\w*|research\b(?!\s+(?:shows?|showed|says|suggests|found|finds|indicates)\b)|(?:über)?prüf(?:e|en|st)?\b|check(?:e|en|st)?\b|verifizier\w*|(?:nach)?schau(?:e|en|st)?\b|guck(?:e|en|st)?\b|such(?:e|en|st)?\b(?=\s+(?:mal|bitte|doch|nach|die|den|das|dem|ein\w*|uns|mir)\b)|find(?:e|est)?(?:\s+(?:mal|bitte|doch))*\s+(?:her|r)aus\b|(?:her|r)ausfinden\b|schlag(?:e)?(?:\s+(?:mal|bitte|doch))*\s+nach\b|nachschlagen\b|find out|look up|look into)/i;
 const OPINION =
   /^(?:was (?:hältst|meinst|denkst|sagst) du|wie (?:siehst|findest|bewertest|beurteilst|schätzt) du|(?:was ist|wie ist|gib mir) deine (?:einschätzung|meinung|sicht)|bewert(?:e)?\b|beurteil(?:e)?\b|schätz(?:e)?\b|erklär(?:e)?\b|fass(?:e)?(?:\s+(?:mal|bitte|kurz|uns|doch))*\s+zusammen\b|stimmt (?:das|es)\b|ist (?:das|es) (?:realistisch|richtig|korrekt|plausibel)\b|what do you think|what's your take|how do you see|explain\b|summari[sz]e\b|is (?:that|this|it) (?:right|correct|realistic)\b)/i;
-// "mal schauen, ob …" is German for "we'll see", not a request; the infinitive asks only after "kannst du".
-const INFINITIVE_IDIOM = /^(?:nach)?schauen\b|^gucken\b/i;
+// After the wake word an -en verb is a statement ("Verity, prüfen wir morgen") or an idiom
+// ("mal schauen, ob …"); it asks only after "kannst du …". Likewise a verb followed by ich/wir
+// is a fronted statement ("Verity schätze ich auf drei Wochen").
+const INFINITIVE =
+  /^(?:recherchieren|(?:über)?prüfen|checken|verifizieren|(?:nach)?schauen|gucken|suchen)\b/i;
+const STATEMENT_SUBJECT = /^[\s,]*(?:ich|wir)\b/i;
 const ABBREVIATIONS = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'etc', 'vs']);
 
 function sentenceEnd(text: string): number {
@@ -35,9 +39,12 @@ function sentenceEnd(text: string): number {
 function requestVerb(request: string) {
   const leadIn = LEAD_IN.exec(request)?.[0] ?? '';
   const intent = request.slice(leadIn.length);
-  if (INFINITIVE_IDIOM.test(intent) && !MODAL.test(leadIn)) return { intent, match: null };
+  if (INFINITIVE.test(intent) && !MODAL.test(leadIn)) return { intent, match: null };
   const research = RESEARCH.exec(intent);
-  return { intent, match: research ?? OPINION.exec(intent), research: Boolean(research) };
+  const match = research ?? OPINION.exec(intent);
+  if (match && STATEMENT_SUBJECT.test(intent.slice(match[0].length)))
+    return { intent, match: null };
+  return { intent, match, research: Boolean(research) };
 }
 
 function requestKind(request: string): VoiceMeetingCommand['kind'] | null {
@@ -63,15 +70,19 @@ function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
     const requestStart = wake.index! + wake[0].length;
     const following = transcript.slice(requestStart);
     const terminator = sentenceEnd(following);
-    const request = (terminator < 0 ? following : following.slice(0, terminator)).trim();
-    if (request.length > 240) continue;
+    let request = (terminator < 0 ? following : following.slice(0, terminator)).trim();
+    let complete = terminator >= 0;
     if (requestStart + request.length > nextCommandStart) {
       // A later wake inside this request is a restart only if what came before it was no
-      // request yet; "research how Verity checks invoices" names the product instead.
-      if (!requestKind(transcript.slice(requestStart, nextCommandStart).trim())) continue;
-      while (commands.length && commands[0]!.start < requestStart + request.length)
-        commands.shift();
+      // request yet; otherwise the speaker asked twice in one breath and both go out.
+      request = transcript
+        .slice(requestStart, nextCommandStart)
+        .replace(/[\s,;:-]+$/, '')
+        .trim();
+      if (!requestKind(request)) continue;
+      complete = commands[0]?.start === nextCommandStart;
     }
+    if (request.length > 240) continue;
     const kind = requestKind(request);
     if (!kind) {
       // A bare "Verity" (maybe with "äh" or just the verb) may start a restarted request.
@@ -80,7 +91,7 @@ function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
         nextCommandStart = wake.index!;
       continue;
     }
-    commands.unshift({ kind, request, complete: terminator >= 0, start: wake.index! });
+    commands.unshift({ kind, request, complete, start: wake.index! });
     nextCommandStart = wake.index!;
   }
   return commands;
