@@ -75,6 +75,17 @@ export function registerLiveMeetingRoutes(
   const lastAttemptAt = new Map<string, number>();
   const retries = new Map<string, { revision: number; count: number }>();
   const inFlight = new Map<string, AbortController>();
+  const eligible = (meetingId: string, revision: number, transcript: string, terminal: boolean) => {
+    if (transcript.length < 80) return false;
+    const failed = retries.get(meetingId);
+    if (failed && failed.count >= 3 && revision <= failed.revision) return false;
+    const last = lastAnalyzed.get(meetingId);
+    return (
+      !last ||
+      transcript.length - last.length >= 160 ||
+      (terminal && createHash('sha256').update(transcript).digest('hex') !== last.hash)
+    );
+  };
   const scheduleAnalysis = (
     sessionId: string,
     meetingId: string,
@@ -82,16 +93,7 @@ export function registerLiveMeetingRoutes(
     transcript: string,
     terminal: boolean,
   ) => {
-    if (!opts.query || transcript.length < 80) return;
-    const failed = retries.get(meetingId);
-    if (failed && failed.count >= 3 && revision <= failed.revision) return;
-    const last = lastAnalyzed.get(meetingId);
-    if (
-      last &&
-      transcript.length - last.length < 160 &&
-      (!terminal || createHash('sha256').update(transcript).digest('hex') === last.hash)
-    )
-      return;
+    if (!opts.query || !eligible(meetingId, revision, transcript, terminal)) return;
     const existing = queued.get(meetingId);
     if (existing) {
       if (revision > existing.revision)
@@ -102,7 +104,11 @@ export function registerLiveMeetingRoutes(
       const current = queued.get(meetingId);
       if (!current) return;
       if (inFlight.size > 0) {
-        current.timer = setTimeout(runQueued, 5_000);
+        current.timer = setTimeout(runQueued, Math.min(5_000, opts.delayMs ?? 5_000));
+        return;
+      }
+      if (!eligible(meetingId, current.revision, current.transcript, current.terminal)) {
+        queued.delete(meetingId);
         return;
       }
       const previousAttempt = lastAttemptAt.get(meetingId);

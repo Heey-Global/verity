@@ -193,6 +193,36 @@ it('analyzes a changed final transcript even after a short closing remark', asyn
   }
 });
 
+it('does not launch a second analysis for a tiny update queued during the first', async () => {
+  const analyzed = Fastify();
+  let release!: (value: string) => void;
+  const query = vi.fn().mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        release = resolve;
+      }),
+  );
+  registerLiveMeetingRoutes(analyzed, ctx.store, { query, delayMs: 1, minIntervalMs: 1 });
+  await analyzed.ready();
+  try {
+    const transcript =
+      'The team reviewed the release plan and agreed to verify the figures before the next update. ' +
+      'Everyone confirmed the current timetable.';
+    await analyzed.inject({ method: 'PUT', url, payload: { ...meeting, transcript } });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await analyzed.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, revision: 2, transcript: `${transcript} Okay.` },
+    });
+    release('{"insights":[]}');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(query).toHaveBeenCalledTimes(1);
+  } finally {
+    await analyzed.close();
+  }
+});
+
 it('accepts remote pause but lets only the recorder acknowledge it', async () => {
   await app.inject({ method: 'PUT', url, payload: meeting });
   const requested = await app.inject({
