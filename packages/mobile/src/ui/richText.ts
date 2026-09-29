@@ -97,8 +97,10 @@ export type InlineSpan =
 // local file refs (`/work/a.ts:12`), which the renderer displays compactly without
 // trying to open through Linking. A markdown image `![alt](target)` parses as the
 // same link — its `!` is consumed so it doesn't leak into the prose; the renderer
-// previews image targets below the line.
-const INLINE = /\*\*([^*]+)\*\*|`([^`]+)`|!?\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s]+)/g;
+// previews image targets below the line. Neither the label nor the target may
+// contain a bracket: otherwise a run of unclosed `[` / `](` makes every start
+// position scan to the end of the line, which is quadratic on agent output.
+const INLINE = /\*\*([^*]+)\*\*|`([^`]+)`|!?\[([^[\]]+)\]\(([^()[\]\s]+)\)|(https?:\/\/[^\s]+)/g;
 
 // Trailing sentence punctuation that shouldn't be swallowed into a bare URL (so
 // "see https://x.com." links "https://x.com" and keeps the period as text).

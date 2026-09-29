@@ -142,6 +142,16 @@ describe('parseInline', () => {
     ]);
   });
 
+  it('stays linear on runs of unclosed link brackets', () => {
+    // parseInline runs on every streamed agent line; a quadratic scan here
+    // freezes the transcript on output that merely looks link-shaped.
+    for (const input of ['[' + '[\\'.repeat(50_000), '[\\](' + '[!](!'.repeat(50_000)]) {
+      const started = performance.now();
+      parseInline(input);
+      expect(performance.now() - started).toBeLessThan(200);
+    }
+  });
+
   it('recognizes a bare URL and keeps trailing punctuation as plain text', () => {
     expect(parseInline('open https://verity.dev/docs.')).toEqual([
       { t: 'plain', text: 'open ' },
