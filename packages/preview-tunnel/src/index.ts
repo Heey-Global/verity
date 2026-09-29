@@ -34,7 +34,7 @@ import {
   type WsOpenMeta,
 } from './framing.js';
 import { StreamRegistry } from './streams.js';
-import { loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
+import { expiredPage, loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
 const LOGIN_PATH = '/__verity/login';
 const LOGO_PATH = '/__verity/logo.png';
@@ -667,7 +667,7 @@ export class PreviewEdge {
         return;
       }
       if (this.expired()) {
-        sendPreviewError(response, 410, 'This preview link has expired. Ask for a new link.');
+        sendPreviewExpired(response);
         return;
       }
       if (url.pathname === LOGIN_PATH) {
@@ -899,7 +899,7 @@ export class PreviewEdge {
       this.loginFailures.set(client, failures);
       const form = new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
       if (this.expired()) {
-        sendPreviewError(response, 410, 'This preview link has expired. Ask for a new link.');
+        sendPreviewExpired(response);
         return;
       }
       if (!(await verifyPreviewPin(form.get('pin') ?? '', this.options.pinHash))) {
@@ -913,7 +913,7 @@ export class PreviewEdge {
         return;
       }
       if (this.expired()) {
-        sendPreviewError(response, 410, 'This preview link has expired. Ask for a new link.');
+        sendPreviewExpired(response);
         return;
       }
       this.loginFailures.delete(client);
@@ -1810,6 +1810,19 @@ function sendPreviewError(
   message: string,
   retryAfter?: string,
 ): void {
+  sendPreviewPage(response, status, previewErrorPage(message), retryAfter);
+}
+
+function sendPreviewExpired(response: ServerResponse): void {
+  sendPreviewPage(response, 410, expiredPage());
+}
+
+function sendPreviewPage(
+  response: ServerResponse,
+  status: number,
+  page: string,
+  retryAfter?: string,
+): void {
   response.writeHead(status, {
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'no-store',
@@ -1817,5 +1830,5 @@ function sendPreviewError(
     'x-frame-options': 'DENY',
     ...(retryAfter ? { 'retry-after': retryAfter } : {}),
   });
-  response.end(previewErrorPage(message));
+  response.end(page);
 }
