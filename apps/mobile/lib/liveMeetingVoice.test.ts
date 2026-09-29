@@ -145,6 +145,14 @@ test('does not resend a stable partial after punctuation is added', () => {
   expect(dispatch).toHaveBeenCalledTimes(1);
 });
 
+test('does not resend a short request after speech recognition revises a word', () => {
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe('Verity, research pricing.', true);
+  detector.observe('Verity, research prices.', true);
+  expect(dispatch).toHaveBeenCalledTimes(1);
+});
+
 test('sends a new request after an earlier recognized request disappears', () => {
   const dispatch = jest.fn();
   const detector = new VoiceMeetingCommandDetector(dispatch);
