@@ -52,7 +52,14 @@ enum StagingProbe {
           guard tunnel.isActive else {
             throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "unknown")
           }
-          let (_, response) = try await client.data(from: coreURL)
+          let response: URLResponse
+          do {
+            let result = try await client.data(for: URLRequest(url: coreURL))
+            response = result.1
+          } catch {
+            throw ProbeFailure.tunnelStopped(
+              CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase))
+          }
           guard let http = response as? HTTPURLResponse, http.statusCode == 200,
             tunnel.isActive
           else { throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "bad response") }

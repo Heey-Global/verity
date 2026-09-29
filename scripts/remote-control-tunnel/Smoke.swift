@@ -4,6 +4,85 @@ import Network
 import UIKit
 #endif
 
+enum ProductionProbeFailure: Error { case transport(String) }
+
+// The prototype uses a different SOCKS implementation; only this
+// path can catch regressions in the shipping app's stream forwarding.
+@available(macOS 14.0, iOS 17.0, *)
+func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) async throws {
+  let dataURL = endpoint.deletingLastPathComponent().appendingPathComponent("data")
+  for (host, pin, expectedFailure) in [
+    ("core.test", corePin, ""),
+    ("core.test", "sha256-" + String(repeating: "A", count: 43), "PIN_MISMATCH"),
+    ("wrong.test", corePin, "PINNED_CHAIN_TRUST_FAILED"),
+  ] {
+    let origin = URL(string: "https://\(host)")!
+    var outerOrigin = URLComponents(url: dataURL, resolvingAgainstBaseURL: false)!
+    outerOrigin.scheme = "https"
+    let outerDelegate = try CertificatePinDelegate(pin: outerPin, origin: outerOrigin.url!)
+    let outer = URLSession(configuration: .ephemeral, delegate: outerDelegate, delegateQueue: nil)
+    let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: origin, outerSession: outer)
+    defer { tunnel.stop(); outer.invalidateAndCancel() }
+    let port = try await tunnel.start(ticket: "fixture-ticket", sessionId: "fixture-session")
+    let config = URLSessionConfiguration.ephemeral
+    config.timeoutIntervalForRequest = 10
+    config.timeoutIntervalForResource = 15
+    config.proxyConfigurations = [
+      ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!))
+    ]
+    let delegate = try CertificatePinDelegate(pin: pin, origin: origin)
+    let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    defer { client.invalidateAndCancel() }
+    do {
+      let (body, response) = try await client.data(for: URLRequest(url: origin.appendingPathComponent("healthz")))
+      guard expectedFailure.isEmpty,
+        (response as? HTTPURLResponse)?.statusCode == 200,
+        String(data: body, encoding: .utf8) == "core-ok",
+        delegate.phase == "PIN_AND_CHAIN_TRUST_ACCEPTED"
+      else { throw TunnelError.protocolViolation }
+      var request = URLRequest(url: origin.appendingPathComponent("echo"))
+      request.httpMethod = "POST"
+      request.httpBody = Data(repeating: 0x61, count: 96 * 1024)
+      let (echo, echoResponse) = try await client.data(for: request)
+      guard echo == request.httpBody, (echoResponse as? HTTPURLResponse)?.statusCode == 200
+      else { throw TunnelError.protocolViolation }
+      let socket = client.webSocketTask(with: URL(string: "wss://\(host)/socket")!)
+      socket.resume()
+      try await socket.send(.string("production-tunnel-echo"))
+      guard case .string("production-tunnel-echo") = try await socket.receive()
+      else { throw TunnelError.protocolViolation }
+      socket.cancel(with: .normalClosure, reason: nil)
+    } catch {
+      guard !expectedFailure.isEmpty, delegate.failure?.hasPrefix(expectedFailure) == true else {
+        throw ProductionProbeFailure.transport(
+          CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase))
+      }
+    }
+    print("production app case passed: \(expectedFailure.isEmpty ? "valid-private-ca" : expectedFailure)")
+  }
+}
+
+func checkFailureDiagnostics() throws {
+  let underlying = NSError(domain: NSOSStatusErrorDomain, code: -9802)
+  let error = NSError(domain: NSURLErrorDomain, code: -1200, userInfo: [
+    NSUnderlyingErrorKey: underlying,
+    "_kCFStreamErrorDomainKey": 3,
+    "_kCFStreamErrorCodeKey": -9802,
+    NSLocalizedDescriptionKey: "secret-body",
+  ])
+  let result = CertificatePinDelegate.transportFailure(error: error, phase: "NO_AUTH_CHALLENGE")
+  guard result.contains("NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE"),
+    result.contains("streamDomain:3:streamCode:-9802"),
+    result.contains("underlying:NSOSStatusErrorDomain:-9802"), !result.contains("secret-body")
+  else { throw TunnelError.protocolViolation }
+  var nested = NSError(domain: "secret-domain", code: 10, userInfo: [NSLocalizedDescriptionKey: "secret-message"])
+  for index in 0..<10 { nested = NSError(domain: "secret-domain", code: index, userInfo: [NSUnderlyingErrorKey: nested]) }
+  let bounded = CertificatePinDelegate.transportFailure(error: nested, phase: "secret-phase")
+  guard bounded.contains("OtherErrorDomain"), bounded.contains("UNKNOWN_PHASE"),
+    !bounded.contains("secret"), bounded.components(separatedBy: "underlying:").count <= 3
+  else { throw TunnelError.protocolViolation }
+}
+
 @available(macOS 14.0, iOS 17.0, *)
 func runTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) async throws {
   func session(port: NWEndpoint.Port, host: String = "core.test", pin: String) throws
@@ -111,6 +190,8 @@ func smokeResult() async -> String {
   let corePin = environment["VERITY_TUNNEL_CORE_PIN"] ?? (arguments.count > 3 ? arguments[3] : "")
   guard let url = URL(string: endpoint), url.scheme == "wss" else { return "FAIL: missing WSS endpoint" }
   do {
+    try checkFailureDiagnostics()
+    try await runProductionTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin)
     try await runTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin)
     return "success"
   } catch { return "FAIL: \(error)" }

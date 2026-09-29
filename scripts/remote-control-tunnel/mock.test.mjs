@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import tls from 'node:tls';
+import { Duplex } from 'node:stream';
 import { X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
 import { WebSocket, createWebSocketStream } from 'ws';
@@ -108,6 +109,63 @@ await test('TLS remains end-to-end through the test WSS relay', { timeout: 20000
   assert.equal(isBinary, true);
   echo.terminate();
   socket.destroy();
+  // Exercise the framed fixture used by the production Apple tunnel, not just the raw spike.
+  const framed = new WebSocket(`wss://127.0.0.1:${fixture.relayPort}/data`, { ca: cert });
+  await once(framed, 'open');
+  const attached = once(framed, 'message');
+  framed.send(JSON.stringify({ type: 'attach', ticket: 'fixture-ticket' }));
+  const attachedEvent = /** @type {unknown[]} */ (await attached);
+  assert.ok(Buffer.isBuffer(attachedEvent[0]));
+  assert.deepEqual(JSON.parse(attachedEvent[0].toString()), {
+    type: 'attached',
+    sessionId: 'fixture-session',
+    capability: 'remote-control-v1',
+  });
+  let sequence = 0;
+  let receivedSequence = 0;
+  const pipe = new Duplex({
+    read() {},
+    write(chunk, _encoding, callback) {
+      assert.ok(Buffer.isBuffer(chunk));
+      framed.send(
+        JSON.stringify({
+          type: 'stream.data',
+          streamId: 'test',
+          seq: sequence++,
+          payload: chunk.toString('base64'),
+        }),
+        callback,
+      );
+    },
+    final(callback) {
+      framed.send(JSON.stringify({ type: 'stream.end', streamId: 'test' }), callback);
+    },
+  });
+  framed.on('message', (raw) => {
+    assert.ok(Buffer.isBuffer(raw));
+    /** @type {unknown} */
+    const parsed = JSON.parse(raw.toString());
+    assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+    const frame = /** @type {Record<string, unknown>} */ (parsed);
+    if (frame.type === 'stream.data') {
+      assert.equal(frame.seq, receivedSequence++);
+      assert.equal(typeof frame.payload, 'string');
+      pipe.push(Buffer.from(/** @type {string} */ (frame.payload), 'base64'));
+    } else if (frame.type === 'stream.end') pipe.push(null);
+    else pipe.destroy(new Error('Unexpected frame'));
+  });
+  framed.send(
+    JSON.stringify({ type: 'stream.open', streamId: 'test', channel: 'remote', meta: {} }),
+  );
+  const framedTLS = tls.connect({ socket: pipe, ca: cert, servername: 'core.test' });
+  await once(framedTLS, 'secureConnect');
+  const framedChunks = [];
+  framedTLS.on('data', (chunk) => framedChunks.push(chunk));
+  framedTLS.write('GET /healthz HTTP/1.1\r\nHost: core.test\r\nConnection: close\r\n\r\n');
+  await once(framedTLS, 'end');
+  assert.match(Buffer.concat(framedChunks).toString(), /core-ok/);
+  framedTLS.destroy();
+  framed.terminate();
   const oversized = outer();
   oversized.on('error', () => {});
   await once(oversized, 'open');

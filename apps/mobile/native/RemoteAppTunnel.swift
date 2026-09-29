@@ -94,7 +94,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   /// transport error on whichever request happened to run next.
   var stopReason: String? { lock.withLock { stopReasonText } }
 
-  init(dataURL: URL, coreURL: URL) throws {
+  init(dataURL: URL, coreURL: URL, outerSession: URLSession? = nil) throws {
     guard dataURL.scheme == "wss", dataURL.path == "/data", dataURL.query == nil,
       dataURL.fragment == nil, dataURL.user == nil, dataURL.password == nil,
       coreURL.scheme == "https", coreURL.user == nil, coreURL.password == nil,
@@ -110,7 +110,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // `start` bounds the attachment itself.
     configuration.timeoutIntervalForRequest = 7 * 24 * 60 * 60
     configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
-    outer = URLSession(configuration: configuration)
+    outer = outerSession ?? URLSession(configuration: configuration)
     socket = outer.webSocketTask(with: dataURL)
     socket.maximumMessageSize = 96 * 1024
     writer = Writer(socket)

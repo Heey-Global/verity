@@ -2,7 +2,8 @@
 
 Test-only experiment for Remote Control generally: already-paired personal
 devices first, with restricted team enrollment later using the same transport.
-Nothing here is linked into the application or implements production admission,
+The runner compiles the production app tunnel as well as the original prototype.
+The fixture does not implement production admission,
 member rights, subscriptions, invitation proofs or device enrollment.
 
 ## Path under test
@@ -57,8 +58,8 @@ was checked against a deliberately disabled verifier and failed as expected.
 
 ## Limits
 
-The fixture carries raw TLS bytes in binary WebSocket messages, not the proposed
-Uplink JSON/base64 `remote` framing. It has no real hosted gateway, outbound Core
+The original prototype path carries raw TLS bytes in binary WebSocket messages.
+The production app path uses JSON/base64 `remote` framing. It has no real hosted gateway, outbound Core
 connector admission, ticket exchange or team bootstrap. Loopback outer WSS is
 not a test of public gateway routing or routable-address ATS behavior. The two
 TLS legs use the same generated fixture certificate for convenience; production
@@ -69,3 +70,22 @@ Control. Sustained transfer/load, detailed EOF/half-close behavior, network-path
 changes and production request/device lifecycle still require follow-up. The
 32 KiB transfer checks record chunking; it is not a load test. After cancellation,
 reconnection creates a fresh tunnel; TLS session resumption is not promised.
+
+## Production app regression path
+
+Both Apple targets also compile the shipping `RemoteAppTunnel.swift` and run
+HTTPS GET, a 96 KiB POST round trip, and WSS echo through its SOCKS listener and
+the fixture's `/data` JSON stream framing. Separate fresh sessions require a
+private-CA certificate to succeed with the paired pin, a wrong pin to fail as
+`PIN_MISMATCH`, and a wrong logical hostname to fail as
+`PINNED_CHAIN_TRUST_FAILED`. The successful request must reach the delegate's
+`PIN_AND_CHAIN_TRUST_ACCEPTED` phase; a generic connection failure cannot satisfy
+a negative case.
+
+Only the outer fixture session is injected, with its own pin delegate, because
+the ephemeral fixture CA is deliberately absent from system trust. The inner
+Core connection uses the production delegate and no system trust installation.
+The iOS simulator runner preserves the app's ATS configuration. Neither this
+fixture nor Linux tests reproduce hosted admission or establish physical-device
+success. The native helper assertions also check nested TLS error codes,
+redaction of arbitrary strings, and bounded error traversal.

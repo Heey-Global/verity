@@ -23,6 +23,41 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     return storedPhase
   }
 
+  // NSError descriptions/userInfo may contain URLs, headers, or peer-controlled text.
+  // Retain only known domains and numeric causes, bounded even for cyclic chains.
+  static func transportFailure(error: NSError, phase: String) -> String {
+    let domains: Set<String> = [
+      "NSURLErrorDomain", "kCFErrorDomainCFNetwork", "NSOSStatusErrorDomain",
+      "NSPOSIXErrorDomain", "NSCocoaErrorDomain", "kCFErrorDomainSSL",
+    ]
+    let phases: Set<String> = [
+      "NO_AUTH_CHALLENGE", "AUTH_CHALLENGE_RECEIVED", "PIN_AND_CHAIN_TRUST_ACCEPTED",
+    ]
+    var fields: [String] = []
+    var current: NSError? = error
+    for depth in 0..<3 {
+      guard let value = current else { break }
+      if depth > 0 { fields.append("underlying") }
+      fields.append(domains.contains(value.domain) ? value.domain : "OtherErrorDomain")
+      fields.append(String(value.code))
+      if depth == 0 { fields.append(phases.contains(phase) ? phase : "UNKNOWN_PHASE") }
+      for (key, label) in [
+        ("_kCFStreamErrorDomainKey", "streamDomain"),
+        ("_kCFStreamErrorCodeKey", "streamCode"),
+      ] {
+        if let number = value.userInfo[key] as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID(),
+          let integer = Int64(number.stringValue)
+        {
+          fields.append(label)
+          fields.append(String(integer))
+        }
+      }
+      current = value.userInfo[NSUnderlyingErrorKey] as? NSError
+    }
+    return "Pinned TLS transport failed [\(fields.joined(separator: ":"))]."
+  }
+
   private func recordPhase(_ phase: String) {
     failureLock.lock()
     storedPhase = phase
