@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { useVoiceInput } from './useVoiceInput';
+import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
 
 const handlers: Record<
   string,
@@ -19,6 +20,24 @@ jest.mock('expo-speech-recognition', () => ({
     abort: jest.fn(),
   },
 }));
+
+it('stops continuous dictation on a second long press', async () => {
+  jest.useFakeTimers();
+  const onAutoSend = jest.fn().mockResolvedValue(true);
+  const { result } = renderHook(() => useVoiceInput('', jest.fn(), onAutoSend));
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Keep this draft' }], isFinal: true }));
+  expect(result.current.countdown).toBe(3);
+
+  act(() => result.current.startAuto());
+  expect(result.current.autoMode).toBe(false);
+  expect(result.current.countdown).toBeNull();
+  expect(ExpoSpeechRecognitionModule.stop).toHaveBeenCalled();
+  act(() => jest.advanceTimersByTime(6000));
+  expect(onAutoSend).not.toHaveBeenCalled();
+  jest.useRealTimers();
+});
 
 it('lets a tap cancel automatic send until more speech arrives', async () => {
   jest.useFakeTimers();
