@@ -1,4 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
+import { AppState } from 'react-native';
 
 import { getAuthToken } from './authToken';
 import { requestRemoteControlAdmission } from './remoteControlAdmission';
@@ -36,8 +37,21 @@ let retryAfter = 0;
 // replacement for it: relaying every request through the hosted service made
 // the app far slower on the very network (VPN, LAN) where it used to be fast.
 const DIRECT_PROBE_TIMEOUT_MS = 3_000;
+// A VPN may need a moment after resume; one failure must not hide it for 30 seconds.
+const DIRECT_FAILURE_TTL_MS = 3_000;
 const DIRECT_ROUTE_TTL_MS = 30_000;
 let directRoute: { key: string; reachable: boolean; checkedAt: number } | null = null;
+let routeGeneration = 0;
+let previousAppState = AppState.currentState;
+AppState.addEventListener('change', (state) => {
+  if (state === 'active' && previousAppState !== 'active') {
+    // VPN reachability and suspended probes cannot survive an app background cycle.
+    routeGeneration += 1;
+    directRoute = null;
+    directProbe = null;
+  }
+  previousAppState = state;
+});
 let directProbe: { key: string; promise: Promise<boolean> } | null = null;
 let lastFailure: {
   key: string;
@@ -93,6 +107,14 @@ async function tunnelDiagnosticSummary(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/** Any HTTP response proves that the pinned direct transport is reachable. */
+export function reportDirectRouteSuccess(url: string): void {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  if (key !== null) directRoute = { key, reachable: true, checkedAt: Date.now() };
 }
 
 /** A direct request failed at the network level; route the next ones through Uplink. */
@@ -167,6 +189,18 @@ function keyFor(url: string): string | null {
 
 /** Return zero for a direct pinned connection. Admission failure never replays an API request. */
 export async function remoteControlPortForUrl(url: string): Promise<number> {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  // Admission and explicit diagnostics may take seconds. A healthy direct route
+  // must not wait behind their serialized native-tunnel lifecycle operations.
+  if (
+    key !== null &&
+    (await directRouteReachable(target.origin, key)) &&
+    keyFor(target.origin) === key &&
+    (active === null || active.key === key)
+  )
+    return 0;
   const selected = operation.then(() => selectPort(url));
   operation = selected.then(
     () => undefined,
@@ -283,22 +317,32 @@ async function selectPort(url: string): Promise<number> {
 
 async function directRouteReachable(coreUrl: string, key: string): Promise<boolean> {
   const known = directRoute?.key === key ? directRoute : null;
-  if (known !== null && Date.now() - known.checkedAt < DIRECT_ROUTE_TTL_MS) return known.reachable;
-  const probe =
-    directProbe?.key === key
-      ? directProbe.promise
-      : probeDirect(coreUrl, key).finally(() => {
-          if (directProbe?.key === key) directProbe = null;
-        });
-  if (directProbe?.key !== key) directProbe = { key, promise: probe };
+  if (
+    known !== null &&
+    Date.now() - known.checkedAt < (known.reachable ? DIRECT_ROUTE_TTL_MS : DIRECT_FAILURE_TTL_MS)
+  )
+    return known.reachable;
+  const generation = routeGeneration;
+  let currentProbe = directProbe?.key === key ? directProbe : null;
+  if (currentProbe === null) {
+    const promise = probeDirect(coreUrl, key).finally(() => {
+      if (directProbe === currentProbe) directProbe = null;
+    });
+    currentProbe = { key, promise };
+    directProbe = currentProbe;
+  }
   // While a live tunnel carries traffic, look for the direct route without
   // stalling requests on it; the next request after it answers switches back.
   if (known?.reachable === false && active?.key === key) return false;
-  return probe;
+  const reachable = await currentProbe.promise;
+  if (keyFor(coreUrl) !== key) return false;
+  if (routeGeneration !== generation) return directRouteReachable(coreUrl, key);
+  return directRoute?.key === key ? directRoute.reachable : reachable;
 }
 
 async function probeDirect(coreUrl: string, key: string): Promise<boolean> {
   const previousRoute = directRoute;
+  const generation = routeGeneration;
   const tlsPin = getServerProfile()?.endpoints.find((entry) => entry.url === coreUrl)?.tlsPin;
   let reachable = false;
   let reason: string | null = null;
@@ -311,7 +355,7 @@ async function probeDirect(coreUrl: string, key: string): Promise<boolean> {
       reason = safeRemoteFailure(error) ?? 'direct probe failed';
     }
   }
-  if (keyFor(coreUrl) === key && directRoute === previousRoute)
+  if (routeGeneration === generation && keyFor(coreUrl) === key && directRoute === previousRoute)
     directRoute = { key, reachable, checkedAt: Date.now() };
   console.info('Remote Control direct probe', {
     reachable,

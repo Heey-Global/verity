@@ -3,6 +3,7 @@ import {
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
   reportDirectRouteFailure,
+  reportDirectRouteSuccess,
 } from './remoteControlTransport';
 
 interface NativeResponse {
@@ -189,6 +190,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               tlsPin,
               port,
             );
+        if (useRemote && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
       } catch (error) {
         let directFailed = port === 0;
         if (
@@ -205,6 +207,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             if (init.signal?.aborted) {
               throw new DOMException('The operation was aborted.', 'AbortError');
             }
+            // A recovered direct read must also move subsequent requests off the failed tunnel.
+            reportDirectRouteSuccess(url);
             return new Response(utf8ResponseBody(response), {
               status: response.status,
               headers: response.headers,
