@@ -324,6 +324,36 @@ it('starts with Nemotron and saves a note at its first edit', async () => {
   });
 });
 
+it('keeps fast keystrokes before a re-render in one note', async () => {
+  jest.mocked(currentMeeting).mockImplementation(() =>
+    jest.mocked(startMeeting).mock.calls.length > 0
+      ? {
+          id: 'meeting-1',
+          sessionId: 'session-1',
+          engine: 'fluid-nemotron',
+          startedAt: Date.now(),
+          endedAt: null,
+          state: 'active',
+          transcript: '',
+          error: null,
+        }
+      : null,
+  );
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Start meeting'));
+  await waitFor(() => expect(startMeeting).toHaveBeenCalled());
+  const input = await screen.findByLabelText('Add a meeting note');
+  // A hardware keyboard can deliver both changes before the screen renders the first one.
+  act(() => {
+    input.props.onChangeText('k');
+    input.props.onChangeText('kl');
+  });
+  const ids = jest.mocked(saveNote).mock.calls.map(([note]) => note.id);
+  expect(ids).toHaveLength(2);
+  expect(new Set(ids).size).toBe(1);
+  expect(screen.getAllByLabelText('Add a meeting note')[0]).toHaveDisplayValue('kl');
+});
+
 it('updates a mounted meeting screen when another instance edits a note', async () => {
   const live: MeetingRecord = {
     id: 'meeting-shared',

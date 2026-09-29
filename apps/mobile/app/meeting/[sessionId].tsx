@@ -405,8 +405,10 @@ export default function MeetingScreen() {
   };
 
   const editNote = (value: string) => {
-    if (!meeting || (meeting.state !== 'active' && !draft)) return;
-    const note = draft ?? {
+    // Keystrokes can arrive before React re-renders; the module draft is already current then.
+    const current = meeting ? (pendingDrafts.get(meeting.id) ?? draft) : null;
+    if (!meeting || (meeting.state !== 'active' && !current)) return;
+    const note = current ?? {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       meetingId: meeting.id,
       atSeconds: (Date.now() - meeting.startedAt) / 1000,
