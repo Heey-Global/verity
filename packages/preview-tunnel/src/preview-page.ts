@@ -66,16 +66,16 @@ export function previewErrorPage(message: string): string {
 export function expiredPage(): string {
   return shell(
     'Preview expired',
-    'Preview expired',
-    '<h1 id="page-title">This preview link has expired</h1><p class="copy">This preview is no longer available. Ask the person who shared it for a new link.</p>',
+    'Shared preview',
+    '<h1 id="page-title">This link has expired</h1><p class="copy">Ask the person who shared it for a new link.</p>',
   );
 }
 
 export function unavailablePage(): string {
   return shell(
     'Preview unavailable',
-    'Preview unavailable',
-    '<h1 id="page-title">This preview is unavailable</h1><p class="copy">This link is not available. Check the address or ask the person who shared it for a new link.</p>',
+    'Shared preview',
+    '<h1 id="page-title">This link isn’t available</h1><p class="copy">Check the address or ask the person who shared it for a new link.</p>',
   );
 }
 

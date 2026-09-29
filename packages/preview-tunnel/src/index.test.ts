@@ -34,7 +34,7 @@ it('uses the code-entry page chrome for an expired preview', () => {
   expect(loginHeader).toBeDefined();
   expect(expired.match(/<style>(.*?)<\/style>/s)?.[1]).toBe(loginStyles);
   expect(expired.match(/<body>(.*?)<section/s)?.[1]).toBe(loginHeader);
-  expect(expired).toContain('This preview link has expired');
+  expect(expired).toContain('This link has expired');
   expect(expired).not.toContain('<form');
 });
 it('uses the code-entry page chrome for unavailable previews', () => {
@@ -45,6 +45,7 @@ it('uses the code-entry page chrome for unavailable previews', () => {
   expect(unavailable.match(/<style>(.*?)<\/style>/s)?.[1]).toBe(loginStyles);
   expect(unavailable.match(/<body>(.*?)<section/s)?.[1]).toBe(loginHeader);
   expect(unavailable).not.toContain('<form');
+  expect(unavailable).toContain('This link isn’t available');
   expect(unavailable).not.toMatch(/expired|stopped/i);
 });
 afterEach(async () => {
@@ -129,9 +130,7 @@ describe('preview tunnel', () => {
     const response = await fetch(`http://127.0.0.1:${edgePort}/`);
     expect(response.status).toBe(410);
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(await response.text()).toContain(
-      '<h1 id="page-title">This preview link has expired</h1>',
-    );
+    expect(await response.text()).toContain('<h1 id="page-title">This link has expired</h1>');
   });
 
   it('tears an open stream down when the share expires under it', async () => {
