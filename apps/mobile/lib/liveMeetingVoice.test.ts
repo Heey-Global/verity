@@ -95,6 +95,7 @@ test('recognizes everyday German phrasings, since meetings are transcribed in Ge
     'Verity, such good news from Anna.',
     'Verity, schau mal, der Kunde hat angerufen.',
     'Verity, guck mal, das Budget ist knapp.',
+    'Verity, Check-in ist um neun.',
   ])
     expect(latestVoiceMeetingCommand(statement)).toBeNull();
 });
@@ -136,6 +137,15 @@ test('sends both requests when the speaker asks twice in one breath', () => {
   ]);
   dispatch.mockClear();
   detector.stop();
+  expect(latestVoiceMeetingCommand('Verity research the budget Verity äh')).toMatchObject({
+    request: 'research the budget',
+  });
+  // A German request ending in "über" names the product rather than asking again.
+  expect(
+    latestVoiceMeetingCommand(
+      'Verity, recherchiere, was Kunden sagen über Verity prüfe die Preise',
+    ),
+  ).toMatchObject({ request: 'recherchiere, was Kunden sagen über Verity prüfe die Preise' });
   // A hesitation between them is not part of the first request.
   detector.observe('Verity research the budget Verity äh Verity research the hosting costs', true);
   expect(dispatch.mock.calls.map(([command]) => command.request)).toEqual([
