@@ -6,6 +6,7 @@ import {
   Modal,
   Pressable,
   ScrollView,
+  Share,
   Text,
   TextInput,
   View,
@@ -25,6 +26,26 @@ const DURATIONS = [
   { label: '4 hours', seconds: 14400 },
   { label: '8 hours', seconds: 28800 },
 ] as const;
+
+/** "until 20:14", or with the day when the link outlives today. */
+function expiryLabel(expiresAt: string | Date, now = new Date()): string {
+  const expiry = new Date(expiresAt);
+  const time = expiry.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (expiry.toDateString() === now.toDateString()) return `until ${time}`;
+  return `until ${expiry.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${time}`;
+}
+
+function remainingLabel(expiresAt: string | Date, now = new Date()): string {
+  const minutes = Math.max(0, Math.round((new Date(expiresAt).getTime() - now.getTime()) / 60_000));
+  if (minutes < 60) return `${minutes} min left`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h left` : `${hours} h ${rest} min left`;
+}
+
+function folderLabel(staticPath: string | null): string {
+  return !staticPath || staticPath === '.' ? 'Worktree' : staticPath;
+}
 
 function previewError(caught: unknown): string {
   const message = caught instanceof Error ? caught.message : 'Could not create preview link';
@@ -63,6 +84,10 @@ export function StaticPreviewSheet({
   const [error, setError] = useState<string>();
   const [folderError, setFolderError] = useState<string>();
   const [copiedId, setCopiedId] = useState<string>();
+  // Stopping takes an Uplink round trip. Without its own state the button just
+  // sat there and the sheet later jumped to the create form unannounced.
+  const [stoppingId, setStoppingId] = useState<string>();
+  const [stoppedPath, setStoppedPath] = useState<string | null>();
   const requestGeneration = useRef(0);
   const createdShareIds = useRef(new Set<string>());
   const stoppedShareIds = useRef(new Set<string>());
@@ -170,17 +195,23 @@ export function StaticPreviewSheet({
         style: 'destructive',
         onPress: () => {
           setBusy(true);
+          setError(undefined);
+          setStoppingId(share.id);
           void client
             .stopPublicPreviewShare(share.id)
             .then(() => {
               stoppedShareIds.current.add(share.id);
               createdShareIds.current.delete(share.id);
+              setStoppedPath(share.staticPath);
               setShares((current) => current.filter((item) => item.id !== share.id));
             })
             .catch((caught: unknown) =>
               setError(caught instanceof Error ? caught.message : 'Could not stop preview'),
             )
-            .finally(() => setBusy(false));
+            .finally(() => {
+              setBusy(false);
+              setStoppingId(undefined);
+            });
         },
       },
     ]);
@@ -191,8 +222,10 @@ export function StaticPreviewSheet({
       ['creating', 'active', 'revoking'].includes(share.state) &&
       new Date(share.expiresAt).getTime() > Date.now(),
   );
-  const detailsVisible = activeShare !== undefined;
+  const stoppedVisible = activeShare === undefined && stoppedPath !== undefined;
+  const detailsVisible = activeShare !== undefined || stoppedVisible;
   const canCreate = loadedPath === path && /^\d{6,12}$/.test(pin) && !busy;
+  const stopping = activeShare !== undefined && stoppingId === activeShare.id;
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.overlay} behavior="padding" automaticOffset>
@@ -221,67 +254,174 @@ export function StaticPreviewSheet({
               <ScrollView
                 style={styles.detailsScroll}
                 contentContainerStyle={styles.detailsContent}
-                accessibilityLabel="Active preview link"
+                accessibilityLabel={activeShare ? 'Active preview link' : 'Preview link stopped'}
               >
-                {sharesLoading ? <ActivityIndicator color={theme.colors.textMuted} /> : null}
+                {sharesLoading && !activeShare && !stoppedVisible ? (
+                  <ActivityIndicator color={theme.colors.textMuted} />
+                ) : null}
                 {activeShare ? (
-                  <View style={styles.shareCard}>
-                    <View style={styles.statusRow}>
-                      <View style={styles.statusDot} />
+                  <View style={[styles.shareCard, stopping ? styles.shareCardStopping : null]}>
+                    <View style={styles.statusPill}>
+                      <View
+                        style={[
+                          styles.statusDot,
+                          activeShare.state !== 'active' || stopping
+                            ? styles.statusDotPending
+                            : null,
+                        ]}
+                      />
                       <Text style={styles.statusText}>
-                        {activeShare.state === 'active'
-                          ? 'Link active'
-                          : `Link ${activeShare.state}`}
+                        {stopping
+                          ? 'Stopping'
+                          : activeShare.state === 'active'
+                            ? 'Live'
+                            : activeShare.state === 'creating'
+                              ? 'Starting'
+                              : 'Stopping'}
                       </Text>
                     </View>
-                    <Text style={styles.folderName}>
-                      {activeShare.staticPath === '.' ? 'Worktree' : activeShare.staticPath}
-                    </Text>
-                    <Text style={styles.caption}>
-                      Available until {new Date(activeShare.expiresAt).toLocaleString()}
-                    </Text>
+                    <View style={styles.heroText}>
+                      <Text style={styles.heroTitle}>Your preview is live</Text>
+                      <Text style={styles.caption}>
+                        Anyone with this link and the PIN can view the folder.
+                      </Text>
+                    </View>
                     {activeShare.publicOrigin ? (
-                      <View style={styles.linkRow}>
+                      <>
                         <Pressable
-                          style={styles.linkTarget}
+                          style={styles.linkBox}
                           onPress={() =>
                             void Linking.openURL(activeShare.publicOrigin!).catch(() => undefined)
                           }
                           accessibilityRole="link"
                           accessibilityLabel={`Open preview link ${activeShare.publicOrigin}`}
                         >
+                          <Icon name="link" size={16} color={theme.colors.primary} />
                           <Text style={styles.link} numberOfLines={2}>
                             {activeShare.publicOrigin}
                           </Text>
                         </Pressable>
-                        <Pressable
-                          style={styles.copyButton}
-                          onPress={() =>
-                            void Clipboard.setStringAsync(activeShare.publicOrigin!).then(() =>
-                              setCopiedId(activeShare.id),
-                            )
-                          }
-                          accessibilityRole="button"
-                          accessibilityLabel="Copy preview link"
-                        >
-                          <Text style={styles.actionText}>
-                            {copiedId === activeShare.id ? 'Copied' : 'Copy'}
-                          </Text>
-                        </Pressable>
-                      </View>
+                        <View style={styles.actions}>
+                          <Pressable
+                            style={[styles.actionButton, styles.actionButtonPrimary]}
+                            onPress={() =>
+                              void Clipboard.setStringAsync(activeShare.publicOrigin!).then(() =>
+                                setCopiedId(activeShare.id),
+                              )
+                            }
+                            disabled={stopping}
+                            accessibilityRole="button"
+                            accessibilityLabel="Copy preview link"
+                          >
+                            <Icon
+                              name={copiedId === activeShare.id ? 'check' : 'copy'}
+                              size={16}
+                              color={theme.colors.onPrimary}
+                            />
+                            <Text style={styles.actionTextPrimary}>
+                              {copiedId === activeShare.id ? 'Copied' : 'Copy'}
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            style={styles.actionButton}
+                            onPress={() =>
+                              void Share.share({ message: activeShare.publicOrigin! }).catch(
+                                () => undefined,
+                              )
+                            }
+                            disabled={stopping}
+                            accessibilityRole="button"
+                            accessibilityLabel="Share preview link"
+                          >
+                            <Icon name="share" size={16} color={theme.colors.text} />
+                            <Text style={styles.actionText}>Share</Text>
+                          </Pressable>
+                          <Pressable
+                            style={styles.actionButton}
+                            onPress={() =>
+                              void Linking.openURL(activeShare.publicOrigin!).catch(() => undefined)
+                            }
+                            disabled={stopping}
+                            accessibilityRole="button"
+                            accessibilityLabel="Open preview in browser"
+                          >
+                            <Icon name="external-link" size={16} color={theme.colors.text} />
+                            <Text style={styles.actionText}>Open</Text>
+                          </Pressable>
+                        </View>
+                      </>
                     ) : null}
-                    <Pressable
-                      style={styles.stopButton}
-                      onPress={() => stop(activeShare)}
-                      disabled={busy}
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.dangerText}>Stop sharing</Text>
-                    </Pressable>
+                    <View style={styles.facts}>
+                      <View style={styles.fact}>
+                        <Icon name="folder" size={16} color={theme.colors.textMuted} />
+                        <Text style={styles.factLabel}>Folder</Text>
+                        <Text style={styles.factValue} numberOfLines={1}>
+                          {folderLabel(activeShare.staticPath)}
+                        </Text>
+                      </View>
+                      <View style={styles.fact}>
+                        <Icon name="clock" size={16} color={theme.colors.textMuted} />
+                        <Text style={styles.factLabel}>Expires</Text>
+                        <Text style={styles.factValue} numberOfLines={1}>
+                          {`${remainingLabel(activeShare.expiresAt)} · ${expiryLabel(activeShare.expiresAt)}`}
+                        </Text>
+                      </View>
+                      <View style={styles.fact}>
+                        <Icon name="lock" size={16} color={theme.colors.textMuted} />
+                        <Text style={styles.factLabel}>Access</Text>
+                        <Text style={styles.factValue}>PIN required</Text>
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
+                {stoppedVisible ? (
+                  <View style={styles.stoppedCard} accessibilityLiveRegion="polite">
+                    <Icon name="check-circle" size={32} color={theme.colors.tone.done} />
+                    <Text style={styles.heroTitle}>Link stopped</Text>
+                    <Text style={[styles.caption, styles.centered]}>
+                      {`The link for ${folderLabel(stoppedPath ?? null)} no longer works. Anyone who still has it sees nothing.`}
+                    </Text>
                   </View>
                 ) : null}
                 {error ? <Text style={styles.error}>{error}</Text> : null}
               </ScrollView>
+              {activeShare ? (
+                <Pressable
+                  style={[styles.stopButton, stopping ? styles.stopButtonBusy : null]}
+                  onPress={() => stop(activeShare)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Stop sharing"
+                  accessibilityState={{ disabled: busy, busy: stopping }}
+                >
+                  {stopping ? (
+                    <ActivityIndicator size="small" color={theme.colors.tone.danger} />
+                  ) : (
+                    <Icon name="slash" size={16} color={theme.colors.tone.danger} />
+                  )}
+                  <Text style={styles.dangerText}>
+                    {stopping ? 'Stopping link…' : 'Stop sharing'}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {stoppedVisible ? (
+                <View style={styles.stoppedActions}>
+                  <Pressable
+                    style={styles.createButton}
+                    onPress={() => setStoppedPath(undefined)}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.createText}>Create a new link</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={onClose}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.secondaryText}>Done</Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
           ) : (
             <View style={styles.content}>
@@ -387,11 +527,21 @@ export function StaticPreviewSheet({
                   onPress={() => void create()}
                   disabled={!canCreate}
                   accessibilityRole="button"
-                  accessibilityState={{ disabled: !canCreate }}
-                  style={[styles.createButton, !canCreate ? styles.createButtonDisabled : null]}
+                  accessibilityLabel={busy ? 'Creating link' : 'Create link'}
+                  accessibilityState={{ disabled: !canCreate, busy }}
+                  style={[
+                    styles.createButton,
+                    !canCreate && !busy ? styles.createButtonDisabled : null,
+                  ]}
                 >
-                  <Text style={styles.createText}>{busy ? 'Creating…' : 'Create link'}</Text>
+                  {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+                  <Text style={styles.createText}>{busy ? 'Creating link…' : 'Create link'}</Text>
                 </Pressable>
+                {busy ? (
+                  <Text style={[styles.caption, styles.centered]} accessibilityLiveRegion="polite">
+                    Setting up a secure public link. This takes a few seconds.
+                  </Text>
+                ) : null}
               </View>
             </View>
           )}
@@ -454,7 +604,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surfaceAlt,
   },
   browserPath: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm },
-  folderName: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
   loading: { padding: theme.spacing.md },
   empty: { color: theme.colors.textMuted, padding: theme.spacing.sm, fontSize: theme.text.sm },
   fileRow: {
@@ -490,35 +639,116 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing.sm,
   },
   createButton: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    minHeight: 48,
     backgroundColor: theme.colors.primary,
     borderRadius: theme.radius.md,
     padding: theme.spacing.md,
   },
   createButtonDisabled: { opacity: 0.45 },
-  createText: { color: theme.colors.background, fontWeight: '700', fontSize: theme.text.md },
+  createText: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.md },
+  centered: { textAlign: 'center' },
   error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
   shareCard: {
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.lg,
-    gap: theme.spacing.md,
+    gap: theme.spacing.lg,
   },
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.primary },
-  statusText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '700' },
-  caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
-  link: { color: theme.colors.primary, fontSize: theme.text.sm },
-  linkRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  linkTarget: { flex: 1, minWidth: 0, paddingVertical: theme.spacing.sm },
-  copyButton: {
-    padding: theme.spacing.sm,
-    borderRadius: theme.radius.md,
+  shareCardStopping: { opacity: 0.6 },
+  statusPill: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 2,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  stopButton: { alignSelf: 'flex-start', paddingVertical: theme.spacing.sm },
-  actionText: { color: theme.colors.primary, fontWeight: '600' },
-  dangerText: { color: theme.colors.tone.danger, fontWeight: '600' },
+  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.done },
+  statusDotPending: { backgroundColor: theme.colors.tone.attention },
+  statusText: {
+    color: theme.colors.text,
+    fontSize: theme.text.xs,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  heroText: { gap: theme.spacing.xs },
+  heroTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+  caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+  linkBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  link: { flex: 1, minWidth: 0, color: theme.colors.primary, fontSize: theme.text.sm },
+  actions: { flexDirection: 'row', gap: theme.spacing.sm },
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    minHeight: 44,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  actionButtonPrimary: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  actionText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
+  actionTextPrimary: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.sm },
+  facts: {
+    gap: theme.spacing.sm,
+    paddingTop: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  fact: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  factLabel: { width: 64, color: theme.colors.textMuted, fontSize: theme.text.sm },
+  factValue: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+  stopButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    minHeight: 48,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.tone.danger,
+  },
+  stopButtonBusy: { opacity: 0.8 },
+  dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.md },
+  stoppedCard: {
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.xl,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  stoppedActions: { gap: theme.spacing.sm },
+  secondaryButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    borderRadius: theme.radius.md,
+  },
+  secondaryText: { color: theme.colors.textMuted, fontWeight: '600', fontSize: theme.text.md },
 }));

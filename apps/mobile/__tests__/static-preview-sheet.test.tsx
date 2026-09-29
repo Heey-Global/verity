@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
@@ -92,7 +93,7 @@ it('creates and shows a static share for the folder selected in the session work
     }),
   );
   expect(await screen.findByText('https://preview.example')).toBeTruthy();
-  expect(screen.getByText(/Available until/)).toBeTruthy();
+  expect(screen.getByText(/left · until/)).toBeTruthy();
   expect(screen.queryByLabelText('Preview PIN')).toBeNull();
   expect(
     screen.getByRole('link', { name: 'Open preview link https://preview.example' }),
@@ -383,4 +384,152 @@ it('does not offer folders from the previous location when navigation fails', as
   expect(await screen.findByText('Folder unavailable')).toBeTruthy();
   expect(screen.queryByLabelText('Open folder site')).toBeNull();
   expect(screen.queryByLabelText('Open folder site/site')).toBeNull();
+});
+
+it('shows progress while a link is being created instead of only dimming the button', async () => {
+  let resolveCreate!: (share: PublicPreviewShare) => void;
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => []),
+    createSessionStaticPreviewShare: jest.fn(
+      () =>
+        new Promise<PublicPreviewShare>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    ),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.changeText(await screen.findByLabelText('Preview PIN'), '123456');
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
+    ).toBe(false),
+  );
+  fireEvent.press(screen.getByText('Create link'));
+
+  // The Uplink alone spends seconds on a create. A disabled button with no
+  // other change reads as a tap that did not register.
+  const button = await screen.findByRole('button', { name: 'Creating link' });
+  expect(button.props.accessibilityState.busy).toBe(true);
+  expect(screen.getByText('Creating link…')).toBeTruthy();
+  expect(screen.getByText(/This takes a few seconds/)).toBeTruthy();
+
+  await act(async () =>
+    resolveCreate({
+      id: 'share-new',
+      sessionId: 'session-one',
+      targetKind: 'static-folder',
+      staticPath: '.',
+      state: 'active',
+      publicOrigin: 'https://new.example',
+      expiresAt: '2030-01-01T01:00:00Z',
+    } as unknown as PublicPreviewShare),
+  );
+  expect(screen.getByText('Your preview is live')).toBeTruthy();
+});
+
+it('shows the stop in progress and confirms it before offering a new link', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+  });
+  let resolveStop!: () => void;
+  const onClose = jest.fn();
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'site',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+    stopPublicPreviewShare: jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStop = resolve;
+        }),
+    ),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={onClose}
+      />,
+    );
+    fireEvent.press(await screen.findByRole('button', { name: 'Stop sharing' }));
+
+    // While the Uplink removes the edge the sheet must say so, not sit still.
+    expect(await screen.findByText('Stopping link…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop sharing' }).props.accessibilityState.busy).toBe(
+      true,
+    );
+    expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+
+    await act(async () => resolveStop());
+
+    // And afterwards it confirms, instead of dropping the user into the create
+    // form as if nothing had happened.
+    expect(screen.getByText('Link stopped')).toBeTruthy();
+    expect(screen.getByText(/The link for site no longer works/)).toBeTruthy();
+    expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+
+    fireEvent.press(screen.getByRole('button', { name: 'Create a new link' }));
+    expect(await screen.findByLabelText('Preview PIN')).toBeTruthy();
+  } finally {
+    alert.mockRestore();
+  }
+});
+
+it('keeps the link and explains when stopping fails', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+  });
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: '.',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+    stopPublicPreviewShare: jest.fn(async () => {
+      throw new Error('Uplink offline');
+    }),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+    fireEvent.press(await screen.findByRole('button', { name: 'Stop sharing' }));
+    expect(await screen.findByText('Uplink offline')).toBeTruthy();
+    expect(screen.getByText('https://existing.example')).toBeTruthy();
+    expect(screen.getByText('Stop sharing')).toBeTruthy();
+    expect(screen.queryByText('Link stopped')).toBeNull();
+  } finally {
+    alert.mockRestore();
+  }
 });

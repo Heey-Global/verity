@@ -2523,6 +2523,9 @@ export async function buildEmbeddedServer(
         return status.running;
       },
       edge: uplinkControl,
+      // The same deferred logger as the client's: this manager is built just as
+      // far ahead of `app`, and its timing lines belong next to the Uplink's.
+      log: uplinkLog,
     });
     // Dialled from below, once the logger it reports through is the real one.
     // Nothing between here and there asks the client for anything: every share

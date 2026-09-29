@@ -87,6 +87,39 @@ export interface PreviewShareManagerOptions {
     contents?: string;
   }>;
   listArtifactDirectory?: (path: string) => Promise<string[]>;
+  /** One line per create and per stop, carrying how long each step took. A
+   * link that takes ten seconds is otherwise one opaque request: the Uplink
+   * round trip, the connector start and the wait for its edge connection all
+   * sit behind the same spinner. */
+  log?: Pick<Console, 'info' | 'warn'>;
+}
+
+/** Records the milliseconds spent in each named step, in the order they ran. */
+type PhaseTimer = {
+  mark(phase: string): void;
+  readonly phasesMs: Record<string, number>;
+  readonly lastPhase: string | undefined;
+  totalMs(): number;
+};
+
+function phaseTimer(): PhaseTimer {
+  const startedAt = performance.now();
+  let last = startedAt;
+  let lastPhase: string | undefined;
+  const phasesMs: Record<string, number> = {};
+  return {
+    mark(phase) {
+      const now = performance.now();
+      phasesMs[phase] = Math.round(now - last);
+      last = now;
+      lastPhase = phase;
+    },
+    phasesMs,
+    get lastPhase() {
+      return lastPhase;
+    },
+    totalMs: () => Math.round(performance.now() - startedAt),
+  };
 }
 
 export interface CreatePreviewShareInput {
@@ -195,11 +228,44 @@ export class PreviewShareManager {
     }
     return this.withLifecycleLocks(
       [`project:${projectId}`, ...(devServer ? [`dev-server:${devServer.id}`] : [])],
-      () => this.createLocked(input),
+      () => this.createTimed(input),
     );
   }
 
-  private async createLocked(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
+  private async createTimed(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
+    const timer = phaseTimer();
+    try {
+      const share = await this.createLocked(input, timer);
+      this.options.log?.info(
+        {
+          shareId: share.id,
+          targetKind: share.targetKind,
+          phasesMs: timer.phasesMs,
+          totalMs: timer.totalMs(),
+        },
+        'public preview share created',
+      );
+      return share;
+    } catch (error) {
+      this.options.log?.warn(
+        {
+          // The step that was running when it failed is the one after the last
+          // completed step, so name that one rather than the error text.
+          completedPhase: timer.lastPhase ?? null,
+          phasesMs: timer.phasesMs,
+          totalMs: timer.totalMs(),
+          errorName: error instanceof Error ? error.name : typeof error,
+        },
+        'public preview share creation failed',
+      );
+      throw error;
+    }
+  }
+
+  private async createLocked(
+    input: CreatePreviewShareInput,
+    timer: PhaseTimer,
+  ): Promise<PublicPreviewShare> {
     if (!/^\d{6,12}$/.test(input.pin)) {
       throw new PreviewShareInputError('PIN must contain 6 to 12 digits');
     }
@@ -282,8 +348,10 @@ export class PreviewShareManager {
         'public previews are not entitled or the Uplink is offline',
       );
     }
+    timer.mark('validate');
     const connectorImage = await this.resolveConnectorImage();
     const pinHash = await hashPin(input.pin);
+    timer.mark('pinHash');
     const binding = await this.options.edge
       .create({ pinHash, durationSeconds: input.ttlSeconds })
       .catch((error: unknown) => {
@@ -292,6 +360,7 @@ export class PreviewShareManager {
           cause: error,
         });
       });
+    timer.mark('uplinkCreate');
     let shareId: string;
     try {
       shareId = validShareId(binding.shareId);
@@ -352,6 +421,7 @@ export class PreviewShareManager {
     try {
       this.assertEdgeAvailable();
       record = await this.options.store.createPublicPreviewShare(recordInput);
+      timer.mark('persist');
     } catch (error) {
       const removal = await Promise.allSettled([this.options.edge.remove(shareId)]);
       if (removal[0]?.status === 'rejected') {
@@ -417,6 +487,7 @@ export class PreviewShareManager {
         project.containerName,
         connectorImage,
         staticMount,
+        timer,
       );
       const after = await this.options.docker.inspectContainer(project.containerName);
       if (!after.running || containerGenerationOf(after) !== generation) {
@@ -460,6 +531,7 @@ export class PreviewShareManager {
         { connectorContainerId: connectorId },
       );
       if (!active) throw new Error('share was revoked while it was being created');
+      timer.mark('activate');
       becameActive = true;
       this.assertEdgeAvailable();
       return publicShare(active);
@@ -658,13 +730,37 @@ export class PreviewShareManager {
     const current = claimed ?? (await this.options.store.getPublicPreviewShare(id));
     if (!current || current.state === 'revoked' || current.state === 'expired') return true;
     if (current.state !== 'revoking') return false;
+    const startedAt = performance.now();
     await this.creations.get(id);
+    const waitedForCreationMs = Math.round(performance.now() - startedAt);
+    // Timed separately because they run in parallel: the slower of the two is
+    // what the user waits for, and the total alone would not say which.
+    const timed = async (operation: () => Promise<void>): Promise<number> => {
+      const began = performance.now();
+      await operation();
+      return Math.round(performance.now() - began);
+    };
     const cleanup = await Promise.allSettled([
-      current.connectorContainerId
-        ? removeContainer(this.options.docker, current.connectorContainerId)
-        : removeContainer(this.options.docker, current.connectorContainerName),
-      this.options.edge.remove(id),
+      timed(() =>
+        removeContainer(
+          this.options.docker,
+          current.connectorContainerId ?? current.connectorContainerName,
+        ),
+      ),
+      timed(() => this.options.edge.remove(id)),
     ]);
+    const [connectorRemove, uplinkRemove] = cleanup;
+    const complete = cleanup.every((result) => result.status === 'fulfilled');
+    this.options.log?.[complete ? 'info' : 'warn'](
+      {
+        shareId: id,
+        waitedForCreationMs,
+        connectorRemoveMs: connectorRemove?.status === 'fulfilled' ? connectorRemove.value : null,
+        uplinkRemoveMs: uplinkRemove?.status === 'fulfilled' ? uplinkRemove.value : null,
+        totalMs: Math.round(performance.now() - startedAt),
+      },
+      complete ? 'public preview share stopped' : 'public preview share stop incomplete',
+    );
     const failures: unknown[] = [];
     for (const result of cleanup) {
       if (result.status === 'rejected') failures.push(result.reason);
@@ -785,6 +881,7 @@ export class PreviewShareManager {
     targetContainerName: string,
     connectorImage: string,
     staticMount?: NonNullable<import('./docker.js').ContainerSpec['volumeMounts']>[number],
+    timer?: PhaseTimer,
   ): Promise<string> {
     const spec = {
       image: connectorImage,
@@ -828,7 +925,9 @@ export class PreviewShareManager {
     }
     try {
       await this.options.docker.startContainer(created.id);
+      timer?.mark('connectorStart');
       await this.waitConnectorReady(created.id);
+      timer?.mark('connectorReady');
       return created.id;
     } catch (error) {
       await removeContainer(this.options.docker, created.id);
