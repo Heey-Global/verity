@@ -20,6 +20,11 @@ insights/
 - `sources/documents/` receives chat attachments selected with **Save to knowledge**,
   Google Drive imports, web sources, and source files uploaded in the explorer.
 - `sources/meetings/` keeps meeting audio and its transcript automatically.
+- For existing files in a session worktree, agents can use the project-bound
+  `verity_knowledge` `import_source` operation to copy a file into
+  `sources/meetings/` or `sources/documents/`. The import refuses overwrites;
+  after checking the imported file, the agent can remove the worktree original
+  when a move was requested.
 - `insights/` contains knowledge distilled from those sources. Agents may create and
   revise Markdown here with ordinary filesystem tools.
 

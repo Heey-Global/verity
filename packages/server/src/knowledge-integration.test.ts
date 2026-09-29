@@ -6,12 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryEventBus, type Conductor } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { buildServer } from './server.js';
 import { requestArrivedInternally, startProjectInternalUnixListener } from './internal-listener.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 
 let ctx: TestDb;
+let sessionWorktree: string;
 beforeAll(async () => {
   ctx = await createTestDb();
 });
@@ -20,6 +21,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await truncateAll(ctx.db);
+  sessionWorktree = mkdtempSync(join(tmpdir(), 'verity-knowledge-worktree-'));
   await ctx.store.upsertProject({
     id: 'p',
     owner: 'test',
@@ -30,10 +32,11 @@ beforeEach(async () => {
   await ctx.store.createSession({
     sessionId: 's',
     projectId: 'p',
-    worktree: '/test',
+    worktree: sessionWorktree,
     model: 'test',
   });
 });
+afterEach(() => rmSync(sessionWorktree, { recursive: true, force: true }));
 
 async function setup() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'verity-knowledge-data-'));
@@ -166,6 +169,45 @@ it('publishes an explicitly requested project insight to Shared', async () => {
   }
 });
 
+it('imports a worktree transcript into project Sources through the bound tool', async () => {
+  const h = await setup();
+  try {
+    mkdirSync(join(sessionWorktree, 'docs/meetings'), { recursive: true });
+    writeFileSync(join(sessionWorktree, 'docs/meetings/planning.md'), '# Planning\n');
+    const imported = await h.agent({
+      operation: 'import_source',
+      sourcePath: 'docs/meetings/planning.md',
+      destination: 'meetings',
+      path: 'planning.md',
+    });
+    expect(imported.isError).toBeUndefined();
+    expect(readFileSync(join(h.dataRoot, 'knowledge/p/sources/meetings/planning.md'), 'utf8')).toBe(
+      '# Planning\n',
+    );
+    expect(h.permission).not.toHaveBeenCalled();
+    const conflict = await h.agent({
+      operation: 'import_source',
+      sourcePath: 'docs/meetings/planning.md',
+      destination: 'meetings',
+      path: 'planning.md',
+    });
+    expect(conflict.isError).toBeUndefined();
+    writeFileSync(join(sessionWorktree, 'docs/meetings/planning.md'), '# Changed\n');
+    const changed = await h.agent({
+      operation: 'import_source',
+      sourcePath: 'docs/meetings/planning.md',
+      destination: 'meetings',
+      path: 'planning.md',
+    });
+    expect(changed.isError).toBe(true);
+    expect(readFileSync(join(h.dataRoot, 'knowledge/p/sources/meetings/planning.md'), 'utf8')).toBe(
+      '# Planning\n',
+    );
+  } finally {
+    await h.close();
+  }
+});
+
 it('refuses the retired managed-library operations even where a grant would allow them', async () => {
   const h = await setup();
   try {
@@ -227,6 +269,18 @@ it('keeps management APIs behind device authentication and returns bounded valid
     const refused = await h.agent({ operation: 'publish_shared', path: 'profile.md' }, forged);
     expect(refused.isError).toBe(true);
     expect(existsSync(join(h.dataRoot, 'knowledge/shared/insights/profile.md'))).toBe(false);
+    writeFileSync(join(sessionWorktree, 'transcript.md'), '# Private meeting\n');
+    const refusedImport = await h.agent(
+      {
+        operation: 'import_source',
+        sourcePath: 'transcript.md',
+        destination: 'meetings',
+        path: 'transcript.md',
+      },
+      forged,
+    );
+    expect(refusedImport.isError).toBe(true);
+    expect(existsSync(join(h.dataRoot, 'knowledge/p/sources/meetings/transcript.md'))).toBe(false);
   } finally {
     await h.close();
   }
