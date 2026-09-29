@@ -11,6 +11,7 @@ import {
   resumeMeeting,
   startMeeting,
   subscribeMeeting,
+  subscribeVoiceMeetingRequest,
 } from '../lib/liveMeetingSession';
 import {
   listMeetings,
@@ -42,6 +43,7 @@ jest.mock('../lib/liveMeetingSession', () => ({
     listener(null);
     return jest.fn();
   }),
+  subscribeVoiceMeetingRequest: jest.fn().mockReturnValue(jest.fn()),
   startMeeting: jest.fn().mockResolvedValue({
     id: 'meeting-1',
     sessionId: 'session-1',
@@ -74,6 +76,7 @@ jest.mock('../lib/client', () => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(subscribeVoiceMeetingRequest).mockReturnValue(jest.fn());
   jest.mocked(currentMeeting).mockReturnValue(null);
   jest.mocked(subscribeMeeting).mockImplementation((listener) => {
     listener(null);
@@ -136,6 +139,44 @@ it('opens the complete transcript on demand and starts research in the same sess
       params: { id: 'session-1' },
     });
   });
+});
+
+it('shows a spoken request failure without interrupting the meeting', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-voice',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Verity, research the deadline.',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let notify!: (event: {
+    meetingId: string;
+    sessionId: string;
+    status: 'failed';
+    message: string;
+  }) => void;
+  jest.mocked(subscribeVoiceMeetingRequest).mockImplementation((listener) => {
+    notify = listener;
+    return jest.fn();
+  });
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Verity, research the deadline.')).toBeOnTheScreen();
+  act(() =>
+    notify({
+      meetingId: meeting.id,
+      sessionId: meeting.sessionId,
+      status: 'failed',
+      message: 'Voice request could not be sent: offline',
+    }),
+  );
+  expect(screen.getByText('Voice request could not be sent: offline')).toBeOnTheScreen();
+  expect(screen.getByText(/● Transcribing/)).toBeOnTheScreen();
 });
 
 it('starts a direct meeting request and stays put when the server rejects it', async () => {
