@@ -95,13 +95,13 @@ function fixture(
   };
   const edge = {
     isAvailable: vi.fn(() => true),
-    create: vi.fn(async () => ({
+    create: vi.fn(async (input: { pinHash: string; durationSeconds: number }) => ({
       shareId: 'share-id',
       publicOrigin: 'https://share-id.preview.example',
       edgeUrl: 'wss://share-id.preview.example/__verity/connector',
       connectorToken: 'c'.repeat(32),
       sessionSecret: 's'.repeat(32),
-      expiresAt: new Date('2030-01-01T01:00:00Z'),
+      expiresAt: new Date(Date.UTC(2030, 0, 1) + input.durationSeconds * 1000),
     })),
     remove: vi.fn(async () => undefined),
   };
@@ -137,6 +137,38 @@ function fixture(
     log,
   };
 }
+
+describe('public preview duration and PIN policy', () => {
+  it.each([
+    ['1 hour', 3600, '123456'],
+    ['24 hours', 86400, '123456789012'],
+    ['7 days', 604800, '123456789012'],
+    ['30 days', 2592000, '123456789012'],
+  ])('creates a %s share', async (_label, ttlSeconds, pin) => {
+    const { manager, edge } = fixture();
+    await manager.create({ devServerId: 'dev-1', pin, ttlSeconds });
+    expect(edge.create).toHaveBeenCalledWith({
+      pinHash: expect.any(String),
+      durationSeconds: ttlSeconds,
+    });
+  });
+
+  it.each([900, 7200, 28800, 31 * 86400])('rejects unsupported duration %i', async (ttlSeconds) => {
+    const { manager, edge } = fixture();
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456789012', ttlSeconds }),
+    ).rejects.toThrow('TTL must be 1 hour, 24 hours, 7 days, or 30 days');
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('requires a 12-digit PIN for links lasting at least a day', async () => {
+    const { manager, edge } = fixture();
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 86400 }),
+    ).rejects.toThrow('PIN must contain 12 digits');
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+});
 
 /** A `performance.now()` that moves only when a test says so, so a step's
  * recorded duration is exactly the time that step was made to take. */
@@ -375,9 +407,9 @@ describe('PreviewShareManager', () => {
         clock.advance(300);
         return digest;
       });
-      edge.create.mockImplementationOnce(async () => {
+      edge.create.mockImplementationOnce(async (input) => {
         clock.advance(4_000);
-        return await fixture().edge.create();
+        return await fixture().edge.create(input);
       });
       docker.startContainer.mockImplementationOnce(async () => {
         clock.advance(700);

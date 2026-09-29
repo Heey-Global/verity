@@ -21,11 +21,54 @@ it('generates a PIN that can be replaced before the link is created', async () =
   );
 
   const input = await screen.findByLabelText('Preview PIN');
-  expect(input.props.value).toMatch(/^\d{6}$/);
+  expect(input.props.value).toMatch(/^\d{12}$/);
   fireEvent.changeText(input, '987654');
   expect(screen.getByLabelText('Preview PIN').props.value).toBe('987654');
   fireEvent.press(screen.getByRole('button', { name: 'Generate a new PIN' }));
-  expect(screen.getByLabelText('Preview PIN').props.value).toMatch(/^\d{6}$/);
+  expect(screen.getByLabelText('Preview PIN').props.value).toMatch(/^\d{12}$/);
+});
+
+it('requires a longer PIN for a 30-day share and submits that duration', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({
+      directories: [],
+      files: ['index.html'],
+    })),
+    listPublicPreviewShares: jest.fn(async () => []),
+    createSessionStaticPreviewShare: jest.fn(async () => ({
+      id: 'share-long',
+      sessionId: 'session-one',
+      targetKind: 'static-folder',
+      staticPath: '.',
+      state: 'active',
+      publicOrigin: 'https://long.example',
+      pin: '123456789012',
+      expiresAt: '2030-01-31T00:00:00Z',
+    })),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+  fireEvent.press(screen.getByRole('radio', { name: '30 days' }));
+  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
+  expect(
+    screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
+  ).toBe(true);
+  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456789012');
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
+  await waitFor(() =>
+    expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
+      staticPath: '.',
+      pin: '123456789012',
+      ttlSeconds: 30 * 24 * 60 * 60,
+    }),
+  );
 });
 
 it('shows and copies the saved PIN on a reopened link and shares it with the URL', async () => {

@@ -41,6 +41,12 @@ import { Icon } from '../Icon';
 import { StatusPill } from '../StatusPill';
 import { projectLifecycleState, projectSetupStatus } from '../../lib/projectSetup';
 import { projectIdParam, useProjectDetail } from '../../lib/useProjectDetail';
+import {
+  generatePreviewPin,
+  LONG_PREVIEW_DURATION_SECONDS,
+  PUBLIC_PREVIEW_DURATIONS,
+  validPreviewPin,
+} from './publicPreviewShare';
 
 export function ProjectToolsScreen({ mode }: { mode: 'dev-server' | 'automations' }) {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -1579,14 +1585,6 @@ function DevServerCard({
   );
 }
 
-const PUBLIC_SHARE_TTLS = [
-  { label: '15 min', seconds: 15 * 60 },
-  { label: '1 hour', seconds: 60 * 60 },
-  { label: '2 hours', seconds: 2 * 60 * 60 },
-  { label: '4 hours', seconds: 4 * 60 * 60 },
-  { label: '8 hours', seconds: 8 * 60 * 60 },
-] as const;
-
 function PublicPreviewShareControls({
   client,
   server,
@@ -1606,7 +1604,7 @@ function PublicPreviewShareControls({
 }) {
   const { theme } = useUnistyles();
   const [modalOpen, setModalOpen] = useState(false);
-  const [pin, setPin] = useState('');
+  const [pin, setPin] = useState(generatePreviewPin);
   const [targetKind, setTargetKind] = useState<'dev-server' | 'static-folder'>(
     staticOnly ? 'static-folder' : 'dev-server',
   );
@@ -1622,7 +1620,7 @@ function PublicPreviewShareControls({
   const canOpen = canCreateDevServer || canCreateStatic;
 
   const create = useCallback(() => {
-    if (busy || !canCreate || !/^\d{6,12}$/.test(pin)) return;
+    if (busy || !canCreate || !validPreviewPin(pin, ttlSeconds)) return;
     setBusy(true);
     setError(undefined);
     const request =
@@ -1632,7 +1630,7 @@ function PublicPreviewShareControls({
     void request
       .then((share) => {
         onShareChanged(share);
-        setPin('');
+        setPin(generatePreviewPin());
         setModalOpen(false);
       })
       .catch((caught) =>
@@ -1692,7 +1690,7 @@ function PublicPreviewShareControls({
   const liveShares = shares.filter(
     ({ state }) => !['revoked', 'expired', 'failed'].includes(state),
   );
-  const pinValid = /^\d{6,12}$/.test(pin);
+  const pinValid = validPreviewPin(pin, ttlSeconds);
 
   return (
     <View style={styles.publicShareSection}>
@@ -1830,7 +1828,11 @@ function PublicPreviewShareControls({
               />
             ) : null}
             <SettingsInput
-              label="PIN (6–12 digits)"
+              label={
+                ttlSeconds >= LONG_PREVIEW_DURATION_SECONDS
+                  ? 'PIN (12 digits)'
+                  : 'PIN (6–12 digits)'
+              }
               value={pin}
               onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 12))}
               keyboardType="number-pad"
@@ -1839,7 +1841,7 @@ function PublicPreviewShareControls({
             />
             <Text style={styles.fieldLabel}>Expires after</Text>
             <View style={styles.publicShareTtlRow}>
-              {PUBLIC_SHARE_TTLS.map((option) => (
+              {PUBLIC_PREVIEW_DURATIONS.map((option) => (
                 <Pressable
                   key={option.seconds}
                   onPress={() => setTtlSeconds(option.seconds)}
@@ -1855,7 +1857,11 @@ function PublicPreviewShareControls({
               ))}
             </View>
             {!pinValid && pin.length > 0 ? (
-              <Text style={styles.settingsError}>Enter 6 to 12 digits.</Text>
+              <Text style={styles.settingsError}>
+                {ttlSeconds >= LONG_PREVIEW_DURATION_SECONDS
+                  ? 'Enter 12 digits.'
+                  : 'Enter 6 to 12 digits.'}
+              </Text>
             ) : null}
             {error ? <Text style={styles.settingsError}>{error}</Text> : null}
             <View style={styles.lifecycleActions}>

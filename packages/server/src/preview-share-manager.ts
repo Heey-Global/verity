@@ -28,8 +28,8 @@ const CREATING_LEASE_MS = 2 * 60_000;
 const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
-const MIN_PREVIEW_TTL_SECONDS = 15 * 60;
-const MAX_PREVIEW_TTL_SECONDS = 8 * 60 * 60;
+const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
+const LONG_PREVIEW_TTL_SECONDS = 24 * 60 * 60;
 
 export interface PreviewEdgeCreate {
   pinHash: string;
@@ -267,15 +267,19 @@ export class PreviewShareManager {
     input: CreatePreviewShareInput,
     timer: PhaseTimer,
   ): Promise<PublicPreviewShare> {
+    if (
+      !Number.isSafeInteger(input.ttlSeconds) ||
+      !PREVIEW_TTL_SECONDS.includes(input.ttlSeconds)
+    ) {
+      throw new PreviewShareInputError('TTL must be 1 hour, 24 hours, 7 days, or 30 days');
+    }
     if (!/^\d{6,12}$/.test(input.pin)) {
       throw new PreviewShareInputError('PIN must contain 6 to 12 digits');
     }
-    if (
-      !Number.isSafeInteger(input.ttlSeconds) ||
-      input.ttlSeconds < MIN_PREVIEW_TTL_SECONDS ||
-      input.ttlSeconds > MAX_PREVIEW_TTL_SECONDS
-    ) {
-      throw new PreviewShareInputError('TTL must be between 15 minutes and 8 hours');
+    if (input.ttlSeconds >= LONG_PREVIEW_TTL_SECONDS && input.pin.length !== 12) {
+      throw new PreviewShareInputError(
+        'PIN must contain 12 digits for shares lasting 24 hours or more',
+      );
     }
     const isStatic = input.staticPath !== undefined;
     if (input.sessionId && !isStatic) {
