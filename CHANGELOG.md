@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.18.0](https://github.com/Heey-Global/verity/compare/v2.17.0...v2.18.0) (2026-09-29)
+
+
+### Features
+
+* **meeting:** analyze live transcripts for shared insights ([#894](https://github.com/Heey-Global/verity/issues/894)) ([bb10291](https://github.com/Heey-Global/verity/commit/bb102914f6176a27912f7a5537b0c5ee626d1294))
+* **meeting:** compare live claims with project knowledge ([#900](https://github.com/Heey-Global/verity/issues/900)) ([08bbc2a](https://github.com/Heey-Global/verity/commit/08bbc2a475647fd33fcbd9deaddc3ad2eabf3878))
+* **models:** add Claude Sonnet 5.5 ([#892](https://github.com/Heey-Global/verity/issues/892)) ([86d1246](https://github.com/Heey-Global/verity/commit/86d1246c9a036704099756250e41860e27fdbd1d))
+* **preview:** brand public preview pages ([#902](https://github.com/Heey-Global/verity/issues/902)) ([b1ab656](https://github.com/Heey-Global/verity/commit/b1ab6561d171c7af0549e20335bad140e57f2010))
+
+
+### Bug Fixes
+
+* **preview:** serve session files and style public pages ([#896](https://github.com/Heey-Global/verity/issues/896)) ([a530286](https://github.com/Heey-Global/verity/commit/a530286e3b5408b2e0d6cbcc6205f9073a1ea798))
+* **remote-control:** trace tunnel bytes and TLS probe progress ([#895](https://github.com/Heey-Global/verity/issues/895)) ([6ae6b8e](https://github.com/Heey-Global/verity/commit/6ae6b8ebfc8f9fc26893256fd80ea554cd076c43))
+
 ## [2.17.0](https://github.com/Heey-Global/verity/compare/v2.16.1...v2.17.0) (2026-09-29)
 
 
