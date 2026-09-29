@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import type { TLSSocket } from 'node:tls';
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
@@ -35,6 +37,8 @@ export interface ManagedGatewayBackend {
 }
 
 export interface ManagedGatewayConfig {
+  /** Fixed metadata only; never request URLs, headers, addresses or error messages. */
+  readonly log?: (event: Record<string, string | number>) => void;
   readonly tls?: { readonly key: string | Buffer; readonly cert: string | Buffer };
   readonly publicHost?: string;
   readonly publicPort: number;
@@ -111,6 +115,24 @@ function internalRequestTimeout(url: string | undefined, defaultTimeoutMs: numbe
   return INTERNAL_MCP_PATHS.has(path)
     ? Math.max(defaultTimeoutMs, INTERNAL_MCP_TIMEOUT_MS)
     : defaultTimeoutMs;
+}
+
+/** Unknown OpenSSL errors remain opaque: messages can contain peer-controlled data. */
+function tlsFailureReason(error: NodeJS.ErrnoException): string {
+  switch (error.code) {
+    case 'ERR_SSL_HTTP_REQUEST':
+      return 'plaintext_http';
+    case 'ERR_SSL_WRONG_VERSION_NUMBER':
+      return 'wrong_tls_version';
+    case 'ERR_SSL_NO_SHARED_CIPHER':
+      return 'no_shared_cipher';
+    case 'ERR_TLS_HANDSHAKE_TIMEOUT':
+      return 'handshake_timeout';
+    case 'ECONNRESET':
+      return 'connection_reset';
+    default:
+      return 'tls_error';
+  }
 }
 
 function validPort(port: number): boolean {
@@ -411,7 +433,67 @@ export async function startManagedGateway(
       config.clientIdentitySecret,
     );
   };
+  const tlsDiagnostics = new WeakMap<
+    Socket,
+    { connection: string; peerPort: number; probes: number }
+  >();
+  const diagnostic = (socket: Socket) => {
+    let value = tlsDiagnostics.get(socket);
+    if (value === undefined) {
+      // The port is only a best-effort local join with the connector's localPort;
+      // NAT and port reuse prevent it from being an end-to-end identity.
+      value = { connection: randomUUID(), peerPort: socket.remotePort ?? 0, probes: 0 };
+      tlsDiagnostics.set(socket, value);
+      const started = Date.now();
+      const context = value;
+      socket.once('close', () =>
+        config.log?.({
+          event: 'gateway.tls',
+          action: 'closed',
+          connection: context.connection,
+          peerPort: context.peerPort,
+          durationMs: Date.now() - started,
+          // These are Node TLSSocket counters, not opaque relay frame totals.
+          receivedBytes: socket.bytesRead,
+          sentBytes: socket.bytesWritten,
+        }),
+      );
+    }
+    return value;
+  };
   const publicHandler = (request: IncomingMessage, response: ServerResponse): void => {
+    if (
+      config.log !== undefined &&
+      config.tls !== undefined &&
+      request.method === 'GET' &&
+      request.url?.split('?', 1)[0] === '/healthz'
+    ) {
+      const context = diagnostic(request.socket);
+      // Keep-alive probes must not turn one connection into an unbounded log source.
+      if (context.probes++ < 4) {
+        const started = Date.now();
+        const fields = {
+          event: 'gateway.health_probe',
+          connection: context.connection,
+          peerPort: context.peerPort,
+        };
+        config.log({ ...fields, action: 'received' });
+        let reported = false;
+        const report = (action: string) => {
+          if (reported) return;
+          reported = true;
+          config.log?.({
+            ...fields,
+            action,
+            status: response.statusCode,
+            durationMs: Date.now() - started,
+          });
+        };
+        response.once('finish', () => report('completed'));
+        response.once('close', () => report('closed'));
+      }
+    }
+
     if (!publicPathAllowed(request.url)) {
       response.writeHead(404).end();
       return;
@@ -427,6 +509,27 @@ export async function startManagedGateway(
     config.tls === undefined
       ? createServer(publicHandler)
       : createHttpsServer({ key: config.tls.key, cert: config.tls.cert }, publicHandler);
+  if (config.tls !== undefined && config.log !== undefined) {
+    publicServer.on('secureConnection', (socket: TLSSocket) => {
+      const context = diagnostic(socket);
+      config.log?.({
+        event: 'gateway.tls',
+        action: 'secure',
+        connection: context.connection,
+        peerPort: context.peerPort,
+      });
+    });
+    publicServer.on('tlsClientError', (error: NodeJS.ErrnoException, socket: TLSSocket) => {
+      const context = diagnostic(socket);
+      config.log?.({
+        event: 'gateway.tls',
+        action: 'failed',
+        reason: tlsFailureReason(error),
+        connection: context.connection,
+        peerPort: context.peerPort,
+      });
+    });
+  }
   const internalServer = createServer((request, response) =>
     route(
       request,

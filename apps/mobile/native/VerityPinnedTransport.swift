@@ -22,7 +22,7 @@ private final class PinnedTransportException: GenericException<String>, @uncheck
 class VerityPinnedTransport: Module {
   private var webSockets: [String: (URLSession, URLSessionWebSocketTask, CertificatePinDelegate)] = [:]
   private let webSocketsLock = NSLock()
-  private var requests: [String: URLSession] = [:]
+  private var requests: [String: (URLSession, CertificatePinDelegate)] = [:]
   private let requestsLock = NSLock()
 
   private func configuration(proxyPort: Int) throws -> URLSessionConfiguration {
@@ -40,9 +40,9 @@ class VerityPinnedTransport: Module {
     return configuration
   }
 
-  private func storeRequest(_ session: URLSession, id: String) {
+  private func storeRequest(_ session: URLSession, delegate: CertificatePinDelegate, id: String) {
     requestsLock.lock()
-    requests[id] = session
+    requests[id] = (session, delegate)
     requestsLock.unlock()
   }
 
@@ -96,7 +96,7 @@ class VerityPinnedTransport: Module {
       }
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
       let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
-      self.storeRequest(session, id: requestId)
+      self.storeRequest(session, delegate: delegate, id: requestId)
       defer {
         self.finishRequest(requestId)
         session.finishTasksAndInvalidate()
@@ -164,7 +164,7 @@ class VerityPinnedTransport: Module {
       for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
       let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
-      self.storeRequest(session, id: requestId)
+      self.storeRequest(session, delegate: delegate, id: requestId)
       defer {
         self.finishRequest(requestId)
         session.finishTasksAndInvalidate()
@@ -183,11 +183,14 @@ class VerityPinnedTransport: Module {
       ]
     }
 
-    AsyncFunction("cancelRequest") { (requestId: String) in
+    AsyncFunction("cancelRequest") { (requestId: String) -> String? in
       self.requestsLock.lock()
-      let session = self.requests.removeValue(forKey: requestId)
+      let entry = self.requests.removeValue(forKey: requestId)
       self.requestsLock.unlock()
-      session?.invalidateAndCancel()
+      // Capture before cancellation changes the delegate or completes the request.
+      let phase = entry?.1.phase
+      entry?.0.invalidateAndCancel()
+      return phase
     }
 
     AsyncFunction("verifyIdentity") {

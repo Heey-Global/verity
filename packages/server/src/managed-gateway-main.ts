@@ -11,6 +11,7 @@ const DEFAULT_INTERNAL_PORT = 8083;
 export async function startManagedGatewayMain(): Promise<void> {
   const tls = await tlsFromEnvironment();
   const gateway = await startManagedGateway({
+    log: (event) => console.info(JSON.stringify(event)),
     ...(tls === undefined ? {} : { tls }),
     ...(tls === undefined ? {} : { clientIdentitySecret: managedClientIdentitySecret(tls.key) }),
     publicHost: process.env.HOST ?? '0.0.0.0',
