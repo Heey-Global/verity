@@ -7,6 +7,7 @@ import {
   scryptSync,
   timingSafeEqual,
 } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { isIP } from 'node:net';
@@ -36,6 +37,9 @@ import { StreamRegistry } from './streams.js';
 import { loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
 const LOGIN_PATH = '/__verity/login';
+const LOGO_PATH = '/__verity/logo.png';
+const LOGO_FILE = new URL('../assets/verity-mark.png', import.meta.url);
+let logoBytes: Buffer | undefined;
 const CONNECTOR_PATH = '/__verity/connector';
 const COOKIE_NAME = '__Host-verity-preview';
 const MAX_LOGIN_IDENTITIES = 1024;
@@ -646,11 +650,26 @@ export class PreviewEdge {
     let counted = false;
     let streaming = false;
     try {
+      const url = new URL(request.url ?? '/', this.options.publicOrigin);
+      if (url.pathname === LOGO_PATH) {
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          response.writeHead(405, { allow: 'GET, HEAD' }).end();
+          return;
+        }
+        logoBytes ??= readFileSync(LOGO_FILE);
+        response.writeHead(200, {
+          'content-type': 'image/png',
+          'content-length': String(logoBytes.length),
+          'cache-control': 'public, max-age=86400',
+          'x-content-type-options': 'nosniff',
+        });
+        response.end(request.method === 'HEAD' ? undefined : logoBytes);
+        return;
+      }
       if (this.expired()) {
         sendPreviewError(response, 410, 'This preview link has expired. Ask for a new link.');
         return;
       }
-      const url = new URL(request.url ?? '/', this.options.publicOrigin);
       if (url.pathname === LOGIN_PATH) {
         await this.handleLogin(request, response);
         return;

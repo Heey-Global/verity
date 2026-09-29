@@ -741,9 +741,18 @@ describe('preview tunnel', () => {
     expect(loginPage.status).toBe(200);
     expect(loginPage.headers.get('content-security-policy')).toContain("default-src 'none'");
     const form = await loginPage.text();
+    expect(form).toContain('src="/__verity/logo.png"');
+    expect(form).toContain('href="https://verity.build"');
+    expect(form).toContain('Verity is your self-hosted workspace for coding agents.');
     expect(form).toContain('name="pin"');
     expect(form).toContain('value="/index.html"');
     expect(form).toContain('@media(max-width:480px)');
+    const logo = await fetch(`${origin}/__verity/logo.png`);
+    expect(logo.status).toBe(200);
+    expect(logo.headers.get('content-type')).toBe('image/png');
+    expect([...new Uint8Array(await logo.arrayBuffer()).slice(0, 8)]).toEqual([
+      137, 80, 78, 71, 13, 10, 26, 10,
+    ]);
 
     const rejected = await fetch(`${origin}/__verity/login`, {
       method: 'POST',
