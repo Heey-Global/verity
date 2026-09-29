@@ -6,8 +6,13 @@ export interface VoiceMeetingCommand {
 }
 
 const WAKE_WORD = /\bVerity\b[\s,:-]*/gi;
+// Spoken requests open with hesitations and politeness before the verb:
+// "Verity, äh mach mal bitte Research …", "Verity, kannst du mal schauen, …".
+const LEAD_IN =
+  /^(?:(?:äh+m?|ähm|öh+m?|hm+|uh+m?|um+|also|okay|ok|bitte|please|mal|mach(?:e|st du)?|kannst du|könntest du|würdest du|can you|could you|would you)\b[\s,.]*)*/i;
+// Imperatives only: nouns and statements ("Recherche ergab …", "Google hat …") stay speech.
 const RESEARCH =
-  /^(?:(?:kannst du|can you)\s+(?:mal\s+)?)?(?:recherchier\w*|prüf\w*|überprüf\w*|check\w*|verifizier\w*|finde heraus|research|look up)\b/i;
+  /^(?:recherchier\w*|research\b|(?:über)?prüf(?:e|en|st)?\b|check\b|verifizier\w*|(?:nach)?schau(?:e|en|st)?\b|guck(?:e|en|st)?\b|such(?:e|en|st)\b|finde? heraus|find out|look up|look into)/i;
 const OPINION = /^(?:was hältst du|wie siehst du|was ist deine einschätzung|what do you think)\b/i;
 const ABBREVIATIONS = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'etc', 'vs']);
 
@@ -22,33 +27,49 @@ function sentenceEnd(text: string): number {
   return -1;
 }
 
+function requestKind(request: string): VoiceMeetingCommand['kind'] | null {
+  const intent = request.slice(LEAD_IN.exec(request)?.[0].length ?? 0);
+  const research = RESEARCH.exec(intent);
+  const match = research ?? OPINION.exec(intent);
+  if (!match) return null;
+  const remainder = intent
+    .slice(match[0].length)
+    .replace(/^[\s,]*(?:mal\s+)?/i, '')
+    .trim();
+  if (remainder.length < 3 || intent.length < 12) return null;
+  return research ? 'research' : 'opinion';
+}
+
 /** Only explicit, limited requests may leave the microphone as session turns. */
 function voiceMeetingCommands(transcript: string): VoiceMeetingCommand[] {
-  let wake: RegExpExecArray | null;
+  const wakes = [...transcript.matchAll(WAKE_WORD)];
   const commands: VoiceMeetingCommand[] = [];
-  WAKE_WORD.lastIndex = 0;
-  while ((wake = WAKE_WORD.exec(transcript))) {
-    const following = transcript.slice(wake.index + wake[0].length);
+  // Walk backwards so a restarted request ("Verity, äh … Verity, research X") ends the
+  // abandoned one instead of sending both.
+  let nextCommandStart = transcript.length;
+  for (let position = wakes.length - 1; position >= 0; position -= 1) {
+    const wake = wakes[position]!;
+    const requestStart = wake.index! + wake[0].length;
+    const following = transcript.slice(requestStart);
     const terminator = sentenceEnd(following);
     const request = (terminator < 0 ? following : following.slice(0, terminator)).trim();
-    if (request.length < 12 || request.length > 240) continue;
-    const research = RESEARCH.exec(request);
-    const opinion = research ? null : OPINION.exec(request);
-    const match = research ?? opinion;
-    if (match) {
-      const kind = research ? 'research' : 'opinion';
-      const remainder = request
-        .slice(match[0].length)
-        .trim()
-        .replace(/^mal\s+/i, '');
-      if (remainder.length < 3) continue;
-      commands.push({
-        kind,
-        request,
-        complete: terminator >= 0,
-        start: wake.index,
-      });
+    if (requestStart + request.length > nextCommandStart) {
+      // A later wake inside this request is a restart only if what came before it was no
+      // request yet; "research how Verity checks invoices" names the product instead.
+      if (!requestKind(transcript.slice(requestStart, nextCommandStart).trim())) continue;
+      while (commands.length && commands[0]!.start < requestStart + request.length)
+        commands.shift();
     }
+    if (request.length > 240) continue;
+    const kind = requestKind(request);
+    if (!kind) {
+      // A bare "Verity" (maybe with "äh") may be the start of a restarted request.
+      if (terminator < 0 && !request.slice(LEAD_IN.exec(request)?.[0].length ?? 0).trim())
+        nextCommandStart = wake.index!;
+      continue;
+    }
+    commands.unshift({ kind, request, complete: terminator >= 0, start: wake.index! });
+    nextCommandStart = wake.index!;
   }
   return commands;
 }

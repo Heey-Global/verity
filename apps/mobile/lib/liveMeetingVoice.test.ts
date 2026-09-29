@@ -29,6 +29,61 @@ test('recognizes research and opinion only after the wake word', () => {
   expect(latestVoiceMeetingCommand('Verity, recherchiere.')).toBeNull();
 });
 
+test('accepts spoken lead-ins and sends a restarted request once', () => {
+  // Verbatim from a device transcript whose requests were not recognized.
+  const transcript =
+    'Verity kannst du mal schauen, wie ein guter Webdesigner heißt. Verity, äh mach mal bitte Research Verity Research Good Web Designers';
+  jest.useFakeTimers();
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe(transcript, true);
+  expect(dispatch.mock.calls.map(([command]) => command.request)).toEqual([
+    'kannst du mal schauen, wie ein guter Webdesigner heißt',
+    'Research Good Web Designers',
+  ]);
+  expect(latestVoiceMeetingCommand('Verity, ähm bitte recherchiere den Preis.')).toMatchObject({
+    kind: 'research',
+  });
+  expect(latestVoiceMeetingCommand('Verity, kannst du mal kurz warten.')).toBeNull();
+  for (const statement of [
+    'Verity, such a good point from Anna.',
+    'Verity, researchers found that churn doubled.',
+    'Verity, Recherche ergab, dass es teurer wird.',
+    'Verity, Google hat das gestern veröffentlicht.',
+    'Verity schaut sich dann die Daten an.',
+    'Verity guckt automatisch nach.',
+    'Verity googlet das.',
+    'Verity, Recherche ist fertig.',
+  ])
+    expect(latestVoiceMeetingCommand(statement)).toBeNull();
+  detector.stop();
+});
+
+test('keeps a request that mentions the product after its verb', () => {
+  // A second wake word that is not a restart must not replace the real request.
+  expect(latestVoiceMeetingCommand('Verity, research how Verity check invoices.')).toMatchObject({
+    request: 'research how Verity check invoices',
+  });
+  expect(
+    latestVoiceMeetingCommand('Verity, prüfe den Vertrag, Verity recherchiere den Preis.'),
+  ).toMatchObject({ request: 'prüfe den Vertrag, Verity recherchiere den Preis' });
+});
+
+test('does not send a hesitation while the speaker restarts', () => {
+  jest.useFakeTimers();
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe('Verity, äh mach mal bitte Research Verity', false);
+  jest.advanceTimersByTime(5000);
+  expect(dispatch).not.toHaveBeenCalled();
+  detector.observe('Verity, äh mach mal bitte Research Verity Research Good Web Designers', false);
+  jest.advanceTimersByTime(3000);
+  expect(dispatch.mock.calls.map(([command]) => command.request)).toEqual([
+    'Research Good Web Designers',
+  ]);
+  detector.stop();
+});
+
 test('waits for a stable snapshot and sends a revised command only once', () => {
   jest.useFakeTimers();
   const dispatch = jest.fn();
