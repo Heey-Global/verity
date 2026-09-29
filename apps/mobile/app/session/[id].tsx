@@ -8244,7 +8244,14 @@ function usePinnedImageSource(
     }
     const baseUrl = getVerityBaseUrl();
     const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === baseUrl);
-    if (baseUrl === null || endpoint?.transport !== 'direct' || endpoint.tlsPin === undefined) {
+    if (
+      baseUrl === null ||
+      endpoint?.transport !== 'direct' ||
+      endpoint.tlsPin === undefined ||
+      // The bearer and pin belong to the active endpoint only; a source built for
+      // another origin (e.g. before a LAN/remote switch) keeps its own loader.
+      !immediate!.uri!.startsWith(`${baseUrl}/`)
+    ) {
       setSource(immediate);
       return;
     }
