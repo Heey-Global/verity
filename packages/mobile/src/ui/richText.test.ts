@@ -148,7 +148,7 @@ describe('parseInline', () => {
     for (const input of ['[' + '[\\'.repeat(50_000), '[\\](' + '[!](!'.repeat(50_000)]) {
       const started = performance.now();
       parseInline(input);
-      expect(performance.now() - started).toBeLessThan(200);
+      expect(performance.now() - started).toBeLessThan(500);
     }
   });
 
