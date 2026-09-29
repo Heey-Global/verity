@@ -33,6 +33,7 @@ import {
   type WsOpenMeta,
 } from './framing.js';
 import { StreamRegistry } from './streams.js';
+import { loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
 const LOGIN_PATH = '/__verity/login';
 const CONNECTOR_PATH = '/__verity/connector';
@@ -646,8 +647,7 @@ export class PreviewEdge {
     let streaming = false;
     try {
       if (this.expired()) {
-        response.writeHead(410, { 'cache-control': 'no-store' });
-        response.end('Preview share expired.');
+        sendPreviewError(response, 410, 'This preview link has expired. Ask for a new link.');
         return;
       }
       const url = new URL(request.url ?? '/', this.options.publicOrigin);
@@ -680,19 +680,16 @@ export class PreviewEdge {
       }
       const connector = this.connector;
       if (!connector || connector.readyState !== WebSocket.OPEN) {
-        response.writeHead(503, {
-          'content-type': 'text/plain; charset=utf-8',
-          'retry-after': '2',
-        });
-        response.end('Preview connector is not available.');
+        sendPreviewError(
+          response,
+          503,
+          'The preview is temporarily unavailable. Try again shortly.',
+          '2',
+        );
         return;
       }
       if (this.activeRequests >= this.options.maxConcurrentRequests) {
-        response.writeHead(503, {
-          'content-type': 'text/plain; charset=utf-8',
-          'retry-after': '1',
-        });
-        response.end('Preview request concurrency limit reached.');
+        sendPreviewError(response, 503, 'The preview is busy. Try again shortly.', '1');
         return;
       }
       this.activeRequests += 1;
@@ -839,8 +836,7 @@ export class PreviewEdge {
       response.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store',
-        'content-security-policy':
-          "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+        'content-security-policy': PREVIEW_PAGE_CSP,
         'x-frame-options': 'DENY',
       });
       response.end(loginPage(url.searchParams.get('next') ?? '/'));
@@ -852,11 +848,7 @@ export class PreviewEdge {
       return;
     }
     if (this.loginVerifications >= 2) {
-      response.writeHead(429, {
-        'content-type': 'text/plain; charset=utf-8',
-        'retry-after': '1',
-      });
-      response.end('Too many concurrent PIN attempts.');
+      sendPreviewError(response, 429, 'Too many code attempts. Try again shortly.', '1');
       return;
     }
     this.loginVerifications += 1;
@@ -876,41 +868,33 @@ export class PreviewEdge {
         if (attempts.length === 0) this.loginFailures.delete(identity);
       }
       if (!this.loginFailures.has(client) && this.loginFailures.size >= MAX_LOGIN_IDENTITIES) {
-        response.writeHead(429, {
-          'content-type': 'text/plain; charset=utf-8',
-          'retry-after': '60',
-        });
-        response.end('PIN verification capacity reached.');
+        sendPreviewError(response, 429, 'Code entry is busy. Try again in a minute.', '60');
         return;
       }
       const failures = this.loginFailures.get(client) ?? [];
       if (failures.length >= 10) {
-        response.writeHead(429, {
-          'content-type': 'text/plain; charset=utf-8',
-          'retry-after': '60',
-        });
-        response.end('Too many PIN attempts.');
+        sendPreviewError(response, 429, 'Too many code attempts. Try again in a minute.', '60');
         return;
       }
       failures.push(now);
       this.loginFailures.set(client, failures);
       const form = new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
       if (this.expired()) {
-        response.writeHead(410, { 'cache-control': 'no-store' });
-        response.end('Preview share expired.');
+        sendPreviewError(response, 410, 'This preview link has expired. Ask for a new link.');
         return;
       }
       if (!(await verifyPreviewPin(form.get('pin') ?? '', this.options.pinHash))) {
         response.writeHead(401, {
-          'content-type': 'text/plain; charset=utf-8',
+          'content-type': 'text/html; charset=utf-8',
           'cache-control': 'no-store',
+          'content-security-policy': PREVIEW_PAGE_CSP,
+          'x-frame-options': 'DENY',
         });
-        response.end('Invalid PIN.');
+        response.end(loginPage(form.get('next') ?? '/', 'Invalid code. Please try again.'));
         return;
       }
       if (this.expired()) {
-        response.writeHead(410, { 'cache-control': 'no-store' });
-        response.end('Preview share expired.');
+        sendPreviewError(response, 410, 'This preview link has expired. Ask for a new link.');
         return;
       }
       this.loginFailures.delete(client);
@@ -1801,7 +1785,18 @@ async function verifyPreviewPin(pin: string, encoded: string): Promise<boolean> 
   return safeHashEquals(derived.toString('hex'), expected);
 }
 
-function loginPage(next: string): string {
-  const escaped = next.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Development preview</title><style>body{font:16px system-ui;max-width:28rem;margin:12vh auto;padding:1.5rem}input,button{box-sizing:border-box;width:100%;padding:.8rem;margin:.4rem 0}small{color:#555}</style></head><body><h1>Development preview</h1><p>This temporary environment may change or disappear without notice.</p><form method="post" action="${LOGIN_PATH}"><input type="hidden" name="next" value="${escaped}"><label>PIN<input name="pin" type="password" inputmode="numeric" autocomplete="one-time-code" required autofocus></label><button type="submit">Open preview</button></form><small>Do not enter production, customer, or business-critical data.</small></body></html>`;
+function sendPreviewError(
+  response: ServerResponse,
+  status: number,
+  message: string,
+  retryAfter?: string,
+): void {
+  response.writeHead(status, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-security-policy': PREVIEW_PAGE_CSP,
+    'x-frame-options': 'DENY',
+    ...(retryAfter ? { 'retry-after': retryAfter } : {}),
+  });
+  response.end(previewErrorPage(message));
 }

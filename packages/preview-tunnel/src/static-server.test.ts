@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,14 +55,25 @@ describe('static preview server', () => {
     const workspace = await mkdtemp(join(tmpdir(), 'verity-static-preview-'));
     await mkdir(join(workspace, 'dist'));
     await writeFile(join(workspace, 'dist', 'index.html'), '<h1>preview</h1>');
+    await chmod(join(workspace, 'dist', 'index.html'), 0o600);
     await writeFile(join(workspace, 'secret.txt'), 'not public');
     await symlink('../secret.txt', join(workspace, 'dist', 'escape.txt'));
     const server = await startStaticPreviewServer(workspace, 'dist');
     cleanups.push(() => server.close());
 
-    await expect(fetch(`${server.origin}/`)).resolves.toMatchObject({ status: 200 });
+    const index = await rawRequest(server.origin, '/');
+    expect(index).toMatchObject({
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+      body: '<h1>preview</h1>',
+    });
     const escape = await fetch(`${server.origin}/escape.txt`);
     expect(escape.status).toBe(404);
+    expect(escape.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    const errorPage = await escape.text();
+    expect(errorPage).toContain('We can’t open this page.');
+    expect(errorPage).toContain('The file is missing or cannot be read.');
+    expect(errorPage).toContain('@media(max-width:480px)');
     const traversal = await fetch(`${server.origin}/%2e%2e/secret.txt`);
     expect(traversal.status).not.toBe(200);
   });

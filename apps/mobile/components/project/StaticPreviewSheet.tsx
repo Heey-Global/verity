@@ -143,12 +143,12 @@ export function StaticPreviewSheet({
   }, [refresh]);
 
   const create = async () => {
-    if (!path || loadedPath !== path || !/^\d{6,12}$/.test(pin) || busy) return;
+    if (loadedPath !== path || !/^\d{6,12}$/.test(pin) || busy) return;
     setBusy(true);
     setError(undefined);
     try {
       const share = await client.createSessionStaticPreviewShare(sessionId, {
-        staticPath: path,
+        staticPath: path || '.',
         pin,
         ttlSeconds: duration,
       });
@@ -192,7 +192,7 @@ export function StaticPreviewSheet({
       new Date(share.expiresAt).getTime() > Date.now(),
   );
   const detailsVisible = activeShare !== undefined;
-  const canCreate = Boolean(path && loadedPath === path && /^\d{6,12}$/.test(pin) && !busy);
+  const canCreate = loadedPath === path && /^\d{6,12}$/.test(pin) && !busy;
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.overlay} behavior="padding" automaticOffset>
@@ -234,7 +234,9 @@ export function StaticPreviewSheet({
                           : `Link ${activeShare.state}`}
                       </Text>
                     </View>
-                    <Text style={styles.folderName}>{activeShare.staticPath}</Text>
+                    <Text style={styles.folderName}>
+                      {activeShare.staticPath === '.' ? 'Worktree' : activeShare.staticPath}
+                    </Text>
                     <Text style={styles.caption}>
                       Available until {new Date(activeShare.expiresAt).toLocaleString()}
                     </Text>
@@ -290,7 +292,7 @@ export function StaticPreviewSheet({
                   <Text style={styles.browserPath} numberOfLines={1}>
                     Worktree{path ? ` / ${path}` : ''}
                   </Text>
-                  {path && loadedPath === path ? (
+                  {loadedPath === path ? (
                     <Icon name="check" size={18} color={theme.colors.primary} />
                   ) : null}
                 </View>

@@ -3317,10 +3317,7 @@ export function SessionChat({
               hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel="Share static preview"
-              style={[
-                styles.headerBookmarkBtn,
-                hasActiveStaticPreview ? styles.headerPreviewActive : null,
-              ]}
+              style={styles.headerBookmarkBtn}
             >
               <Icon
                 name="monitor"
@@ -8596,7 +8593,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 11 * theme.fontScale,
     fontWeight: '600',
   },
-  headerPreviewActive: { borderBottomWidth: 2, borderBottomColor: theme.colors.primary },
   headerPreviewActiveText: { color: theme.colors.primary },
   headerLoopButton: {
     paddingHorizontal: theme.spacing.sm,
