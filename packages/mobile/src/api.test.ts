@@ -51,6 +51,99 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+describe('VerityClient live meetings', () => {
+  it('sends a meeting, finalized note, and recorder commands to their scoped routes', async () => {
+    const meeting = {
+      id: 'meeting/one',
+      sessionId: 'session/one',
+      engine: 'fluid-nemotron' as const,
+      startedAt: 1,
+      endedAt: null,
+      state: 'active' as const,
+      transcript: 'Hello',
+      captureStatus: 'listening' as const,
+      ownerToken: 'recorder-secret',
+      revision: 2,
+    };
+    const note = {
+      id: 'note/one',
+      meetingId: meeting.id,
+      atSeconds: 3,
+      text: 'Decision',
+      revision: 1,
+    };
+    const command = {
+      id: 'command/one',
+      meetingId: meeting.id,
+      action: 'pause',
+      state: 'pending',
+      error: null,
+      requestedAt: 4,
+      acknowledgedAt: null,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ cursor: 7, meetings: [meeting], notes: [note] }),
+      json({ ok: true }),
+      json({ ok: true }),
+      json({ commands: [command], recorderOnline: true }),
+      json({ commandId: command.id }),
+      json({ ok: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getLiveMeetingChanges(meeting.sessionId, 6)).toEqual({
+      cursor: 7,
+      meetings: [
+        {
+          id: meeting.id,
+          sessionId: meeting.sessionId,
+          engine: meeting.engine,
+          startedAt: meeting.startedAt,
+          endedAt: meeting.endedAt,
+          state: meeting.state,
+          transcript: meeting.transcript,
+          captureStatus: meeting.captureStatus,
+          revision: meeting.revision,
+        },
+      ],
+      notes: [note],
+    });
+    await client.putLiveMeeting(meeting);
+    await client.putLiveMeetingNote(meeting.sessionId, note);
+    expect(
+      await client.getLiveMeetingCommands(meeting.sessionId, meeting.id, meeting.ownerToken),
+    ).toEqual({
+      commands: [command],
+      recorderOnline: true,
+    });
+    expect(await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'pause')).toBe(
+      command.id,
+    );
+    await client.acknowledgeLiveMeetingCommand(
+      meeting.sessionId,
+      meeting.id,
+      command.id,
+      meeting.ownerToken,
+      'completed',
+      null,
+    );
+    const root = 'http://host/sessions/session%2Fone/live-meetings';
+    expect(calls.map(({ url, init }) => [url, init?.method])).toEqual([
+      [`${root}?after=6`, 'GET'],
+      [`${root}/meeting%2Fone`, 'PUT'],
+      [`${root}/meeting%2Fone/notes/note%2Fone`, 'PUT'],
+      [`${root}/meeting%2Fone/commands`, 'GET'],
+      [`${root}/meeting%2Fone/commands`, 'POST'],
+      [`${root}/meeting%2Fone/commands/command%2Fone`, 'PUT'],
+    ]);
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual(meeting);
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual(note);
+    expect(calls[3]?.init?.headers).toMatchObject({ 'x-meeting-owner-token': meeting.ownerToken });
+    expect(JSON.parse(String(calls[4]?.init?.body))).toEqual({ action: 'pause' });
+    expect(calls[5]?.init?.headers).toMatchObject({ 'x-meeting-owner-token': meeting.ownerToken });
+    expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({ state: 'completed', error: null });
+  });
+});
+
 describe('VerityClient Matrix integrations', () => {
   const projectId = 'project/one';
   const source = {
