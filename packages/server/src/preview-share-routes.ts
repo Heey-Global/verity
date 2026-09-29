@@ -37,9 +37,7 @@ export function registerPreviewShareRoutes(
       const session = await deps.eventStore.getSession(sessionId);
       if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
       const { path } = z.object({ path: z.string().optional().default('') }).parse(request.query);
-      return {
-        directories: await deps.manager.listStaticDirectories(session.projectId, path, sessionId),
-      };
+      return await deps.manager.listStaticEntries(session.projectId, path, sessionId);
     } catch (error) {
       if (error instanceof z.ZodError || error instanceof PreviewShareInputError) {
         reply.code(400);

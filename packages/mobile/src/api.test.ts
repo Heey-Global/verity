@@ -3098,7 +3098,8 @@ describe('VerityClient Dev Servers', () => {
     };
     const { fetch, calls } = fakeFetchSequence(
       json({ share }),
-      json({ directories: ['dist'] }),
+      json({ directories: ['dist'], files: ['index.html'] }),
+      json({ directories: ['dist'], files: ['index.html'] }),
       json({ share: { ...share, sessionId: 's1' } }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -3112,6 +3113,10 @@ describe('VerityClient Dev Servers', () => {
     await expect(client.listSessionStaticPreviewDirectories('s1', 'web')).resolves.toEqual([
       'dist',
     ]);
+    await expect(client.listSessionStaticPreviewEntries('s1', 'web')).resolves.toEqual({
+      directories: ['dist'],
+      files: ['index.html'],
+    });
     await expect(
       client.createSessionStaticPreviewShare('s1', {
         staticPath: 'web/dist',
@@ -3121,6 +3126,7 @@ describe('VerityClient Dev Servers', () => {
     ).resolves.toEqual({ ...share, sessionId: 's1' });
     expect(calls.map((call) => call.url)).toEqual([
       'http://host/projects/project%20one/public-static-shares',
+      'http://host/sessions/s1/public-static-directories?path=web',
       'http://host/sessions/s1/public-static-directories?path=web',
       'http://host/sessions/s1/public-static-shares',
     ]);

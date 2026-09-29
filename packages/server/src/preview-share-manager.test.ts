@@ -135,10 +135,34 @@ function fixture(
 }
 
 describe('PreviewShareManager', () => {
+  it('allows only one active static link per session even for a different folder', async () => {
+    const { manager, store, edge, record } = fixture();
+    store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree: '/data/repo/sessions/s1',
+      model: 'test',
+      name: null,
+      kind: 'normal',
+      lastSeenEventCount: null,
+    });
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      { ...record, devServerId: null, sessionId: 's1', staticPath: 'site/one', state: 'active' },
+    ]);
+    await expect(
+      manager.create({ sessionId: 's1', staticPath: 'site/two', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow('target already has an active public share');
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
   it('mounts the selected session worktree folder and records the session source', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-preview-session-'));
     const worktree = join(root, 'repo', 'sessions', 's1');
     await mkdir(join(worktree, 'site', 'dist'), { recursive: true });
+    await writeFile(join(worktree, 'site', 'dist', 'index.html'), 'index');
+    await writeFile(join(worktree, 'site', 'dist', 'zoom-v2.html'), 'zoom');
+    await writeFile(join(worktree, 'site', 'dist', '.secret'), 'hidden');
+    await symlink('index.html', join(worktree, 'site', 'dist', 'linked.html'));
     await mkdir(join(worktree, '.private'));
     await symlink(join(worktree, '.private'), join(worktree, 'linked'));
     const { manager, store, docker } = fixture();
@@ -159,6 +183,10 @@ describe('PreviewShareManager', () => {
     options.dataVolumeRoot = root;
     await expect(manager.listStaticDirectories('p1', '', 's1')).resolves.toEqual(['site']);
     await expect(manager.listStaticDirectories('p1', 'site', 's1')).resolves.toEqual(['dist']);
+    await expect(manager.listStaticEntries('p1', 'site/dist', 's1')).resolves.toEqual({
+      directories: [],
+      files: ['index.html', 'zoom-v2.html'],
+    });
     await expect(manager.listStaticDirectories('p1', 'linked', 's1')).rejects.toThrow(/not safe/);
     await manager.create({
       sessionId: 's1',

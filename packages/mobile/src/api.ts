@@ -3326,12 +3326,21 @@ export class VerityClient {
   }
 
   async listSessionStaticPreviewDirectories(sessionId: string, path = ''): Promise<string[]> {
+    return (await this.listSessionStaticPreviewEntries(sessionId, path)).directories;
+  }
+
+  async listSessionStaticPreviewEntries(
+    sessionId: string,
+    path = '',
+  ): Promise<{ directories: string[]; files: string[] }> {
     const query = path ? `?path=${encodeURIComponent(path)}` : '';
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/public-static-directories${query}`,
       { method: 'GET' },
     );
-    return z.object({ directories: z.array(z.string()) }).parse(await res.json()).directories;
+    return z
+      .object({ directories: z.array(z.string()), files: z.array(z.string()).default([]) })
+      .parse(await res.json());
   }
 
   async createSessionStaticPreviewShare(

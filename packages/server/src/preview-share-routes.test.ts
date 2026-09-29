@@ -193,20 +193,20 @@ describe('public preview share route refusals', () => {
   });
 
   it('uses the session id for folder browsing and share creation', async () => {
-    const listStaticDirectories = vi.fn(async () => ['dist']);
+    const listStaticEntries = vi.fn(async () => ({ directories: ['dist'], files: ['index.html'] }));
     const create = vi.fn(
       async () => ({ id: 'session-share', sessionId: 's1' }) as PublicPreviewShare,
     );
     const app = appFor({
-      manager: { listStaticDirectories, create },
+      manager: { listStaticEntries, create },
       getSession: async () => ({ sessionId: 's1', projectId: 'p1' }),
     });
     const browsed = await app.inject({
       method: 'GET',
       url: '/sessions/s1/public-static-directories?path=site',
     });
-    expect(browsed.json()).toEqual({ directories: ['dist'] });
-    expect(listStaticDirectories).toHaveBeenCalledWith('p1', 'site', 's1');
+    expect(browsed.json()).toEqual({ directories: ['dist'], files: ['index.html'] });
+    expect(listStaticEntries).toHaveBeenCalledWith('p1', 'site', 's1');
     const created = await app.inject({
       method: 'POST',
       url: '/sessions/s1/public-static-shares',
