@@ -1,8 +1,73 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { Alert, Share } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
+
+it('generates a PIN that can be replaced before the link is created', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => []),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+
+  const input = await screen.findByLabelText('Preview PIN');
+  expect(input.props.value).toMatch(/^\d{6}$/);
+  fireEvent.changeText(input, '987654');
+  expect(screen.getByLabelText('Preview PIN').props.value).toBe('987654');
+  fireEvent.press(screen.getByRole('button', { name: 'Generate a new PIN' }));
+  expect(screen.getByLabelText('Preview PIN').props.value).toMatch(/^\d{6}$/);
+});
+
+it('shows and copies the saved PIN on a reopened link and shares it with the URL', async () => {
+  const shareAction = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'site',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        pin: '482913',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('482 913')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Copy PIN' }));
+    await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('482913'));
+    fireEvent.press(screen.getByRole('button', { name: 'Share link and PIN' }));
+    expect(shareAction).toHaveBeenCalledWith({
+      message: expect.stringContaining(
+        'Preview: https://existing.example\nPIN: 482913\nAvailable ',
+      ),
+    });
+  } finally {
+    shareAction.mockRestore();
+  }
+});
 
 it('creates a share for index.html in the worktree root', async () => {
   const client = {
@@ -18,6 +83,7 @@ it('creates a share for index.html in the worktree root', async () => {
       staticPath: '.',
       state: 'active',
       publicOrigin: 'https://root.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     })),
   } as unknown as VerityClient;
@@ -44,6 +110,7 @@ it('creates a share for index.html in the worktree root', async () => {
       ttlSeconds: 3600,
     }),
   );
+  expect(await screen.findByText('123 456')).toBeTruthy();
 });
 
 it('creates and shows a static share for the folder selected in the session worktree', async () => {
@@ -55,6 +122,7 @@ it('creates and shows a static share for the folder selected in the session work
     staticPath: 'site/dist',
     state: 'active' as const,
     publicOrigin: 'https://preview.example',
+    pin: '123456',
     expiresAt: '2030-01-01T01:00:00Z',
   };
   const client = {
@@ -92,7 +160,7 @@ it('creates and shows a static share for the folder selected in the session work
     }),
   );
   expect(await screen.findByText('https://preview.example')).toBeTruthy();
-  expect(screen.getByText(/Available until/)).toBeTruthy();
+  expect(screen.getByText(/left · until/)).toBeTruthy();
   expect(screen.queryByLabelText('Preview PIN')).toBeNull();
   expect(
     screen.getByRole('link', { name: 'Open preview link https://preview.example' }),
@@ -135,6 +203,7 @@ it('opens directly on the active link when the sheet is reopened', async () => {
         staticPath: 'docs/presentations/site',
         state: 'active',
         publicOrigin: 'https://existing.example',
+        pin: '123456',
         expiresAt: '2030-01-01T01:00:00Z',
       },
     ]),
@@ -198,6 +267,7 @@ it('explains an Uplink internal error and permits retrying the same folder', asy
       staticPath: 'demo',
       state: 'active',
       publicOrigin: 'https://retry.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     });
   const client = {
@@ -252,6 +322,7 @@ it('keeps a newly created link when the initial share list arrives late', async 
       staticPath: 'demo',
       state: 'active',
       publicOrigin: 'https://new.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     })),
   } as unknown as VerityClient;
@@ -322,6 +393,7 @@ it('finishes loading a new folder when a link creation completes during navigati
       staticPath: 'demo',
       state: 'active',
       publicOrigin: 'https://new.example',
+      pin: '123456',
       expiresAt: '2030-01-01T01:00:00Z',
     } as PublicPreviewShare),
   );
@@ -383,4 +455,220 @@ it('does not offer folders from the previous location when navigation fails', as
   expect(await screen.findByText('Folder unavailable')).toBeTruthy();
   expect(screen.queryByLabelText('Open folder site')).toBeNull();
   expect(screen.queryByLabelText('Open folder site/site')).toBeNull();
+});
+
+it('shows progress while a link is being created instead of only dimming the button', async () => {
+  let resolveCreate!: (share: PublicPreviewShare) => void;
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => []),
+    createSessionStaticPreviewShare: jest.fn(
+      () =>
+        new Promise<PublicPreviewShare>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    ),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.changeText(await screen.findByLabelText('Preview PIN'), '123456');
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
+    ).toBe(false),
+  );
+  fireEvent.press(screen.getByText('Create link'));
+
+  // The Uplink alone spends seconds on a create. A disabled button with no
+  // other change reads as a tap that did not register.
+  const button = await screen.findByRole('button', { name: 'Creating link' });
+  expect(button.props.accessibilityState.busy).toBe(true);
+  expect(screen.getByText('Creating link…')).toBeTruthy();
+  expect(screen.getByText(/This takes a few seconds/)).toBeTruthy();
+
+  await act(async () =>
+    resolveCreate({
+      id: 'share-new',
+      sessionId: 'session-one',
+      targetKind: 'static-folder',
+      staticPath: '.',
+      state: 'active',
+      publicOrigin: 'https://new.example',
+      pin: '123456',
+      expiresAt: '2030-01-01T01:00:00Z',
+    } as unknown as PublicPreviewShare),
+  );
+  expect(screen.getByText('Your preview is live')).toBeTruthy();
+});
+
+it('shows the stop in progress and confirms it before offering a new link', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+  });
+  let resolveStop!: () => void;
+  const onClose = jest.fn();
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'site',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        pin: '123456',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+    stopPublicPreviewShare: jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStop = resolve;
+        }),
+    ),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={onClose}
+      />,
+    );
+    fireEvent.press(await screen.findByRole('button', { name: 'Stop sharing' }));
+
+    // While the Uplink removes the edge the sheet must say so, not sit still.
+    expect(await screen.findByText('Stopping link…')).toBeTruthy();
+    expect(screen.getByText('Stopping your preview')).toBeTruthy();
+    expect(screen.queryByText('Your preview is live')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Stop sharing' }).props.accessibilityState.busy).toBe(
+      true,
+    );
+    expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+
+    await act(async () => resolveStop());
+
+    // And afterwards it confirms, instead of dropping the user into the create
+    // form as if nothing had happened.
+    expect(screen.getByText('Link stopped')).toBeTruthy();
+    expect(screen.getByText(/The link for site no longer works/)).toBeTruthy();
+    expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+
+    fireEvent.press(screen.getByRole('button', { name: 'Create a new link' }));
+    expect(await screen.findByLabelText('Preview PIN')).toBeTruthy();
+  } finally {
+    alert.mockRestore();
+  }
+});
+
+it('keeps the link and explains when stopping fails', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+  });
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: '.',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        pin: '123456',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+    stopPublicPreviewShare: jest.fn(async () => {
+      throw new Error('Uplink offline');
+    }),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+    fireEvent.press(await screen.findByRole('button', { name: 'Stop sharing' }));
+    expect(await screen.findByText('Uplink offline')).toBeTruthy();
+    expect(screen.getByText('https://existing.example')).toBeTruthy();
+    expect(screen.getByText('Stop sharing')).toBeTruthy();
+    expect(screen.queryByText('Link stopped')).toBeNull();
+  } finally {
+    alert.mockRestore();
+  }
+});
+
+it('counts the remaining time down while the sheet stays open', async () => {
+  jest.useFakeTimers({ now: new Date('2030-01-01T00:15:00Z') });
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'share-existing',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'site',
+        state: 'active',
+        publicOrigin: 'https://existing.example',
+        pin: '123456',
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+    expect(await screen.findByText(/^45 min left/)).toBeTruthy();
+
+    // Rendered once and never again, the label would still promise time the
+    // link no longer has.
+    await act(async () => {
+      jest.advanceTimersByTime(60_000);
+    });
+    expect(screen.getByText(/^44 min left/)).toBeTruthy();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('says whether the selected folder has a start page', async () => {
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async (_session: string, path: string) =>
+      path === 'docs'
+        ? { directories: [], files: ['guide.md'] }
+        : { directories: ['docs'], files: ['index.html'] },
+    ),
+    listPublicPreviewShares: jest.fn(async () => []),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  expect(await screen.findByText('index.html opens as the start page')).toBeTruthy();
+
+  fireEvent.press(screen.getByLabelText('Open folder docs'));
+  expect(await screen.findByText('No index.html in this folder')).toBeTruthy();
+  expect(screen.queryByText('index.html opens as the start page')).toBeNull();
 });

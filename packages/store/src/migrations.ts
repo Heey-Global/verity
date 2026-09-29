@@ -3321,6 +3321,29 @@ const migrations: Record<string, Migration> = {
       await sql`alter table live_meeting_insights drop column source_path`.execute(db);
     },
   },
+  // Core keeps the PIN encrypted so the app can show it on every device.
+  '0119_public_preview_share_pin': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table public_preview_shares add column pin_secret text`.execute(db);
+      // Expired links still marked live need connector/Uplink cleanup after startup.
+      await sql`update public_preview_shares set state = 'revoking'
+        where state in ('creating', 'active') and expires_at <= now()`.execute(db);
+      const live = await sql`select 1 from public_preview_shares
+        where state in ('creating', 'active', 'revoking')
+          and expires_at > now() limit 1`.execute(db);
+      if (live.rows.length > 0) {
+        throw new Error(
+          'Stop all active preview links before upgrading; their PINs cannot be recovered',
+        );
+      }
+      // Terminal rows have no live edge and cannot reveal their PINs.
+      await sql`delete from public_preview_shares
+        where state in ('revoked', 'expired', 'failed')`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table public_preview_shares drop column pin_secret`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

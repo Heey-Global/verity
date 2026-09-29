@@ -1011,6 +1011,7 @@ export interface PublicPreviewSharesTable {
   public_origin: string;
   edge_url: string;
   pin_hash_secret: string;
+  pin_secret: ColumnType<string | null, string | null | undefined, string | null>;
   connector_token_secret: string;
   session_secret: string;
   connector_container_name: string;

@@ -33,6 +33,7 @@ const create = async (suffix = '1', expiresAt = new Date('2030-01-01T00:00:00Z')
     publicOrigin: `https://share-${suffix}.preview.example`,
     edgeUrl: `wss://share-${suffix}.preview.example/__verity/connector`,
     pinHash: 'scrypt:salt:hash',
+    pin: '123456',
     connectorToken: 'connector-secret',
     sessionSecret: 'session-secret',
     connectorContainerName: `verity-preview-${suffix}`,
@@ -54,6 +55,7 @@ describe('EventStore — public preview shares', () => {
       publicOrigin: 'https://static.preview.example',
       edgeUrl: 'wss://static.preview.example/__verity/connector',
       pinHash: 'scrypt:salt:hash',
+      pin: '123456',
       connectorToken: 'connector-secret',
       sessionSecret: 'session-secret',
       connectorContainerName: 'verity-preview-session-static',
@@ -62,6 +64,31 @@ describe('EventStore — public preview shares', () => {
     expect(share.sessionId).toBe('session-1');
     expect((await ctx.store.getPublicPreviewShare(share.id))?.sessionId).toBe('session-1');
   });
+  it('keeps the PIN so every device can show it again', async () => {
+    const devServer = await ctx.store.createDevServer({
+      projectId: 'p1',
+      name: 'Web',
+      containerPort: '3000',
+    });
+    const share = await ctx.store.createPublicPreviewShare({
+      id: 'with-pin',
+      projectId: 'p1',
+      devServerId: devServer.id,
+      containerGeneration: 'generation-1',
+      targetPort: 3000,
+      publicOrigin: 'https://with-pin.preview.example',
+      edgeUrl: 'wss://with-pin.preview.example/__verity/connector',
+      pinHash: 'scrypt:salt:hash',
+      pin: '482913',
+      connectorToken: 'connector-secret',
+      sessionSecret: 'session-secret',
+      connectorContainerName: 'verity-preview-with-pin',
+      expiresAt: new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(share.pin).toBe('482913');
+    expect((await ctx.store.listPublicPreviewShares('p1'))[0]?.pin).toBe('482913');
+  });
+
   it('durably records idempotent pending Uplink removals', async () => {
     await ctx.store.addPendingUplinkShareRemoval('orphan-1');
     await ctx.store.addPendingUplinkShareRemoval('orphan-1');
@@ -100,6 +127,7 @@ describe('EventStore — public preview shares', () => {
         publicOrigin: 'https://share-2.preview.example',
         edgeUrl: 'wss://share-2.preview.example/__verity/connector',
         pinHash: 'pin',
+        pin: '123456',
         connectorToken: 'connector',
         sessionSecret: 'session',
         connectorContainerName: 'verity-preview-2',
@@ -119,6 +147,7 @@ describe('EventStore — public preview shares', () => {
         publicOrigin: 'https://share-3.preview.example',
         edgeUrl: 'wss://share-3.preview.example/__verity/connector',
         pinHash: 'pin',
+        pin: '123456',
         connectorToken: 'connector',
         sessionSecret: 'session',
         connectorContainerName: 'verity-preview-3',

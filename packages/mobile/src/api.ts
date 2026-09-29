@@ -590,6 +590,7 @@ const publicPreviewShareSchema = z.object({
   sessionId: z.string().nullable().optional(),
   state: z.enum(['creating', 'active', 'revoking', 'revoked', 'expired', 'failed']),
   publicOrigin: z.string().url().nullable(),
+  pin: z.string(),
   expiresAt: z.string(),
   createdAt: z.string(),
   failure: z.string().nullable(),

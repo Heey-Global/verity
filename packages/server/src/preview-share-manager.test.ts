@@ -42,6 +42,7 @@ function fixture(
     publicOrigin: 'https://share-id.preview.example',
     edgeUrl: 'wss://share-id.preview.example/__verity/connector',
     pinHash: 'scrypt:salt:hash',
+    pin: '123456',
     connectorToken: 'connector',
     sessionSecret: 'session',
     connectorContainerName: 'verity-preview-share-id',
@@ -106,6 +107,7 @@ function fixture(
   };
   const resolveConnectorImage = vi.fn<() => Promise<string | undefined>>(async () => digest);
   const isDevServerRunning = vi.fn(async () => true);
+  const log = { info: vi.fn(), warn: vi.fn() };
   const manager = new PreviewShareManager({
     store: store as unknown as EventStore,
     docker: docker as unknown as DockerClient,
@@ -117,6 +119,7 @@ function fixture(
     isDevServerRunning,
     now: () => new Date('2030-01-01T00:00:00Z'),
     wait: vi.fn(async () => undefined),
+    log,
     ...(options.inspectArtifact === undefined ? {} : { inspectArtifact: options.inspectArtifact }),
     ...(options.listArtifactDirectory === undefined
       ? {}
@@ -131,7 +134,25 @@ function fixture(
     record,
     isDevServerRunning,
     resolveConnectorImage,
+    log,
   };
+}
+
+/** A `performance.now()` that moves only when a test says so, so a step's
+ * recorded duration is exactly the time that step was made to take. */
+function manualClock() {
+  let now = 0;
+  const spy = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  return {
+    advance(milliseconds: number) {
+      now += milliseconds;
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+async function flush(): Promise<void> {
+  for (let index = 0; index < 16; index += 1) await Promise.resolve();
 }
 
 describe('PreviewShareManager', () => {
@@ -321,6 +342,169 @@ describe('PreviewShareManager', () => {
       ['creating'],
       'active',
       { connectorContainerId: 'connector-id' },
+    );
+  });
+
+  it('keeps the PIN it was given and hands the Uplink only the hash', async () => {
+    const { manager, store, edge } = fixture();
+    await manager.create({ devServerId: 'dev-1', pin: '482913', ttlSeconds: 3600 });
+
+    expect(store.createPublicPreviewShare).toHaveBeenCalledWith(
+      expect.objectContaining({ pin: '482913' }),
+    );
+    // The Uplink verifies logins itself and must still never see the PIN.
+    expect(JSON.stringify(edge.create.mock.calls)).not.toContain('482913');
+  });
+
+  it('lists the stored PIN so another device can show it again', async () => {
+    const { manager, store } = fixture();
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      { ...(await store.getPublicPreviewShare('share-id'))!, state: 'active', pin: '482913' },
+      { ...(await store.getPublicPreviewShare('share-id'))!, id: 'expired-share', pin: null },
+    ]);
+    expect((await manager.list('p1')).map((share) => share.pin)).toEqual(['482913']);
+  });
+
+  it('attributes the time a link takes to the step that spent it', async () => {
+    const clock = manualClock();
+    try {
+      const { manager, edge, docker, log, resolveConnectorImage } = fixture();
+      // Distinct durations per step, so a mark placed one step early or late
+      // moves a number onto the wrong name instead of leaving the totals intact.
+      resolveConnectorImage.mockImplementationOnce(async () => {
+        clock.advance(300);
+        return digest;
+      });
+      edge.create.mockImplementationOnce(async () => {
+        clock.advance(4_000);
+        return await fixture().edge.create();
+      });
+      docker.startContainer.mockImplementationOnce(async () => {
+        clock.advance(700);
+      });
+      docker.containerLogs.mockImplementationOnce(async () => {
+        clock.advance(2_500);
+        return 'preview connector established\n';
+      });
+
+      await manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 });
+
+      expect(log.info).toHaveBeenCalledWith(
+        {
+          shareId: 'share-id',
+          targetKind: 'dev-server',
+          phasesMs: {
+            validate: 0,
+            connectorImage: 300,
+            pinHash: 0,
+            uplinkCreate: 4_000,
+            persist: 0,
+            connectorStart: 700,
+            connectorReady: 2_500,
+            activate: 0,
+          },
+          totalMs: 7_500,
+        },
+        'public preview share created',
+      );
+      // Order is the point of the record: it is read as a timeline.
+      const [fields] = log.info.mock.calls.at(-1)! as [{ phasesMs: object }];
+      expect(Object.keys(fields.phasesMs)).toEqual([
+        'validate',
+        'connectorImage',
+        'pinHash',
+        'uplinkCreate',
+        'persist',
+        'connectorStart',
+        'connectorReady',
+        'activate',
+      ]);
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('names the last step a failed link completed', async () => {
+    const { manager, docker, log } = fixture();
+    docker.containerLogs.mockResolvedValue('connecting\n');
+
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow('readiness timed out');
+
+    // A readiness timeout is fifteen seconds of a spinner; the line has to say
+    // it was the connector's edge connection and not the Uplink round trip.
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ completedPhase: 'connectorStart', errorName: 'Error' }),
+      'public preview share creation failed',
+    );
+    expect(log.info).not.toHaveBeenCalledWith(expect.anything(), 'public preview share created');
+  });
+
+  it('times the connector removal and the Uplink removal of a stop separately', async () => {
+    const clock = manualClock();
+    try {
+      const { manager, docker, edge, log } = fixture();
+      let releaseUplink!: () => void;
+      // They run in parallel, so only separate numbers say which one the user
+      // was waiting for. The Uplink is held open past the container removal.
+      edge.remove.mockImplementationOnce(
+        () =>
+          new Promise<undefined>((resolve) => {
+            releaseUplink = () => {
+              clock.advance(3_000);
+              resolve(undefined);
+            };
+          }),
+      );
+      docker.removeContainer.mockImplementationOnce(async () => {
+        // After a tick, as a real daemon call would: advanced synchronously it
+        // would land before the Uplink half had even started its clock.
+        await Promise.resolve();
+        clock.advance(400);
+      });
+
+      const stopped = manager.stop('share-id');
+      await flush();
+      releaseUplink();
+      await expect(stopped).resolves.toBe(true);
+
+      expect(log.info).toHaveBeenCalledWith(
+        {
+          shareId: 'share-id',
+          waitedForCreationMs: 0,
+          connectorRemoveMs: 400,
+          uplinkRemoveMs: 3_400,
+          totalMs: 3_400,
+        },
+        'public preview share stopped',
+      );
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('removes the connector by name when its stored id is empty', async () => {
+    const { manager, store, docker } = fixture();
+    store.transitionPublicPreviewShare.mockImplementationOnce(async (_id, _from, state) => ({
+      ...fixture().record,
+      connectorContainerId: '',
+      state,
+    }));
+
+    await expect(manager.stop('share-id')).resolves.toBe(true);
+    expect(docker.removeContainer).toHaveBeenCalledWith('verity-preview-share-id');
+  });
+
+  it('logs an incomplete stop as a warning without a duration for the failed half', async () => {
+    const { manager, docker, log } = fixture();
+    docker.removeContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+
+    await expect(manager.stop('share-id')).rejects.toThrow(/revocation did not complete/);
+
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ connectorRemoveMs: null, uplinkRemoveMs: expect.any(Number) }),
+      'public preview share stop incomplete',
     );
   });
 
