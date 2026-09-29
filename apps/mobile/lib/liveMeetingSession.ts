@@ -25,6 +25,7 @@ let heartbeat: ReturnType<typeof setInterval> | null = null;
 let startInFlight: Promise<MeetingRecord> | null = null;
 let shutdownInFlight: Promise<void> | null = null;
 let shutdownFailed = false;
+let captureControl: Promise<void> = Promise.resolve();
 const pendingSaveSettlements = new Set<Promise<void>>();
 const listeners = new Set<Listener>();
 
@@ -37,6 +38,12 @@ function enqueueWrite(write: () => Promise<void>): Promise<void> {
   // Keep the next write possible while still reporting this failure to its caller.
   writeTail = next.catch(() => undefined);
   return next;
+}
+
+function queueCaptureControl(action: () => Promise<void>): Promise<void> {
+  const operation = captureControl.then(action);
+  captureControl = operation.catch(() => undefined);
+  return operation;
 }
 
 function stopHeartbeat() {
@@ -96,7 +103,8 @@ function onEvent(event: STTEvent) {
     } else if (
       event.state === 'preparing' ||
       event.state === 'downloading' ||
-      event.state === 'listening'
+      event.state === 'listening' ||
+      event.state === 'paused'
     ) {
       active = { ...active, captureStatus: event.state };
       publish();
@@ -219,6 +227,7 @@ export async function endMeeting(): Promise<void> {
   stopHeartbeat();
   let nativeStopCompleted = false;
   try {
+    await captureControl;
     await liveMeetingSTT?.stop();
     nativeStopCompleted = true;
     await writeTail;
@@ -246,4 +255,30 @@ export async function endMeeting(): Promise<void> {
     subscription = null;
     publish();
   }
+}
+
+export function pauseMeeting(): Promise<void> {
+  return queueCaptureControl(async () => {
+    if (!active || active.state !== 'active' || ending) return;
+    if (active.captureStatus === 'paused') return;
+    if (active.captureStatus !== 'listening')
+      throw new Error('The microphone is not ready to pause.');
+    await liveMeetingSTT?.pause();
+    if (active?.state === 'active') {
+      active = { ...active, captureStatus: 'paused' };
+      publish();
+    }
+  });
+}
+
+export function resumeMeeting(): Promise<void> {
+  return queueCaptureControl(async () => {
+    if (!active || active.state !== 'active' || ending) return;
+    if (active.captureStatus !== 'paused') return;
+    await liveMeetingSTT?.resume();
+    if (active?.state === 'active') {
+      active = { ...active, captureStatus: 'listening' };
+      publish();
+    }
+  });
 }

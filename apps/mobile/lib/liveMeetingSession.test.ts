@@ -1,13 +1,21 @@
 import { liveMeetingSTT, type STTEvent } from './liveMeetingSTT';
 import { waitFor } from '@testing-library/react-native';
 import { createMeeting, saveTranscript, setMeetingState } from './liveMeetingStore';
-import { currentMeeting, endMeeting, startMeeting } from './liveMeetingSession';
+import {
+  currentMeeting,
+  endMeeting,
+  pauseMeeting,
+  resumeMeeting,
+  startMeeting,
+} from './liveMeetingSession';
 
 jest.mock('./liveMeetingSTT', () => ({
   liveMeetingSTT: {
     engines: jest.fn().mockResolvedValue([{ id: 'fluid-nemotron', available: true }]),
     start: jest.fn().mockResolvedValue(undefined),
     stop: jest.fn().mockResolvedValue(undefined),
+    pause: jest.fn().mockResolvedValue(undefined),
+    resume: jest.fn().mockResolvedValue(undefined),
     addListener: jest.fn(),
   },
 }));
@@ -29,6 +37,28 @@ jest.mock('./liveMeetingStore', () => ({
 }));
 
 beforeEach(() => jest.clearAllMocks());
+
+it('pauses native capture and can stop a paused meeting', async () => {
+  const native = liveMeetingSTT!;
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(native.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+
+  await startMeeting('session-1');
+  onEvent({ kind: 'status', state: 'listening' });
+  await pauseMeeting();
+  expect(native.pause).toHaveBeenCalledTimes(1);
+  expect(currentMeeting()?.captureStatus).toBe('paused');
+  await resumeMeeting();
+  expect(native.resume).toHaveBeenCalledTimes(1);
+  expect(currentMeeting()?.captureStatus).toBe('listening');
+  await pauseMeeting();
+  await endMeeting();
+  expect(native.stop).toHaveBeenCalledTimes(1);
+  expect(currentMeeting()?.state).toBe('ended');
+});
 
 it('persists a Nemotron transcript and final text before ending the meeting', async () => {
   const native = liveMeetingSTT!;

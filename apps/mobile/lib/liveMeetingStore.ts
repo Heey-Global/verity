@@ -8,7 +8,7 @@ export interface MeetingRecord {
   startedAt: number;
   endedAt: number | null;
   state: 'active' | 'interrupted' | 'ended';
-  captureStatus?: 'preparing' | 'downloading' | 'listening';
+  captureStatus?: 'preparing' | 'downloading' | 'listening' | 'paused';
   transcript: string;
   error: string | null;
 }
