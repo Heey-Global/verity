@@ -358,6 +358,7 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
         { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
         { kind: 'opinion', request: 'delete the project files' },
         { kind: 'opinion', request: 'lösche das Projekt' },
+        { kind: 'research', request: 'research book prices' },
         { kind: 'opinion', request: `was meinst du zu ${'dem Plan und '.repeat(20)}allem` },
       ],
     }),
@@ -369,7 +370,7 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
       method: 'POST',
       url: `${url}/addressed`,
       payload: {
-        utterance: `Verity, recherchier mal, was Pixelwerk kostet. Verity, lösche das Projekt. Und was meinst du zu ${'dem Plan und '.repeat(20)}allem?`,
+        utterance: `Verity, recherchier mal, was Pixelwerk kostet. Verity, lösche das Projekt. Verity, research book prices. Und was meinst du zu ${'dem Plan und '.repeat(20)}allem?`,
         context: 'Wir brauchen eine neue Website.',
       },
     });
@@ -379,6 +380,7 @@ it('returns only spoken requests that were quoted verbatim from the utterance', 
       // A long quote is kept rather than failing the whole answer.
       requests: [
         { kind: 'research', request: 'recherchier mal, was Pixelwerk kostet' },
+        { kind: 'research', request: 'research book prices' },
         { kind: 'opinion', request: `was meinst du zu ${'dem Plan und '.repeat(20)}allem` },
       ],
     });

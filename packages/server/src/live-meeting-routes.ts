@@ -68,7 +68,7 @@ function addressedPrompt(utterance: string, context: string): string {
 // Meeting audio may be heard from anyone in the room. Keep common change requests out of
 // session turns even when the classifier returns them as verbatim speech.
 function isReadOnlyRequest(request: string): boolean {
-  return !/(?<!\p{L})(?:delete|remove|send|email|buy|purchase|book|schedule|create|edit|write|commit|push|deploy|lösche|entferne|sende|verschicke|kaufe|buche|erstelle|ändere|schreibe|veröffentliche)(?!\p{L})/iu.test(
+  return !/^(?:(?:please|bitte|can you|could you|kannst du|könntest du)\s+)*(?:delete|remove|send|email|buy|purchase|book|schedule|create|edit|write|commit|push|deploy|lösche|entferne|sende|verschicke|kaufe|buche|erstelle|ändere|schreibe|veröffentliche)(?!\p{L})/iu.test(
     request,
   );
 }

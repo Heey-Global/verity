@@ -20,6 +20,12 @@ function hasWords(text: string): boolean {
 }
 
 function sameUtterance(a: string, b: string): boolean {
+  const normalize = (value: string) =>
+    value
+      .trim()
+      .replace(/[.!?]+$/, '')
+      .trim();
+  if (normalize(a) === normalize(b)) return true;
   const words = (value: string) =>
     new Set(
       (value.toLocaleLowerCase().match(/\p{L}+/gu) ?? []).filter((word) => word !== 'verity'),

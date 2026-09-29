@@ -131,6 +131,16 @@ test('does not mistake a new earlier mention for an already sent request', () =>
   ]);
 });
 
+test('does not resend a stable partial after punctuation is added', () => {
+  jest.useFakeTimers();
+  const dispatch = jest.fn();
+  const detector = new VoiceMeetingCommandDetector(dispatch);
+  detector.observe('Verity, research 2026', false);
+  jest.advanceTimersByTime(3000);
+  detector.observe('Verity, research 2026.', true);
+  expect(dispatch).toHaveBeenCalledTimes(1);
+});
+
 test('sends a new request after an earlier recognized request disappears', () => {
   const dispatch = jest.fn();
   const detector = new VoiceMeetingCommandDetector(dispatch);
