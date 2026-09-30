@@ -65,7 +65,9 @@ export function PublicPreviewDiagnostics({
           ? 'Remote Control works: the iPhone reached Core through Uplink.'
           : `Remote Control failed at ${result.detail}.`,
       );
-      await refresh();
+      // Core status can stall when the paired address is unreachable. The
+      // independent status refresh must not keep the tunnel test spinner open.
+      void refresh();
     } catch {
       setTestResult('Remote Control test failed before the connection could be checked.');
     } finally {
