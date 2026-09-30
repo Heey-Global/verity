@@ -120,8 +120,10 @@ private final class LiveSTTService {
   private var nemotron: StreamingNemotronMultilingualAsrManager?
   private var parakeet: SlidingWindowAsrManager?
   private var speakerProcessor: LiveSpeakerProcessor?
+  private var speakerModelTask: Task<LiveSpeakerProcessor?, Never>?
   private var speakerInput: AsyncStream<SpeakerAudio>.Continuation?
   private var speakerTask: Task<Void, Never>?
+  private var speakerUnavailable = false
   private var emit: (([String: Any]) -> Void)?
   private var activeEngine: String?
   private var generation = 0
@@ -152,6 +154,7 @@ private final class LiveSTTService {
     activeEngine = engine
     paused = false
     reportedOverflow = false
+    speakerUnavailable = false
     emittedWordCount = 0
     self.emit = emit
     emit(["kind": "status", "state": "preparing", "engine": engine])
@@ -159,14 +162,26 @@ private final class LiveSTTService {
     do {
       if participants > 0 {
         emit(["kind": "speaker-status", "state": "loading"])
-        do {
-          speakerProcessor = try await LiveSpeakerProcessor(participants: participants)
-          try ensureActive(startGeneration)
-          emit(["kind": "speaker-status", "state": "ready"])
-        } catch {
-          try ensureActive(startGeneration)
-          speakerProcessor = nil
-          emit(["kind": "speaker-status", "state": "unavailable", "message": error.localizedDescription])
+        speakerModelTask = Task { [weak self] in
+          do {
+            let processor = try await LiveSpeakerProcessor(participants: participants)
+            guard let self, self.generation == startGeneration, self.activeEngine != nil,
+              !self.speakerUnavailable else {
+              return nil
+            }
+            self.speakerProcessor = processor
+            self.emit?(["kind": "speaker-status", "state": "ready"])
+            return processor
+          } catch {
+            guard let self, self.generation == startGeneration, self.activeEngine != nil,
+              !self.speakerUnavailable else {
+              return nil
+            }
+            self.speakerUnavailable = true
+            self.speakerInput?.finish()
+            self.emit?(["kind": "speaker-status", "state": "unavailable", "message": error.localizedDescription])
+            return nil
+          }
         }
       }
       switch engine {
@@ -200,6 +215,10 @@ private final class LiveSTTService {
     generation += 1
     let wasCapturing = audioEngine != nil
     stopMicrophone()
+    if speakerProcessor == nil {
+      speakerModelTask?.cancel()
+      speakerTask?.cancel()
+    }
     if !wasCapturing {
       await analyzer?.cancelAndFinishNow()
       await parakeet?.cancel()
@@ -210,8 +229,8 @@ private final class LiveSTTService {
     do {
       // Drain every captured buffer before asking the recognizer to finalize.
       try await processingTask?.value
-      await speakerTask?.value
-      if let speakerProcessor {
+      if speakerProcessor != nil { await speakerTask?.value }
+      if let speakerProcessor, !speakerUnavailable {
         if let segments = try? await speakerProcessor.finish() { emitSpeakerSegments(segments) }
       }
       if let analyzer {
@@ -271,6 +290,7 @@ private final class LiveSTTService {
 
   private func clear() {
     speakerTask?.cancel()
+    speakerModelTask?.cancel()
     audioEngine = nil
     microphoneInput = nil
     analyzerInput = nil
@@ -280,8 +300,10 @@ private final class LiveSTTService {
     nemotron = nil
     parakeet = nil
     speakerProcessor = nil
+    speakerModelTask = nil
     speakerInput = nil
     speakerTask = nil
+    speakerUnavailable = false
     activeEngine = nil
     paused = false
     emit = nil
@@ -497,16 +519,20 @@ private final class LiveSTTService {
     let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
       bufferingPolicy: .bufferingNewest(32))
     microphoneInput = continuation
-    if let speakerProcessor {
+    if let speakerModelTask, !speakerUnavailable {
       let (speakerStream, input) = AsyncStream<SpeakerAudio>.makeStream(
-        bufferingPolicy: .bufferingNewest(32))
+        bufferingPolicy: .bufferingNewest(512))
       speakerInput = input
       speakerTask = Task {
+        guard let speakerProcessor = await speakerModelTask.value else { return }
         for await chunk in speakerStream {
+          if speakerUnavailable { break }
           do {
             let segments = try await speakerProcessor.process(chunk)
             emitSpeakerSegments(segments)
           } catch {
+            speakerUnavailable = true
+            speakerInput?.finish()
             emit?(["kind": "speaker-status", "state": "unavailable", "message": error.localizedDescription])
             break
           }
@@ -522,7 +548,10 @@ private final class LiveSTTService {
           SpeakerAudio(samples: samples, sampleRate: copy.format.sampleRate)) {
           speakerContinuation.finish()
           Task { @MainActor [weak self] in
-            self?.emit?(["kind": "speaker-status", "state": "unavailable", "message": "Speaker recognition fell behind audio capture."])
+            guard let self, !self.speakerUnavailable else { return }
+            self.speakerUnavailable = true
+            self.speakerModelTask?.cancel()
+            self.emit?(["kind": "speaker-status", "state": "unavailable", "message": "Speaker recognition fell behind audio capture."])
           }
         }
       }

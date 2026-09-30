@@ -58,6 +58,20 @@ test('merges duplicate identities across earlier and later words', () => {
   expect(resolvedSpeaker(1, merges)).toBe(0);
 });
 
+test('treats overlapping merged identities as one speaker', () => {
+  expect(
+    speakerLines(
+      [{ text: 'Together', start: 0, end: 0.5 }],
+      [
+        { speaker: 0, start: 0, end: 0.5 },
+        { speaker: 1, start: 0, end: 0.5 },
+      ],
+      [],
+      { '1': 0 },
+    ),
+  ).toEqual([{ speaker: 0, text: 'Together', start: 0, end: 0.5 }]);
+});
+
 test('keeps live text visible while word timings catch up', () => {
   expect(
     untimedTranscriptTail('Hello, world is speaking', [

@@ -55,12 +55,12 @@ export function speakerLines(
     const correction = corrections.findLast(
       (entry) => entry.start <= word.start && entry.end >= word.end,
     );
-    const sourceSpeaker = correction
-      ? correction.speaker
-      : matches.length === 1
-        ? matches[0]!.speaker
+    const candidates = new Set(matches.map((match) => resolvedSpeaker(match.speaker, merges)));
+    const speaker = correction
+      ? resolvedSpeaker(correction.speaker, merges)
+      : candidates.size === 1
+        ? [...candidates][0]!
         : null;
-    const speaker = resolvedSpeaker(sourceSpeaker, merges);
     const previous = lines.at(-1);
     if (
       previous?.speaker === speaker &&
