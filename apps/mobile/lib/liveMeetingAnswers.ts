@@ -48,7 +48,17 @@ export function meetingAnswerCards(events: SessionEvent[], meetingId: string): M
       current = null;
     }
   }
-  return cards.slice(-4);
+  return cards;
+}
+
+export function unacknowledgedMeetingAnswers(
+  local: MeetingAnswerCard[],
+  history: MeetingAnswerCard[],
+): MeetingAnswerCard[] {
+  return local.filter(
+    (pending) =>
+      !history.some((card) => card.request === pending.request && card.kind === pending.kind),
+  );
 }
 
 export function compactMeetingAnswer(answer: string): string {

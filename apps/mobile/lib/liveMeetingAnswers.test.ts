@@ -4,6 +4,7 @@ import {
   meetingAnswerCards,
   meetingAnswerSource,
   meetingRequestFromPrompt,
+  unacknowledgedMeetingAnswers,
 } from './liveMeetingAnswers';
 
 test('matches a meeting request to its own streamed answer across ordinary session turns', () => {
@@ -79,4 +80,21 @@ test('keeps a multiline typed request together before transcript context', () =>
       'meeting-1',
     ),
   ).toEqual({ request: 'Check the budget.\n\nAlso check the date.', kind: 'request' });
+});
+
+test('completed requests do not return as working cards after the visible four move on', () => {
+  const completed = Array.from({ length: 5 }, (_, index) => ({
+    id: String(index),
+    request: `Question ${index}`,
+    kind: 'research' as const,
+    status: 'ready' as const,
+    answer: `Answer ${index}`,
+  }));
+  const local = completed.map((card) => ({
+    ...card,
+    id: `local-${card.id}`,
+    status: 'working' as const,
+    answer: '',
+  }));
+  expect(unacknowledgedMeetingAnswers(local, completed)).toEqual([]);
 });

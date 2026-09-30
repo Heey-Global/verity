@@ -50,6 +50,7 @@ import {
   meetingAnswerSource,
   meetingRequestFromPrompt,
   type MeetingAnswerCard,
+  unacknowledgedMeetingAnswers,
 } from '../../lib/liveMeetingAnswers';
 import {
   resolvedSpeaker,
@@ -287,12 +288,14 @@ export default function MeetingScreen() {
                   : [],
               );
               const kept =
-                promptIndexes.length > 4
-                  ? ordered.slice(promptIndexes.at(-4))
+                promptIndexes.length > 32
+                  ? ordered.slice(promptIndexes.at(-32))
                   : ordered.slice(-4_000);
               if (mounted && displayedMeetingId.current === shown) {
                 answerEvents.current = { meetingId: shown, events: kept };
-                setAnswers(meetingAnswerCards(kept, shown));
+                const historyCards = meetingAnswerCards(kept, shown);
+                setAnswers(historyCards.slice(-4));
+                setLocalAnswers((current) => unacknowledgedMeetingAnswers(current, historyCards));
               }
               if (client.getActivity) {
                 const activity = await client.getActivity(sessionId);
