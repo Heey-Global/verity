@@ -68,6 +68,7 @@ import {
   listSessionsSummary,
   listSessionsTitle,
   permissionInputText,
+  printableFileHtml,
   sessionHandoffCaveats,
   sessionHandoffSummary,
   sessionHandoffTitle,
@@ -198,8 +199,10 @@ import {
   cacheDirectoryName,
   fileEntryMeta,
   fileIcon,
+  loadPrintModule,
   loadSharingModule,
   parentPath,
+  pdfFileName,
 } from '../../lib/sessionFileUi';
 import {
   claimPendingMeetingUpload,
@@ -255,6 +258,9 @@ const draftStore = new Map<string, string>();
 const MEETING_FOLLOW_UP_IDLE_POLL_MS = 1200;
 const MEETING_FOLLOW_UP_IDLE_ATTEMPTS = 100;
 const MAX_ATTACHMENTS_PER_TURN = 8;
+// Points at 72 PPI (~18 mm). iOS takes page margins only from this option; the
+// document's own `@page` rule covers Android.
+const PRINT_MARGINS = { top: 50, bottom: 50, left: 50, right: 50 };
 // A history page is an append behind the viewport, so nothing has to be corrected
 // afterwards — but FlashList still measures the new rows over the following frames.
 // Treat the page as "settling" until then so an automatic follow-up load cannot stack
@@ -4570,6 +4576,66 @@ function SessionFilesSheet({
   );
   openWithRef.current = openWith;
 
+  // Print or export the previewed text file. Sharing the raw file never offers
+  // "Print" on iOS — the system prints only content it renders itself, PDFs and
+  // images — so the file goes through HTML instead: straight to the print dialog,
+  // or into a PDF that the share sheet can print, mail or save.
+  const exportPreview = useCallback(
+    (file: { path: string; content: string }, mode: 'print' | 'pdf') => {
+      void (async () => {
+        try {
+          const print = await loadPrintModule();
+          if (print === undefined) throw new Error('Printing is not available in this build');
+          const html = printableFileHtml(file.path, file.content);
+          if (mode === 'print') {
+            try {
+              await print.printAsync({ html, margins: PRINT_MARGINS });
+            } catch (err) {
+              // iOS rejects a print dialog the operator simply dismissed.
+              if (err instanceof Error && /did not complete/i.test(err.message)) return;
+              throw err;
+            }
+            return;
+          }
+          const rendered = await print.printToFileAsync({ html, margins: PRINT_MARGINS });
+          const cacheDir = new FsDirectory(
+            Paths.cache,
+            cacheDirectoryName(sessionId, `${file.path}.pdf`),
+          );
+          cacheDir.create({ idempotent: true, intermediates: true });
+          const pdf = new FsFile(cacheDir, pdfFileName(file.path));
+          await new FsFile(rendered.uri).move(pdf, { overwrite: true });
+          const sharing = await loadSharingModule();
+          if (sharing === undefined || !(await sharing.isAvailableAsync())) {
+            throw new Error('No app is available to share this PDF');
+          }
+          await sharing.shareAsync(pdf.uri, {
+            mimeType: 'application/pdf',
+            UTI: 'com.adobe.pdf',
+            dialogTitle: `Share ${pdfFileName(file.path)}`,
+          });
+        } catch (err) {
+          Alert.alert(
+            mode === 'print' ? 'Could not print file' : 'Could not create PDF',
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      })();
+    },
+    [sessionId],
+  );
+
+  const chooseExport = useCallback(
+    (file: { path: string; content: string }) => {
+      Alert.alert(fileNameFromPath(file.path), undefined, [
+        { text: 'Print', onPress: () => exportPreview(file, 'print') },
+        { text: 'Share as PDF', onPress: () => exportPreview(file, 'pdf') },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    },
+    [exportPreview],
+  );
+
   const openFile = useCallback(
     (entry: SessionFileEntry) => {
       // Every tap invalidates whatever fetch is in flight: a large file takes long
@@ -5039,6 +5105,17 @@ function SessionFilesSheet({
                   drag-selecting the whole file no longer works — this copies the exact
                   content the server returned, which is what select-all was for anyway. */}
               <CopyButton value={preview.content} accessibilityLabel="Copy file contents" />
+              {Platform.OS !== 'web' ? (
+                <Pressable
+                  onPress={() => chooseExport(preview)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Print or share as PDF"
+                  style={styles.bookmarkRemove}
+                >
+                  <Icon name="printer" size={18} color={theme.colors.textMuted} />
+                </Pressable>
+              ) : null}
               <Pressable
                 onPress={() => openWith(preview.path)}
                 hitSlop={8}

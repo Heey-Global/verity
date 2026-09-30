@@ -60,3 +60,20 @@ export async function loadSharingModule(): Promise<typeof import('expo-sharing')
     return undefined;
   }
 }
+
+/** Like {@link loadSharingModule}: a build without the native print module (an
+ * older dev client, Jest) reports printing as unavailable instead of crashing. */
+export async function loadPrintModule(): Promise<typeof import('expo-print') | undefined> {
+  try {
+    return await import('expo-print');
+  } catch {
+    return undefined;
+  }
+}
+
+/** The name a file's PDF export is shared under: `notes/a.md` → `a.pdf`. */
+export function pdfFileName(path: string): string {
+  const name = path.split('/').filter(Boolean).pop() ?? 'document';
+  const stem = name.replace(/\.[^.]+$/, '');
+  return `${stem.length > 0 ? stem : name}.pdf`;
+}

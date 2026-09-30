@@ -111,6 +111,7 @@
         "expo-local-authentication",
         "expo-localization",
         "expo-notifications",
+        "expo-print",
         "expo-router",
         "expo-secure-store",
         "expo-sharing",
