@@ -32,12 +32,13 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
     if connect {
       // Any local process can dial the listener; only the host and port check
       // keeps the tunnel pinned to the paired Core.
+      let otherHost = host == "core.test" ? "wrong.test" : "core.test"
       for head in [
-        "CONNECT wrong.test:443 HTTP/1.1\r\n\r\n",
-        "CONNECT core.test:8443 HTTP/1.1\r\n\r\n",
-        "CONNECT core.test HTTP/1.1\r\n\r\n",
-        "GET / HTTP/1.1\r\nHost: core.test\r\n\r\n",
-        "CONNECT core.test:443\r\n\r\n",
+        "CONNECT \(otherHost):443 HTTP/1.1\r\n\r\n",
+        "CONNECT \(host):8443 HTTP/1.1\r\n\r\n",
+        "CONNECT \(host) HTTP/1.1\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: \(host)\r\n\r\n",
+        "CONNECT \(host):443\r\n\r\n",
       ] {
         try await expectConnectRejected(port: port, head: head)
       }
