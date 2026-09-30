@@ -22,13 +22,14 @@ import { VerityApiError, type VerityClient } from '@verity/mobile';
 type MoveInput = Parameters<VerityClient['moveSession']>[1];
 // Keep ambiguous requests through dialog unmounts, scoped to the connected client.
 const pendingMoves = new WeakMap<VerityClient, Map<string, MoveInput>>();
+// Row height of a project option; the floating list sizes itself from it.
+const optionHeight = 48;
 
 type MoveResult = Awaited<ReturnType<VerityClient['moveSession']>>;
 export function SessionSettingsDialog({
   sessionId,
   sessionName,
   displayName,
-  meta,
   projectId,
   projectName,
   canMove,
@@ -43,8 +44,6 @@ export function SessionSettingsDialog({
   sessionId: string;
   sessionName: string | null;
   displayName: string;
-  // One line under the title, e.g. "Claude Opus 5.5 · control"; falls back to the name.
-  meta?: string;
   projectId: string | null;
   projectName: string;
   canMove: boolean;
@@ -56,7 +55,6 @@ export function SessionSettingsDialog({
     projectId: string;
     projectName: string;
     detail?: string;
-    running?: boolean;
   }[];
   client: VerityClient;
   onClose: () => void;
@@ -69,6 +67,71 @@ export function SessionSettingsDialog({
   const [draftName, setDraftName] = useState(sessionName ?? '');
   const [savedName, setSavedName] = useState(sessionName);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Where the project select sits inside the card, so its options can float over
+  // the rest of the dialog instead of pushing it down.
+  const [pickerAnchor, setPickerAnchor] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    cardHeight: number;
+  }>();
+  const cardRef = useRef<View>(null);
+  const selectRef = useRef<View>(null);
+  // A pending wait for the keyboard to hide; dropped whenever the list closes so
+  // a late event cannot measure a closed picker or an unmounted card.
+  const keyboardWait = useRef<() => void>(undefined);
+  const stopKeyboardWait = () => {
+    keyboardWait.current?.();
+    keyboardWait.current = undefined;
+  };
+  useEffect(() => stopKeyboardWait, []);
+  const closePicker = () => {
+    stopKeyboardWait();
+    setPickerOpen(false);
+  };
+  const measurePicker = () => {
+    const card = cardRef.current;
+    if (!card) return;
+    // Measure the select and the card together, after any layout change, so the
+    // list neither opens from a stale spot nor flips on an outdated card height.
+    // A failed measurement closes the list rather than leaving it invisible.
+    selectRef.current?.measureLayout(
+      card,
+      (x, y, w, h) =>
+        card.measure((_left, _top, _width, cardHeight) =>
+          setPickerAnchor({ x, y, w, h, cardHeight }),
+        ),
+      closePicker,
+    );
+  };
+  const togglePicker = () => {
+    if (pickerOpen) {
+      closePicker();
+      return;
+    }
+    // The list stays invisible and untouchable until measured, so it never
+    // flashes at a guess or takes a tap on an option nobody could see.
+    setPickerAnchor(undefined);
+    setPickerOpen(true);
+    if (!Keyboard.isVisible()) {
+      measurePicker();
+      return;
+    }
+    // Hiding the keyboard resizes the card; measure once it has settled. The
+    // timeout covers a hide event that never arrives.
+    const settle = () => {
+      stopKeyboardWait();
+      requestAnimationFrame(measurePicker);
+    };
+    const hidden = Keyboard.addListener('keyboardDidHide', settle);
+    const fallback = setTimeout(settle, 400);
+    keyboardWait.current = () => {
+      hidden.remove();
+      clearTimeout(fallback);
+    };
+    Keyboard.dismiss();
+  };
   const pending = pendingMoves.get(client) ?? new Map<string, MoveInput>();
   pendingMoves.set(client, pending);
   const previous = pending.get(sessionId);
@@ -92,6 +155,7 @@ export function SessionSettingsDialog({
   const slide = useRef(new Animated.Value(0)).current;
   const showView = (next: 'settings' | 'link') => {
     Keyboard.dismiss();
+    closePicker();
     setLinkError(undefined);
     if (next === 'link') {
       setLinkQuery('');
@@ -265,7 +329,7 @@ export function SessionSettingsDialog({
       }
       style={[styles.button, styles.primary, !result && !canSave && styles.disabled]}
     >
-      {busy && <ActivityIndicator size="small" color={theme.colors.background} />}
+      {busy && <ActivityIndicator size="small" color={theme.colors.onPrimary} />}
       <Text style={styles.primaryText}>
         {result
           ? 'Done'
@@ -316,11 +380,13 @@ export function SessionSettingsDialog({
   );
   const settingsView = (
     <>
-      {header(result ? 'Session moved' : 'Session settings', meta || displayName)}
+      {header(result ? 'Session moved' : 'Session settings', undefined)}
       <ScrollView
         style={styles.body}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        // The floating project list is anchored to where the select was measured.
+        onScrollBeginDrag={closePicker}
       >
         {result ? (
           <>
@@ -336,9 +402,6 @@ export function SessionSettingsDialog({
           </>
         ) : (
           <>
-            <Text style={styles.overline} accessibilityRole="header">
-              Details
-            </Text>
             <View style={styles.field}>
               <Text style={styles.label}>Name</Text>
               <TextInput
@@ -369,7 +432,8 @@ export function SessionSettingsDialog({
                   disabled: busy || unresolved || !canMove || projects.length === 0,
                 }}
                 disabled={busy || unresolved || !canMove || projects.length === 0}
-                onPress={() => setPickerOpen((open) => !open)}
+                onPress={togglePicker}
+                ref={selectRef}
                 style={[styles.select, (busy || unresolved || !canMove) && styles.disabled]}
               >
                 <Icon name="folder" size={16} color={theme.colors.textMuted} />
@@ -382,44 +446,6 @@ export function SessionSettingsDialog({
                   color={theme.colors.textMuted}
                 />
               </Pressable>
-              {pickerOpen && (
-                <ScrollView
-                  style={styles.options}
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {[
-                    { id: projectId, name: projectName },
-                    ...projects.filter((project) => project.id !== projectId),
-                  ].map((project) => (
-                    <Pressable
-                      key={project.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={project.name}
-                      accessibilityState={{
-                        selected: target === project.id,
-                        disabled: busy || unresolved || !canMove,
-                      }}
-                      disabled={busy || unresolved || !canMove}
-                      style={[styles.option, target === project.id && styles.selected]}
-                      onPress={() => {
-                        setTarget(project.id);
-                        setOperationId(randomUUID());
-                        setLeaveCommits(false);
-                        setCommitConfirmation(false);
-                        setError(undefined);
-                        setPickerOpen(false);
-                      }}
-                    >
-                      <Icon name="folder" size={16} color={theme.colors.textMuted} />
-                      <Text style={styles.optionText}>{project.name}</Text>
-                      {target === project.id && (
-                        <Icon name="check" size={16} color={theme.colors.accent} />
-                      )}
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              )}
             </View>
             {!canMove && (
               <Text style={styles.hint}>
@@ -466,7 +492,7 @@ export function SessionSettingsDialog({
               </Text>
             )}
             <View style={styles.sectionHeaderRow}>
-              <Text style={styles.overline} accessibilityRole="header">
+              <Text style={styles.label} accessibilityRole="header">
                 Linked sessions
               </Text>
               <Pressable
@@ -660,12 +686,6 @@ export function SessionSettingsDialog({
                   onPress={() => void addLink(item.id)}
                   style={({ pressed }) => [styles.candidate, pressed && styles.candidatePressed]}
                 >
-                  <View
-                    style={[
-                      styles.statusDot,
-                      item.running && { backgroundColor: theme.colors.tone.attention },
-                    ]}
-                  />
                   <View style={styles.linkLabel}>
                     <Text
                       style={[styles.rowTitle, linked && styles.rowTitleMuted]}
@@ -717,6 +737,23 @@ export function SessionSettingsDialog({
     </>
   );
   const linking = view === 'link' && !result;
+  const projectOptions = [
+    { id: projectId, name: projectName },
+    ...projects.filter((project) => project.id !== projectId),
+  ];
+  // Open downwards when the list fits below the select, otherwise towards the
+  // side with more room — the same choice a native menu makes near an edge.
+  const listHeight = Math.min(projectOptions.length * optionHeight + 10, 250);
+  const listPosition = (() => {
+    if (!pickerAnchor)
+      return { left: 20, right: 20, top: 0, opacity: 0, pointerEvents: 'none' as const };
+    const { x, y, w, h, cardHeight } = pickerAnchor;
+    const below = Math.max(cardHeight - (y + h) - 12, 0);
+    const above = Math.max(y - 12, 0);
+    return below >= listHeight || below >= above
+      ? { left: x, width: w, top: y + h + 6, maxHeight: Math.min(listHeight, below) }
+      : { left: x, width: w, bottom: cardHeight - y + 6, maxHeight: Math.min(listHeight, above) };
+  })();
 
   return (
     <Modal
@@ -738,10 +775,17 @@ export function SessionSettingsDialog({
             accessibilityLabel="Dismiss session settings"
           />
           <View
+            ref={cardRef}
             style={[styles.card, linking && settingsHeight ? { height: settingsHeight } : null]}
             testID="session-settings-card"
             onLayout={
-              linking ? undefined : (event) => setSettingsHeight(event.nativeEvent.layout.height)
+              linking
+                ? undefined
+                : (event) => {
+                    setSettingsHeight(event.nativeEvent.layout.height);
+                    // A hint, an error or rotation moves the select under an open list.
+                    if (pickerOpen) measurePicker();
+                  }
             }
           >
             <Animated.View
@@ -765,6 +809,51 @@ export function SessionSettingsDialog({
             >
               {linking ? linkView : settingsView}
             </Animated.View>
+            {pickerOpen && !linking && !result ? (
+              <>
+                <Pressable
+                  style={StyleSheet.absoluteFill}
+                  onPress={closePicker}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close project list"
+                />
+                <View testID="project-options" style={[styles.options, listPosition]}>
+                  <ScrollView
+                    style={styles.optionsClip}
+                    nestedScrollEnabled
+                    keyboardShouldPersistTaps="handled"
+                  >
+                    {projectOptions.map((project) => (
+                      <Pressable
+                        key={project.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={project.name}
+                        accessibilityState={{
+                          selected: target === project.id,
+                          disabled: busy || unresolved || !canMove,
+                        }}
+                        disabled={busy || unresolved || !canMove}
+                        style={[styles.option, target === project.id && styles.selected]}
+                        onPress={() => {
+                          setTarget(project.id);
+                          setOperationId(randomUUID());
+                          setLeaveCommits(false);
+                          setCommitConfirmation(false);
+                          setError(undefined);
+                          closePicker();
+                        }}
+                      >
+                        <Icon name="folder" size={16} color={theme.colors.textMuted} />
+                        <Text style={styles.optionText}>{project.name}</Text>
+                        {target === project.id && (
+                          <Icon name="check" size={16} color={theme.colors.accent} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              </>
+            ) : null}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -941,7 +1030,6 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       borderRadius: 12,
     },
     candidatePressed: { backgroundColor: theme.colors.surfaceAlt },
-    statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.idle },
     addButton: {
       width: 32,
       height: 32,
@@ -998,12 +1086,27 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     selectText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md },
     placeholder: { color: theme.colors.textFaint },
     options: {
-      maxHeight: 208,
-      flexGrow: 0,
+      position: 'absolute',
       borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
       backgroundColor: theme.colors.surfaceAlt,
+      paddingVertical: 4,
+      // No overflow clipping here: on iOS it would mask the shadow.
+      shadowColor: '#000',
+      shadowOpacity: 0.45,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 8 },
+      elevation: 12,
     },
-    option: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
+    optionsClip: { borderRadius: 11, overflow: 'hidden' },
+    option: {
+      minHeight: optionHeight,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      padding: 12,
+    },
     selected: { backgroundColor: `${theme.colors.accent}14` },
     optionText: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm },
     errorBox: { borderLeftWidth: 2, borderLeftColor: theme.colors.tone.danger, paddingLeft: 12 },
@@ -1036,13 +1139,10 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     },
     primary: {
       minWidth: 96,
-      backgroundColor: theme.colors.accent,
-      shadowColor: theme.colors.accent,
-      shadowOpacity: 0.3,
-      shadowRadius: 10,
-      shadowOffset: { width: 0, height: 2 },
+      borderRadius: theme.radius.md,
+      backgroundColor: theme.colors.primary,
     },
-    primaryText: { color: theme.colors.background, fontSize: theme.text.md, fontWeight: '700' },
+    primaryText: { color: theme.colors.onPrimary, fontSize: theme.text.md, fontWeight: '700' },
     secondary: { minWidth: 96, backgroundColor: theme.colors.surfaceAlt },
     secondaryText: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
     cancelText: { color: theme.colors.textMuted, fontSize: theme.text.md, fontWeight: '600' },
