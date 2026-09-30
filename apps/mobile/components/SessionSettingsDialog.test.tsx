@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { ScrollView } from 'react-native';
+import { Modal, ScrollView } from 'react-native';
 import { SessionSettingsDialog } from './SessionSettingsDialog';
 
 jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => `operation-${Math.random()}`) }));
@@ -67,11 +67,49 @@ it('links a chosen session without changing the name or project', async () => {
     />,
   );
   fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Choose Target project' }));
   fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
   await waitFor(() => expect(client.linkSessions).toHaveBeenCalledWith('s', 'peer'));
   expect(client.renameSession).not.toHaveBeenCalled();
   expect(client.moveSession).not.toHaveBeenCalled();
+});
+
+it('finds a session by search and keeps the link view open to link more', async () => {
+  const view = setup(jest.fn());
+  const client = view.props.client as jest.Mocked<VerityClient>;
+  // The mount-time load never settles here; this answers the reload after linking.
+  client.listSessionLinks.mockResolvedValue([
+    { sessionId: 'peer', name: 'Backend work', projectName: 'Target project' },
+  ] as never);
+  view.rerender(
+    <SessionSettingsDialog
+      {...view.props}
+      linkableSessions={[
+        { id: 'peer', name: 'Backend work', projectId: 'b', projectName: 'Target project' },
+        { id: 'docs', name: 'Docs refresh', projectId: 'c', projectName: 'Other project' },
+      ]}
+    />,
+  );
+  await act(async () => undefined);
+  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
+  // Every candidate is one tap away: no project step to open before a session shows.
+  expect(screen.getByRole('button', { name: 'Link Docs refresh' })).toBeTruthy();
+  fireEvent.changeText(screen.getByLabelText('Search sessions'), 'backend');
+  expect(screen.queryByRole('button', { name: 'Link Docs refresh' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
+  await waitFor(() => expect(client.linkSessions).toHaveBeenCalledWith('s', 'peer'));
+  // Linking must not bounce the operator back to settings, or linking a second
+  // session means finding the entry point again.
+  expect(await screen.findByRole('button', { name: 'Backend work, linked' })).toBeDisabled();
+  fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
+  expect(screen.getByRole('button', { name: 'Disconnect Backend work' })).toBeTruthy();
+});
+
+it('returns from the link view on Android back instead of closing the dialog', () => {
+  const { props } = setup(jest.fn());
+  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
+  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
+  expect(props.onClose).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Session name')).toBeTruthy();
 });
 
 it('reports why the server refused a link where it can be seen', async () => {
@@ -90,7 +128,6 @@ it('reports why the server refused a link where it can be seen', async () => {
     />,
   );
   fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Choose Target project' }));
   fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
   expect(await screen.findByRole('alert')).toHaveTextContent(
     'Could not link the sessions: both sessions must belong to active projects.',
