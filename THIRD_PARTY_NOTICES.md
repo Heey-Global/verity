@@ -60,7 +60,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 1 |
 | ISC | 60 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 968 |
+| MIT | 969 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -699,6 +699,7 @@ separately by `TRADEMARKS.md`.
 | expo-modules-core | MIT | [source](https://www.npmjs.com/package/expo-modules-core) |
 | expo-modules-jsi | MIT | [source](https://www.npmjs.com/package/expo-modules-jsi) |
 | expo-notifications | MIT | [source](https://www.npmjs.com/package/expo-notifications) |
+| expo-print | MIT | [source](https://www.npmjs.com/package/expo-print) |
 | expo-router | MIT | [source](https://www.npmjs.com/package/expo-router) |
 | expo-secure-store | MIT | [source](https://www.npmjs.com/package/expo-secure-store) |
 | expo-server-sdk | MIT | [source](https://www.npmjs.com/package/expo-server-sdk) |

@@ -81,6 +81,7 @@ export {
 } from './ui/transcriptFreeze.js';
 export { parseMarkdownBlocks, splitTableCells, type MdBlock } from './ui/markdownTable.js';
 export { chunkFilePreview } from './ui/filePreview.js';
+export { printableFileHtml, markdownToHtml, isMarkdownPath } from './ui/printDocument.js';
 export {
   modelRateLimited,
   rateLimitNotice,
