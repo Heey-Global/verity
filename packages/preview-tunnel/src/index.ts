@@ -681,6 +681,16 @@ export class PreviewEdge {
         await this.handleLogin(request, response);
         return;
       }
+      if (
+        request.method === 'GET' &&
+        url.searchParams.has('pin') &&
+        !this.sessionAuthorized(request)
+      ) {
+        const pin = url.searchParams.get('pin') ?? '';
+        url.searchParams.delete('pin');
+        await this.handleLogin(request, response, { pin, next: url.pathname + url.search });
+        return;
+      }
       if (!this.sessionAuthorized(request)) {
         response.writeHead(303, {
           location: `${LOGIN_PATH}?next=${encodeURIComponent(url.pathname + url.search)}`,
@@ -856,9 +866,13 @@ export class PreviewEdge {
     return Date.now() >= this.expiresAtMs;
   }
 
-  private async handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  private async handleLogin(
+    request: IncomingMessage,
+    response: ServerResponse,
+    linkCode?: { pin: string; next: string },
+  ): Promise<void> {
     const url = new URL(request.url ?? LOGIN_PATH, this.options.publicOrigin);
-    if (request.method === 'GET') {
+    if (request.method === 'GET' && !linkCode && !url.searchParams.has('pin')) {
       response.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store',
@@ -868,7 +882,7 @@ export class PreviewEdge {
       response.end(loginPage(url.searchParams.get('next') ?? '/'));
       return;
     }
-    if (request.method !== 'POST') {
+    if (request.method !== 'POST' && request.method !== 'GET') {
       response.writeHead(405, { allow: 'GET, POST' });
       response.end();
       return;
@@ -904,7 +918,15 @@ export class PreviewEdge {
       }
       failures.push(now);
       this.loginFailures.set(client, failures);
-      const form = new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
+      const form = linkCode
+        ? new URLSearchParams(linkCode)
+        : request.method === 'GET'
+          ? url.searchParams
+          : new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
+      const next = safeNext(form.get('next'), this.options.publicOrigin);
+      const cleanNext = new URL(next, this.options.publicOrigin);
+      if (request.method === 'GET') cleanNext.searchParams.delete('pin');
+      const returnPath = cleanNext.pathname + cleanNext.search + cleanNext.hash;
       if (this.expired()) {
         sendPreviewExpired(response);
         return;
@@ -916,7 +938,7 @@ export class PreviewEdge {
           'content-security-policy': PREVIEW_PAGE_CSP,
           'x-frame-options': 'DENY',
         });
-        response.end(loginPage(form.get('next') ?? '/', 'Invalid code. Please try again.'));
+        response.end(loginPage(returnPath, 'Invalid code. Please try again.'));
         return;
       }
       if (this.expired()) {
@@ -924,9 +946,8 @@ export class PreviewEdge {
         return;
       }
       this.loginFailures.delete(client);
-      const next = safeNext(form.get('next'), this.options.publicOrigin);
       response.writeHead(303, {
-        location: next,
+        location: returnPath,
         'set-cookie': `${COOKIE_NAME}=${this.sessionValue()}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=28800`,
         'cache-control': 'no-store',
       });
