@@ -30,7 +30,6 @@ export function SessionSettingsDialog({
   sessionId,
   sessionName,
   displayName,
-  meta,
   projectId,
   projectName,
   canMove,
@@ -45,8 +44,6 @@ export function SessionSettingsDialog({
   sessionId: string;
   sessionName: string | null;
   displayName: string;
-  // One line under the title, e.g. "Claude Opus 5.5 · control"; falls back to the name.
-  meta?: string;
   projectId: string | null;
   projectName: string;
   canMove: boolean;
@@ -58,7 +55,6 @@ export function SessionSettingsDialog({
     projectId: string;
     projectName: string;
     detail?: string;
-    running?: boolean;
   }[];
   client: VerityClient;
   onClose: () => void;
@@ -333,7 +329,7 @@ export function SessionSettingsDialog({
       }
       style={[styles.button, styles.primary, !result && !canSave && styles.disabled]}
     >
-      {busy && <ActivityIndicator size="small" color={theme.colors.background} />}
+      {busy && <ActivityIndicator size="small" color={theme.colors.onPrimary} />}
       <Text style={styles.primaryText}>
         {result
           ? 'Done'
@@ -384,7 +380,7 @@ export function SessionSettingsDialog({
   );
   const settingsView = (
     <>
-      {header(result ? 'Session moved' : 'Session settings', meta || displayName)}
+      {header(result ? 'Session moved' : 'Session settings', undefined)}
       <ScrollView
         style={styles.body}
         contentContainerStyle={styles.content}
@@ -406,9 +402,6 @@ export function SessionSettingsDialog({
           </>
         ) : (
           <>
-            <Text style={styles.overline} accessibilityRole="header">
-              Details
-            </Text>
             <View style={styles.field}>
               <Text style={styles.label}>Name</Text>
               <TextInput
@@ -499,7 +492,7 @@ export function SessionSettingsDialog({
               </Text>
             )}
             <View style={styles.sectionHeaderRow}>
-              <Text style={styles.overline} accessibilityRole="header">
+              <Text style={styles.label} accessibilityRole="header">
                 Linked sessions
               </Text>
               <Pressable
@@ -693,12 +686,6 @@ export function SessionSettingsDialog({
                   onPress={() => void addLink(item.id)}
                   style={({ pressed }) => [styles.candidate, pressed && styles.candidatePressed]}
                 >
-                  <View
-                    style={[
-                      styles.statusDot,
-                      item.running && { backgroundColor: theme.colors.tone.attention },
-                    ]}
-                  />
                   <View style={styles.linkLabel}>
                     <Text
                       style={[styles.rowTitle, linked && styles.rowTitleMuted]}
@@ -1043,7 +1030,6 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       borderRadius: 12,
     },
     candidatePressed: { backgroundColor: theme.colors.surfaceAlt },
-    statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.idle },
     addButton: {
       width: 32,
       height: 32,
@@ -1153,13 +1139,10 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     },
     primary: {
       minWidth: 96,
-      backgroundColor: theme.colors.accent,
-      shadowColor: theme.colors.accent,
-      shadowOpacity: 0.3,
-      shadowRadius: 10,
-      shadowOffset: { width: 0, height: 2 },
+      borderRadius: theme.radius.md,
+      backgroundColor: theme.colors.primary,
     },
-    primaryText: { color: theme.colors.background, fontSize: theme.text.md, fontWeight: '700' },
+    primaryText: { color: theme.colors.onPrimary, fontSize: theme.text.md, fontWeight: '700' },
     secondary: { minWidth: 96, backgroundColor: theme.colors.surfaceAlt },
     secondaryText: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
     cancelText: { color: theme.colors.textMuted, fontSize: theme.text.md, fontWeight: '600' },
