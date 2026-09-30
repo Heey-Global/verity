@@ -14,6 +14,11 @@ describe('markdownToHtml', () => {
     expect(html).toContain('<h2>Next</h2>');
   });
 
+  it('strips only a whitespace-separated closing hash run from headings', () => {
+    expect(markdownToHtml('# Using C#')).toBe('<h1>Using C#</h1>');
+    expect(markdownToHtml('## Closed ##')).toBe('<h2>Closed</h2>');
+  });
+
   it('leaves snake_case identifiers alone', () => {
     expect(markdownToHtml('call max_old_space_size now')).toBe(
       '<p>call max_old_space_size now</p>',
