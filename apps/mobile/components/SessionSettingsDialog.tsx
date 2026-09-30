@@ -22,6 +22,8 @@ import { VerityApiError, type VerityClient } from '@verity/mobile';
 type MoveInput = Parameters<VerityClient['moveSession']>[1];
 // Keep ambiguous requests through dialog unmounts, scoped to the connected client.
 const pendingMoves = new WeakMap<VerityClient, Map<string, MoveInput>>();
+// Row height of a project option; the floating list sizes itself from it.
+const optionHeight = 48;
 
 type MoveResult = Awaited<ReturnType<VerityClient['moveSession']>>;
 export function SessionSettingsDialog({
@@ -80,34 +82,58 @@ export function SessionSettingsDialog({
   }>();
   const cardRef = useRef<View>(null);
   const selectRef = useRef<View>(null);
+  // A pending wait for the keyboard to hide; dropped whenever the list closes so
+  // a late event cannot measure a closed picker or an unmounted card.
+  const keyboardWait = useRef<() => void>(undefined);
+  const stopKeyboardWait = () => {
+    keyboardWait.current?.();
+    keyboardWait.current = undefined;
+  };
+  useEffect(() => stopKeyboardWait, []);
+  const closePicker = () => {
+    stopKeyboardWait();
+    setPickerOpen(false);
+  };
   const measurePicker = () => {
     const card = cardRef.current;
     if (!card) return;
     // Measure the select and the card together, after any layout change, so the
     // list neither opens from a stale spot nor flips on an outdated card height.
-    selectRef.current?.measureLayout(card, (x, y, w, h) =>
-      card.measure((_left, _top, _width, cardHeight) =>
-        setPickerAnchor({ x, y, w, h, cardHeight }),
-      ),
+    // A failed measurement closes the list rather than leaving it invisible.
+    selectRef.current?.measureLayout(
+      card,
+      (x, y, w, h) =>
+        card.measure((_left, _top, _width, cardHeight) =>
+          setPickerAnchor({ x, y, w, h, cardHeight }),
+        ),
+      closePicker,
     );
   };
   const togglePicker = () => {
     if (pickerOpen) {
-      setPickerOpen(false);
+      closePicker();
       return;
     }
-    // The list stays invisible until measured, so it never flashes at a guess.
+    // The list stays invisible and untouchable until measured, so it never
+    // flashes at a guess or takes a tap on an option nobody could see.
     setPickerAnchor(undefined);
     setPickerOpen(true);
     if (!Keyboard.isVisible()) {
       measurePicker();
       return;
     }
-    // Hiding the keyboard resizes the card; measure once it has settled.
-    const hidden = Keyboard.addListener('keyboardDidHide', () => {
-      hidden.remove();
+    // Hiding the keyboard resizes the card; measure once it has settled. The
+    // timeout covers a hide event that never arrives.
+    const settle = () => {
+      stopKeyboardWait();
       requestAnimationFrame(measurePicker);
-    });
+    };
+    const hidden = Keyboard.addListener('keyboardDidHide', settle);
+    const fallback = setTimeout(settle, 400);
+    keyboardWait.current = () => {
+      hidden.remove();
+      clearTimeout(fallback);
+    };
     Keyboard.dismiss();
   };
   const pending = pendingMoves.get(client) ?? new Map<string, MoveInput>();
@@ -133,7 +159,7 @@ export function SessionSettingsDialog({
   const slide = useRef(new Animated.Value(0)).current;
   const showView = (next: 'settings' | 'link') => {
     Keyboard.dismiss();
-    setPickerOpen(false);
+    closePicker();
     setLinkError(undefined);
     if (next === 'link') {
       setLinkQuery('');
@@ -364,7 +390,7 @@ export function SessionSettingsDialog({
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         // The floating project list is anchored to where the select was measured.
-        onScrollBeginDrag={() => setPickerOpen(false)}
+        onScrollBeginDrag={closePicker}
       >
         {result ? (
           <>
@@ -730,9 +756,10 @@ export function SessionSettingsDialog({
   ];
   // Open downwards when the list fits below the select, otherwise towards the
   // side with more room — the same choice a native menu makes near an edge.
-  const listHeight = Math.min(projectOptions.length * 48 + 10, 250);
+  const listHeight = Math.min(projectOptions.length * optionHeight + 10, 250);
   const listPosition = (() => {
-    if (!pickerAnchor) return { left: 20, right: 20, top: 0, opacity: 0 };
+    if (!pickerAnchor)
+      return { left: 20, right: 20, top: 0, opacity: 0, pointerEvents: 'none' as const };
     const { x, y, w, h, cardHeight } = pickerAnchor;
     const below = Math.max(cardHeight - (y + h) - 12, 0);
     const above = Math.max(y - 12, 0);
@@ -765,7 +792,13 @@ export function SessionSettingsDialog({
             style={[styles.card, linking && settingsHeight ? { height: settingsHeight } : null]}
             testID="session-settings-card"
             onLayout={
-              linking ? undefined : (event) => setSettingsHeight(event.nativeEvent.layout.height)
+              linking
+                ? undefined
+                : (event) => {
+                    setSettingsHeight(event.nativeEvent.layout.height);
+                    // A hint, an error or rotation moves the select under an open list.
+                    if (pickerOpen) measurePicker();
+                  }
             }
           >
             <Animated.View
@@ -793,12 +826,16 @@ export function SessionSettingsDialog({
               <>
                 <Pressable
                   style={StyleSheet.absoluteFill}
-                  onPress={() => setPickerOpen(false)}
+                  onPress={closePicker}
                   accessibilityRole="button"
                   accessibilityLabel="Close project list"
                 />
-                <View style={[styles.options, listPosition]}>
-                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                <View testID="project-options" style={[styles.options, listPosition]}>
+                  <ScrollView
+                    style={styles.optionsClip}
+                    nestedScrollEnabled
+                    keyboardShouldPersistTaps="handled"
+                  >
                     {projectOptions.map((project) => (
                       <Pressable
                         key={project.id}
@@ -816,7 +853,7 @@ export function SessionSettingsDialog({
                           setLeaveCommits(false);
                           setCommitConfirmation(false);
                           setError(undefined);
-                          setPickerOpen(false);
+                          closePicker();
                         }}
                       >
                         <Icon name="folder" size={16} color={theme.colors.textMuted} />
@@ -1068,15 +1105,22 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       borderWidth: 1,
       borderColor: theme.colors.border,
       backgroundColor: theme.colors.surfaceAlt,
-      overflow: 'hidden',
       paddingVertical: 4,
+      // No overflow clipping here: on iOS it would mask the shadow.
       shadowColor: '#000',
       shadowOpacity: 0.45,
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 8 },
       elevation: 12,
     },
-    option: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
+    optionsClip: { borderRadius: 11, overflow: 'hidden' },
+    option: {
+      minHeight: optionHeight,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      padding: 12,
+    },
     selected: { backgroundColor: `${theme.colors.accent}14` },
     optionText: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm },
     errorBox: { borderLeftWidth: 2, borderLeftColor: theme.colors.tone.danger, paddingLeft: 12 },

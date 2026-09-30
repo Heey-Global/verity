@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { Modal, ScrollView } from 'react-native';
+import { Modal, ScrollView, View } from 'react-native';
 import { SessionSettingsDialog } from './SessionSettingsDialog';
 
 jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => `operation-${Math.random()}`) }));
@@ -8,6 +8,19 @@ jest.mock('./Icon', () => ({ Icon: () => null }));
 jest.mock('react-native-unistyles', () => ({
   useUnistyles: () => ({ theme: jest.requireActual('../theme/tokens').darkTheme }),
 }));
+
+// The preset mocks host views with no-op native measurement, which would keep
+// the floating project list forever unmeasured.
+let layout: { select: [number, number, number, number]; cardHeight: number } | undefined;
+beforeEach(() => {
+  layout = { select: [20, 200, 300, 48], cardHeight: 600 };
+  jest.spyOn(View.prototype, 'measureLayout').mockImplementation((_relative, onSuccess) => {
+    if (layout) onSuccess(...layout.select);
+  });
+  jest.spyOn(View.prototype, 'measure').mockImplementation((onSuccess) => {
+    if (layout) onSuccess(0, 0, 340, layout.cardHeight, 0, 0);
+  });
+});
 
 const result = {
   projectId: 'b',
@@ -171,6 +184,25 @@ it('floats project options over the dialog instead of growing its content', () =
   }
   fireEvent.press(screen.getByLabelText('Close project list'));
   expect(screen.queryByRole('button', { name: 'Other project' })).toBeNull();
+});
+it('anchors project options below the select, or above it when the card has no room', () => {
+  setup(jest.fn());
+  fireEvent.press(screen.getByRole('button', { name: 'Project' }));
+  expect(screen.getByTestId('project-options')).toHaveStyle({ top: 254, left: 20, width: 300 });
+  fireEvent.press(screen.getByLabelText('Close project list'));
+  layout = { select: [20, 200, 300, 48], cardHeight: 300 };
+  fireEvent.press(screen.getByRole('button', { name: 'Project' }));
+  expect(screen.getByTestId('project-options')).toHaveStyle({ bottom: 106, maxHeight: 154 });
+});
+it('keeps unmeasured project options out of reach instead of guessing their place', () => {
+  layout = undefined;
+  setup(jest.fn());
+  fireEvent.press(screen.getByRole('button', { name: 'Project' }));
+  // An invisible list at a fallback spot would pick a project nobody saw.
+  expect(screen.getByTestId('project-options')).toHaveStyle({ opacity: 0 });
+  fireEvent.press(screen.getByRole('button', { name: 'Other project' }));
+  expect(screen.getByRole('button', { name: 'Other project' })).toBeOnTheScreen();
+  expect(screen.getByRole('button', { name: 'Project' })).not.toHaveTextContent(/Other project/);
 });
 it('keeps the retry key after an ambiguous failure and names the destination on success', async () => {
   const request = jest
