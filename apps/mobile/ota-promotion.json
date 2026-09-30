@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.44.1",
-  "runtime": "1.44.0",
+  "version": "1.45.1",
+  "runtime": "1.45.0",
   "channel": "testflight",
-  "commit": "40a99e51a907fb7c5889d4d303120d43d6005ae0",
-  "tag": "mobile-v1.44.1",
-  "branch": "staging-mobile-v1.44.1-40a99e51a907fb7c5889d4d303120d43d6005ae0",
-  "baseline": "mobile-v1.44.0",
-  "group": "4af07858-70e5-48ed-bd34-55572b16db1e",
+  "commit": "bdaeda2cad3a2767caf5935f90dba6891e1aa169",
+  "tag": "mobile-v1.45.1",
+  "branch": "staging-mobile-v1.45.1-bdaeda2cad3a2767caf5935f90dba6891e1aa169",
+  "baseline": "mobile-v1.45.0",
+  "group": "cfd3dac5-9ca0-4748-a81c-a2c7641cae0f",
   "notes": [
-    "tap haptically when a permission prompt blocks the agent (#924)",
-    "organize sources and approve shared publication (#921)"
+    "share session dev servers over Uplink (#934)",
+    "record structured ACP diagnostics for control plane (#933)"
   ]
 }
