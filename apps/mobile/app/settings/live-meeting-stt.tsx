@@ -113,7 +113,7 @@ export default function LiveMeetingSTTScreen() {
         <Text style={styles.label}>Engine</Text>
         {loadingEngines ? <ActivityIndicator color={ACCENT} /> : null}
         {!loadingEngines && engines.length === 0 ? (
-          <Text style={styles.caption}>This prototype requires iOS 26 or later.</Text>
+          <Text style={styles.caption}>This prototype requires iOS 27 or later.</Text>
         ) : null}
         {engines.map((engine) => (
           <Pressable
