@@ -20,20 +20,32 @@ export function resolvedSpeaker(
   return seen.has(speaker) ? null : speaker;
 }
 
-export function untimedTranscriptTail(transcript: string, words: TimedWord[]): string | null {
-  if (!words.length) return transcript.trim();
-  const spoken = words.flatMap((word) => word.text.match(/\S+/gu) ?? []);
+export function reconcileTimedTranscript(
+  transcript: string,
+  words: TimedWord[],
+): { words: TimedWord[]; tail: string } | null {
   const transcriptWords = [...transcript.matchAll(/\S+/gu)];
   const comparable = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-  for (let index = 0; index < spoken.length; index++) {
-    if (
-      !transcriptWords[index] ||
-      comparable(spoken[index]!) !== comparable(transcriptWords[index]![0])
-    )
-      return null;
-  }
-  const last = transcriptWords[spoken.length - 1];
-  return last ? transcript.slice(last.index + last[0].length).trim() : transcript.trim();
+  let index = 0;
+  const aligned = words.map((word) => {
+    const spoken = word.text.match(/\S+/gu) ?? [];
+    const first = transcriptWords[index];
+    for (const token of spoken) {
+      if (!transcriptWords[index] || comparable(token) !== comparable(transcriptWords[index]![0]))
+        return null;
+      index++;
+    }
+    const last = transcriptWords[index - 1];
+    return first && last
+      ? { ...word, text: transcript.slice(first.index, last.index + last[0].length) }
+      : null;
+  });
+  if (aligned.some((word) => word === null)) return null;
+  const last = transcriptWords[index - 1];
+  return {
+    words: aligned as TimedWord[],
+    tail: last ? transcript.slice(last.index + last[0].length).trim() : transcript.trim(),
+  };
 }
 
 export function speakerLines(

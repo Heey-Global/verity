@@ -47,7 +47,7 @@ import {
 import {
   resolvedSpeaker,
   speakerLines,
-  untimedTranscriptTail,
+  reconcileTimedTranscript,
   type SpeakerLine,
 } from '../../lib/liveMeetingSpeakers';
 
@@ -300,15 +300,15 @@ export default function MeetingScreen() {
 
   const chunks = useMemo(() => {
     if (meeting?.timedWords?.length) {
+      const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
+      if (!aligned) return [{ text: meeting.transcript }];
       const lines: TranscriptRow[] = speakerLines(
-        meeting.timedWords,
+        aligned.words,
         meeting.speakerTurns ?? [],
         meeting.speakerCorrections ?? [],
         meeting.speakerMerges ?? {},
       );
-      const tail = untimedTranscriptTail(meeting.transcript, meeting.timedWords);
-      if (tail === null) return [{ text: meeting.transcript }];
-      if (tail) lines.push({ text: `Speaker pending: ${tail}` });
+      if (aligned.tail) lines.push({ text: `Speaker pending: ${aligned.tail}` });
       return lines;
     }
     const text = meeting?.transcript ?? '';
