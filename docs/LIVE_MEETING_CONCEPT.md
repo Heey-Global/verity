@@ -113,13 +113,18 @@ dependent and is a validation gate, not a promise:
 
 - Apple's engine runs in a system process and is plausibly unaffected by the iOS 27 restriction
   on background Neural Engine access for in-app models. This must be tested on the target devices.
-- FluidAudio models run inside the app. Continued Neural Engine inference in the background on
-  iOS 27 requires the Background Inference entitlement together with `BGContinuedProcessingTask`,
-  which shows a Live Activity, can be cancelled by the person and may be terminated by the system.
-  Treat this as a separately gated capability for the FluidAudio path and for V2 diarization.
+- FluidAudio models run inside the app. Neural Engine access in the background requires the
+  Background Inference entitlement, even when an audio session keeps the app running. The app
+  declares that entitlement, but whether Nemotron and diarization continue through app switching
+  and screen lock remains a device-validation gate. `BGContinuedProcessingTask` is a separate
+  option for bounded inference work; it shows a Live Activity and the system may terminate it.
 
 Whatever the outcome, the transcript must show where capture stopped. Never claim to recover
 speech that occurred while capture or recognition was not running.
+On an unlocked iPad, the system microphone-in-use icon indicates active capture. There is no
+Dynamic Island on the target iPad Pro 11-inch (4th generation), and this implementation does not
+add an ActivityKit Live Activity. Neither system UI element proves that transcription or speaker
+inference is still progressing; validate those separately on the target devices.
 
 ### Ending a meeting
 
