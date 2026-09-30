@@ -20,8 +20,9 @@ const CLAUDE_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
   'claude-sonnet-5-5': '2.1.284',
 };
 
-/** First Codex CLI release whose bundled picker catalog lists GPT-6 Sol and Luna. */
+/** Verified Codex CLI floors whose bundled picker catalog lists these models. */
 const CODEX_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
+  'gpt-6.1-sol': '0.159.2',
   'gpt-6-sol': '0.156.1',
   'gpt-6-luna': '0.156.1',
 };
