@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.0.0](https://github.com/Heey-Global/verity/compare/v3.0.0...v4.0.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mobile:** require iOS 27 for background inference ([#930](https://github.com/Heey-Global/verity/issues/930))
+
+### Features
+
+* **preview:** share session dev servers over Uplink ([#934](https://github.com/Heey-Global/verity/issues/934)) ([bdaeda2](https://github.com/Heey-Global/verity/commit/bdaeda2cad3a2767caf5935f90dba6891e1aa169))
+* **session:** record structured ACP diagnostics for control plane ([#933](https://github.com/Heey-Global/verity/issues/933)) ([bc52cc4](https://github.com/Heey-Global/verity/commit/bc52cc47c9505f90dcae6156bc699285801ca156))
+
+
+### Bug Fixes
+
+* **mobile:** recover Remote Control over Uplink without VPN ([#931](https://github.com/Heey-Global/verity/issues/931)) ([f03c7c8](https://github.com/Heey-Global/verity/commit/f03c7c8a045acbecd00fa6055a4d5d8ed0cbcd4b))
+* **mobile:** require iOS 27 for background inference ([#930](https://github.com/Heey-Global/verity/issues/930)) ([85c38ad](https://github.com/Heey-Global/verity/commit/85c38ad31c136c929446931eed76b2aebd0c01a4))
+
 ## [3.0.0](https://github.com/Heey-Global/verity/compare/v2.19.0...v3.0.0) (2026-09-30)
 
 
