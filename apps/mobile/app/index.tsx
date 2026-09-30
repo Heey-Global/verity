@@ -738,6 +738,12 @@ function SessionList({ client }: { client: VerityClient }) {
           sessionId={renaming.sessionId}
           sessionName={renaming.name}
           displayName={sessionLabel(renaming)}
+          meta={[
+            modelDisplayName(renaming.model),
+            projects.find((project) => project.id === renaming.projectId)?.repo,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
           projectId={renaming.projectId ?? null}
           projectName={
             projects.find((project) => project.id === renaming.projectId)?.repo ?? 'No project'
@@ -779,6 +785,8 @@ function SessionList({ client }: { client: VerityClient }) {
               projectName:
                 projects.find((project) => project.id === candidate.projectId)?.repo ??
                 candidate.projectId!,
+              detail: modelDisplayName(candidate.model),
+              running: candidate.status === 'running',
             }))}
           onClose={() => setRenaming(null)}
           onDelete={onDeleteRenaming}
