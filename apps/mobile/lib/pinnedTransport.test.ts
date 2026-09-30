@@ -145,6 +145,63 @@ describe('pinned native file transport', () => {
     expect(mockReportDirectSuccess).toHaveBeenCalledWith('https://verity.example/sessions');
   });
 
+  it('recovers a read that the untested direct route lost through Uplink', async () => {
+    const pin = `sha256-${'a'.repeat(43)}`;
+    mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
+    mockRequest
+      .mockRejectedValueOnce(new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003]'))
+      .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
+
+    await expect(
+      createPinnedFetch(pin, true)('https://verity.example/sessions'),
+    ).resolves.toMatchObject({ status: 200 });
+    // Without the recovery the first read after leaving the VPN fails on screen
+    // and only its retry reaches Uplink.
+    expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
+    expect(mockRequest).toHaveBeenNthCalledWith(
+      2,
+      mockRequest.mock.calls[0]?.[0],
+      'https://verity.example/sessions',
+      'GET',
+      {},
+      null,
+      pin,
+      4_321,
+    );
+    expect(mockReportDirectSuccess).not.toHaveBeenCalled();
+  });
+
+  it('reports both routes when the Uplink recovery of a direct read also fails', async () => {
+    mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
+    mockRequest.mockRejectedValue(
+      new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]'),
+    );
+
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions'),
+    ).rejects.toMatchObject({
+      name: 'VerityConnectionError',
+      message:
+        'Direct and Uplink Core requests failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
+    });
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('never replays a failed direct mutation through Uplink', async () => {
+    mockRemotePort.mockResolvedValue(0);
+    mockRequest.mockRejectedValue(new Error('Pinned TLS transport failed'));
+
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions', {
+        method: 'POST',
+        body: '{}',
+      }),
+    ).rejects.toMatchObject({ name: 'VerityConnectionError' });
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    expect(mockRemotePort).toHaveBeenCalledTimes(1);
+    expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
+  });
+
   it('restores direct reachability even when Core returns an HTTP error', async () => {
     mockRemotePort.mockResolvedValue(0);
     mockRequest.mockResolvedValue({ status: 503, headers: {}, bodyBase64: 'e30=' });

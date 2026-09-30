@@ -41,8 +41,61 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var sentBytes = 0
     var receivedBytes = 0
     var deliveredBytes = 0
+    // Record-level trace of the pinned TLS exchange, never its contents: which
+    // proxy dialect opened the stream, the TLS record types seen in each
+    // direction, the first handshake message from Core, and which side ended
+    // the stream. On a device this is the only view of a handshake that the
+    // app's TLS client abandons without reporting why.
+    let proxy: String
+    let openedAt = Date()
+    var firstRemoteAt: Date?
+    var endedAt: Date?
+    var endedBy = "open"
+    var outTypes: [UInt8] = []
+    var inTypes: [UInt8] = []
+    var firstHandshake = "none"
 
-    init(_ connection: NWConnection) { self.connection = connection }
+    init(_ connection: NWConnection, proxy: String) {
+      self.connection = connection
+      self.proxy = proxy
+    }
+
+    func noteRecord(_ data: Data, incoming: Bool) {
+      guard data.count >= 5 else { return }
+      let type = data[data.startIndex]
+      guard type >= 20, type <= 23 else { return }
+      if incoming {
+        if inTypes.count < 6 { inTypes.append(type) }
+        if firstHandshake == "none", type == 22, data.count >= 6 {
+          let message = data[data.startIndex + 5]
+          // A HelloRetryRequest is a ServerHello whose random is the fixed
+          // RFC 8446 sentinel; the client must then send a second ClientHello.
+          let hrrRandom: [UInt8] = [
+            0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65,
+            0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2,
+            0xC8, 0xA8, 0x33, 0x9C,
+          ]
+          let randomStart = data.startIndex + 11
+          let isRetry = message == 2 && data.endIndex >= randomStart + 32
+            && Array(data[randomStart..<randomStart + 32]) == hrrRandom
+          firstHandshake = isRetry ? "hrr" : String(message)
+        }
+      } else if outTypes.count < 6 {
+        outTypes.append(type)
+      }
+    }
+
+    var traceToken: String {
+      let ended = endedAt ?? Date()
+      let firstRemote = firstRemoteAt.map { String(Int($0.timeIntervalSince(openedAt) * 1000)) }
+        ?? "none"
+      let list: ([UInt8]) -> String = {
+        $0.isEmpty ? "none" : $0.map { String($0) }.joined(separator: "-")
+      }
+      return "up\(sentBytes).dn\(receivedBytes).t\(firstRemote)"
+        + ".d\(Int(ended.timeIntervalSince(openedAt) * 1000)).\(endedBy).p\(proxy)"
+        + ".o\(list(outTypes)).i\(list(inTypes)).h\(firstHandshake)"
+    }
   }
 
   private let expectedHost: String
@@ -74,11 +127,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var localResets = 0
   private var remoteResets = 0
   private var lastReset = "none"
+  private var recentStreams: [Stream] = []
 
   // Counts and a fixed event name only: diagnostics must not expose URLs, tickets, or stream data.
   var diagnosticSummary: String {
     lock.withLock {
-      "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent), sentBytes=\(sentBytes), receivedBytes=\(receivedBytes), deliveredBytes=\(deliveredBytes), localResets=\(localResets), remoteResets=\(remoteResets), lastReset=\(lastReset)"
+      let traces = recentStreams.enumerated()
+        .map { "s\($0.offset + 1)=\($0.element.traceToken)" }.joined(separator: ";")
+      return "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent), sentBytes=\(sentBytes), receivedBytes=\(receivedBytes), deliveredBytes=\(deliveredBytes), localResets=\(localResets), remoteResets=\(remoteResets), lastReset=\(lastReset)"
+        + (traces.isEmpty ? "" : ", streams=\(traces)")
     }
   }
 
@@ -194,6 +251,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     for (id, stream) in streams {
       logStream(id, stream, event: "session_stopped")
       stream.closed = true
+      if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
     }
     streams.removeAll()
     sessionPendingBytes = 0
@@ -298,6 +356,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
       else { throw RemoteSmokeError.invalidFrame }
       lock.withLock {
         let first = stream.receivedBytes == 0 && !data.isEmpty
+        if first { stream.firstRemoteAt = Date() }
+        stream.noteRecord(data, incoming: true)
         stream.receivedBytes += data.count
         receivedBytes += data.count
         if first { logStream(id, stream, event: "first_remote_data") }
@@ -320,7 +380,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     case "stream.end":
       guard Set(frame.keys) == Set(["type", "streamId"]), !stream.incomingEnded
       else { throw RemoteSmokeError.invalidFrame }
-      lock.withLock { stream.incomingEnded = true }
+      lock.withLock {
+        stream.incomingEnded = true
+        if stream.endedBy == "open" { stream.endedBy = "remote"; stream.endedAt = Date() }
+      }
       enqueue(Data(), to: stream, id: id, complete: true)
     case "stream.reset":
       guard Set(frame.keys) == Set(["type", "streamId", "code"]),
@@ -391,6 +454,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     if let stream {
       if reason.hasPrefix("local_reset_") { localResets += 1; lastReset = reason }
       if reason.hasPrefix("remote_reset_") { remoteResets += 1; lastReset = reason }
+      if stream.endedBy == "open" {
+        stream.endedBy = reason.contains("reset") ? "reset" : reason == "completed" ? "remote" : "stopped"
+        stream.endedAt = Date()
+      }
       logStream(id, stream, event: reason)
       stream.closed = true
       sessionPendingBytes -= stream.pendingBytes
@@ -424,35 +491,49 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
     }
     do {
-      let greeting = try await read(connection, count: 2)
-      guard greeting[0] == 5, greeting[1] > 0 else { throw RemoteSmokeError.invalidFrame }
-      let methods = try await read(connection, count: Int(greeting[1]))
-      guard methods.contains(0) else { throw RemoteSmokeError.invalidFrame }
-      try await write(Data([5, 0]), to: connection)
-      let request = try await read(connection, count: 4)
-      guard request.prefix(3) == Data([5, 1, 0]) else { throw RemoteSmokeError.invalidFrame }
-      let matches: Bool
-      switch request[3] {
-      case 1:
-        matches = matchesIP(try await read(connection, count: 4), host: expectedHost,
-          family: AF_INET)
-      case 3:
-        let length = try await read(connection, count: 1)
-        let hostname = try await read(connection, count: Int(length[0]))
-        matches = String(data: hostname, encoding: .utf8)?.lowercased() == expectedHost.lowercased()
-      case 4:
-        matches = matchesIP(try await read(connection, count: 16), host: expectedHost,
-          family: AF_INET6)
-      default: throw RemoteSmokeError.invalidFrame
+      // The app's URLSession may dial this listener as a SOCKS5 or an HTTP
+      // CONNECT proxy; both carry the same pinned TLS bytes and are held to the
+      // same paired Core host and port.
+      let first = try await read(connection, count: 1)
+      let proxy: String
+      if first[0] == 5 {
+        proxy = "socks"
+        let count = try await read(connection, count: 1)
+        guard count[0] > 0 else { throw RemoteSmokeError.invalidFrame }
+        let methods = try await read(connection, count: Int(count[0]))
+        guard methods.contains(0) else { throw RemoteSmokeError.invalidFrame }
+        try await write(Data([5, 0]), to: connection)
+        let request = try await read(connection, count: 4)
+        guard request.prefix(3) == Data([5, 1, 0]) else { throw RemoteSmokeError.invalidFrame }
+        let matches: Bool
+        switch request[3] {
+        case 1:
+          matches = matchesIP(try await read(connection, count: 4), host: expectedHost,
+            family: AF_INET)
+        case 3:
+          let length = try await read(connection, count: 1)
+          let hostname = try await read(connection, count: Int(length[0]))
+          matches = String(data: hostname, encoding: .utf8)?.lowercased() == expectedHost.lowercased()
+        case 4:
+          matches = matchesIP(try await read(connection, count: 16), host: expectedHost,
+            family: AF_INET6)
+        default: throw RemoteSmokeError.invalidFrame
+        }
+        let port = try await read(connection, count: 2)
+        guard matches, (Int(port[0]) << 8) | Int(port[1]) == expectedPort
+        else { throw RemoteSmokeError.invalidInput }
+      } else if first[0] == UInt8(ascii: "C") {
+        proxy = "connect"
+        let head = try await readConnectHead(connection, first: first)
+        guard matchesConnectTarget(head) else { throw RemoteSmokeError.invalidInput }
+      } else {
+        throw RemoteSmokeError.invalidFrame
       }
-      let port = try await read(connection, count: 2)
-      guard matches, (Int(port[0]) << 8) | Int(port[1]) == expectedPort
-      else { throw RemoteSmokeError.invalidInput }
       timeout.cancel()
       try await reserveStreamSlot()
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let stream = Stream(connection)
+      let stream = Stream(connection, proxy: proxy)
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false
@@ -461,11 +542,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
           streams[id] = stream
           usedIds.insert(id)
           openedId = id
+          recentStreams.append(stream)
+          if recentStreams.count > 3 { recentStreams.removeFirst() }
         }
         return available
       }
       guard available else { throw RemoteSmokeError.limitReached }
-      try await write(Data([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]), to: connection)
+      try await write(
+        proxy == "socks"
+          ? Data([5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+          : Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8),
+        to: connection)
       try await writer.send(["type": "stream.open", "streamId": id, "channel": "remote", "meta": [:]])
       lock.withLock {
         openedStreams += 1
@@ -482,6 +569,34 @@ final class RemoteAppTunnel: @unchecked Sendable {
       if let openedId { drop(openedId, reason: "local_rejected") }
       connection.cancel()
     }
+  }
+
+  // Only the request head is read; the TLS bytes that follow the 200 reply
+  // belong to the stream. Bounded so a client cannot hold the accept open.
+  private func readConnectHead(_ connection: NWConnection, first: Data) async throws -> String {
+    var head = first
+    let terminator = Data("\r\n\r\n".utf8)
+    while head.range(of: terminator) == nil {
+      guard head.count < 4_096 else { throw RemoteSmokeError.invalidFrame }
+      let bytes = try await receive(connection, maximum: 4_096 - head.count)
+      guard !bytes.isEmpty else { throw RemoteSmokeError.closed }
+      head.append(bytes)
+    }
+    guard let end = head.range(of: terminator), end.upperBound == head.endIndex,
+      let text = String(data: head, encoding: .utf8)
+    else { throw RemoteSmokeError.invalidFrame }
+    return text
+  }
+
+  private func matchesConnectTarget(_ head: String) -> Bool {
+    let parts = head.components(separatedBy: "\r\n")[0].split(separator: " ")
+    guard parts.count == 3, parts[0] == "CONNECT", parts[2].hasPrefix("HTTP/1.") else { return false }
+    let target = String(parts[1])
+    guard let separator = target.lastIndex(of: ":"), let port = Int(target[target.index(after: separator)...])
+    else { return false }
+    var host = String(target[..<separator])
+    if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
+    return host.lowercased() == expectedHost.lowercased() && port == expectedPort
   }
 
   private func reserveStreamSlot() async throws {
@@ -506,7 +621,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     while !Task.isCancelled {
       let bytes = try await receive(stream.connection, maximum: 16 * 1024)
       if bytes.isEmpty {
-        lock.withLock { stream.outgoingEnded = true }
+        lock.withLock {
+          stream.outgoingEnded = true
+          if stream.endedBy == "open" { stream.endedBy = "local"; stream.endedAt = Date() }
+        }
         try await writer.send(["type": "stream.end", "streamId": id])
         finish(id, stream)
         return
@@ -515,6 +633,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
       lock.withLock {
         let first = stream.sentBytes == 0
+        stream.noteRecord(bytes, incoming: false)
         stream.sentBytes += bytes.count
         sentBytes += bytes.count
         if first { logStream(id, stream, event: "first_local_data_sent") }

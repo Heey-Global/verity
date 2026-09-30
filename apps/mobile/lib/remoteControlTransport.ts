@@ -28,6 +28,56 @@ interface NativePinnedTransport {
   ): Promise<{ status: number }>;
   /** Older native builds cancel without returning the request-specific TLS phase. */
   cancelRequest(requestId: string): Promise<string | null | void>;
+  /** Absent in native builds that only speak SOCKS to the loopback tunnel. */
+  setProxyMode?(mode: ProxyMode): Promise<void>;
+}
+
+type ProxyMode = 'socks' | 'connect';
+// A device's URLSession may abandon the pinned handshake through one loopback
+// proxy dialect and complete it through the other; the two take different
+// paths through the system proxy code. Whichever answered is kept for the rest
+// of the process.
+let proxyMode: ProxyMode = 'socks';
+
+class ProbeFallbackFailure extends Error {
+  constructor(
+    readonly first: unknown,
+    readonly second: unknown,
+    readonly other: ProxyMode,
+  ) {
+    super('Remote Core probe failed through both proxy dialects.');
+  }
+}
+
+async function probeCoreThroughEitherProxy(
+  coreUrl: string,
+  tlsPin: string,
+  port: number,
+): Promise<void> {
+  const transport = requireNativeModule<NativePinnedTransport>('VerityPinnedTransport');
+  try {
+    await probeCore(coreUrl, tlsPin, port);
+  } catch (error) {
+    if (typeof transport.setProxyMode !== 'function') throw error;
+    const other: ProxyMode = proxyMode === 'socks' ? 'connect' : 'socks';
+    await transport.setProxyMode(other);
+    try {
+      await probeCore(coreUrl, tlsPin, port);
+    } catch (otherError) {
+      await transport.setProxyMode(proxyMode).catch(() => undefined);
+      throw new ProbeFallbackFailure(error, otherError, other);
+    }
+    proxyMode = other;
+    console.info('Remote Control proxy dialect switched', { proxyMode });
+  }
+}
+
+function probeFailureDetail(error: unknown): string | null {
+  if (!(error instanceof ProbeFallbackFailure)) return safeRemoteFailure(error);
+  const first = safeRemoteFailure(error.first);
+  const second = safeRemoteFailure(error.second);
+  if (first === null && second === null) return null;
+  return `${first ?? 'unclassified failure'}; via ${error.other} ${second ?? 'unclassified failure'}`;
 }
 
 let active: { key: string; port: number } | null = null;
@@ -92,16 +142,27 @@ async function tunnelStopReason(): Promise<string | null> {
   }
 }
 
+// One token per recent stream, fixed fields only: bytes each way, milliseconds
+// to Core's first bytes and to the end, which side ended it, the proxy dialect,
+// the TLS record types seen each way and Core's first handshake message.
+const STREAM_TRACE =
+  String.raw`s\d{1,2}=up\d{1,9}\.dn\d{1,9}\.t(?:none|\d{1,7})\.d\d{1,8}` +
+  String.raw`\.(?:open|local|remote|reset|stopped)\.p(?:socks|connect)` +
+  String.raw`\.o(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.i(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.h(?:none|hrr|\d{1,3})`;
+const TUNNEL_SUMMARY = new RegExp(
+  String.raw`^local=\d+, opened=\d+, received=\d+, last=[a-z_.]+` +
+    String.raw`(?:, sentBytes=\d+, receivedBytes=\d+, deliveredBytes=\d+, localResets=\d+, remoteResets=\d+, ` +
+    String.raw`lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout))` +
+    String.raw`(?:, streams=${STREAM_TRACE}(?:;${STREAM_TRACE}){0,2})?)?$`,
+  'u',
+);
+
 async function tunnelDiagnosticSummary(): Promise<string | null> {
   try {
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     if (typeof native.diagnosticSummary !== 'function') return null;
     const summary = await native.diagnosticSummary();
-    return typeof summary === 'string' &&
-      summary.length <= 512 &&
-      /^local=\d+, opened=\d+, received=\d+, last=[a-z_.]+(?:, sentBytes=\d+, receivedBytes=\d+, deliveredBytes=\d+, localResets=\d+, remoteResets=\d+, lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout)))?$/u.test(
-        summary,
-      )
+    return typeof summary === 'string' && summary.length <= 1024 && TUNNEL_SUMMARY.test(summary)
       ? summary
       : null;
   } catch {
@@ -192,6 +253,15 @@ export async function remoteControlPortForUrl(url: string): Promise<number> {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
+  if (key !== null && directRoute?.key !== key && active === null) {
+    // Nothing is known yet (cold start, foreground): send the request directly
+    // at once, as the app did before Remote Control existed, and learn the
+    // route from its outcome. Waiting for a probe to fail first costs its full
+    // timeout on every VPN wake-up, and then an Uplink attempt that can take
+    // far longer, before a request that would have worked directly is sent.
+    void directRouteReachable(target.origin, key).catch(() => undefined);
+    return 0;
+  }
   // Admission and explicit diagnostics may take seconds. A healthy direct route
   // must not wait behind their serialized native-tunnel lifecycle operations.
   if (
@@ -395,8 +465,8 @@ async function open(coreUrl: string, key: string): Promise<number> {
       await native.stop();
       return 0;
     }
-    // Attachment alone does not prove that the SOCKS stream reaches the pinned Core.
-    await probeCore(coreUrl, tlsPin, port);
+    // Attachment alone does not prove that the proxied stream reaches the pinned Core.
+    await probeCoreThroughEitherProxy(coreUrl, tlsPin, port);
     if (keyFor(coreUrl) !== key) {
       await native.stop();
       return 0;
@@ -407,7 +477,7 @@ async function open(coreUrl: string, key: string): Promise<number> {
     return port;
   } catch (error) {
     const detail =
-      (stage === 'attachment' ? await tunnelStopReason() : null) ?? safeRemoteFailure(error);
+      (stage === 'attachment' ? await tunnelStopReason() : null) ?? probeFailureDetail(error);
     const summary = stage === 'probe' ? await tunnelDiagnosticSummary() : null;
     lastFailure = {
       key,

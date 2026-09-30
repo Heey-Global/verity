@@ -220,15 +220,56 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           }
         }
         if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
+        let remoteAttempted = false;
+        if (
+          port === 0 &&
+          useRemote &&
+          directFailed &&
+          !fileUri &&
+          (init.method ?? 'GET').toUpperCase() === 'GET' &&
+          encodedBody === null &&
+          !init.signal?.aborted
+        ) {
+          // The direct route was tried first without knowing whether it works.
+          // A read that it lost is recovered through Uplink, which the failure
+          // just made the route for the requests that follow.
+          const remotePort = await remoteControlPortForUrl(url);
+          if (remotePort > 0 && !init.signal?.aborted) {
+            remoteAttempted = true;
+            try {
+              response = await transport.request(
+                requestId,
+                url,
+                'GET',
+                headers,
+                null,
+                tlsPin,
+                remotePort,
+              );
+              if (init.signal?.aborted) {
+                throw new DOMException('The operation was aborted.', 'AbortError');
+              }
+              return new Response(utf8ResponseBody(response), {
+                status: response.status,
+                headers: response.headers,
+              });
+            } catch (remoteError) {
+              if (init.signal?.aborted) throw remoteError;
+              error = remoteError;
+            }
+          }
+        }
         const failure = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
         const route =
           port > 0
             ? (init.method ?? 'GET').toUpperCase() === 'GET' && !fileUri && encodedBody === null
               ? 'Uplink and direct Core requests'
               : 'Uplink Core request'
-            : failure === null
-              ? 'Direct Core request'
-              : `Uplink ${failure} and direct Core request`;
+            : remoteAttempted
+              ? 'Direct and Uplink Core requests'
+              : failure === null
+                ? 'Direct Core request'
+                : `Uplink ${failure} and direct Core request`;
         const reason =
           error instanceof Error
             ? (error.message.match(

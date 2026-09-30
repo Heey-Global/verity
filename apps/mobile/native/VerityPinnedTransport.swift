@@ -24,6 +24,11 @@ class VerityPinnedTransport: Module {
   private let webSocketsLock = NSLock()
   private var requests: [String: (URLSession, CertificatePinDelegate)] = [:]
   private let requestsLock = NSLock()
+  // How URLSession speaks to the loopback tunnel. Both dialects carry the same
+  // pinned TLS bytes; the app switches when one of them fails the Core probe on
+  // a device, since the two take different paths through the system proxy code.
+  private var proxyMode = "socks"
+  private let proxyModeLock = NSLock()
 
   private func configuration(proxyPort: Int) throws -> URLSessionConfiguration {
     guard proxyPort >= 0 && proxyPort <= 65_535 else { throw PinnedTransportError.invalidURL }
@@ -33,8 +38,13 @@ class VerityPinnedTransport: Module {
       guard let port = NWEndpoint.Port(rawValue: UInt16(proxyPort)) else {
         throw PinnedTransportError.invalidURL
       }
+      proxyModeLock.lock()
+      let mode = proxyMode
+      proxyModeLock.unlock()
       configuration.proxyConfigurations = [
-        ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: port))
+        mode == "connect"
+          ? ProxyConfiguration(httpCONNECTProxy: .hostPort(host: "127.0.0.1", port: port))
+          : ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: port))
       ]
     }
     return configuration
@@ -181,6 +191,13 @@ class VerityPinnedTransport: Module {
         "headers": responseHeaders,
         "bodyBase64": data.base64EncodedString(),
       ]
+    }
+
+    AsyncFunction("setProxyMode") { (mode: String) in
+      guard mode == "socks" || mode == "connect" else { throw PinnedTransportError.invalidURL }
+      self.proxyModeLock.lock()
+      self.proxyMode = mode
+      self.proxyModeLock.unlock()
     }
 
     AsyncFunction("cancelRequest") { (requestId: String) -> String? in

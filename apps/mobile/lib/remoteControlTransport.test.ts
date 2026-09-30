@@ -18,6 +18,8 @@ const mockRequest = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockLastStopReason = jest.fn();
 const mockDiagnosticSummary = jest.fn();
+// Undefined models a native build that only speaks SOCKS; tests opt into the fallback.
+let mockSetProxyMode: jest.Mock | undefined;
 
 jest.mock('./remoteControlAdmission', () => ({
   requestRemoteControlAdmission: (...args: unknown[]) => mockAdmission(...args),
@@ -27,7 +29,7 @@ jest.mock('./authToken', () => ({ getAuthToken: (...args: unknown[]) => mockToke
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: (name: string) =>
     name === 'VerityPinnedTransport'
-      ? { request: mockRequest, cancelRequest: mockCancelRequest }
+      ? { request: mockRequest, cancelRequest: mockCancelRequest, setProxyMode: mockSetProxyMode }
       : {
           isSupported: async () => true,
           start: mockStart,
@@ -49,6 +51,10 @@ Object.defineProperty(globalThis, 'Headers', {
 Object.defineProperty(globalThis, 'fetch', {
   configurable: true,
   value: jest.fn(),
+});
+
+afterEach(() => {
+  mockSetProxyMode = undefined;
 });
 
 const { remoteControlFailureForUrl, remoteControlPortForUrl, reportDirectRouteFailure } =
@@ -99,6 +105,8 @@ describe('shared remote control transport', () => {
     mockStart.mockResolvedValue(4_321);
     mockIsActive.mockResolvedValue(true);
 
+    // A direct request failed first; only then does Uplink carry the traffic.
+    reportDirectRouteFailure(coreUrl);
     const [first, second] = await Promise.all([
       remoteControlPortForUrl(`${coreUrl}/api/sessions`),
       remoteControlPortForUrl(`${coreUrl}/api/status`),
@@ -151,10 +159,12 @@ describe('shared remote control transport', () => {
     mockStart.mockClear().mockResolvedValue(4_321);
     mockStop.mockClear();
 
+    reportDirectRouteFailure(coreUrl);
     const first = remoteControlPortForUrl(`${coreUrl}/api/first`);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(resolveFirst).toBeDefined();
     mockProfile.mockReturnValue(next);
+    reportDirectRouteFailure(coreUrl);
     const second = remoteControlPortForUrl(`${coreUrl}/api/second`);
     resolveFirst?.({ ticket: 'first', sessionId: 'first', finish: jest.fn(), cancel: jest.fn() });
 
@@ -179,6 +189,7 @@ describe('shared remote control transport', () => {
     mockStop.mockClear();
     mockRequest.mockRejectedValue(new Error('Pinned TLS transport failed'));
 
+    reportDirectRouteFailure(coreUrl);
     expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
     expect(remoteControlFailureForUrl(`${coreUrl}/api/sessions`)).toBe('probe');
     expect(mockStop).toHaveBeenCalledTimes(1);
@@ -542,6 +553,78 @@ describe('remote diagnostics', () => {
     });
   });
 
+  it('shows the record-level stream trace after a failed Core probe', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
+    // Without the trace a handshake the device abandons is indistinguishable
+    // from one that never received Core's reply.
+    const summary =
+      'local=25, opened=22, received=74, last=local_connected, sentBytes=39738, receivedBytes=149598, deliveredBytes=149598, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2;s2=up1806.dn6801.tnone.d12.open.pconnect.o22.inone.hnone;s3=up0.dn0.tnone.d3.reset.psocks.onone.inone.hhrr';
+    mockDiagnosticSummary.mockResolvedValue(summary);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: `probe (Remote Core probe failed.; tunnel ${summary})`,
+    });
+  });
+
+  it.each([
+    'streams=s1=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s2=https://x',
+    'streams=s1=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s2=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s3=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s4=up1.dn1.t1.d1.local.psocks.o22.i22.h2',
+    'streams=s1=up1.dn1.t1.d1.local.pother.o22.i22.h2',
+  ])('rejects a malformed stream trace: %s', async (trace) => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
+    mockDiagnosticSummary.mockResolvedValue(
+      `local=1, opened=1, received=0, last=stream_opened, sentBytes=0, receivedBytes=0, deliveredBytes=0, localResets=0, remoteResets=0, lastReset=none, ${trace}`,
+    );
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: 'probe (Remote Core probe failed.)',
+    });
+  });
+
+  it('completes the Core probe through HTTP CONNECT when SOCKS fails', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockSetProxyMode = jest.fn().mockResolvedValue(undefined);
+    let mode = 'socks';
+    mockSetProxyMode.mockImplementation(async (next: string) => {
+      mode = next;
+    });
+    mockRequest.mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 0) throw new Error('NSURLErrorDomain:-1003');
+      if (mode === 'socks') throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+      return { status: 200 };
+    });
+    transport.reportDirectRouteFailure(coreUrl);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
+    expect(mockSetProxyMode).toHaveBeenCalledWith('connect');
+    expect(mockSetProxyMode).toHaveBeenCalledTimes(1);
+    // The dialect that answered stays selected for the requests that follow.
+    expect(mode).toBe('connect');
+  });
+
+  it('restores the dialect and names both failures when CONNECT fails too', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockSetProxyMode = jest.fn().mockResolvedValue(undefined);
+    mockRequest.mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 0) throw new Error('NSURLErrorDomain:-1003');
+      throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+    });
+    mockDiagnosticSummary.mockResolvedValue(
+      'local=2, opened=2, received=2, last=remote_stream.end',
+    );
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail:
+        'probe (Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].; via connect Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].; tunnel local=2, opened=2, received=2, last=remote_stream.end)',
+    });
+    expect(mockSetProxyMode.mock.calls).toEqual([['connect'], ['socks']]);
+  });
+
   it('does not display arbitrary native diagnostic text', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
@@ -573,6 +656,7 @@ describe('remote diagnostics', () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
     mockAdmission.mockRejectedValue(new Error('Remote admission failed: unavailable.'));
+    transport.reportDirectRouteFailure(coreUrl);
     expect(await transport.remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
     expect(transport.remoteControlFailureForUrl(`${coreUrl}/api/sessions`)).toBe(
       'admission (Remote admission failed: unavailable.)',
@@ -624,6 +708,7 @@ describe('remote diagnostics', () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
     mockAdmission.mockRejectedValue(new Error('https://private.example/?ticket=secret'));
+    transport.reportDirectRouteFailure(coreUrl);
     await transport.remoteControlPortForUrl(`${coreUrl}/api/sessions`);
     expect(transport.remoteControlFailureForUrl(`${coreUrl}/api/sessions`)).toBe('admission');
     expect(console.warn).toHaveBeenCalledWith(
@@ -650,7 +735,10 @@ describe('direct routing across background and diagnostics', () => {
     jest.spyOn(console, 'info').mockImplementation(() => undefined);
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockSetProxyMode = undefined;
+  });
 
   it('does not queue a healthy direct request behind a manual Uplink test', async () => {
     const transport =
@@ -700,6 +788,7 @@ describe('direct routing across background and diagnostics', () => {
       if (args[6] === 0) throw new Error('direct offline');
       return { status: 200 };
     });
+    transport.reportDirectRouteFailure(coreUrl);
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
     mockStop.mockClear();
     mockRequest.mockResolvedValue({ status: 200 });
@@ -766,5 +855,46 @@ describe('direct routing across background and diagnostics', () => {
     rejectOld(new Error('older failure'));
     expect(await route).toBe(0);
     expect(mockAdmission).not.toHaveBeenCalled();
+  });
+
+  it('sends the first request directly before the probe has answered', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    let rejectProbe!: (reason: Error) => void;
+    mockRequest.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectProbe = reject;
+        }),
+    );
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4321);
+    mockIsActive.mockResolvedValue(true);
+    for (const listener of mockAppStateListeners) {
+      listener('background');
+      listener('active');
+    }
+
+    // A VPN that needs a few seconds to wake up used to fail the 3 s probe and
+    // send the request into a long Uplink attempt, although the request itself
+    // would have gone through directly.
+    const result = await Promise.race([
+      transport.remoteControlPortForUrl(coreUrl),
+      new Promise((resolve) => setImmediate(() => resolve('blocked'))),
+    ]);
+    expect(result).toBe(0);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    expect(mockAdmission).not.toHaveBeenCalled();
+
+    // The request's own failure is what moves the route onto Uplink.
+    transport.reportDirectRouteFailure(coreUrl);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
+    expect(mockAdmission).toHaveBeenCalledTimes(1);
+    rejectProbe(new Error('late probe failure'));
   });
 });
