@@ -41,6 +41,7 @@ import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
 import {
   latestResearchQuestion,
+  meetingRequestId,
   meetingRequestPrompt,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
@@ -49,6 +50,7 @@ import {
   meetingAnswerCards,
   meetingAnswerSource,
   meetingRequestFromPrompt,
+  sameMeetingRequest,
   type MeetingAnswerCard,
   unacknowledgedMeetingAnswers,
 } from '../../lib/liveMeetingAnswers';
@@ -156,6 +158,7 @@ export default function MeetingScreen() {
             {
               id: `voice-${Date.now()}-${current.length}`,
               request: event.request!,
+              requestId: event.requestId,
               kind: event.kind ?? 'request',
               status: 'working',
               answer: '',
@@ -443,16 +446,12 @@ export default function MeetingScreen() {
     const canonical = [
       ...answers,
       ...queuedAnswers.filter(
-        (queued) =>
-          !answers.some((card) => card.request === queued.request && card.kind === queued.kind),
+        (queued) => !answers.some((card) => sameMeetingRequest(card, queued)),
       ),
     ];
     return [
       ...canonical,
-      ...localAnswers.filter(
-        (local) =>
-          !canonical.some((card) => card.request === local.request && card.kind === local.kind),
-      ),
+      ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
     ].slice(-4);
   }, [answers, queuedAnswers, localAnswers]);
   const transcriptPreview = useMemo(() => {
@@ -580,12 +579,13 @@ export default function MeetingScreen() {
     }
     setSendingInsight(true);
     setError(null);
+    const requestId = meetingRequestId();
     try {
       await client.sendTurn(sessionId, {
         prompt:
           kind === 'research'
-            ? researchPrompt(meeting.id, question.trim(), meeting.transcript)
-            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript),
+            ? researchPrompt(meeting.id, question.trim(), meeting.transcript, requestId)
+            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript, requestId),
       });
       if (displayedMeetingId.current === meeting.id)
         setLocalAnswers((current) => [
@@ -593,6 +593,7 @@ export default function MeetingScreen() {
           {
             id: `local-${Date.now()}`,
             request: question.trim(),
+            requestId,
             kind,
             status: 'working',
             answer: '',

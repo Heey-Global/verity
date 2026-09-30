@@ -4,6 +4,7 @@ import {
   meetingAnswerCards,
   meetingAnswerSource,
   meetingRequestFromPrompt,
+  sameMeetingRequest,
   unacknowledgedMeetingAnswers,
 } from './liveMeetingAnswers';
 
@@ -89,6 +90,7 @@ test('completed requests do not return as working cards after the visible four m
     kind: 'research' as const,
     status: 'ready' as const,
     answer: `Answer ${index}`,
+    requestId: `request-${index}`,
   }));
   const local = completed.map((card) => ({
     ...card,
@@ -97,4 +99,34 @@ test('completed requests do not return as working cards after the visible four m
     answer: '',
   }));
   expect(unacknowledgedMeetingAnswers(local, completed)).toEqual([]);
+});
+
+test('an older answer cannot acknowledge a repeated question', () => {
+  const previous = {
+    id: '1',
+    request: 'Is Friday correct?',
+    kind: 'research' as const,
+    status: 'ready' as const,
+    answer: 'No.',
+    requestId: 'first',
+  };
+  const repeated = {
+    ...previous,
+    id: 'local-2',
+    status: 'working' as const,
+    answer: '',
+    requestId: 'second',
+  };
+  expect(unacknowledgedMeetingAnswers([repeated], [previous])).toEqual([repeated]);
+  expect(sameMeetingRequest(previous, repeated)).toBe(false);
+  expect(sameMeetingRequest({ ...repeated, id: 'queued-2' }, repeated)).toBe(true);
+});
+
+test('reads the same request reference from the session prompt', () => {
+  expect(
+    meetingRequestFromPrompt(
+      'During live meeting meeting-1, please respond to this request:\n\nIs Friday correct?\n\nRecent meeting transcript:\nFriday.\n\nMeeting request reference: second',
+      'meeting-1',
+    ),
+  ).toEqual({ request: 'Is Friday correct?', kind: 'request', requestId: 'second' });
 });

@@ -8,22 +8,24 @@ export interface MeetingAnswerCard {
   kind: 'research' | 'request';
   status: 'working' | 'ready' | 'failed';
   answer: string;
+  requestId?: string;
 }
 
 export function meetingRequestFromPrompt(
   prompt: string,
   meetingId: string,
-): Pick<MeetingAnswerCard, 'request' | 'kind'> | null {
+): Pick<MeetingAnswerCard, 'request' | 'kind' | 'requestId'> | null {
   const separator = prompt.indexOf('\n\n');
   if (separator < 0) return null;
   const header = prompt.slice(0, separator);
   const context = prompt.indexOf('\n\nRecent meeting transcript:', separator + 2);
   const request = prompt.slice(separator + 2, context < 0 ? undefined : context).trim();
   if (!request) return null;
+  const requestId = /(?:^|\n\n)Meeting request reference: ([a-zA-Z0-9-]+)/u.exec(prompt)?.[1];
   if (header === `Research this point raised during live meeting ${meetingId}:`)
-    return { request, kind: 'research' };
+    return { request, kind: 'research', ...(requestId ? { requestId } : {}) };
   if (header === `During live meeting ${meetingId}, please respond to this request:`)
-    return { request, kind: 'request' };
+    return { request, kind: 'request', ...(requestId ? { requestId } : {}) };
   return null;
 }
 
@@ -56,9 +58,13 @@ export function unacknowledgedMeetingAnswers(
   history: MeetingAnswerCard[],
 ): MeetingAnswerCard[] {
   return local.filter(
-    (pending) =>
-      !history.some((card) => card.request === pending.request && card.kind === pending.kind),
+    (pending) => !history.some((card) => pending.requestId && card.requestId === pending.requestId),
   );
+}
+
+export function sameMeetingRequest(a: MeetingAnswerCard, b: MeetingAnswerCard): boolean {
+  if (a.requestId || b.requestId) return !!a.requestId && a.requestId === b.requestId;
+  return a.request === b.request && a.kind === b.kind;
 }
 
 export function compactMeetingAnswer(answer: string): string {
