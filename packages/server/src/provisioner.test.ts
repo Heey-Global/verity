@@ -99,6 +99,10 @@ describe('openCodeSettingsConfig', () => {
       opencodeDisabledModels: 'model-b',
     } as VeritySettingsRecord);
     expect(JSON.parse(config ?? '{}')).toMatchObject({
+      permission: {
+        read: { '/knowledge/**': 'allow' },
+        external_directory: { '/knowledge/**': 'allow' },
+      },
       provider: {
         verity: {
           options: {
@@ -120,6 +124,10 @@ describe('openCodeSettingsConfig', () => {
       const first = materializeOpenCodeSettings(undefined, root);
       expect(JSON.parse(readFileSync(join(first, 'opencode.json'), 'utf8'))).not.toHaveProperty(
         'provider',
+      );
+      expect(JSON.parse(readFileSync(join(first, 'opencode.json'), 'utf8'))).toHaveProperty(
+        'permission.external_directory./knowledge/**',
+        'allow',
       );
       expect(statSync(first).mode & 0o777).toBe(0o755);
       expect(statSync(join(first, 'opencode.json')).mode & 0o777).toBe(0o644);

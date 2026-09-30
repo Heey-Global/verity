@@ -667,6 +667,10 @@ describe('PreviewShareManager', () => {
           contents: JSON.stringify({
             $schema: 'https://opencode.ai/config.json',
             autoupdate: false,
+            permission: {
+              read: { '/knowledge/**': 'allow' },
+              external_directory: { '/knowledge/**': 'allow' },
+            },
             provider: {
               verity: {
                 npm: '@ai-sdk/openai-compatible',
