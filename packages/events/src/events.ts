@@ -523,6 +523,16 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     kind: z.string(),
     message: z.string(),
   }),
+  // Technical diagnostics are deliberately scalar and contain no agent, chat,
+  // tool-input, tool-output, or stderr text.
+  z.object({
+    t: z.literal('diagnostic'),
+    source: z.enum(['agent', 'tool', 'mcp']),
+    outcome: z.enum(['completed', 'failed', 'cancelled']),
+    phase: z.enum(['spawn', 'initialize', 'session_load', 'session_new', 'prompt', 'tool_call']),
+    backend: z.string().min(1).max(40).optional(),
+    code: z.number().int().optional(),
+  }),
   z.object({
     t: z.literal('session_progress'),
     summary: z.string().min(1).max(1_000),

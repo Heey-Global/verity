@@ -49,6 +49,25 @@ export function safeSessionProgressErrorKind(value: string): string {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(value) ? value : 'unknown';
 }
 
+/** Build a scalar-only cross-session view, even if a stored event gains fields later. */
+export function recentSessionDiagnostics(events: readonly SequencedEvent[], limit: number) {
+  return events
+    .filter(({ event }) => event.t === 'diagnostic')
+    .slice(-limit)
+    .map(({ seq, ts, event }) => {
+      if (event.t !== 'diagnostic') throw new Error('diagnostic projection drift');
+      return {
+        seq,
+        ts,
+        source: event.source,
+        outcome: event.outcome,
+        phase: event.phase,
+        ...(event.backend === undefined ? {} : { backend: event.backend }),
+        ...(event.code === undefined ? {} : { code: event.code }),
+      };
+    });
+}
+
 function redactSessionObservationTail(value: string): string {
   const redacted = redactSensitiveText(value);
   if (redacted.length <= MAX_MESSAGE_CHARS) return redacted;

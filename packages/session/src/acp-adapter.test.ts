@@ -395,6 +395,21 @@ describe('AcpEventAdapter', () => {
         isError: true,
         parentToolId: undefined,
       },
+      { t: 'diagnostic', source: 'tool', outcome: 'failed', phase: 'tool_call' },
+    ]);
+  });
+
+  it('classifies a failed MCP tool without copying its output into diagnostics', () => {
+    const adapter = new AcpEventAdapter();
+    const events = adapter.consume({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'mcp-call',
+      title: 'mcp__verity__request',
+      status: 'failed',
+      rawOutput: 'private response',
+    });
+    expect(events.filter((event) => event.t === 'diagnostic')).toEqual([
+      { t: 'diagnostic', source: 'mcp', outcome: 'failed', phase: 'tool_call' },
     ]);
   });
 

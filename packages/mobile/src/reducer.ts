@@ -423,6 +423,9 @@ export class SessionReducer {
         // canonical `error` event. So none of these clear the running flag.
         if (shouldRenderAgentEvent(event)) this.emitAgentEvent(seq, ts, event);
         break;
+      case 'diagnostic':
+        // Technical metadata belongs in session diagnostics, not the chat transcript.
+        break;
       default:
         // tool_call_start is rendered in a later slice. Any such event closes the
         // open streaming block so the next text/thinking delta starts a fresh message.
