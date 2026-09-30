@@ -32,6 +32,11 @@ const GENERATION_LABEL = 'verity.container-generation';
 const DEV_SERVER_LABEL = 'verity.dev-server-id';
 const ACTIVE_STATES: readonly PublicPreviewShareState[] = ['creating', 'active', 'revoking'];
 const CREATING_LEASE_MS = 2 * 60_000;
+/** A dev server drops its listener for a few seconds whenever it restarts (a
+ *  config change, a watcher reload). Revoking on the first reconcile that misses
+ *  it would burn a link and PIN already handed out, so a port has to stay gone
+ *  for several passes before its share is stopped. */
+const PORT_MISS_GRACE_MS = 90_000;
 const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
@@ -166,6 +171,8 @@ export interface PublicPreviewShare {
 export class PreviewShareManager {
   private readonly creations = new Map<string, Promise<void>>();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
+  /** First reconcile at which a port share's listener was missing, by share id. */
+  private readonly portMissingSince = new Map<string, number>();
   private readonly now: () => Date;
   private connectorImage: string | undefined;
 
@@ -268,6 +275,26 @@ export class PreviewShareManager {
     return (await this.sessionServers(project, worktree)).some(
       (server) => server.port === port && server.reachable,
     );
+  }
+
+  /** Whether a live port share should keep running. A failed probe counts as a
+   *  miss rather than an immediate revoke: it is as likely a slow exec as a gone
+   *  server, and the grace window bounds how long a dead link can linger. */
+  private async portStillServed(
+    shareId: string,
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    worktree: string,
+    port: number,
+  ): Promise<boolean> {
+    const reachable = await this.sessionPortReachable(project, worktree, port).catch(() => false);
+    if (reachable) {
+      this.portMissingSince.delete(shareId);
+      return true;
+    }
+    const now = this.now().getTime();
+    const since = this.portMissingSince.get(shareId) ?? now;
+    this.portMissingSince.set(shareId, since);
+    return now - since < PORT_MISS_GRACE_MS;
   }
 
   async create(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
@@ -934,7 +961,12 @@ export class PreviewShareManager {
               (share.devServerId === null
                 ? session !== undefined &&
                   share.targetPort !== null &&
-                  (await this.sessionPortReachable(project, session.worktree, share.targetPort))
+                  (await this.portStillServed(
+                    share.id,
+                    project,
+                    session.worktree,
+                    share.targetPort,
+                  ))
                 : devServer?.projectId === project.id &&
                   devServer.containerPort === String(share.targetPort) &&
                   (await this.options.isDevServerRunning({ project, devServer }))))
@@ -963,7 +995,10 @@ export class PreviewShareManager {
         } catch {
           matches = false;
         }
-        if (!matches) await this.stop(share.id);
+        if (!matches) {
+          this.portMissingSince.delete(share.id);
+          await this.stop(share.id);
+        }
       } catch (error) {
         failures.push(error);
       }

@@ -1861,7 +1861,7 @@ describe('session port previews', () => {
     ).rejects.toBeInstanceOf(PreviewShareInputError);
   });
 
-  it('revokes a port link once the session stops listening on it', async () => {
+  it('revokes a port link only after the session stopped listening for the grace period', async () => {
     const { manager, store, docker, edge, inspect, record, listListeningProcesses } = portFixture([
       listener(5173, 'any'),
     ]);
@@ -1879,10 +1879,29 @@ describe('session port previews', () => {
     ]);
     docker.inspectContainer.mockResolvedValue(inspect);
 
+    let now = new Date('2030-01-01T00:00:00Z').getTime();
+    (manager as unknown as { now: () => Date }).now = () => new Date(now);
+
     await manager.reconcile();
     expect(edge.remove).not.toHaveBeenCalled();
 
+    // A restarting dev server is gone for a moment; its link and PIN must survive.
     listListeningProcesses.mockResolvedValue([]);
+    await manager.reconcile();
+    now += 60_000;
+    listListeningProcesses.mockRejectedValueOnce(new Error('exec timed out'));
+    await manager.reconcile();
+    expect(edge.remove).not.toHaveBeenCalled();
+
+    // Back before the grace ran out: the miss is forgotten, not carried forward.
+    listListeningProcesses.mockResolvedValue([listener(5173, 'any')]);
+    await manager.reconcile();
+    now += 60_000;
+    listListeningProcesses.mockResolvedValue([]);
+    await manager.reconcile();
+    expect(edge.remove).not.toHaveBeenCalled();
+
+    now += 90_000;
     await manager.reconcile();
     expect(edge.remove).toHaveBeenCalledWith(record.id);
   });

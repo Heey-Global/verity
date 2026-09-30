@@ -15,7 +15,12 @@ import * as Clipboard from 'expo-clipboard';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type { PublicPreviewShare, SessionDevServer, VerityClient } from '@verity/mobile';
+import {
+  VerityApiError,
+  type PublicPreviewShare,
+  type SessionDevServer,
+  type VerityClient,
+} from '@verity/mobile';
 import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import {
@@ -122,8 +127,11 @@ export function StaticPreviewSheet({
   // sat there and the sheet later jumped to the create form unannounced.
   const [stoppingId, setStoppingId] = useState<string>();
   const [stopped, setStopped] = useState<{ tab: PreviewTab; label: string }>();
-  // Older Cores have no port detection; the sheet then offers folders only.
-  const devServersSupported = typeof client.listSessionDevServers === 'function';
+  // A Core older than port detection answers 404; the sheet then falls back to
+  // the folder-only flow instead of polling a route that will never exist.
+  const [devServersSupported, setDevServersSupported] = useState(
+    typeof client.listSessionDevServers === 'function',
+  );
   const [tab, setTab] = useState<PreviewTab>(devServersSupported ? 'server' : 'folder');
   const tabChosen = useRef(false);
   const [devServers, setDevServers] = useState<SessionDevServer[]>([]);
@@ -234,7 +242,11 @@ export function StaticPreviewSheet({
           setDevServerError(undefined);
         })
         .catch((caught: unknown) => {
-          if (active) {
+          if (!active) return;
+          if (caught instanceof VerityApiError && caught.status === 404) {
+            setDevServersSupported(false);
+            setTab('folder');
+          } else {
             setDevServerError(
               caught instanceof Error ? caught.message : 'Could not look for dev servers',
             );

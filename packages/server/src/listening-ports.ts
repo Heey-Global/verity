@@ -34,7 +34,9 @@ export const LISTENING_PORTS_SCRIPT = [
   "echo '#tcp'",
   'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null',
   "echo '#fd'",
-  'ls -l /proc/[0-9]*/fd 2>/dev/null',
+  // The extra operand keeps `ls` printing a `/proc/N/fd:` header even when the
+  // glob matches a single process; the parser attributes sockets by that header.
+  'ls -l /proc/[0-9]*/fd /dev/null 2>/dev/null',
   "echo '#proc'",
   'for d in /proc/[0-9]*; do',
   'c=$(readlink "$d/cwd" 2>/dev/null) || continue',

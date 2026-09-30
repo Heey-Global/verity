@@ -712,13 +712,19 @@ export function SessionChat({
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
   const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
   const [hasRunningDevServer, setHasRunningDevServer] = useState(false);
+  // Set once a Core without port detection answers 404, so the header stops asking.
+  const devServersUnsupported = useRef(false);
   const refreshStaticPreview = useCallback(() => {
     if (!projectId) return;
-    if (typeof client.listSessionDevServers === 'function') {
+    if (typeof client.listSessionDevServers === 'function' && !devServersUnsupported.current) {
       void client
         .listSessionDevServers(sessionId)
         .then((servers) => setHasRunningDevServer(servers.length > 0))
-        .catch(() => undefined);
+        .catch((caught: unknown) => {
+          if (caught instanceof VerityApiError && caught.status === 404) {
+            devServersUnsupported.current = true;
+          }
+        });
     }
     void client
       .listPublicPreviewShares(projectId)

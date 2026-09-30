@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
+import { VerityApiError, type PublicPreviewShare, type VerityClient } from '@verity/mobile';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
@@ -807,6 +807,27 @@ describe('dev server tab', () => {
         jest.advanceTimersByTime(4_000);
       });
       expect(await screen.findByLabelText('Vite on port 5173')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // A Core older than port detection has no such route. Without the fallback the
+  // sheet would open on an error and keep polling a 404 every few seconds.
+  it('falls back to the folder flow when Core has no port detection', async () => {
+    jest.useFakeTimers();
+    try {
+      const listSessionDevServers = jest.fn(async () => {
+        throw new VerityApiError(404, 'Route GET:/sessions/session-one/dev-servers not found');
+      });
+      renderSheet({ listSessionDevServers });
+
+      expect(await screen.findByText('FOLDER TO SHARE')).toBeTruthy();
+      expect(screen.queryByRole('tab', { name: 'Dev server' })).toBeNull();
+      await act(async () => {
+        jest.advanceTimersByTime(12_000);
+      });
+      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
     } finally {
       jest.useRealTimers();
     }
