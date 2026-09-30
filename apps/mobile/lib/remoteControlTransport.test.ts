@@ -823,6 +823,29 @@ describe('direct routing across background and diagnostics', () => {
     expect(mockStop).not.toHaveBeenCalled();
   });
 
+  it('hands the running probe to a read sent before its verdict', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    expect(transport.pendingDirectVerdict(coreUrl)).toBeNull();
+    let resolveProbe!: (value: { status: number }) => void;
+    mockRequest.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveProbe = resolve;
+        }),
+    );
+    for (const listener of mockAppStateListeners) {
+      listener('background');
+      listener('active');
+    }
+    expect(await transport.remoteControlPortForUrl(coreUrl, true)).toBe(0);
+    const verdict = transport.pendingDirectVerdict(coreUrl);
+    expect(verdict).not.toBeNull();
+    resolveProbe({ status: 200 });
+    expect(await verdict).toBe(true);
+    expect(transport.pendingDirectVerdict(coreUrl)).toBeNull();
+  });
+
   it('holds a mutation for the probe verdict instead of sending it blind', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');

@@ -198,6 +198,18 @@ async function tunnelDiagnosticSummary(): Promise<string | null> {
   }
 }
 
+/**
+ * The route probe still running for this Core, if any. A direct read sent
+ * while nothing was known can wait on it: the probe is capped, the read is
+ * not, and a blackholed private address answers only with the request timeout.
+ */
+export function pendingDirectVerdict(url: string): Promise<boolean> | null {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  return key !== null && directProbe?.key === key ? directProbe.promise : null;
+}
+
 /** Any HTTP response proves that the pinned direct transport is reachable. */
 export function reportDirectRouteSuccess(url: string): void {
   const target = new URL(url);

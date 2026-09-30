@@ -295,6 +295,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
       if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
     }
     streams.removeAll()
+    // Cancelled connections are not worth keeping for a summary nobody reads
+    // after the stop; the app reads it before stopping a failed tunnel.
+    recentStreams.removeAll()
     sessionPendingBytes = 0
     pendingLocal = 0
     listener?.cancel()

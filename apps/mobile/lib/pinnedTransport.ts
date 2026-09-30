@@ -1,5 +1,6 @@
 import { requireNativeModule } from 'expo-modules-core';
 import {
+  pendingDirectVerdict,
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
   reportDirectRouteFailure,
@@ -172,6 +173,19 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
+      // A read sent directly while the route is unknown must not sit in a
+      // request timeout when the capped probe already knows the address is
+      // dead: cancel it so the Uplink recovery below starts.
+      let settled = false;
+      const verdict = useRemote && replayable && port === 0 ? pendingDirectVerdict(url) : null;
+      if (verdict !== null) {
+        void verdict.then(
+          (reachable) => {
+            if (!reachable && !settled) void transport.cancelRequest(requestId);
+          },
+          () => undefined,
+        );
+      }
       try {
         response = fileUri
           ? await transport.upload(
@@ -192,8 +206,10 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               tlsPin,
               port,
             );
+        settled = true;
         if (useRemote && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
       } catch (error) {
+        settled = true;
         let directFailed = port === 0;
         if (
           port > 0 &&
@@ -223,6 +239,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         }
         if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
         let remoteAttempted = false;
+        let remoteReason: string | null = null;
         if (port === 0 && useRemote && directFailed && replayable && !init.signal?.aborted) {
           // The direct route was tried first without knowing whether it works.
           // A read that it lost is recovered through Uplink, which the failure
@@ -231,7 +248,9 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           try {
             remotePort = await remoteControlPortForUrl(url, true);
           } catch {
-            // Admission failures are reported by remoteControlFailureForUrl below.
+            // Route selection reports its own admission and probe failures;
+            // this is the native bridge itself failing.
+            console.warn('Remote Control route selection threw while recovering a direct read');
           }
           if (init.signal?.aborted) {
             throw new DOMException('The operation was aborted.', 'AbortError');
@@ -257,9 +276,9 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               });
             } catch (remoteError) {
               if (init.signal?.aborted) throw remoteError;
-              // The direct failure stays the reported reason: that is the
-              // route the label leads with, and the Uplink failure is kept by
-              // remoteControlFailureForUrl for the next attempt.
+              // Both legs are named below: a pin rejected on the Uplink leg
+              // must not hide behind the direct failure.
+              remoteReason = safeTransportReason(remoteError);
             }
           }
         }
@@ -274,13 +293,10 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               : failure === null
                 ? 'Direct Core request'
                 : `Uplink ${failure} and direct Core request`;
-        const reason =
-          error instanceof Error
-            ? (error.message.match(
-                /Pinned TLS (?:transport|verification) failed \[[^\]]{1,150}\]/u,
-              )?.[0] ?? 'native transport error')
-            : 'native transport error';
-        const diagnostic = new Error(`${route} failed: ${reason}`);
+        const reason = safeTransportReason(error);
+        const diagnostic = new Error(
+          `${route} failed: ${reason}${remoteReason === null ? '' : `; Uplink: ${remoteReason}`}`,
+        );
         diagnostic.name = 'VerityConnectionError';
         throw diagnostic;
       }
@@ -298,6 +314,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       headers: response.headers,
     });
   }) as typeof fetch;
+}
+
+// Only the bounded native phase and code list may reach the screen.
+function safeTransportReason(error: unknown): string {
+  return error instanceof Error
+    ? (error.message.match(/Pinned TLS (?:transport|verification) failed \[[^\]]{1,150}\]/u)?.[0] ??
+        'native transport error')
+    : 'native transport error';
 }
 
 export async function verifyPairedIdentity(input: {
