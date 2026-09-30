@@ -24617,12 +24617,24 @@ var FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
 
 // node_modules/@verity/events/dist/knowledge-tool.js
 var import_zod4 = __toESM(require_zod(), 1);
+var sourcePath = import_zod4.z.string().trim().min(1).max(512).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith(".") && !part.includes("\\") && !part.includes("\0")));
 var knowledgeToolRequestSchema = import_zod4.z.discriminatedUnion("operation", [
   import_zod4.z.object({
     operation: import_zod4.z.literal("import_source"),
     sourcePath: import_zod4.z.string().trim().min(1).max(512),
     destination: import_zod4.z.enum(["meetings", "documents"]),
-    path: import_zod4.z.string().trim().min(1).max(255).regex(/^[^/\\\0]+$/u).refine((name) => !name.startsWith("."))
+    path: sourcePath
+  }).strict(),
+  import_zod4.z.object({
+    operation: import_zod4.z.literal("create_source_folder"),
+    destination: import_zod4.z.enum(["meetings", "documents"]),
+    path: sourcePath
+  }).strict(),
+  import_zod4.z.object({
+    operation: import_zod4.z.literal("move_source"),
+    sourcePath,
+    destination: import_zod4.z.enum(["meetings", "documents"]),
+    path: sourcePath
   }).strict(),
   import_zod4.z.object({
     operation: import_zod4.z.literal("publish_shared"),

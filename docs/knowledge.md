@@ -25,6 +25,9 @@ insights/
   `sources/meetings/` or `sources/documents/`. The import refuses overwrites;
   after checking the imported file, the agent can remove the worktree original
   when a move was requested.
+  Nested destination paths create missing subfolders automatically. Agents can
+  create an empty subfolder with `create_source_folder` and move an existing
+  project Sources file into one with `move_source`; conflicting files are preserved.
 - `insights/` contains knowledge distilled from those sources. Agents may create and
   revise Markdown here with ordinary filesystem tools.
 

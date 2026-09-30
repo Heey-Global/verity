@@ -11,6 +11,7 @@ import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import {
   codexGatewayConfig,
+  OPENCODE_KNOWLEDGE_READ_PERMISSION,
   projectClonePath,
   projectNetworkName,
   RUNNER_AGENT_UID,
@@ -1511,13 +1512,16 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
   try {
     const parsed = JSON.parse(contents) as unknown;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
-    if (!exactKeys(parsed, ['$schema', 'autoupdate', 'provider'])) return false;
-    const { $schema, autoupdate, provider } = parsed as {
+    if (!exactKeys(parsed, ['$schema', 'autoupdate', 'permission', 'provider'])) return false;
+    const { $schema, autoupdate, permission, provider } = parsed as {
       $schema?: unknown;
       autoupdate?: unknown;
+      permission?: unknown;
       provider?: unknown;
     };
     if ($schema !== 'https://opencode.ai/config.json' || autoupdate !== false) return false;
+    if (JSON.stringify(permission) !== JSON.stringify(OPENCODE_KNOWLEDGE_READ_PERMISSION))
+      return false;
     if (typeof provider !== 'object' || provider === null || Array.isArray(provider)) return false;
     if (!exactKeys(provider, ['verity'])) return false;
     const verity = (provider as { verity?: unknown }).verity;

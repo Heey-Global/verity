@@ -149,20 +149,31 @@ async function setup() {
   };
 }
 
-it('publishes an explicitly requested project insight to Shared', async () => {
+it('requires a fresh approval to publish a project insight to Shared', async () => {
   const h = await setup();
   try {
     const projectInsights = join(h.dataRoot, 'knowledge/p/insights');
     mkdirSync(projectInsights, { recursive: true });
     writeFileSync(join(projectInsights, 'profile.md'), '# Distilled profile\n');
 
+    const denied = await h.agent({ operation: 'publish_shared', path: 'profile.md' });
+    expect(denied.isError).toBe(true);
+    expect(existsSync(join(h.dataRoot, 'knowledge/shared/insights/profile.md'))).toBe(false);
+    expect(h.permission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'verity_knowledge',
+        input: { operation: 'publish_shared', path: 'profile.md' },
+        allowStandingGrant: false,
+      }),
+    );
+    h.permission.mockResolvedValueOnce({ decision: { behavior: 'allow' }, decidedBy: 'card' });
     const published = await h.agent({ operation: 'publish_shared', path: 'profile.md' });
 
     expect(published.isError).toBeUndefined();
     expect(readFileSync(join(h.dataRoot, 'knowledge/shared/insights/profile.md'), 'utf8')).toBe(
       '# Distilled profile\n',
     );
-    expect(h.permission).not.toHaveBeenCalled();
+    expect(h.permission).toHaveBeenCalledTimes(2);
     expect(h.fallback).not.toHaveBeenCalled();
   } finally {
     await h.close();
@@ -203,6 +214,49 @@ it('imports a worktree transcript into project Sources through the bound tool', 
     expect(readFileSync(join(h.dataRoot, 'knowledge/p/sources/meetings/planning.md'), 'utf8')).toBe(
       '# Planning\n',
     );
+  } finally {
+    await h.close();
+  }
+});
+
+it('organizes imported Sources through the project-bound tool', async () => {
+  const h = await setup();
+  try {
+    mkdirSync(join(sessionWorktree, 'docs'), { recursive: true });
+    writeFileSync(join(sessionWorktree, 'docs/note.md'), '# Note\n');
+    expect(
+      (
+        await h.agent({
+          operation: 'import_source',
+          sourcePath: 'docs/note.md',
+          destination: 'documents',
+          path: 'note.md',
+        })
+      ).isError,
+    ).toBeUndefined();
+    expect(
+      (
+        await h.agent({
+          operation: 'create_source_folder',
+          destination: 'documents',
+          path: 'team/2026',
+        })
+      ).isError,
+    ).toBeUndefined();
+    expect(
+      (
+        await h.agent({
+          operation: 'move_source',
+          sourcePath: 'documents/note.md',
+          destination: 'documents',
+          path: 'team/2026/note.md',
+        })
+      ).isError,
+    ).toBeUndefined();
+    expect(
+      readFileSync(join(h.dataRoot, 'knowledge/p/sources/documents/team/2026/note.md'), 'utf8'),
+    ).toBe('# Note\n');
+    expect(existsSync(join(h.dataRoot, 'knowledge/p/sources/documents/note.md'))).toBe(false);
   } finally {
     await h.close();
   }

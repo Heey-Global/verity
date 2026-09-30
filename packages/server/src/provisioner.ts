@@ -1746,6 +1746,11 @@ function codexGatewayConfigBind(
 /** Build the complete OpenCode provider configuration from server-owned settings.
  * The generated file is read-only in sandboxes; its API key never comes from an
  * environment variable or a deployment-managed shared volume. */
+export const OPENCODE_KNOWLEDGE_READ_PERMISSION = {
+  read: { '/knowledge/**': 'allow' },
+  external_directory: { '/knowledge/**': 'allow' },
+} as const;
+
 export function openCodeSettingsConfig(
   settings: VeritySettingsRecord | undefined,
   connectorPort = 47_821,
@@ -1758,6 +1763,7 @@ export function openCodeSettingsConfig(
     {
       $schema: 'https://opencode.ai/config.json',
       autoupdate: false,
+      permission: OPENCODE_KNOWLEDGE_READ_PERMISSION,
       provider: {
         verity: {
           npm: '@ai-sdk/openai-compatible',
@@ -1801,7 +1807,15 @@ export function materializeOpenCodeSettings(
 ): string {
   const config =
     openCodeSettingsConfig(settings, connectorPort) ??
-    JSON.stringify({ $schema: 'https://opencode.ai/config.json', autoupdate: false }, null, 2);
+    JSON.stringify(
+      {
+        $schema: 'https://opencode.ai/config.json',
+        autoupdate: false,
+        permission: OPENCODE_KNOWLEDGE_READ_PERMISSION,
+      },
+      null,
+      2,
+    );
   // This directory is mounted as the non-root agent's XDG config root. It holds
   // only the local gateway address, a fixed placeholder, and model names.
   writeSecretFile(secretRoot, 'opencode.json', config, 'opencode', 0o644, 0o755);

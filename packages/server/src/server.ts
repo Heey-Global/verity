@@ -14,7 +14,11 @@ import { createLiveMeetingAnalysisQuery } from './live-meeting-analysis-query.js
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { publishSharedInsight } from './knowledge-publish.js';
-import { importProjectSource } from './knowledge-import.js';
+import {
+  createProjectSourceFolder,
+  importProjectSource,
+  moveProjectSource,
+} from './knowledge-import.js';
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import { KnowledgeSessionClosedError } from '@verity/session';
 import { execFile } from 'node:child_process';
@@ -5727,7 +5731,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           return (
             session?.projectId === projectId &&
-            !(await deps.eventStore.knowledge.isSessionInvalidated(sessionId))
+            !(await deps.eventStore.knowledge.isSessionInvalidated(sessionId)) &&
+            (request as { operation?: string }).operation !== 'publish_shared'
           );
         }
         if (toolName === 'verity_google_drive') {
@@ -5794,13 +5799,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (input.toolName === 'verity_knowledge') {
           const request = knowledgeToolRequestSchema.parse(input.request);
           if (deps.dataRoot === undefined) throw new Error('Knowledge storage is unavailable');
-          if (request.operation === 'import_source') {
+          if (request.operation !== 'publish_shared') {
             const session = await deps.eventStore.getSession(input.sessionId);
             if (session?.projectId !== input.projectId)
               throw new ControlPlaneSessionAuthorityError(
                 'Knowledge access requires an active session in the calling project',
               );
-            return importProjectSource(deps.dataRoot, input.projectId, session.worktree, request);
+            if (request.operation === 'import_source')
+              return importProjectSource(deps.dataRoot, input.projectId, session.worktree, request);
+            if (request.operation === 'create_source_folder')
+              return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
+            return moveProjectSource(deps.dataRoot, input.projectId, request);
           }
           return publishSharedInsight(deps.dataRoot, input.projectId, request);
         }
