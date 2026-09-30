@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.41.1",
-  "runtime": "1.41.0",
+  "version": "1.44.1",
+  "runtime": "1.44.0",
   "channel": "testflight",
-  "commit": "abcbfce2682572df66a75c07375e9a7e511a0285",
-  "tag": "mobile-v1.41.1",
-  "branch": "staging-mobile-v1.41.1-abcbfce2682572df66a75c07375e9a7e511a0285",
-  "baseline": "mobile-v1.41.0",
-  "group": "3c0aaebc-c95b-4af2-bcf0-218e6d31227c",
+  "commit": "40a99e51a907fb7c5889d4d303120d43d6005ae0",
+  "tag": "mobile-v1.44.1",
+  "branch": "staging-mobile-v1.44.1-40a99e51a907fb7c5889d4d303120d43d6005ae0",
+  "baseline": "mobile-v1.44.0",
+  "group": "4af07858-70e5-48ed-bd34-55572b16db1e",
   "notes": [
-    "unlock mobile credentials before remote startup (#874)"
+    "tap haptically when a permission prompt blocks the agent (#924)",
+    "organize sources and approve shared publication (#921)"
   ]
 }
