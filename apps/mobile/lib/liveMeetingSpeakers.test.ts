@@ -1,4 +1,4 @@
-import { resolvedSpeaker, speakerLines } from './liveMeetingSpeakers';
+import { resolvedSpeaker, speakerLines, untimedTranscriptTail } from './liveMeetingSpeakers';
 
 test('attributes words through a speaker change and leaves overlapping speech unknown', () => {
   const lines = speakerLines(
@@ -56,4 +56,16 @@ test('merges duplicate identities across earlier and later words', () => {
     { speaker: 0, text: 'Later', start: 2, end: 2.3 },
   ]);
   expect(resolvedSpeaker(1, merges)).toBe(0);
+});
+
+test('keeps live text visible while word timings catch up', () => {
+  expect(
+    untimedTranscriptTail('Hello, world is speaking', [
+      { text: 'Hello', start: 0, end: 0.4 },
+      { text: 'world', start: 0.5, end: 1 },
+    ]),
+  ).toBe('is speaking');
+  expect(
+    untimedTranscriptTail('A changed partial transcript', [{ text: 'Old', start: 0, end: 0.4 }]),
+  ).toBe('A changed partial transcript');
 });

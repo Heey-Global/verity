@@ -223,6 +223,29 @@ it('shows timed transcript words with their speaker when attribution is unambigu
   expect(screen.getByText('Unknown speaker: yes')).toBeOnTheScreen();
 });
 
+it('keeps the unfinished transcript visible after timed words', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-tail',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello from the meeting',
+    error: null,
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.4 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello from the meeting')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByText('Speaker 1: Hello')).toBeOnTheScreen();
+  expect(screen.getByText('Speaker pending: from the meeting')).toBeOnTheScreen();
+});
+
 it('saves a correction for one speaker segment without changing the other', async () => {
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   const meeting: MeetingRecord = {

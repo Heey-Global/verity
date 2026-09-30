@@ -185,8 +185,9 @@ failure is retryable and must not erase the locally saved meeting.
 
 ## 5. Version 2: speakers and names
 
-Add FluidAudio diarization to the same microphone timeline. Select the model after testing
-German meetings, speaker count limits, latency and resource usage. Transcription and diarization
+Add FluidAudio diarization to the same microphone timeline. The expected participant count selected
+before recording chooses streaming Sortformer for up to four (including "Not sure") or LS-EEND for
+five to ten. Validate that choice with German meetings, latency and resource measurements. Transcription and diarization
 are separate workloads: Apple's engine outside the app process, the FluidAudio diarizer inside it.
 Word-level time ranges from the transcriber are aligned with speaker turns from the diarizer.
 
@@ -210,10 +211,11 @@ a diarizer state reset in meetings longer than one hour.
   identify a voice. No calendar access is required in V1 or V2.
 
 Do not retain reusable voice profiles or identify people across meetings as part of this scope.
-Speaker inference failing must not stop transcription or note persistence. FluidAudio model
-bundles are self-hosted on the Verity server with checksums, prepared as an explicit step with
-disk-space checks and a repair path for partial downloads; the pinned library and model revisions
-are re-validated on every bump.
+Speaker inference failing must not stop transcription or note persistence. The app downloads
+FluidAudio model bundles directly from the provider through the pinned library and caches them on
+the device. The Verity server does not relay model files or raw meeting audio. Missing or damaged
+downloads need a clear retry path; model revisions and device resource usage must be re-validated
+on every library bump.
 
 ## 6. Vocabulary support
 

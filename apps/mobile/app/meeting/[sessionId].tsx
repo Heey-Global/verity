@@ -44,7 +44,12 @@ import {
   meetingRequestPrompt,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
-import { resolvedSpeaker, speakerLines, type SpeakerLine } from '../../lib/liveMeetingSpeakers';
+import {
+  resolvedSpeaker,
+  speakerLines,
+  untimedTranscriptTail,
+  type SpeakerLine,
+} from '../../lib/liveMeetingSpeakers';
 
 type TranscriptRow = SpeakerLine | { text: string };
 
@@ -295,12 +300,15 @@ export default function MeetingScreen() {
 
   const chunks = useMemo(() => {
     if (meeting?.timedWords?.length) {
-      return speakerLines(
+      const lines: TranscriptRow[] = speakerLines(
         meeting.timedWords,
         meeting.speakerTurns ?? [],
         meeting.speakerCorrections ?? [],
         meeting.speakerMerges ?? {},
       );
+      const tail = untimedTranscriptTail(meeting.transcript, meeting.timedWords);
+      if (tail) lines.push({ text: `Speaker pending: ${tail}` });
+      return lines;
     }
     const text = meeting?.transcript ?? '';
     const result: TranscriptRow[] = [];

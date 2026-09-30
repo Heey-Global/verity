@@ -20,6 +20,22 @@ export function resolvedSpeaker(
   return seen.has(speaker) ? null : speaker;
 }
 
+export function untimedTranscriptTail(transcript: string, words: TimedWord[]): string {
+  if (!words.length) return transcript.trim();
+  const spoken = words.flatMap((word) => word.text.match(/\S+/gu) ?? []);
+  const transcriptWords = [...transcript.matchAll(/\S+/gu)];
+  const comparable = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  for (let index = 0; index < spoken.length; index++) {
+    if (
+      !transcriptWords[index] ||
+      comparable(spoken[index]!) !== comparable(transcriptWords[index]![0])
+    )
+      return transcript.trim();
+  }
+  const last = transcriptWords[spoken.length - 1];
+  return last ? transcript.slice(last.index + last[0].length).trim() : transcript.trim();
+}
+
 export function speakerLines(
   words: TimedWord[],
   turns: SpeakerTurn[],
