@@ -12,6 +12,9 @@ export interface LiveMeetingSyncRecord {
   expectedParticipants?: number | null | undefined;
   speakerTurns?: Array<{ speaker: number; start: number; end: number }> | undefined;
   timedWords?: Array<{ text: string; start: number; end: number }> | undefined;
+  speakerNames?: Record<string, string> | undefined;
+  speakerCorrections?: Array<{ start: number; end: number; speaker: number | null }> | undefined;
+  speakerMerges?: Record<string, number> | undefined;
   captureStatus: string;
   ownerTokenHash: string;
   revision: number;
@@ -137,6 +140,9 @@ export class LiveMeetingStore {
           expected_participants: meeting.expectedParticipants ?? null,
           speaker_turns_json: JSON.stringify(meeting.speakerTurns ?? []),
           timed_words_json: JSON.stringify(meeting.timedWords ?? []),
+          speaker_names_json: JSON.stringify(meeting.speakerNames ?? {}),
+          speaker_corrections_json: JSON.stringify(meeting.speakerCorrections ?? []),
+          speaker_merges_json: JSON.stringify(meeting.speakerMerges ?? {}),
           capture_status: meeting.captureStatus,
           owner_token_hash: meeting.ownerTokenHash,
           recorder_last_seen_at: Date.now(),
@@ -153,6 +159,9 @@ export class LiveMeetingStore {
               expected_participants: meeting.expectedParticipants ?? null,
               speaker_turns_json: JSON.stringify(meeting.speakerTurns ?? []),
               timed_words_json: JSON.stringify(meeting.timedWords ?? []),
+              speaker_names_json: JSON.stringify(meeting.speakerNames ?? {}),
+              speaker_corrections_json: JSON.stringify(meeting.speakerCorrections ?? []),
+              speaker_merges_json: JSON.stringify(meeting.speakerMerges ?? {}),
               capture_status: meeting.captureStatus,
               recorder_last_seen_at: Date.now(),
               revision: meeting.revision,
@@ -441,6 +450,13 @@ export class LiveMeetingStore {
           start: number;
           end: number;
         }>,
+        speakerNames: JSON.parse(row.speaker_names_json) as Record<string, string>,
+        speakerCorrections: JSON.parse(row.speaker_corrections_json) as Array<{
+          start: number;
+          end: number;
+          speaker: number | null;
+        }>,
+        speakerMerges: JSON.parse(row.speaker_merges_json) as Record<string, number>,
         captureStatus: row.capture_status,
         revision: Number(row.revision),
       })),

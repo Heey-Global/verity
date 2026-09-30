@@ -24,6 +24,7 @@ import {
   startMeeting,
   subscribeMeeting,
   subscribeVoiceMeetingRequest,
+  updateSpeakerEdits,
 } from '../../lib/liveMeetingSession';
 import { liveMeetingSTT, type STTEngine, type STTEngineId } from '../../lib/liveMeetingSTT';
 import {
@@ -34,6 +35,7 @@ import {
   saveNote,
   type MeetingNote,
   type MeetingRecord,
+  type SpeakerCorrection,
 } from '../../lib/liveMeetingStore';
 import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
@@ -42,7 +44,9 @@ import {
   meetingRequestPrompt,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
-import { speakerLines } from '../../lib/liveMeetingSpeakers';
+import { resolvedSpeaker, speakerLines, type SpeakerLine } from '../../lib/liveMeetingSpeakers';
+
+type TranscriptRow = SpeakerLine | { text: string };
 
 const ACCENT = '#bd8bff';
 const TEXT = '#eee9f7';
@@ -100,7 +104,7 @@ export default function MeetingScreen() {
   const noteSaveErrorRef = useRef<string | null>(null);
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
-  const transcriptList = useRef<FlatList<string>>(null);
+  const transcriptList = useRef<FlatList<TranscriptRow>>(null);
   const transcriptAtEnd = useRef(true);
 
   useEffect(
@@ -291,17 +295,25 @@ export default function MeetingScreen() {
 
   const chunks = useMemo(() => {
     if (meeting?.timedWords?.length) {
-      return speakerLines(meeting.timedWords, meeting.speakerTurns ?? []).map(
-        (line) =>
-          `${line.speaker === null ? 'Unknown speaker' : `Speaker ${line.speaker + 1}`}: ${line.text}`,
+      return speakerLines(
+        meeting.timedWords,
+        meeting.speakerTurns ?? [],
+        meeting.speakerCorrections ?? [],
+        meeting.speakerMerges ?? {},
       );
     }
     const text = meeting?.transcript ?? '';
-    const result: string[] = [];
+    const result: TranscriptRow[] = [];
     for (let start = 0; start < text.length; start += 900)
-      result.push(text.slice(start, start + 900));
+      result.push({ text: text.slice(start, start + 900) });
     return result;
-  }, [meeting?.transcript, meeting?.timedWords, meeting?.speakerTurns]);
+  }, [
+    meeting?.transcript,
+    meeting?.timedWords,
+    meeting?.speakerTurns,
+    meeting?.speakerCorrections,
+    meeting?.speakerMerges,
+  ]);
   const suggestedQuestion = useMemo(
     () => latestResearchQuestion(meeting?.transcript ?? ''),
     [meeting?.transcript],
@@ -310,6 +322,95 @@ export default function MeetingScreen() {
     const text = meeting?.transcript.trim() ?? '';
     return text.length > 180 ? `…${text.slice(-180)}` : text;
   }, [meeting?.transcript]);
+
+  const speakerLabel = (speaker: number | null) =>
+    speaker === null
+      ? 'Unknown speaker'
+      : (meeting?.speakerNames?.[speaker] ?? `Speaker ${speaker + 1}`);
+
+  const persistSpeakerEdits = async (
+    names: Record<string, string>,
+    corrections: SpeakerCorrection[],
+    merges: Record<string, number> = meeting?.speakerMerges ?? {},
+  ) => {
+    if (!meeting?.ownerToken) return;
+    try {
+      await updateSpeakerEdits(meeting.id, names, corrections, merges);
+      setMeeting((current) =>
+        current?.id === meeting.id
+          ? {
+              ...current,
+              speakerNames: names,
+              speakerCorrections: corrections,
+              speakerMerges: merges,
+            }
+          : current,
+      );
+      setSyncError(true);
+    } catch (reason) {
+      setError(`Could not save speaker correction: ${String(reason)}`);
+    }
+  };
+
+  const renameSpeaker = (speaker: number) => {
+    if (!meeting?.ownerToken) return;
+    Alert.prompt(
+      'Name this speaker',
+      'The name applies throughout this meeting.',
+      (value) => {
+        const name = value.trim();
+        const names = { ...(meeting.speakerNames ?? {}) };
+        if (name) names[speaker] = name;
+        else delete names[speaker];
+        void persistSpeakerEdits(names, meeting.speakerCorrections ?? []);
+      },
+      'plain-text',
+      meeting.speakerNames?.[speaker] ?? '',
+    );
+  };
+
+  const correctSpeaker = (line: SpeakerLine, available: number[]) => {
+    if (!meeting?.ownerToken) return;
+    const buttons = [
+      ...available.map((speaker) => ({
+        text: speakerLabel(speaker),
+        onPress: () => {
+          void persistSpeakerEdits(meeting.speakerNames ?? {}, [
+            ...(meeting.speakerCorrections ?? []),
+            { start: line.start, end: line.end, speaker },
+          ]);
+        },
+      })),
+      {
+        text: 'Unknown speaker',
+        onPress: () => {
+          void persistSpeakerEdits(meeting.speakerNames ?? {}, [
+            ...(meeting.speakerCorrections ?? []),
+            { start: line.start, end: line.end, speaker: null },
+          ]);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' as const },
+    ];
+    Alert.alert('Correct speaker', line.text, buttons);
+  };
+
+  const mergeSpeaker = (source: number, available: number[]) => {
+    if (!meeting?.ownerToken) return;
+    const targets = available.filter((speaker) => speaker !== source);
+    if (!targets.length) return;
+    Alert.alert('Merge duplicate speaker', `Treat ${speakerLabel(source)} as:`, [
+      ...targets.map((target) => ({
+        text: speakerLabel(target),
+        onPress: () =>
+          void persistSpeakerEdits(meeting.speakerNames ?? {}, meeting.speakerCorrections ?? [], {
+            ...(meeting.speakerMerges ?? {}),
+            [source]: target,
+          }),
+      })),
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
 
   const openResearch = async (question: string, kind: 'research' | 'request' = 'research') => {
     if (!sessionId || !meeting || !question.trim() || sendingInsight) return;
@@ -515,7 +616,29 @@ export default function MeetingScreen() {
   const active = meeting?.state === 'active' && runningMeeting?.id === meeting.id;
   const live = meeting?.state === 'active';
   const noteUnsaved = noteSaveError?.meetingId === meeting?.id;
-  const speakers = [...new Set((meeting?.speakerTurns ?? []).map((turn) => turn.speaker))];
+  const speakers = [
+    ...new Set([
+      ...(meeting?.speakerTurns ?? []).map((turn) =>
+        resolvedSpeaker(turn.speaker, meeting?.speakerMerges ?? {}),
+      ),
+      ...(meeting?.speakerCorrections ?? []).flatMap((correction) =>
+        correction.speaker === null
+          ? []
+          : [resolvedSpeaker(correction.speaker, meeting?.speakerMerges ?? {})],
+      ),
+    ]),
+  ]
+    .filter((speaker): speaker is number => speaker !== null)
+    .sort((a, b) => a - b);
+  const speakerChoices = Array.from(
+    {
+      length: Math.max(
+        meeting?.expectedParticipants ?? 4,
+        ...speakers.map((speaker) => speaker + 1),
+      ),
+    },
+    (_, speaker) => speaker,
+  ).filter((speaker) => resolvedSpeaker(speaker, meeting?.speakerMerges ?? {}) === speaker);
   return (
     <KeyboardAvoidingView
       style={[styles.root, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 12 }]}
@@ -597,18 +720,27 @@ export default function MeetingScreen() {
             {speakers.length ? (
               <View style={styles.participantChoices}>
                 {speakers.map((speaker) => (
-                  <View
+                  <Pressable
                     key={speaker}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Rename ${speakerLabel(speaker)}`}
+                    accessibilityHint="Long press to merge this speaker with another"
+                    disabled={!meeting.ownerToken}
+                    onPress={() => renameSpeaker(speaker)}
+                    onLongPress={() => mergeSpeaker(speaker, speakers)}
                     style={[
                       styles.speakerBadge,
-                      meeting.activeSpeaker === speaker &&
+                      resolvedSpeaker(
+                        meeting.activeSpeaker ?? null,
+                        meeting.speakerMerges ?? {},
+                      ) === speaker &&
                         meeting.lastSpeakerAt !== undefined &&
                         now - meeting.lastSpeakerAt < 2500 &&
                         styles.speakerBadgeActive,
                     ]}
                   >
-                    <Text style={styles.speakerText}>Speaker {speaker + 1}</Text>
-                  </View>
+                    <Text style={styles.speakerText}>{speakerLabel(speaker)}</Text>
+                  </Pressable>
                 ))}
               </View>
             ) : (
@@ -622,6 +754,34 @@ export default function MeetingScreen() {
                   : 'No speaker labels yet.'}
               </Text>
             )}
+            {meeting.ownerToken && speakers.length > 0 ? (
+              <Text style={styles.muted}>Tap to name · Hold to merge</Text>
+            ) : null}
+            {meeting.ownerToken && Object.keys(meeting.speakerMerges ?? {}).length ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Restore merged speaker"
+                onPress={() => {
+                  Alert.alert('Restore merged speaker', 'Choose the speaker to separate again.', [
+                    ...Object.keys(meeting.speakerMerges ?? {}).map((source) => ({
+                      text: meeting.speakerNames?.[source] ?? `Speaker ${Number(source) + 1}`,
+                      onPress: () => {
+                        const merges = { ...(meeting.speakerMerges ?? {}) };
+                        delete merges[source];
+                        void persistSpeakerEdits(
+                          meeting.speakerNames ?? {},
+                          meeting.speakerCorrections ?? [],
+                          merges,
+                        );
+                      },
+                    })),
+                    { text: 'Cancel', style: 'cancel' },
+                  ]);
+                }}
+              >
+                <Text style={styles.muted}>Restore merged speaker</Text>
+              </Pressable>
+            ) : null}
           </View>
           <View style={styles.transcriptCard}>
             <Pressable
@@ -650,7 +810,22 @@ export default function MeetingScreen() {
                 style={styles.transcript}
                 data={chunks}
                 keyExtractor={(_, index) => String(index)}
-                renderItem={({ item }) => <Text style={styles.transcriptText}>{item}</Text>}
+                renderItem={({ item }) =>
+                  'start' in item ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Correct speaker for ${item.text}`}
+                      disabled={!meeting.ownerToken}
+                      onPress={() => correctSpeaker(item, speakerChoices)}
+                    >
+                      <Text style={styles.transcriptText}>
+                        {speakerLabel(item.speaker)}: {item.text}
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.transcriptText}>{item.text}</Text>
+                  )
+                }
                 ListEmptyComponent={
                   <Text style={styles.muted}>Recognized speech will appear here.</Text>
                 }

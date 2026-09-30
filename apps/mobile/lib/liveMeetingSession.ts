@@ -14,10 +14,12 @@ import {
   saveTranscript,
   saveSpeakerTurns,
   saveTimedWords,
+  saveSpeakerEdits,
   setCaptureStatus,
   touchMeeting,
   type MeetingRecord,
   type TimedWord,
+  type SpeakerCorrection,
 } from './liveMeetingStore';
 
 type Listener = (meeting: MeetingRecord | null) => void;
@@ -340,6 +342,28 @@ function onEvent(event: STTEvent) {
 
 export function currentMeeting(): MeetingRecord | null {
   return active;
+}
+
+export async function updateSpeakerEdits(
+  meetingId: string,
+  names: Record<string, string>,
+  corrections: SpeakerCorrection[],
+  merges: Record<string, number>,
+): Promise<void> {
+  if (active?.id === meetingId) {
+    await enqueueWrite(() => saveSpeakerEdits(meetingId, names, corrections, merges));
+    if (active?.id === meetingId) {
+      active = {
+        ...active,
+        speakerNames: names,
+        speakerCorrections: corrections,
+        speakerMerges: merges,
+      };
+      publish();
+    }
+  } else {
+    await saveSpeakerEdits(meetingId, names, corrections, merges);
+  }
 }
 
 export function subscribeMeeting(listener: Listener): () => void {

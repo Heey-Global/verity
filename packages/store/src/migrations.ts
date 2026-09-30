@@ -3360,6 +3360,24 @@ const migrations: Record<string, Migration> = {
       await sql`alter table live_meetings drop column expected_participants`.execute(db);
     },
   },
+  '0121_live_meeting_speaker_edits': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column speaker_names_json text not null default '{}'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column speaker_corrections_json text not null default '[]'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column speaker_merges_json text not null default '{}'`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column speaker_merges_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_corrections_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_names_json`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

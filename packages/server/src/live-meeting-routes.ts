@@ -40,6 +40,20 @@ const meetingBody = z.object({
     )
     .max(50_000)
     .optional(),
+  speakerNames: z.record(z.string().regex(/^[0-9]$/), z.string().trim().min(1).max(60)).optional(),
+  speakerCorrections: z
+    .array(
+      z
+        .object({
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().nonnegative(),
+          speaker: z.number().int().min(0).max(9).nullable(),
+        })
+        .refine((correction) => correction.end > correction.start),
+    )
+    .max(2_000)
+    .optional(),
+  speakerMerges: z.record(z.string().regex(/^[0-9]$/), z.number().int().min(0).max(9)).optional(),
   captureStatus: z.enum(['preparing', 'downloading', 'listening', 'paused']),
   ownerToken: z.string().min(32).max(256),
   revision: z.number().int().positive(),

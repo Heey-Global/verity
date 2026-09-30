@@ -64,12 +64,23 @@ it('syncs bounded speaker turns and the expected group size', async () => {
     { speaker: 1, start: 1.25, end: 2.5 },
   ];
   const timedWords = [{ text: 'Hello', start: 0.5, end: 1.0 }];
+  const speakerNames = { '0': 'Anna' };
+  const speakerCorrections = [{ start: 0.5, end: 1, speaker: 1 }];
+  const speakerMerges = { '1': 0 };
   expect(
     (
       await app.inject({
         method: 'PUT',
         url,
-        payload: { ...meeting, expectedParticipants: 6, speakerTurns, timedWords },
+        payload: {
+          ...meeting,
+          expectedParticipants: 6,
+          speakerTurns,
+          timedWords,
+          speakerNames,
+          speakerCorrections,
+          speakerMerges,
+        },
       })
     ).statusCode,
   ).toBe(200);
@@ -78,6 +89,9 @@ it('syncs bounded speaker turns and the expected group size', async () => {
     expectedParticipants: 6,
     speakerTurns,
     timedWords,
+    speakerNames,
+    speakerCorrections,
+    speakerMerges,
   });
   expect(
     (

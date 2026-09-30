@@ -1344,6 +1344,9 @@ interface LiveMeetingsTable {
   expected_participants: number | null;
   speaker_turns_json: string;
   timed_words_json: string;
+  speaker_names_json: string;
+  speaker_corrections_json: string;
+  speaker_merges_json: string;
   capture_status: string;
   owner_token_hash: string;
   recorder_last_seen_at: number;

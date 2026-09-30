@@ -17,6 +17,9 @@ export interface MeetingRecord {
   expectedParticipants?: number | null;
   speakerTurns?: SpeakerTurn[];
   timedWords?: TimedWord[];
+  speakerNames?: Record<string, string>;
+  speakerCorrections?: SpeakerCorrection[];
+  speakerMerges?: Record<string, number>;
   speakerStatus?: 'loading' | 'ready' | 'unavailable';
   activeSpeaker?: number;
   lastSpeakerAt?: number;
@@ -36,6 +39,12 @@ export interface TimedWord {
   text: string;
   start: number;
   end: number;
+}
+
+export interface SpeakerCorrection {
+  start: number;
+  end: number;
+  speaker: number | null;
 }
 
 export interface MeetingNote {
@@ -83,6 +92,9 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
       ['expected_participants', 'INTEGER'],
       ['speaker_turns', "TEXT NOT NULL DEFAULT '[]'"],
       ['timed_words', "TEXT NOT NULL DEFAULT '[]'"],
+      ['speaker_names', "TEXT NOT NULL DEFAULT '{}'"],
+      ['speaker_corrections', "TEXT NOT NULL DEFAULT '[]'"],
+      ['speaker_merges', "TEXT NOT NULL DEFAULT '{}'"],
     ]) {
       if (!meetingColumns.some((column) => column.name === name))
         await connection.execAsync(`ALTER TABLE meetings ADD COLUMN ${name} ${definition}`);
@@ -209,6 +221,23 @@ export async function saveTimedWords(id: string, words: TimedWord[]): Promise<vo
   );
 }
 
+export async function saveSpeakerEdits(
+  id: string,
+  names: Record<string, string>,
+  corrections: SpeakerCorrection[],
+  merges: Record<string, number>,
+): Promise<void> {
+  await (
+    await db()
+  ).runAsync(
+    'UPDATE meetings SET speaker_names = ?, speaker_corrections = ?, speaker_merges = ?, revision = revision + 1 WHERE id = ? AND owner_token IS NOT NULL',
+    JSON.stringify(names),
+    JSON.stringify(corrections),
+    JSON.stringify(merges),
+    id,
+  );
+}
+
 export async function touchMeeting(id: string): Promise<void> {
   await (
     await db()
@@ -261,13 +290,16 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     expected_participants: number | null;
     speaker_turns: string;
     timed_words: string;
+    speaker_names: string;
+    speaker_corrections: string;
+    speaker_merges: string;
     error: string | null;
     owner_token: string | null;
     revision: number;
     synced_revision: number;
     capture_status: MeetingRecord['captureStatus'];
   }>(
-    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, error, owner_token, revision, synced_revision, capture_status, expected_participants, speaker_turns, timed_words FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
+    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, error, owner_token, revision, synced_revision, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
     sessionId,
     serverId,
   );
@@ -283,6 +315,9 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     expectedParticipants: row.expected_participants,
     speakerTurns: JSON.parse(row.speaker_turns) as SpeakerTurn[],
     timedWords: JSON.parse(row.timed_words) as TimedWord[],
+    speakerNames: JSON.parse(row.speaker_names) as Record<string, string>,
+    speakerCorrections: JSON.parse(row.speaker_corrections) as SpeakerCorrection[],
+    speakerMerges: JSON.parse(row.speaker_merges) as Record<string, number>,
     error: row.error,
     ownerToken: row.owner_token,
     revision: row.revision,
@@ -380,6 +415,9 @@ export async function pendingMeetings(
     expected_participants: number | null;
     speaker_turns: string;
     timed_words: string;
+    speaker_names: string;
+    speaker_corrections: string;
+    speaker_merges: string;
     capture_status: NonNullable<MeetingRecord['captureStatus']>;
     owner_token: string;
     revision: number;
@@ -398,6 +436,9 @@ export async function pendingMeetings(
     expectedParticipants: row.expected_participants,
     speakerTurns: JSON.parse(row.speaker_turns) as SpeakerTurn[],
     timedWords: JSON.parse(row.timed_words) as TimedWord[],
+    speakerNames: JSON.parse(row.speaker_names) as Record<string, string>,
+    speakerCorrections: JSON.parse(row.speaker_corrections) as SpeakerCorrection[],
+    speakerMerges: JSON.parse(row.speaker_merges) as Record<string, number>,
     captureStatus: row.capture_status,
     ownerToken: row.owner_token,
     revision: row.revision,
@@ -505,12 +546,14 @@ export async function importChanges(
     for (const meeting of meetings) {
       await connection.runAsync(
         `INSERT INTO meetings
-        (id, session_id, server_id, engine, started_at, last_active_at, ended_at, state, transcript, capture_status, expected_participants, speaker_turns, timed_words, revision, synced_revision, is_remote)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        (id, session_id, server_id, engine, started_at, last_active_at, ended_at, state, transcript, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges, revision, synced_revision, is_remote)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at, state=excluded.state,
           transcript=excluded.transcript, capture_status=excluded.capture_status,
           expected_participants=excluded.expected_participants, speaker_turns=excluded.speaker_turns,
           timed_words=excluded.timed_words,
+          speaker_names=excluded.speaker_names, speaker_corrections=excluded.speaker_corrections,
+          speaker_merges=excluded.speaker_merges,
           revision=excluded.revision, synced_revision=excluded.revision
         WHERE meetings.server_id = excluded.server_id AND meetings.owner_token IS NULL AND meetings.revision < excluded.revision`,
         meeting.id,
@@ -526,6 +569,9 @@ export async function importChanges(
         meeting.expectedParticipants ?? null,
         JSON.stringify(meeting.speakerTurns ?? []),
         JSON.stringify(meeting.timedWords ?? []),
+        JSON.stringify(meeting.speakerNames ?? {}),
+        JSON.stringify(meeting.speakerCorrections ?? []),
+        JSON.stringify(meeting.speakerMerges ?? {}),
         meeting.revision,
         meeting.revision,
       );

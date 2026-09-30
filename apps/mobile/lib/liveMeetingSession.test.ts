@@ -4,6 +4,7 @@ import { waitFor } from '@testing-library/react-native';
 import {
   createMeeting,
   saveSpeakerTurns,
+  saveSpeakerEdits,
   saveTranscript,
   setMeetingState,
 } from './liveMeetingStore';
@@ -14,6 +15,7 @@ import {
   resumeMeeting,
   startMeeting,
   subscribeVoiceMeetingRequest,
+  updateSpeakerEdits,
 } from './liveMeetingSession';
 
 jest.mock('./client', () => ({
@@ -45,6 +47,7 @@ jest.mock('./liveMeetingStore', () => ({
   }),
   saveTranscript: jest.fn().mockResolvedValue(undefined),
   saveSpeakerTurns: jest.fn().mockResolvedValue(undefined),
+  saveSpeakerEdits: jest.fn().mockResolvedValue(undefined),
   saveTimedWords: jest.fn().mockResolvedValue(undefined),
   setMeetingState: jest.fn().mockResolvedValue(undefined),
   touchMeeting: jest.fn().mockResolvedValue(undefined),
@@ -76,6 +79,20 @@ it('keeps speaker turns without interrupting transcription when speaker storage 
   await waitFor(() =>
     expect(saveTranscript).toHaveBeenCalledWith('meeting-1', 'Still transcribing'),
   );
+  await endMeeting();
+});
+
+it('keeps a renamed speaker when another live speaker update arrives', async () => {
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  await startMeeting('session-1');
+  await updateSpeakerEdits('meeting-1', { '0': 'Anna' }, [], {});
+  expect(saveSpeakerEdits).toHaveBeenCalledWith('meeting-1', { '0': 'Anna' }, [], {});
+  onEvent({ kind: 'speaker', speaker: 0, start: 1, end: 2 });
+  expect(currentMeeting()?.speakerNames).toEqual({ '0': 'Anna' });
   await endMeeting();
 });
 

@@ -1,11 +1,31 @@
-import type { SpeakerTurn, TimedWord } from './liveMeetingStore';
+import type { SpeakerCorrection, SpeakerTurn, TimedWord } from './liveMeetingStore';
 
 export interface SpeakerLine {
   speaker: number | null;
   text: string;
+  start: number;
+  end: number;
 }
 
-export function speakerLines(words: TimedWord[], turns: SpeakerTurn[]): SpeakerLine[] {
+export function resolvedSpeaker(
+  speaker: number | null,
+  merges: Record<string, number>,
+): number | null {
+  if (speaker === null) return null;
+  const seen = new Set<number>();
+  while (merges[speaker] !== undefined && !seen.has(speaker)) {
+    seen.add(speaker);
+    speaker = merges[speaker]!;
+  }
+  return seen.has(speaker) ? null : speaker;
+}
+
+export function speakerLines(
+  words: TimedWord[],
+  turns: SpeakerTurn[],
+  corrections: SpeakerCorrection[] = [],
+  merges: Record<string, number> = {},
+): SpeakerLine[] {
   const lines: SpeakerLine[] = [];
   for (const word of words) {
     const duration = word.end - word.start;
@@ -16,10 +36,25 @@ export function speakerLines(words: TimedWord[], turns: SpeakerTurn[]): SpeakerL
         overlap: Math.max(0, Math.min(word.end, turn.end) - Math.max(word.start, turn.start)),
       }))
       .filter(({ overlap }) => overlap > duration * 0.6);
-    const speaker = matches.length === 1 ? matches[0]!.speaker : null;
+    const correction = corrections.findLast(
+      (entry) => entry.start <= word.start && entry.end >= word.end,
+    );
+    const sourceSpeaker = correction
+      ? correction.speaker
+      : matches.length === 1
+        ? matches[0]!.speaker
+        : null;
+    const speaker = resolvedSpeaker(sourceSpeaker, merges);
     const previous = lines.at(-1);
-    if (previous?.speaker === speaker) previous.text += ` ${word.text}`;
-    else lines.push({ speaker, text: word.text });
+    if (
+      previous?.speaker === speaker &&
+      word.start - previous.end <= 1.2 &&
+      previous.text.length < 240 &&
+      !/[.!?]$/.test(previous.text)
+    ) {
+      previous.text += ` ${word.text}`;
+      previous.end = word.end;
+    } else lines.push({ speaker, text: word.text, start: word.start, end: word.end });
   }
   return lines;
 }

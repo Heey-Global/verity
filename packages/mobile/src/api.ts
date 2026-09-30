@@ -1863,6 +1863,11 @@ const liveMeetingSchema = z.object({
   timedWords: z
     .array(z.object({ text: z.string(), start: z.number(), end: z.number() }))
     .optional(),
+  speakerNames: z.record(z.string(), z.string()).optional(),
+  speakerCorrections: z
+    .array(z.object({ start: z.number(), end: z.number(), speaker: z.number().nullable() }))
+    .optional(),
+  speakerMerges: z.record(z.string(), z.number()).optional(),
   captureStatus: z.enum(['preparing', 'downloading', 'listening', 'paused']),
   revision: z.number(),
 });
