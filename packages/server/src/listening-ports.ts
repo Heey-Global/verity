@@ -51,6 +51,7 @@ export const LISTENING_PORTS_SCRIPT = [
 
 function bindOf(hexAddress: string): ListeningProcess['bind'] {
   const address = hexAddress.toUpperCase();
+  // Node's default IPv6 wildcard also accepts IPv4 on a dual-stack socket.
   if (/^0+$/u.test(address)) return 'any';
   // IPv4 is little-endian per word: 127.x.y.z ends in 7F.
   if (address.length === 8) return address.endsWith('7F') ? 'loopback' : 'other';
@@ -145,7 +146,7 @@ export function sessionDevServers(
     return [
       {
         port: process.port,
-        reachable: process.bind !== 'loopback',
+        reachable: process.bind === 'any',
         pid: process.pid,
         name: devServerName(process.command),
         command: process.command,

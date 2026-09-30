@@ -7,7 +7,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer, type Server } from 'node:net';
+import { createConnection, createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -108,7 +108,7 @@ describe('listening port discovery', () => {
     ]);
   });
 
-  it('reports a port bound on IPv4 loopback and IPv6 any once, as reachable', () => {
+  it('recognizes a dual-stack wildcard listener', () => {
     const output = [
       '#tcp',
       '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
@@ -133,7 +133,37 @@ describe('listening port discovery', () => {
         command: 'node /work/.verity-sessions/agent-1/node_modules/.bin/vite',
       },
     ]);
+    expect(
+      sessionDevServers(parseListeningProcesses(output), '/work/.verity-sessions/agent-1'),
+    ).toEqual([expect.objectContaining({ port: 0x1435, reachable: true })]);
   });
+
+  it.skipIf(!existsSync('/proc/net/tcp6'))(
+    'discovers a real dual-stack listener reached over IPv4',
+    async () => {
+      const server = createServer((socket) => socket.end());
+      servers.push(server);
+      await new Promise<void>((resolve) =>
+        server.listen({ port: 0, host: '::', ipv6Only: false }, resolve),
+      );
+      const port = (server.address() as { port: number }).port;
+      await new Promise<void>((resolve, reject) => {
+        const socket = createConnection({ port, host: '127.0.0.1' });
+        socket.once('connect', () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.once('error', reject);
+      });
+
+      const { stdout } = await execFileAsync('sh', ['-c', LISTENING_PORTS_SCRIPT]);
+      const found = parseListeningProcesses(stdout).find((entry) => entry.port === port);
+      expect(found).toEqual(expect.objectContaining({ bind: 'any', pid: process.pid }));
+      expect(sessionDevServers(found ? [found] : [], process.cwd())).toEqual([
+        expect.objectContaining({ port, reachable: true }),
+      ]);
+    },
+  );
 
   it('attributes listeners to the session whose worktree contains them', () => {
     const listener = (pid: number, cwd: string) => ({
