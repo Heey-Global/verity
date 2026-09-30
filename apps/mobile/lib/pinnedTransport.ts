@@ -166,7 +166,9 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     let response: NativeResponse;
     try {
       const encodedBody = fileUri ? null : await encodeBody(init.body);
-      const port = useRemote ? await remoteControlPortForUrl(url) : 0;
+      const replayable =
+        !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
+      const port = useRemote ? await remoteControlPortForUrl(url, replayable) : 0;
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
@@ -221,15 +223,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         }
         if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
         let remoteAttempted = false;
-        if (
-          port === 0 &&
-          useRemote &&
-          directFailed &&
-          !fileUri &&
-          (init.method ?? 'GET').toUpperCase() === 'GET' &&
-          encodedBody === null &&
-          !init.signal?.aborted
-        ) {
+        if (port === 0 && useRemote && directFailed && replayable && !init.signal?.aborted) {
           // The direct route was tried first without knowing whether it works.
           // A read that it lost is recovered through Uplink, which the failure
           // just made the route for the requests that follow.
@@ -335,25 +329,16 @@ export function createPinnedWebSocket(
   const listeners = new Map<'message' | 'close' | 'error', Set<SocketListener>>();
   let socketId: string | null = null;
   let closed = false;
-  let opened = false;
-  let port = 0;
   const subscription = native().addListener('onWebSocketEvent', (event) => {
     if (event.id !== socketId) return;
-    if (event.type === 'open') {
-      opened = true;
-      return;
-    }
-    // A direct socket that never opened tells the next request to use Uplink.
-    if (event.type === 'close' && !opened && !closed && useRemote && port === 0) {
-      reportDirectRouteFailure(url);
-    }
+    if (event.type === 'open') return;
     if (event.type === 'message' || event.type === 'close' || event.type === 'error') {
       for (const listener of listeners.get(event.type) ?? []) listener({ data: event.data });
     }
     if (event.type === 'close') subscription.remove();
   });
   void (async () => {
-    port = useRemote ? await remoteControlPortForUrl(url) : 0;
+    const port = useRemote ? await remoteControlPortForUrl(url) : 0;
     return native().openWebSocket(
       url,
       tlsPin,

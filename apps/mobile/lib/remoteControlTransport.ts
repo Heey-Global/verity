@@ -272,19 +272,25 @@ function keyFor(url: string): string | null {
   return `${profile.serverId}:${url}:${remote.installationId}:${remote.installationHandle}:${remote.uplinkOrigin}`;
 }
 
-/** Return zero for a direct pinned connection. Admission failure never replays an API request. */
-export async function remoteControlPortForUrl(url: string): Promise<number> {
+/**
+ * Return zero for a direct pinned connection. Admission failure never replays an
+ * API request. `replayable` says the caller can repeat the request through
+ * Uplink if the direct route loses it; a mutation cannot, and waits for the
+ * route verdict instead.
+ */
+export async function remoteControlPortForUrl(url: string, replayable = true): Promise<number> {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
   if (key !== null && directRoute?.key !== key && active === null) {
-    // Nothing is known yet (cold start, foreground): send the request directly
-    // at once, as the app did before Remote Control existed, and learn the
-    // route from its outcome. Waiting for a probe to fail first costs its full
-    // timeout on every VPN wake-up, and then an Uplink attempt that can take
-    // far longer, before a request that would have worked directly is sent.
-    void directRouteReachable(target.origin, key).catch(() => undefined);
-    return 0;
+    // Nothing is known yet (cold start, foreground): send a replayable request
+    // directly at once, as the app did before Remote Control existed, and learn
+    // the route from its outcome. Waiting for a probe to fail first costs its
+    // full timeout on every VPN wake-up, and then an Uplink attempt that can
+    // take far longer, before a request that would have worked directly is sent.
+    const probe = directRouteReachable(target.origin, key).catch(() => false);
+    if (replayable) return 0;
+    await probe;
   }
   // Admission and explicit diagnostics may take seconds. A healthy direct route
   // must not wait behind their serialized native-tunnel lifecycle operations.

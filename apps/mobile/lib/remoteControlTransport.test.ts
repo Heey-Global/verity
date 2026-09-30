@@ -823,6 +823,23 @@ describe('direct routing across background and diagnostics', () => {
     expect(mockStop).not.toHaveBeenCalled();
   });
 
+  it('holds a mutation for the probe verdict instead of sending it blind', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    // Off the VPN, a POST sent directly before anything is known fails on
+    // screen: unlike a read it cannot be replayed through Uplink afterwards.
+    mockRequest.mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 0) throw new Error('NSURLErrorDomain:-1003');
+      return { status: 200 };
+    });
+    for (const listener of mockAppStateListeners) {
+      listener('background');
+      listener('active');
+    }
+    expect(await transport.remoteControlPortForUrl(coreUrl, false)).toBe(4321);
+    expect(mockAdmission).toHaveBeenCalledTimes(1);
+  });
+
   it('does not restore an old negative probe after foreground recovery', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');

@@ -64,14 +64,18 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
 
     var traceToken: String {
+      // Clamped to the widths the app accepts; a long-lived stream must not
+      // push the whole trace out of the visible summary.
       let ended = endedAt ?? Date()
-      let firstRemote = firstRemoteAt.map { String(Int($0.timeIntervalSince(openedAt) * 1000)) }
-        ?? "none"
+      let millis: (Date, Int) -> Int = { date, cap in
+        max(0, min(Int(date.timeIntervalSince(self.openedAt) * 1000), cap))
+      }
+      let firstRemote = firstRemoteAt.map { String(millis($0, 9_999_999)) } ?? "none"
       let list: ([UInt8]) -> String = {
         $0.isEmpty ? "none" : $0.map { String($0) }.joined(separator: "-")
       }
-      return "up\(sentBytes).dn\(receivedBytes).t\(firstRemote)"
-        + ".d\(max(0, Int(ended.timeIntervalSince(openedAt) * 1000))).\(endedBy).p\(proxy)"
+      return "up\(min(sentBytes, 999_999_999)).dn\(min(receivedBytes, 999_999_999)).t\(firstRemote)"
+        + ".d\(millis(ended, 99_999_999)).\(endedBy).p\(proxy)"
         + ".o\(list(outgoing.types)).i\(list(incoming.types)).h\(incoming.firstHandshake)"
     }
   }

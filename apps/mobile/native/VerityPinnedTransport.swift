@@ -8,6 +8,7 @@ private enum PinnedTransportError: Error {
   case invalidBody
   case nonHTTPResponse
   case invalidIdentity
+  case invalidProxyMode
 }
 
 // GenericException stores its parameter but deliberately has no default reason.
@@ -194,7 +195,7 @@ class VerityPinnedTransport: Module {
     }
 
     AsyncFunction("setProxyMode") { (mode: String) in
-      guard mode == "socks" || mode == "connect" else { throw PinnedTransportError.invalidURL }
+      guard mode == "socks" || mode == "connect" else { throw PinnedTransportError.invalidProxyMode }
       self.proxyModeLock.lock()
       self.proxyMode = mode
       self.proxyModeLock.unlock()

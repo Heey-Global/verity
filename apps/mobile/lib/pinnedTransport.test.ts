@@ -6,8 +6,6 @@ const mockRemotePort = jest.fn();
 const mockRemoteFailure = jest.fn();
 const mockReportDirectFailure = jest.fn();
 const mockReportDirectSuccess = jest.fn();
-const mockOpenWebSocket = jest.fn();
-const mockAddListener = jest.fn(() => ({ remove: jest.fn() }));
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
@@ -23,9 +21,9 @@ jest.mock('expo-modules-core', () => ({
     download: mockDownload,
     cancelRequest: mockCancelRequest,
     verifyIdentity: jest.fn(),
-    openWebSocket: mockOpenWebSocket,
+    openWebSocket: jest.fn(),
     closeWebSocket: jest.fn(),
-    addListener: mockAddListener,
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
   }),
 }));
 
@@ -55,7 +53,7 @@ Object.defineProperty(globalThis, 'fetch', {
   value: jest.fn(),
 });
 
-import { createPinnedFetch, createPinnedWebSocket, downloadPinnedFile } from './pinnedTransport';
+import { createPinnedFetch, downloadPinnedFile } from './pinnedTransport';
 
 describe('pinned native file transport', () => {
   beforeEach(() => {
@@ -109,7 +107,7 @@ describe('pinned native file transport', () => {
 
     await createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://192.0.2.1/status');
 
-    expect(mockRemotePort).toHaveBeenCalledWith('https://192.0.2.1/status');
+    expect(mockRemotePort).toHaveBeenCalledWith('https://192.0.2.1/status', true);
     expect(mockRequest).toHaveBeenCalledWith(
       expect.any(String),
       'https://192.0.2.1/status',
@@ -204,29 +202,6 @@ describe('pinned native file transport', () => {
     });
   });
 
-  it('marks the direct route failed when a direct socket closes before opening', async () => {
-    mockRemotePort.mockResolvedValue(0);
-    let emit: ((event: { id: string; type: string; data?: string }) => void) | undefined;
-    mockOpenWebSocket.mockResolvedValue('socket-1');
-    mockAddListener.mockImplementation((...args: unknown[]) => {
-      emit = args[1] as typeof emit;
-      return { remove: jest.fn() };
-    });
-    const socket = createPinnedWebSocket(
-      'wss://verity.example/stream',
-      `sha256-${'a'.repeat(43)}`,
-      [],
-      true,
-    );
-    const closeListener = jest.fn();
-    socket.addEventListener('close', closeListener);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    emit?.({ id: 'socket-1', type: 'close', data: 'refused' });
-    expect(closeListener).toHaveBeenCalled();
-    // Without this the stream reconnects directly into the same dead address.
-    expect(mockReportDirectFailure).toHaveBeenCalledWith('wss://verity.example/stream');
-  });
-
   it('never replays a failed direct mutation through Uplink', async () => {
     mockRemotePort.mockResolvedValue(0);
     mockRequest.mockRejectedValue(new Error('Pinned TLS transport failed'));
@@ -238,7 +213,8 @@ describe('pinned native file transport', () => {
       }),
     ).rejects.toMatchObject({ name: 'VerityConnectionError' });
     expect(mockRequest).toHaveBeenCalledTimes(1);
-    expect(mockRemotePort).toHaveBeenCalledTimes(1);
+    // A mutation asks for a route it can commit to, not one it may have to replay.
+    expect(mockRemotePort.mock.calls).toEqual([['https://verity.example/sessions', false]]);
     expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
   });
 
