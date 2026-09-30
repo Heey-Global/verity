@@ -29,6 +29,19 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
     let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: origin, outerSession: outer)
     defer { tunnel.stop(); outer.invalidateAndCancel() }
     let port = try await tunnel.start(ticket: "fixture-ticket", sessionId: "fixture-session")
+    if connect {
+      // Any local process can dial the listener; only the host and port check
+      // keeps the tunnel pinned to the paired Core.
+      for head in [
+        "CONNECT wrong.test:443 HTTP/1.1\r\n\r\n",
+        "CONNECT core.test:8443 HTTP/1.1\r\n\r\n",
+        "CONNECT core.test HTTP/1.1\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: core.test\r\n\r\n",
+        "CONNECT core.test:443\r\n\r\n",
+      ] {
+        try await expectConnectRejected(port: port, head: head)
+      }
+    }
     let loopback = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!)
     let proxy = connect
       ? ProxyConfiguration(httpCONNECTProxy: loopback)
@@ -108,6 +121,38 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
       summary.contains(".o22"), summary.contains(".i22")
     else { throw ProductionProbeFailure.transport("stream trace missing: \(summary)") }
     print("production app case passed: \(expectedFailure.isEmpty ? "valid-private-ca" : expectedFailure) via \(connect ? "connect" : "socks")")
+  }
+}
+
+// A rejected CONNECT is closed without a reply; a 200 or a hang is a failure.
+@available(macOS 14.0, iOS 17.0, *)
+func expectConnectRejected(port: Int, head: String) async throws {
+  let connection = NWConnection(
+    host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+  connection.start(queue: .global())
+  defer { connection.cancel() }
+  try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    connection.send(content: Data(head.utf8), completion: .contentProcessed { error in
+      if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+    })
+  }
+  let reply: String = await withCheckedContinuation { continuation in
+    let lock = NSLock()
+    var finished = false
+    let finish: (String) -> Void = { value in
+      lock.lock()
+      defer { lock.unlock() }
+      guard !finished else { return }
+      finished = true
+      continuation.resume(returning: value)
+    }
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 64) { data, _, _, _ in
+      finish(data.map { String(decoding: $0, as: UTF8.self) } ?? "")
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5) { finish("timeout") }
+  }
+  guard reply != "timeout", !reply.hasPrefix("HTTP/1.1 200") else {
+    throw ProductionProbeFailure.transport("CONNECT not rejected: \(head.prefix(24))")
   }
 }
 

@@ -321,6 +321,41 @@ describe('pinned native file transport', () => {
     expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
   });
 
+  it('names the unanswered address when the grace period ends without recovery', async () => {
+    jest.useFakeTimers();
+    try {
+      mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
+      let failDirect!: (error: Error) => void;
+      mockRequest.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            failDirect = reject;
+          }),
+      );
+      mockCancelRequest.mockImplementation(async () => {
+        failDirect(
+          new Error('Pinned TLS transport failed [NSURLErrorDomain:-999:NO_AUTH_CHALLENGE]'),
+        );
+      });
+      mockRemotePort.mockResolvedValue(0);
+      mockRemoteFailure.mockReturnValue('probe');
+      const pending = createPinnedFetch(
+        `sha256-${'a'.repeat(43)}`,
+        true,
+      )('https://verity.example/sessions');
+      const outcome = pending.catch((error: Error) => error);
+      await jest.advanceTimersByTimeAsync(4_000);
+      // The -999 is the app's own doing and tells the user nothing.
+      expect(await outcome).toMatchObject({
+        name: 'VerityConnectionError',
+        message:
+          'Uplink probe and direct Core request failed: paired address unanswered after the route probe timed out',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('reports the probe refusal for a read it cancelled', async () => {
     mockDirectVerdict.mockReturnValue(Promise.resolve('dead'));
     mockDirectRefusal.mockReturnValue(

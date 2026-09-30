@@ -144,8 +144,12 @@ async function encodeBody(body: BodyInit | null | undefined): Promise<string | n
   throw new Error('This request body is not supported by the pinned transport.');
 }
 
-// How long a direct read may keep waiting after the route probe timed out.
-const DIRECT_GRACE_MS = 7_000;
+// How long a direct read may keep waiting after the 3 s route probe timed out.
+// The probe cannot tell a VPN still waking up from a blackholed address, so
+// off the VPN a blackholed cold start now costs about 7 s before Uplink is
+// tried, where it used to cost 3 s; on the VPN, which is where the app is
+// used most, the same 7 s let a slow wake-up succeed directly.
+const DIRECT_GRACE_MS = 4_000;
 
 export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fetch {
   return (async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -182,7 +186,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       // at once, and a probe timeout grants it a few more seconds, which a
       // waking VPN needs and a blackholed address does not deserve.
       let settled = false;
-      let condemned = false;
+      let cancelledBy: 'verdict' | 'grace' | null = null;
       let grace: ReturnType<typeof setTimeout> | undefined;
       // Non-null only for a read sent while the route was untested; a read the
       // known-good direct route loses fails as before, without an Uplink detour.
@@ -192,11 +196,13 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           (outcome) => {
             if (settled || outcome === 'reachable') return;
             if (outcome === 'dead') {
-              condemned = true;
+              cancelledBy = 'verdict';
               void transport.cancelRequest(requestId);
             } else
               grace = setTimeout(() => {
-                if (!settled) void transport.cancelRequest(requestId);
+                if (settled) return;
+                cancelledBy = 'grace';
+                void transport.cancelRequest(requestId);
               }, DIRECT_GRACE_MS);
           },
           () => undefined,
@@ -316,10 +322,13 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
                 : skipped === null
                   ? 'Direct Core request'
                   : `Uplink ${skipped} and direct Core request`;
-          // A read cancelled on the probe's verdict reports that refusal, not
-          // its own cancellation.
+          // A read the app cancelled itself reports why, not its own -999.
           const reason =
-            (condemned ? lastDirectRefusal(url) : null) ?? safeTransportReason(failure);
+            cancelledBy === 'verdict'
+              ? (lastDirectRefusal(url) ?? safeTransportReason(failure))
+              : cancelledBy === 'grace'
+                ? 'paired address unanswered after the route probe timed out'
+                : safeTransportReason(failure);
           const diagnostic = new Error(
             `${route} failed: ${reason}${remoteReason === null ? '' : `; Uplink: ${remoteReason}`}`,
           );

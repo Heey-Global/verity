@@ -608,6 +608,42 @@ describe('remote diagnostics', () => {
     expect(mode).toBe('connect');
   });
 
+  it('re-syncs the native dialect after a failed restore', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockSetProxyMode = jest
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('bridge lost'))
+      .mockResolvedValue(undefined);
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4321);
+    mockRequest.mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 0) throw new Error('NSURLErrorDomain:-1003');
+      throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+    });
+    mockDiagnosticSummary.mockResolvedValue(
+      'local=2, opened=2, received=6, last=remote_stream.end, sentBytes=3612, receivedBytes=13602, deliveredBytes=13602, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
+    );
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    // Native may still be on the trial dialect; JavaScript must not assume otherwise.
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    expect(mockSetProxyMode.mock.calls).toEqual([
+      ['socks'],
+      ['connect'],
+      ['socks'],
+      ['socks'],
+      ['connect'],
+      ['socks'],
+    ]);
+  });
+
   it('does not change the dialect when Core never answered through the tunnel', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
