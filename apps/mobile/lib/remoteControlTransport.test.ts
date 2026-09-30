@@ -842,15 +842,15 @@ describe('direct routing across background and diagnostics', () => {
     const verdict = transport.pendingDirectVerdict(coreUrl);
     expect(verdict).not.toBeNull();
     resolveProbe({ status: 200 });
-    expect(await verdict).toBe(true);
+    expect(await verdict).toBe('reachable');
     expect(transport.pendingDirectVerdict(coreUrl)).toBeNull();
   });
 
   it.each([
-    // A probe that timed out must not cancel a read a waking VPN will still carry.
-    ['Remote Core probe timed out.', true],
-    ['NSURLErrorDomain:-1003', false],
-  ])('condemns a read only on a definite refusal: %s', async (failure, verdict) => {
+    // A probe that timed out must not condemn a read a waking VPN will still carry.
+    ['Remote Core probe timed out.', 'unknown'],
+    ['NSURLErrorDomain:-1003', 'dead'],
+  ])('tells a definite refusal from a probe timeout: %s', async (failure, verdict) => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
     let rejectProbe!: (reason: Error) => void;

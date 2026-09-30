@@ -190,11 +190,16 @@ describe('pinned native file transport', () => {
     expect(mockRequest).toHaveBeenCalledTimes(2);
   });
 
-  it('cancels a stalled direct read once the route probe says the address is dead', async () => {
+  it.each([
+    ['dead', 0],
+    // A probe timeout is not a verdict; the read gets a bounded grace period.
+    ['unknown', 7_000],
+  ])('cancels a stalled direct read once the route probe says %s', async (outcome, delayMs) => {
+    jest.useFakeTimers();
     const pin = `sha256-${'a'.repeat(43)}`;
-    let resolveVerdict!: (reachable: boolean) => void;
+    let resolveVerdict!: (verdict: string) => void;
     mockDirectVerdict.mockReturnValue(
-      new Promise<boolean>((resolve) => {
+      new Promise<string>((resolve) => {
         resolveVerdict = resolve;
       }),
     );
@@ -213,11 +218,15 @@ describe('pinned native file transport', () => {
     mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
 
     const pending = createPinnedFetch(pin, true)('https://verity.example/sessions');
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await jest.advanceTimersByTimeAsync(0);
     // Off the VPN a blackholed private address would otherwise hold this read
     // for the whole request timeout before Uplink gets its turn.
-    resolveVerdict(false);
+    resolveVerdict(outcome);
+    await jest.advanceTimersByTimeAsync(Math.max(0, delayMs - 1));
+    expect(mockCancelRequest).toHaveBeenCalledTimes(delayMs === 0 ? 1 : 0);
+    await jest.advanceTimersByTimeAsync(1);
     await expect(pending).resolves.toMatchObject({ status: 200 });
+    jest.useRealTimers();
     expect(mockCancelRequest).toHaveBeenCalledWith(mockRequest.mock.calls[0]?.[0]);
     expect(mockRequest).toHaveBeenNthCalledWith(
       2,

@@ -122,9 +122,14 @@ AppState.addEventListener('change', (state) => {
   }
   previousAppState = state;
 });
-// `dead` is true only for a definite refusal (no host, connection refused);
-// a probe timeout says nothing about an address a VPN is still waking up for.
-let directProbe: { key: string; promise: Promise<boolean>; dead: Promise<boolean> } | null = null;
+// 'dead' is a definite refusal (no host, connection refused); 'unknown' is a
+// probe timeout, which says little about an address a VPN is still waking up for.
+export type DirectVerdict = 'reachable' | 'dead' | 'unknown';
+let directProbe: {
+  key: string;
+  promise: Promise<boolean>;
+  verdict: Promise<DirectVerdict>;
+} | null = null;
 let lastFailure: {
   key: string;
   stage: 'setup' | 'admission' | 'attachment' | 'probe';
@@ -201,17 +206,15 @@ async function tunnelDiagnosticSummary(): Promise<string | null> {
 }
 
 /**
- * The route probe still running for this Core, if any, resolving false only
- * when the address is definitely dead. A direct read sent while nothing was
- * known can give up on that verdict instead of sitting in its own timeout; a
- * probe that merely timed out keeps the read going, since a VPN may still be
- * waking up.
+ * The route probe still running for this Core, if any. A direct read sent
+ * while nothing was known can give up on its verdict instead of sitting in
+ * its own request timeout.
  */
-export function pendingDirectVerdict(url: string): Promise<boolean> | null {
+export function pendingDirectVerdict(url: string): Promise<DirectVerdict> | null {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
-  return key !== null && directProbe?.key === key ? directProbe.dead.then((dead) => !dead) : null;
+  return key !== null && directProbe?.key === key ? directProbe.verdict : null;
 }
 
 /** Any HTTP response proves that the pinned direct transport is reachable. */
@@ -451,7 +454,10 @@ async function directRouteReachable(coreUrl: string, key: string): Promise<boole
     currentProbe = {
       key,
       promise: outcome.then((result) => result.reachable),
-      dead: outcome.then((result) => result.dead),
+      verdict: outcome.then(
+        (result) => result.verdict,
+        (): DirectVerdict => 'unknown',
+      ),
     };
     directProbe = currentProbe;
   }
@@ -467,7 +473,7 @@ async function directRouteReachable(coreUrl: string, key: string): Promise<boole
 async function probeDirect(
   coreUrl: string,
   key: string,
-): Promise<{ reachable: boolean; dead: boolean }> {
+): Promise<{ reachable: boolean; verdict: DirectVerdict }> {
   const previousRoute = directRoute;
   const generation = routeGeneration;
   const tlsPin = getServerProfile()?.endpoints.find((entry) => entry.url === coreUrl)?.tlsPin;
@@ -491,7 +497,11 @@ async function probeDirect(
   });
   return {
     reachable,
-    dead: !reachable && reason !== null && !reason.startsWith('Remote Core probe timed out'),
+    verdict: reachable
+      ? 'reachable'
+      : reason !== null && !reason.startsWith('Remote Core probe timed out')
+        ? 'dead'
+        : 'unknown',
   };
 }
 

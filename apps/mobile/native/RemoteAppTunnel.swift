@@ -168,6 +168,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var localResets = 0
   private var remoteResets = 0
   private var lastReset = "none"
+  // At most three finished streams, each holding one cancelled connection;
+  // the summary stays readable after the tunnel has stopped.
   private var recentStreams: [Stream] = []
 
   // Counts and a fixed event name only: diagnostics must not expose URLs, tickets, or stream data.
@@ -295,9 +297,6 @@ final class RemoteAppTunnel: @unchecked Sendable {
       if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
     }
     streams.removeAll()
-    // Cancelled connections are not worth keeping for a summary nobody reads
-    // after the stop; the app reads it before stopping a failed tunnel.
-    recentStreams.removeAll()
     sessionPendingBytes = 0
     pendingLocal = 0
     listener?.cancel()
