@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/Heey-Global/verity/compare/website-v1.6.5...website-v2.0.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tasks:** Remove GET /issues and /tasks routes and the mobile task API.
+
+### Code Refactoring
+
+* **tasks:** remove retired issues and plan board ([#922](https://github.com/Heey-Global/verity/issues/922)) ([663e4c5](https://github.com/Heey-Global/verity/commit/663e4c593ba03bc99884159362a1144ef8f26e8f))
+
 ## [1.6.5](https://github.com/Heey-Global/verity/compare/website-v1.6.4...website-v1.6.5) (2026-09-29)
 
 
