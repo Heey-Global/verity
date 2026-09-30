@@ -64,11 +64,12 @@ async function probeCoreThroughEitherProxy(
   try {
     await probeCore(coreUrl, tlsPin, port);
   } catch (error) {
-    // A rejected pin or chain is a verdict on the certificate, not on the path
-    // the bytes took; the other dialect cannot change it.
+    // Only a handshake the client abandoned before certificate evaluation
+    // points at the proxy path. A rejected pin, an HTTP failure or a Core that
+    // is down would cost a second full probe for nothing.
     if (
       typeof transport.setProxyMode !== 'function' ||
-      (error instanceof Error && error.message.startsWith('Pinned TLS verification failed'))
+      !(error instanceof Error && error.message.includes('NO_AUTH_CHALLENGE'))
     )
       throw error;
     const other: ProxyMode = proxyMode === 'socks' ? 'connect' : 'socks';
@@ -80,7 +81,10 @@ async function probeCoreThroughEitherProxy(
     try {
       await probeCore(coreUrl, tlsPin, port);
     } catch (otherError) {
-      await transport.setProxyMode(proxyMode).catch(() => undefined);
+      await transport.setProxyMode(proxyMode).catch(() => {
+        // Native may still be on the trial dialect; sync again before the next probe.
+        proxyModeSynced = false;
+      });
       throw new ProbeFallbackFailure(error, otherError, other);
     }
     proxyMode = other;
@@ -278,7 +282,7 @@ function keyFor(url: string): string | null {
  * Uplink if the direct route loses it; a mutation cannot, and waits for the
  * route verdict instead.
  */
-export async function remoteControlPortForUrl(url: string, replayable = true): Promise<number> {
+export async function remoteControlPortForUrl(url: string, replayable = false): Promise<number> {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);

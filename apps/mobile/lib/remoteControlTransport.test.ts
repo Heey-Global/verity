@@ -924,8 +924,8 @@ describe('direct routing across background and diagnostics', () => {
     // would have gone through directly.
     const result = await Promise.race([
       Promise.all([
-        transport.remoteControlPortForUrl(coreUrl),
-        transport.remoteControlPortForUrl(`${coreUrl}/api/status`),
+        transport.remoteControlPortForUrl(coreUrl, true),
+        transport.remoteControlPortForUrl(`${coreUrl}/api/status`, true),
       ]),
       new Promise((resolve) => setImmediate(() => resolve('blocked'))),
     ]);

@@ -229,11 +229,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           // just made the route for the requests that follow.
           let remotePort = 0;
           try {
-            remotePort = await remoteControlPortForUrl(url);
+            remotePort = await remoteControlPortForUrl(url, true);
           } catch {
             // Admission failures are reported by remoteControlFailureForUrl below.
           }
-          if (remotePort > 0 && !init.signal?.aborted) {
+          if (init.signal?.aborted) {
+            throw new DOMException('The operation was aborted.', 'AbortError');
+          }
+          if (remotePort > 0) {
             remoteAttempted = true;
             try {
               response = await transport.request(

@@ -187,6 +187,25 @@ describe('pinned native file transport', () => {
     expect(mockRequest).toHaveBeenCalledTimes(2);
   });
 
+  it('surfaces an abort that arrives while Uplink admission runs', async () => {
+    const controller = new AbortController();
+    mockRemotePort.mockResolvedValueOnce(0).mockImplementationOnce(async () => {
+      controller.abort();
+      return 4_321;
+    });
+    mockRequest.mockRejectedValue(
+      new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003]'),
+    );
+
+    // A cancelled read must not come back as a connection error on screen.
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions', {
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('reports the direct failure when Uplink admission itself rejects', async () => {
     mockRemotePort.mockResolvedValueOnce(0).mockRejectedValueOnce(new Error('admission crashed'));
     mockRequest.mockRejectedValue(
