@@ -182,6 +182,29 @@ describe('pinned native file transport', () => {
     expect(mockReportDirectSuccess).not.toHaveBeenCalled();
   });
 
+  it('does not retry a remote read cancelled during proxy recovery', async () => {
+    const controller = new AbortController();
+    let finishRecovery!: (recovered: boolean) => void;
+    mockRemotePort.mockResolvedValue(4_321);
+    mockRequest.mockRejectedValueOnce(new Error('Pinned TLS transport failed [NO_AUTH_CHALLENGE]'));
+    mockRecoverRemoteRead.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        finishRecovery = resolve;
+      }),
+    );
+    const pending = createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)(
+      'https://verity.example/sessions',
+      { signal: controller.signal },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockRecoverRemoteRead).toHaveBeenCalledTimes(1);
+    controller.abort();
+    finishRecovery(true);
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('recovers a read that the untested direct route lost through Uplink', async () => {
     mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
     const pin = `sha256-${'a'.repeat(43)}`;
