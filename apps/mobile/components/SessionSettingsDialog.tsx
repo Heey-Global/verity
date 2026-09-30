@@ -76,19 +76,39 @@ export function SessionSettingsDialog({
     y: number;
     w: number;
     h: number;
+    cardHeight: number;
   }>();
   const cardRef = useRef<View>(null);
   const selectRef = useRef<View>(null);
+  const measurePicker = () => {
+    const card = cardRef.current;
+    if (!card) return;
+    // Measure the select and the card together, after any layout change, so the
+    // list neither opens from a stale spot nor flips on an outdated card height.
+    selectRef.current?.measureLayout(card, (x, y, w, h) =>
+      card.measure((_left, _top, _width, cardHeight) =>
+        setPickerAnchor({ x, y, w, h, cardHeight }),
+      ),
+    );
+  };
   const togglePicker = () => {
     if (pickerOpen) {
       setPickerOpen(false);
       return;
     }
-    Keyboard.dismiss();
-    const card = cardRef.current;
-    if (card)
-      selectRef.current?.measureLayout(card, (x, y, w, h) => setPickerAnchor({ x, y, w, h }));
+    // The list stays invisible until measured, so it never flashes at a guess.
+    setPickerAnchor(undefined);
     setPickerOpen(true);
+    if (!Keyboard.isVisible()) {
+      measurePicker();
+      return;
+    }
+    // Hiding the keyboard resizes the card; measure once it has settled.
+    const hidden = Keyboard.addListener('keyboardDidHide', () => {
+      hidden.remove();
+      requestAnimationFrame(measurePicker);
+    });
+    Keyboard.dismiss();
   };
   const pending = pendingMoves.get(client) ?? new Map<string, MoveInput>();
   pendingMoves.set(client, pending);
@@ -113,6 +133,7 @@ export function SessionSettingsDialog({
   const slide = useRef(new Animated.Value(0)).current;
   const showView = (next: 'settings' | 'link') => {
     Keyboard.dismiss();
+    setPickerOpen(false);
     setLinkError(undefined);
     if (next === 'link') {
       setLinkQuery('');
@@ -707,25 +728,18 @@ export function SessionSettingsDialog({
     { id: projectId, name: projectName },
     ...projects.filter((project) => project.id !== projectId),
   ];
-  // Open downwards when the list fits below the select, otherwise upwards — the
-  // same choice a native menu makes near the bottom edge.
-  const cardHeight = settingsHeight ?? 0;
+  // Open downwards when the list fits below the select, otherwise towards the
+  // side with more room — the same choice a native menu makes near an edge.
   const listHeight = Math.min(projectOptions.length * 48 + 10, 250);
-  const below = pickerAnchor ? cardHeight - (pickerAnchor.y + pickerAnchor.h) - 12 : 0;
-  const above = pickerAnchor ? pickerAnchor.y - 12 : 0;
-  const openUp = pickerAnchor !== undefined && below < listHeight && above > below;
-  const listPosition = pickerAnchor
-    ? {
-        left: pickerAnchor.x,
-        width: pickerAnchor.w,
-        ...(openUp
-          ? { bottom: cardHeight - pickerAnchor.y + 6, maxHeight: Math.min(listHeight, above) }
-          : {
-              top: pickerAnchor.y + pickerAnchor.h + 6,
-              maxHeight: Math.max(Math.min(listHeight, below), 96),
-            }),
-      }
-    : { left: 20, right: 20, top: 0, maxHeight: listHeight };
+  const listPosition = (() => {
+    if (!pickerAnchor) return { left: 20, right: 20, top: 0, opacity: 0 };
+    const { x, y, w, h, cardHeight } = pickerAnchor;
+    const below = Math.max(cardHeight - (y + h) - 12, 0);
+    const above = Math.max(y - 12, 0);
+    return below >= listHeight || below >= above
+      ? { left: x, width: w, top: y + h + 6, maxHeight: Math.min(listHeight, below) }
+      : { left: x, width: w, bottom: cardHeight - y + 6, maxHeight: Math.min(listHeight, above) };
+  })();
 
   return (
     <Modal
@@ -780,6 +794,7 @@ export function SessionSettingsDialog({
                 <Pressable
                   style={StyleSheet.absoluteFill}
                   onPress={() => setPickerOpen(false)}
+                  accessibilityRole="button"
                   accessibilityLabel="Close project list"
                 />
                 <View style={[styles.options, listPosition]}>
