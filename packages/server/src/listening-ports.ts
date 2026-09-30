@@ -9,6 +9,9 @@ export interface ListeningProcess {
   pid: number;
   cwd: string;
   command: string;
+  /** An IPv6 wildcard needs an IPv4 probe before the connector can use it. */
+  ipv6Wildcard?: boolean;
+  reachable?: boolean;
 }
 
 /** A listener attributed to one session worktree, as the preview sheet shows it. */
@@ -65,7 +68,10 @@ function bindOf(hexAddress: string): ListeningProcess['bind'] {
 /** Parses {@link LISTENING_PORTS_SCRIPT} output. A port bound twice (IPv4 and
  *  IPv6, or several workers) is reported once, preferring its widest bind. */
 export function parseListeningProcesses(output: string): ListeningProcess[] {
-  const listeners = new Map<string, { port: number; bind: ListeningProcess['bind'] }>();
+  const listeners = new Map<
+    string,
+    { port: number; bind: ListeningProcess['bind']; ipv6Wildcard?: boolean }
+  >();
   const owners = new Map<string, number>();
   const processes = new Map<number, { cwd: string; command: string }>();
   let section = '';
@@ -82,7 +88,11 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
       const [address, portHex] = (fields[1] ?? '').split(':');
       const inode = fields[9];
       if (!address || !portHex || !inode || inode === '0') continue;
-      listeners.set(inode, { port: Number.parseInt(portHex, 16), bind: bindOf(address) });
+      listeners.set(inode, {
+        port: Number.parseInt(portHex, 16),
+        bind: bindOf(address),
+        ...(address.length === 32 && /^0+$/u.test(address) ? { ipv6Wildcard: true } : {}),
+      });
     } else if (section === '#fd') {
       const header = /^\/proc\/(\d+)\/fd:$/u.exec(line);
       if (header) {
@@ -146,7 +156,7 @@ export function sessionDevServers(
     return [
       {
         port: process.port,
-        reachable: process.bind === 'any',
+        reachable: process.reachable ?? process.bind === 'any',
         pid: process.pid,
         name: devServerName(process.command),
         command: process.command,

@@ -22,6 +22,34 @@ const project: ProjectRecord = {
 };
 
 describe('DockerProjectRuntime', () => {
+  it.each([
+    ['[true]', true],
+    ['[false]', false],
+  ])('probes IPv4 reachability for an IPv6 wildcard (%s)', async (probeResult, reachable) => {
+    const output = [
+      '#tcp',
+      '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+      '   0: 00000000000000000000000000000000:1435 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 21 1 0',
+      '#fd',
+      '/proc/40/fd:',
+      'lrwx------ 1 dev dev 64 Sep 30 13:07 18 -> socket:[21]',
+      '#proc',
+      'P\t40\t/work/sessions/s1\tnode server.js',
+    ].join('\n');
+    const runner = vi
+      .fn<RuntimeRunner>()
+      .mockResolvedValueOnce({ stdout: output, stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: probeResult, stderr: '', exitCode: 0 });
+    const processes = await new DockerProjectRuntime({ runner }).listListeningProcesses(project);
+
+    expect(processes).toEqual([
+      expect.objectContaining({ port: 5173, ipv6Wildcard: true, reachable }),
+    ]);
+    expect(runner.mock.calls[1]?.[1]).toEqual(
+      expect.arrayContaining(['exec', project.containerName, 'node', '-e', '5173']),
+    );
+  });
+
   it('runs an Agent Loop script inside its session worktree with hard bounds', async () => {
     const runner = vi.fn<RuntimeRunner>().mockResolvedValue({
       stdout: '{"spawn":true}\n',

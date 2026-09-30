@@ -128,6 +128,7 @@ describe('listening port discovery', () => {
       {
         port: 0x1435,
         bind: 'any',
+        ipv6Wildcard: true,
         pid: 40,
         cwd: '/work/.verity-sessions/agent-1/web',
         command: 'node /work/.verity-sessions/agent-1/node_modules/.bin/vite',
