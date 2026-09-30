@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.46.0](https://github.com/Heey-Global/verity/compare/mobile-v1.45.0...mobile-v1.46.0) (2026-09-30)
+
+
+### Features
+
+* **preview:** share session dev servers over Uplink ([#934](https://github.com/Heey-Global/verity/issues/934)) ([bdaeda2](https://github.com/Heey-Global/verity/commit/bdaeda2cad3a2767caf5935f90dba6891e1aa169))
+
+
+### Bug Fixes
+
+* **mobile:** adopt scene lifecycle to prevent iOS 27 launch crash ([#936](https://github.com/Heey-Global/verity/issues/936)) ([add0d0b](https://github.com/Heey-Global/verity/commit/add0d0b3b8632d20459b4bde5eba7656888866a8))
+
 ## [1.45.0](https://github.com/Heey-Global/verity/compare/mobile-v1.44.0...mobile-v1.45.0) (2026-09-30)
 
 
