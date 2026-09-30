@@ -51,38 +51,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var firstRemoteAt: Date?
     var endedAt: Date?
     var endedBy = "open"
-    var outTypes: [UInt8] = []
-    var inTypes: [UInt8] = []
-    var firstHandshake = "none"
+    var outgoing = RecordTrace()
+    var incoming = RecordTrace()
 
     init(_ connection: NWConnection, proxy: String) {
       self.connection = connection
       self.proxy = proxy
     }
 
-    func noteRecord(_ data: Data, incoming: Bool) {
-      guard data.count >= 5 else { return }
-      let type = data[data.startIndex]
-      guard type >= 20, type <= 23 else { return }
-      if incoming {
-        if inTypes.count < 6 { inTypes.append(type) }
-        if firstHandshake == "none", type == 22, data.count >= 6 {
-          let message = data[data.startIndex + 5]
-          // A HelloRetryRequest is a ServerHello whose random is the fixed
-          // RFC 8446 sentinel; the client must then send a second ClientHello.
-          let hrrRandom: [UInt8] = [
-            0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65,
-            0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2,
-            0xC8, 0xA8, 0x33, 0x9C,
-          ]
-          let randomStart = data.startIndex + 11
-          let isRetry = message == 2 && data.endIndex >= randomStart + 32
-            && Array(data[randomStart..<randomStart + 32]) == hrrRandom
-          firstHandshake = isRetry ? "hrr" : String(message)
-        }
-      } else if outTypes.count < 6 {
-        outTypes.append(type)
-      }
+    func noteRecord(_ data: Data, incoming isIncoming: Bool) {
+      if isIncoming { incoming.feed(data) } else { outgoing.feed(data) }
     }
 
     var traceToken: String {
@@ -93,8 +71,67 @@ final class RemoteAppTunnel: @unchecked Sendable {
         $0.isEmpty ? "none" : $0.map { String($0) }.joined(separator: "-")
       }
       return "up\(sentBytes).dn\(receivedBytes).t\(firstRemote)"
-        + ".d\(Int(ended.timeIntervalSince(openedAt) * 1000)).\(endedBy).p\(proxy)"
-        + ".o\(list(outTypes)).i\(list(inTypes)).h\(firstHandshake)"
+        + ".d\(max(0, Int(ended.timeIntervalSince(openedAt) * 1000))).\(endedBy).p\(proxy)"
+        + ".o\(list(outgoing.types)).i\(list(incoming.types)).h\(incoming.firstHandshake)"
+    }
+  }
+
+  // Follows TLS record boundaries across socket reads and frames, so a record
+  // split over two chunks is counted once and a chunk starting mid-record is
+  // not mistaken for a new one. Keeps only record types and the first
+  // handshake message; the 38-byte prefix needed to tell a ServerHello from a
+  // HelloRetryRequest is discarded once classified.
+  struct RecordTrace {
+    private static let hrrRandom: [UInt8] = [
+      0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65,
+      0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2,
+      0xC8, 0xA8, 0x33, 0x9C,
+    ]
+    private var header: [UInt8] = []
+    private var remaining = 0
+    private var prefix: [UInt8] = []
+    private var capturePrefix = false
+    private var desynced = false
+    private(set) var types: [UInt8] = []
+    private(set) var firstHandshake = "none"
+
+    mutating func feed(_ data: Data) {
+      guard !desynced else { return }
+      var index = data.startIndex
+      while index < data.endIndex {
+        if remaining > 0 {
+          let step = min(remaining, data.endIndex - index)
+          if capturePrefix {
+            let take = min(step, 38 - prefix.count)
+            prefix.append(contentsOf: data[index..<index + take])
+          }
+          remaining -= step
+          index += step
+          if capturePrefix, prefix.count >= 38 || remaining == 0 { classifyPrefix() }
+          continue
+        }
+        header.append(data[index])
+        index += 1
+        guard header.count == 5 else { continue }
+        let type = header[0]
+        guard type >= 20, type <= 23 else {
+          desynced = true
+          return
+        }
+        remaining = Int(header[3]) << 8 | Int(header[4])
+        header = []
+        if types.count < 6 { types.append(type) }
+        if type == 22, firstHandshake == "none", !capturePrefix { capturePrefix = true }
+        if remaining == 0, capturePrefix { classifyPrefix() }
+      }
+    }
+
+    private mutating func classifyPrefix() {
+      capturePrefix = false
+      guard let message = prefix.first else { return }
+      let retry = message == 2 && prefix.count >= 38 && Array(prefix[6..<38]) == Self.hrrRandom
+      firstHandshake = retry ? "hrr" : String(message)
+      prefix = []
     }
   }
 
@@ -596,7 +633,18 @@ final class RemoteAppTunnel: @unchecked Sendable {
     else { return false }
     var host = String(target[..<separator])
     if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
-    return host.lowercased() == expectedHost.lowercased() && port == expectedPort
+    guard port == expectedPort else { return false }
+    if host.lowercased() == expectedHost.lowercased() { return true }
+    // An IP-literal Core may be spelled differently by the client (IPv6 compression).
+    for family in [AF_INET, AF_INET6] {
+      let size = family == AF_INET ? 4 : 16
+      var expected = [UInt8](repeating: 0, count: size)
+      var given = [UInt8](repeating: 0, count: size)
+      if expectedHost.withCString({ inet_pton(family, $0, &expected) }) == 1,
+        host.withCString({ inet_pton(family, $0, &given) }) == 1
+      { return expected == given }
+    }
+    return false
   }
 
   private func reserveStreamSlot() async throws {

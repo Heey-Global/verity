@@ -38,6 +38,8 @@ type ProxyMode = 'socks' | 'connect';
 // paths through the system proxy code. Whichever answered is kept for the rest
 // of the process.
 let proxyMode: ProxyMode = 'socks';
+// Native keeps its own copy; a JavaScript reload must not leave the two apart.
+let proxyModeSynced = false;
 
 class ProbeFallbackFailure extends Error {
   constructor(
@@ -55,12 +57,26 @@ async function probeCoreThroughEitherProxy(
   port: number,
 ): Promise<void> {
   const transport = requireNativeModule<NativePinnedTransport>('VerityPinnedTransport');
+  if (typeof transport.setProxyMode === 'function' && !proxyModeSynced) {
+    await transport.setProxyMode(proxyMode);
+    proxyModeSynced = true;
+  }
   try {
     await probeCore(coreUrl, tlsPin, port);
   } catch (error) {
-    if (typeof transport.setProxyMode !== 'function') throw error;
+    // A rejected pin or chain is a verdict on the certificate, not on the path
+    // the bytes took; the other dialect cannot change it.
+    if (
+      typeof transport.setProxyMode !== 'function' ||
+      (error instanceof Error && error.message.startsWith('Pinned TLS verification failed'))
+    )
+      throw error;
     const other: ProxyMode = proxyMode === 'socks' ? 'connect' : 'socks';
-    await transport.setProxyMode(other);
+    try {
+      await transport.setProxyMode(other);
+    } catch {
+      throw error;
+    }
     try {
       await probeCore(coreUrl, tlsPin, port);
     } catch (otherError) {
@@ -150,21 +166,29 @@ const STREAM_TRACE =
   String.raw`\.(?:open|local|remote|reset|stopped)\.p(?:socks|connect)` +
   String.raw`\.o(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.i(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.h(?:none|hrr|\d{1,3})`;
 const TUNNEL_SUMMARY = new RegExp(
-  String.raw`^local=\d+, opened=\d+, received=\d+, last=[a-z_.]+` +
+  String.raw`^(local=\d+, opened=\d+, received=\d+, last=[a-z_.]+` +
     String.raw`(?:, sentBytes=\d+, receivedBytes=\d+, deliveredBytes=\d+, localResets=\d+, remoteResets=\d+, ` +
-    String.raw`lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout))` +
-    String.raw`(?:, streams=${STREAM_TRACE}(?:;${STREAM_TRACE}){0,2})?)?$`,
+    String.raw`lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout)))?)` +
+    String.raw`(?:, streams=([^\n]*))?$`,
   'u',
 );
+const STREAM_TRACES = new RegExp(String.raw`^${STREAM_TRACE}(?:;${STREAM_TRACE}){0,2}$`, 'u');
+
+// The counters stay visible even when one stream token is out of shape.
+function acceptedSummary(summary: unknown): string | null {
+  if (typeof summary !== 'string' || summary.length > 1024) return null;
+  const match = TUNNEL_SUMMARY.exec(summary);
+  if (match === null) return null;
+  const [, base, traces] = match;
+  if (base === undefined) return null;
+  return traces !== undefined && STREAM_TRACES.test(traces) ? `${base}, streams=${traces}` : base;
+}
 
 async function tunnelDiagnosticSummary(): Promise<string | null> {
   try {
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     if (typeof native.diagnosticSummary !== 'function') return null;
-    const summary = await native.diagnosticSummary();
-    return typeof summary === 'string' && summary.length <= 1024 && TUNNEL_SUMMARY.test(summary)
-      ? summary
-      : null;
+    return acceptedSummary(await native.diagnosticSummary());
   } catch {
     return null;
   }

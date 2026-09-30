@@ -6,6 +6,8 @@ const mockRemotePort = jest.fn();
 const mockRemoteFailure = jest.fn();
 const mockReportDirectFailure = jest.fn();
 const mockReportDirectSuccess = jest.fn();
+const mockOpenWebSocket = jest.fn();
+const mockAddListener = jest.fn(() => ({ remove: jest.fn() }));
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
@@ -21,9 +23,9 @@ jest.mock('expo-modules-core', () => ({
     download: mockDownload,
     cancelRequest: mockCancelRequest,
     verifyIdentity: jest.fn(),
-    openWebSocket: jest.fn(),
+    openWebSocket: mockOpenWebSocket,
     closeWebSocket: jest.fn(),
-    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    addListener: mockAddListener,
   }),
 }));
 
@@ -53,7 +55,7 @@ Object.defineProperty(globalThis, 'fetch', {
   value: jest.fn(),
 });
 
-import { createPinnedFetch, downloadPinnedFile } from './pinnedTransport';
+import { createPinnedFetch, createPinnedWebSocket, downloadPinnedFile } from './pinnedTransport';
 
 describe('pinned native file transport', () => {
   beforeEach(() => {
@@ -185,6 +187,44 @@ describe('pinned native file transport', () => {
         'Direct and Uplink Core requests failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
     });
     expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports the direct failure when Uplink admission itself rejects', async () => {
+    mockRemotePort.mockResolvedValueOnce(0).mockRejectedValueOnce(new Error('admission crashed'));
+    mockRequest.mockRejectedValue(
+      new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]'),
+    );
+
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions'),
+    ).rejects.toMatchObject({
+      name: 'VerityConnectionError',
+      message:
+        'Direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
+    });
+  });
+
+  it('marks the direct route failed when a direct socket closes before opening', async () => {
+    mockRemotePort.mockResolvedValue(0);
+    let emit: ((event: { id: string; type: string; data?: string }) => void) | undefined;
+    mockOpenWebSocket.mockResolvedValue('socket-1');
+    mockAddListener.mockImplementation((...args: unknown[]) => {
+      emit = args[1] as typeof emit;
+      return { remove: jest.fn() };
+    });
+    const socket = createPinnedWebSocket(
+      'wss://verity.example/stream',
+      `sha256-${'a'.repeat(43)}`,
+      [],
+      true,
+    );
+    const closeListener = jest.fn();
+    socket.addEventListener('close', closeListener);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    emit?.({ id: 'socket-1', type: 'close', data: 'refused' });
+    expect(closeListener).toHaveBeenCalled();
+    // Without this the stream reconnects directly into the same dead address.
+    expect(mockReportDirectFailure).toHaveBeenCalledWith('wss://verity.example/stream');
   });
 
   it('never replays a failed direct mutation through Uplink', async () => {
