@@ -32,7 +32,6 @@ import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
-import { TASKS_ENABLED } from '../lib/featureFlags';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
@@ -195,14 +194,6 @@ function HydratedRoot() {
                 options={{
                   title: 'Verity',
                 }}
-              />
-              {/* The task backlog (ADR 0007) is a top-triggered OVERLAY, not a persistent
-              bottom-tab destination: the home header's list icon opens it as a modal
-              sheet (its own close/swipe-dismiss), so it lifts over the current context
-              and gets out of the way — no footer nav competing with the chat composer. */}
-              <Stack.Screen
-                name="plan"
-                options={{ presentation: 'fullScreenModal', headerShown: false }}
               />
               <Stack.Screen
                 name="search"
@@ -443,19 +434,6 @@ function AppHeader({
                   <Icon name="search" size={19} color={theme.colors.textMuted} />
                 </Pressable>
               </Link>
-              {TASKS_ENABLED ? (
-                <Link href="/plan" accessibilityLabel="Tasks" asChild>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.headerIconButton,
-                      pressed ? styles.headerPressed : null,
-                    ]}
-                    accessibilityRole="button"
-                  >
-                    <Icon name="check-square" size={19} color={theme.colors.textMuted} />
-                  </Pressable>
-                </Link>
-              ) : null}
             </>
           ) : null}
         </View>

@@ -190,7 +190,6 @@ describe('validateGitHubAppCreds (production mint, faked transport)', () => {
         checks: 'read',
         actions: 'write',
         workflows: 'write',
-        organization_projects: 'write',
         issues: 'write',
       },
     });
@@ -241,7 +240,7 @@ describe('validateGitHubAppCreds (production mint, faked transport)', () => {
     expect(result).toEqual({
       ok: false,
       error:
-        'GitHub App is missing required permissions (approve Contents, Pull requests, Checks, Actions, Workflows, Issues, and Organization projects)',
+        'GitHub App is missing required permissions (approve Contents, Pull requests, Checks, Actions, Workflows, and Issues)',
     });
     expect(JSON.stringify(result)).not.toContain('LEAK');
   });

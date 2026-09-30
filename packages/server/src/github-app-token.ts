@@ -52,11 +52,10 @@ export interface GitHubAppProjectTokenMintOptions {
   resolveCreds?: (() => Promise<GitHubAppCreds | undefined>) | undefined;
   /** Optional least-privilege permission subset for the minted token (GitHub App
    *  installation-token `permissions` body param, e.g.
-   *  `{ organization_projects: 'write', issues: 'write' }`). Each requested
+   *  `{ issues: 'write' }`). Each requested
    *  permission must be within what the installation was granted. Omit → the token
    *  inherits the FULL granted installation permission set (the default). GitHub
-   *  always adds `metadata: read` regardless. Used to scope the task-engine token
-   *  (ADR 0007) to only what it needs instead of the broad shared token. Values are
+   *  always adds `metadata: read` regardless. Values are
    *  GitHub's fixed access levels — a typo'd level is a compile error, not a runtime
    *  422 that would surface as a 500. */
   permissions?: Record<string, 'read' | 'write' | 'admin'> | undefined;
@@ -100,10 +99,7 @@ export const PROJECT_GITHUB_TOKEN_PERMISSIONS = {
   workflows: 'write',
 } as const satisfies Record<string, 'read' | 'write' | 'admin'>;
 
-export const REQUIRED_GITHUB_APP_PERMISSIONS = {
-  ...PROJECT_GITHUB_TOKEN_PERMISSIONS,
-  organization_projects: 'write',
-} as const satisfies Record<string, 'read' | 'write' | 'admin'>;
+export const REQUIRED_GITHUB_APP_PERMISSIONS = PROJECT_GITHUB_TOKEN_PERMISSIONS;
 
 /** Least-privilege permission set for the registry (ghcr.io) token the provisioner
  *  mints to authenticate devcontainer builds — pull the PRIVATE verity-sandbox-toolkit
@@ -232,10 +228,9 @@ export function createGitHubAppProjectTokenMint(
 
 /**
  * Mint an installation-level token without a `repositories` filter. This is still
- * permission-bounded by GitHub's `permissions` subset, but it can resolve issue
- * content from every repository the App installation can access. The task board
- * needs that for cross-repo ProjectV2 items: a board item can point at an issue
- * in any installed repo, and GitHub omits inaccessible content from the read.
+ * permission-bounded by GitHub's `permissions` subset and can access every
+ * repository the App installation can access. Installation-wide repository
+ * discovery uses this mint with metadata-only permission.
  */
 export function createGitHubAppInstallationTokenMint(
   opts: GitHubAppProjectTokenMintOptions,
@@ -248,9 +243,8 @@ export function createGitHubAppInstallationTokenMint(
 
 /**
  * Wrap a {@link GitHubProjectTokenMint} with a per-`owner/repo` TTL memo + single-flight
- * so repeated callers don't re-mint on every call. The reuse consumers — the task board's
- * per-operation preflight and the release lookup's refreshes — would otherwise mint a
- * fresh installation token for each read; here they share one cached token per repo.
+ * so repeated callers don't re-mint on every call. Release lookups and token
+ * broker requests share one cached token per repository.
  *
  * Caches only a SUCCESSFUL (defined) token per key for `ttlMs` (default 50min, under the
  * 1h installation-token life). An undefined result — AND a thrown mint (the mint throws on
@@ -442,7 +436,7 @@ export async function validateGitHubAppCreds(
         : res.status === 404
           ? 'installation not found (check the Installation ID)'
           : res.status === 422
-            ? 'GitHub App is missing required permissions (approve Contents, Pull requests, Checks, Actions, Workflows, Issues, and Organization projects)'
+            ? 'GitHub App is missing required permissions (approve Contents, Pull requests, Checks, Actions, Workflows, and Issues)'
             : `GitHub returned an unexpected status (${String(res.status)})`;
     return { ok: false, error };
   }

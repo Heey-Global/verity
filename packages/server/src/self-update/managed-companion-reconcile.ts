@@ -44,7 +44,6 @@ const REQUIRED_AGENT_SEED_FILES = [
   'bin/verity-git-sign',
   'bin/verity-memory',
   'bin/verity-secret-scan',
-  'bin/verity-tasks',
   'bin/gh',
   'bin/git',
   'hooks/pre-commit',

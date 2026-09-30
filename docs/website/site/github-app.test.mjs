@@ -17,7 +17,7 @@ const manifest = {
   public: false,
   default_permissions: {
     contents: 'write', pull_requests: 'write', checks: 'read', actions: 'write', workflows: 'write',
-    issues: 'write', metadata: 'read', packages: 'read', organization_projects: 'write',
+    issues: 'write', metadata: 'read', packages: 'read',
   },
   default_events: [],
 };

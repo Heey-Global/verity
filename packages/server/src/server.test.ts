@@ -3742,49 +3742,9 @@ describe('GET /provider-limits', () => {
   });
 });
 
-describe('GET /issues (#137)', () => {
-  it('503s when no issue provider is configured (GitHub off)', async () => {
-    // The shared `app` is built without `listIssues`.
-    const res = await app.inject({ method: 'GET', url: '/issues' });
-    expect(res.statusCode).toBe(503);
-    expect(res.json()).toEqual({ error: 'GitHub issues are not configured' });
-  });
-
-  it('returns the provider list when configured', async () => {
-    const issues = [
-      { number: 137, title: 'Issues on the overview', body: 'do the thing', url: 'https://x/137' },
-      { number: 42, title: 'Another', body: '', url: 'https://x/42' },
-    ];
-    const withIssues = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      listIssues: () => Promise.resolve(issues),
-    });
-    try {
-      const res = await withIssues.inject({ method: 'GET', url: '/issues' });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual(issues);
-    } finally {
-      await withIssues.close();
-    }
-  });
-
-  it('returns an empty list (200, not 503) when the provider yields none', async () => {
-    const withIssues = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      listIssues: () => Promise.resolve([]),
-    });
-    try {
-      const res = await withIssues.inject({ method: 'GET', url: '/issues' });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual([]);
-    } finally {
-      await withIssues.close();
-    }
-  });
+it('does not expose the retired issues and task-board routes', async () => {
+  expect((await app.inject({ method: 'GET', url: '/issues' })).statusCode).toBe(404);
+  expect((await app.inject({ method: 'GET', url: '/tasks' })).statusCode).toBe(404);
 });
 
 describe('GET /projects (#174)', () => {

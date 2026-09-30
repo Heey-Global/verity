@@ -729,7 +729,7 @@ container smokes are enforced by CI.
 
 Claude's former stateless helper-query implementation (`claude -p`) is deliberately
 absent: it ran in the Server rather than through the supervised ACP boundary. Auto-
-title and task-refinement callers use their existing no-query fallback. Reintroducing
+title uses its existing no-query fallback. Reintroducing
 Claude helper queries requires a dedicated supervisor protocol and may not restore
 the native process path.
 

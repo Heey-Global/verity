@@ -633,7 +633,6 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/gh" /opt/agent-seed/bin/gh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/git" /opt/agent-seed/bin/git
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
-install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-tasks" /opt/agent-seed/bin/verity-tasks
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
 # env only in broker mode; without the broker env it is transparently ssh-keygen,
 # so baking it here is inert on non-broker deployments.
@@ -655,8 +654,6 @@ ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
 ln -sf /opt/agent-seed/bin/verity-secret-scan /usr/local/bin/verity-secret-scan
-# The task-board CLI (ADR 0007) so an agent can run `verity-tasks …` from any cwd.
-ln -sf /opt/agent-seed/bin/verity-tasks /usr/local/bin/verity-tasks
 # The token-broker client + credential helper on PATH so the gh wrapper and git's
 # `!verity-gh-cred` helper resolve from any cwd.
 ln -sf /opt/agent-seed/bin/verity-gh-token /usr/local/bin/verity-gh-token

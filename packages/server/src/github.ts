@@ -192,8 +192,8 @@ export type GitHubIdentityResolver = () => Promise<GitHubIdentity | null>;
 /**
  * A memoized resolver for the repo's `{ owner, repo }` from its `origin` remote.
  * The origin URL is stable for the server's lifetime, so it's read once and cached.
- * Returns null when there's no origin or it isn't a GitHub remote. Shared by the PR
- * and issue services so both parse the remote identically (and only once each).
+ * Returns null when there's no origin or it isn't a GitHub remote. The PR service
+ * uses this resolver to parse the remote once.
  */
 function makeIdentityResolver(git: GitOutput, repoDir: string): GitHubIdentityResolver {
   let identityPromise: Promise<GitHubIdentity | null> | undefined;
@@ -212,7 +212,7 @@ function makeIdentityResolver(git: GitOutput, repoDir: string): GitHubIdentityRe
 
 /**
  * A standalone, memoized {@link GitHubIdentityResolver} for the repo at `repoDir`,
- * for callers that need the `{ owner, repo }` without a PR/issue service — e.g. the
+ * for callers that need the `{ owner, repo }` without the PR service — e.g. the
  * branches route, which surfaces owner/repo so the mobile header can build tappable
  * GitHub URLs for its Issue/PR chips (#161). Parses the `origin` remote with the same
  * {@link parseGitHubRemote} the services use (no duplicated parsing), and returns null
@@ -230,7 +230,7 @@ export function createGitHubIdentityResolver(
  * provider fn is re-consulted (it may rotate, #131); a string source is constant.
  * Empty/whitespace reads as absent (`undefined`), which makes the caller inert.
  *
- * Exported so the GraphQL task service (`github-tasks.ts`) resolves the rotating
+ * Exported so callers resolve the rotating
  * token identically — same inert-when-absent semantics — without duplicating it.
  */
 export function makeTokenResolver(token: GitHubTokenSource | undefined): () => string | undefined {
@@ -898,136 +898,6 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
 }
 
 /**
- * One open GitHub issue, trimmed to what the overview backlog needs (#137): the
- * number, title, body (markdown) and html url. Pull requests are excluded by the
- * service (the issues endpoint returns both).
- */
-export interface IssueSummary {
-  number: number;
-  title: string;
-  body: string;
-  url: string;
-}
-
-/**
- * Lists the repo's OPEN issues so the mobile overview can show the backlog and spawn
- * a session straight from one (#137). Like {@link GitHubPrService} it's best-effort:
- * inert (returns `[]`) without a resolvable token or a GitHub origin, and degrades to
- * `[]` (or the last good list) on any API error — the overview just shows no issues
- * rather than erroring. The single-page result is cached with a TTL so a polled
- * overview doesn't burn rate limit.
- */
-export interface GitHubIssueService {
-  /** Open issues, most-recently-updated first, PRs excluded. Never throws. */
-  listOpenIssues(): Promise<IssueSummary[]>;
-}
-
-export interface GitHubIssueServiceOptions {
-  /** The repo whose `origin` remote identifies the GitHub owner/name. */
-  repoDir: string;
-  /** GitHub token or token provider — see {@link GitHubTokenSource}. */
-  token?: GitHubTokenSource | undefined;
-  /** Async repo-scoped token mint, used by DB-backed GitHub App credentials. */
-  asyncToken?: ((owner: string, repo: string) => Promise<string | undefined>) | undefined;
-  /** Injected git runner (tests); defaults to the real `git`. */
-  git?: GitOutput;
-  /** Injected fetch (tests); defaults to the global `fetch`. */
-  fetch?: HttpFetch;
-  /** Cache TTL in ms for the issue list (default 60s, matching the PR service). */
-  ttlMs?: number;
-  /** Per-request timeout in ms (default 8s) — an abort degrades to `[]`. */
-  timeoutMs?: number;
-  /** Issues per page (default 50, clamped to GitHub's 1–100). v1 fetches one page;
-   * pagination for very large backlogs is a follow-up. */
-  perPage?: number;
-  /** Clock seam (tests). */
-  now?: () => number;
-}
-
-/** Map a raw GitHub issue object to an {@link IssueSummary}, or null when the
- *  required fields (number, title) are missing/ill-typed (a garbled row is dropped
- *  rather than crashing the list). */
-function toIssueSummary(raw: Record<string, unknown>): IssueSummary | null {
-  const { number, title } = raw;
-  if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) return null;
-  if (typeof title !== 'string') return null;
-  return {
-    number,
-    title,
-    body: typeof raw.body === 'string' ? raw.body : '',
-    url: typeof raw.html_url === 'string' ? raw.html_url : '',
-  };
-}
-
-export function createGitHubIssueService(opts: GitHubIssueServiceOptions): GitHubIssueService {
-  const git = opts.git ?? defaultGit;
-  const doFetch: HttpFetch = opts.fetch ?? ((url, init) => fetch(url, init));
-  const ttlMs = opts.ttlMs ?? 60_000;
-  const timeoutMs = opts.timeoutMs ?? 8_000;
-  const perPage = Math.min(Math.max(opts.perPage ?? 50, 1), 100);
-  const now = opts.now ?? ((): number => Date.now());
-  const resolveToken = makeTokenResolver(opts.token);
-  const identity = makeIdentityResolver(git, opts.repoDir);
-
-  let cache: { issues: IssueSummary[]; at: number } | undefined;
-
-  // One GitHub query. Like the PR service, distinguishes a real answer (200, possibly
-  // empty) from a hard failure so a transient error doesn't pin a stale-empty list.
-  const lookup = async (token: string): Promise<{ ok: boolean; issues: IssueSummary[] }> => {
-    const id = await identity();
-    if (id === null) return { ok: false, issues: [] };
-    try {
-      const url =
-        `https://api.github.com/repos/${id.owner}/${id.repo}/issues` +
-        `?state=open&sort=updated&direction=desc&per_page=${String(perPage)}`;
-      const res = await doFetch(url, {
-        headers: githubHeaders(token),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!res.ok) return { ok: false, issues: [] };
-      const body: unknown = await res.json();
-      if (!Array.isArray(body)) return { ok: true, issues: [] };
-      const issues = body
-        .filter((it): it is Record<string, unknown> => typeof it === 'object' && it !== null)
-        // The issues endpoint returns PRs too; a PR carries a `pull_request` field.
-        .filter((it) => it.pull_request === undefined)
-        .map(toIssueSummary)
-        .filter((it): it is IssueSummary => it !== null);
-      return { ok: true, issues };
-    } catch {
-      return { ok: false, issues: [] };
-    }
-  };
-
-  return {
-    async listOpenIssues(): Promise<IssueSummary[]> {
-      const id = await identity();
-      if (id === null) return [];
-      // Prefer the scoped, freshly minted App credential. The synchronous source
-      // is only a legacy fallback and may be a stale fleet token.
-      let token: string | undefined;
-      if (opts.asyncToken !== undefined) {
-        try {
-          token = await opts.asyncToken(id.owner, id.repo);
-        } catch {
-          // Fall through to the explicitly configured legacy token source.
-        }
-      }
-      token ??= resolveToken();
-      if (token === undefined) return [];
-      if (cache !== undefined && now() - cache.at < ttlMs) return cache.issues;
-      const result = await lookup(token);
-      if (result.ok) {
-        cache = { issues: result.issues, at: now() };
-        return result.issues;
-      }
-      // Hard failure: don't cache it; serve the last good list if we have one.
-      return cache?.issues ?? [];
-    },
-  };
-}
-
-/**
  * The latest published GitHub release for a repo, trimmed to what the project
  * overview surfaces: the tag, the human release name, its html url and the
  * publish timestamp. Only the `tag` is rendered today (the overview version
@@ -1047,7 +917,7 @@ export interface ReleaseSummary {
 
 /**
  * Looks up a repo's LATEST published/prerelease release for the project overview. Unlike the
- * PR/issue services this is NOT scoped to a single `origin` — it takes (owner,
+ * PR service this is NOT scoped to a single `origin` — it takes (owner,
  * repo) per call and serves the whole fleet from one instance (mirrors the
  * installation service's fleet-wide shape), because the overview lists every
  * installed repo.
@@ -1253,14 +1123,14 @@ interface InstallationRepo {
 /**
  * Lists the repos the GitHub App-installation is installed on (concept §19,
  * #174) — the live source of the `projects` cache (`GET /projects`). Like {@link
- * GitHubIssueService} it's best-effort: inert (`[]`) without a resolvable token,
+ * GitHubPrService} it's best-effort: inert (`[]`) without a resolvable token,
  * degrades to `[]` (or the last good list) on any API error, never throws.
  * Paginated via GitHub's `Link: <next>; rel="next"` header so the full
  * installation set is fetched in one call regardless of how many repos the App
  * scopes — Verity caches every repo as a `projects` row keyed by `(owner, repo)`
  * (the `state` survives even when the repo has been provisioned).
  *
- * Unlike the PR/issue services this is NOT scoped to a single repo's `origin`
+ * Unlike the PR service this is NOT scoped to a single repo's `origin`
  * identity — it queries the App-installation-level endpoint
  * `GET /installation/repositories`, available to any `ghs_*` App-installation
  * token minted from the DB-backed GitHub App credentials. No
@@ -1277,12 +1147,10 @@ export interface GitHubInstallationServiceOptions {
   asyncToken?: (() => Promise<string | undefined>) | undefined;
   /** Injected fetch (tests); defaults to the global `fetch`. */
   fetch?: HttpFetch;
-  /** Cache TTL in ms (default 60s, keyed off the same window the PR/issue services
-   *  use so an installation-list refresh piggybacks a moment when GitHub is being
-   *  hit anyway). */
+  /** Cache TTL in ms (default 60s). */
   ttlMs?: number;
   /** Per-request timeout in ms (default 10s — paginating across many repos takes
-   *  longer than the PR lookup; mirrors the issue service's grace window scaled). */
+   *  longer than the PR lookup). */
   timeoutMs?: number;
   /** Repos per page (default 100 — GitHub's max; minimizes round-trips for fleets
    *  with many installed repos). */
@@ -1312,7 +1180,7 @@ function nextLink(header: string | null | undefined): string | null {
 
 /** Map a raw GitHub `repositories[i]` object to an {@link InstallationRepo}, or
  *  null when the required fields are missing/ill-typed (the repo is dropped
- *  rather than crashing the list — matches {@link toIssueSummary}'s discipline). */
+ *  rather than crashing the list). */
 function toInstallationRepo(raw: Record<string, unknown>): InstallationRepo | null {
   const owner = raw.owner;
   if (owner === null || typeof owner !== 'object' || Array.isArray(owner)) return null;

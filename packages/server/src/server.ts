@@ -199,9 +199,7 @@ import {
   type GitOutput,
 } from './branches.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
-import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } from './github.js';
-import type { GitHubTaskService } from './github-tasks.js';
-import { registerTaskRoutes } from './task-routes.js';
+import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
@@ -1181,12 +1179,6 @@ export interface ServerDeps {
    */
   repoIdentity?: (worktree: string) => Promise<GitHubIdentity | null>;
   /**
-   * Lists the repo's open GitHub issues for the overview backlog (#137) — used by
-   * `GET /issues`. Absent → that route returns 503 (GitHub not configured). Returns
-   * `[]` (never throws) on a lookup failure; the result is cached by the provider.
-   */
-  listIssues?: () => Promise<IssueSummary[]>;
-  /**
    * Account-global Claude quota probe (the undocumented `/api/oauth/usage`
    * endpoint the Claude apps use), surfaced via `GET /provider-limits` so the
    * overview can show a real usage gauge for Claude — at parity with Codex —
@@ -1205,21 +1197,7 @@ export interface ServerDeps {
    * provider; without one the probe is inert (yields `[]`). Injected in tests.
    */
   codexUsage?: CodexUsageService;
-  /**
-   * The task-management backend over a Projects v2 board (ADR 0007) — powers the
-   * `/tasks` routes. Absent → those routes return 503 (task management not
-   * configured; the mobile Plan tab hides). Best-effort by contract: its reads
-   * return `null`/`[]` and its writes `null`/`false` rather than throwing, so a
-   * GitHub outage degrades the planning view instead of erroring the server.
-   */
-  taskService?: GitHubTaskService;
-  /**
-   * The working directory (repo root) for the one-shot task-refiner (ADR 0007,
-   * Voice → Refiner) — gives the model repo context when turning a transcript into a
-   * blueprint. Present → `POST /tasks/refine` is enabled (it runs through the resolved
-   * conductor's stateless `query`); absent → that route 503s. Typically the server's
-   * `repoDir`.
-   */
+  /** Repository context for server-side model queries. */
   refineCwd?: string;
   /**
    * Latest published GitHub release for a repo, for the project-overview version
@@ -4869,13 +4847,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // Both probes are cached, backed off and never throw. An unconfigured provider
   // simply contributes nothing.
   registerProviderLimitsRoute(app, { claudeUsage, codexUsage });
-
-  registerTaskRoutes(app, {
-    ...(deps.taskService !== undefined ? { taskService: deps.taskService } : {}),
-    ...(deps.listIssues !== undefined ? { listIssues: deps.listIssues } : {}),
-    ...(deps.refineCwd !== undefined ? { refineCwd: deps.refineCwd } : {}),
-    query: (opts) => conductor.query(opts),
-  });
 
   // Multi-repo fleet-registry projects (concept §19, #174) for `GET /projects` —
   // the source of the new-session picker's project list. When a GitHub provider is

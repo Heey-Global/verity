@@ -120,7 +120,7 @@ describe('createGitHubAppProjectTokenMint', () => {
         appId: '123',
         privateKeyPath,
         defaultInstallationId: '456',
-        permissions: { organization_projects: 'write', issues: 'write' },
+        permissions: { issues: 'write', checks: 'read' },
         fetch,
       });
 
@@ -128,7 +128,7 @@ describe('createGitHubAppProjectTokenMint', () => {
       // Assert the parsed wire contract, not key-emission order.
       expect(bodies[0] === undefined ? undefined : JSON.parse(bodies[0])).toEqual({
         repositories: ['Verity'],
-        permissions: { organization_projects: 'write', issues: 'write' },
+        permissions: { issues: 'write', checks: 'read' },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -176,19 +176,19 @@ describe('createGitHubAppProjectTokenMint', () => {
       const bodies: Array<string | undefined> = [];
       const fetch: HttpFetch = (_url, init) => {
         bodies.push(init?.body);
-        return Promise.resolve(ok({ token: 'ghs_board' }));
+        return Promise.resolve(ok({ token: 'ghs_installation' }));
       };
       const mint = createGitHubAppInstallationTokenMint({
         appId: '123',
         privateKeyPath,
         defaultInstallationId: '456',
-        permissions: { organization_projects: 'write', issues: 'write' },
+        permissions: { issues: 'write', checks: 'read' },
         fetch,
       });
 
-      await expect(mint()).resolves.toBe('ghs_board');
+      await expect(mint()).resolves.toBe('ghs_installation');
       expect(bodies[0] === undefined ? undefined : JSON.parse(bodies[0])).toEqual({
-        permissions: { organization_projects: 'write', issues: 'write' },
+        permissions: { issues: 'write', checks: 'read' },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

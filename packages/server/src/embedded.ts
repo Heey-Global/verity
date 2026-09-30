@@ -91,13 +91,11 @@ import { createGitBranchService } from './branches.js';
 import {
   createGitHubIdentityResolver,
   createGitHubInstallationService,
-  createGitHubIssueService,
   createGitHubPrService,
   createGitHubReleaseService,
   openPullRequest,
   type GitHubInstallationService,
 } from './github.js';
-import { createGitHubTaskService } from './github-tasks.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
 import { PreviewShareManager, sweepOrphanedPreviewShares } from './preview-share-manager.js';
@@ -170,7 +168,6 @@ import {
 import {
   createGitHubAppInstallationTokenMint,
   createGitHubAppProjectTokenMint,
-  createCachedInstallationTokenMint,
   createCachedProjectTokenMint,
   PROJECT_GITHUB_TOKEN_PERMISSIONS,
   REGISTRY_GITHUB_TOKEN_PERMISSIONS,
@@ -658,13 +655,6 @@ export interface EmbeddedServerConfig {
   /** Test seam for the bundled Codex catalog (the sealed-boot seed). Production uses
    *  `codex debug models --bundled`, which needs neither an unlock nor a CODEX_HOME. */
   codexBundledModelLoader?: (() => Promise<string[]>) | undefined;
-  /** The GitHub Projects v2 board number (under the `repoDir` origin's owner) that
-   *  backs task management — the `/tasks` routes (ADR 0007). Set together with `repoDir`
-   *  to wire the GraphQL task service; omit either to disable it (the `/tasks` routes
-   *  then return 503 and the mobile Plan tab hides). A token source is resolved at
-   *  REQUEST time from DB-backed GitHub App credentials; with none, the board simply
-   *  reads inert. */
-  tasksProjectNumber?: number | undefined;
   /** Enable Expo push-token registration + sender (ADR 0008). */
   pushEnabled?: boolean | undefined;
   /** Optional Expo push-security access token. Never logged or persisted. */
@@ -1552,22 +1542,6 @@ export function parseCpuCores(value: string | undefined): number | undefined {
   return Math.floor(n * 1e9);
 }
 
-/**
- * Parse the optional GitHub Projects v2 board number that backs task management
- * (ADR 0007) from `VERITY_TASKS_PROJECT_NUMBER`. Unset/empty → `undefined`: the
- * feature stays off and the `/tasks` routes 503 (the mobile Plan tab hides).
- * Set-but-invalid THROWS (fail loud rather than silently disabling) — a board
- * number is a positive integer (`github.com/orgs/<owner>/projects/<number>`).
- */
-export function parseTasksProjectNumber(value: string | undefined): number | undefined {
-  if (value === undefined || value.trim() === '') return undefined;
-  const n = Number(value);
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`invalid VERITY_TASKS_PROJECT_NUMBER "${value}": expected a positive integer`);
-  }
-  return n;
-}
-
 export function devcontainerBuildOptionsForDockerBaseUrl(dockerBaseUrl: string): {
   devcontainerBuild: typeof defaultDevcontainerBuildSpawner;
   dockerHostForBuild: string;
@@ -2206,14 +2180,6 @@ export async function buildEmbeddedServer(
     }
     return svc;
   };
-  // Open-issues list for the overview backlog (#137). Managed installs mint
-  // repo-scoped installation tokens from the encrypted GitHub App settings.
-  const issueService = config.repoDir
-    ? createGitHubIssueService({
-        repoDir: config.repoDir,
-        asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
-      })
-    : undefined;
   // Repo identity (owner/repo) for the header's tappable Issue/PR chips (#161). Needs
   // only the repo — owner/repo comes from the `origin` remote, no token required — so
   // it's available even on token-less deployments. Resolves to null (chips stay
@@ -2257,10 +2223,8 @@ export async function buildEmbeddedServer(
   // The per-project sandbox token — scoped to a LEAST-PRIVILEGE subset (audit M2)
   // instead of inheriting the full installation grant. The subset lives in
   // PROJECT_GITHUB_TOKEN_PERMISSIONS (push branches incl. `.github/workflows/*`,
-  // open PRs, manage issues, and inspect/administer Actions runs);
-  // board writes go through the
-  // dedicated task mints below, so a compromised sandbox cannot tamper with the
-  // org's Projects v2 board. Repo scope is still `[project.repo]`.
+  // open PRs, manage issues, and inspect/administer Actions runs).
+  // Repo scope is still `[project.repo]`.
   // Minting fails closed until the installation has approved this complete set;
   // silently dropping a denied permission would give the sandbox a misleading token.
   const projectTokenMint =
@@ -2270,46 +2234,11 @@ export async function buildEmbeddedServer(
       permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,
     });
 
-  // Task-management board over Projects v2 (ADR 0007) — the `/tasks` routes. Constructed
-  // on the explicit opt-in (a `repoDir` whose origin owns the board + a configured board
-  // number); omit either and the routes 503 (task management not configured). GraphQL, so
-  // it's user-initiated + on-demand only — never polled (AGENTS.md).
-  //
-  // Deliberately NOT gated on a token being present at build time — like `releaseService`
-  // below, it's wired whenever opted-in and degrades to an inert board (getBoard → null)
-  // when no token resolves at request time. That's what lets an App configured purely via
-  // the app UI (ADR 0002 — credentials in the encrypted DB store) still serves
-  // `/tasks`: the mint reads those DB credentials at request time.
-  //
-  // Token: a DEDICATED least-privilege mint scoped to only what the task engine needs —
-  // `organization_projects` (board read/write + rank) + `issues` (draft→issue).
-  // Minted for the repo each task operation needs (origin for board reads, the chosen
-  // target repo for repo-picker create/convert), memoized ~50min (tokens live 1h) so
-  // a Plan-tab refresh doesn't re-mint per call.
-  const taskTokenMint = createGitHubAppProjectTokenMint({
-    ...baseMintOpts,
-    permissions: { organization_projects: 'write', issues: 'write' },
-  });
-  const taskBoardTokenMint = createGitHubAppInstallationTokenMint({
-    ...baseMintOpts,
-    permissions: { organization_projects: 'write', issues: 'write' },
-  });
-  // TTL memo + single-flight for REUSE consumers: release lookup uses per-repo
-  // installation tokens, task issue operations use per-target-repo task tokens, and
-  // task board operations use one installation-wide task token. Provisioner/worktree
-  // paths keep the raw `projectTokenMint` because each server-side operation needs a
-  // fresh project-scoped token.
   const cachedProjectTokenMint = createCachedProjectTokenMint(projectTokenMint, {
     authorityKey:
       config.githubProjectTokenMint === undefined
         ? githubAppAuthorityKey
         : () => Promise.resolve('test-github-project-token-mint'),
-  });
-  const cachedTaskTokenMint = createCachedProjectTokenMint(taskTokenMint, {
-    authorityKey: githubAppAuthorityKey,
-  });
-  const cachedTaskBoardTokenMint = createCachedInstallationTokenMint(taskBoardTokenMint, {
-    authorityKey: githubAppAuthorityKey,
   });
   // GitHub-token broker (security review): the sandbox holds an opaque per-project
   // capability and redeems it at POST /internal/github/token instead of carrying a
@@ -2343,19 +2272,6 @@ export async function buildEmbeddedServer(
     ...baseMintOpts,
     permissions: { metadata: 'read' },
   });
-  const taskService =
-    config.repoDir && config.tasksProjectNumber !== undefined
-      ? createGitHubTaskService({
-          repoDir: config.repoDir,
-          projectNumber: config.tasksProjectNumber,
-          asyncToken: async (repo) => {
-            const id = repo ?? (await repoIdentityFor(config.repoDir as string)());
-            return id ? cachedTaskTokenMint({ owner: id.owner, repo: id.repo }) : undefined;
-          },
-          asyncBoardToken: () => cachedTaskBoardTokenMint(),
-        })
-      : undefined;
-
   // GitHub-App-installation repo list (concept §19, #174) — the live source of the
   // `projects` cache, fetched fresh per `GET /projects` (with a per-call TTL cached by
   // the service so a polled picker doesn't burn rate limit). The DB-backed App path
@@ -4136,10 +4052,7 @@ export async function buildEmbeddedServer(
     // Needs `openssh-client` in the Server image (deploy/Dockerfile). Injectable
     // so tests never shell out.
     sshKeygen: defaultSshKeygenSpawner,
-    ...(issueService !== undefined ? { listIssues: () => issueService.listOpenIssues() } : {}),
-    ...(taskService !== undefined ? { taskService } : {}),
-    // Voice → Refiner (ADR 0007): the one-shot refiner runs in the server's repo for
-    // context. Present only with a repo; the route 503s otherwise.
+    // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
     latestRelease: (owner: string, repo: string) => releaseService.latestRelease(owner, repo),
     refreshLatestRelease: (owner: string, repo: string) =>
