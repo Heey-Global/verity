@@ -43,6 +43,7 @@ export interface SessionHistoryRouteDeps {
     limit: number | undefined,
     beforeSeq: number | undefined,
   ) => Promise<unknown>;
+  diagnostics: (reply: FastifyReply, sessionId: string) => Promise<unknown>;
 }
 
 /** Registers live activity, bounded diagnostics, and backward-paginated history reads. */
@@ -68,5 +69,9 @@ export function registerSessionHistoryRoutes(
     const { id } = sessionParams.parse(request.params);
     const { beforeSeq, limit } = historyQuery.parse(request.query);
     return deps.history(reply, id, limit, beforeSeq);
+  });
+  app.get('/sessions/:id/diagnostics', async (request, reply): Promise<unknown> => {
+    const { id } = sessionParams.parse(request.params);
+    return deps.diagnostics(reply, id);
   });
 }

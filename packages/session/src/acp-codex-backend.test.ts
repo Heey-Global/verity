@@ -415,6 +415,7 @@ describe('AcpCodexBackend', () => {
       'text',
       'result',
       'status',
+      'diagnostic',
     ]);
     expect(fake.kill).toHaveBeenCalled();
     expect(fake.writes.some((message) => message['method'] === '_session/steering')).toBe(false);
@@ -762,6 +763,7 @@ describe('AcpCodexBackend', () => {
       'status',
       'text',
       'result',
+      'diagnostic',
     ]);
   });
 });

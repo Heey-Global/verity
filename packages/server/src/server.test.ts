@@ -2694,6 +2694,50 @@ describe('GET /sessions/:id/events (backward pagination)', () => {
   });
 });
 
+describe('GET /sessions/:id/diagnostics', () => {
+  it('bounds history reads when recent events have no diagnostics', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const read = vi.spyOn(ctx.store, 'getEventsBeforeSeq').mockResolvedValue({
+      events: [{ seq: 1, ts: 1, event: { t: 'prompt', text: 'private chat' } }],
+      hasMore: true,
+    });
+    try {
+      const res = await app.inject({ method: 'GET', url: '/sessions/s1/diagnostics' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+      expect(read).toHaveBeenCalledTimes(10);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('returns technical metadata without transcript content', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'private chat' });
+    await ctx.store.appendEvent('s1', {
+      t: 'diagnostic',
+      source: 'agent',
+      outcome: 'failed',
+      phase: 'session_load',
+      backend: 'opencode-acp',
+      code: -32603,
+    });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s1/diagnostics' });
+    expect(res.statusCode).toBe(200);
+    const diagnostics = res.json<Array<{ seq: number; ts: number; source: string }>>();
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.ts).toBeGreaterThan(0);
+    expect(diagnostics[0]).toMatchObject({
+      source: 'agent',
+      outcome: 'failed',
+      phase: 'session_load',
+      backend: 'opencode-acp',
+      code: -32603,
+    });
+    expect(res.body).not.toContain('private chat');
+  });
+});
+
 /**
  * The attention envelope. `?envelope=1` is opt-in precisely so the shape of the
  * default response cannot change under an app that has not been updated — the

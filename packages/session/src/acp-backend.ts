@@ -587,6 +587,7 @@ export async function runAcpTurn(
   // so the conductor can drop the binding and start cold instead of re-resuming a
   // pointer that will be refused again on every future turn.
   let loadRefused = false;
+  let diagnosticPhase: 'spawn' | 'initialize' | 'session_load' | 'session_new' | 'prompt' = 'spawn';
   const topLevelText = new AcpTextStream();
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
@@ -783,6 +784,7 @@ export async function runAcpTurn(
         return queueUpdate(params.update);
       })
       .connectWith(processStream(child, opts.worktree), async (agent) => {
+        diagnosticPhase = 'initialize';
         const initialized = await agent.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
           ...(profile.clientCapabilitiesMeta !== undefined
@@ -844,6 +846,7 @@ export async function runAcpTurn(
         };
         let session: NewSessionResponse;
         if (opts.resumeSessionId !== undefined) {
+          diagnosticPhase = 'session_load';
           if (initialized.agentCapabilities?.loadSession !== true) {
             throw new Error(profile.loadSessionUnsupported);
           }
@@ -882,9 +885,11 @@ export async function runAcpTurn(
             });
           session = { sessionId: opts.resumeSessionId, ...loaded };
         } else {
+          diagnosticPhase = 'session_new';
           session = await agent.request(acp.methods.agent.session.new, request);
         }
         sessionId = session.sessionId;
+        diagnosticPhase = 'prompt';
         boundSessionId = session.sessionId;
         cancelSession = () => {
           void agent
@@ -1079,6 +1084,14 @@ export async function runAcpTurn(
         } else if (!aborted) {
           await writer.write({ t: 'status', state: 'crashed' });
         }
+        await writer.write({
+          t: 'diagnostic',
+          source: 'agent',
+          outcome:
+            prompt.stopReason === 'cancelled' ? (aborted ? 'cancelled' : 'failed') : 'completed',
+          phase: diagnosticPhase,
+          backend: profile.telemetryBackend,
+        });
         await writer.finish();
         return prompt;
       });
@@ -1132,6 +1145,32 @@ export async function runAcpTurn(
     if (sessionId !== undefined && !aborted && !failedBeforeExecution) {
       await writer.write({ t: 'error', kind: 'acp', message }).catch(() => undefined);
       await writer.write({ t: 'status', state: 'crashed' }).catch(() => undefined);
+    }
+    if (sessionId !== undefined || opts.storeSessionId !== undefined) {
+      const diagnostic = {
+        t: 'diagnostic',
+        source: 'agent',
+        outcome: aborted ? 'cancelled' : 'failed',
+        phase: diagnosticPhase,
+        backend: profile.telemetryBackend,
+        ...(error instanceof acp.RequestError ? { code: error.code } : {}),
+      } as const;
+      if (writer.currentSessionId !== undefined) {
+        await writer.write(diagnostic).catch(() => undefined);
+      } else {
+        // A refused session/load never binds SessionWriter. The existing Verity
+        // session still owns this attempt, so persist the metadata directly.
+        const storeId = opts.storeSessionId ?? opts.resumeSessionId;
+        if (storeId !== undefined && (await opts.store.getSession(storeId)) !== undefined) {
+          const { seq, ts } = await opts.store.appendEvent(storeId, diagnostic).catch(() => ({
+            seq: undefined,
+            ts: undefined,
+          }));
+          if (seq !== undefined && ts !== undefined) {
+            opts.bus?.publish(storeId, { seq, ts, event: diagnostic });
+          }
+        }
+      }
     }
     await writer.finish().catch(() => undefined);
     return {

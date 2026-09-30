@@ -74,6 +74,13 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
   merged: { t: 'merged', number: 233 },
   compaction: { t: 'compaction', boundary: true },
   error: { t: 'error', kind: 'spawn_failed', message: 'boom' },
+  diagnostic: {
+    t: 'diagnostic',
+    source: 'agent',
+    outcome: 'failed',
+    phase: 'session_load',
+    code: -32603,
+  },
   session_progress: {
     t: 'session_progress',
     summary: 'Implementation complete and verified.',

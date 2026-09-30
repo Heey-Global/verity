@@ -33,7 +33,7 @@ export const publishSessionProgressRequestSchema = z
   .strict();
 
 export const SESSION_PROGRESS_TOOL_DESCRIPTION =
-  'Read one selected project session’s bounded, structured progress on demand. Returns lifecycle, activity timing, branch and cached PR/Issue association where available, plus a concise published summary/blocker when present. It does not return transcript text and must not be polled. Each call requires user approval.';
+  'Read one selected project session’s bounded, structured progress on demand. Returns lifecycle, activity timing, branch and cached PR/Issue association where available, recent technical diagnostics, plus a concise published summary/blocker when present. It does not return transcript text and must not be polled. Each call requires user approval.';
 
 export const RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION = `Read a small recent window from one exact project session after user approval. The request must state sessionId, purpose and optional count/time window; count defaults to ${String(RECENT_SESSION_MESSAGES_DEFAULT)} and is capped at ${String(RECENT_SESSION_MESSAGES_MAX)}. Returns only user/assistant/error text with recognized credential patterns redacted, without attachments, tools, hidden prompts or capabilities. Freely written text can contain unrecognizable sensitive material, so the approval must be treated as authorizing the displayed content scope. If hasMore is true, pass nextBeforeSeq as beforeSeq in a fresh approved request for the next older page; never poll it.`;
 

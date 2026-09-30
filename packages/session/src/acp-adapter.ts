@@ -354,6 +354,14 @@ export class AcpEventAdapter {
       isError: tool.status === 'failed',
       parentToolId: parent,
     });
+    if (tool.status === 'failed') {
+      events.push({
+        t: 'diagnostic',
+        source: name.startsWith('mcp__') ? 'mcp' : 'tool',
+        outcome: 'failed',
+        phase: 'tool_call',
+      });
+    }
     return events;
   }
 }

@@ -23674,6 +23674,16 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     kind: import_zod.z.string(),
     message: import_zod.z.string()
   }),
+  // Technical diagnostics are deliberately scalar and contain no agent, chat,
+  // tool-input, tool-output, or stderr text.
+  import_zod.z.object({
+    t: import_zod.z.literal("diagnostic"),
+    source: import_zod.z.enum(["agent", "tool", "mcp"]),
+    outcome: import_zod.z.enum(["completed", "failed", "cancelled"]),
+    phase: import_zod.z.enum(["spawn", "initialize", "session_load", "session_new", "prompt", "tool_call"]),
+    backend: import_zod.z.string().min(1).max(40).optional(),
+    code: import_zod.z.number().int().optional()
+  }),
   import_zod.z.object({
     t: import_zod.z.literal("session_progress"),
     summary: import_zod.z.string().min(1).max(1e3),
@@ -28761,6 +28771,14 @@ var AcpEventAdapter = class {
       isError: tool.status === "failed",
       parentToolId: parent
     });
+    if (tool.status === "failed") {
+      events.push({
+        t: "diagnostic",
+        source: name.startsWith("mcp__") ? "mcp" : "tool",
+        outcome: "failed",
+        phase: "tool_call"
+      });
+    }
     return events;
   }
 };
@@ -29481,6 +29499,7 @@ async function runAcpTurn(opts, profile) {
   let sessionId = opts.resumeSessionId;
   let boundSessionId;
   let loadRefused = false;
+  let diagnosticPhase = "spawn";
   const topLevelText = new AcpTextStream();
   let updateTail = Promise.resolve();
   let updateError;
@@ -29583,6 +29602,7 @@ async function runAcpTurn(opts, profile) {
         turnHasAgentContent = true;
       return queueUpdate(params.update);
     }).connectWith(processStream(child, opts.worktree), async (agent) => {
+      diagnosticPhase = "initialize";
       const initialized = await agent.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
         ...profile.clientCapabilitiesMeta !== void 0 ? {
@@ -29625,6 +29645,7 @@ async function runAcpTurn(opts, profile) {
       };
       let session;
       if (opts.resumeSessionId !== void 0) {
+        diagnosticPhase = "session_load";
         if (initialized.agentCapabilities?.loadSession !== true) {
           throw new Error(profile.loadSessionUnsupported);
         }
@@ -29640,9 +29661,11 @@ async function runAcpTurn(opts, profile) {
         });
         session = { sessionId: opts.resumeSessionId, ...loaded };
       } else {
+        diagnosticPhase = "session_new";
         session = await agent.request(methods.agent.session.new, request2);
       }
       sessionId = session.sessionId;
+      diagnosticPhase = "prompt";
       boundSessionId = session.sessionId;
       cancelSession = () => {
         void agent.notify(methods.agent.session.cancel, { sessionId: session.sessionId }).catch(() => killAgent(child));
@@ -29752,6 +29775,13 @@ async function runAcpTurn(opts, profile) {
       } else if (!aborted) {
         await writer.write({ t: "status", state: "crashed" });
       }
+      await writer.write({
+        t: "diagnostic",
+        source: "agent",
+        outcome: prompt.stopReason === "cancelled" ? aborted ? "cancelled" : "failed" : "completed",
+        phase: diagnosticPhase,
+        backend: profile.telemetryBackend
+      });
       await writer.finish();
       return prompt;
     });
@@ -29774,6 +29804,30 @@ ${message}`;
     if (sessionId !== void 0 && !aborted && !failedBeforeExecution) {
       await writer.write({ t: "error", kind: "acp", message }).catch(() => void 0);
       await writer.write({ t: "status", state: "crashed" }).catch(() => void 0);
+    }
+    if (sessionId !== void 0 || opts.storeSessionId !== void 0) {
+      const diagnostic = {
+        t: "diagnostic",
+        source: "agent",
+        outcome: aborted ? "cancelled" : "failed",
+        phase: diagnosticPhase,
+        backend: profile.telemetryBackend,
+        ...error instanceof RequestError ? { code: error.code } : {}
+      };
+      if (writer.currentSessionId !== void 0) {
+        await writer.write(diagnostic).catch(() => void 0);
+      } else {
+        const storeId = opts.storeSessionId ?? opts.resumeSessionId;
+        if (storeId !== void 0 && await opts.store.getSession(storeId) !== void 0) {
+          const { seq, ts } = await opts.store.appendEvent(storeId, diagnostic).catch(() => ({
+            seq: void 0,
+            ts: void 0
+          }));
+          if (seq !== void 0 && ts !== void 0) {
+            opts.bus?.publish(storeId, { seq, ts, event: diagnostic });
+          }
+        }
+      }
     }
     await writer.finish().catch(() => void 0);
     return {

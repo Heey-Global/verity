@@ -274,6 +274,13 @@ const SAMPLES: Record<AgentEventType, AgentEvent> = {
   error,
   session_progress: { t: 'session_progress', summary: 'halfway', outcomeDelivered: false },
   raw: { t: 'raw', backend: 'claude-code', payload: { a: 1 } },
+  diagnostic: {
+    t: 'diagnostic',
+    source: 'agent',
+    outcome: 'failed',
+    phase: 'session_load',
+    code: -32603,
+  },
 };
 
 describe('the session-overview projection slice', () => {

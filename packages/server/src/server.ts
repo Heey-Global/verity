@@ -124,6 +124,7 @@ import type { DevicePairingManager } from './device-pairing.js';
 import {
   currentPublishedProgress,
   olderEventsMayMatchWindow,
+  recentSessionDiagnostics,
   redactSessionObservationText,
   safeRecentMessages,
   safeSessionProgressErrorKind,
@@ -1592,7 +1593,7 @@ So: repo work belongs in a project session. When a task needs to read a private 
 What this container does have:
 - The Verity HTTP API, reachable in-cluster, for inspecting projects, sessions and server state.
 - The \`verity_list_sessions\` and \`verity_session_handoff\` tools. List first and let the user choose an exact existing session or New session; a new-session handoff creates the target and uses the briefing as its first turn. A bare project target is only a convenience when exactly one eligible session exists and never chooses among several.
-- The on-demand \`verity_session_progress\` tool returns structured lifecycle/cached branch-PR facts without transcript content. \`verity_recent_session_messages\` reads one explicitly selected session only after a separate approval that names the purpose and bounded window. Never poll either tool.
+- The on-demand \`verity_session_progress\` tool returns structured lifecycle/cached branch-PR facts and recent technical diagnostics without transcript content. \`verity_recent_session_messages\` reads one explicitly selected session only after a separate approval that names the purpose and bounded window. Never poll either tool.
 - Project sessions can publish a bounded, explicit outcome summary with \`verity_publish_session_progress\`; the server binds it to the calling session. A completed turn is not proof that the requested outcome was delivered.
 - Outbound HTTPS, so public documentation and public repositories are readable.
 - Doppler-backed server credentials and other control-plane capabilities where a task genuinely requires them.
@@ -5471,6 +5472,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           status,
           projectionTruncated: progressPage.hasMore,
           lastActivityAt,
+          diagnostics: recentSessionDiagnostics(events, 20),
           ...(activePrompt === undefined
             ? {}
             : {
@@ -8355,6 +8357,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: `session ${id} not found` };
       }
       return deps.eventStore.getEventsBeforeSeq(id, limit ?? DEFAULT_HISTORY_PAGE, beforeSeq);
+    },
+    diagnostics: async (reply, id) => {
+      const session = await deps.eventStore.getSession(id);
+      if (!session) {
+        reply.code(404);
+        return { error: `session ${id} not found` };
+      }
+      // Diagnostics are scalar metadata only; the transcript and raw agent output
+      // never cross this endpoint.
+      const diagnostics = [];
+      let beforeSeq: number | undefined;
+      // A sparse or older session may have no diagnostics at all. Bound the
+      // backward scan independently of the number of matches.
+      for (let pageNumber = 0; pageNumber < 10 && diagnostics.length < 100; pageNumber += 1) {
+        const page = await deps.eventStore.getEventsBeforeSeq(id, 500, beforeSeq);
+        diagnostics.unshift(...recentSessionDiagnostics(page.events, 100));
+        if (!page.hasMore || page.events.length === 0) break;
+        beforeSeq = page.events[0]?.seq;
+      }
+      return diagnostics.slice(-100);
     },
   });
 

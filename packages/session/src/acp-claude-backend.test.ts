@@ -680,6 +680,7 @@ describe('AcpClaudeBackend', () => {
       'text',
       'result',
       'status',
+      'diagnostic',
     ]);
     expect(fake.kill).toHaveBeenCalled();
     expect(steer?.({ text: 'too late' })).toBe(false);
@@ -1055,6 +1056,7 @@ describe('AcpClaudeBackend', () => {
       'text',
       'error',
       'status',
+      'diagnostic',
     ]);
     expect(events.find((event) => event.t === 'text')).toMatchObject({
       t: 'text',
@@ -1159,7 +1161,14 @@ describe('AcpClaudeBackend', () => {
     expect(result).toMatchObject({ exitCode: 1, failedBeforeExecution: true });
     expect(fake.writes.some((message) => message['method'] === 'session/prompt')).toBe(false);
     // And it leaves no terminal row behind, so the replay stays one logical turn.
-    expect(await ctx.store.getEvents('verity-session-14')).toEqual([]);
+    expect(await ctx.store.getEvents('verity-session-14')).toEqual([
+      expect.objectContaining({
+        t: 'diagnostic',
+        source: 'agent',
+        outcome: 'failed',
+        phase: 'session_load',
+      }),
+    ]);
   });
 
   it('reads a refusal the adapter printed on stderr, not just the JSON-RPC message', async () => {
@@ -1232,6 +1241,7 @@ describe('AcpClaudeBackend', () => {
       'text',
       'error',
       'status',
+      'diagnostic',
     ]);
   });
 
@@ -1789,6 +1799,7 @@ describe('AcpClaudeBackend', () => {
       'status',
       'text',
       'result',
+      'diagnostic',
     ]);
   });
 
@@ -1814,6 +1825,7 @@ describe('AcpClaudeBackend', () => {
       'session',
       'status',
       'text',
+      'diagnostic',
     ]);
   });
 
@@ -1838,7 +1850,7 @@ describe('AcpClaudeBackend', () => {
     expect(result.stderr).toContain('ede_diagnostic');
     expect(
       (await ctx.store.getEvents('verity-session-ede-cancel')).map((event) => event.t),
-    ).toEqual(['session', 'status']);
+    ).toEqual(['session', 'status', 'diagnostic']);
   });
 
   it('still records a crash when the engine aborts a contentless turn on its own', async () => {
@@ -1856,8 +1868,17 @@ describe('AcpClaudeBackend', () => {
     // (see the steering test), but a genuinely broken turn must still badge.
     expect(result).toMatchObject({ aborted: false, exitCode: 1 });
     const events = await ctx.store.getEvents('verity-session-ede-crash');
-    expect(events.map((event) => event.t)).toEqual(['session', 'status', 'error', 'status']);
-    expect(events.at(-1)).toMatchObject({ t: 'status', state: 'crashed' });
+    expect(events.map((event) => event.t)).toEqual([
+      'session',
+      'status',
+      'error',
+      'status',
+      'diagnostic',
+    ]);
+    expect(events.findLast((event) => event.t === 'status')).toMatchObject({
+      t: 'status',
+      state: 'crashed',
+    });
   });
 
   it('still records a crash when the turn is cancelled without an operator abort', async () => {
@@ -1878,7 +1899,11 @@ describe('AcpClaudeBackend', () => {
       'text',
       'result',
       'status',
+      'diagnostic',
     ]);
-    expect(events.at(-1)).toMatchObject({ t: 'status', state: 'crashed' });
+    expect(events.findLast((event) => event.t === 'status')).toMatchObject({
+      t: 'status',
+      state: 'crashed',
+    });
   });
 });
