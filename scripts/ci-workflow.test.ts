@@ -893,7 +893,7 @@ describe('native iOS compile gate', () => {
       >;
     };
     const job = github.jobs['verify-ios'];
-    expect(job?.['runs-on']).toBe('macos-26');
+    expect(job?.['runs-on']).toBe('xcode-27');
     expect(job?.needs).toBe('changes');
     expect(job?.if).toContain("needs.changes.outputs.required == 'true'");
     expect(github.on?.pull_request).toBeDefined();
@@ -1040,7 +1040,7 @@ describe('native iOS compile gate', () => {
       >;
     };
     const job = release.jobs['publish-mobile-native'];
-    expect(job?.['runs-on']).toBe('macos-26');
+    expect(job?.['runs-on']).toBe('xcode-27');
     expect(job?.permissions?.issues).toBe('write');
     // Recovery moves the release PR labels through the issues endpoint, which
     // GitHub authorizes against the pull-request scope for a PR: with read
@@ -2025,7 +2025,7 @@ describe('GitHub-hosted runner boundary', () => {
   });
 
   it('runs every concrete job on an approved ephemeral GitHub-hosted runner', () => {
-    const hostedImages = new Set(['ubuntu-24.04', 'ubuntu-24.04-arm', 'macos-26']);
+    const hostedImages = new Set(['ubuntu-24.04', 'ubuntu-24.04-arm', 'macos-26', 'xcode-27']);
     const offenders = jobs
       .filter(declaresRunner)
       .filter(({ job }) => {

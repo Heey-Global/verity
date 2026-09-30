@@ -817,7 +817,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
     # Public-repository GitHub-hosted runners are free. Keep the expensive macOS
     # allocation scoped to the native release job only.
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 120
     env:
       MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}

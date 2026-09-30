@@ -130,7 +130,7 @@ jobs:
   verify-ios:
     needs: changes
     if: needs.changes.outputs.required == 'true'
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 120
     steps:
       # renovate: datasource=github-actions depName=actions/checkout

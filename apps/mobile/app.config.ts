@@ -61,7 +61,7 @@ const config: ExpoConfig = {
   ios: {
     bundleIdentifier: 'build.verity.app',
     // Keep the generated app target and Podfile on the same iOS minimum.
-    deploymentTarget: '26.0',
+    deploymentTarget: '27.0',
     // GitHub's manifest code has no PKCE protection, so its callback must use a
     // claimed HTTPS link rather than a custom scheme another app could steal.
     // ASWebAuthenticationSession validates HTTPS callbacks through the
