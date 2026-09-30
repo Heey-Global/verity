@@ -1475,9 +1475,7 @@ export const CLAUDE_MODELS = [
 /** The curated Claude ids the picker tucks behind the "More models" disclosure: still
  * selectable, but not among the rows a fresh session shows first. Always a subset of
  * {@link CLAUDE_MODELS} — `/models` only nominates the ones it actually lists. */
-const CLAUDE_MORE_MODELS: readonly (typeof CLAUDE_MODELS)[number][] = [
-  'claude-haiku-4-5-20251001',
-];
+const CLAUDE_MORE_MODELS: readonly (typeof CLAUDE_MODELS)[number][] = ['claude-haiku-4-5-20251001'];
 
 /** The default model a fresh spawn uses when the operator doesn't pick one — a
  * Claude id (routes to the subscription-billed Claude Code backend). */
