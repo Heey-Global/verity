@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.45.1",
-  "runtime": "1.45.0",
+  "version": "1.46.1",
+  "runtime": "1.46.0",
   "channel": "testflight",
-  "commit": "bdaeda2cad3a2767caf5935f90dba6891e1aa169",
-  "tag": "mobile-v1.45.1",
-  "branch": "staging-mobile-v1.45.1-bdaeda2cad3a2767caf5935f90dba6891e1aa169",
-  "baseline": "mobile-v1.45.0",
-  "group": "cfd3dac5-9ca0-4748-a81c-a2c7641cae0f",
+  "commit": "d5d51851883f1649636dca41242f55d6af0751e7",
+  "tag": "mobile-v1.46.1",
+  "branch": "staging-mobile-v1.46.1-d5d51851883f1649636dca41242f55d6af0751e7",
+  "baseline": "mobile-v1.46.0",
+  "group": "0716bf51-ec60-43b3-ac35-ac07df322404",
   "notes": [
-    "share session dev servers over Uplink (#934)",
-    "record structured ACP diagnostics for control plane (#933)"
+    "float the project picker over session settings (#941)",
+    "keep mobile fixtures out of server releases (#939)"
   ]
 }
