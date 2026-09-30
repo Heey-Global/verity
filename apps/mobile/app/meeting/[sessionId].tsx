@@ -107,6 +107,22 @@ export default function MeetingScreen() {
   const [sendingInsight, setSendingInsight] = useState(false);
   const [voiceSending, setVoiceSending] = useState(false);
   const noteSaveErrorRef = useRef<string | null>(null);
+  const speakerEditDraft = useRef<{
+    meetingId: string;
+    names: Record<string, string>;
+    corrections: SpeakerCorrection[];
+    merges: Record<string, number>;
+  } | null>(null);
+  const speakerEditWrite = useRef<Promise<void>>(Promise.resolve());
+  if (speakerEditDraft.current?.meetingId !== meeting?.id)
+    speakerEditDraft.current = meeting
+      ? {
+          meetingId: meeting.id,
+          names: meeting.speakerNames ?? {},
+          corrections: meeting.speakerCorrections ?? [],
+          merges: meeting.speakerMerges ?? {},
+        }
+      : null;
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
   const transcriptList = useRef<FlatList<TranscriptRow>>(null);
@@ -338,23 +354,31 @@ export default function MeetingScreen() {
       : (meeting?.speakerNames?.[speaker] ?? `Speaker ${speaker + 1}`);
 
   const persistSpeakerEdits = async (
-    names: Record<string, string>,
-    corrections: SpeakerCorrection[],
-    merges: Record<string, number> = meeting?.speakerMerges ?? {},
+    change: Partial<{
+      names: Record<string, string>;
+      corrections: SpeakerCorrection[];
+      merges: Record<string, number>;
+    }>,
   ) => {
-    if (!meeting?.ownerToken) return;
+    if (!meeting?.ownerToken || speakerEditDraft.current?.meetingId !== meeting.id) return;
+    const next = { ...speakerEditDraft.current, ...change };
+    speakerEditDraft.current = next;
+    setMeeting((current) =>
+      current?.id === next.meetingId
+        ? {
+            ...current,
+            speakerNames: next.names,
+            speakerCorrections: next.corrections,
+            speakerMerges: next.merges,
+          }
+        : current,
+    );
     try {
-      await updateSpeakerEdits(meeting.id, names, corrections, merges);
-      setMeeting((current) =>
-        current?.id === meeting.id
-          ? {
-              ...current,
-              speakerNames: names,
-              speakerCorrections: corrections,
-              speakerMerges: merges,
-            }
-          : current,
-      );
+      const write = speakerEditWrite.current
+        .catch(() => undefined)
+        .then(() => updateSpeakerEdits(next.meetingId, next.names, next.corrections, next.merges));
+      speakerEditWrite.current = write;
+      await write;
       setSyncError(true);
     } catch (reason) {
       setError(`Could not save speaker correction: ${String(reason)}`);
@@ -372,10 +396,10 @@ export default function MeetingScreen() {
           setError('Speaker names can be at most 60 characters.');
           return;
         }
-        const names = { ...(meeting.speakerNames ?? {}) };
+        const names = { ...(speakerEditDraft.current?.names ?? meeting.speakerNames ?? {}) };
         if (name) names[speaker] = name;
         else delete names[speaker];
-        void persistSpeakerEdits(names, meeting.speakerCorrections ?? []);
+        void persistSpeakerEdits({ names });
       },
       'plain-text',
       meeting.speakerNames?.[speaker] ?? '',
@@ -388,19 +412,23 @@ export default function MeetingScreen() {
       ...available.map((speaker) => ({
         text: speakerLabel(speaker),
         onPress: () => {
-          void persistSpeakerEdits(meeting.speakerNames ?? {}, [
-            ...(meeting.speakerCorrections ?? []),
-            { start: line.start, end: line.end, speaker },
-          ]);
+          void persistSpeakerEdits({
+            corrections: [
+              ...(speakerEditDraft.current?.corrections ?? meeting.speakerCorrections ?? []),
+              { start: line.start, end: line.end, speaker },
+            ],
+          });
         },
       })),
       {
         text: 'Unknown speaker',
         onPress: () => {
-          void persistSpeakerEdits(meeting.speakerNames ?? {}, [
-            ...(meeting.speakerCorrections ?? []),
-            { start: line.start, end: line.end, speaker: null },
-          ]);
+          void persistSpeakerEdits({
+            corrections: [
+              ...(speakerEditDraft.current?.corrections ?? meeting.speakerCorrections ?? []),
+              { start: line.start, end: line.end, speaker: null },
+            ],
+          });
         },
       },
       { text: 'Cancel', style: 'cancel' as const },
@@ -416,9 +444,11 @@ export default function MeetingScreen() {
       ...targets.map((target) => ({
         text: speakerLabel(target),
         onPress: () =>
-          void persistSpeakerEdits(meeting.speakerNames ?? {}, meeting.speakerCorrections ?? [], {
-            ...(meeting.speakerMerges ?? {}),
-            [source]: target,
+          void persistSpeakerEdits({
+            merges: {
+              ...(speakerEditDraft.current?.merges ?? meeting.speakerMerges ?? {}),
+              [source]: target,
+            },
           }),
       })),
       { text: 'Cancel', style: 'cancel' },
@@ -779,13 +809,11 @@ export default function MeetingScreen() {
                     ...Object.keys(meeting.speakerMerges ?? {}).map((source) => ({
                       text: meeting.speakerNames?.[source] ?? `Speaker ${Number(source) + 1}`,
                       onPress: () => {
-                        const merges = { ...(meeting.speakerMerges ?? {}) };
+                        const merges = {
+                          ...(speakerEditDraft.current?.merges ?? meeting.speakerMerges ?? {}),
+                        };
                         delete merges[source];
-                        void persistSpeakerEdits(
-                          meeting.speakerNames ?? {},
-                          meeting.speakerCorrections ?? [],
-                          merges,
-                        );
+                        void persistSpeakerEdits({ merges });
                       },
                     })),
                     { text: 'Cancel', style: 'cancel' },

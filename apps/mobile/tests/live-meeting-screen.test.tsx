@@ -339,6 +339,52 @@ it('renames a speaker across the current meeting', async () => {
   prompt.mockRestore();
 });
 
+it('keeps a rename when a correction is made before its save finishes', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  let finishFirstSave!: () => void;
+  jest
+    .mocked(updateSpeakerEdits)
+    .mockImplementationOnce(() => new Promise<void>((resolve) => (finishFirstSave = resolve)));
+  const meeting: MeetingRecord = {
+    id: 'meeting-quick-edits',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'Hello',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  await screen.findByText('Hello');
+  fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
+  const reply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof reply === 'function') act(() => reply('Anna'));
+  await waitFor(() => expect(updateSpeakerEdits).toHaveBeenCalledTimes(1));
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  fireEvent.press(screen.getByLabelText('Correct speaker for Hello'));
+  const buttons = alert.mock.calls.at(-1)?.[2] ?? [];
+  act(() => buttons.find((button) => button.text === 'Unknown speaker')?.onPress?.());
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+  await act(async () => finishFirstSave());
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenLastCalledWith(
+      meeting.id,
+      { '0': 'Anna' },
+      [{ start: 0, end: 0.5, speaker: null }],
+      {},
+    ),
+  );
+  prompt.mockRestore();
+  alert.mockRestore();
+});
+
 it('rejects a speaker name longer than the sync contract allows', async () => {
   const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
   const meeting: MeetingRecord = {

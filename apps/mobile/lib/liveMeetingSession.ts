@@ -351,16 +351,14 @@ export async function updateSpeakerEdits(
   merges: Record<string, number>,
 ): Promise<void> {
   if (active?.id === meetingId) {
+    active = {
+      ...active,
+      speakerNames: names,
+      speakerCorrections: corrections,
+      speakerMerges: merges,
+    };
+    publish();
     await enqueueWrite(() => saveSpeakerEdits(meetingId, names, corrections, merges));
-    if (active?.id === meetingId) {
-      active = {
-        ...active,
-        speakerNames: names,
-        speakerCorrections: corrections,
-        speakerMerges: merges,
-      };
-      publish();
-    }
   } else {
     await saveSpeakerEdits(meetingId, names, corrections, merges);
   }
