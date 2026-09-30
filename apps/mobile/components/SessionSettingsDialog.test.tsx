@@ -158,6 +158,20 @@ it('contains the dialog on tablets and keeps project options collapsed until req
   });
   expect(screen.getByRole('button', { name: /Save and move|Retry move/ })).toBeEnabled();
 });
+it('floats project options over the dialog instead of growing its content', () => {
+  setup(jest.fn());
+  const body = screen.UNSAFE_getByType(ScrollView);
+  fireEvent.press(screen.getByRole('button', { name: 'Project' }));
+  // Options rendered inside the body scroll view push everything below them
+  // down and make the card jump; they belong to an overlay above it.
+  let node = screen.getByRole('button', { name: 'Other project' }).parent;
+  while (node) {
+    expect(node).not.toBe(body);
+    node = node.parent;
+  }
+  fireEvent.press(screen.getByLabelText('Close project list'));
+  expect(screen.queryByRole('button', { name: 'Other project' })).toBeNull();
+});
 it('keeps the retry key after an ambiguous failure and names the destination on success', async () => {
   const request = jest
     .fn()

@@ -69,6 +69,27 @@ export function SessionSettingsDialog({
   const [draftName, setDraftName] = useState(sessionName ?? '');
   const [savedName, setSavedName] = useState(sessionName);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Where the project select sits inside the card, so its options can float over
+  // the rest of the dialog instead of pushing it down.
+  const [pickerAnchor, setPickerAnchor] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }>();
+  const cardRef = useRef<View>(null);
+  const selectRef = useRef<View>(null);
+  const togglePicker = () => {
+    if (pickerOpen) {
+      setPickerOpen(false);
+      return;
+    }
+    Keyboard.dismiss();
+    const card = cardRef.current;
+    if (card)
+      selectRef.current?.measureLayout(card, (x, y, w, h) => setPickerAnchor({ x, y, w, h }));
+    setPickerOpen(true);
+  };
   const pending = pendingMoves.get(client) ?? new Map<string, MoveInput>();
   pendingMoves.set(client, pending);
   const previous = pending.get(sessionId);
@@ -321,6 +342,8 @@ export function SessionSettingsDialog({
         style={styles.body}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        // The floating project list is anchored to where the select was measured.
+        onScrollBeginDrag={() => setPickerOpen(false)}
       >
         {result ? (
           <>
@@ -369,7 +392,8 @@ export function SessionSettingsDialog({
                   disabled: busy || unresolved || !canMove || projects.length === 0,
                 }}
                 disabled={busy || unresolved || !canMove || projects.length === 0}
-                onPress={() => setPickerOpen((open) => !open)}
+                onPress={togglePicker}
+                ref={selectRef}
                 style={[styles.select, (busy || unresolved || !canMove) && styles.disabled]}
               >
                 <Icon name="folder" size={16} color={theme.colors.textMuted} />
@@ -382,44 +406,6 @@ export function SessionSettingsDialog({
                   color={theme.colors.textMuted}
                 />
               </Pressable>
-              {pickerOpen && (
-                <ScrollView
-                  style={styles.options}
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {[
-                    { id: projectId, name: projectName },
-                    ...projects.filter((project) => project.id !== projectId),
-                  ].map((project) => (
-                    <Pressable
-                      key={project.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={project.name}
-                      accessibilityState={{
-                        selected: target === project.id,
-                        disabled: busy || unresolved || !canMove,
-                      }}
-                      disabled={busy || unresolved || !canMove}
-                      style={[styles.option, target === project.id && styles.selected]}
-                      onPress={() => {
-                        setTarget(project.id);
-                        setOperationId(randomUUID());
-                        setLeaveCommits(false);
-                        setCommitConfirmation(false);
-                        setError(undefined);
-                        setPickerOpen(false);
-                      }}
-                    >
-                      <Icon name="folder" size={16} color={theme.colors.textMuted} />
-                      <Text style={styles.optionText}>{project.name}</Text>
-                      {target === project.id && (
-                        <Icon name="check" size={16} color={theme.colors.accent} />
-                      )}
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              )}
             </View>
             {!canMove && (
               <Text style={styles.hint}>
@@ -717,6 +703,29 @@ export function SessionSettingsDialog({
     </>
   );
   const linking = view === 'link' && !result;
+  const projectOptions = [
+    { id: projectId, name: projectName },
+    ...projects.filter((project) => project.id !== projectId),
+  ];
+  // Open downwards when the list fits below the select, otherwise upwards — the
+  // same choice a native menu makes near the bottom edge.
+  const cardHeight = settingsHeight ?? 0;
+  const listHeight = Math.min(projectOptions.length * 48 + 10, 250);
+  const below = pickerAnchor ? cardHeight - (pickerAnchor.y + pickerAnchor.h) - 12 : 0;
+  const above = pickerAnchor ? pickerAnchor.y - 12 : 0;
+  const openUp = pickerAnchor !== undefined && below < listHeight && above > below;
+  const listPosition = pickerAnchor
+    ? {
+        left: pickerAnchor.x,
+        width: pickerAnchor.w,
+        ...(openUp
+          ? { bottom: cardHeight - pickerAnchor.y + 6, maxHeight: Math.min(listHeight, above) }
+          : {
+              top: pickerAnchor.y + pickerAnchor.h + 6,
+              maxHeight: Math.max(Math.min(listHeight, below), 96),
+            }),
+      }
+    : { left: 20, right: 20, top: 0, maxHeight: listHeight };
 
   return (
     <Modal
@@ -738,6 +747,7 @@ export function SessionSettingsDialog({
             accessibilityLabel="Dismiss session settings"
           />
           <View
+            ref={cardRef}
             style={[styles.card, linking && settingsHeight ? { height: settingsHeight } : null]}
             testID="session-settings-card"
             onLayout={
@@ -765,6 +775,46 @@ export function SessionSettingsDialog({
             >
               {linking ? linkView : settingsView}
             </Animated.View>
+            {pickerOpen && !linking && !result ? (
+              <>
+                <Pressable
+                  style={StyleSheet.absoluteFill}
+                  onPress={() => setPickerOpen(false)}
+                  accessibilityLabel="Close project list"
+                />
+                <View style={[styles.options, listPosition]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {projectOptions.map((project) => (
+                      <Pressable
+                        key={project.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={project.name}
+                        accessibilityState={{
+                          selected: target === project.id,
+                          disabled: busy || unresolved || !canMove,
+                        }}
+                        disabled={busy || unresolved || !canMove}
+                        style={[styles.option, target === project.id && styles.selected]}
+                        onPress={() => {
+                          setTarget(project.id);
+                          setOperationId(randomUUID());
+                          setLeaveCommits(false);
+                          setCommitConfirmation(false);
+                          setError(undefined);
+                          setPickerOpen(false);
+                        }}
+                      >
+                        <Icon name="folder" size={16} color={theme.colors.textMuted} />
+                        <Text style={styles.optionText}>{project.name}</Text>
+                        {target === project.id && (
+                          <Icon name="check" size={16} color={theme.colors.accent} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              </>
+            ) : null}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -998,10 +1048,18 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     selectText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md },
     placeholder: { color: theme.colors.textFaint },
     options: {
-      maxHeight: 208,
-      flexGrow: 0,
+      position: 'absolute',
       borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
       backgroundColor: theme.colors.surfaceAlt,
+      overflow: 'hidden',
+      paddingVertical: 4,
+      shadowColor: '#000',
+      shadowOpacity: 0.45,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 8 },
+      elevation: 12,
     },
     option: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
     selected: { backgroundColor: `${theme.colors.accent}14` },
