@@ -902,6 +902,8 @@ describe('direct routing across background and diagnostics', () => {
     const pending = transport.pendingDirectVerdict(coreUrl);
     rejectProbe(new Error(failure));
     expect(await pending).toBe(verdict);
+    // A read cancelled on that verdict reports the refusal, not its own -999.
+    expect(transport.lastDirectRefusal(coreUrl)).toBe(verdict === 'dead' ? failure : null);
   });
 
   it('holds a mutation for the probe verdict instead of sending it blind', async () => {

@@ -136,6 +136,7 @@ const DIRECT_PROBE_TIMEOUT_MS = 3_000;
 const DIRECT_FAILURE_TTL_MS = 3_000;
 const DIRECT_ROUTE_TTL_MS = 30_000;
 let directRoute: { key: string; reachable: boolean; checkedAt: number } | null = null;
+let directRefusal: { key: string; reason: string } | null = null;
 let routeGeneration = 0;
 let previousAppState = AppState.currentState;
 AppState.addEventListener('change', (state) => {
@@ -240,6 +241,14 @@ export function pendingDirectVerdict(url: string): Promise<DirectVerdict> | null
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
   return key !== null && directProbe?.key === key ? directProbe.verdict : null;
+}
+
+/** The probe's own refusal, for a read that was cancelled on its verdict. */
+export function lastDirectRefusal(url: string): string | null {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  return key !== null && directRefusal?.key === key ? directRefusal.reason : null;
 }
 
 /** Any HTTP response proves that the pinned direct transport is reachable. */
@@ -520,7 +529,9 @@ async function probeDirect(
     reason,
     elapsedMs: Date.now() - startedAt,
   });
-  return { reachable, verdict: reachable ? 'reachable' : definiteRefusal(reason) };
+  const verdict = reachable ? 'reachable' : definiteRefusal(reason);
+  if (verdict === 'dead' && reason !== null) directRefusal = { key, reason };
+  return { reachable, verdict };
 }
 
 async function open(coreUrl: string, key: string): Promise<number> {

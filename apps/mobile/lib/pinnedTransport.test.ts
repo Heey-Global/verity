@@ -7,6 +7,7 @@ const mockRemoteFailure = jest.fn();
 const mockReportDirectFailure = jest.fn();
 const mockReportDirectSuccess = jest.fn();
 const mockDirectVerdict = jest.fn();
+const mockDirectRefusal = jest.fn();
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
@@ -14,6 +15,7 @@ jest.mock('./remoteControlTransport', () => ({
   reportDirectRouteSuccess: (...args: unknown[]) => mockReportDirectSuccess(...args),
   reportDirectRouteFailure: (...args: unknown[]) => mockReportDirectFailure(...args),
   pendingDirectVerdict: (...args: unknown[]) => mockDirectVerdict(...args),
+  lastDirectRefusal: (...args: unknown[]) => mockDirectRefusal(...args),
 }));
 
 jest.mock('expo-modules-core', () => ({
@@ -67,6 +69,7 @@ describe('pinned native file transport', () => {
     mockRemoteFailure.mockReset().mockReturnValue(null);
     mockReportDirectFailure.mockReset();
     mockDirectVerdict.mockReset().mockReturnValue(null);
+    mockDirectRefusal.mockReset().mockReturnValue(null);
     mockReportDirectSuccess.mockReset();
   });
 
@@ -149,6 +152,7 @@ describe('pinned native file transport', () => {
   });
 
   it('recovers a read that the untested direct route lost through Uplink', async () => {
+    mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
     const pin = `sha256-${'a'.repeat(43)}`;
     mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
     mockRequest
@@ -175,6 +179,7 @@ describe('pinned native file transport', () => {
   });
 
   it('reports both routes when the Uplink recovery of a direct read also fails', async () => {
+    mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
     mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
     mockRequest.mockRejectedValue(
       new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]'),
@@ -244,6 +249,7 @@ describe('pinned native file transport', () => {
   });
 
   it('surfaces an abort that arrives during the Uplink recovery request', async () => {
+    mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
     const controller = new AbortController();
     mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
     mockRequest
@@ -261,6 +267,7 @@ describe('pinned native file transport', () => {
   });
 
   it('surfaces an abort that arrives while Uplink admission runs', async () => {
+    mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
     const controller = new AbortController();
     mockRemotePort.mockResolvedValueOnce(0).mockImplementationOnce(async () => {
       controller.abort();
@@ -280,6 +287,7 @@ describe('pinned native file transport', () => {
   });
 
   it('reports the direct failure when Uplink admission itself rejects', async () => {
+    mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
     mockRemotePort.mockResolvedValueOnce(0).mockRejectedValueOnce(new Error('admission crashed'));
     mockRequest.mockRejectedValue(
       new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]'),
@@ -291,6 +299,54 @@ describe('pinned native file transport', () => {
       name: 'VerityConnectionError',
       message:
         'Direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
+    });
+  });
+
+  it('fails a read the known-good direct route lost without an Uplink detour', async () => {
+    mockRemotePort.mockResolvedValue(0);
+    mockRequest.mockRejectedValue(
+      new Error('Pinned TLS transport failed [NSURLErrorDomain:-1004:NO_AUTH_CHALLENGE]'),
+    );
+
+    // A Core restart on a reachable route must surface at once, not after a
+    // full admission, attachment and probe.
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions'),
+    ).rejects.toMatchObject({
+      name: 'VerityConnectionError',
+      message:
+        'Direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1004:NO_AUTH_CHALLENGE]',
+    });
+    expect(mockRemotePort).toHaveBeenCalledTimes(1);
+    expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
+  });
+
+  it('reports the probe refusal for a read it cancelled', async () => {
+    mockDirectVerdict.mockReturnValue(Promise.resolve('dead'));
+    mockDirectRefusal.mockReturnValue(
+      'Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
+    );
+    let failDirect!: (error: Error) => void;
+    mockRequest.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failDirect = reject;
+        }),
+    );
+    mockCancelRequest.mockImplementation(async () => {
+      failDirect(
+        new Error('Pinned TLS transport failed [NSURLErrorDomain:-999:NO_AUTH_CHALLENGE]'),
+      );
+    });
+    mockRemotePort.mockResolvedValue(0);
+    mockRemoteFailure.mockReturnValue('admission (Remote admission failed: unavailable.)');
+
+    // The cancellation is the app's own doing; the screen must name the refusal.
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions'),
+    ).rejects.toMatchObject({
+      message:
+        'Uplink admission (Remote admission failed: unavailable.) and direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
     });
   });
 

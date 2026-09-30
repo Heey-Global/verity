@@ -1,5 +1,6 @@
 import { requireNativeModule } from 'expo-modules-core';
 import {
+  lastDirectRefusal,
   pendingDirectVerdict,
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
@@ -181,14 +182,19 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       // at once, and a probe timeout grants it a few more seconds, which a
       // waking VPN needs and a blackholed address does not deserve.
       let settled = false;
+      let condemned = false;
       let grace: ReturnType<typeof setTimeout> | undefined;
+      // Non-null only for a read sent while the route was untested; a read the
+      // known-good direct route loses fails as before, without an Uplink detour.
       const verdict = useRemote && replayable && port === 0 ? pendingDirectVerdict(url) : null;
       if (verdict !== null) {
         void verdict.then(
           (outcome) => {
             if (settled || outcome === 'reachable') return;
-            if (outcome === 'dead') void transport.cancelRequest(requestId);
-            else
+            if (outcome === 'dead') {
+              condemned = true;
+              void transport.cancelRequest(requestId);
+            } else
               grace = setTimeout(() => {
                 if (!settled) void transport.cancelRequest(requestId);
               }, DIRECT_GRACE_MS);
@@ -251,6 +257,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         let remoteReason: string | null = null;
         if (
           !recovered &&
+          verdict !== null &&
           port === 0 &&
           useRemote &&
           directFailed &&
@@ -309,7 +316,10 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
                 : skipped === null
                   ? 'Direct Core request'
                   : `Uplink ${skipped} and direct Core request`;
-          const reason = safeTransportReason(failure);
+          // A read cancelled on the probe's verdict reports that refusal, not
+          // its own cancellation.
+          const reason =
+            (condemned ? lastDirectRefusal(url) : null) ?? safeTransportReason(failure);
           const diagnostic = new Error(
             `${route} failed: ${reason}${remoteReason === null ? '' : `; Uplink: ${remoteReason}`}`,
           );
