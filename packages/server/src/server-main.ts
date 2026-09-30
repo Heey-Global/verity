@@ -15,7 +15,6 @@ import {
   parseNonNegativeInt,
   parsePort,
   parsePushEnabled,
-  parseTasksProjectNumber,
   toolkitFeatureRefIsConfigured,
   type EmbeddedServer,
 } from './embedded.js';
@@ -935,10 +934,6 @@ async function main(): Promise<void> {
       codexEnabled: process.env.CODEX_ENABLED !== '0',
       // Codex runs over ACP and receives brokered tools through the MCP gateway.
       codexModels: splitList(process.env.CODEX_MODELS),
-      // GitHub Projects v2 board backing task management (ADR 0007). Unset → the
-      // `/tasks` routes 503 and the mobile Plan tab hides; set to the board number
-      // (with `repoDir` + a GitHub token) to activate it.
-      tasksProjectNumber: parseTasksProjectNumber(process.env.VERITY_TASKS_PROJECT_NUMBER),
       // Expo's push API is unauthenticated by default. An access token is only
       // required when Enhanced Push Security is enabled for the EAS project, so
       // self-hosted Verity servers can send out of the box. Keep an explicit

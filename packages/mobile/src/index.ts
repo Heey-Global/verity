@@ -16,13 +16,11 @@ export {
 export {
   publishAgentLoopMutation,
   publishDevServerStatusMutation,
-  publishIssuesChanged,
   publishProjectStatusMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
   subscribeAgentLoopMutations,
   subscribeDevServerStatusMutations,
-  subscribeIssuesChanged,
   subscribeProjectStatusMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,
@@ -119,7 +117,6 @@ export {
   modelDisplayName,
   engineLabel,
 } from './ui/modelPicker.js';
-export { buildIssuePrompt } from './ui/issuePrompt.js';
 export { secretGrantScopes, type StandingSecretGrantScope } from './ui/secretGrantScopes.js';
 export {
   brokeredAuthSentence,
@@ -177,8 +174,6 @@ export {
   type TranscriptionBackendMode,
   type TranscriptionBackendStatus,
 } from './ui/transcriptionBackend.js';
-export { composeRefinedIssueBody } from './ui/taskIssue.js';
-export { TASKS_AGENT_SEED_PROMPT } from './ui/tasksAgent.js';
 export { composeTranscript, pickRecognitionLocale, recognitionErrorMessage } from './dictation.js';
 export {
   toolCallView,
@@ -247,14 +242,6 @@ export {
   sessionSummarySchema,
   sessionListEnvelopeSchema,
   attentionSignalSchema,
-  issueSummarySchema,
-  taskItemSchema,
-  taskBoardSchema,
-  taskFieldValueSchema,
-  taskFieldSchema,
-  taskFieldOptionSchema,
-  taskContentTypeSchema,
-  refinedTaskSchema,
   projectDetailSchema,
   projectRecordSchema,
   projectRuntimeHealthSchema,
@@ -281,7 +268,6 @@ export {
   type CreateProjectRequest,
   type DevicePushTokenRequest,
   type DevicePushTokenRegistered,
-  type IssueSummary,
   type MeetingTranscriptCreated,
   type MeetingTranscriptUpload,
   type ModelList,
@@ -331,14 +317,7 @@ export {
   type SessionListEnvelope,
   type AttentionSignal,
   type SpawnRequest,
-  type TaskBoard,
-  type TaskItem,
-  type TaskFieldValue,
-  type TaskField,
-  type TaskIssueCreated,
-  type TaskDraftConverted,
   type ToolkitDrift,
-  type RefinedTask,
   type TurnAccepted,
   type TurnCancelled,
   type TurnRequest,

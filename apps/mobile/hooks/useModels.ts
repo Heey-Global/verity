@@ -22,7 +22,7 @@ export interface UseModels {
 /**
  * One-shot loader for the new-session model picker (ADR 0001 / #143): fetches the
  * routable model set on mount and on explicit `refresh()`. Mirrors {@link useBranches}
- * / {@link useIssues} — a small glue hook (no headless model), StrictMode-safe via a
+ * — a small glue hook (no headless model), StrictMode-safe via a
  * mounted + request-id guard so a slow/stale response can't clobber current state.
  *
  * Ordering + default resolution are the picker UI's job (via the pure `orderModels` /

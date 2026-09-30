@@ -48,10 +48,9 @@ schedule, last run, and last result — grounded in the redesign spec
 
 ### Constraints carried in from existing decisions
 
-- **Not GitHub-task data.** ADR 0007 constrains anything touching the Projects v2
-  board to on-demand-cached GraphQL, never a poll loop. Agent Loops are
-  **Verity-local scheduled jobs**; they do not read or write the task board and
-  introduce no GraphQL. ADR 0007's rule is untouched.
+- **Verity-local jobs.** Agent Loops store their schedules and results locally
+  and introduce no GitHub GraphQL dependency. The former task-board proposal
+  in ADR 0007 was withdrawn.
 - **No central job runner.** The repo deliberately avoids poll loops. Each
   recurring concern owns its own self-rescheduling timer and registers an
   `onClose` disposer in `buildServer`. The sandbox auto-update scheduler
@@ -342,7 +341,7 @@ established in-repo pattern; the loop's logic lives in a plain script the user
 (via the setup agent) fully controls — no Verity-side severity DSL to design or
 maintain; one durable session per loop gives the agent continuity across runs and
 one place to watch; draft-until-tested keeps unproven loops from ever firing; no
-new GraphQL and no impact on ADR 0007.
+new GraphQL.
 
 **Negative / accepted:** Agent Loops are Verity-local — the first persisted
 scheduled entity, so a small amount of net-new store/scheduler surface. Running
@@ -355,15 +354,14 @@ disambiguation lives in code naming (see Naming).
 **Guardrails that must hold:** the scheduler stays a single self-rescheduling
 `unref`'d timer with an overlap guard and an `onClose` disposer — never a tight
 poll loop; reaction dispatch stays idle-only + marker-deduped; a loop never fires
-while `draft`; Agent Loops never touch the GitHub task board (ADR 0007).
+while `draft`.
 
 ## Configuration / gating
 
 The scheduler is built only when its dependencies (a conductor + project
 worktrees + provisioner) are present, mirroring how the sandbox updater no-ops
 when its deps are absent. With no `enabled` loops, the timer idles. The
-`/agent-loops` routes `503` when the loop service is not wired, matching the
-`/tasks` gating pattern.
+`/agent-loops` routes `503` when the loop service is not wired.
 
 ## Suggested build order
 
@@ -395,5 +393,4 @@ when its deps are absent. With no `enabled` loops, the timer idles. The
   scheduler pattern this ADR builds from.
 - `packages/server/src/server.ts:1951` — `maybeDispatchCiFailureRepairTurn`, the
   idle-only, marker-deduped dispatch pattern.
-- ADR 0007 — task management (GraphQL board). Agent Loops are explicitly **not**
-  task data and add no GraphQL.
+- ADR 0007 — withdrawn task-management proposal; Agent Loops add no GraphQL.

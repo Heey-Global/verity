@@ -14,8 +14,7 @@ import type { AuthTokenRegistry } from './auth.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import type { WorktreeProvisioner } from './worktree.js';
 import type { GitBranchService, GitOutput } from './branches.js';
-import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } from './github.js';
-import type { GitHubTaskService } from './github-tasks.js';
+import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -169,19 +168,12 @@ export interface ControlPlaneDeps {
   mergePr?: ((number: number, worktree: string) => Promise<boolean>) | undefined;
   /** Resolve GitHub owner/repo for a session worktree so Issue/PR chips deep-link correctly. */
   repoIdentity?: ((worktree: string) => Promise<GitHubIdentity | null>) | undefined;
-  /** Open-issues list for the overview backlog (#137). Omit → `GET /issues` 503. */
-  listIssues?: (() => Promise<IssueSummary[]>) | undefined;
   /** Latest GitHub release lookup for project overview/detail badges. */
   latestRelease?: ((owner: string, repo: string) => ReleaseSummary | null | undefined) | undefined;
   /** Awaited latest-release refresh for routes that need an immediate answer. */
   refreshLatestRelease?:
     ((owner: string, repo: string) => Promise<ReleaseSummary | null | undefined>) | undefined;
-  /** Task-management backend over a Projects v2 board (ADR 0007). Omit → the `/tasks`
-   *  routes 503. Forwarded to {@link buildServer} — like `listIssues`, it must be
-   *  passed explicitly or the routes silently never see it (#137). */
-  taskService?: GitHubTaskService | undefined;
-  /** Working dir (repo root) for the one-shot task refiner (ADR 0007, Voice → Refiner).
-   *  Omit → `POST /tasks/refine` 503. Forwarded to {@link buildServer}. */
+  /** Repository context for server-side model queries. */
   refineCwd?: string | undefined;
   /** Live GitHub-App credential validation for `POST /github/app/validate` (#320).
    * Test-mints an installation token from the passed creds and reports a redaction-
@@ -396,12 +388,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.mergePr !== undefined ? { mergePr: deps.mergePr } : {}),
     ...(deps.repoIdentity !== undefined ? { repoIdentity: deps.repoIdentity } : {}),
-    ...(deps.listIssues !== undefined ? { listIssues: deps.listIssues } : {}),
     ...(deps.latestRelease !== undefined ? { latestRelease: deps.latestRelease } : {}),
     ...(deps.refreshLatestRelease !== undefined
       ? { refreshLatestRelease: deps.refreshLatestRelease }
       : {}),
-    ...(deps.taskService !== undefined ? { taskService: deps.taskService } : {}),
     ...(deps.refineCwd !== undefined ? { refineCwd: deps.refineCwd } : {}),
     ...(deps.githubAppValidate !== undefined ? { githubAppValidate: deps.githubAppValidate } : {}),
     ...(deps.resolveGitHubAppIdentity !== undefined

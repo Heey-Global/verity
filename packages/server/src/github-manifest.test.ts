@@ -102,8 +102,6 @@ describe('buildManifest', () => {
       metadata: 'read',
       // Pull digest-pinned private runner/toolkit images during provisioning.
       packages: 'read',
-      // Org Projects v2 read+write so the App can provision + manage the task board (ADR 0007).
-      organization_projects: 'write',
     });
     expect(m.public).toBe(false);
     expect(m.setup_on_update).toBe(false);

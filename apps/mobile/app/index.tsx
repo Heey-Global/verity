@@ -11,7 +11,6 @@ import {
   type DevServer,
   type DevServerStatusMutation,
   type DevServerDetection,
-  type IssueSummary,
   type ProjectRecord,
   type ProviderLimitRow,
   type ProviderLimitState,
@@ -73,7 +72,6 @@ import { ProjectStatusDot } from '../components/ProjectStatusDot';
 import { ServerAttentionBanner, StaleBanner } from '../components/ServerAttentionBanner';
 import { UnreadDot } from '../components/UnreadDot';
 import { WorkingDot } from '../components/WorkingDot';
-import { useIssues } from '../hooks/useIssues';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
@@ -202,12 +200,6 @@ function SessionList({ client }: { client: VerityClient }) {
     detectionsByProject,
     previewSessionIds,
   } = useProjects(client);
-  const {
-    issues,
-    loading: issuesLoading,
-    error: issuesError,
-    refresh: refreshIssues,
-  } = useIssues(client);
   // Returning to the overview refetches the sessions too, not just the projects
   // (`useProjects` does its own). Deleting a project takes its sessions with it,
   // and the 2s poll would otherwise leave them on the list for a frame or two,
@@ -611,11 +603,11 @@ function SessionList({ client }: { client: VerityClient }) {
   const onRefreshOverview = useCallback(async () => {
     setRefreshingOverview(true);
     try {
-      await Promise.allSettled([refresh(), refreshProjects(), refreshIssues()]);
+      await Promise.allSettled([refresh(), refreshProjects()]);
     } finally {
       setRefreshingOverview(false);
     }
-  }, [refresh, refreshIssues, refreshProjects]);
+  }, [refresh, refreshProjects]);
 
   // Delete is destructive + irreversible (drops history, removes the worktree),
   // so confirm with a native alert before firing. The optimistic removal + any
@@ -646,8 +638,7 @@ function SessionList({ client }: { client: VerityClient }) {
   }
 
   // The list is shown as project groups. A poll error with known data is non-fatal
-  // (keep the last list) but not silent. Issues live in the footer so they stay below
-  // the project/session overview.
+  // (keep the last list) but not silent.
   const master = (
     <View style={styles.flex}>
       {/* Above the stale banner on purpose: a poll that failed is a symptom, and
@@ -711,8 +702,8 @@ function SessionList({ client }: { client: VerityClient }) {
               <>
                 {pausedGroups.length > 0 ? (
                   <View style={styles.pausedSection}>
-                    <View style={styles.issuesHeaderRow}>
-                      <Text style={styles.issuesHeader}>Paused</Text>
+                    <View style={styles.sectionHeaderRow}>
+                      <Text style={styles.sectionHeader}>Paused</Text>
                       <Text style={styles.pausedCount}>{pausedGroups.length}</Text>
                     </View>
                     <View style={styles.pausedList}>
@@ -722,12 +713,6 @@ function SessionList({ client }: { client: VerityClient }) {
                     </View>
                   </View>
                 ) : null}
-                <IssuesSection
-                  issues={issues}
-                  loading={issuesLoading}
-                  error={issuesError}
-                  refresh={refreshIssues}
-                />
               </>
             }
           />
@@ -1644,80 +1629,6 @@ function projectTitle(project: ProjectRecord): string {
   return isVerityControlPlaneProject(project) ? 'Verity Control' : project.repo;
 }
 
-// The open-issues backlog (#137) shown beneath the sessions: tap an issue to read
-// it and spawn a session from it. Hidden entirely when there's nothing to show and
-// nothing in flight — e.g. GitHub isn't configured server-side (the server 503s, the
-// client maps that to an empty list), so the overview stays clean.
-function IssuesSection({
-  issues,
-  loading,
-  error,
-  refresh,
-}: {
-  issues: IssueSummary[];
-  loading: boolean;
-  error: string | undefined;
-  refresh: () => void;
-}) {
-  if (!loading && !error && issues.length === 0) return null;
-  return (
-    <View style={styles.issuesSection}>
-      <View style={styles.issuesHeaderRow}>
-        <Text style={styles.issuesHeader}>Issues</Text>
-        {loading ? <ActivityIndicator size="small" /> : null}
-      </View>
-      {error ? (
-        <Pressable
-          onPress={refresh}
-          accessibilityRole="button"
-          accessibilityLabel="Retry loading issues"
-        >
-          <Text style={styles.issuesError}>Couldn&apos;t load issues — {error}. Tap to retry.</Text>
-        </Pressable>
-      ) : null}
-      {issues.map((issue) => (
-        <IssueRow key={issue.number} issue={issue} />
-      ))}
-    </View>
-  );
-}
-
-// One issue row: its number + title; tap to open the detail screen (the issue's
-// fields ride along as route params so the detail renders without a second fetch).
-function IssueRow({ issue }: { issue: IssueSummary }) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.issueRow,
-        hovered ? styles.rowHovered : null,
-        pressed ? styles.rowPressed : null,
-      ]}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      onPress={() =>
-        router.push({
-          pathname: '/issue/[number]',
-          params: {
-            number: String(issue.number),
-            title: issue.title,
-            body: issue.body,
-            url: issue.url,
-            ...(issue.projectId ? { projectId: issue.projectId } : {}),
-          },
-        })
-      }
-      accessibilityRole="button"
-      accessibilityLabel={`Open issue ${String(issue.number)}: ${issue.title}`}
-    >
-      <Text style={styles.issueRowNumber}>#{issue.number}</Text>
-      <Text style={styles.issueRowTitle} numberOfLines={2}>
-        {issue.title}
-      </Text>
-    </Pressable>
-  );
-}
-
 const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
 
 function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
@@ -2425,10 +2336,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.xl,
     paddingHorizontal: theme.spacing.lg,
   },
-  issuesSection: {
-    marginTop: theme.spacing.md,
-    gap: theme.spacing.sm,
-  },
   pausedSection: {
     marginTop: theme.spacing.md,
     gap: theme.spacing.sm,
@@ -2450,8 +2357,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   // iPhone single-pane: shed the rounded card frame and all borders so each group
   // reads as a full-width surface panel floating on the true-black page. The
-  // negative margin cancels listContent's side gutter (which the issues
-  // footer/empty state still rely on); groups are separated by the black gap from
+  // negative margin cancels listContent's side gutter; groups are separated by the black gap from
   // `separator`, not by hairlines — fewer competing lines, clearer project blocks.
   projectGroupFlat: {
     borderRadius: 0,
@@ -2462,44 +2368,17 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.primary,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  issuesHeaderRow: {
+  sectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
     marginBottom: theme.spacing.xs,
   },
-  issuesHeader: {
+  sectionHeader: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
     fontWeight: '700',
     textTransform: 'uppercase',
-  },
-  issuesError: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
-    lineHeight: 16 * theme.fontScale,
-  },
-  issueRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  issueRowNumber: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
-  issueRowTitle: {
-    flex: 1,
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
   },
   projectHeader: {
     flexDirection: 'row',

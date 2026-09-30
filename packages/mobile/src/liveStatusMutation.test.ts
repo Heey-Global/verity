@@ -2,13 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   publishAgentLoopMutation,
   publishDevServerStatusMutation,
-  publishIssuesChanged,
   publishProjectStatusMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
   subscribeAgentLoopMutations,
   subscribeDevServerStatusMutations,
-  subscribeIssuesChanged,
   subscribeProjectStatusMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,
@@ -36,15 +34,13 @@ describe('live status mutations', () => {
     unsubscribeUpdate();
   });
 
-  it('publishes loop, dev-server, issue, and session action projections', () => {
+  it('publishes loop, dev-server, and session action projections', () => {
     const loopListener = vi.fn();
     const serverListener = vi.fn();
-    const issuesListener = vi.fn();
     const sessionListener = vi.fn();
     const unsubscribes = [
       subscribeAgentLoopMutations(loopListener),
       subscribeDevServerStatusMutations(serverListener),
-      subscribeIssuesChanged(issuesListener),
       subscribeSessionStatusMutations(sessionListener),
     ];
     const loop = { id: 'loop-1' } as Parameters<typeof publishAgentLoopMutation>[0];
@@ -52,12 +48,10 @@ describe('live status mutations', () => {
 
     publishAgentLoopMutation(loop);
     publishDevServerStatusMutation(server);
-    publishIssuesChanged();
     publishSessionStatusMutation('s1', 'running');
 
     expect(loopListener).toHaveBeenCalledWith(loop);
     expect(serverListener).toHaveBeenCalledWith(server);
-    expect(issuesListener).toHaveBeenCalledOnce();
     expect(sessionListener).toHaveBeenCalledWith('s1', 'running');
     for (const unsubscribe of unsubscribes) unsubscribe();
   });

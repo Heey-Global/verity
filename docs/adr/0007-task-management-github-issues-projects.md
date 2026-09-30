@@ -1,6 +1,8 @@
 # ADR 0007 — Task Management on GitHub Issues + Projects v2
 
-**Status:** Proposed · **Date:** 2026-07-04
+**Status:** Withdrawn · **Date:** 2026-07-04
+
+This historical proposal was removed from the product in September 2026. The Plan screen, GitHub Projects board integration, task API, and standalone issues backlog no longer exist.
 
 ## Context
 
