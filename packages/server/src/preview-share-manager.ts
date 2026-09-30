@@ -8,6 +8,12 @@ import {
 import { DockerError, type DockerClient } from './docker.js';
 import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
 import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
+import {
+  sessionDevServers,
+  type ListeningProcess,
+  type SessionDevServer,
+} from './listening-ports.js';
+import { containerPathFor } from './project-backend.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import {
   codexGatewayConfig,
@@ -26,6 +32,11 @@ const GENERATION_LABEL = 'verity.container-generation';
 const DEV_SERVER_LABEL = 'verity.dev-server-id';
 const ACTIVE_STATES: readonly PublicPreviewShareState[] = ['creating', 'active', 'revoking'];
 const CREATING_LEASE_MS = 2 * 60_000;
+/** A dev server drops its listener for a few seconds whenever it restarts (a
+ *  config change, a watcher reload). Revoking on the first reconcile that misses
+ *  it would burn a link and PIN already handed out, so a port has to stay gone
+ *  for several passes before its share is stopped. */
+const PORT_MISS_GRACE_MS = 90_000;
 const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
@@ -73,6 +84,11 @@ export interface PreviewShareManagerOptions {
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>;
     devServer: NonNullable<Awaited<ReturnType<EventStore['getDevServer']>>>;
   }) => Promise<boolean>;
+  /** Lists the sandbox's TCP listeners; absent where no project runtime exists,
+   *  which leaves session dev servers undiscoverable rather than guessed. */
+  listListeningProcesses?: (
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+  ) => Promise<ListeningProcess[]>;
   now?: () => Date;
   connectorReadyTimeoutMs?: number;
   connectorReadyPollMs?: number;
@@ -128,6 +144,8 @@ export interface CreatePreviewShareInput {
   sessionId?: string;
   devServerId?: string;
   staticPath?: string;
+  /** A port something in the session's worktree listens on; requires `sessionId`. */
+  targetPort?: number;
   pin: string;
   ttlSeconds: number;
 }
@@ -137,6 +155,7 @@ export interface PublicPreviewShare {
   projectId: string;
   devServerId: string | null;
   targetKind: 'dev-server' | 'static-folder';
+  targetPort: number | null;
   staticPath: string | null;
   sessionId: string | null;
   state: PublicPreviewShareState;
@@ -152,6 +171,8 @@ export interface PublicPreviewShare {
 export class PreviewShareManager {
   private readonly creations = new Map<string, Promise<void>>();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
+  /** First reconcile at which a port share's listener was missing, by share id. */
+  private readonly portMissingSince = new Map<string, number>();
   private readonly now: () => Date;
   private connectorImage: string | undefined;
 
@@ -210,6 +231,97 @@ export class PreviewShareManager {
         .map((entry) => entry.name)
         .sort((a, b) => a.localeCompare(b)),
     };
+  }
+
+  /** What the session is serving right now, for the preview sheet. A sandbox
+   *  that is asleep or stopped serves nothing, which is an answer, not an error. */
+  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[]> {
+    const session = await this.options.store.getSession(sessionId);
+    if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
+    const project = await this.options.store.getProject(session.projectId);
+    if (!project) throw new PreviewShareNotFoundError('project not found');
+    if (project.state !== 'active') return [];
+    const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    if (!sandbox.running) return [];
+    // Without discovery wired there is simply nothing to show; a 409 here would
+    // park the sheet's default tab on an error it can never leave.
+    if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return [];
+    return this.sessionServers(project, session.worktree);
+  }
+
+  private async sessionServers(
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    worktree: string,
+  ): Promise<SessionDevServer[]> {
+    if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) {
+      throw new PreviewShareConflictError('dev server discovery is not configured');
+    }
+    let sandboxWorktree: string;
+    try {
+      sandboxWorktree = containerPathFor(
+        worktree,
+        projectClonePath(this.options.hostCloneRoot, project),
+      );
+    } catch {
+      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+    }
+    let processes: ListeningProcess[];
+    try {
+      processes = await this.options.listListeningProcesses(project);
+    } catch {
+      // A stopped sandbox or a timed-out exec is a state to report, not a 500
+      // carrying raw runner output.
+      throw new PreviewShareConflictError('could not inspect the project sandbox');
+    }
+    return sessionDevServers(processes, sandboxWorktree);
+  }
+
+  /** The connector dials the sandbox over the project network, so a listener
+   *  bound to loopback only would publish a link that can never answer. */
+  private async sessionPortReachable(
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    worktree: string,
+    port: number,
+  ): Promise<boolean> {
+    return (await this.sessionServers(project, worktree)).some(
+      (server) => server.port === port && server.reachable,
+    );
+  }
+
+  /** Whether a live port share should keep running. A failed probe counts as a
+   *  miss rather than an immediate revoke: it is as likely a slow exec as a gone
+   *  server, and the grace window bounds how long a dead link can linger. */
+  private async portStillServed(
+    shareId: string,
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    worktree: string,
+    port: number,
+  ): Promise<boolean> {
+    let reachable = false;
+    try {
+      if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return false;
+      const sandboxWorktree = containerPathFor(
+        worktree,
+        projectClonePath(this.options.hostCloneRoot, project),
+      );
+      const processes = await this.options.listListeningProcesses(project);
+      reachable = sessionDevServers(processes, sandboxWorktree).some(
+        (server) => server.port === port && server.reachable,
+      );
+      // A different session now owns the forwarded port. Waiting through the
+      // restart grace period would expose that session through the old link.
+      if (!reachable && processes.some((process) => process.port === port)) return false;
+    } catch {
+      // A failed probe follows the same grace period as a missing listener.
+    }
+    if (reachable) {
+      this.portMissingSince.delete(shareId);
+      return true;
+    }
+    const now = this.now().getTime();
+    const since = this.portMissingSince.get(shareId) ?? now;
+    this.portMissingSince.set(shareId, since);
+    return now - since < PORT_MISS_GRACE_MS;
   }
 
   async create(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
@@ -283,16 +395,24 @@ export class PreviewShareManager {
       );
     }
     const isStatic = input.staticPath !== undefined;
-    if (input.sessionId && !isStatic) {
-      throw new PreviewShareInputError('session preview requires a static folder');
+    const port = input.targetPort;
+    if (
+      [isStatic, input.devServerId !== undefined, port !== undefined].filter(Boolean).length !== 1
+    ) {
+      throw new PreviewShareInputError('choose exactly one dev server, port or static folder');
     }
-    if (isStatic === (input.devServerId !== undefined)) {
-      throw new PreviewShareInputError('choose exactly one dev server or static folder');
+    if (input.sessionId && input.devServerId !== undefined) {
+      throw new PreviewShareInputError('session preview requires a static folder or port');
+    }
+    if (port !== undefined && (!input.sessionId || !validPort(String(port)))) {
+      throw new PreviewShareInputError('a port preview requires a session and a valid port');
     }
     const devServer = input.devServerId
       ? await this.options.store.getDevServer(input.devServerId)
       : undefined;
-    if (!isStatic && !devServer) throw new PreviewShareNotFoundError('dev server not found');
+    if (input.devServerId !== undefined && !devServer) {
+      throw new PreviewShareNotFoundError('dev server not found');
+    }
     if (devServer && (!devServer.containerPort || !validPort(devServer.containerPort))) {
       throw new PreviewShareConflictError('dev server has no valid container port');
     }
@@ -311,6 +431,14 @@ export class PreviewShareManager {
     if (devServer && !(await this.options.isDevServerRunning({ project, devServer }))) {
       throw new PreviewShareConflictError('dev server is not running');
     }
+    if (
+      port !== undefined &&
+      !(await this.sessionPortReachable(project, session!.worktree, port))
+    ) {
+      throw new PreviewShareConflictError(
+        'nothing in this session listens on that port on a reachable address',
+      );
+    }
     const staticPath = isStatic
       ? input.sessionId && input.staticPath?.trim() === '.'
         ? '.'
@@ -321,10 +449,12 @@ export class PreviewShareManager {
         ACTIVE_STATES.includes(share.state) &&
         (devServer
           ? share.devServerId === devServer.id
-          : share.staticPath !== null &&
-            (input.sessionId
-              ? share.sessionId === input.sessionId
-              : share.sessionId === null && share.staticPath === staticPath)),
+          : port !== undefined
+            ? sessionPortShare(share, input.sessionId!, port)
+            : share.staticPath !== null &&
+              (input.sessionId
+                ? share.sessionId === input.sessionId
+                : share.sessionId === null && share.staticPath === staticPath)),
     );
     if (existing) throw new PreviewShareConflictError('target already has an active public share');
     const staticRoot = staticPath
@@ -412,8 +542,8 @@ export class PreviewShareManager {
       projectId: project.id,
       devServerId: devServer?.id ?? null,
       containerGeneration: generation,
-      targetPort: devServer ? Number(devServer.containerPort) : null,
-      targetKind: devServer ? 'dev-server' : 'static-folder',
+      targetPort: devServer ? Number(devServer.containerPort) : (port ?? null),
+      targetKind: devServer || port !== undefined ? 'dev-server' : 'static-folder',
       staticPath,
       sessionId: input.sessionId ?? null,
       publicOrigin,
@@ -462,8 +592,10 @@ export class PreviewShareManager {
           ACTIVE_STATES.includes(share.state) &&
           (devServer
             ? share.devServerId === devServer.id
-            : share.staticPath === staticPath &&
-              (share.sessionId ?? null) === (input.sessionId ?? null)),
+            : port !== undefined
+              ? sessionPortShare(share, input.sessionId!, port)
+              : share.staticPath === staticPath &&
+                (share.sessionId ?? null) === (input.sessionId ?? null)),
       );
       if (winner) {
         throw new PreviewShareConflictError('dev server already has an active public share', {
@@ -530,6 +662,12 @@ export class PreviewShareManager {
         if (!(await this.options.isDevServerRunning({ project, devServer: currentDevServer }))) {
           throw new Error('dev server stopped while the share was being created');
         }
+      }
+      if (
+        port !== undefined &&
+        !(await this.sessionPortReachable(project, session!.worktree, port))
+      ) {
+        throw new Error('the session port stopped listening while the share was being created');
       }
       this.assertEdgeAvailable();
       const active = await this.options.store.transitionPublicPreviewShare(
@@ -730,6 +868,7 @@ export class PreviewShareManager {
   }
 
   async stop(id: string, terminal: 'revoked' | 'expired' = 'revoked'): Promise<boolean> {
+    this.portMissingSince.delete(id);
     const record = await this.options.store.getPublicPreviewShare(id);
     if (!record) return false;
     const claimed = await this.options.store.transitionPublicPreviewShare(
@@ -843,14 +982,22 @@ export class PreviewShareManager {
           if (
             project?.state === 'active' &&
             (!share.sessionId ||
-              (session?.projectId === project.id && share.staticPath !== null)) &&
-            (share.targetKind === 'static-folder' ||
-              (devServer?.projectId === project.id &&
-                devServer.containerPort === String(share.targetPort))) &&
+              (session?.projectId === project.id &&
+                (share.staticPath !== null || share.targetPort !== null))) &&
             share.connectorContainerId !== null &&
             (share.targetKind === 'static-folder' ||
-              (devServer !== undefined &&
-                (await this.options.isDevServerRunning({ project, devServer }))))
+              (share.devServerId === null
+                ? session !== undefined &&
+                  share.targetPort !== null &&
+                  (await this.portStillServed(
+                    share.id,
+                    project,
+                    session.worktree,
+                    share.targetPort,
+                  ))
+                : devServer?.projectId === project.id &&
+                  devServer.containerPort === String(share.targetPort) &&
+                  (await this.options.isDevServerRunning({ project, devServer }))))
           ) {
             const [sandbox, connector] = await Promise.all([
               this.options.docker.inspectContainer(project.containerName),
@@ -1144,6 +1291,7 @@ function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
     projectId: record.projectId,
     devServerId: record.devServerId,
     targetKind: record.targetKind ?? 'dev-server',
+    targetPort: record.targetPort,
     staticPath: record.staticPath ?? null,
     sessionId: record.sessionId ?? null,
     state: record.state,
@@ -1155,6 +1303,20 @@ function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
+}
+
+/** A live share of `port` in `sessionId`, as opposed to that session's folder share. */
+function sessionPortShare(
+  share: PublicPreviewShareRecord,
+  sessionId: string,
+  port: number,
+): boolean {
+  return (
+    share.sessionId === sessionId &&
+    share.devServerId === null &&
+    share.staticPath === null &&
+    share.targetPort === port
+  );
 }
 
 function validPort(value: string): boolean {

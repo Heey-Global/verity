@@ -22,6 +22,35 @@ const project: ProjectRecord = {
 };
 
 describe('DockerProjectRuntime', () => {
+  it.each([
+    ['IPv6 wildcard', '00000000000000000000000000000000', '[true]', true],
+    ['IPv6 wildcard', '00000000000000000000000000000000', '[false]', false],
+    ['specific IPv4', '030014AC', '[true]', true],
+    ['specific IPv4', '030014AC', '[false]', false],
+  ])('probes IPv4 reachability for %s (%s)', async (kind, address, probeResult, reachable) => {
+    const output = [
+      '#tcp',
+      '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+      `   0: ${address}:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 21 1 0`,
+      '#fd',
+      '/proc/40/fd:',
+      'lrwx------ 1 dev dev 64 Sep 30 13:07 18 -> socket:[21]',
+      '#proc',
+      'P\t40\t/work/sessions/s1\tnode server.js',
+    ].join('\n');
+    const runner = vi
+      .fn<RuntimeRunner>()
+      .mockResolvedValueOnce({ stdout: output, stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: probeResult, stderr: '', exitCode: 0 });
+    const processes = await new DockerProjectRuntime({ runner }).listListeningProcesses(project);
+
+    expect(processes).toEqual([expect.objectContaining({ port: 5173, reachable })]);
+    expect(processes[0]?.ipv6Wildcard).toBe(kind === 'IPv6 wildcard' ? true : undefined);
+    expect(runner.mock.calls[1]?.[1]).toEqual(
+      expect.arrayContaining(['exec', project.containerName, 'node', '-e', '5173']),
+    );
+  });
+
   it('runs an Agent Loop script inside its session worktree with hard bounds', async () => {
     const runner = vi.fn<RuntimeRunner>().mockResolvedValue({
       stdout: '{"spawn":true}\n',

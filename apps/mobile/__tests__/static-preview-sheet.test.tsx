@@ -715,3 +715,152 @@ it('says whether the selected folder has a start page', async () => {
   expect(await screen.findByText('No index.html in this folder')).toBeTruthy();
   expect(screen.queryByText('index.html opens as the start page')).toBeNull();
 });
+
+describe('dev server tab', () => {
+  const vite = {
+    port: 5173,
+    reachable: true,
+    pid: 40,
+    name: 'Vite',
+    command: 'node node_modules/.bin/vite --host 0.0.0.0',
+    workdir: 'web',
+  };
+  const portShare = (overrides: Partial<PublicPreviewShare> = {}) =>
+    ({
+      id: 'port-share',
+      sessionId: 'session-one',
+      targetKind: 'dev-server',
+      devServerId: null,
+      targetPort: 5173,
+      staticPath: null,
+      state: 'active',
+      publicOrigin: 'https://vite.example',
+      pin: '123456789012',
+      expiresAt: '2030-01-01T01:00:00Z',
+      ...overrides,
+    }) as PublicPreviewShare;
+  const renderSheet = (client: Partial<VerityClient>) =>
+    render(
+      <StaticPreviewSheet
+        client={
+          {
+            listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+            listPublicPreviewShares: jest.fn(async () => []),
+            ...client,
+          } as unknown as VerityClient
+        }
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+
+  it('shares a detected server with the generated PIN and shows its live link', async () => {
+    const createSessionPortPreviewShare = jest.fn(async () => portShare());
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => [vite]),
+      createSessionPortPreviewShare,
+    });
+
+    expect(await screen.findByLabelText('Vite on port 5173')).toBeTruthy();
+    expect(screen.getByText('web · node node_modules/.bin/vite --host 0.0.0.0')).toBeTruthy();
+    const pin = screen.getByLabelText('Preview PIN').props.value as string;
+    fireEvent.press(screen.getByRole('button', { name: 'Share port 5173' }));
+
+    await waitFor(() =>
+      expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
+        targetPort: 5173,
+        pin,
+        ttlSeconds: 3600,
+      }),
+    );
+    expect(await screen.findByText('https://vite.example')).toBeTruthy();
+    expect(screen.getByText('Vite :5173')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Back to dev servers' }));
+    expect(screen.getByRole('button', { name: 'Show link for port 5173' })).toBeTruthy();
+  });
+
+  it('explains why a loopback-only server cannot be shared instead of offering a link', async () => {
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]),
+      createSessionPortPreviewShare: jest.fn(),
+    });
+
+    expect(await screen.findByText('Local only')).toBeTruthy();
+    expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Share port 5173' })).toBeNull();
+  });
+
+  // The agent starts servers while the sheet is open; without the poll the list
+  // would stay on "No dev server running" until the sheet is reopened.
+  it('picks up a server that starts while the sheet is open', async () => {
+    jest.useFakeTimers();
+    try {
+      const listSessionDevServers = jest
+        .fn<Promise<(typeof vite)[]>, [string]>()
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([vite]);
+      renderSheet({ listSessionDevServers });
+
+      expect(await screen.findByText('No dev server running')).toBeTruthy();
+      await act(async () => {
+        jest.advanceTimersByTime(4_000);
+      });
+      expect(await screen.findByLabelText('Vite on port 5173')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // A Core older than port detection has no such route. Without the fallback the
+  // sheet would open on an error and keep polling a 404 every few seconds.
+  it('falls back to the folder flow when Core has no port detection', async () => {
+    jest.useFakeTimers();
+    try {
+      const listSessionDevServers = jest.fn(async () => null);
+      renderSheet({ listSessionDevServers });
+
+      expect(await screen.findByText('FOLDER TO SHARE')).toBeTruthy();
+      expect(screen.queryByRole('tab', { name: 'Dev server' })).toBeNull();
+      await act(async () => {
+        jest.advanceTimersByTime(12_000);
+      });
+      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('opens on the folder tab when only a folder link is live', async () => {
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => [vite]),
+      listPublicPreviewShares: jest.fn(async () => [
+        portShare({
+          id: 'folder-share',
+          targetKind: 'static-folder',
+          targetPort: null,
+          staticPath: 'site',
+          publicOrigin: 'https://folder.example',
+        }),
+      ]),
+    });
+
+    expect(await screen.findByText('https://folder.example')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
+      true,
+    );
+    fireEvent.press(screen.getByRole('tab', { name: 'Dev server' }));
+    expect(await screen.findByRole('button', { name: 'Share port 5173' })).toBeTruthy();
+  });
+
+  it('keeps an active port link accessible when discovery finds no server', async () => {
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => []),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+    });
+
+    fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
+    expect(await screen.findByText('https://vite.example')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
+  });
+});

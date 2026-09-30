@@ -15,7 +15,7 @@ import * as Clipboard from 'expo-clipboard';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
+import type { PublicPreviewShare, SessionDevServer, VerityClient } from '@verity/mobile';
 import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import {
@@ -58,6 +58,29 @@ function folderLabel(staticPath: string | null): string {
   return !staticPath || staticPath === '.' ? 'Worktree' : staticPath;
 }
 
+/** A share of a port detected in the session, as opposed to a configured dev server. */
+function isPortShare(share: PublicPreviewShare): boolean {
+  return (
+    share.targetKind === 'dev-server' &&
+    share.devServerId === null &&
+    typeof share.targetPort === 'number'
+  );
+}
+
+function isLive(share: PublicPreviewShare): boolean {
+  return (
+    ['creating', 'active', 'revoking'].includes(share.state) &&
+    new Date(share.expiresAt).getTime() > Date.now()
+  );
+}
+
+function serverLabel(port: number, servers: readonly SessionDevServer[]): string {
+  const server = servers.find((item) => item.port === port);
+  return `${server?.name ?? 'Dev server'} :${String(port)}`;
+}
+
+type PreviewTab = 'server' | 'folder';
+
 function previewError(caught: unknown): string {
   const message = caught instanceof Error ? caught.message : 'Could not create preview link';
   if (/NSURLErrorDomain:-1009:NO_AUTH_CHALLENGE/u.test(message)) {
@@ -98,7 +121,19 @@ export function StaticPreviewSheet({
   // Stopping takes an Uplink round trip. Without its own state the button just
   // sat there and the sheet later jumped to the create form unannounced.
   const [stoppingId, setStoppingId] = useState<string>();
-  const [stoppedPath, setStoppedPath] = useState<string | null>();
+  const [stopped, setStopped] = useState<{ tab: PreviewTab; label: string }>();
+  // A Core older than port detection has no such route (the client reports
+  // null); the sheet then falls back to the folder-only flow instead of polling.
+  const [devServersSupported, setDevServersSupported] = useState(
+    typeof client.listSessionDevServers === 'function',
+  );
+  const [tab, setTab] = useState<PreviewTab>(devServersSupported ? 'server' : 'folder');
+  const tabChosen = useRef(false);
+  const [devServers, setDevServers] = useState<SessionDevServer[]>([]);
+  const [devServersLoading, setDevServersLoading] = useState(devServersSupported);
+  const [devServerError, setDevServerError] = useState<string>();
+  const [openPort, setOpenPort] = useState<number>();
+  const [creatingPort, setCreatingPort] = useState<number>();
   const requestGeneration = useRef(0);
   const createdShareIds = useRef(new Set<string>());
   const stoppedShareIds = useRef(new Set<string>());
@@ -151,13 +186,22 @@ export function StaticPreviewSheet({
             const local = current.filter((share) => createdShareIds.current.has(share.id));
             const remote = nextShares.filter(
               (share) =>
-                share.targetKind === 'static-folder' &&
+                (share.targetKind === 'static-folder' || isPortShare(share)) &&
                 share.sessionId === sessionId &&
                 !stoppedShareIds.current.has(share.id) &&
                 !createdShareIds.current.has(share.id),
             );
             return [...local, ...remote];
           });
+          // Reopening on a live folder link lands on it, as before the tabs.
+          const live = nextShares.filter((share) => share.sessionId === sessionId && isLive(share));
+          if (
+            !tabChosen.current &&
+            live.some((share) => share.targetKind === 'static-folder') &&
+            !live.some(isPortShare)
+          ) {
+            setTab('folder');
+          }
         }
       })
       .catch((caught: unknown) => {
@@ -177,6 +221,48 @@ export function StaticPreviewSheet({
       requestGeneration.current += 1;
     };
   }, [refresh]);
+
+  // Servers come and go as the agent starts them; poll while the tab is shown so
+  // a freshly started one appears without reopening the sheet.
+  const pollDevServers = devServersSupported && tab === 'server';
+  useEffect(() => {
+    if (!pollDevServers) return;
+    let active = true;
+    const load = () =>
+      client
+        .listSessionDevServers(sessionId)
+        .then((servers) => {
+          if (!active) return;
+          if (servers === null) {
+            setDevServersSupported(false);
+            setTab('folder');
+            return;
+          }
+          setDevServers(servers);
+          setDevServerError(undefined);
+        })
+        .catch((caught: unknown) => {
+          if (!active) return;
+          setDevServerError(
+            caught instanceof Error ? caught.message : 'Could not look for dev servers',
+          );
+        })
+        .finally(() => {
+          if (active) setDevServersLoading(false);
+        });
+    void load();
+    const timer = setInterval(() => void load(), 4_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [client, pollDevServers, sessionId]);
+
+  const selectTab = (next: PreviewTab) => {
+    tabChosen.current = true;
+    setError(undefined);
+    setTab(next);
+  };
 
   const create = async () => {
     if (loadedPath !== path || !validPreviewPin(pin, duration) || busy) return;
@@ -198,6 +284,30 @@ export function StaticPreviewSheet({
     }
   };
 
+  const createForPort = async (server: SessionDevServer) => {
+    if (!server.reachable || !validPreviewPin(pin, duration) || busy) return;
+    setBusy(true);
+    setCreatingPort(server.port);
+    setError(undefined);
+    try {
+      const share = await client.createSessionPortPreviewShare(sessionId, {
+        targetPort: server.port,
+        pin,
+        ttlSeconds: duration,
+      });
+      createdShareIds.current.add(share.id);
+      setShares((current) => [share, ...current]);
+      setPin(generatePreviewPin());
+      setStopped(undefined);
+      setOpenPort(server.port);
+    } catch (caught) {
+      setError(previewError(caught));
+    } finally {
+      setBusy(false);
+      setCreatingPort(undefined);
+    }
+  };
+
   const stop = (share: PublicPreviewShare) => {
     Alert.alert('Stop preview?', 'The link will stop working immediately.', [
       { text: 'Cancel', style: 'cancel' },
@@ -213,7 +323,11 @@ export function StaticPreviewSheet({
             .then(() => {
               stoppedShareIds.current.add(share.id);
               createdShareIds.current.delete(share.id);
-              setStoppedPath(share.staticPath ?? null);
+              setStopped(
+                isPortShare(share)
+                  ? { tab: 'server', label: serverLabel(share.targetPort!, devServers) }
+                  : { tab: 'folder', label: folderLabel(share.staticPath ?? null) },
+              );
               setShares((current) => current.filter((item) => item.id !== share.id));
             })
             .catch((caught: unknown) =>
@@ -228,25 +342,84 @@ export function StaticPreviewSheet({
     ]);
   };
 
-  const activeShare = shares.find(
-    (share) =>
-      ['creating', 'active', 'revoking'].includes(share.state) &&
-      new Date(share.expiresAt).getTime() > Date.now(),
-  );
-  const stoppedVisible = activeShare === undefined && stoppedPath !== undefined;
+  const portShare = (port: number) =>
+    shares.find((share) => isPortShare(share) && share.targetPort === port && isLive(share));
+  const activeShare =
+    tab === 'folder'
+      ? shares.find((share) => share.targetKind === 'static-folder' && isLive(share))
+      : openPort === undefined
+        ? undefined
+        : portShare(openPort);
+  const activeIsPort = activeShare !== undefined && isPortShare(activeShare);
+  const stoppedVisible = activeShare === undefined && stopped?.tab === tab;
+  const serverDetails = tab === 'server' && (activeShare !== undefined || stoppedVisible);
   const detailsVisible = activeShare !== undefined || stoppedVisible;
+  const backToServers = () => {
+    setStopped(undefined);
+    setOpenPort(undefined);
+  };
   const hasIndex = files.includes('index.html');
   const canCreate = loadedPath === path && validPreviewPin(pin, duration) && !busy;
   const stopping = activeShare !== undefined && stoppingId === activeShare.id;
   // Re-render while a link is shown so "N min left" counts down and an
   // expired link drops out of the sheet instead of staying on screen.
   const [, setTick] = useState(0);
-  const ticking = activeShare !== undefined;
+  const ticking = activeShare !== undefined || shares.some(isLive);
   useEffect(() => {
     if (!ticking) return;
     const timer = setInterval(() => setTick((tick) => tick + 1), 30_000);
     return () => clearInterval(timer);
   }, [ticking]);
+  const expirySettings = (
+    <>
+      <Text style={styles.label}>EXPIRES AFTER</Text>
+      <View style={styles.durations}>
+        {PUBLIC_PREVIEW_DURATIONS.map((option) => (
+          <Pressable
+            key={option.seconds}
+            onPress={() => setDuration(option.seconds)}
+            accessibilityRole="radio"
+            accessibilityLabel={option.a11y}
+            accessibilityState={{ selected: duration === option.seconds }}
+            style={[styles.duration, duration === option.seconds ? styles.durationActive : null]}
+          >
+            <Text
+              style={duration === option.seconds ? styles.durationTextActive : styles.durationText}
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <View style={styles.pinLabelRow}>
+        <Text style={styles.label}>PIN</Text>
+        <Text style={styles.pinHint}>Visitors need it to open the link</Text>
+      </View>
+      <View style={styles.pinInputRow}>
+        <TextInput
+          value={pin}
+          onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 12))}
+          keyboardType="number-pad"
+          accessibilityLabel="Preview PIN"
+          accessibilityHint={
+            duration >= LONG_PREVIEW_DURATION_SECONDS ? '12 digits' : '6 to 12 digits'
+          }
+          style={styles.pinInput}
+          placeholder={duration >= LONG_PREVIEW_DURATION_SECONDS ? '12 digits' : '6–12 digits'}
+          placeholderTextColor={theme.colors.textFaint}
+        />
+        <Pressable
+          onPress={() => setPin(generatePreviewPin())}
+          hitSlop={8}
+          style={styles.pinRefresh}
+          accessibilityRole="button"
+          accessibilityLabel="Generate a new PIN"
+        >
+          <Icon name="refresh-cw" size={18} color={theme.colors.primary} />
+        </Pressable>
+      </View>
+    </>
+  );
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.overlay} behavior="padding" automaticOffset>
@@ -270,6 +443,39 @@ export function StaticPreviewSheet({
               <Icon name="x" size={20} color={theme.colors.textMuted} />
             </Pressable>
           </View>
+          {devServersSupported ? (
+            <View style={styles.tabs} accessibilityRole="tablist">
+              {(
+                [
+                  ['server', 'Dev server'],
+                  ['folder', 'Folder'],
+                ] as const
+              ).map(([value, label]) => (
+                <Pressable
+                  key={value}
+                  onPress={() => selectTab(value)}
+                  accessibilityRole="tab"
+                  accessibilityLabel={label}
+                  accessibilityState={{ selected: tab === value }}
+                  style={[styles.tab, tab === value ? styles.tabActive : null]}
+                >
+                  <Text style={tab === value ? styles.tabTextActive : styles.tabText}>{label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+          {serverDetails ? (
+            <Pressable
+              onPress={backToServers}
+              style={styles.backRow}
+              accessibilityRole="button"
+              accessibilityLabel="Back to dev servers"
+              hitSlop={8}
+            >
+              <Icon name="chevron-left" size={16} color={theme.colors.primary} />
+              <Text style={styles.backText}>All dev servers</Text>
+            </Pressable>
+          ) : null}
           {detailsVisible ? (
             <View style={styles.detailsBody}>
               <ScrollView
@@ -314,7 +520,9 @@ export function StaticPreviewSheet({
                           ? 'Switching the link off. This takes a few seconds.'
                           : activeShare.state === 'creating'
                             ? 'The link starts working in a moment.'
-                            : 'Anyone with this link and the PIN can view the folder.'}
+                            : activeIsPort
+                              ? 'Anyone with this link and the PIN can open the dev server.'
+                              : 'Anyone with this link and the PIN can view the folder.'}
                       </Text>
                     </View>
                     {activeShare.publicOrigin ? (
@@ -421,10 +629,16 @@ export function StaticPreviewSheet({
                     ) : null}
                     <View style={styles.facts}>
                       <View style={styles.fact}>
-                        <Icon name="folder" size={16} color={theme.colors.textMuted} />
-                        <Text style={styles.factLabel}>Folder</Text>
+                        <Icon
+                          name={activeIsPort ? 'server' : 'folder'}
+                          size={16}
+                          color={theme.colors.textMuted}
+                        />
+                        <Text style={styles.factLabel}>{activeIsPort ? 'Server' : 'Folder'}</Text>
                         <Text style={styles.factValue} numberOfLines={1}>
-                          {folderLabel(activeShare.staticPath)}
+                          {activeIsPort
+                            ? serverLabel(activeShare.targetPort!, devServers)
+                            : folderLabel(activeShare.staticPath)}
                         </Text>
                       </View>
                       <View style={styles.fact}>
@@ -442,7 +656,7 @@ export function StaticPreviewSheet({
                     <Icon name="check-circle" size={32} color={theme.colors.tone.done} />
                     <Text style={styles.heroTitle}>Link stopped</Text>
                     <Text style={[styles.caption, styles.centered]}>
-                      {`The link for ${folderLabel(stoppedPath ?? null)} no longer works. Anyone who still has it sees nothing.`}
+                      {`The link for ${stopped?.label ?? 'this preview'} no longer works. Anyone who still has it sees nothing.`}
                     </Text>
                   </View>
                 ) : null}
@@ -471,10 +685,12 @@ export function StaticPreviewSheet({
                 <View style={styles.stoppedActions}>
                   <Pressable
                     style={styles.createButton}
-                    onPress={() => setStoppedPath(undefined)}
+                    onPress={() => (tab === 'server' ? backToServers() : setStopped(undefined))}
                     accessibilityRole="button"
                   >
-                    <Text style={styles.createText}>Create a new link</Text>
+                    <Text style={styles.createText}>
+                      {tab === 'server' ? 'Back to dev servers' : 'Create a new link'}
+                    </Text>
                   </Pressable>
                   <Pressable
                     style={styles.secondaryButton}
@@ -485,6 +701,161 @@ export function StaticPreviewSheet({
                   </Pressable>
                 </View>
               ) : null}
+            </View>
+          ) : tab === 'server' ? (
+            <View style={styles.content}>
+              <Text style={styles.label}>RUNNING IN THIS SESSION</Text>
+              <ScrollView
+                style={styles.explorer}
+                contentContainerStyle={styles.serverList}
+                accessibilityLabel="Dev servers in this session"
+              >
+                {devServersLoading && devServers.length === 0 ? (
+                  <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
+                ) : null}
+                {!devServersLoading &&
+                devServers.length === 0 &&
+                !shares.some((share) => isPortShare(share) && isLive(share)) &&
+                !devServerError ? (
+                  <View style={styles.emptyServers}>
+                    <Icon name="monitor" size={28} color={theme.colors.textFaint} />
+                    <Text style={styles.heroTitle}>No dev server running</Text>
+                    <Text style={[styles.caption, styles.centered]}>
+                      When a server starts in this session, it shows up here automatically.
+                    </Text>
+                  </View>
+                ) : null}
+                {shares
+                  .filter(
+                    (share) =>
+                      isPortShare(share) &&
+                      isLive(share) &&
+                      !devServers.some((server) => server.port === share.targetPort),
+                  )
+                  .map((share) => (
+                    <View key={share.id} style={styles.serverRow}>
+                      <View style={styles.serverMain}>
+                        <View style={styles.serverText}>
+                          <Text
+                            style={styles.serverName}
+                          >{`Port ${String(share.targetPort)}`}</Text>
+                          <Text style={styles.serverCommand}>Shared link</Text>
+                        </View>
+                        <Pressable
+                          style={styles.livePill}
+                          onPress={() => {
+                            setStopped(undefined);
+                            setOpenPort(share.targetPort ?? undefined);
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Show link for port ${String(share.targetPort)}`}
+                        >
+                          <View style={styles.statusDot} />
+                          <Text style={styles.liveText}>Live</Text>
+                          <Icon name="chevron-right" size={14} color={theme.colors.primary} />
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                {devServers.map((server) => {
+                  const live = portShare(server.port);
+                  const creating = creatingPort === server.port;
+                  const port = String(server.port);
+                  return (
+                    <View
+                      key={port}
+                      style={styles.serverRow}
+                      accessibilityLabel={`${server.name} on port ${port}`}
+                    >
+                      <View style={styles.serverMain}>
+                        <View
+                          style={[
+                            styles.serverDot,
+                            server.reachable ? null : styles.serverDotLocal,
+                          ]}
+                        />
+                        <View style={styles.serverText}>
+                          <Text style={styles.serverName} numberOfLines={1}>
+                            {server.name}
+                            <Text style={styles.serverPort}>{` :${port}`}</Text>
+                          </Text>
+                          <Text style={styles.serverCommand} numberOfLines={1}>
+                            {server.workdir === '.'
+                              ? server.command
+                              : `${server.workdir} · ${server.command}`}
+                          </Text>
+                        </View>
+                        {live ? (
+                          <Pressable
+                            style={styles.livePill}
+                            onPress={() => {
+                              setStopped(undefined);
+                              setOpenPort(server.port);
+                            }}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Show link for port ${port}`}
+                          >
+                            <View style={styles.statusDot} />
+                            <Text style={styles.liveText}>Live</Text>
+                            <Icon name="chevron-right" size={14} color={theme.colors.primary} />
+                          </Pressable>
+                        ) : server.reachable ? (
+                          <Pressable
+                            style={[
+                              styles.shareButton,
+                              busy || !validPreviewPin(pin, duration)
+                                ? styles.createButtonDisabled
+                                : null,
+                            ]}
+                            onPress={() => void createForPort(server)}
+                            disabled={busy || !validPreviewPin(pin, duration)}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              creating ? `Creating link for port ${port}` : `Share port ${port}`
+                            }
+                            accessibilityState={{
+                              disabled: busy || !validPreviewPin(pin, duration),
+                              busy: creating,
+                            }}
+                          >
+                            {creating ? (
+                              <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+                            ) : (
+                              <Icon name="share-2" size={14} color={theme.colors.onPrimary} />
+                            )}
+                            <Text style={styles.shareButtonText}>
+                              {creating ? 'Creating…' : 'Share link'}
+                            </Text>
+                          </Pressable>
+                        ) : (
+                          <Text style={styles.localOnly}>Local only</Text>
+                        )}
+                      </View>
+                      {!server.reachable ? (
+                        <View style={styles.localHint}>
+                          <Icon name="info" size={14} color={theme.colors.tone.attention} />
+                          <Text style={styles.localHintText}>
+                            Listens on localhost only, so the link cannot reach it. Restart it with
+                            --host 0.0.0.0 to share it.
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </ScrollView>
+              <View style={styles.footer}>
+                {devServerError ? <Text style={styles.error}>{devServerError}</Text> : null}
+                {error ? <Text style={styles.error}>{error}</Text> : null}
+                {devServers.some((server) => server.reachable && !portShare(server.port))
+                  ? expirySettings
+                  : null}
+                {busy ? (
+                  <Text style={[styles.caption, styles.centered]} accessibilityLiveRegion="polite">
+                    Setting up a secure public link. This takes a few seconds.
+                  </Text>
+                ) : null}
+              </View>
             </View>
           ) : (
             <View style={styles.content}>
@@ -564,61 +935,7 @@ export function StaticPreviewSheet({
               <View style={styles.footer}>
                 {folderError ? <Text style={styles.error}>{folderError}</Text> : null}
                 {error ? <Text style={styles.error}>{error}</Text> : null}
-                <Text style={styles.label}>EXPIRES AFTER</Text>
-                <View style={styles.durations}>
-                  {PUBLIC_PREVIEW_DURATIONS.map((option) => (
-                    <Pressable
-                      key={option.seconds}
-                      onPress={() => setDuration(option.seconds)}
-                      accessibilityRole="radio"
-                      accessibilityLabel={option.a11y}
-                      accessibilityState={{ selected: duration === option.seconds }}
-                      style={[
-                        styles.duration,
-                        duration === option.seconds ? styles.durationActive : null,
-                      ]}
-                    >
-                      <Text
-                        style={
-                          duration === option.seconds
-                            ? styles.durationTextActive
-                            : styles.durationText
-                        }
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-                <View style={styles.pinLabelRow}>
-                  <Text style={styles.label}>PIN</Text>
-                  <Text style={styles.pinHint}>Visitors need it to open the link</Text>
-                </View>
-                <View style={styles.pinInputRow}>
-                  <TextInput
-                    value={pin}
-                    onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 12))}
-                    keyboardType="number-pad"
-                    accessibilityLabel="Preview PIN"
-                    accessibilityHint={
-                      duration >= LONG_PREVIEW_DURATION_SECONDS ? '12 digits' : '6 to 12 digits'
-                    }
-                    style={styles.pinInput}
-                    placeholder={
-                      duration >= LONG_PREVIEW_DURATION_SECONDS ? '12 digits' : '6–12 digits'
-                    }
-                    placeholderTextColor={theme.colors.textFaint}
-                  />
-                  <Pressable
-                    onPress={() => setPin(generatePreviewPin())}
-                    hitSlop={8}
-                    style={styles.pinRefresh}
-                    accessibilityRole="button"
-                    accessibilityLabel="Generate a new PIN"
-                  >
-                    <Icon name="refresh-cw" size={18} color={theme.colors.primary} />
-                  </Pressable>
-                </View>
+                {expirySettings}
                 <Pressable
                   onPress={() => void create()}
                   disabled={!canCreate}
@@ -868,6 +1185,78 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
   },
   stoppedActions: { gap: theme.spacing.sm },
+  tabs: {
+    flexDirection: 'row',
+    padding: 3,
+    gap: 3,
+    marginBottom: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  tab: {
+    flex: 1,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.sm + 1,
+  },
+  tabActive: { backgroundColor: theme.colors.surface },
+  tabText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
+  tabTextActive: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+  backRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 2,
+    marginBottom: theme.spacing.sm,
+  },
+  backText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  serverList: { gap: theme.spacing.sm },
+  emptyServers: {
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.xl,
+    paddingHorizontal: theme.spacing.lg,
+  },
+  serverRow: {
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  serverMain: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  serverDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.done },
+  serverDotLocal: { backgroundColor: theme.colors.tone.attention },
+  serverText: { flex: 1, minWidth: 0, gap: 2 },
+  serverName: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
+  serverPort: { color: theme.colors.textMuted, fontWeight: '600' },
+  serverCommand: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  shareButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    minHeight: 36,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.primary,
+  },
+  shareButtonText: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '700' },
+  livePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    minHeight: 36,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  liveText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '700' },
+  localOnly: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
+  localHint: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.xs },
+  localHintText: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
   secondaryButton: {
     alignItems: 'center',
     justifyContent: 'center',

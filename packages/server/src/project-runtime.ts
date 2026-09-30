@@ -2,6 +2,11 @@ import { execFile } from 'node:child_process';
 import { posix } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectRecord } from '@verity/store';
+import {
+  LISTENING_PORTS_SCRIPT,
+  parseListeningProcesses,
+  type ListeningProcess,
+} from './listening-ports.js';
 import { dockerHostFor } from './project-backend.js';
 import {
   dockerEnvPassthrough,
@@ -10,6 +15,11 @@ import {
 } from './project-settings-env.js';
 
 const execFileAsync = promisify(execFile);
+
+const IPV4_PORT_PROBE = `const net=require('node:net'),os=require('node:os');
+const addresses=Object.values(os.networkInterfaces()).flat().filter(x=>x&&x.family==='IPv4'&&!x.internal).map(x=>x.address);
+const probe=(host,port)=>new Promise(resolve=>{const socket=net.connect({host,port});socket.setTimeout(400);socket.once('connect',()=>{socket.destroy();resolve(true)});socket.once('error',()=>resolve(false));socket.once('timeout',()=>{socket.destroy();resolve(false)})});
+Promise.all(process.argv.slice(1).map(async value=>{const port=Number(value);return (await Promise.all(addresses.map(host=>probe(host,port)))).some(Boolean)})).then(result=>console.log(JSON.stringify(result)));`;
 
 export interface ProjectRuntimeSettings extends ProjectEnvironmentSettings {
   /** Stable dev_servers.id. Absent only for legacy callers predating multi-server
@@ -77,6 +87,8 @@ export interface ProjectRuntime {
     project: ProjectRecord,
     settings: ProjectRuntimeSettings,
   ): Promise<ProjectRuntimeHealth>;
+  /** Every TCP listener in the sandbox the exec user can attribute to a process. */
+  listListeningProcesses?(project: ProjectRecord): Promise<ListeningProcess[]>;
 }
 
 interface RuntimeRunResult {
@@ -265,6 +277,43 @@ export class DockerProjectRuntime implements ProjectRuntime {
       { env: { ...this.dockerEnv(), ...passthrough.env } },
     );
     return this.devServerStatus(project, settings);
+  }
+
+  async listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]> {
+    const result = await this.runner(
+      this.opts.dockerCommand ?? 'docker',
+      ['exec', project.containerName, 'sh', '-c', LISTENING_PORTS_SCRIPT],
+      { env: this.dockerEnv(), timeoutMs: 10_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const processes = parseListeningProcesses(result?.stdout ?? '');
+    const ambiguous = processes.filter(
+      (process) => process.ipv6Wildcard || process.bind === 'other',
+    );
+    if (ambiguous.length === 0) return processes;
+    let reachable: boolean[] = [];
+    try {
+      const probe = await this.runner(
+        this.opts.dockerCommand ?? 'docker',
+        [
+          'exec',
+          project.containerName,
+          'node',
+          '-e',
+          IPV4_PORT_PROBE,
+          ...ambiguous.map((p) => String(p.port)),
+        ],
+        { env: this.dockerEnv(), timeoutMs: 5_000, maxBuffer: 4096 },
+      );
+      const parsed: unknown = JSON.parse(probe?.stdout ?? '');
+      if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'boolean')) {
+        reachable = parsed;
+      }
+    } catch {
+      // An unverified listener must not be offered as a working public link.
+    }
+    for (const [index, process] of ambiguous.entries())
+      process.reachable = reachable[index] === true;
+    return processes;
   }
 
   async devServerStatus(

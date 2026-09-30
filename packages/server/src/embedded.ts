@@ -2438,6 +2438,10 @@ export async function buildEmbeddedServer(
         });
         return status.running;
       },
+      listListeningProcesses: async (project) =>
+        await new DockerProjectRuntime({
+          dockerBaseUrl: config.dockerBaseUrl,
+        }).listListeningProcesses(project),
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
       // far ahead of `app`, and its timing lines belong next to the Uplink's.

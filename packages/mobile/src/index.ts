@@ -285,6 +285,7 @@ export {
   type DevServerDetection,
   type DevServerDetectionState,
   type PublicPreviewShare,
+  type SessionDevServer,
   type PublicPreviewShareCreateRequest,
   agentLoopConfigFingerprint,
   type PermissionDecided,
