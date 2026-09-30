@@ -12,6 +12,8 @@ enum ProductionProbeFailure: Error { case transport(String) }
 func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) async throws {
   let dataURL = endpoint.deletingLastPathComponent().appendingPathComponent("data")
   for (host, pin, expectedFailure) in [
+    // A second attachment must work after the preceding tunnel is torn down.
+    ("core.test", corePin, ""),
     ("core.test", corePin, ""),
     ("core.test", "sha256-" + String(repeating: "A", count: 43), "PIN_MISMATCH"),
     ("wrong.test", corePin, "PINNED_CHAIN_TRUST_FAILED"),
@@ -47,12 +49,53 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
       guard echo == request.httpBody, (echoResponse as? HTTPURLResponse)?.statusCode == 200
       else { throw TunnelError.protocolViolation }
       let socket = client.webSocketTask(with: URL(string: "wss://\(host)/socket")!)
+      defer { socket.cancel(with: .normalClosure, reason: nil) }
       socket.resume()
       try await socket.send(.string("production-tunnel-echo"))
       guard case .string("production-tunnel-echo") = try await socket.receive()
       else { throw TunnelError.protocolViolation }
-      socket.cancel(with: .normalClosure, reason: nil)
+      // A reused session hides failures caused by the app's fresh TLS connection
+      // per request. Keep a WebSocket alive while those connections churn.
+      for batch in 0..<3 {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+          for _ in 0..<4 {
+            group.addTask {
+              let requestConfig = URLSessionConfiguration.ephemeral
+              requestConfig.timeoutIntervalForRequest = 10
+              requestConfig.timeoutIntervalForResource = 15
+              requestConfig.proxyConfigurations = [
+                ProxyConfiguration(socksv5Proxy: .hostPort(
+                  host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!))
+              ]
+              let requestDelegate = try CertificatePinDelegate(pin: pin, origin: origin)
+              let requestClient = URLSession(configuration: requestConfig,
+                delegate: requestDelegate, delegateQueue: nil)
+              defer { requestClient.finishTasksAndInvalidate() }
+              let body: Data
+              let response: URLResponse
+              do {
+                (body, response) = try await requestClient.data(
+                  for: URLRequest(url: origin.appendingPathComponent("healthz")))
+              } catch {
+                throw ProductionProbeFailure.transport(
+                  CertificatePinDelegate.transportFailure(
+                    error: error as NSError, phase: requestDelegate.phase))
+              }
+              guard (response as? HTTPURLResponse)?.statusCode == 200,
+                String(data: body, encoding: .utf8) == "core-ok",
+                requestDelegate.phase == "PIN_AND_CHAIN_TRUST_ACCEPTED"
+              else { throw TunnelError.protocolViolation }
+            }
+          }
+          try await group.waitForAll()
+        }
+        let message = "production-churn-\(batch)"
+        try await socket.send(.string(message))
+        guard case .string(let echoed) = try await socket.receive(), echoed == message
+        else { throw TunnelError.protocolViolation }
+      }
     } catch {
+      if let failure = error as? ProductionProbeFailure { throw failure }
       guard !expectedFailure.isEmpty, delegate.failure?.hasPrefix(expectedFailure) == true else {
         throw ProductionProbeFailure.transport(
           CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase))
