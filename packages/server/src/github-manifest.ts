@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { HttpFetch } from './github.js';
-import { REQUIRED_GITHUB_APP_PERMISSIONS } from './github-app-token.js';
+import { PROJECT_GITHUB_TOKEN_PERMISSIONS } from './github-app-token.js';
 
 /** The GitHub App manifest Verity submits. Webhooks are DISABLED (`hook_attributes.active:false`)
  *  because Verity is pull-based (it mints installation tokens on demand, it does
@@ -53,7 +53,7 @@ export function buildManifest(base: string): Record<string, unknown> {
     setup_on_update: false,
     public: false,
     default_permissions: {
-      ...REQUIRED_GITHUB_APP_PERMISSIONS,
+      ...PROJECT_GITHUB_TOKEN_PERMISSIONS,
       packages: 'read',
       metadata: 'read',
     },

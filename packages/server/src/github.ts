@@ -121,7 +121,7 @@ export type HttpFetch = (
  * DB-backed GitHub App token providers; this synchronous source remains a unit seam
  * for the standalone service implementations.
  */
-export type GitHubTokenSource = string | (() => string | undefined);
+type GitHubTokenSource = string | (() => string | undefined);
 
 export interface GitHubPrServiceOptions {
   /** The repo whose `origin` remote identifies the GitHub owner/name (e.g. /work). */
@@ -230,10 +230,10 @@ export function createGitHubIdentityResolver(
  * provider fn is re-consulted (it may rotate, #131); a string source is constant.
  * Empty/whitespace reads as absent (`undefined`), which makes the caller inert.
  *
- * Exported so callers resolve the rotating
- * token identically — same inert-when-absent semantics — without duplicating it.
+ * Services resolve rotating tokens identically, with the same inert-when-absent
+ * semantics.
  */
-export function makeTokenResolver(token: GitHubTokenSource | undefined): () => string | undefined {
+function makeTokenResolver(token: GitHubTokenSource | undefined): () => string | undefined {
   return () => {
     const raw = typeof token === 'function' ? token() : token;
     const trimmed = raw?.trim();

@@ -99,8 +99,6 @@ export const PROJECT_GITHUB_TOKEN_PERMISSIONS = {
   workflows: 'write',
 } as const satisfies Record<string, 'read' | 'write' | 'admin'>;
 
-export const REQUIRED_GITHUB_APP_PERMISSIONS = PROJECT_GITHUB_TOKEN_PERMISSIONS;
-
 /** Least-privilege permission set for the registry (ghcr.io) token the provisioner
  *  mints to authenticate devcontainer builds — pull the PRIVATE verity-sandbox-toolkit
  *  Feature + base image as the App. Requires the App to be granted `packages: read`. */
@@ -416,7 +414,7 @@ export async function validateGitHubAppCreds(
       // persisted or returned). Request the full App permission subset Verity
       // needs so existing Apps missing a newly-required grant fail validation
       // before provisioning/session/task token refresh starts failing later.
-      body: JSON.stringify({ permissions: REQUIRED_GITHUB_APP_PERMISSIONS }),
+      body: JSON.stringify({ permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS }),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
