@@ -175,7 +175,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       }
       // A read sent directly while the route is unknown must not sit in a
       // request timeout when the capped probe already knows the address is
-      // dead: cancel it so the Uplink recovery below starts.
+      // dead: cancel it so the Uplink recovery below starts. A probe that only
+      // timed out leaves the read alone; the VPN may still be waking up.
       let settled = false;
       const verdict = useRemote && replayable && port === 0 ? pendingDirectVerdict(url) : null;
       if (verdict !== null) {
@@ -275,7 +276,9 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
                 headers: response.headers,
               });
             } catch (remoteError) {
-              if (init.signal?.aborted) throw remoteError;
+              if (init.signal?.aborted) {
+                throw new DOMException('The operation was aborted.', 'AbortError');
+              }
               // Both legs are named below: a pin rejected on the Uplink leg
               // must not hide behind the direct failure.
               remoteReason = safeTransportReason(remoteError);
@@ -285,7 +288,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         const failure = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
         const route =
           port > 0
-            ? (init.method ?? 'GET').toUpperCase() === 'GET' && !fileUri && encodedBody === null
+            ? replayable
               ? 'Uplink and direct Core requests'
               : 'Uplink Core request'
             : remoteAttempted

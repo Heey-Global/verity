@@ -122,7 +122,9 @@ AppState.addEventListener('change', (state) => {
   }
   previousAppState = state;
 });
-let directProbe: { key: string; promise: Promise<boolean> } | null = null;
+// `dead` is true only for a definite refusal (no host, connection refused);
+// a probe timeout says nothing about an address a VPN is still waking up for.
+let directProbe: { key: string; promise: Promise<boolean>; dead: Promise<boolean> } | null = null;
 let lastFailure: {
   key: string;
   stage: 'setup' | 'admission' | 'attachment' | 'probe';
@@ -199,15 +201,17 @@ async function tunnelDiagnosticSummary(): Promise<string | null> {
 }
 
 /**
- * The route probe still running for this Core, if any. A direct read sent
- * while nothing was known can wait on it: the probe is capped, the read is
- * not, and a blackholed private address answers only with the request timeout.
+ * The route probe still running for this Core, if any, resolving false only
+ * when the address is definitely dead. A direct read sent while nothing was
+ * known can give up on that verdict instead of sitting in its own timeout; a
+ * probe that merely timed out keeps the read going, since a VPN may still be
+ * waking up.
  */
 export function pendingDirectVerdict(url: string): Promise<boolean> | null {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
-  return key !== null && directProbe?.key === key ? directProbe.promise : null;
+  return key !== null && directProbe?.key === key ? directProbe.dead.then((dead) => !dead) : null;
 }
 
 /** Any HTTP response proves that the pinned direct transport is reachable. */
@@ -441,10 +445,14 @@ async function directRouteReachable(coreUrl: string, key: string): Promise<boole
   const generation = routeGeneration;
   let currentProbe = directProbe?.key === key ? directProbe : null;
   if (currentProbe === null) {
-    const promise = probeDirect(coreUrl, key).finally(() => {
+    const outcome = probeDirect(coreUrl, key).finally(() => {
       if (directProbe === currentProbe) directProbe = null;
     });
-    currentProbe = { key, promise };
+    currentProbe = {
+      key,
+      promise: outcome.then((result) => result.reachable),
+      dead: outcome.then((result) => result.dead),
+    };
     directProbe = currentProbe;
   }
   // While a live tunnel carries traffic, look for the direct route without
@@ -456,7 +464,10 @@ async function directRouteReachable(coreUrl: string, key: string): Promise<boole
   return directRoute?.key === key ? directRoute.reachable : reachable;
 }
 
-async function probeDirect(coreUrl: string, key: string): Promise<boolean> {
+async function probeDirect(
+  coreUrl: string,
+  key: string,
+): Promise<{ reachable: boolean; dead: boolean }> {
   const previousRoute = directRoute;
   const generation = routeGeneration;
   const tlsPin = getServerProfile()?.endpoints.find((entry) => entry.url === coreUrl)?.tlsPin;
@@ -478,7 +489,10 @@ async function probeDirect(coreUrl: string, key: string): Promise<boolean> {
     reason,
     elapsedMs: Date.now() - startedAt,
   });
-  return reachable;
+  return {
+    reachable,
+    dead: !reachable && reason !== null && !reason.startsWith('Remote Core probe timed out'),
+  };
 }
 
 async function open(coreUrl: string, key: string): Promise<number> {

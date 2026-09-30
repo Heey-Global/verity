@@ -231,6 +231,23 @@ describe('pinned native file transport', () => {
     );
   });
 
+  it('surfaces an abort that arrives during the Uplink recovery request', async () => {
+    const controller = new AbortController();
+    mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
+    mockRequest
+      .mockRejectedValueOnce(new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003]'))
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        throw new Error('private native text');
+      });
+
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions', {
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('surfaces an abort that arrives while Uplink admission runs', async () => {
     const controller = new AbortController();
     mockRemotePort.mockResolvedValueOnce(0).mockImplementationOnce(async () => {
