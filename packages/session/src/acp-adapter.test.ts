@@ -485,6 +485,15 @@ describe('AcpEventAdapter', () => {
     ]);
   });
 
+  it('hides Claude list-shaped quick actions until the message is complete', () => {
+    const stream = new AcpTextStream();
+    expect(stream.push('Choose.\n<quick-act')).toEqual([{ t: 'text', delta: 'Choose.' }]);
+    expect(stream.push('ions>\n• First\n• Second\n</quick-actions>')).toEqual([]);
+    expect(stream.flush()).toEqual([
+      { t: 'choices', options: [{ label: 'First' }, { label: 'Second' }] },
+    ]);
+  });
+
   it('streams prose while hiding a choices opener split across ACP chunks', () => {
     const stream = new AcpTextStream();
     expect(stream.push('Working now.\n\n```verity:cho')).toEqual([
