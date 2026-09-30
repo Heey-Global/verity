@@ -246,6 +246,29 @@ it('keeps the unfinished transcript visible after timed words', async () => {
   expect(screen.getByText('Speaker pending: from the meeting')).toBeOnTheScreen();
 });
 
+it('shows the transcript once when its text no longer matches the timed words', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-revised',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Revised meeting text',
+    error: null,
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    timedWords: [{ text: 'Old', start: 0, end: 0.4 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  await screen.findByText('Revised meeting text');
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByText('Revised meeting text')).toBeOnTheScreen();
+  expect(screen.queryByText('Speaker 1: Old')).not.toBeOnTheScreen();
+});
+
 it('saves a correction for one speaker segment without changing the other', async () => {
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   const meeting: MeetingRecord = {

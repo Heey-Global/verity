@@ -307,6 +307,7 @@ export default function MeetingScreen() {
         meeting.speakerMerges ?? {},
       );
       const tail = untimedTranscriptTail(meeting.transcript, meeting.timedWords);
+      if (tail === null) return [{ text: meeting.transcript }];
       if (tail) lines.push({ text: `Speaker pending: ${tail}` });
       return lines;
     }

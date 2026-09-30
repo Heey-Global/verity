@@ -20,7 +20,7 @@ export function resolvedSpeaker(
   return seen.has(speaker) ? null : speaker;
 }
 
-export function untimedTranscriptTail(transcript: string, words: TimedWord[]): string {
+export function untimedTranscriptTail(transcript: string, words: TimedWord[]): string | null {
   if (!words.length) return transcript.trim();
   const spoken = words.flatMap((word) => word.text.match(/\S+/gu) ?? []);
   const transcriptWords = [...transcript.matchAll(/\S+/gu)];
@@ -30,7 +30,7 @@ export function untimedTranscriptTail(transcript: string, words: TimedWord[]): s
       !transcriptWords[index] ||
       comparable(spoken[index]!) !== comparable(transcriptWords[index]![0])
     )
-      return transcript.trim();
+      return null;
   }
   const last = transcriptWords[spoken.length - 1];
   return last ? transcript.slice(last.index + last[0].length).trim() : transcript.trim();

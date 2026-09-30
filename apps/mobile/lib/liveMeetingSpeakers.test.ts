@@ -81,5 +81,5 @@ test('keeps live text visible while word timings catch up', () => {
   ).toBe('is speaking');
   expect(
     untimedTranscriptTail('A changed partial transcript', [{ text: 'Old', start: 0, end: 0.4 }]),
-  ).toBe('A changed partial transcript');
+  ).toBeNull();
 });
