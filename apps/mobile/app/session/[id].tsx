@@ -4580,8 +4580,13 @@ function SessionFilesSheet({
   // "Print" on iOS — the system prints only content it renders itself, PDFs and
   // images — so the file goes through HTML instead: straight to the print dialog,
   // or into a PDF that the share sheet can print, mail or save.
+  // Rendering a long file takes seconds with no dialog on screen yet; a second tap
+  // would stack print dialogs or overwrite the PDF the first share is still reading.
+  const exporting = useRef(false);
   const exportPreview = useCallback(
     (file: { path: string; content: string }, mode: 'print' | 'pdf') => {
+      if (exporting.current) return;
+      exporting.current = true;
       void (async () => {
         try {
           const print = await loadPrintModule();
@@ -4619,6 +4624,8 @@ function SessionFilesSheet({
             mode === 'print' ? 'Could not print file' : 'Could not create PDF',
             err instanceof Error ? err.message : String(err),
           );
+        } finally {
+          exporting.current = false;
         }
       })();
     },
