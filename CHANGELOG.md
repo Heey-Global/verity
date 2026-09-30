@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/Heey-Global/verity/compare/v4.0.0...v4.0.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **mobile:** adopt scene lifecycle to prevent iOS 27 launch crash ([#936](https://github.com/Heey-Global/verity/issues/936)) ([add0d0b](https://github.com/Heey-Global/verity/commit/add0d0b3b8632d20459b4bde5eba7656888866a8))
+
 ## [4.0.0](https://github.com/Heey-Global/verity/compare/v3.0.0...v4.0.0) (2026-09-30)
 
 
