@@ -64,12 +64,13 @@ async function probeCoreThroughEitherProxy(
   try {
     await probeCore(coreUrl, tlsPin, port);
   } catch (error) {
-    // Only a handshake the client abandoned before certificate evaluation
-    // points at the proxy path. A rejected pin, an HTTP failure or a Core that
-    // is down would cost a second full probe for nothing.
+    // Only a handshake the client abandoned after Core had answered points at
+    // the proxy path. A rejected pin, an HTTP failure or a Core that never
+    // replied through the tunnel would cost a second full probe for nothing.
     if (
       typeof transport.setProxyMode !== 'function' ||
-      !(error instanceof Error && error.message.includes('NO_AUTH_CHALLENGE'))
+      !(error instanceof Error && error.message.includes('NO_AUTH_CHALLENGE')) ||
+      !(await tunnelReceivedBytes())
     )
       throw error;
     const other: ProxyMode = proxyMode === 'socks' ? 'connect' : 'socks';
@@ -90,6 +91,12 @@ async function probeCoreThroughEitherProxy(
     proxyMode = other;
     console.info('Remote Control proxy dialect switched', { proxyMode });
   }
+}
+
+async function tunnelReceivedBytes(): Promise<boolean> {
+  const summary = await tunnelDiagnosticSummary();
+  const received = summary?.match(/, receivedBytes=(\d+)/u)?.[1];
+  return received !== undefined && Number(received) > 0;
 }
 
 function probeFailureDetail(error: unknown): string | null {

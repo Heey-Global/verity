@@ -598,11 +598,41 @@ describe('remote diagnostics', () => {
       if (mode === 'socks') throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
       return { status: 200 };
     });
+    mockDiagnosticSummary.mockResolvedValue(
+      'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none',
+    );
     transport.reportDirectRouteFailure(coreUrl);
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
     expect(mockSetProxyMode.mock.calls).toEqual([['socks'], ['connect']]);
     // The dialect that answered stays selected for the requests that follow.
     expect(mode).toBe('connect');
+  });
+
+  it('does not change the dialect when Core never answered through the tunnel', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockSetProxyMode = jest.fn().mockResolvedValue(undefined);
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(4321);
+    mockRequest.mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 0) throw new Error('NSURLErrorDomain:-1003');
+      throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+    });
+    // A Core that is down looks the same to the client; only the tunnel
+    // counters tell that no reply ever arrived, so a second probe is pointless.
+    const summary =
+      'local=1, opened=1, received=0, last=stream_opened, sentBytes=1806, receivedBytes=0, deliveredBytes=0, localResets=0, remoteResets=0, lastReset=none';
+    mockDiagnosticSummary.mockResolvedValue(summary);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: `probe (Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].; tunnel ${summary})`,
+    });
+    expect(mockSetProxyMode.mock.calls).toEqual([['socks']]);
   });
 
   it('does not change the dialect for a rejected certificate', async () => {
@@ -636,13 +666,12 @@ describe('remote diagnostics', () => {
       if (args[6] === 0) throw new Error('NSURLErrorDomain:-1003');
       throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
     });
-    mockDiagnosticSummary.mockResolvedValue(
-      'local=2, opened=2, received=2, last=remote_stream.end',
-    );
+    const summary =
+      'local=2, opened=2, received=6, last=remote_stream.end, sentBytes=3612, receivedBytes=13602, deliveredBytes=13602, localResets=0, remoteResets=0, lastReset=none';
+    mockDiagnosticSummary.mockResolvedValue(summary);
     expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
       ready: false,
-      detail:
-        'probe (Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].; via connect Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].; tunnel local=2, opened=2, received=2, last=remote_stream.end)',
+      detail: `probe (Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].; via connect Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].; tunnel ${summary})`,
     });
     expect(mockSetProxyMode.mock.calls).toEqual([['socks'], ['connect'], ['socks']]);
   });
