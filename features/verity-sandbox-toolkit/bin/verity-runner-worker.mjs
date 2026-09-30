@@ -24453,6 +24453,7 @@ function atEndOfBlockComment(text, i) {
 // node_modules/@verity/events/dist/choices.js
 var CHOICES_FENCE_TAG = "verity:choices";
 var CHOICES_FENCE_RE = /```verity:choices[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+var LEGACY_CHOICES_RE = /^<quick-actions>[ \t]*\r?\n([\s\S]*?)\r?\n<\/quick-actions>[ \t]*$/gm;
 function parseLenientJson(body) {
   try {
     return JSON.parse(body);
@@ -24467,7 +24468,7 @@ function parseLenientJson(body) {
 function parseChoicesBlock(input) {
   const matches = [...input.matchAll(CHOICES_FENCE_RE)];
   if (matches.length === 0)
-    return { text: input };
+    return parseLegacyChoices(input);
   let choices;
   for (let i = matches.length - 1; i >= 0 && choices === void 0; i--) {
     const parsedJson = parseLenientJson(matches[i][1] ?? "");
@@ -24478,13 +24479,35 @@ function parseChoicesBlock(input) {
       choices = result2.data;
   }
   if (choices === void 0)
-    return { text: input };
+    return parseLegacyChoices(input);
   let text = input;
   for (let i = matches.length - 1; i >= 0; i--) {
     const match = matches[i];
     text = text.slice(0, match.index) + text.slice(match.index + match[0].length);
   }
   return { text: text.trimEnd(), choices };
+}
+function parseLegacyChoices(input) {
+  const matches = [...input.matchAll(LEGACY_CHOICES_RE)];
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const lines = (matches[i][1] ?? "").split(/\r?\n/);
+    if (lines.length < 2 || lines.length > 20)
+      continue;
+    const labels = lines.map((line) => /^[ \t]*[-*•] (.+?)[ \t]*$/.exec(line)?.[1]);
+    if (labels.some((label) => label === void 0))
+      continue;
+    const result2 = choicesPayloadSchema.safeParse({
+      options: labels.map((label) => ({ label }))
+    });
+    if (!result2.success)
+      continue;
+    const match = matches[i];
+    return {
+      text: (input.slice(0, match.index) + input.slice(match.index + match[0].length)).trimEnd(),
+      choices: result2.data
+    };
+  }
+  return { text: input };
 }
 var CHOICES_SYSTEM_PROMPT = `# Quick-Action choices (Verity)
 
@@ -28759,7 +28782,11 @@ function finalAcpTextEvents(text) {
   return text.length > 0 ? [{ t: "text", delta: text }] : [];
 }
 var AcpTextStream = class _AcpTextStream {
-  static fences = ["```verity:choices", "```verity:agent-loop"];
+  static fences = [
+    "```verity:choices",
+    "```verity:agent-loop",
+    "<quick-actions>"
+  ];
   static maxContractLength = 64 * 1024;
   pending = "";
   bufferingContract = false;

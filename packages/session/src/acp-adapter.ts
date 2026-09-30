@@ -381,7 +381,11 @@ export function finalAcpTextEvents(text: string): AgentEvent[] {
  * become a Verity machine-contract fence. Once a fence starts, buffer it until
  * turn end so its JSON never flashes into the chat. */
 export class AcpTextStream {
-  private static readonly fences = ['```verity:choices', '```verity:agent-loop'] as const;
+  private static readonly fences = [
+    '```verity:choices',
+    '```verity:agent-loop',
+    '<quick-actions>',
+  ] as const;
   private static readonly maxContractLength = 64 * 1024;
   private pending = '';
   private bufferingContract = false;

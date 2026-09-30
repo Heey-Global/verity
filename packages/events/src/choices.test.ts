@@ -32,6 +32,20 @@ describe('parseChoicesBlock', () => {
     expect(choices).toEqual({ options: [{ label: 'A' }, { label: 'B' }] });
   });
 
+  it('lifts Claude list-shaped quick actions from a completed message', () => {
+    const input =
+      'Send the result.\n\n<quick-actions>\n• Screenshot bereit\n• Test nicht gefunden\n</quick-actions>';
+    expect(parseChoicesBlock(input)).toEqual({
+      text: 'Send the result.',
+      choices: { options: [{ label: 'Screenshot bereit' }, { label: 'Test nicht gefunden' }] },
+    });
+  });
+
+  it('leaves malformed quick-action lists visible as text', () => {
+    const input = 'Example:\n<quick-actions>\n• First\nnot a list item\n</quick-actions>';
+    expect(parseChoicesBlock(input)).toEqual({ text: input });
+  });
+
   it('preserves question, recommended, and multiSelect fields', () => {
     const input = fence(
       '{"question":"Pick","options":[{"label":"A","recommended":true},{"label":"B"}],"multiSelect":true}',
