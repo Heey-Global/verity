@@ -1,5 +1,30 @@
 # Changelog
 
+## [3.0.0](https://github.com/Heey-Global/verity/compare/v2.19.0...v3.0.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tasks:** Remove GET /issues and /tasks routes and the mobile task API.
+
+### Features
+
+* **knowledge:** organize sources and approve shared publication ([#921](https://github.com/Heey-Global/verity/issues/921)) ([6d54422](https://github.com/Heey-Global/verity/commit/6d544226b3a011bfc5b932c99c10c70e08bdd5c3))
+* **meeting:** add live speakers and in-screen answers ([#920](https://github.com/Heey-Global/verity/issues/920)) ([b88a606](https://github.com/Heey-Global/verity/commit/b88a60694407502a858bd74041d805c660a11cf1))
+* **mobile:** print and share previewed files as PDF ([#925](https://github.com/Heey-Global/verity/issues/925)) ([3b0738d](https://github.com/Heey-Global/verity/commit/3b0738da6b694f605404945364a0e52f26db3285))
+* **models:** add Codex Sol 6.1 and move Haiku to more models ([#918](https://github.com/Heey-Global/verity/issues/918)) ([e194ac3](https://github.com/Heey-Global/verity/commit/e194ac3734b49bd34ad6dc53003353a06d090073))
+
+
+### Bug Fixes
+
+* **deps:** update dependency ws to v8.22.0 ([#915](https://github.com/Heey-Global/verity/issues/915)) ([bd93af8](https://github.com/Heey-Global/verity/commit/bd93af8096d7ba058cb67a167fbad6ab22fb5d55))
+* **session:** render Claude quick-action lists as choices ([#927](https://github.com/Heey-Global/verity/issues/927)) ([ce06f99](https://github.com/Heey-Global/verity/commit/ce06f99a987b43934465e0d523bc520d71e21016))
+
+
+### Code Refactoring
+
+* **tasks:** remove retired issues and plan board ([#922](https://github.com/Heey-Global/verity/issues/922)) ([663e4c5](https://github.com/Heey-Global/verity/commit/663e4c593ba03bc99884159362a1144ef8f26e8f))
+
 ## [2.19.0](https://github.com/Heey-Global/verity/compare/v2.18.0...v2.19.0) (2026-09-29)
 
 
