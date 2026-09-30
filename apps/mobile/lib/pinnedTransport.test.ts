@@ -198,7 +198,7 @@ describe('pinned native file transport', () => {
   it.each([
     ['dead', 0],
     // A probe timeout is not a verdict; the read gets a bounded grace period.
-    ['unknown', 7_000],
+    ['unknown', 4_000],
   ])('cancels a stalled direct read once the route probe says %s', async (outcome, delayMs) => {
     jest.useFakeTimers();
     try {
