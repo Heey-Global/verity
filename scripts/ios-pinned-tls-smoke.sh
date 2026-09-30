@@ -7,6 +7,7 @@
 # Set VERITY_SMOKE_OPAQUE_RELAY=1 to run the same macOS/iOS pin and
 # hostname checks through a byte-only relay to the local TLS backend.
 set -euo pipefail
+python3 -m unittest -q scripts.test_ios_pinned_tls_relay
 
 tmp="$(mktemp -d)"
 server_pid=''
@@ -83,6 +84,7 @@ addresses=(127.0.0.1)
 if [[ -n "$host_ip" ]]; then addresses+=("$host_ip"); fi
 python3 - "$tmp/cert.pem" "$tmp/key.pem" "$tmp/server-ready" "${addresses[@]}" <<'PY' &
 import asyncio, faulthandler, http.server, os, socketserver, ssl, sys, threading
+from scripts.ios_pinned_tls_relay import relay
 
 faulthandler.dump_traceback_later(15, repeat=True)
 
@@ -125,27 +127,6 @@ for address in (['127.0.0.1'] if relay_mode else sys.argv[4:]):
     servers.append(server)
 for server in servers:
     threading.Thread(target=server.serve_forever, daemon=True).start()
-async def relay(reader, writer):
-    upstream = None
-    tasks = []
-    async def pump(source, target):
-        while data := await source.read(65536):
-            target.write(data)
-            await target.drain()
-    try:
-        remote_reader, upstream = await asyncio.wait_for(
-            asyncio.open_connection('127.0.0.1', 18444), timeout=5)
-        tasks = [asyncio.create_task(pump(reader, upstream)),
-                 asyncio.create_task(pump(remote_reader, writer))]
-        await asyncio.wait(tasks, timeout=30, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        writer.close()
-        if upstream is not None:
-            upstream.close()
-
 async def serve_relays():
     listeners = []
     try:
