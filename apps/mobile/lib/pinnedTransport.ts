@@ -3,6 +3,7 @@ import {
   directRouteKnownReachable,
   lastDirectRefusal,
   pendingDirectVerdict,
+  recoverRemoteControlRead,
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
   reportDirectRouteFailure,
@@ -237,6 +238,29 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         let directFailed = port === 0;
         let failure: Error = error instanceof Error ? error : new Error('native transport error');
         if (
+          port > 0 &&
+          replayable &&
+          failure.message.includes('NO_AUTH_CHALLENGE') &&
+          !init.signal?.aborted &&
+          (await recoverRemoteControlRead(url, port))
+        ) {
+          if (init.signal?.aborted)
+            throw new DOMException('The operation was aborted.', 'AbortError');
+          try {
+            response = await transport.request(requestId, url, 'GET', headers, null, tlsPin, port);
+            if (init.signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError');
+            }
+            recovered = true;
+          } catch (retryError) {
+            if (init.signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError');
+            }
+            failure = retryError instanceof Error ? retryError : failure;
+          }
+        }
+        if (
+          !recovered &&
           port > 0 &&
           !fileUri &&
           (init.method ?? 'GET').toUpperCase() === 'GET' &&

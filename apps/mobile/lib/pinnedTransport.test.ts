@@ -9,6 +9,7 @@ const mockReportDirectSuccess = jest.fn();
 const mockDirectVerdict = jest.fn();
 const mockDirectRefusal = jest.fn();
 const mockDirectKnownReachable = jest.fn();
+const mockRecoverRemoteRead = jest.fn();
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
@@ -18,6 +19,7 @@ jest.mock('./remoteControlTransport', () => ({
   pendingDirectVerdict: (...args: unknown[]) => mockDirectVerdict(...args),
   lastDirectRefusal: (...args: unknown[]) => mockDirectRefusal(...args),
   directRouteKnownReachable: (...args: unknown[]) => mockDirectKnownReachable(...args),
+  recoverRemoteControlRead: (...args: unknown[]) => mockRecoverRemoteRead(...args),
 }));
 
 jest.mock('expo-modules-core', () => ({
@@ -73,6 +75,7 @@ describe('pinned native file transport', () => {
     mockDirectVerdict.mockReset().mockReturnValue(null);
     mockDirectRefusal.mockReset().mockReturnValue(null);
     mockDirectKnownReachable.mockReset().mockReturnValue(false);
+    mockRecoverRemoteRead.mockReset().mockResolvedValue(false);
     mockReportDirectSuccess.mockReset();
   });
 
@@ -152,6 +155,31 @@ describe('pinned native file transport', () => {
     );
     expect(mockRequest.mock.calls[1]?.[0]).toBe(mockRequest.mock.calls[0]?.[0]);
     expect(mockReportDirectSuccess).toHaveBeenCalledWith('https://verity.example/sessions');
+  });
+
+  it('retries a TLS-stalled remote read through a recovered tunnel', async () => {
+    const pin = `sha256-${'a'.repeat(43)}`;
+    mockRemotePort.mockResolvedValue(4_321);
+    mockRecoverRemoteRead.mockResolvedValue(true);
+    mockRequest
+      .mockRejectedValueOnce(new Error('Pinned TLS transport failed [NO_AUTH_CHALLENGE]'))
+      .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
+
+    await expect(
+      createPinnedFetch(pin, true)('https://verity.example/sessions'),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(mockRecoverRemoteRead).toHaveBeenCalledWith('https://verity.example/sessions', 4_321);
+    expect(mockRequest).toHaveBeenNthCalledWith(
+      2,
+      mockRequest.mock.calls[0]?.[0],
+      'https://verity.example/sessions',
+      'GET',
+      {},
+      null,
+      pin,
+      4_321,
+    );
+    expect(mockReportDirectSuccess).not.toHaveBeenCalled();
   });
 
   it('recovers a read that the untested direct route lost through Uplink', async () => {
