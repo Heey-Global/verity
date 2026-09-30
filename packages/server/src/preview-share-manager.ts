@@ -297,7 +297,23 @@ export class PreviewShareManager {
     worktree: string,
     port: number,
   ): Promise<boolean> {
-    const reachable = await this.sessionPortReachable(project, worktree, port).catch(() => false);
+    let reachable = false;
+    try {
+      if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return false;
+      const sandboxWorktree = containerPathFor(
+        worktree,
+        projectClonePath(this.options.hostCloneRoot, project),
+      );
+      const processes = await this.options.listListeningProcesses(project);
+      reachable = sessionDevServers(processes, sandboxWorktree).some(
+        (server) => server.port === port && server.reachable,
+      );
+      // A different session now owns the forwarded port. Waiting through the
+      // restart grace period would expose that session through the old link.
+      if (!reachable && processes.some((process) => process.port === port)) return false;
+    } catch {
+      // A failed probe follows the same grace period as a missing listener.
+    }
     if (reachable) {
       this.portMissingSince.delete(shareId);
       return true;

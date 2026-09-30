@@ -713,7 +713,10 @@ export function StaticPreviewSheet({
                 {devServersLoading && devServers.length === 0 ? (
                   <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
                 ) : null}
-                {!devServersLoading && devServers.length === 0 && !devServerError ? (
+                {!devServersLoading &&
+                devServers.length === 0 &&
+                !shares.some((share) => isPortShare(share) && isLive(share)) &&
+                !devServerError ? (
                   <View style={styles.emptyServers}>
                     <Icon name="monitor" size={28} color={theme.colors.textFaint} />
                     <Text style={styles.heroTitle}>No dev server running</Text>
@@ -722,6 +725,38 @@ export function StaticPreviewSheet({
                     </Text>
                   </View>
                 ) : null}
+                {shares
+                  .filter(
+                    (share) =>
+                      isPortShare(share) &&
+                      isLive(share) &&
+                      !devServers.some((server) => server.port === share.targetPort),
+                  )
+                  .map((share) => (
+                    <View key={share.id} style={styles.serverRow}>
+                      <View style={styles.serverMain}>
+                        <View style={styles.serverText}>
+                          <Text
+                            style={styles.serverName}
+                          >{`Port ${String(share.targetPort)}`}</Text>
+                          <Text style={styles.serverCommand}>Shared link</Text>
+                        </View>
+                        <Pressable
+                          style={styles.livePill}
+                          onPress={() => {
+                            setStopped(undefined);
+                            setOpenPort(share.targetPort ?? undefined);
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Show link for port ${String(share.targetPort)}`}
+                        >
+                          <View style={styles.statusDot} />
+                          <Text style={styles.liveText}>Live</Text>
+                          <Icon name="chevron-right" size={14} color={theme.colors.primary} />
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
                 {devServers.map((server) => {
                   const live = portShare(server.port);
                   const creating = creatingPort === server.port;

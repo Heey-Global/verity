@@ -852,4 +852,15 @@ describe('dev server tab', () => {
     fireEvent.press(screen.getByRole('tab', { name: 'Dev server' }));
     expect(await screen.findByRole('button', { name: 'Share port 5173' })).toBeTruthy();
   });
+
+  it('keeps an active port link accessible when discovery finds no server', async () => {
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => []),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+    });
+
+    fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
+    expect(await screen.findByText('https://vite.example')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
+  });
 });

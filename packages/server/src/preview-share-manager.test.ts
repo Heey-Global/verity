@@ -1929,4 +1929,27 @@ describe('session port previews', () => {
     await manager.reconcile();
     expect(edge.remove).toHaveBeenCalledWith(record.id);
   });
+
+  it('revokes immediately when another session takes over a shared port', async () => {
+    const { manager, store, edge, record, listListeningProcesses } = portFixture([
+      listener(5173, 'any'),
+    ]);
+    store.listPublicPreviewShares.mockResolvedValue([
+      {
+        ...record,
+        devServerId: null,
+        targetPort: 5173,
+        targetKind: 'dev-server' as const,
+        sessionId: 's1',
+        staticPath: null,
+        state: 'active' as const,
+        connectorContainerId: 'connector-id',
+      },
+    ]);
+    listListeningProcesses.mockResolvedValue([listener(5173, 'any', '/work/sessions/s2')]);
+
+    await manager.reconcile();
+
+    expect(edge.remove).toHaveBeenCalled();
+  });
 });
