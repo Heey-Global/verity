@@ -38,7 +38,7 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.157.1",
+      "default": "0.159.2",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {

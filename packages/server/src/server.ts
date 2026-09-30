@@ -1474,6 +1474,11 @@ export const CLAUDE_MODELS = [
   'claude-haiku-4-5-20251001',
 ] as const;
 
+/** The curated Claude ids the picker tucks behind the "More models" disclosure: still
+ * selectable, but not among the rows a fresh session shows first. Always a subset of
+ * {@link CLAUDE_MODELS} — `/models` only nominates the ones it actually lists. */
+const CLAUDE_MORE_MODELS: readonly (typeof CLAUDE_MODELS)[number][] = ['claude-haiku-4-5-20251001'];
+
 /** The default model a fresh spawn uses when the operator doesn't pick one — a
  * Claude id (routes to the subscription-billed Claude Code backend). */
 export const DEFAULT_MODEL = CLAUDE_MODELS[0];
@@ -7237,10 +7242,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (options.allowLegacyCodexFallback === true && codexConfigured
         ? CODEX_DEFAULT_MODEL
         : models.find((model) => !model.startsWith('verity/')));
+    const moreModels = [...(claudeConfigured ? CLAUDE_MORE_MODELS : []), ...codexModels.slice(3)];
     return {
       models,
       ...(codexModels.length > 0 ? { modelOrder } : {}),
-      ...(codexModels.length > 3 ? { moreModels: codexModels.slice(3) } : {}),
+      ...(moreModels.length > 0 ? { moreModels } : {}),
       ...(claudeConfigured && models.includes(DEFAULT_MODEL)
         ? { default: DEFAULT_MODEL }
         : fallbackDefault !== undefined
