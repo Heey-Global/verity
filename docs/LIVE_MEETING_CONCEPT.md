@@ -290,6 +290,11 @@ source date, uncertainty and the triggering meeting position. Deduplicate findin
 and research budgets, and prioritize direct requests. An inability to verify is not evidence that
 a participant is wrong. Assistance must never block capture, persistence or synchronization.
 
+Research, fact checks and direct spoken or typed requests run as turns in the meeting's session,
+but do not navigate away from the meeting screen. Show a working card, then a compact answer there;
+the full session chat opens only when the person explicitly taps “Open in chat.” Restore answer
+cards from the session history when the meeting screen is reopened.
+
 Responses are text first; reading aloud is explicit. Accepted findings can become attributed notes
 with source links. Do not automatically send messages, modify external systems or turn unconfirmed
 suggestions into commitments. Research and questioning remain within the self-hosted core boundary.

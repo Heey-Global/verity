@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { LiveMeetingInsight } from '@verity/mobile';
+import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
 
 import {
   currentMeeting,
@@ -44,6 +44,13 @@ import {
   meetingRequestPrompt,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
+import {
+  compactMeetingAnswer,
+  meetingAnswerCards,
+  meetingAnswerSource,
+  meetingRequestFromPrompt,
+  type MeetingAnswerCard,
+} from '../../lib/liveMeetingAnswers';
 import {
   resolvedSpeaker,
   speakerLines,
@@ -88,6 +95,13 @@ export default function MeetingScreen() {
   const [history, setHistory] = useState<MeetingRecord[]>([]);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
+  const [answers, setAnswers] = useState<MeetingAnswerCard[]>([]);
+  const [queuedAnswers, setQueuedAnswers] = useState<MeetingAnswerCard[]>([]);
+  const [localAnswers, setLocalAnswers] = useState<MeetingAnswerCard[]>([]);
+  const [expandedAnswer, setExpandedAnswer] = useState<string | null>(null);
+  const answerEvents = useRef<{ meetingId: string; events: SessionHistoryPage['events'] } | null>(
+    null,
+  );
   const [draft, setDraft] = useState<MeetingNote | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -135,6 +149,17 @@ export default function MeetingScreen() {
         setVoiceSending(event.status === 'sending');
         if (event.status === 'failed') setError(event.message ?? 'Voice request failed.');
         else if (event.status === 'sending') setError(null);
+        if (event.status === 'sent' && event.request)
+          setLocalAnswers((current) => [
+            ...current,
+            {
+              id: `voice-${Date.now()}-${current.length}`,
+              request: event.request!,
+              kind: event.kind ?? 'request',
+              status: 'working',
+              answer: '',
+            },
+          ]);
       }),
     [],
   );
@@ -229,6 +254,69 @@ export default function MeetingScreen() {
           } catch {
             // An older server can still serve the meeting without insight support.
           }
+          try {
+            const client = createVerityClient();
+            if (client?.getHistory) {
+              let page = await client.getHistory(sessionId, { limit: 200 });
+              let events = page.events;
+              const cached =
+                answerEvents.current?.meetingId === shown ? answerEvents.current : null;
+              let pages = 1;
+              while (
+                page.hasMore &&
+                pages < 10 &&
+                events[0]?.seq > 0 &&
+                (cached
+                  ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
+                  : meetingAnswerCards(events, shown).length < 4)
+              ) {
+                page = await client.getHistory(sessionId, {
+                  beforeSeq: events[0]!.seq,
+                  limit: 200,
+                });
+                events = [...page.events, ...events];
+                pages++;
+              }
+              const merged = new Map<number, SessionHistoryPage['events'][number]>();
+              for (const entry of cached?.events ?? []) merged.set(entry.seq, entry);
+              for (const entry of events) merged.set(entry.seq, entry);
+              const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
+              const promptIndexes = ordered.flatMap((entry, index) =>
+                entry.event.t === 'prompt' && meetingRequestFromPrompt(entry.event.text, shown)
+                  ? [index]
+                  : [],
+              );
+              const kept =
+                promptIndexes.length > 4
+                  ? ordered.slice(promptIndexes.at(-4))
+                  : ordered.slice(-4_000);
+              if (mounted && displayedMeetingId.current === shown) {
+                answerEvents.current = { meetingId: shown, events: kept };
+                setAnswers(meetingAnswerCards(kept, shown));
+              }
+              if (client.getActivity) {
+                const activity = await client.getActivity(sessionId);
+                if (mounted && displayedMeetingId.current === shown)
+                  setQueuedAnswers(
+                    activity.queued.flatMap((item, index) => {
+                      const request = meetingRequestFromPrompt(item.text, shown);
+                      return request
+                        ? [
+                            {
+                              id: `queued-${item.id || index}`,
+                              ...request,
+                              status: 'working' as const,
+                              answer: '',
+                            },
+                          ]
+                        : [];
+                    }),
+                  );
+              }
+            }
+          } catch {
+            // Meeting recording must continue when the session answer feed is unavailable.
+          }
         }
       } catch {
         if (mounted) setSyncError(true);
@@ -267,6 +355,11 @@ export default function MeetingScreen() {
     let current = true;
     setNotes([]);
     setInsights([]);
+    setAnswers([]);
+    setQueuedAnswers([]);
+    setLocalAnswers([]);
+    setExpandedAnswer(null);
+    answerEvents.current = null;
     void listNotes(meeting.id)
       .then((saved) => {
         if (!current) return;
@@ -343,6 +436,22 @@ export default function MeetingScreen() {
     () => latestResearchQuestion(meeting?.transcript ?? ''),
     [meeting?.transcript],
   );
+  const visibleAnswers = useMemo(() => {
+    const canonical = [
+      ...answers,
+      ...queuedAnswers.filter(
+        (queued) =>
+          !answers.some((card) => card.request === queued.request && card.kind === queued.kind),
+      ),
+    ];
+    return [
+      ...canonical,
+      ...localAnswers.filter(
+        (local) =>
+          !canonical.some((card) => card.request === local.request && card.kind === local.kind),
+      ),
+    ].slice(-4);
+  }, [answers, queuedAnswers, localAnswers]);
   const transcriptPreview = useMemo(() => {
     const text = meeting?.transcript.trim() ?? '';
     return text.length > 180 ? `…${text.slice(-180)}` : text;
@@ -475,8 +584,18 @@ export default function MeetingScreen() {
             ? researchPrompt(meeting.id, question.trim(), meeting.transcript)
             : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript),
       });
-      if (live && !active) followRemoteMeeting(meeting.sessionId, meeting.id);
-      router.push({ pathname: '/session/[id]', params: { id: sessionId } });
+      if (displayedMeetingId.current === meeting.id)
+        setLocalAnswers((current) => [
+          ...current,
+          {
+            id: `local-${Date.now()}`,
+            request: question.trim(),
+            kind,
+            status: 'working',
+            answer: '',
+          },
+        ]);
+      if (kind === 'request') setInsightQuestion('');
     } catch (reason) {
       setError(`Could not start meeting request: ${String(reason)}`);
     } finally {
@@ -894,6 +1013,61 @@ export default function MeetingScreen() {
           <View style={styles.insightsCard}>
             <Text style={styles.section}>Live Insights</Text>
             <ScrollView style={styles.insightList} keyboardShouldPersistTaps="handled">
+              {visibleAnswers.map((card) => (
+                <View key={card.id} style={styles.suggestion}>
+                  <Text style={styles.suggestionLabel}>
+                    {card.status === 'ready'
+                      ? 'ANSWER READY'
+                      : card.status === 'failed'
+                        ? 'REQUEST INTERRUPTED'
+                        : 'VERITY IS WORKING'}
+                  </Text>
+                  <Text style={styles.suggestionText}>{card.request}</Text>
+                  {card.status === 'ready' ? (
+                    <>
+                      <Text style={styles.evidence}>
+                        {expandedAnswer === card.id
+                          ? card.answer
+                          : compactMeetingAnswer(card.answer)}
+                      </Text>
+                      {meetingAnswerSource(card.answer) ? (
+                        <Text style={styles.evidence}>
+                          Source: {meetingAnswerSource(card.answer)}
+                        </Text>
+                      ) : null}
+                      {card.answer.length > 360 ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            expandedAnswer === card.id
+                              ? 'Collapse meeting answer'
+                              : 'Expand meeting answer'
+                          }
+                          onPress={() =>
+                            setExpandedAnswer((current) => (current === card.id ? null : card.id))
+                          }
+                        >
+                          <Text style={styles.researchButtonText}>
+                            {expandedAnswer === card.id ? 'Show less' : 'Show full answer'}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {card.status === 'ready' ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Open answer in chat"
+                      onPress={() =>
+                        router.push({ pathname: '/session/[id]', params: { id: sessionId } })
+                      }
+                      style={styles.researchButton}
+                    >
+                      <Text style={styles.researchButtonText}>Open in chat ›</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ))}
               {insights.slice(0, 4).map((insight) => (
                 <View key={insight.id} style={styles.suggestion}>
                   <Text style={styles.suggestionLabel}>
@@ -907,15 +1081,29 @@ export default function MeetingScreen() {
                   {insight.sourcePath ? (
                     <Text style={styles.evidence}>Source: {insight.sourcePath}</Text>
                   ) : null}
-                  {insight.kind === 'research' ? (
+                  {insight.kind === 'research' || insight.kind === 'contradiction' ? (
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel="Research insight"
+                      accessibilityLabel={
+                        insight.kind === 'contradiction'
+                          ? 'Check meeting claim'
+                          : 'Research insight'
+                      }
                       disabled={sendingInsight}
-                      onPress={() => void openResearch(insight.evidenceA)}
+                      onPress={() =>
+                        void openResearch(
+                          insight.kind === 'contradiction'
+                            ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
+                            : insight.evidenceA,
+                        )
+                      }
                       style={styles.researchButton}
                     >
-                      <Text style={styles.researchButtonText}>Research in session ›</Text>
+                      <Text style={styles.researchButtonText}>
+                        {insight.kind === 'contradiction'
+                          ? 'Let Verity check ›'
+                          : 'Let Verity research ›'}
+                      </Text>
                     </Pressable>
                   ) : null}
                 </View>
@@ -932,7 +1120,7 @@ export default function MeetingScreen() {
                     onPress={() => void openResearch(suggestedQuestion)}
                     style={styles.researchButton}
                   >
-                    <Text style={styles.researchButtonText}>Research in session ›</Text>
+                    <Text style={styles.researchButtonText}>Let Verity research ›</Text>
                   </Pressable>
                 </View>
               ) : insights.length === 0 ? (
@@ -952,7 +1140,7 @@ export default function MeetingScreen() {
               />
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Open question in session"
+                accessibilityLabel="Ask Verity in meeting"
                 disabled={!insightQuestion.trim() || sendingInsight}
                 onPress={() => void openResearch(insightQuestion, 'request')}
                 style={styles.insightGo}

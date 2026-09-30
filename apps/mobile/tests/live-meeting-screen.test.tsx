@@ -145,7 +145,7 @@ it('shows a listening state before speech and numbered voices as they are recogn
   expect(screen.getByText('Speaker 3')).toBeOnTheScreen();
 });
 
-it('opens the complete transcript on demand and starts research in the same session', async () => {
+it('keeps research and fact checks in the meeting while sending turns to its session', async () => {
   const meeting: MeetingRecord = {
     id: 'meeting-insight',
     sessionId: 'session-1',
@@ -189,11 +189,114 @@ it('opens the complete transcript on demand and starts research in the same sess
       'session-1',
       expect.objectContaining({ prompt: expect.stringContaining('Is the release still Friday?') }),
     );
-    expect(router.push).toHaveBeenCalledWith({
-      pathname: '/session/[id]',
-      params: { id: 'session-1' },
-    });
+    expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
   });
+  expect(router.push).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Check meeting claim'));
+  await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(2));
+  expect(sendTurn.mock.calls[1]?.[1].prompt).toContain(
+    'Check whether “Tuesday” conflicts with “Friday”',
+  );
+  expect(router.push).not.toHaveBeenCalled();
+});
+
+it('shows the compact session answer in the meeting after reopening it', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-answer',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'Is Friday correct?',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(createVerityClient).mockReturnValue({
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getHistory: jest.fn().mockImplementation(async (_sessionId, options) =>
+      options?.beforeSeq
+        ? {
+            hasMore: false,
+            events: [
+              {
+                seq: 7,
+                event: {
+                  t: 'prompt',
+                  text: 'Research this point raised during live meeting meeting-answer:\n\nIs Friday correct?\n\nRecent meeting transcript:\nIs Friday correct?',
+                },
+              },
+            ],
+          }
+        : {
+            hasMore: true,
+            events: [
+              { seq: 8, event: { t: 'text', delta: 'The roadmap confirms Tuesday.' } },
+              { seq: 9, event: { t: 'result' } },
+            ],
+          },
+    ),
+    getActivity: jest.fn().mockResolvedValue({
+      busy: true,
+      queued: [
+        {
+          id: 'waiting-1',
+          text: 'During live meeting meeting-answer, please respond to this request:\n\nWhat changed?',
+        },
+      ],
+    }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('ANSWER READY')).toBeOnTheScreen();
+  expect(screen.getByText('The roadmap confirms Tuesday.')).toBeOnTheScreen();
+  expect(screen.getByText('What changed?')).toBeOnTheScreen();
+  expect(router.push).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Open answer in chat'));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 'session-1' },
+  });
+});
+
+it('shows a spoken request as working without leaving the meeting', async () => {
+  let notify!: (event: {
+    meetingId: string;
+    sessionId: string;
+    status: 'sent';
+    request: string;
+    kind: 'research';
+  }) => void;
+  jest.mocked(subscribeVoiceMeetingRequest).mockImplementation((listener) => {
+    notify = listener;
+    return jest.fn();
+  });
+  const meeting: MeetingRecord = {
+    id: 'meeting-voice-answer',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'Verity, check the deadline.',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  await screen.findByText('Verity, check the deadline.');
+  act(() =>
+    notify({
+      meetingId: meeting.id,
+      sessionId: meeting.sessionId,
+      status: 'sent',
+      request: 'check the deadline',
+      kind: 'research',
+    }),
+  );
+  expect(screen.getByText('check the deadline')).toBeOnTheScreen();
+  expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
+  expect(router.push).not.toHaveBeenCalled();
 });
 
 it('shows timed transcript words with their speaker when attribution is unambiguous', async () => {
@@ -538,7 +641,7 @@ it('starts a direct meeting request and stays put when the server rejects it', a
   render(<MeetingScreen />);
   const input = await screen.findByLabelText('Ask Verity about this meeting');
   fireEvent.changeText(input, 'What do you think?');
-  fireEvent.press(screen.getByLabelText('Open question in session'));
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
   await waitFor(() =>
     expect(screen.getByText(/Could not start meeting request/)).toBeOnTheScreen(),
   );

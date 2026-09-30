@@ -85,7 +85,7 @@ it('pauses, resumes, and opens the full meeting after stopping', async () => {
   });
 });
 
-it('opens the same session when a spoken request is accepted', () => {
+it('keeps the spoken request in the meeting instead of opening the session', () => {
   jest.mocked(usePathname).mockReturnValue('/');
   jest.mocked(subscribeMeeting).mockImplementation((listener) => {
     listener({
@@ -109,11 +109,8 @@ it('opens the same session when a spoken request is accepted', () => {
   render(<ActiveMeetingOverlay />);
   act(() => notify({ meetingId: 'meeting-1', sessionId: 'session-1', status: 'sent' }));
   act(() => notify({ meetingId: 'meeting-1', sessionId: 'session-1', status: 'sent' }));
-  expect(router.push).toHaveBeenCalledWith({
-    pathname: '/session/[id]',
-    params: { id: 'session-1' },
-  });
-  expect(router.push).toHaveBeenCalledTimes(1);
+  expect(router.push).not.toHaveBeenCalled();
+  expect(screen.getByText('Answer will appear in the meeting')).toBeOnTheScreen();
 });
 
 it.each([

@@ -118,7 +118,11 @@ it('sends a direct spoken research request once in the recording session', async
     return { remove: jest.fn() };
   });
   const events: string[] = [];
-  const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event.status));
+  const sentRequests: string[] = [];
+  const unsubscribe = subscribeVoiceMeetingRequest((event) => {
+    events.push(event.status);
+    if (event.status === 'sent' && event.request) sentRequests.push(event.request);
+  });
   try {
     await startMeeting('session-1');
     onEvent({ kind: 'status', state: 'listening' });
@@ -132,6 +136,7 @@ it('sends a direct spoken research request once in the recording session', async
     );
     onEvent({ kind: 'snapshot', text: 'Verity, recherchiere den Liefertermin.', final: true });
     await waitFor(() => expect(events).toContain('sent'));
+    expect(sentRequests).toEqual(['recherchiere den Liefertermin']);
     expect(sendTurn).toHaveBeenCalledTimes(1);
   } finally {
     unsubscribe();
@@ -649,7 +654,7 @@ it('does not leave "sending" on screen when capture pauses between two requests'
     await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
     await pauseMeeting();
     releaseFirst();
-    await waitFor(() => expect(events).toEqual(['sending', 'failed']));
+    await waitFor(() => expect(events).toEqual(['sending', 'sent', 'failed']));
     expect(sendTurn).toHaveBeenCalledTimes(1);
   } finally {
     unsubscribe();
