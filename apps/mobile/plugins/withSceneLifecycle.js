@@ -114,4 +114,3 @@ module.exports = function withSceneLifecycle(config) {
     return mod;
   });
 };
-module.exports.migrateAppDelegate = migrateAppDelegate;
