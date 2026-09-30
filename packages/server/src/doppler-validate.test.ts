@@ -659,9 +659,9 @@ describe('listDopplerProjects (production check, faked transport)', () => {
     let calls = 0;
     const fetch: HttpFetch = () => {
       calls += 1;
-      // A full page that alone consumes the whole budget: each page staying
-      // under a per-request timeout must not reset the walk's deadline.
-      now += 101;
+      // Each full page stays inside the budget on its own; only the walk as a
+      // whole overruns it. A deadline reset per page would keep paging.
+      now += 60;
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -675,7 +675,7 @@ describe('listDopplerProjects (production check, faked transport)', () => {
     } finally {
       clock.mockRestore();
     }
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
   });
 
   it('keeps paging when a full page contains a malformed entry', async () => {
