@@ -93,9 +93,27 @@ async function probeCoreThroughEitherProxy(
   }
 }
 
+// Only "no such host", "cannot connect" and a refused certificate condemn the
+// address; a timeout, a lost connection or "offline" is what a VPN still
+// coming up looks like, and a read in flight then keeps its grace period.
+function definiteRefusal(reason: string | null): DirectVerdict {
+  if (reason === null) return 'unknown';
+  if (reason.startsWith('Pinned TLS verification failed')) return 'dead';
+  return /^Pinned TLS transport failed \[NSURLErrorDomain:-100[34]:/u.test(reason) ||
+    /:NSPOSIXErrorDomain:61(?::|\])/u.test(reason)
+    ? 'dead'
+    : 'unknown';
+}
+
+// Whether the probe's own stream, or failing that the attachment, ever
+// carried a reply from Core. The counters belong to this attachment alone.
 async function tunnelReceivedBytes(): Promise<boolean> {
   const summary = await tunnelDiagnosticSummary();
-  const received = summary?.match(/, receivedBytes=(\d+)/u)?.[1];
+  if (summary === null) return false;
+  const streams = summary.match(/, streams=(.*)$/u)?.[1];
+  if (streams !== undefined)
+    return [...streams.matchAll(/\.dn(\d+)\./gu)].some((match) => Number(match[1]) > 0);
+  const received = summary.match(/, receivedBytes=(\d+)/u)?.[1];
   return received !== undefined && Number(received) > 0;
 }
 
@@ -502,14 +520,7 @@ async function probeDirect(
     reason,
     elapsedMs: Date.now() - startedAt,
   });
-  return {
-    reachable,
-    verdict: reachable
-      ? 'reachable'
-      : reason !== null && !reason.startsWith('Remote Core probe timed out')
-        ? 'dead'
-        : 'unknown',
-  };
+  return { reachable, verdict: reachable ? 'reachable' : definiteRefusal(reason) };
 }
 
 async function open(coreUrl: string, key: string): Promise<number> {

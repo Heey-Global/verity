@@ -599,7 +599,7 @@ describe('remote diagnostics', () => {
       return { status: 200 };
     });
     mockDiagnosticSummary.mockResolvedValue(
-      'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none',
+      'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
     );
     transport.reportDirectRouteFailure(coreUrl);
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
@@ -623,10 +623,10 @@ describe('remote diagnostics', () => {
       if (args[6] === 0) throw new Error('NSURLErrorDomain:-1003');
       throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
     });
-    // A Core that is down looks the same to the client; only the tunnel
-    // counters tell that no reply ever arrived, so a second probe is pointless.
+    // A Core that is down looks the same to the client; only the probe's own
+    // stream tells that no reply ever arrived, so a second probe is pointless.
     const summary =
-      'local=1, opened=1, received=0, last=stream_opened, sentBytes=1806, receivedBytes=0, deliveredBytes=0, localResets=0, remoteResets=0, lastReset=none';
+      'local=1, opened=1, received=0, last=stream_opened, sentBytes=1806, receivedBytes=6801, deliveredBytes=6801, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn0.tnone.d900.open.psocks.o22.inone.hnone';
     mockDiagnosticSummary.mockResolvedValue(summary);
     expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
       ready: false,
@@ -876,10 +876,15 @@ describe('direct routing across background and diagnostics', () => {
   });
 
   it.each([
-    // A probe that timed out must not condemn a read a waking VPN will still carry.
+    // Only a definite refusal condemns a read a waking VPN might still carry.
     ['Remote Core probe timed out.', 'unknown'],
-    ['NSURLErrorDomain:-1003', 'dead'],
-  ])('tells a definite refusal from a probe timeout: %s', async (failure, verdict) => {
+    ['Pinned TLS transport failed [NSURLErrorDomain:-1001:NO_AUTH_CHALLENGE]', 'unknown'],
+    ['Pinned TLS transport failed [NSURLErrorDomain:-1009:NO_AUTH_CHALLENGE]', 'unknown'],
+    ['Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]', 'dead'],
+    ['Pinned TLS transport failed [NSURLErrorDomain:-1004:NO_AUTH_CHALLENGE]', 'dead'],
+    ['Pinned TLS verification failed [PIN_MISMATCH]', 'dead'],
+    ['NSURLErrorDomain:-1003', 'unknown'],
+  ])('tells a definite refusal from a transient failure: %s', async (failure, verdict) => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
     let rejectProbe!: (reason: Error) => void;
