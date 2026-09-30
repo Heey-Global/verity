@@ -316,7 +316,7 @@ export function SessionSettingsDialog({
   );
   const settingsView = (
     <>
-      {header(result ? 'Session moved' : 'Session settings', meta ?? displayName)}
+      {header(result ? 'Session moved' : 'Session settings', meta || displayName)}
       <ScrollView
         style={styles.body}
         contentContainerStyle={styles.content}
@@ -719,7 +719,12 @@ export function SessionSettingsDialog({
   const linking = view === 'link' && !result;
 
   return (
-    <Modal transparent animationType="fade" onRequestClose={close}>
+    <Modal
+      transparent
+      animationType="fade"
+      // Android back leaves the link view first, like its on-screen back button.
+      onRequestClose={linking ? () => !linkBusy && showView('settings') : close}
+    >
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

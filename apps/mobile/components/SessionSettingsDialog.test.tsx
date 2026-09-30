@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { ScrollView } from 'react-native';
+import { Modal, ScrollView } from 'react-native';
 import { SessionSettingsDialog } from './SessionSettingsDialog';
 
 jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => `operation-${Math.random()}`) }));
@@ -102,6 +102,14 @@ it('finds a session by search and keeps the link view open to link more', async 
   expect(await screen.findByRole('button', { name: 'Backend work, linked' })).toBeDisabled();
   fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
   expect(screen.getByRole('button', { name: 'Disconnect Backend work' })).toBeTruthy();
+});
+
+it('returns from the link view on Android back instead of closing the dialog', () => {
+  const { props } = setup(jest.fn());
+  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
+  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
+  expect(props.onClose).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Session name')).toBeTruthy();
 });
 
 it('reports why the server refused a link where it can be seen', async () => {
