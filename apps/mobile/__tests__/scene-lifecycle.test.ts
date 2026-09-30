@@ -27,10 +27,7 @@ const plugin = require('../plugins/withSceneLifecycle.js') as {
   (config: unknown): PluginResult;
 };
 // SDK 57 bare-minimum AppDelegate, captured from expo/expo's sdk-57 template.
-const template = readFileSync(
-  resolve(__dirname, '../../../scripts/fixtures/mobile/Expo57AppDelegate.swift'),
-  'utf8',
-);
+const template = readFileSync(resolve(__dirname, './fixtures/Expo57AppDelegate.swift'), 'utf8');
 
 async function generate(contents = template) {
   const config = plugin({ ...mobileConfig });

@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { globSync, readFileSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const config = JSON.parse(readFileSync('release-please-config.backend.json', 'utf8')) as {
@@ -11,6 +12,28 @@ const included = (files: string[]) =>
   files.some((file) => !root?.['exclude-paths']?.some((path) => file.startsWith(`${path}/`)));
 
 describe('automatic backend release membership', () => {
+  it('keeps actual mobile test fixtures out of the backend release', () => {
+    // A mobile-only fixture outside the app makes its entire commit a server release.
+    const fixtures: string[] = [];
+    for (const test of globSync('apps/mobile/**/*.test.{ts,tsx}')) {
+      const source = readFileSync(test, 'utf8');
+      for (const match of source.matchAll(
+        /resolve\(__dirname,\s*['"]([^'"]*fixtures[^'"]*)['"]/g,
+      )) {
+        const fixture = relative(process.cwd(), resolve(dirname(test), match[1]));
+        expect(readFileSync(fixture).length).toBeGreaterThan(0);
+        fixtures.push(fixture);
+      }
+    }
+    expect(fixtures.length).toBeGreaterThan(0);
+    for (const fixture of fixtures) expect(included([fixture]), fixture).toBe(false);
+  });
+
+  it('excludes the historical mobile fixture path when rebuilding release history', () => {
+    // Moving a file does not remove its old pathname from an already merged commit.
+    expect(included(['scripts/fixtures/mobile/Expo57AppDelegate.swift'])).toBe(false);
+  });
+
   it('uses the root package and directory-prefix exclusions', () => {
     expect(Object.keys(config.packages)).toEqual(['.']);
     expect(root?.['exclude-paths']?.length).toBeGreaterThan(0);
