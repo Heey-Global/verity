@@ -1,0 +1,151 @@
+import { posix } from 'node:path';
+
+/** A TCP listener inside a project sandbox, joined to the process that owns it. */
+export interface ListeningProcess {
+  port: number;
+  /** `any` is reachable from the preview connector over the project network;
+   *  `loopback` answers only inside the sandbox itself. */
+  bind: 'any' | 'loopback' | 'other';
+  pid: number;
+  cwd: string;
+  command: string;
+}
+
+/** A listener attributed to one session worktree, as the preview sheet shows it. */
+export interface SessionDevServer {
+  port: number;
+  reachable: boolean;
+  pid: number;
+  name: string;
+  command: string;
+  /** Working directory relative to the session worktree; `.` for its root. */
+  workdir: string;
+}
+
+const MAX_COMMAND_CHARS = 300;
+
+/**
+ * Collects listening sockets, socket ownership and process metadata in one exec.
+ * Parsing stays in Node so the script needs nothing beyond POSIX sh, `ls`, `tr`
+ * and `cut`, which every sandbox image carries. Processes of other users (the
+ * broker, root helpers) are unreadable to the exec user and drop out by design.
+ */
+export const LISTENING_PORTS_SCRIPT = [
+  "echo '#tcp'",
+  'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null',
+  "echo '#fd'",
+  'ls -l /proc/[0-9]*/fd 2>/dev/null',
+  "echo '#proc'",
+  'for d in /proc/[0-9]*; do',
+  'c=$(readlink "$d/cwd" 2>/dev/null) || continue',
+  `printf 'P\\t%s\\t%s\\t' "\${d#/proc/}" "$c"`,
+  `tr '\\0\\n\\t' '   ' < "$d/cmdline" 2>/dev/null | cut -c1-${String(MAX_COMMAND_CHARS)}`,
+  'done',
+  'true',
+].join('\n');
+
+function bindOf(hexAddress: string): ListeningProcess['bind'] {
+  const address = hexAddress.toUpperCase();
+  if (/^0+$/u.test(address)) return 'any';
+  // IPv4 is little-endian per word: 127.x.y.z ends in 7F.
+  if (address.length === 8) return address.endsWith('7F') ? 'loopback' : 'other';
+  if (address === '00000000000000000000000001000000') return 'loopback';
+  if (address.startsWith('0000000000000000FFFF0000')) {
+    return address.endsWith('7F') ? 'loopback' : 'other';
+  }
+  return 'other';
+}
+
+/** Parses {@link LISTENING_PORTS_SCRIPT} output. A port bound twice (IPv4 and
+ *  IPv6, or several workers) is reported once, preferring its widest bind. */
+export function parseListeningProcesses(output: string): ListeningProcess[] {
+  const listeners = new Map<string, { port: number; bind: ListeningProcess['bind'] }>();
+  const owners = new Map<string, number>();
+  const processes = new Map<number, { cwd: string; command: string }>();
+  let section = '';
+  let fdPid: number | null = null;
+  for (const line of output.split('\n')) {
+    if (line === '#tcp' || line === '#fd' || line === '#proc') {
+      section = line;
+      continue;
+    }
+    if (section === '#tcp') {
+      const fields = line.trim().split(/\s+/u);
+      // sl local rem st tx:rx tr:when retrnsmt uid timeout inode
+      if (fields.length < 10 || fields[3] !== '0A') continue;
+      const [address, portHex] = (fields[1] ?? '').split(':');
+      const inode = fields[9];
+      if (!address || !portHex || !inode || inode === '0') continue;
+      listeners.set(inode, { port: Number.parseInt(portHex, 16), bind: bindOf(address) });
+    } else if (section === '#fd') {
+      const header = /^\/proc\/(\d+)\/fd:$/u.exec(line);
+      if (header) {
+        fdPid = Number(header[1]);
+        continue;
+      }
+      const socket = /-> socket:\[(\d+)\]$/u.exec(line);
+      if (socket && fdPid !== null && !owners.has(socket[1]!)) owners.set(socket[1]!, fdPid);
+    } else if (section === '#proc' && line.startsWith('P\t')) {
+      const [, pid, cwd, ...command] = line.split('\t');
+      if (!pid || !cwd) continue;
+      processes.set(Number(pid), { cwd, command: command.join(' ').trim() });
+    }
+  }
+  const rank = { any: 2, other: 1, loopback: 0 } as const;
+  const byPort = new Map<number, ListeningProcess>();
+  for (const [inode, listener] of listeners) {
+    const pid = owners.get(inode);
+    const process = pid === undefined ? undefined : processes.get(pid);
+    if (pid === undefined || !process) continue;
+    const current = byPort.get(listener.port);
+    if (current && rank[current.bind] >= rank[listener.bind]) continue;
+    byPort.set(listener.port, { ...listener, pid, ...process });
+  }
+  return [...byPort.values()].sort((a, b) => a.port - b.port);
+}
+
+const KNOWN_SERVERS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bstorybook\b/u, 'Storybook'],
+  [/\bnext\b/u, 'Next.js'],
+  [/\bnuxt\b/u, 'Nuxt'],
+  [/\bastro\b/u, 'Astro'],
+  [/\bremix\b/u, 'Remix'],
+  [/\bsvelte-kit\b/u, 'SvelteKit'],
+  [/\bvite\b/u, 'Vite'],
+  [/\bwebpack\b/u, 'webpack'],
+  [/\bexpo\b/u, 'Expo'],
+  [/\bng serve\b|@angular\/cli/u, 'Angular'],
+  [/\bhttp\.server\b/u, 'Python HTTP'],
+  [/\b(?:uvicorn|gunicorn|flask|django|manage\.py)\b/u, 'Python'],
+  [/\b(?:rails|puma)\b/u, 'Rails'],
+];
+
+/** A short human label for a listener's command line: the framework when it is
+ *  recognisable, otherwise the executable's basename. */
+export function devServerName(command: string): string {
+  for (const [pattern, name] of KNOWN_SERVERS) if (pattern.test(command)) return name;
+  const executable = command.split(' ', 1)[0] ?? '';
+  return posix.basename(executable) || 'Server';
+}
+
+/** Keeps the listeners whose process runs inside `worktree` (a sandbox path). */
+export function sessionDevServers(
+  processes: readonly ListeningProcess[],
+  worktree: string,
+): SessionDevServer[] {
+  const root = posix.normalize(worktree).replace(/\/+$/u, '');
+  return processes.flatMap((process) => {
+    const cwd = posix.normalize(process.cwd);
+    if (cwd !== root && !cwd.startsWith(`${root}/`)) return [];
+    return [
+      {
+        port: process.port,
+        reachable: process.bind !== 'loopback',
+        pid: process.pid,
+        name: devServerName(process.command),
+        command: process.command,
+        workdir: posix.relative(root, cwd) || '.',
+      },
+    ];
+  });
+}

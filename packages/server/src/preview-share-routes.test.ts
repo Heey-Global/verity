@@ -221,6 +221,39 @@ describe('public preview share route refusals', () => {
     });
   });
 
+  it('lists session dev servers and shares one of their ports', async () => {
+    const devServers = [
+      { port: 5173, reachable: true, pid: 40, name: 'Vite', command: 'vite', workdir: '.' },
+    ];
+    const listSessionDevServers = vi.fn(async () => devServers);
+    const create = vi.fn(async () => ({ id: 'port-share', sessionId: 's1' }) as PublicPreviewShare);
+    const app = appFor({ manager: { listSessionDevServers, create } });
+
+    const listed = await app.inject({ method: 'GET', url: '/sessions/s1/dev-servers' });
+    expect(listed.json()).toEqual({ devServers });
+    expect(listSessionDevServers).toHaveBeenCalledWith('s1');
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/public-port-shares',
+      payload: { targetPort: 5173, pin: '123456', ttlSeconds: 3600 },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(create).toHaveBeenCalledWith({
+      sessionId: 's1',
+      targetPort: 5173,
+      pin: '123456',
+      ttlSeconds: 3600,
+    });
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/public-port-shares',
+      payload: { targetPort: 70_000, pin: '123456', ttlSeconds: 3600 },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it('shows an Uplink protocol refusal on static share creation', async () => {
     const response = await appFor({
       manager: {

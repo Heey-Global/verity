@@ -495,6 +495,8 @@ const publicPreviewShareSchema = z.object({
   projectId: z.string(),
   devServerId: z.string().nullable(),
   targetKind: z.enum(['dev-server', 'static-folder']),
+  // Absent from Cores that predate session port previews.
+  targetPort: z.number().int().nullable().optional(),
   staticPath: z.string().nullable(),
   sessionId: z.string().nullable().optional(),
   state: z.enum(['creating', 'active', 'revoking', 'revoked', 'expired', 'failed']),
@@ -510,6 +512,17 @@ export interface PublicPreviewShareCreateRequest {
   pin: string;
   ttlSeconds: number;
 }
+
+const sessionDevServerSchema = z.object({
+  port: z.number().int(),
+  /** False when the server listens on localhost only, which a public link cannot reach. */
+  reachable: z.boolean(),
+  pid: z.number().int(),
+  name: z.string(),
+  command: z.string(),
+  workdir: z.string(),
+});
+export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
 
 const publicPreviewShareResponseSchema = z.object({ share: publicPreviewShareSchema });
 const publicPreviewSharesResponseSchema = z.object({
@@ -3318,6 +3331,30 @@ export class VerityClient {
   ): Promise<PublicPreviewShare> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/public-static-shares`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return publicPreviewShareResponseSchema.parse(await res.json()).share;
+  }
+
+  /** Servers listening inside the session worktree right now. */
+  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[]> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/dev-servers`, {
+      method: 'GET',
+    });
+    return z.object({ devServers: z.array(sessionDevServerSchema) }).parse(await res.json())
+      .devServers;
+  }
+
+  async createSessionPortPreviewShare(
+    sessionId: string,
+    body: PublicPreviewShareCreateRequest & { targetPort: number },
+  ): Promise<PublicPreviewShare> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/public-port-shares`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

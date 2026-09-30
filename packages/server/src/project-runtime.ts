@@ -2,6 +2,11 @@ import { execFile } from 'node:child_process';
 import { posix } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectRecord } from '@verity/store';
+import {
+  LISTENING_PORTS_SCRIPT,
+  parseListeningProcesses,
+  type ListeningProcess,
+} from './listening-ports.js';
 import { dockerHostFor } from './project-backend.js';
 import {
   dockerEnvPassthrough,
@@ -77,6 +82,8 @@ export interface ProjectRuntime {
     project: ProjectRecord,
     settings: ProjectRuntimeSettings,
   ): Promise<ProjectRuntimeHealth>;
+  /** Every TCP listener in the sandbox the exec user can attribute to a process. */
+  listListeningProcesses?(project: ProjectRecord): Promise<ListeningProcess[]>;
 }
 
 interface RuntimeRunResult {
@@ -265,6 +272,15 @@ export class DockerProjectRuntime implements ProjectRuntime {
       { env: { ...this.dockerEnv(), ...passthrough.env } },
     );
     return this.devServerStatus(project, settings);
+  }
+
+  async listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]> {
+    const result = await this.runner(
+      this.opts.dockerCommand ?? 'docker',
+      ['exec', project.containerName, 'sh', '-c', LISTENING_PORTS_SCRIPT],
+      { env: this.dockerEnv(), timeoutMs: 10_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    return parseListeningProcesses(result?.stdout ?? '');
   }
 
   async devServerStatus(

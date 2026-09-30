@@ -711,15 +711,23 @@ export function SessionChat({
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
   const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
+  const [hasRunningDevServer, setHasRunningDevServer] = useState(false);
   const refreshStaticPreview = useCallback(() => {
     if (!projectId) return;
+    if (typeof client.listSessionDevServers === 'function') {
+      void client
+        .listSessionDevServers(sessionId)
+        .then((servers) => setHasRunningDevServer(servers.length > 0))
+        .catch(() => undefined);
+    }
     void client
       .listPublicPreviewShares(projectId)
       .then((shares) => {
         setHasActiveStaticPreview(
           shares.some(
             (share) =>
-              share.targetKind === 'static-folder' &&
+              (share.targetKind === 'static-folder' ||
+                (share.targetKind === 'dev-server' && share.devServerId === null)) &&
               share.sessionId === sessionId &&
               share.state === 'active' &&
               new Date(share.expiresAt).getTime() > Date.now(),
@@ -730,7 +738,8 @@ export function SessionChat({
   }, [client, projectId, sessionId]);
   useEffect(() => {
     refreshStaticPreview();
-    const timer = setInterval(refreshStaticPreview, 60_000);
+    // Short enough that a server the agent just started lights the dot up soon.
+    const timer = setInterval(refreshStaticPreview, 20_000);
     return () => clearInterval(timer);
   }, [refreshStaticPreview]);
 
@@ -3358,14 +3367,21 @@ export function SessionChat({
               }}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel="Share static preview"
+              accessibilityLabel={
+                hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
+              }
               style={styles.headerBookmarkBtn}
             >
-              <Icon
-                name="monitor"
-                size={15}
-                color={hasActiveStaticPreview ? theme.colors.primary : theme.colors.textMuted}
-              />
+              <View>
+                <Icon
+                  name="monitor"
+                  size={15}
+                  color={hasActiveStaticPreview ? theme.colors.primary : theme.colors.textMuted}
+                />
+                {hasRunningDevServer ? (
+                  <View testID="preview-server-dot" style={styles.headerPreviewServerDot} />
+                ) : null}
+              </View>
               <Text
                 style={[
                   styles.headerBookmarkCount,
@@ -8841,6 +8857,17 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
   },
   headerPreviewActiveText: { color: theme.colors.primary },
+  headerPreviewServerDot: {
+    position: 'absolute',
+    top: -2,
+    right: -3,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: theme.colors.tone.done,
+    borderWidth: 1,
+    borderColor: theme.colors.surface,
+  },
   headerLoopButton: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 5,

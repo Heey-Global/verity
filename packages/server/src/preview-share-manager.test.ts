@@ -1721,3 +1721,169 @@ it('does not revoke public links just to validate a session move', async () => {
     release();
   }
 });
+
+describe('session port previews', () => {
+  const session = {
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/data/repo/sessions/s1',
+    model: 'test',
+    name: null,
+    kind: 'normal' as const,
+    lastSeenEventCount: null,
+  };
+  const listener = (port: number, bind: 'any' | 'loopback', cwd = '/work/sessions/s1/web') => ({
+    port,
+    bind,
+    pid: port,
+    cwd,
+    command: 'node /work/sessions/s1/node_modules/.bin/vite',
+  });
+
+  function portFixture(listeners: ReturnType<typeof listener>[]) {
+    const setup = fixture();
+    setup.store.getProject.mockResolvedValue({ ...project, cloneDir: 'repo' } as typeof project);
+    setup.store.getSession.mockResolvedValue(session);
+    const listListeningProcesses = vi.fn(async () => listeners);
+    (
+      setup.manager as unknown as {
+        options: { listListeningProcesses: typeof listListeningProcesses };
+      }
+    ).options.listListeningProcesses = listListeningProcesses;
+    return { ...setup, listListeningProcesses };
+  }
+
+  it('lists only what runs inside the session worktree, mapped into the sandbox', async () => {
+    const { manager } = portFixture([
+      listener(5173, 'any'),
+      listener(6006, 'loopback', '/work/sessions/s1'),
+      listener(4000, 'any', '/work/sessions/s2'),
+    ]);
+
+    await expect(manager.listSessionDevServers('s1')).resolves.toEqual([
+      expect.objectContaining({ port: 5173, reachable: true, name: 'Vite', workdir: 'web' }),
+      expect.objectContaining({ port: 6006, reachable: false, workdir: '.' }),
+    ]);
+  });
+
+  it('reports nothing for a sandbox that is not running instead of failing', async () => {
+    const { manager, docker, inspect, listListeningProcesses } = portFixture([
+      listener(5173, 'any'),
+    ]);
+    docker.inspectContainer.mockResolvedValueOnce({ ...inspect, running: false });
+
+    await expect(manager.listSessionDevServers('s1')).resolves.toEqual([]);
+    expect(listListeningProcesses).not.toHaveBeenCalled();
+  });
+
+  it('points the connector at the session port over the project network', async () => {
+    const { manager, store, docker } = portFixture([listener(5173, 'any')]);
+
+    await manager.create({ sessionId: 's1', targetPort: 5173, pin: '123456', ttlSeconds: 3600 });
+
+    expect(store.createPublicPreviewShare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 's1',
+        devServerId: null,
+        staticPath: null,
+        targetKind: 'dev-server',
+        targetPort: 5173,
+      }),
+    );
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.arrayContaining([
+          `VERITY_PREVIEW_TARGET_ORIGIN=http://${project.containerName}:5173`,
+        ]),
+      }),
+    );
+  });
+
+  // A loopback-only listener is invisible to the connector: the link would be
+  // minted, billed against the Uplink and then answer nothing but errors.
+  it('refuses a port that listens on loopback only before contacting the Uplink', async () => {
+    const { manager, edge } = portFixture([listener(5173, 'loopback')]);
+
+    await expect(
+      manager.create({ sessionId: 's1', targetPort: 5173, pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toBeInstanceOf(PreviewShareConflictError);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('shares a port next to the session folder link but only once per port', async () => {
+    const { manager, store, edge, record } = portFixture([
+      listener(5173, 'any'),
+      listener(6006, 'any'),
+    ]);
+    const folder = {
+      ...record,
+      devServerId: null,
+      targetPort: null,
+      targetKind: 'static-folder' as const,
+      sessionId: 's1',
+      staticPath: 'site',
+      state: 'active' as const,
+    };
+    const port = {
+      ...record,
+      devServerId: null,
+      targetPort: 5173,
+      targetKind: 'dev-server' as const,
+      sessionId: 's1',
+      staticPath: null,
+      state: 'active' as const,
+    };
+    store.listPublicPreviewShares.mockResolvedValue([folder, port]);
+
+    await expect(
+      manager.create({ sessionId: 's1', targetPort: 5173, pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow('target already has an active public share');
+    expect(edge.create).not.toHaveBeenCalled();
+
+    await manager.create({ sessionId: 's1', targetPort: 6006, pin: '123456', ttlSeconds: 3600 });
+    expect(edge.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a port without a session and a port combined with a folder', async () => {
+    const { manager } = portFixture([listener(5173, 'any')]);
+
+    await expect(
+      manager.create({ projectId: 'p1', targetPort: 5173, pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toBeInstanceOf(PreviewShareInputError);
+    await expect(
+      manager.create({
+        sessionId: 's1',
+        targetPort: 5173,
+        staticPath: 'site',
+        pin: '123456',
+        ttlSeconds: 3600,
+      }),
+    ).rejects.toBeInstanceOf(PreviewShareInputError);
+  });
+
+  it('revokes a port link once the session stops listening on it', async () => {
+    const { manager, store, docker, edge, inspect, record, listListeningProcesses } = portFixture([
+      listener(5173, 'any'),
+    ]);
+    store.listPublicPreviewShares.mockResolvedValue([
+      {
+        ...record,
+        devServerId: null,
+        targetPort: 5173,
+        targetKind: 'dev-server' as const,
+        sessionId: 's1',
+        staticPath: null,
+        state: 'active' as const,
+        connectorContainerId: 'connector-id',
+      },
+    ]);
+    docker.inspectContainer.mockResolvedValue(inspect);
+
+    await manager.reconcile();
+    expect(edge.remove).not.toHaveBeenCalled();
+
+    listListeningProcesses.mockResolvedValue([]);
+    await manager.reconcile();
+    expect(edge.remove).toHaveBeenCalledWith(record.id);
+  });
+});

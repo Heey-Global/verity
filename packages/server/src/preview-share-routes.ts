@@ -22,6 +22,9 @@ const shareParams = z.object({ shareId: z.string().min(1) });
 const staticCreateBody = createBody.extend({
   staticPath: z.string().trim().min(1).max(1024),
 });
+const portCreateBody = createBody.extend({
+  targetPort: z.number().int().min(1).max(65_535),
+});
 
 export function registerPreviewShareRoutes(
   app: FastifyInstance,
@@ -63,6 +66,59 @@ export function registerPreviewShareRoutes(
     try {
       const { sessionId } = sessionParams.parse(request.params);
       const body = staticCreateBody.parse(request.body);
+      const share = await deps.manager.create({ sessionId, ...body });
+      reply.code(201);
+      return { share };
+    } catch (error) {
+      if (error instanceof z.ZodError || error instanceof PreviewShareInputError) {
+        reply.code(400);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareNotFoundError) {
+        reply.code(404);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareConflictError) {
+        reply.code(409);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareUpstreamError) {
+        reply.code(502);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  });
+
+  app.get('/sessions/:sessionId/dev-servers', async (request, reply) => {
+    if (!deps.manager) {
+      reply.code(503);
+      return { error: 'public previews are not configured' };
+    }
+    try {
+      const { sessionId } = sessionParams.parse(request.params);
+      return { devServers: await deps.manager.listSessionDevServers(sessionId) };
+    } catch (error) {
+      if (error instanceof PreviewShareNotFoundError) {
+        reply.code(404);
+        return { error: error.message };
+      }
+      if (error instanceof PreviewShareConflictError) {
+        reply.code(409);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  });
+
+  app.post('/sessions/:sessionId/public-port-shares', async (request, reply) => {
+    if (!deps.manager) {
+      reply.code(503);
+      return { error: 'public previews are not configured' };
+    }
+    try {
+      const { sessionId } = sessionParams.parse(request.params);
+      const body = portCreateBody.parse(request.body);
       const share = await deps.manager.create({ sessionId, ...body });
       reply.code(201);
       return { share };

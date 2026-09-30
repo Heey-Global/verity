@@ -3060,6 +3060,49 @@ describe('VerityClient Dev Servers', () => {
   });
 });
 
+describe('VerityClient session dev server previews', () => {
+  it('lists what a session serves and shares one of its ports', async () => {
+    const devServers = [
+      { port: 5173, reachable: true, pid: 40, name: 'Vite', command: 'vite', workdir: 'web' },
+    ];
+    const share = {
+      id: 'port-one',
+      projectId: 'p1',
+      devServerId: null,
+      targetKind: 'dev-server',
+      targetPort: 5173,
+      staticPath: null,
+      sessionId: 's 1',
+      state: 'active',
+      publicOrigin: 'https://port.preview.example',
+      pin: '123456',
+      expiresAt: '2026-01-01T02:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      failure: null,
+    };
+    const { fetch, calls } = fakeFetchSequence(json({ devServers }), json({ share }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.listSessionDevServers('s 1')).resolves.toEqual(devServers);
+    await expect(
+      client.createSessionPortPreviewShare('s 1', {
+        targetPort: 5173,
+        pin: '123456',
+        ttlSeconds: 3600,
+      }),
+    ).resolves.toEqual(share);
+    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
+      ['GET', 'http://host/sessions/s%201/dev-servers'],
+      ['POST', 'http://host/sessions/s%201/public-port-shares'],
+    ]);
+    expect(JSON.parse((calls[1]?.init?.body as string) ?? '')).toEqual({
+      targetPort: 5173,
+      pin: '123456',
+      ttlSeconds: 3600,
+    });
+  });
+});
+
 describe('VerityClient Doppler binding picker (#320)', () => {
   it('GETs /doppler/projects and parses the project list', async () => {
     const { fetch, calls } = fakeFetch(
