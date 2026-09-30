@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, realpathSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -68,6 +75,38 @@ describe('listening port discovery', () => {
       );
     },
   );
+
+  // Kernel threads and exiting processes have an empty cmdline, on which `cut`
+  // prints nothing: without the closing newline the next process would be glued
+  // onto that line and its listener would vanish from the sheet.
+  it('keeps the process after one with an empty command line', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'verity-proc-')));
+    mkdirSync(join(root, 'net'));
+    writeFileSync(
+      join(root, 'net', 'tcp'),
+      [
+        '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+        '   0: 00000000:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 21 1 0',
+        '',
+      ].join('\n'),
+    );
+    for (const [pid, cmdline] of [
+      ['7', ''],
+      ['8', 'node\0vite\0'],
+    ] as const) {
+      mkdirSync(join(root, pid, 'fd'), { recursive: true });
+      symlinkSync(root, join(root, pid, 'cwd'));
+      writeFileSync(join(root, pid, 'cmdline'), cmdline);
+    }
+    symlinkSync('socket:[21]', join(root, '8', 'fd', '3'));
+
+    const script = LISTENING_PORTS_SCRIPT.replaceAll('/proc', root);
+    const { stdout } = await execFileAsync('sh', ['-c', script]);
+
+    expect(parseListeningProcesses(stdout.replaceAll(root, '/proc'))).toEqual([
+      { port: 0x1435, bind: 'any', pid: 8, cwd: '/proc', command: 'node vite' },
+    ]);
+  });
 
   it('reports a port bound on IPv4 loopback and IPv6 any once, as reachable', () => {
     const output = [

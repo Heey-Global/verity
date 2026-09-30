@@ -243,6 +243,9 @@ export class PreviewShareManager {
     if (project.state !== 'active') return [];
     const sandbox = await this.options.docker.inspectContainer(project.containerName);
     if (!sandbox.running) return [];
+    // Without discovery wired there is simply nothing to show; a 409 here would
+    // park the sheet's default tab on an error it can never leave.
+    if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return [];
     return this.sessionServers(project, session.worktree);
   }
 
@@ -262,7 +265,15 @@ export class PreviewShareManager {
     } catch {
       throw new PreviewShareConflictError('session worktree is outside the project checkout');
     }
-    return sessionDevServers(await this.options.listListeningProcesses(project), sandboxWorktree);
+    let processes: ListeningProcess[];
+    try {
+      processes = await this.options.listListeningProcesses(project);
+    } catch {
+      // A stopped sandbox or a timed-out exec is a state to report, not a 500
+      // carrying raw runner output.
+      throw new PreviewShareConflictError('could not inspect the project sandbox');
+    }
+    return sessionDevServers(processes, sandboxWorktree);
   }
 
   /** The connector dials the sandbox over the project network, so a listener
@@ -841,6 +852,7 @@ export class PreviewShareManager {
   }
 
   async stop(id: string, terminal: 'revoked' | 'expired' = 'revoked'): Promise<boolean> {
+    this.portMissingSince.delete(id);
     const record = await this.options.store.getPublicPreviewShare(id);
     if (!record) return false;
     const claimed = await this.options.store.transitionPublicPreviewShare(
@@ -995,10 +1007,7 @@ export class PreviewShareManager {
         } catch {
           matches = false;
         }
-        if (!matches) {
-          this.portMissingSince.delete(share.id);
-          await this.stop(share.id);
-        }
+        if (!matches) await this.stop(share.id);
       } catch (error) {
         failures.push(error);
       }

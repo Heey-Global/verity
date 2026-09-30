@@ -42,6 +42,9 @@ export const LISTENING_PORTS_SCRIPT = [
   'c=$(readlink "$d/cwd" 2>/dev/null) || continue',
   `printf 'P\\t%s\\t%s\\t' "\${d#/proc/}" "$c"`,
   `tr '\\0\\n\\t' '   ' < "$d/cmdline" 2>/dev/null | cut -c1-${String(MAX_COMMAND_CHARS)}`,
+  // An empty or vanished cmdline makes `cut` print nothing, which would glue the
+  // next process onto this line. The extra newline ends it either way.
+  'echo',
   'done',
   'true',
 ].join('\n');

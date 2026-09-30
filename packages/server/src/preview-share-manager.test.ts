@@ -1810,6 +1810,30 @@ describe('session port previews', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
+  // A raw runner error would reach the phone as a 500 with docker output in it.
+  it('reports a sandbox it cannot inspect as a conflict, not a server error', async () => {
+    const { manager, edge, listListeningProcesses } = portFixture([]);
+    listListeningProcesses.mockRejectedValue(new Error('docker exec: timed out'));
+
+    await expect(
+      manager.create({ sessionId: 's1', targetPort: 5173, pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toBeInstanceOf(PreviewShareConflictError);
+    await expect(manager.listSessionDevServers('s1')).rejects.toBeInstanceOf(
+      PreviewShareConflictError,
+    );
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  // The sheet opens on the Dev server tab; a 409 there would be a dead end.
+  it('lists nothing where discovery is not wired instead of refusing', async () => {
+    const { manager } = portFixture([listener(5173, 'any')]);
+    (
+      manager as unknown as { options: { listListeningProcesses?: unknown } }
+    ).options.listListeningProcesses = undefined;
+
+    await expect(manager.listSessionDevServers('s1')).resolves.toEqual([]);
+  });
+
   it('shares a port next to the session folder link but only once per port', async () => {
     const { manager, store, edge, record } = portFixture([
       listener(5173, 'any'),

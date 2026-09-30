@@ -15,12 +15,7 @@ import * as Clipboard from 'expo-clipboard';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import {
-  VerityApiError,
-  type PublicPreviewShare,
-  type SessionDevServer,
-  type VerityClient,
-} from '@verity/mobile';
+import type { PublicPreviewShare, SessionDevServer, VerityClient } from '@verity/mobile';
 import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import {
@@ -127,8 +122,8 @@ export function StaticPreviewSheet({
   // sat there and the sheet later jumped to the create form unannounced.
   const [stoppingId, setStoppingId] = useState<string>();
   const [stopped, setStopped] = useState<{ tab: PreviewTab; label: string }>();
-  // A Core older than port detection answers 404; the sheet then falls back to
-  // the folder-only flow instead of polling a route that will never exist.
+  // A Core older than port detection has no such route (the client reports
+  // null); the sheet then falls back to the folder-only flow instead of polling.
   const [devServersSupported, setDevServersSupported] = useState(
     typeof client.listSessionDevServers === 'function',
   );
@@ -238,19 +233,19 @@ export function StaticPreviewSheet({
         .listSessionDevServers(sessionId)
         .then((servers) => {
           if (!active) return;
+          if (servers === null) {
+            setDevServersSupported(false);
+            setTab('folder');
+            return;
+          }
           setDevServers(servers);
           setDevServerError(undefined);
         })
         .catch((caught: unknown) => {
           if (!active) return;
-          if (caught instanceof VerityApiError && caught.status === 404) {
-            setDevServersSupported(false);
-            setTab('folder');
-          } else {
-            setDevServerError(
-              caught instanceof Error ? caught.message : 'Could not look for dev servers',
-            );
-          }
+          setDevServerError(
+            caught instanceof Error ? caught.message : 'Could not look for dev servers',
+          );
         })
         .finally(() => {
           if (active) setDevServersLoading(false);

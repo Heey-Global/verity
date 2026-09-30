@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { VerityApiError, type PublicPreviewShare, type VerityClient } from '@verity/mobile';
+import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
@@ -817,9 +817,7 @@ describe('dev server tab', () => {
   it('falls back to the folder flow when Core has no port detection', async () => {
     jest.useFakeTimers();
     try {
-      const listSessionDevServers = jest.fn(async () => {
-        throw new VerityApiError(404, 'Route GET:/sessions/session-one/dev-servers not found');
-      });
+      const listSessionDevServers = jest.fn(async () => null);
       renderSheet({ listSessionDevServers });
 
       expect(await screen.findByText('FOLDER TO SHARE')).toBeTruthy();

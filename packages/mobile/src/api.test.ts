@@ -3101,6 +3101,26 @@ describe('VerityClient session dev server previews', () => {
       ttlSeconds: 3600,
     });
   });
+
+  // The app hides the Dev server tab on null. A missing session answers 404 too,
+  // and treating that as an old Core would switch the feature off for good.
+  it('reports an older Core as unsupported but keeps a missing session an error', async () => {
+    const { fetch } = fakeFetchSequence(
+      json(
+        {
+          message: 'Route GET:/sessions/s1/dev-servers not found',
+          error: 'Not Found',
+          statusCode: 404,
+        },
+        404,
+      ),
+      json({ error: 'project session not found' }, 404),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.listSessionDevServers('s1')).resolves.toBeNull();
+    await expect(client.listSessionDevServers('s1')).rejects.toMatchObject({ status: 404 });
+  });
 });
 
 describe('VerityClient Doppler binding picker (#320)', () => {

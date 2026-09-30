@@ -3341,10 +3341,23 @@ export class VerityClient {
   }
 
   /** Servers listening inside the session worktree right now. */
-  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[]> {
-    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/dev-servers`, {
-      method: 'GET',
-    });
+  /** What the session is serving, or `null` when this Core predates port
+   *  detection. Only the router's own "Route … not found" means that: the route
+   *  also answers 404 for a missing session, which must not hide the feature. */
+  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[] | null> {
+    let res: Response;
+    try {
+      res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/dev-servers`, {
+        method: 'GET',
+      });
+    } catch (err) {
+      // Fastify's default not-found body carries `error: 'Not Found'`; Core's
+      // own 404s name what is missing, so a vanished session stays an error.
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found') {
+        return null;
+      }
+      throw err;
+    }
     return z.object({ devServers: z.array(sessionDevServerSchema) }).parse(await res.json())
       .devServers;
   }
