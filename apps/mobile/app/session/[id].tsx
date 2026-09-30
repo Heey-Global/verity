@@ -135,6 +135,7 @@ import {
 import { WebView } from 'react-native-webview';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
+import { usePermissionHaptic } from '../../components/usePermissionHaptic';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
@@ -647,6 +648,7 @@ export function SessionChat({
     loadOlder,
     loadOlderUntil,
   } = useSession(client, sessionId, baseUrl);
+  usePermissionHaptic(loaded, session.pendingPermission?.toolUseId);
   const sessionFileImageSource = useCallback(
     (path: string): ImageSource | undefined => {
       if (!isSessionImageFilePath(path)) return undefined;
