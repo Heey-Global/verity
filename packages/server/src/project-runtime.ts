@@ -286,7 +286,9 @@ export class DockerProjectRuntime implements ProjectRuntime {
       { env: this.dockerEnv(), timeoutMs: 10_000, maxBuffer: 4 * 1024 * 1024 },
     );
     const processes = parseListeningProcesses(result?.stdout ?? '');
-    const ambiguous = processes.filter((process) => process.ipv6Wildcard);
+    const ambiguous = processes.filter(
+      (process) => process.ipv6Wildcard || process.bind === 'other',
+    );
     if (ambiguous.length === 0) return processes;
     let reachable: boolean[] = [];
     try {
