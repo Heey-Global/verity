@@ -32,10 +32,10 @@ export function ActiveMeetingOverlay() {
   const [pendingCommand, setPendingCommand] = useState<'pause' | 'resume' | 'stop' | null>(null);
   const [recorderOnline, setRecorderOnline] = useState(true);
   const remoteStopRequested = useRef(false);
-  const voiceNavigation = useRef<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceSending, setVoiceSending] = useState(false);
+  const [voiceRequestSent, setVoiceRequestSent] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [overlayHeight, setOverlayHeight] = useState(105);
   const pathname = usePathname();
@@ -73,28 +73,20 @@ export function ActiveMeetingOverlay() {
   }, [bottomLimit, leftLimit, position]);
 
   useEffect(() => subscribeMeeting(setLocalMeeting), []);
-  useEffect(() => {
-    if (voiceNavigation.current && pathname === `/session/${voiceNavigation.current}`)
-      voiceNavigation.current = null;
-  }, [pathname]);
+  useEffect(() => setVoiceRequestSent(false), [localMeeting?.id]);
   useEffect(
     () =>
       subscribeVoiceMeetingRequest((event) => {
         if (event.meetingId !== localMeeting?.id) return;
         setVoiceSending(event.status === 'sending');
         if (event.status === 'failed') setError(event.message ?? 'Voice request failed.');
-        if (event.status === 'sending') setError(null);
-        if (
-          event.status === 'sent' &&
-          localMeeting.state === 'active' &&
-          pathname !== `/session/${event.sessionId}` &&
-          voiceNavigation.current !== event.sessionId
-        ) {
-          voiceNavigation.current = event.sessionId;
-          router.push({ pathname: '/session/[id]', params: { id: event.sessionId } });
+        if (event.status === 'sending') {
+          setError(null);
+          setVoiceRequestSent(false);
         }
+        if (event.status === 'sent') setVoiceRequestSent(true);
       }),
-    [localMeeting?.id, localMeeting?.state, pathname],
+    [localMeeting?.id],
   );
   useEffect(() => subscribeFollowedRemoteMeeting(setFollowed), []);
   const meeting = localMeeting?.state === 'active' ? localMeeting : remoteMeeting;
@@ -271,6 +263,9 @@ export function ActiveMeetingOverlay() {
         {error ? <Text style={{ color: '#ffaba5', fontSize: 11 }}>{error}</Text> : null}
         {voiceSending ? (
           <Text style={{ color: '#aaa2ba', fontSize: 11 }}>Sending voice request…</Text>
+        ) : null}
+        {voiceRequestSent ? (
+          <Text style={{ color: '#aaa2ba', fontSize: 11 }}>Answer will appear in the meeting</Text>
         ) : null}
         <View style={{ flexDirection: 'row', gap: 8 }}>
           <Pressable

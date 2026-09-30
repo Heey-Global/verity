@@ -3344,6 +3344,40 @@ const migrations: Record<string, Migration> = {
       await sql`alter table public_preview_shares drop column pin_secret`.execute(db);
     },
   },
+  '0120_live_meeting_speakers': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column expected_participants integer`.execute(db);
+      await sql`alter table live_meetings add column speaker_turns_json text not null default '[]'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column timed_words_json text not null default '[]'`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column timed_words_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_turns_json`.execute(db);
+      await sql`alter table live_meetings drop column expected_participants`.execute(db);
+    },
+  },
+  '0121_live_meeting_speaker_edits': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column speaker_names_json text not null default '{}'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column speaker_corrections_json text not null default '[]'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column speaker_merges_json text not null default '{}'`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column speaker_merges_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_corrections_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_names_json`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

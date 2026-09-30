@@ -56,7 +56,7 @@ it('requires live preview links to be stopped before the PIN migration', async (
     });
 
     const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
-    expect((await migrator.migrateDown()).error).toBeUndefined();
+    expect((await migrator.migrateTo('0118_live_meeting_insight_sources')).error).toBeUndefined();
     const blocked = await migrator.migrateToLatest();
     expect(String(blocked.error)).toContain('Stop all active preview links before upgrading');
 

@@ -1,7 +1,13 @@
 import { liveMeetingSTT, type STTEvent } from './liveMeetingSTT';
 import { createVerityClient } from './client';
 import { waitFor } from '@testing-library/react-native';
-import { createMeeting, saveTranscript, setMeetingState } from './liveMeetingStore';
+import {
+  createMeeting,
+  saveSpeakerTurns,
+  saveSpeakerEdits,
+  saveTranscript,
+  setMeetingState,
+} from './liveMeetingStore';
 import {
   currentMeeting,
   endMeeting,
@@ -9,6 +15,7 @@ import {
   resumeMeeting,
   startMeeting,
   subscribeVoiceMeetingRequest,
+  updateSpeakerEdits,
 } from './liveMeetingSession';
 
 jest.mock('./client', () => ({
@@ -39,12 +46,55 @@ jest.mock('./liveMeetingStore', () => ({
     error: null,
   }),
   saveTranscript: jest.fn().mockResolvedValue(undefined),
+  saveSpeakerTurns: jest.fn().mockResolvedValue(undefined),
+  saveSpeakerEdits: jest.fn().mockResolvedValue(undefined),
+  saveTimedWords: jest.fn().mockResolvedValue(undefined),
   setMeetingState: jest.fn().mockResolvedValue(undefined),
   touchMeeting: jest.fn().mockResolvedValue(undefined),
   setCaptureStatus: jest.fn().mockResolvedValue(undefined),
 }));
 
 beforeEach(() => jest.clearAllMocks());
+
+it('selects the larger speaker model from the expected participant count', async () => {
+  await startMeeting('session-1', 'fluid-nemotron', 6);
+  expect(liveMeetingSTT?.start).toHaveBeenCalledWith('fluid-nemotron', 'de-DE', ['Verity'], 6);
+  await endMeeting();
+});
+
+it('keeps speaker turns without interrupting transcription when speaker storage fails', async () => {
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  jest.mocked(saveSpeakerTurns).mockRejectedValueOnce(new Error('speaker storage failed'));
+  await startMeeting('session-1');
+  onEvent({ kind: 'speaker-status', state: 'ready' });
+  onEvent({ kind: 'speaker', speaker: 0, start: 1, end: 2 });
+  await waitFor(() => expect(currentMeeting()?.speakerStatus).toBe('unavailable'));
+  expect(currentMeeting()?.speakerTurns).toEqual([{ speaker: 0, start: 1, end: 2 }]);
+  expect(currentMeeting()?.state).toBe('active');
+  onEvent({ kind: 'snapshot', text: 'Still transcribing', final: true });
+  await waitFor(() =>
+    expect(saveTranscript).toHaveBeenCalledWith('meeting-1', 'Still transcribing'),
+  );
+  await endMeeting();
+});
+
+it('keeps a renamed speaker when another live speaker update arrives', async () => {
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  await startMeeting('session-1');
+  await updateSpeakerEdits('meeting-1', { '0': 'Anna' }, [], {});
+  expect(saveSpeakerEdits).toHaveBeenCalledWith('meeting-1', { '0': 'Anna' }, [], {});
+  onEvent({ kind: 'speaker', speaker: 0, start: 1, end: 2 });
+  expect(currentMeeting()?.speakerNames).toEqual({ '0': 'Anna' });
+  await endMeeting();
+});
 
 // Stands in for the server's model: treats "Verity, <request>." as addressed to it.
 const checkSpokenMeetingRequest = jest.fn(
@@ -68,7 +118,11 @@ it('sends a direct spoken research request once in the recording session', async
     return { remove: jest.fn() };
   });
   const events: string[] = [];
-  const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event.status));
+  const sentRequests: string[] = [];
+  const unsubscribe = subscribeVoiceMeetingRequest((event) => {
+    events.push(event.status);
+    if (event.status === 'sent' && event.request) sentRequests.push(event.request);
+  });
   try {
     await startMeeting('session-1');
     onEvent({ kind: 'status', state: 'listening' });
@@ -82,6 +136,7 @@ it('sends a direct spoken research request once in the recording session', async
     );
     onEvent({ kind: 'snapshot', text: 'Verity, recherchiere den Liefertermin.', final: true });
     await waitFor(() => expect(events).toContain('sent'));
+    expect(sentRequests).toEqual(['recherchiere den Liefertermin']);
     expect(sendTurn).toHaveBeenCalledTimes(1);
   } finally {
     unsubscribe();
@@ -264,11 +319,11 @@ it('persists a Nemotron transcript and final text before ending the meeting', as
   });
 
   await startMeeting('session-1');
-  expect(createMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron');
+  expect(createMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', null);
   expect(jest.mocked(createMeeting).mock.invocationCallOrder[0]).toBeLessThan(
     jest.mocked(native.start).mock.invocationCallOrder[0],
   );
-  expect(native.start).toHaveBeenCalledWith('fluid-nemotron', 'de-DE', ['Verity']);
+  expect(native.start).toHaveBeenCalledWith('fluid-nemotron', 'de-DE', ['Verity'], 4);
 
   onEvent({ kind: 'snapshot', text: 'Complete meeting', final: false });
   await endMeeting();
@@ -599,7 +654,7 @@ it('does not leave "sending" on screen when capture pauses between two requests'
     await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
     await pauseMeeting();
     releaseFirst();
-    await waitFor(() => expect(events).toEqual(['sending', 'failed']));
+    await waitFor(() => expect(events).toEqual(['sending', 'sent', 'failed']));
     expect(sendTurn).toHaveBeenCalledTimes(1);
   } finally {
     unsubscribe();

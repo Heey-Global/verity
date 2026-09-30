@@ -73,7 +73,12 @@ const config: ExpoConfig = {
     // same iPad binary on Apple Silicon Macs unless Mac availability is disabled
     // there.
     supportsTablet: true,
+    // Meetings keep the microphone session active after an app switch or screen lock.
+    entitlements: {
+      'com.apple.developer.background-tasks.continued-processing.inference': true,
+    },
     infoPlist: {
+      UIBackgroundModes: ['audio'],
       // Verity uses only standard/exempt encryption; declaring export compliance
       // stops EAS/App Store Connect prompting for it on every build.
       ITSAppUsesNonExemptEncryption: false,

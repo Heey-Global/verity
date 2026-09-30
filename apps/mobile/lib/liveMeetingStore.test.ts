@@ -1,5 +1,5 @@
 import { waitFor } from '@testing-library/react-native';
-import { listMeetings, saveNote } from './liveMeetingStore';
+import { listMeetings, saveNote, saveSpeakerTurns, saveSpeakerEdits } from './liveMeetingStore';
 jest.mock('./client', () => ({ getActiveMeetingServerId: jest.fn().mockReturnValue(null) }));
 
 const mockRunAsync = jest.fn().mockResolvedValue(undefined);
@@ -41,4 +41,26 @@ it('writes edits to one note in call order across screen instances', async () =>
   await Promise.all([oldWrite, newWrite]);
   expect(mockRunAsync).toHaveBeenCalledTimes(2);
   expect(mockRunAsync.mock.calls[1].at(-1)).toBe('New text');
+});
+
+it('stores speaker turns with their original audio time ranges', async () => {
+  await saveSpeakerTurns('meeting-1', [{ speaker: 2, start: 1.5, end: 2.25 }]);
+  expect(mockRunAsync).toHaveBeenCalledWith(
+    'UPDATE meetings SET speaker_turns = ?, revision = revision + 1 WHERE id = ?',
+    '[{"speaker":2,"start":1.5,"end":2.25}]',
+    'meeting-1',
+  );
+});
+
+it('stores meeting-only speaker names and segment corrections on the owner device', async () => {
+  await saveSpeakerEdits('meeting-1', { '0': 'Anna' }, [{ start: 1, end: 2, speaker: 1 }], {
+    '2': 0,
+  });
+  expect(mockRunAsync).toHaveBeenCalledWith(
+    expect.stringContaining('WHERE id = ? AND owner_token IS NOT NULL'),
+    '{"0":"Anna"}',
+    '[{"start":1,"end":2,"speaker":1}]',
+    '{"2":0}',
+    'meeting-1',
+  );
 });

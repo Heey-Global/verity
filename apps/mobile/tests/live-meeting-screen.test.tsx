@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { FlatList } from 'react-native';
+import { Alert, FlatList } from 'react-native';
 import { router } from 'expo-router';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
@@ -12,6 +12,7 @@ import {
   startMeeting,
   subscribeMeeting,
   subscribeVoiceMeetingRequest,
+  updateSpeakerEdits,
 } from '../lib/liveMeetingSession';
 import {
   listMeetings,
@@ -57,6 +58,7 @@ jest.mock('../lib/liveMeetingSession', () => ({
   endMeeting: jest.fn(),
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
+  updateSpeakerEdits: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../lib/liveMeetingStore', () => ({
   listMeetings: jest.fn().mockResolvedValue([]),
@@ -90,7 +92,60 @@ beforeEach(() => {
   jest.mocked(getActiveMeetingServerId).mockReturnValue(null);
 });
 
-it('opens the complete transcript on demand and starts research in the same session', async () => {
+it('passes the selected expected group size when starting a meeting', async () => {
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('3 people'));
+  expect(screen.getByLabelText('3 people').props.accessibilityState).toEqual(
+    expect.objectContaining({ selected: true }),
+  );
+  fireEvent.press(screen.getByText('Start meeting'));
+  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 3));
+});
+
+it('offers larger groups and passes their size to the recorder', async () => {
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('6 people'));
+  fireEvent.press(screen.getByText('Start meeting'));
+  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 6));
+});
+
+it('shows a listening state before speech and numbered voices as they are recognized', async () => {
+  const meeting: MeetingRecord = {
+    id: 'speaker-meeting',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+    speakerStatus: 'ready',
+    speakerTurns: [],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(currentMeeting).mockReturnValue(meeting);
+  let publish!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    publish = listener;
+    listener(meeting);
+    return jest.fn();
+  });
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Listening for voices…')).toBeOnTheScreen();
+  act(() =>
+    publish({
+      ...meeting,
+      speakerTurns: [
+        { speaker: 2, start: 1, end: 2 },
+        { speaker: 0, start: 3, end: 4 },
+      ],
+    }),
+  );
+  expect(screen.getByText('Speaker 1')).toBeOnTheScreen();
+  expect(screen.getByText('Speaker 3')).toBeOnTheScreen();
+});
+
+it('keeps research and fact checks in the meeting while sending turns to its session', async () => {
   const meeting: MeetingRecord = {
     id: 'meeting-insight',
     sessionId: 'session-1',
@@ -134,11 +189,395 @@ it('opens the complete transcript on demand and starts research in the same sess
       'session-1',
       expect.objectContaining({ prompt: expect.stringContaining('Is the release still Friday?') }),
     );
-    expect(router.push).toHaveBeenCalledWith({
-      pathname: '/session/[id]',
-      params: { id: 'session-1' },
-    });
+    expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
   });
+  expect(router.push).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Check meeting claim'));
+  await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(2));
+  expect(sendTurn.mock.calls[1]?.[1].prompt).toContain(
+    'Check whether “Tuesday” conflicts with “Friday”',
+  );
+  expect(router.push).not.toHaveBeenCalled();
+});
+
+it('shows the compact session answer in the meeting after reopening it', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-answer',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'Is Friday correct?',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(createVerityClient).mockReturnValue({
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getHistory: jest.fn().mockImplementation(async (_sessionId, options) =>
+      options?.beforeSeq
+        ? {
+            hasMore: false,
+            events: [
+              {
+                seq: 7,
+                event: {
+                  t: 'prompt',
+                  text: 'Research this point raised during live meeting meeting-answer:\n\nIs Friday correct?\n\nRecent meeting transcript:\nIs Friday correct?',
+                },
+              },
+            ],
+          }
+        : {
+            hasMore: true,
+            events: [
+              { seq: 8, event: { t: 'text', delta: 'The roadmap confirms Tuesday.' } },
+              { seq: 9, event: { t: 'result' } },
+            ],
+          },
+    ),
+    getActivity: jest.fn().mockResolvedValue({
+      busy: true,
+      queued: [
+        {
+          id: 'waiting-1',
+          text: 'During live meeting meeting-answer, please respond to this request:\n\nWhat changed?',
+        },
+      ],
+    }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('ANSWER READY')).toBeOnTheScreen();
+  expect(screen.getByText('The roadmap confirms Tuesday.')).toBeOnTheScreen();
+  expect(screen.getByText('What changed?')).toBeOnTheScreen();
+  expect(router.push).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Open answer in chat'));
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 'session-1' },
+  });
+});
+
+it('shows a spoken request as working without leaving the meeting', async () => {
+  let notify!: (event: {
+    meetingId: string;
+    sessionId: string;
+    status: 'sent';
+    request: string;
+    kind: 'research';
+  }) => void;
+  jest.mocked(subscribeVoiceMeetingRequest).mockImplementation((listener) => {
+    notify = listener;
+    return jest.fn();
+  });
+  const meeting: MeetingRecord = {
+    id: 'meeting-voice-answer',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'Verity, check the deadline.',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  await screen.findByText('Verity, check the deadline.');
+  act(() =>
+    notify({
+      meetingId: meeting.id,
+      sessionId: meeting.sessionId,
+      status: 'sent',
+      request: 'check the deadline',
+      kind: 'research',
+    }),
+  );
+  expect(screen.getByText('check the deadline')).toBeOnTheScreen();
+  expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
+  expect(router.push).not.toHaveBeenCalled();
+});
+
+it('shows timed transcript words with their speaker when attribution is unambiguous', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-speakers',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello yes',
+    error: null,
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+    timedWords: [
+      { text: 'Hello', start: 0.1, end: 0.5 },
+      { text: 'yes', start: 2, end: 2.4 },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(currentMeeting).mockReturnValue(meeting);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello yes')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByText('Speaker 1: Hello')).toBeOnTheScreen();
+  expect(screen.getByText('Unknown speaker: yes')).toBeOnTheScreen();
+});
+
+it('keeps the unfinished transcript visible after timed words', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-tail',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello, from the meeting',
+    error: null,
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.4 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello, from the meeting')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByText('Speaker 1: Hello,')).toBeOnTheScreen();
+  expect(screen.getByText('Speaker pending: from the meeting')).toBeOnTheScreen();
+});
+
+it('shows the transcript once when its text no longer matches the timed words', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-revised',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Revised meeting text',
+    error: null,
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    timedWords: [{ text: 'Old', start: 0, end: 0.4 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  await screen.findByText('Revised meeting text');
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByText('Revised meeting text')).toBeOnTheScreen();
+  expect(screen.queryByText('Speaker 1: Old')).not.toBeOnTheScreen();
+});
+
+it('saves a correction for one speaker segment without changing the other', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'meeting-correction',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'Hello there',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 0.5 },
+      { speaker: 1, start: 1, end: 1.5 },
+    ],
+    timedWords: [
+      { text: 'Hello', start: 0, end: 0.5 },
+      { text: 'there', start: 1, end: 1.5 },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello there')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  fireEvent.press(screen.getByLabelText('Correct speaker for Hello'));
+  const buttons = alert.mock.calls.at(-1)?.[2] ?? [];
+  act(() => buttons.find((button) => button.text === 'Speaker 2')?.onPress?.());
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenCalledWith(
+      meeting.id,
+      {},
+      [{ start: 0, end: 0.5, speaker: 1 }],
+      {},
+    ),
+  );
+  alert.mockRestore();
+});
+
+it('renames a speaker across the current meeting', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'meeting-name',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'Hello',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
+  const reply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof reply === 'function') act(() => reply('Anna'));
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Anna' }, [], {}),
+  );
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  expect(screen.getByText('Anna: Hello')).toBeOnTheScreen();
+  prompt.mockRestore();
+});
+
+it('keeps a rename when a correction is made before its save finishes', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  let finishFirstSave!: () => void;
+  jest
+    .mocked(updateSpeakerEdits)
+    .mockImplementationOnce(() => new Promise<void>((resolve) => (finishFirstSave = resolve)));
+  const meeting: MeetingRecord = {
+    id: 'meeting-quick-edits',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'Hello',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  await screen.findByText('Hello');
+  fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
+  const reply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof reply === 'function') act(() => reply('Anna'));
+  await waitFor(() => expect(updateSpeakerEdits).toHaveBeenCalledTimes(1));
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  fireEvent.press(screen.getByLabelText('Correct speaker for Hello'));
+  const buttons = alert.mock.calls.at(-1)?.[2] ?? [];
+  act(() => buttons.find((button) => button.text === 'Unknown speaker')?.onPress?.());
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+  await act(async () => finishFirstSave());
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenLastCalledWith(
+      meeting.id,
+      { '0': 'Anna' },
+      [{ start: 0, end: 0.5, speaker: null }],
+      {},
+    ),
+  );
+  prompt.mockRestore();
+  alert.mockRestore();
+});
+
+it('rejects a speaker name longer than the sync contract allows', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'meeting-long-name',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'Hello',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
+  const reply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof reply === 'function') act(() => reply('A'.repeat(61)));
+  expect(screen.getByText('Speaker names can be at most 60 characters.')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).not.toHaveBeenCalled();
+  prompt.mockRestore();
+});
+
+it('offers the expected speaker slots when no diarizer turn was detected', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'meeting-unknown',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'Hello',
+    error: null,
+    ownerToken: 'owner',
+    expectedParticipants: 2,
+    speakerTurns: [],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  fireEvent.press(screen.getByLabelText('Correct speaker for Hello'));
+  expect(alert.mock.calls.at(-1)?.[2]?.map((button) => button.text)).toContain('Speaker 2');
+  alert.mockRestore();
+});
+
+it('merges duplicate speaker labels and allows undo', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'meeting-merge',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'One Two',
+    error: null,
+    ownerToken: 'owner',
+    expectedParticipants: 2,
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 0.5 },
+      { speaker: 1, start: 1, end: 1.5 },
+    ],
+    timedWords: [
+      { text: 'One', start: 0, end: 0.5 },
+      { text: 'Two', start: 1, end: 1.5 },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('One Two')).toBeOnTheScreen();
+  fireEvent(screen.getByLabelText('Rename Speaker 2'), 'longPress');
+  const buttons = alert.mock.calls.at(-1)?.[2] ?? [];
+  act(() => buttons.find((button) => button.text === 'Speaker 1')?.onPress?.());
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, {}, [], { '1': 0 }),
+  );
+  expect(screen.queryByLabelText('Rename Speaker 2')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Restore merged speaker'));
+  const restoreButtons = alert.mock.calls.at(-1)?.[2] ?? [];
+  act(() => restoreButtons.find((button) => button.text === 'Speaker 2')?.onPress?.());
+  await waitFor(() => expect(updateSpeakerEdits).toHaveBeenLastCalledWith(meeting.id, {}, [], {}));
+  alert.mockRestore();
 });
 
 it('shows a spoken request failure without interrupting the meeting', async () => {
@@ -202,7 +641,7 @@ it('starts a direct meeting request and stays put when the server rejects it', a
   render(<MeetingScreen />);
   const input = await screen.findByLabelText('Ask Verity about this meeting');
   fireEvent.changeText(input, 'What do you think?');
-  fireEvent.press(screen.getByLabelText('Open question in session'));
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
   await waitFor(() =>
     expect(screen.getByText(/Could not start meeting request/)).toBeOnTheScreen(),
   );
@@ -308,7 +747,9 @@ it('starts with Nemotron and saves a note at its first edit', async () => {
   );
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByText('Start meeting'));
-  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron'));
+  await waitFor(() =>
+    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', null),
+  );
   const input = await screen.findByLabelText('Add a meeting note');
   fireEvent.changeText(input, 'Decision: ship locally');
   await waitFor(() =>

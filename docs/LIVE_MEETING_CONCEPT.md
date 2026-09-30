@@ -113,13 +113,18 @@ dependent and is a validation gate, not a promise:
 
 - Apple's engine runs in a system process and is plausibly unaffected by the iOS 27 restriction
   on background Neural Engine access for in-app models. This must be tested on the target devices.
-- FluidAudio models run inside the app. Continued Neural Engine inference in the background on
-  iOS 27 requires the Background Inference entitlement together with `BGContinuedProcessingTask`,
-  which shows a Live Activity, can be cancelled by the person and may be terminated by the system.
-  Treat this as a separately gated capability for the FluidAudio path and for V2 diarization.
+- FluidAudio models run inside the app. Neural Engine access in the background requires the
+  Background Inference entitlement, even when an audio session keeps the app running. The app
+  declares that entitlement, but whether Nemotron and diarization continue through app switching
+  and screen lock remains a device-validation gate. `BGContinuedProcessingTask` is a separate
+  option for bounded inference work; it shows a Live Activity and the system may terminate it.
 
 Whatever the outcome, the transcript must show where capture stopped. Never claim to recover
 speech that occurred while capture or recognition was not running.
+On an unlocked iPad, the system microphone-in-use icon indicates active capture. There is no
+Dynamic Island on the target iPad Pro 11-inch (4th generation), and this implementation does not
+add an ActivityKit Live Activity. Neither system UI element proves that transcription or speaker
+inference is still progressing; validate those separately on the target devices.
 
 ### Ending a meeting
 
@@ -185,8 +190,9 @@ failure is retryable and must not erase the locally saved meeting.
 
 ## 5. Version 2: speakers and names
 
-Add FluidAudio diarization to the same microphone timeline. Select the model after testing
-German meetings, speaker count limits, latency and resource usage. Transcription and diarization
+Add FluidAudio diarization to the same microphone timeline. The expected participant count selected
+before recording chooses streaming Sortformer for up to four (including "Not sure") or LS-EEND for
+five to ten. Validate that choice with German meetings, latency and resource measurements. Transcription and diarization
 are separate workloads: Apple's engine outside the app process, the FluidAudio diarizer inside it.
 Word-level time ranges from the transcriber are aligned with speaker turns from the diarizer.
 
@@ -210,10 +216,11 @@ a diarizer state reset in meetings longer than one hour.
   identify a voice. No calendar access is required in V1 or V2.
 
 Do not retain reusable voice profiles or identify people across meetings as part of this scope.
-Speaker inference failing must not stop transcription or note persistence. FluidAudio model
-bundles are self-hosted on the Verity server with checksums, prepared as an explicit step with
-disk-space checks and a repair path for partial downloads; the pinned library and model revisions
-are re-validated on every bump.
+Speaker inference failing must not stop transcription or note persistence. The app downloads
+FluidAudio model bundles directly from the provider through the pinned library and caches them on
+the device. The Verity server does not relay model files or raw meeting audio. Missing or damaged
+downloads need a clear retry path; model revisions and device resource usage must be re-validated
+on every library bump.
 
 ## 6. Vocabulary support
 
@@ -282,6 +289,11 @@ Show a compact, dismissible card between transcript and notes only when useful. 
 source date, uncertainty and the triggering meeting position. Deduplicate findings, limit frequency
 and research budgets, and prioritize direct requests. An inability to verify is not evidence that
 a participant is wrong. Assistance must never block capture, persistence or synchronization.
+
+Research, fact checks and direct spoken or typed requests run as turns in the meeting's session,
+but do not navigate away from the meeting screen. Show a working card, then a compact answer there;
+the full session chat opens only when the person explicitly taps “Open in chat.” Restore answer
+cards from the session history when the meeting screen is reopened.
 
 Responses are text first; reading aloud is explicit. Accepted findings can become attributed notes
 with source links. Do not automatically send messages, modify external systems or turn unconfirmed

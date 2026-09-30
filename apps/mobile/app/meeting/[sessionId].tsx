@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { LiveMeetingInsight } from '@verity/mobile';
+import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
 
 import {
   currentMeeting,
@@ -24,6 +24,7 @@ import {
   startMeeting,
   subscribeMeeting,
   subscribeVoiceMeetingRequest,
+  updateSpeakerEdits,
 } from '../../lib/liveMeetingSession';
 import { liveMeetingSTT, type STTEngine, type STTEngineId } from '../../lib/liveMeetingSTT';
 import {
@@ -34,14 +35,33 @@ import {
   saveNote,
   type MeetingNote,
   type MeetingRecord,
+  type SpeakerCorrection,
 } from '../../lib/liveMeetingStore';
 import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
 import {
   latestResearchQuestion,
+  meetingRequestId,
   meetingRequestPrompt,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
+import {
+  compactMeetingAnswer,
+  meetingAnswerCards,
+  meetingAnswerSource,
+  meetingRequestFromPrompt,
+  sameMeetingRequest,
+  type MeetingAnswerCard,
+  unacknowledgedMeetingAnswers,
+} from '../../lib/liveMeetingAnswers';
+import {
+  resolvedSpeaker,
+  speakerLines,
+  reconcileTimedTranscript,
+  type SpeakerLine,
+} from '../../lib/liveMeetingSpeakers';
+
+type TranscriptRow = SpeakerLine | { text: string };
 
 const ACCENT = '#bd8bff';
 const TEXT = '#eee9f7';
@@ -78,6 +98,13 @@ export default function MeetingScreen() {
   const [history, setHistory] = useState<MeetingRecord[]>([]);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
+  const [answers, setAnswers] = useState<MeetingAnswerCard[]>([]);
+  const [queuedAnswers, setQueuedAnswers] = useState<MeetingAnswerCard[]>([]);
+  const [localAnswers, setLocalAnswers] = useState<MeetingAnswerCard[]>([]);
+  const [expandedAnswer, setExpandedAnswer] = useState<string | null>(null);
+  const answerEvents = useRef<{ meetingId: string; events: SessionHistoryPage['events'] } | null>(
+    null,
+  );
   const [draft, setDraft] = useState<MeetingNote | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +113,7 @@ export default function MeetingScreen() {
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
+  const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
   const [showNewMeeting, setShowNewMeeting] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [syncError, setSyncError] = useState(false);
@@ -96,9 +124,25 @@ export default function MeetingScreen() {
   const [sendingInsight, setSendingInsight] = useState(false);
   const [voiceSending, setVoiceSending] = useState(false);
   const noteSaveErrorRef = useRef<string | null>(null);
+  const speakerEditDraft = useRef<{
+    meetingId: string;
+    names: Record<string, string>;
+    corrections: SpeakerCorrection[];
+    merges: Record<string, number>;
+  } | null>(null);
+  const speakerEditWrite = useRef<Promise<void>>(Promise.resolve());
+  if (speakerEditDraft.current?.meetingId !== meeting?.id)
+    speakerEditDraft.current = meeting
+      ? {
+          meetingId: meeting.id,
+          names: meeting.speakerNames ?? {},
+          corrections: meeting.speakerCorrections ?? [],
+          merges: meeting.speakerMerges ?? {},
+        }
+      : null;
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
-  const transcriptList = useRef<FlatList<string>>(null);
+  const transcriptList = useRef<FlatList<TranscriptRow>>(null);
   const transcriptAtEnd = useRef(true);
 
   useEffect(
@@ -108,6 +152,18 @@ export default function MeetingScreen() {
         setVoiceSending(event.status === 'sending');
         if (event.status === 'failed') setError(event.message ?? 'Voice request failed.');
         else if (event.status === 'sending') setError(null);
+        if (event.status === 'sent' && event.request)
+          setLocalAnswers((current) => [
+            ...current,
+            {
+              id: `voice-${Date.now()}-${current.length}`,
+              request: event.request!,
+              requestId: event.requestId,
+              kind: event.kind ?? 'request',
+              status: 'working',
+              answer: '',
+            },
+          ]);
       }),
     [],
   );
@@ -202,6 +258,71 @@ export default function MeetingScreen() {
           } catch {
             // An older server can still serve the meeting without insight support.
           }
+          try {
+            const client = createVerityClient();
+            if (client?.getHistory) {
+              let page = await client.getHistory(sessionId, { limit: 200 });
+              let events = page.events;
+              const cached =
+                answerEvents.current?.meetingId === shown ? answerEvents.current : null;
+              let pages = 1;
+              while (
+                page.hasMore &&
+                pages < 10 &&
+                events[0]?.seq > 0 &&
+                (cached
+                  ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
+                  : meetingAnswerCards(events, shown).length < 4)
+              ) {
+                page = await client.getHistory(sessionId, {
+                  beforeSeq: events[0]!.seq,
+                  limit: 200,
+                });
+                events = [...page.events, ...events];
+                pages++;
+              }
+              const merged = new Map<number, SessionHistoryPage['events'][number]>();
+              for (const entry of cached?.events ?? []) merged.set(entry.seq, entry);
+              for (const entry of events) merged.set(entry.seq, entry);
+              const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
+              const promptIndexes = ordered.flatMap((entry, index) =>
+                entry.event.t === 'prompt' && meetingRequestFromPrompt(entry.event.text, shown)
+                  ? [index]
+                  : [],
+              );
+              const kept =
+                promptIndexes.length > 32
+                  ? ordered.slice(promptIndexes.at(-32))
+                  : ordered.slice(-4_000);
+              if (mounted && displayedMeetingId.current === shown) {
+                answerEvents.current = { meetingId: shown, events: kept };
+                const historyCards = meetingAnswerCards(kept, shown);
+                setAnswers(historyCards.slice(-4));
+                setLocalAnswers((current) => unacknowledgedMeetingAnswers(current, historyCards));
+              }
+              if (client.getActivity) {
+                const activity = await client.getActivity(sessionId);
+                if (mounted && displayedMeetingId.current === shown)
+                  setQueuedAnswers(
+                    activity.queued.flatMap((item, index) => {
+                      const request = meetingRequestFromPrompt(item.text, shown);
+                      return request
+                        ? [
+                            {
+                              id: `queued-${item.id || index}`,
+                              ...request,
+                              status: 'working' as const,
+                              answer: '',
+                            },
+                          ]
+                        : [];
+                    }),
+                  );
+              }
+            }
+          } catch {
+            // Meeting recording must continue when the session answer feed is unavailable.
+          }
         }
       } catch {
         if (mounted) setSyncError(true);
@@ -240,6 +361,11 @@ export default function MeetingScreen() {
     let current = true;
     setNotes([]);
     setInsights([]);
+    setAnswers([]);
+    setQueuedAnswers([]);
+    setLocalAnswers([]);
+    setExpandedAnswer(null);
+    answerEvents.current = null;
     void listNotes(meeting.id)
       .then((saved) => {
         if (!current) return;
@@ -288,20 +414,157 @@ export default function MeetingScreen() {
   }, []);
 
   const chunks = useMemo(() => {
+    if (meeting?.timedWords?.length) {
+      const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
+      if (!aligned) return [{ text: meeting.transcript }];
+      const lines: TranscriptRow[] = speakerLines(
+        aligned.words,
+        meeting.speakerTurns ?? [],
+        meeting.speakerCorrections ?? [],
+        meeting.speakerMerges ?? {},
+      );
+      if (aligned.tail) lines.push({ text: `Speaker pending: ${aligned.tail}` });
+      return lines;
+    }
     const text = meeting?.transcript ?? '';
-    const result: string[] = [];
+    const result: TranscriptRow[] = [];
     for (let start = 0; start < text.length; start += 900)
-      result.push(text.slice(start, start + 900));
+      result.push({ text: text.slice(start, start + 900) });
     return result;
-  }, [meeting?.transcript]);
+  }, [
+    meeting?.transcript,
+    meeting?.timedWords,
+    meeting?.speakerTurns,
+    meeting?.speakerCorrections,
+    meeting?.speakerMerges,
+  ]);
   const suggestedQuestion = useMemo(
     () => latestResearchQuestion(meeting?.transcript ?? ''),
     [meeting?.transcript],
   );
+  const visibleAnswers = useMemo(() => {
+    const canonical = [
+      ...answers,
+      ...queuedAnswers.filter(
+        (queued) => !answers.some((card) => sameMeetingRequest(card, queued)),
+      ),
+    ];
+    return [
+      ...canonical,
+      ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
+    ].slice(-4);
+  }, [answers, queuedAnswers, localAnswers]);
   const transcriptPreview = useMemo(() => {
     const text = meeting?.transcript.trim() ?? '';
     return text.length > 180 ? `…${text.slice(-180)}` : text;
   }, [meeting?.transcript]);
+
+  const speakerLabel = (speaker: number | null) =>
+    speaker === null
+      ? 'Unknown speaker'
+      : (meeting?.speakerNames?.[speaker] ?? `Speaker ${speaker + 1}`);
+
+  const persistSpeakerEdits = async (
+    change: Partial<{
+      names: Record<string, string>;
+      corrections: SpeakerCorrection[];
+      merges: Record<string, number>;
+    }>,
+  ) => {
+    if (!meeting?.ownerToken || speakerEditDraft.current?.meetingId !== meeting.id) return;
+    const next = { ...speakerEditDraft.current, ...change };
+    speakerEditDraft.current = next;
+    setMeeting((current) =>
+      current?.id === next.meetingId
+        ? {
+            ...current,
+            speakerNames: next.names,
+            speakerCorrections: next.corrections,
+            speakerMerges: next.merges,
+          }
+        : current,
+    );
+    try {
+      const write = speakerEditWrite.current
+        .catch(() => undefined)
+        .then(() => updateSpeakerEdits(next.meetingId, next.names, next.corrections, next.merges));
+      speakerEditWrite.current = write;
+      await write;
+      setSyncError(true);
+    } catch (reason) {
+      setError(`Could not save speaker correction: ${String(reason)}`);
+    }
+  };
+
+  const renameSpeaker = (speaker: number) => {
+    if (!meeting?.ownerToken) return;
+    Alert.prompt(
+      'Name this speaker',
+      'The name applies throughout this meeting.',
+      (value) => {
+        const name = value.trim();
+        if (name.length > 60) {
+          setError('Speaker names can be at most 60 characters.');
+          return;
+        }
+        const names = { ...(speakerEditDraft.current?.names ?? meeting.speakerNames ?? {}) };
+        if (name) names[speaker] = name;
+        else delete names[speaker];
+        void persistSpeakerEdits({ names });
+      },
+      'plain-text',
+      meeting.speakerNames?.[speaker] ?? '',
+    );
+  };
+
+  const correctSpeaker = (line: SpeakerLine, available: number[]) => {
+    if (!meeting?.ownerToken) return;
+    const buttons = [
+      ...available.map((speaker) => ({
+        text: speakerLabel(speaker),
+        onPress: () => {
+          void persistSpeakerEdits({
+            corrections: [
+              ...(speakerEditDraft.current?.corrections ?? meeting.speakerCorrections ?? []),
+              { start: line.start, end: line.end, speaker },
+            ],
+          });
+        },
+      })),
+      {
+        text: 'Unknown speaker',
+        onPress: () => {
+          void persistSpeakerEdits({
+            corrections: [
+              ...(speakerEditDraft.current?.corrections ?? meeting.speakerCorrections ?? []),
+              { start: line.start, end: line.end, speaker: null },
+            ],
+          });
+        },
+      },
+      { text: 'Cancel', style: 'cancel' as const },
+    ];
+    Alert.alert('Correct speaker', line.text, buttons);
+  };
+
+  const mergeSpeaker = (source: number, available: number[]) => {
+    if (!meeting?.ownerToken) return;
+    const targets = available.filter((speaker) => speaker !== source);
+    if (!targets.length) return;
+    Alert.alert('Merge duplicate speaker', `Treat ${speakerLabel(source)} as:`, [
+      ...targets.map((target) => ({
+        text: speakerLabel(target),
+        onPress: () =>
+          void persistSpeakerEdits({
+            merges: {
+              ...(speakerEditDraft.current?.merges ?? meeting.speakerMerges ?? {}),
+              [source]: target,
+            },
+          }),
+      })),
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
 
   const openResearch = async (question: string, kind: 'research' | 'request' = 'research') => {
     if (!sessionId || !meeting || !question.trim() || sendingInsight) return;
@@ -316,15 +579,27 @@ export default function MeetingScreen() {
     }
     setSendingInsight(true);
     setError(null);
+    const requestId = meetingRequestId();
     try {
       await client.sendTurn(sessionId, {
         prompt:
           kind === 'research'
-            ? researchPrompt(meeting.id, question.trim(), meeting.transcript)
-            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript),
+            ? researchPrompt(meeting.id, question.trim(), meeting.transcript, requestId)
+            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript, requestId),
       });
-      if (live && !active) followRemoteMeeting(meeting.sessionId, meeting.id);
-      router.push({ pathname: '/session/[id]', params: { id: sessionId } });
+      if (displayedMeetingId.current === meeting.id)
+        setLocalAnswers((current) => [
+          ...current,
+          {
+            id: `local-${Date.now()}`,
+            request: question.trim(),
+            requestId,
+            kind,
+            status: 'working',
+            answer: '',
+          },
+        ]);
+      if (kind === 'request') setInsightQuestion('');
     } catch (reason) {
       setError(`Could not start meeting request: ${String(reason)}`);
     } finally {
@@ -350,7 +625,7 @@ export default function MeetingScreen() {
     setBusy(true);
     setError(null);
     try {
-      const next = await startMeeting(sessionId, selectedEngine);
+      const next = await startMeeting(sessionId, selectedEngine, expectedParticipants);
       setSyncError(true);
       setSelectedId(null);
       setMeeting(next);
@@ -507,6 +782,29 @@ export default function MeetingScreen() {
   const active = meeting?.state === 'active' && runningMeeting?.id === meeting.id;
   const live = meeting?.state === 'active';
   const noteUnsaved = noteSaveError?.meetingId === meeting?.id;
+  const speakers = [
+    ...new Set([
+      ...(meeting?.speakerTurns ?? []).map((turn) =>
+        resolvedSpeaker(turn.speaker, meeting?.speakerMerges ?? {}),
+      ),
+      ...(meeting?.speakerCorrections ?? []).flatMap((correction) =>
+        correction.speaker === null
+          ? []
+          : [resolvedSpeaker(correction.speaker, meeting?.speakerMerges ?? {})],
+      ),
+    ]),
+  ]
+    .filter((speaker): speaker is number => speaker !== null)
+    .sort((a, b) => a - b);
+  const speakerChoices = Array.from(
+    {
+      length: Math.max(
+        meeting?.expectedParticipants ?? 4,
+        ...speakers.map((speaker) => speaker + 1),
+      ),
+    },
+    (_, speaker) => speaker,
+  ).filter((speaker) => resolvedSpeaker(speaker, meeting?.speakerMerges ?? {}) === speaker);
   return (
     <KeyboardAvoidingView
       style={[styles.root, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 12 }]}
@@ -583,6 +881,72 @@ export default function MeetingScreen() {
       ) : null}
       {meeting ? (
         <>
+          <View style={styles.speakerCard}>
+            <Text style={styles.section}>In the room</Text>
+            {speakers.length ? (
+              <View style={styles.participantChoices}>
+                {speakers.map((speaker) => (
+                  <Pressable
+                    key={speaker}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Rename ${speakerLabel(speaker)}`}
+                    accessibilityHint="Long press to merge this speaker with another"
+                    disabled={!meeting.ownerToken}
+                    onPress={() => renameSpeaker(speaker)}
+                    onLongPress={() => mergeSpeaker(speaker, speakers)}
+                    style={[
+                      styles.speakerBadge,
+                      resolvedSpeaker(
+                        meeting.activeSpeaker ?? null,
+                        meeting.speakerMerges ?? {},
+                      ) === speaker &&
+                        meeting.lastSpeakerAt !== undefined &&
+                        now - meeting.lastSpeakerAt < 2500 &&
+                        styles.speakerBadgeActive,
+                    ]}
+                  >
+                    <Text style={styles.speakerText}>{speakerLabel(speaker)}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.muted}>
+                {active
+                  ? meeting.speakerStatus === 'unavailable'
+                    ? 'Speaker labels unavailable; transcription continues.'
+                    : meeting.speakerStatus === 'loading'
+                      ? 'Preparing speaker recognition…'
+                      : 'Listening for voices…'
+                  : 'No speaker labels yet.'}
+              </Text>
+            )}
+            {meeting.ownerToken && speakers.length > 0 ? (
+              <Text style={styles.muted}>Tap to name · Hold to merge</Text>
+            ) : null}
+            {meeting.ownerToken && Object.keys(meeting.speakerMerges ?? {}).length ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Restore merged speaker"
+                onPress={() => {
+                  Alert.alert('Restore merged speaker', 'Choose the speaker to separate again.', [
+                    ...Object.keys(meeting.speakerMerges ?? {}).map((source) => ({
+                      text: meeting.speakerNames?.[source] ?? `Speaker ${Number(source) + 1}`,
+                      onPress: () => {
+                        const merges = {
+                          ...(speakerEditDraft.current?.merges ?? meeting.speakerMerges ?? {}),
+                        };
+                        delete merges[source];
+                        void persistSpeakerEdits({ merges });
+                      },
+                    })),
+                    { text: 'Cancel', style: 'cancel' },
+                  ]);
+                }}
+              >
+                <Text style={styles.muted}>Restore merged speaker</Text>
+              </Pressable>
+            ) : null}
+          </View>
           <View style={styles.transcriptCard}>
             <Pressable
               accessibilityRole="button"
@@ -610,7 +974,22 @@ export default function MeetingScreen() {
                 style={styles.transcript}
                 data={chunks}
                 keyExtractor={(_, index) => String(index)}
-                renderItem={({ item }) => <Text style={styles.transcriptText}>{item}</Text>}
+                renderItem={({ item }) =>
+                  'start' in item ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Correct speaker for ${item.text}`}
+                      disabled={!meeting.ownerToken}
+                      onPress={() => correctSpeaker(item, speakerChoices)}
+                    >
+                      <Text style={styles.transcriptText}>
+                        {speakerLabel(item.speaker)}: {item.text}
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.transcriptText}>{item.text}</Text>
+                  )
+                }
                 ListEmptyComponent={
                   <Text style={styles.muted}>Recognized speech will appear here.</Text>
                 }
@@ -638,6 +1017,61 @@ export default function MeetingScreen() {
           <View style={styles.insightsCard}>
             <Text style={styles.section}>Live Insights</Text>
             <ScrollView style={styles.insightList} keyboardShouldPersistTaps="handled">
+              {visibleAnswers.map((card) => (
+                <View key={card.id} style={styles.suggestion}>
+                  <Text style={styles.suggestionLabel}>
+                    {card.status === 'ready'
+                      ? 'ANSWER READY'
+                      : card.status === 'failed'
+                        ? 'REQUEST INTERRUPTED'
+                        : 'VERITY IS WORKING'}
+                  </Text>
+                  <Text style={styles.suggestionText}>{card.request}</Text>
+                  {card.status === 'ready' ? (
+                    <>
+                      <Text style={styles.evidence}>
+                        {expandedAnswer === card.id
+                          ? card.answer
+                          : compactMeetingAnswer(card.answer)}
+                      </Text>
+                      {meetingAnswerSource(card.answer) ? (
+                        <Text style={styles.evidence}>
+                          Source: {meetingAnswerSource(card.answer)}
+                        </Text>
+                      ) : null}
+                      {card.answer.length > 360 ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            expandedAnswer === card.id
+                              ? 'Collapse meeting answer'
+                              : 'Expand meeting answer'
+                          }
+                          onPress={() =>
+                            setExpandedAnswer((current) => (current === card.id ? null : card.id))
+                          }
+                        >
+                          <Text style={styles.researchButtonText}>
+                            {expandedAnswer === card.id ? 'Show less' : 'Show full answer'}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {card.status === 'ready' ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Open answer in chat"
+                      onPress={() =>
+                        router.push({ pathname: '/session/[id]', params: { id: sessionId } })
+                      }
+                      style={styles.researchButton}
+                    >
+                      <Text style={styles.researchButtonText}>Open in chat ›</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ))}
               {insights.slice(0, 4).map((insight) => (
                 <View key={insight.id} style={styles.suggestion}>
                   <Text style={styles.suggestionLabel}>
@@ -651,15 +1085,29 @@ export default function MeetingScreen() {
                   {insight.sourcePath ? (
                     <Text style={styles.evidence}>Source: {insight.sourcePath}</Text>
                   ) : null}
-                  {insight.kind === 'research' ? (
+                  {insight.kind === 'research' || insight.kind === 'contradiction' ? (
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel="Research insight"
+                      accessibilityLabel={
+                        insight.kind === 'contradiction'
+                          ? 'Check meeting claim'
+                          : 'Research insight'
+                      }
                       disabled={sendingInsight}
-                      onPress={() => void openResearch(insight.evidenceA)}
+                      onPress={() =>
+                        void openResearch(
+                          insight.kind === 'contradiction'
+                            ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
+                            : insight.evidenceA,
+                        )
+                      }
                       style={styles.researchButton}
                     >
-                      <Text style={styles.researchButtonText}>Research in session ›</Text>
+                      <Text style={styles.researchButtonText}>
+                        {insight.kind === 'contradiction'
+                          ? 'Let Verity check ›'
+                          : 'Let Verity research ›'}
+                      </Text>
                     </Pressable>
                   ) : null}
                 </View>
@@ -676,7 +1124,7 @@ export default function MeetingScreen() {
                     onPress={() => void openResearch(suggestedQuestion)}
                     style={styles.researchButton}
                   >
-                    <Text style={styles.researchButtonText}>Research in session ›</Text>
+                    <Text style={styles.researchButtonText}>Let Verity research ›</Text>
                   </Pressable>
                 </View>
               ) : insights.length === 0 ? (
@@ -696,7 +1144,7 @@ export default function MeetingScreen() {
               />
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Open question in session"
+                accessibilityLabel="Ask Verity in meeting"
                 disabled={!insightQuestion.trim() || sendingInsight}
                 onPress={() => void openResearch(insightQuestion, 'request')}
                 style={styles.insightGo}
@@ -771,6 +1219,35 @@ export default function MeetingScreen() {
             </View>
           ) : null}
         </>
+      ) : null}
+      {!live && (!meeting || showNewMeeting) ? (
+        <View>
+          <Text style={styles.section}>People in this meeting</Text>
+          <View style={styles.participantChoices}>
+            {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, null] as const).map((count) => (
+              <Pressable
+                key={count ?? 'unknown'}
+                accessibilityRole="radio"
+                accessibilityLabel={count === null ? 'Not sure' : `${count} people`}
+                accessibilityState={{ selected: expectedParticipants === count }}
+                disabled={busy}
+                onPress={() => setExpectedParticipants(count)}
+                style={[
+                  styles.participantChoice,
+                  expectedParticipants === count && styles.participantChoiceSelected,
+                ]}
+              >
+                <Text
+                  style={
+                    expectedParticipants === count ? styles.participantSelectedText : styles.muted
+                  }
+                >
+                  {count ?? 'Not sure'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
       ) : null}
       {!live && (!meeting || showNewMeeting) ? (
         <View>
@@ -857,6 +1334,33 @@ const styles = StyleSheet.create({
   title: { color: TEXT, fontSize: 28, fontWeight: '700' },
   minimize: { color: TEXT, fontSize: 28, paddingHorizontal: 8 },
   muted: { color: MUTED },
+  participantChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  participantChoice: {
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  participantChoiceSelected: { borderColor: ACCENT },
+  participantSelectedText: { color: ACCENT },
+  speakerCard: {
+    backgroundColor: CARD,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    padding: 16,
+    gap: 10,
+  },
+  speakerBadge: {
+    borderWidth: 1,
+    borderColor: '#433a5c',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  speakerBadgeActive: { borderColor: ACCENT },
+  speakerText: { color: TEXT },
   status: { color: '#a8f4c5', fontSize: 13 },
   statusPaused: { color: '#f3c579' },
   statusError: { color: '#ffaba5' },

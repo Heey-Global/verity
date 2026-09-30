@@ -15,6 +15,46 @@ const meetingBody = z.object({
   endedAt: z.number().int().nonnegative().nullable(),
   state: z.enum(['active', 'interrupted', 'ended']),
   transcript: z.string().max(1_000_000),
+  expectedParticipants: z.number().int().min(1).max(10).nullable().optional(),
+  speakerTurns: z
+    .array(
+      z
+        .object({
+          speaker: z.number().int().min(0).max(9),
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().nonnegative(),
+        })
+        .refine((turn) => turn.end > turn.start),
+    )
+    .max(10_000)
+    .optional(),
+  timedWords: z
+    .array(
+      z
+        .object({
+          text: z.string().min(1).max(1_000_000),
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().nonnegative(),
+        })
+        .refine((word) => word.end > word.start),
+    )
+    .max(50_000)
+    .refine((words) => words.reduce((length, word) => length + word.text.length, 0) <= 1_000_000)
+    .optional(),
+  speakerNames: z.record(z.string().regex(/^[0-9]$/), z.string().trim().min(1).max(60)).optional(),
+  speakerCorrections: z
+    .array(
+      z
+        .object({
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().nonnegative(),
+          speaker: z.number().int().min(0).max(9).nullable(),
+        })
+        .refine((correction) => correction.end > correction.start),
+    )
+    .max(2_000)
+    .optional(),
+  speakerMerges: z.record(z.string().regex(/^[0-9]$/), z.number().int().min(0).max(9)).optional(),
   captureStatus: z.enum(['preparing', 'downloading', 'listening', 'paused']),
   ownerToken: z.string().min(32).max(256),
   revision: z.number().int().positive(),
@@ -270,7 +310,12 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'session not found' };
     }
-    const body = meetingBody.parse(request.body);
+    const parsed = meetingBody.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: 'invalid meeting update' };
+    }
+    const body = parsed.data;
     const { ownerToken, ...meeting } = body;
     const accepted = await store.liveMeetings.putMeeting({
       id: meetingId,
