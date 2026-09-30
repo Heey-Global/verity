@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.45.0](https://github.com/Heey-Global/verity/compare/mobile-v1.44.0...mobile-v1.45.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tasks:** Remove GET /issues and /tasks routes and the mobile task API.
+
+### Features
+
+* **meeting:** add live speakers and in-screen answers ([#920](https://github.com/Heey-Global/verity/issues/920)) ([b88a606](https://github.com/Heey-Global/verity/commit/b88a60694407502a858bd74041d805c660a11cf1))
+* **mobile:** print and share previewed files as PDF ([#925](https://github.com/Heey-Global/verity/issues/925)) ([3b0738d](https://github.com/Heey-Global/verity/commit/3b0738da6b694f605404945364a0e52f26db3285))
+* **mobile:** tap haptically when a permission prompt blocks the agent ([#924](https://github.com/Heey-Global/verity/issues/924)) ([40a99e5](https://github.com/Heey-Global/verity/commit/40a99e51a907fb7c5889d4d303120d43d6005ae0))
+
+
+### Code Refactoring
+
+* **tasks:** remove retired issues and plan board ([#922](https://github.com/Heey-Global/verity/issues/922)) ([663e4c5](https://github.com/Heey-Global/verity/commit/663e4c593ba03bc99884159362a1144ef8f26e8f))
+
 ## [1.44.0](https://github.com/Heey-Global/verity/compare/mobile-v1.43.0...mobile-v1.44.0) (2026-09-29)
 
 
