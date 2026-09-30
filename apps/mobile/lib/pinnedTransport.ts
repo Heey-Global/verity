@@ -1,5 +1,6 @@
 import { requireNativeModule } from 'expo-modules-core';
 import {
+  directRouteKnownReachable,
   lastDirectRefusal,
   pendingDirectVerdict,
   remoteControlFailureForUrl,
@@ -194,13 +195,13 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       if (verdict !== null) {
         void verdict.then(
           (outcome) => {
-            if (settled || outcome === 'reachable') return;
+            if (settled || outcome === 'reachable' || directRouteKnownReachable(url)) return;
             if (outcome === 'dead') {
               cancelledBy = 'verdict';
               void transport.cancelRequest(requestId);
             } else
               grace = setTimeout(() => {
-                if (settled) return;
+                if (settled || directRouteKnownReachable(url)) return;
                 cancelledBy = 'grace';
                 void transport.cancelRequest(requestId);
               }, DIRECT_GRACE_MS);

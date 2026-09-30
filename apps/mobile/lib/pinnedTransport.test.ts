@@ -8,6 +8,7 @@ const mockReportDirectFailure = jest.fn();
 const mockReportDirectSuccess = jest.fn();
 const mockDirectVerdict = jest.fn();
 const mockDirectRefusal = jest.fn();
+const mockDirectKnownReachable = jest.fn();
 
 jest.mock('./remoteControlTransport', () => ({
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
@@ -16,6 +17,7 @@ jest.mock('./remoteControlTransport', () => ({
   reportDirectRouteFailure: (...args: unknown[]) => mockReportDirectFailure(...args),
   pendingDirectVerdict: (...args: unknown[]) => mockDirectVerdict(...args),
   lastDirectRefusal: (...args: unknown[]) => mockDirectRefusal(...args),
+  directRouteKnownReachable: (...args: unknown[]) => mockDirectKnownReachable(...args),
 }));
 
 jest.mock('expo-modules-core', () => ({
@@ -70,6 +72,7 @@ describe('pinned native file transport', () => {
     mockReportDirectFailure.mockReset();
     mockDirectVerdict.mockReset().mockReturnValue(null);
     mockDirectRefusal.mockReset().mockReturnValue(null);
+    mockDirectKnownReachable.mockReset().mockReturnValue(false);
     mockReportDirectSuccess.mockReset();
   });
 
@@ -351,6 +354,36 @@ describe('pinned native file transport', () => {
         message:
           'Uplink probe and direct Core request failed: paired address unanswered after the route probe timed out',
       });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps a slow direct read when another read proves the route reachable', async () => {
+    jest.useFakeTimers();
+    try {
+      mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
+      mockRemotePort.mockResolvedValue(0);
+      let finishSlow!: (response: { status: number; headers: {}; bodyBase64: string }) => void;
+      mockRequest
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishSlow = resolve;
+            }),
+        )
+        .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
+      mockReportDirectSuccess.mockImplementation(() => {
+        mockDirectKnownReachable.mockReturnValue(true);
+      });
+      const fetch = createPinnedFetch(`sha256-${'a'.repeat(43)}`, true);
+      const slow = fetch('https://verity.example/slow');
+      await jest.advanceTimersByTimeAsync(0);
+      await expect(fetch('https://verity.example/fast')).resolves.toMatchObject({ status: 200 });
+      await jest.advanceTimersByTimeAsync(4_000);
+      expect(mockCancelRequest).not.toHaveBeenCalled();
+      finishSlow({ status: 200, headers: {}, bodyBase64: 'e30=' });
+      await expect(slow).resolves.toMatchObject({ status: 200 });
     } finally {
       jest.useRealTimers();
     }

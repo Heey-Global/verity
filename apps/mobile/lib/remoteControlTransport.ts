@@ -251,6 +251,14 @@ export function lastDirectRefusal(url: string): string | null {
   return key !== null && directRefusal?.key === key ? directRefusal.reason : null;
 }
 
+/** A newer direct response supersedes a pending probe's cancellation decision. */
+export function directRouteKnownReachable(url: string): boolean {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  return key !== null && directRoute?.key === key && directRoute.reachable;
+}
+
 /** Any HTTP response proves that the pinned direct transport is reachable. */
 export function reportDirectRouteSuccess(url: string): void {
   const target = new URL(url);
