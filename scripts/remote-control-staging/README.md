@@ -74,6 +74,23 @@ receiving application processed them. `localResets` and `remoteResets` count
 terminations from each side. `lastReset` retains the latest direction and fixed
 code even after another stream opens.
 
+`streams=` lists up to three recent streams as fixed tokens, for example
+`s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2`: bytes sent and
+received, milliseconds until Core's first bytes (`tnone` if none arrived) and
+until the stream ended, which side ended it (`local` is the app's own TLS
+client closing, `remote` is Core), the proxy dialect the app used (`socks` or
+`connect`), the TLS record types seen in each direction (22 handshake, 20
+change-cipher-spec, 21 alert, 23 application data), and Core's first handshake
+message (`2` ServerHello, `hrr` HelloRetryRequest). A stream that received a
+full handshake flight and was then ended by `local` without any `23` record
+sent is a handshake the device's TLS client abandoned. No payload bytes are
+recorded.
+
+The app dials the loopback tunnel as a SOCKS5 proxy first. When that Core
+probe fails on a device it retries once as an HTTP CONNECT proxy and keeps the
+dialect that answered; `via connect` in the probe failure names the second
+attempt.
+
 Native `Verity remote stream` events include the remote session and stream IDs,
 first data in either direction, first local delivery, and final byte counts.
 Core's `remote connector first bytes` and `remote connector stream ended` use

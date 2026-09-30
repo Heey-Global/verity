@@ -1,5 +1,8 @@
 import { requireNativeModule } from 'expo-modules-core';
 import {
+  directRouteKnownReachable,
+  lastDirectRefusal,
+  pendingDirectVerdict,
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
   reportDirectRouteFailure,
@@ -142,6 +145,13 @@ async function encodeBody(body: BodyInit | null | undefined): Promise<string | n
   throw new Error('This request body is not supported by the pinned transport.');
 }
 
+// How long a direct read may keep waiting after the 3 s route probe timed out.
+// The probe cannot tell a VPN still waking up from a blackholed address, so
+// off the VPN a blackholed cold start now costs about 7 s before Uplink is
+// tried, where it used to cost 3 s; on the VPN, which is where the app is
+// used most, the same 7 s let a slow wake-up succeed directly.
+const DIRECT_GRACE_MS = 4_000;
+
 export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fetch {
   return (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     if (input instanceof Request)
@@ -163,13 +173,43 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       void transport.cancelRequest(requestId);
     };
     init.signal?.addEventListener('abort', onAbort, { once: true });
-    let response: NativeResponse;
+    let response!: NativeResponse;
     try {
       const encodedBody = fileUri ? null : await encodeBody(init.body);
-      const port = useRemote ? await remoteControlPortForUrl(url) : 0;
+      const replayable =
+        !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
+      const port = useRemote ? await remoteControlPortForUrl(url, replayable) : 0;
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
+      // A read sent directly while the route is unknown must not sit in a
+      // request timeout: a definite refusal from the capped probe cancels it
+      // at once, and a probe timeout grants it a few more seconds, which a
+      // waking VPN needs and a blackholed address does not deserve.
+      let settled = false;
+      let cancelledBy: 'verdict' | 'grace' | null = null;
+      let grace: ReturnType<typeof setTimeout> | undefined;
+      // Non-null only for a read sent while the route was untested; a read the
+      // known-good direct route loses fails as before, without an Uplink detour.
+      const verdict = useRemote && replayable && port === 0 ? pendingDirectVerdict(url) : null;
+      if (verdict !== null) {
+        void verdict.then(
+          (outcome) => {
+            if (settled || outcome === 'reachable' || directRouteKnownReachable(url)) return;
+            if (outcome === 'dead') {
+              cancelledBy = 'verdict';
+              void transport.cancelRequest(requestId);
+            } else
+              grace = setTimeout(() => {
+                if (settled || directRouteKnownReachable(url)) return;
+                cancelledBy = 'grace';
+                void transport.cancelRequest(requestId);
+              }, DIRECT_GRACE_MS);
+          },
+          () => undefined,
+        );
+      }
+      let recovered = false;
       try {
         response = fileUri
           ? await transport.upload(
@@ -190,9 +230,12 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               tlsPin,
               port,
             );
+        settled = true;
         if (useRemote && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
       } catch (error) {
+        settled = true;
         let directFailed = port === 0;
+        let failure: Error = error instanceof Error ? error : new Error('native transport error');
         if (
           port > 0 &&
           !fileUri &&
@@ -209,35 +252,92 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             }
             // A recovered direct read must also move subsequent requests off the failed tunnel.
             reportDirectRouteSuccess(url);
-            return new Response(utf8ResponseBody(response), {
-              status: response.status,
-              headers: response.headers,
-            });
+            recovered = true;
           } catch (directError) {
             if (init.signal?.aborted) throw directError;
-            error = directError;
+            failure = directError instanceof Error ? directError : failure;
             directFailed = true;
           }
         }
         if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
-        const failure = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
-        const route =
-          port > 0
-            ? (init.method ?? 'GET').toUpperCase() === 'GET' && !fileUri && encodedBody === null
-              ? 'Uplink and direct Core requests'
-              : 'Uplink Core request'
-            : failure === null
-              ? 'Direct Core request'
-              : `Uplink ${failure} and direct Core request`;
-        const reason =
-          error instanceof Error
-            ? (error.message.match(
-                /Pinned TLS (?:transport|verification) failed \[[^\]]{1,150}\]/u,
-              )?.[0] ?? 'native transport error')
-            : 'native transport error';
-        const diagnostic = new Error(`${route} failed: ${reason}`);
-        diagnostic.name = 'VerityConnectionError';
-        throw diagnostic;
+        let remoteAttempted = false;
+        let remoteReason: string | null = null;
+        if (
+          !recovered &&
+          verdict !== null &&
+          port === 0 &&
+          useRemote &&
+          directFailed &&
+          replayable &&
+          !init.signal?.aborted
+        ) {
+          // The direct route was tried first without knowing whether it works.
+          // A read that it lost is recovered through Uplink, which the failure
+          // just made the route for the requests that follow.
+          let remotePort = 0;
+          try {
+            remotePort = await remoteControlPortForUrl(url, true);
+          } catch {
+            // Route selection reports its own admission and probe failures;
+            // this is the native bridge itself failing.
+            console.warn('Remote Control route selection threw while recovering a direct read');
+          }
+          if (init.signal?.aborted) {
+            throw new DOMException('The operation was aborted.', 'AbortError');
+          }
+          if (remotePort > 0) {
+            remoteAttempted = true;
+            try {
+              response = await transport.request(
+                requestId,
+                url,
+                'GET',
+                headers,
+                null,
+                tlsPin,
+                remotePort,
+              );
+              if (init.signal?.aborted) {
+                throw new DOMException('The operation was aborted.', 'AbortError');
+              }
+              recovered = true;
+            } catch (remoteError) {
+              if (init.signal?.aborted) {
+                throw new DOMException('The operation was aborted.', 'AbortError');
+              }
+              // Both legs are named below: a pin rejected on the Uplink leg
+              // must not hide behind the direct failure.
+              remoteReason = safeTransportReason(remoteError);
+            }
+          }
+        }
+        if (!recovered) {
+          const skipped = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
+          const route =
+            port > 0
+              ? replayable
+                ? 'Uplink and direct Core requests'
+                : 'Uplink Core request'
+              : remoteAttempted
+                ? 'Direct and Uplink Core requests'
+                : skipped === null
+                  ? 'Direct Core request'
+                  : `Uplink ${skipped} and direct Core request`;
+          // A read the app cancelled itself reports why, not its own -999.
+          const reason =
+            cancelledBy === 'verdict'
+              ? (lastDirectRefusal(url) ?? safeTransportReason(failure))
+              : cancelledBy === 'grace'
+                ? 'paired address unanswered after the route probe timed out'
+                : safeTransportReason(failure);
+          const diagnostic = new Error(
+            `${route} failed: ${reason}${remoteReason === null ? '' : `; Uplink: ${remoteReason}`}`,
+          );
+          diagnostic.name = 'VerityConnectionError';
+          throw diagnostic;
+        }
+      } finally {
+        if (grace !== undefined) clearTimeout(grace);
       }
     } catch (error) {
       if (init.signal?.aborted) {
@@ -253,6 +353,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       headers: response.headers,
     });
   }) as typeof fetch;
+}
+
+// Only the bounded native phase and code list may reach the screen.
+function safeTransportReason(error: unknown): string {
+  return error instanceof Error
+    ? (error.message.match(/Pinned TLS (?:transport|verification) failed \[[^\]]{1,150}\]/u)?.[0] ??
+        'native transport error')
+    : 'native transport error';
 }
 
 export async function verifyPairedIdentity(input: {

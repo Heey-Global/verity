@@ -11,12 +11,15 @@ enum ProductionProbeFailure: Error { case transport(String) }
 @available(macOS 14.0, iOS 17.0, *)
 func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) async throws {
   let dataURL = endpoint.deletingLastPathComponent().appendingPathComponent("data")
-  for (host, pin, expectedFailure) in [
+  for (host, pin, expectedFailure, connect) in [
     // A second attachment must work after the preceding tunnel is torn down.
-    ("core.test", corePin, ""),
-    ("core.test", corePin, ""),
-    ("core.test", "sha256-" + String(repeating: "A", count: 43), "PIN_MISMATCH"),
-    ("wrong.test", corePin, "PINNED_CHAIN_TRUST_FAILED"),
+    ("core.test", corePin, "", false),
+    ("core.test", corePin, "", false),
+    // The app falls back to HTTP CONNECT when SOCKS fails the Core probe on a
+    // device; the same listener must carry both dialects.
+    ("core.test", corePin, "", true),
+    ("core.test", "sha256-" + String(repeating: "A", count: 43), "PIN_MISMATCH", false),
+    ("wrong.test", corePin, "PINNED_CHAIN_TRUST_FAILED", true),
   ] {
     let origin = URL(string: "https://\(host)")!
     var outerOrigin = URLComponents(url: dataURL, resolvingAgainstBaseURL: false)!
@@ -26,12 +29,28 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
     let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: origin, outerSession: outer)
     defer { tunnel.stop(); outer.invalidateAndCancel() }
     let port = try await tunnel.start(ticket: "fixture-ticket", sessionId: "fixture-session")
+    if connect {
+      // Any local process can dial the listener; only the host and port check
+      // keeps the tunnel pinned to the paired Core.
+      let otherHost = host == "core.test" ? "wrong.test" : "core.test"
+      for head in [
+        "CONNECT \(otherHost):443 HTTP/1.1\r\n\r\n",
+        "CONNECT \(host):8443 HTTP/1.1\r\n\r\n",
+        "CONNECT \(host) HTTP/1.1\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: \(host)\r\n\r\n",
+        "CONNECT \(host):443\r\n\r\n",
+      ] {
+        try await expectConnectRejected(port: port, head: head)
+      }
+    }
+    let loopback = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!)
+    let proxy = connect
+      ? ProxyConfiguration(httpCONNECTProxy: loopback)
+      : ProxyConfiguration(socksv5Proxy: loopback)
     let config = URLSessionConfiguration.ephemeral
     config.timeoutIntervalForRequest = 10
     config.timeoutIntervalForResource = 15
-    config.proxyConfigurations = [
-      ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!))
-    ]
+    config.proxyConfigurations = [proxy]
     let delegate = try CertificatePinDelegate(pin: pin, origin: origin)
     let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     defer { client.invalidateAndCancel() }
@@ -63,10 +82,7 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
               let requestConfig = URLSessionConfiguration.ephemeral
               requestConfig.timeoutIntervalForRequest = 10
               requestConfig.timeoutIntervalForResource = 15
-              requestConfig.proxyConfigurations = [
-                ProxyConfiguration(socksv5Proxy: .hostPort(
-                  host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!))
-              ]
+              requestConfig.proxyConfigurations = [proxy]
               let requestDelegate = try CertificatePinDelegate(pin: pin, origin: origin)
               let requestClient = URLSession(configuration: requestConfig,
                 delegate: requestDelegate, delegateQueue: nil)
@@ -101,7 +117,43 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
           CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase))
       }
     }
-    print("production app case passed: \(expectedFailure.isEmpty ? "valid-private-ca" : expectedFailure)")
+    let summary = tunnel.diagnosticSummary
+    guard summary.contains(", streams=s1=up"), summary.contains(connect ? ".pconnect." : ".psocks."),
+      summary.contains(".o22"), summary.contains(".i22")
+    else { throw ProductionProbeFailure.transport("stream trace missing: \(summary)") }
+    print("production app case passed: \(expectedFailure.isEmpty ? "valid-private-ca" : expectedFailure) via \(connect ? "connect" : "socks")")
+  }
+}
+
+// A rejected CONNECT is closed without a reply; a 200 or a hang is a failure.
+@available(macOS 14.0, iOS 17.0, *)
+func expectConnectRejected(port: Int, head: String) async throws {
+  let connection = NWConnection(
+    host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+  connection.start(queue: .global())
+  defer { connection.cancel() }
+  try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    connection.send(content: Data(head.utf8), completion: .contentProcessed { error in
+      if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+    })
+  }
+  let reply: String = await withCheckedContinuation { continuation in
+    let lock = NSLock()
+    var finished = false
+    let finish: (String) -> Void = { value in
+      lock.lock()
+      defer { lock.unlock() }
+      guard !finished else { return }
+      finished = true
+      continuation.resume(returning: value)
+    }
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 64) { data, _, _, _ in
+      finish(data.map { String(decoding: $0, as: UTF8.self) } ?? "")
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5) { finish("timeout") }
+  }
+  guard reply != "timeout", !reply.hasPrefix("HTTP/1.1 200") else {
+    throw ProductionProbeFailure.transport("CONNECT not rejected: \(head.prefix(24))")
   }
 }
 
