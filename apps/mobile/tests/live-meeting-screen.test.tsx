@@ -293,6 +293,32 @@ it('renames a speaker across the current meeting', async () => {
   prompt.mockRestore();
 });
 
+it('rejects a speaker name longer than the sync contract allows', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'meeting-long-name',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'ended',
+    transcript: 'Hello',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Hello')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
+  const reply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof reply === 'function') act(() => reply('A'.repeat(61)));
+  expect(screen.getByText('Speaker names can be at most 60 characters.')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).not.toHaveBeenCalled();
+  prompt.mockRestore();
+});
+
 it('offers the expected speaker slots when no diarizer turn was detected', async () => {
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   const meeting: MeetingRecord = {

@@ -32,13 +32,14 @@ const meetingBody = z.object({
     .array(
       z
         .object({
-          text: z.string().min(1).max(100),
+          text: z.string().min(1).max(1_000_000),
           start: z.number().finite().nonnegative(),
           end: z.number().finite().nonnegative(),
         })
         .refine((word) => word.end > word.start),
     )
     .max(50_000)
+    .refine((words) => words.reduce((length, word) => length + word.text.length, 0) <= 1_000_000)
     .optional(),
   speakerNames: z.record(z.string().regex(/^[0-9]$/), z.string().trim().min(1).max(60)).optional(),
   speakerCorrections: z

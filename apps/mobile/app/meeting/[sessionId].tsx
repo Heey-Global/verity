@@ -359,6 +359,10 @@ export default function MeetingScreen() {
       'The name applies throughout this meeting.',
       (value) => {
         const name = value.trim();
+        if (name.length > 60) {
+          setError('Speaker names can be at most 60 characters.');
+          return;
+        }
         const names = { ...(meeting.speakerNames ?? {}) };
         if (name) names[speaker] = name;
         else delete names[speaker];

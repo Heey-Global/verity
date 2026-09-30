@@ -63,7 +63,13 @@ it('syncs bounded speaker turns and the expected group size', async () => {
     { speaker: 0, start: 0.5, end: 1.25 },
     { speaker: 1, start: 1.25, end: 2.5 },
   ];
-  const timedWords = [{ text: 'Hello', start: 0.5, end: 1.0 }];
+  const timedWords = [
+    {
+      text: 'A recognized Apple segment can exceed one hundred characters. '.repeat(3),
+      start: 0.5,
+      end: 1.0,
+    },
+  ];
   const speakerNames = { '0': 'Anna' };
   const speakerCorrections = [{ start: 0.5, end: 1, speaker: 1 }];
   const speakerMerges = { '1': 0 };
