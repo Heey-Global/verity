@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.19.0](https://github.com/Heey-Global/verity/compare/v2.18.0...v2.19.0) (2026-09-29)
+
+
+### Features
+
+* **meeting:** classify spoken requests and preserve note drafts ([#914](https://github.com/Heey-Global/verity/issues/914)) ([7d0446d](https://github.com/Heey-Global/verity/commit/7d0446da86ecf846ec9eb0a00961a49dcf14faeb))
+* **preview:** add branded expired and unavailable pages ([#909](https://github.com/Heey-Global/verity/issues/909)) ([2fe1be7](https://github.com/Heey-Global/verity/commit/2fe1be7e409084917962a6b923583a83be55788b))
+* **preview:** offer shares up to 30 days ([#912](https://github.com/Heey-Global/verity/issues/912)) ([bbe0ac5](https://github.com/Heey-Global/verity/commit/bbe0ac596a2ec3d74255294a76dc596441d86769))
+* **preview:** save and share PINs across devices ([#905](https://github.com/Heey-Global/verity/issues/905)) ([209b276](https://github.com/Heey-Global/verity/commit/209b2762f8adaccf7f9e634723f7ba91f47bec3b))
+
+
+### Bug Fixes
+
+* **preview:** schedule expiry beyond Node timer limit ([#911](https://github.com/Heey-Global/verity/issues/911)) ([9a47096](https://github.com/Heey-Global/verity/commit/9a4709620fe65daf11cf7c65a7e70419c778602f))
+* **preview:** simplify share status page copy ([#913](https://github.com/Heey-Global/verity/issues/913)) ([9237bd8](https://github.com/Heey-Global/verity/commit/9237bd86fcf2aac7a1d3169c0b8ab3c14e8ee295))
+* **remote-control:** preserve native TLS causes and test production tunnel ([#904](https://github.com/Heey-Global/verity/issues/904)) ([443b6b8](https://github.com/Heey-Global/verity/commit/443b6b891e21c9c9b8daaf86e4d1a0e5aa9b1f77))
+
 ## [2.18.0](https://github.com/Heey-Global/verity/compare/v2.17.0...v2.18.0) (2026-09-29)
 
 
