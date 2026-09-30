@@ -165,6 +165,8 @@ const config: ExpoConfig = {
     // The live STT prototype's inline Swift module uses FluidAudio for the two
     // selectable on-device models. The local plugin pins its native pod.
     './plugins/withFluidAudio',
+    // iOS 27 requires scene lifecycle adoption before UIKit creates the UI.
+    './plugins/withSceneLifecycle',
     // Efficient image rendering (chat attachments + previews).
     'expo-image',
     // Native share-sheet integration for exporting session content and files.
