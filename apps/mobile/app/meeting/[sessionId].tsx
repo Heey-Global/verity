@@ -879,7 +879,11 @@ export default function MeetingScreen() {
     void queueNoteSave(note)
       .then(() => finalizeNote(note.id, note.text))
       .then(() => setSyncError(true))
-      .catch((reason) => setError(`Note could not be saved: ${String(reason)}`));
+      .catch((reason) => {
+        // Without a draft there is nothing to retry, so the note must not look saved.
+        setNotes((current) => current.filter((entry) => entry.id !== note.id));
+        setError(`Note could not be saved: ${String(reason)}`);
+      });
   };
 
   const noticedCards = (): ReactNode[] => {
