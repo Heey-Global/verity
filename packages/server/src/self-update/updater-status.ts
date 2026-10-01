@@ -938,6 +938,18 @@ function closeServer(server: Server): Promise<void> {
  */
 export const UPDATER_REQUEST_TIMEOUT_MS = 2_000;
 
+/**
+ * How long the update request itself may take before it is given up on.
+ *
+ * Longer than every other call because giving up here does not cancel
+ * anything: before answering, the Updater takes the journal lease, archives the
+ * previous operation and scans the generations on the host disk, and once it
+ * has the request it journals and runs the update whether or not anyone is
+ * still waiting. Abandoning it after the general allowance turned an accepted
+ * update into a reported failure while Verity went on replacing itself.
+ */
+export const UPDATER_UPDATE_REQUEST_TIMEOUT_MS = 15_000;
+
 interface UpdaterCallOptions {
   readonly socketPath: string;
   readonly token: string;
@@ -1150,11 +1162,14 @@ export async function readUpdaterOperation(
 export async function requestUpdaterOperation(
   options: UpdaterCallOptions & { readonly idempotencyKey: string; readonly targetDigest: string },
 ): Promise<UpdateOperation> {
-  const { status, value } = await call(options, {
-    method: 'POST',
-    path: '/v1/update',
-    body: { idempotencyKey: options.idempotencyKey, targetDigest: options.targetDigest },
-  });
+  const { status, value } = await call(
+    { timeoutMs: UPDATER_UPDATE_REQUEST_TIMEOUT_MS, ...options },
+    {
+      method: 'POST',
+      path: '/v1/update',
+      body: { idempotencyKey: options.idempotencyKey, targetDigest: options.targetDigest },
+    },
+  );
   if (status !== 202) throw new UpdaterRequestError(status, errorCode(value));
   const operation = parseOperationEnvelope(value);
   if (operation === undefined || operation === null)
