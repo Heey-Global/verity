@@ -876,14 +876,18 @@ export default function MeetingScreen() {
       text: text.trim().slice(0, 10_000),
     };
     setNotes((current) => [...current, note].sort((a, b) => a.atSeconds - b.atSeconds));
-    void queueNoteSave(note)
-      .then(() => finalizeNote(note.id, note.text))
-      .then(() => setSyncError(true))
-      .catch((reason) => {
-        // Without a draft there is nothing to retry, so the note must not look saved.
+    // Saved directly rather than through the draft queue: a failure here must not mark the
+    // composer's draft as unsaved, and without a draft there is nothing to retry.
+    void saveNote(note).then(
+      async () => {
+        // Finalizing marks it ready for the next sync; until then it is pending like any note.
+        if (await finalizeNote(note.id, note.text).catch(() => false)) setSyncError(true);
+      },
+      (reason) => {
         setNotes((current) => current.filter((entry) => entry.id !== note.id));
         setError(`Note could not be saved: ${String(reason)}`);
-      });
+      },
+    );
   };
 
   const noticedCards = (): ReactNode[] => {

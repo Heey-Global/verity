@@ -1321,3 +1321,41 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
   fireEvent.press(screen.getAllByText('Not now').at(-1)!);
   expect(screen.queryByText('Is the release still Friday?')).toBeNull();
 });
+
+it('does not show a noticed-point note whose save failed', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-noticed-failure',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(saveNote).mockRejectedValueOnce(new Error('disk full'));
+  jest.mocked(createVerityClient).mockReturnValue({
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'insight-failure',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'Check the budget.',
+        evidenceA: 'budget',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Save as note'));
+  expect(await screen.findByText('Note could not be saved: Error: disk full')).toBeOnTheScreen();
+  expect(screen.queryByTestId('meeting-note')).toBeNull();
+  expect(finalizeNote).not.toHaveBeenCalled();
+  expect(screen.queryByText(/note not saved/)).toBeNull();
+});
