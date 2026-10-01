@@ -2058,7 +2058,7 @@ describe('GitHub-hosted runner boundary', () => {
       expect(build?.with?.load).toBe(true);
 
       const gate = workflow.jobs['smoke-test'];
-      expect(gate?.needs).toBe('architecture-smoke');
+      expect([gate?.needs].flat()).toContain('architecture-smoke');
       expect(gate?.if).toBe('${{ always() }}');
       expect(gate?.['runs-on']).toBe('ubuntu-24.04');
       expect(gate?.steps).toHaveLength(1);
@@ -3763,6 +3763,7 @@ describe('persistent buildx builder', () => {
 describe('server image CI smoke', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
     jobs: {
+      'server-image-build': { env: Record<string, string>; steps: WorkflowStep[] };
       'server-image': {
         env: Record<string, string>;
         strategy: { 'fail-fast': boolean; matrix: { include: { installer: string }[] } };
@@ -3772,7 +3773,8 @@ describe('server image CI smoke', () => {
   };
   const job = workflow.jobs['server-image'];
   const legs = job.strategy.matrix.include.map((leg) => leg.installer);
-  const build = job.steps.find((step) => step.name === 'Build Verity server image');
+  const buildJob = workflow.jobs['server-image-build'];
+  const build = buildJob.steps.find((step) => step.name === 'Build Verity server image');
   const smoke = job.steps.find((step) => step.name === 'Smoke-test Verity server image');
   const cleanInstall = job.steps.find(
     (step) => step.name === 'Verify clean Compose installation on an empty Docker host',
@@ -3788,7 +3790,8 @@ describe('server image CI smoke', () => {
     // `docker save` anywhere re-packs what was just unpacked — each a minute or
     // more of the slowest PR check, and neither fails anything.
     expect(archive).toBe('$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE');
-    expect(job.env.VERITY_CI_IMAGE_ARCHIVE).toContain('${{ github.run_attempt }}');
+    expect(job.env.VERITY_CI_IMAGE_ARCHIVE).toContain('${{ github.run_id }}');
+    expect(job.env.VERITY_CI_IMAGE_ARCHIVE).not.toContain('${{ github.run_attempt }}');
     expect(build?.with?.load).toBeUndefined();
     expect(job.steps.some((step) => step.run?.includes('docker save'))).toBe(false);
     const loads = job.steps.filter((step) => step.run?.includes(`load --input "${archive}"`));
@@ -3923,6 +3926,7 @@ describe('server image CI smoke', () => {
 describe('managed installer CI acceptance', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
     jobs: {
+      'server-image-build': WorkflowJob;
       'server-image': WorkflowJob & {
         env: Record<string, string>;
         strategy: { matrix: { include: { installer: string }[] } };
@@ -3931,7 +3935,9 @@ describe('managed installer CI acceptance', () => {
   };
   const job = workflow.jobs['server-image'];
   const archive = String(
-    job.steps.find((entry) => entry.name === 'Build Verity server image')?.with?.outputs ?? '',
+    workflow.jobs['server-image-build'].steps.find(
+      (entry) => entry.name === 'Build Verity server image',
+    )?.with?.outputs ?? '',
   )
     .replace(/^type=docker,dest=/, '')
     .replace('${{ runner.temp }}', '$RUNNER_TEMP')
