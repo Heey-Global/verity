@@ -406,6 +406,7 @@ export {
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,
   type UplinkDiagnostics,
+  type RemoteStreamRecord,
 } from './api.js';
 export { canCreatePublicPreviewTarget, type PublicPreviewTargetKind } from './publicPreview.js';
 export { secretUnlockedSchema, type SecretUnlocked } from './api.js';

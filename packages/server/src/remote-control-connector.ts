@@ -28,6 +28,7 @@ type ByteCounter =
 
 interface Stream {
   startedAt: number;
+  firstLocalReplyAt: number | undefined;
   receivedFromAppBytes: number;
   writtenToLocalBytes: number;
   receivedFromLocalBytes: number;
@@ -42,6 +43,30 @@ interface Stream {
   outgoingStallTimer: NodeJS.Timeout | undefined;
   outgoingPaused: boolean;
 }
+
+/**
+ * Core's side of one tunnel stream, for the paired app's diagnostics screen.
+ * The app shows its own byte counts per stream; without this view, which side
+ * lost a reply can only be read from the server log, which a phone cannot.
+ * Counters only: no payload, ticket or address ever leaves through this.
+ */
+export interface RemoteStreamRecord {
+  sessionId: string;
+  /** First eight characters of the stream ID, enough to match the app's trace. */
+  streamId: string;
+  startedAt: number;
+  durationMs: number;
+  /** Milliseconds from open until the local TLS ingress first answered. */
+  firstLocalReplyMs: number | null;
+  receivedFromAppBytes: number;
+  writtenToLocalBytes: number;
+  receivedFromLocalBytes: number;
+  sentToUplinkBytes: number;
+  /** 'open' while live; otherwise the fixed reason the stream ended with. */
+  state: string;
+}
+
+const RECENT_STREAMS = 8;
 
 export interface RemoteConnectorPoolOptions {
   /** Fixed Uplink data endpoint. Tickets are sent only in the first WebSocket frame. */
@@ -76,6 +101,8 @@ export function createRemoteConnectorPool(options: RemoteConnectorPoolOptions): 
     request: RemoteConnectorRequest,
     signal: AbortSignal,
   ) => Promise<RemoteConnectorReservation | 'unavailable' | 'limit_reached'>;
+  /** Live streams first, then the most recently ended ones, newest last. */
+  recentStreams: () => RemoteStreamRecord[];
 } {
   const dataUrl = new URL(options.dataUrl);
   if (
@@ -98,11 +125,31 @@ export function createRemoteConnectorPool(options: RemoteConnectorPoolOptions): 
     throw new Error('remote connector requires a fixed local TLS ingress');
   }
   const sessions = new Set<ConnectorSession>();
+  const ended: RemoteStreamRecord[] = [];
+  const retain = (record: RemoteStreamRecord): void => {
+    ended.push(record);
+    if (ended.length > RECENT_STREAMS) ended.shift();
+  };
   return {
+    // Bounded as a whole: the app rejects an oversized list, and many live
+    // streams is exactly the situation this view is read in. The newest live
+    // streams are the ones the user just tested, so they are what survives.
+    recentStreams: () => {
+      const live = [...sessions]
+        .flatMap((session) => session.liveStreams())
+        .sort((a, b) => a.startedAt - b.startedAt)
+        .slice(-RECENT_STREAMS);
+      return [...live, ...ended.slice(Math.max(0, ended.length - (RECENT_STREAMS - live.length)))];
+    },
     reserve: (request, signal) => {
       if (signal.aborted) return Promise.resolve('unavailable');
       if (sessions.size >= MAX_SESSIONS) return Promise.resolve('limit_reached');
-      const session = new ConnectorSession(options, request, () => sessions.delete(session));
+      const session = new ConnectorSession(
+        options,
+        request,
+        () => sessions.delete(session),
+        retain,
+      );
       sessions.add(session);
       signal.addEventListener('abort', () => session.release('admission aborted'), { once: true });
       if (signal.aborted) session.release('admission aborted');
@@ -129,6 +176,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     private readonly options: RemoteConnectorPoolOptions,
     private readonly request: RemoteConnectorRequest,
     private readonly onRelease: () => void,
+    private readonly onStreamEnded: (record: RemoteStreamRecord) => void = () => undefined,
   ) {
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
@@ -242,6 +290,28 @@ class ConnectorSession implements RemoteConnectorReservation {
     this.heartbeat.unref();
   }
 
+  liveStreams(): RemoteStreamRecord[] {
+    return [...this.streams].map(([id, stream]) => this.record(id, stream, 'open'));
+  }
+
+  private record(id: string, stream: Stream, state: string): RemoteStreamRecord {
+    const now = Date.now();
+    return {
+      sessionId: this.request.sessionId,
+      streamId: id.slice(0, 8),
+      startedAt: stream.startedAt,
+      durationMs: now - stream.startedAt,
+      firstLocalReplyMs:
+        stream.firstLocalReplyAt === undefined ? null : stream.firstLocalReplyAt - stream.startedAt,
+      receivedFromAppBytes: stream.receivedFromAppBytes,
+      writtenToLocalBytes: stream.writtenToLocalBytes,
+      receivedFromLocalBytes: stream.receivedFromLocalBytes,
+      sentToUplinkBytes: stream.sentToUplinkBytes,
+      // Reasons are fixed literals, but the app drops the whole list on an overlong one.
+      state: state.slice(0, 64),
+    };
+  }
+
   release(reason: string): void {
     if (this.terminated) return;
     this.terminated = true;
@@ -324,6 +394,7 @@ class ConnectorSession implements RemoteConnectorReservation {
   private dropStream(id: string, reason: string): void {
     const stream = this.streams.get(id);
     if (!stream) return;
+    this.onStreamEnded(this.record(id, stream, reason));
     this.options.log?.info(
       {
         sessionId: this.request.sessionId,
@@ -359,6 +430,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     if (this.streams.get(id) !== stream || bytes === 0) return;
     const first = stream[counter] === 0;
     stream[counter] += bytes;
+    if (first && counter === 'receivedFromLocalBytes') stream.firstLocalReplyAt = Date.now();
     if (first)
       this.options.log?.info(
         {
@@ -418,6 +490,7 @@ class ConnectorSession implements RemoteConnectorReservation {
       )(this.options.localHost, this.options.localPort);
       const stream: Stream = {
         startedAt: Date.now(),
+        firstLocalReplyAt: undefined,
         receivedFromAppBytes: 0,
         writtenToLocalBytes: 0,
         receivedFromLocalBytes: 0,

@@ -47,6 +47,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // the stream. On a device this is the only view of a handshake that the
     // app's TLS client abandons without reporting why.
     let proxy: String
+    /** First characters of the stream ID, so Core's record of the same stream can be matched. */
+    let key: String
     let openedAt = Date()
     var firstRemoteAt: Date?
     var endedAt: Date?
@@ -54,9 +56,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var outgoing = RecordTrace()
     var incoming = RecordTrace()
 
-    init(_ connection: NWConnection, proxy: String) {
+    init(_ connection: NWConnection, proxy: String, key: String) {
       self.connection = connection
       self.proxy = proxy
+      self.key = key
     }
 
     func noteRecord(_ data: Data, incoming isIncoming: Bool) {
@@ -74,7 +77,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let list: ([UInt8]) -> String = {
         $0.isEmpty ? "none" : $0.map { String($0) }.joined(separator: "-")
       }
-      return "up\(min(sentBytes, 999_999_999)).dn\(min(receivedBytes, 999_999_999)).t\(firstRemote)"
+      return "k\(key).up\(min(sentBytes, 999_999_999)).dn\(min(receivedBytes, 999_999_999)).t\(firstRemote)"
         + ".d\(millis(ended, 99_999_999)).\(endedBy).p\(proxy)"
         + ".o\(list(outgoing.types)).i\(list(incoming.types)).h\(incoming.firstHandshake)"
     }
@@ -124,7 +127,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         }
         remaining = Int(header[3]) << 8 | Int(header[4])
         header = []
-        if types.count < 6 { types.append(type) }
+        if types.count < 8 { types.append(type) }
         if type == 22, firstHandshake == "none", !capturePrefix { capturePrefix = true }
         if remaining == 0, capturePrefix { classifyPrefix() }
       }
@@ -576,7 +579,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       try await reserveStreamSlot()
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let stream = Stream(connection, proxy: proxy)
+      let stream = Stream(connection, proxy: proxy, key: String(id.prefix(8)))
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false

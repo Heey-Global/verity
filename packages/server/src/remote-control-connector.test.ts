@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { createServer, type Server as NetServer, type Socket } from 'node:net';
+import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
 import WebSocket, { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
@@ -18,6 +18,7 @@ async function fixture(
   log?: Pick<Console, 'info' | 'warn'>,
 ): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
+  recentStreams: ReturnType<typeof createRemoteConnectorPool>['recentStreams'];
   received: unknown[];
   peer: () => WebSocket;
   localConnections: () => number;
@@ -65,6 +66,7 @@ async function fixture(
   });
   return {
     reserve: pool.reserve,
+    recentStreams: pool.recentStreams,
     received,
     peer: () => {
       if (!peer) throw new Error('no peer');
@@ -164,7 +166,119 @@ describe('remote control connector', () => {
       log.info.mock.calls.filter(([, message]) => message === 'remote connector first bytes'),
     ).toHaveLength(4);
     expect(JSON.stringify(log.info.mock.calls)).not.toContain('installation_ticket');
+    // The phone's diagnostics screen reads this instead of the server log.
+    expect(f.recentStreams()).toEqual([
+      expect.objectContaining({
+        sessionId: 'session_one',
+        streamId: 'stream_o',
+        receivedFromAppBytes: 3,
+        writtenToLocalBytes: 3,
+        receivedFromLocalBytes: 3,
+        sentToUplinkBytes: 3,
+        firstLocalReplyMs: expect.any(Number),
+        state: 'complete',
+      }),
+    ]);
+    expect(JSON.stringify(f.recentStreams())).not.toContain('installation_ticket');
     reservation.release('test complete');
+  });
+
+  it('lists a live stream that Core has not answered before any ended one', async () => {
+    // An ingress that accepts the bytes and never answers.
+    const swallowed: Socket[] = [];
+    const silent = createServer({ allowHalfOpen: true }, (socket) => swallowed.push(socket));
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', resolve));
+    open.add({
+      close: () => {
+        for (const socket of swallowed) socket.destroy();
+        return closeServer(silent);
+      },
+    });
+    const silentAddress = silent.address();
+    if (!silentAddress || typeof silentAddress === 'string') throw new Error('no address');
+    const f = await fixture(() =>
+      createConnection({ host: '127.0.0.1', port: silentAddress.port, allowHalfOpen: true }),
+    );
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'stalled_one', channel: 'remote', meta: {} }),
+    );
+    f.peer().send(
+      JSON.stringify({ type: 'stream.data', streamId: 'stalled_one', seq: 0, payload: 'AQID' }),
+    );
+    await vi.waitFor(() =>
+      expect(f.recentStreams()).toEqual([
+        expect.objectContaining({
+          streamId: 'stalled_',
+          receivedFromAppBytes: 3,
+          writtenToLocalBytes: 3,
+          state: 'open',
+        }),
+      ]),
+    );
+    // A request the ingress swallowed shows as bytes in and nothing back.
+    expect(f.recentStreams()[0]).toMatchObject({
+      firstLocalReplyMs: null,
+      receivedFromLocalBytes: 0,
+    });
+    reservation.release('test complete');
+    await vi.waitFor(() => expect(f.recentStreams()[0]?.state).toBe('session_ended'));
+  });
+
+  it('bounds the stream list however many streams are live', async () => {
+    const f = await fixture();
+    const reservations: RemoteConnectorReservation[] = [];
+    for (const sessionId of ['session_a', 'session_b', 'session_c']) {
+      const reservation = await reserve(f, sessionId);
+      const attached = reservation.attach(
+        'ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() =>
+        expect(
+          f.received.filter((frame) => (frame as { type: string }).type === 'attach'),
+        ).toHaveLength(reservations.length + 1),
+      );
+      f.peer().send(
+        JSON.stringify({ type: 'attached', sessionId, capability: 'remote-control-v1' }),
+      );
+      await attached;
+      for (let index = 0; index < 8; index += 1) {
+        f.peer().send(
+          JSON.stringify({
+            type: 'stream.open',
+            streamId: `${sessionId}_${String(index)}`,
+            channel: 'remote',
+            meta: {},
+          }),
+        );
+      }
+      reservations.push(reservation);
+    }
+    // 24 live streams; the app's schema admits at most 16 and would otherwise
+    // drop the whole diagnostics response, status fields included.
+    await vi.waitFor(() => expect(f.localConnections()).toBe(24));
+    const listed = f.recentStreams();
+    expect(listed).toHaveLength(8);
+    expect(listed.every((record) => record.state === 'open')).toBe(true);
+    // The stream the user just tested is the newest; the oldest sessions' streams go.
+    expect(listed.map((record) => record.sessionId)).toEqual(Array(8).fill('session_c'));
+    for (const reservation of reservations) reservation.release('test complete');
   });
 
   it('rejects data before the attachment barrier and never opens the local ingress', async () => {

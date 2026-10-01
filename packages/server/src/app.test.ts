@@ -63,6 +63,21 @@ describe('buildControlPlane', () => {
       control: 'connected' as const,
       sharing: 'ready' as const,
       remoteControl: 'ready' as const,
+      // Core's per-stream counters ride along; the phone shows them beside its own.
+      remoteStreams: [
+        {
+          sessionId: 'session_one',
+          streamId: 'abcdef01',
+          startedAt: 1_700_000_000_000,
+          durationMs: 31_000,
+          firstLocalReplyMs: 53,
+          receivedFromAppBytes: 1_911,
+          writtenToLocalBytes: 1_911,
+          receivedFromLocalBytes: 3_080,
+          sentToUplinkBytes: 3_080,
+          state: 'open',
+        },
+      ],
     };
     // The route alone can pass while composition silently reports Uplink disabled.
     const app = buildControlPlane({
