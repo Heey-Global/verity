@@ -48,7 +48,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // app's TLS client abandons without reporting why.
     let proxy: String
     /** First characters of the stream ID, so Core's record of the same stream can be matched. */
-    var key = ""
+    let key: String
     let openedAt = Date()
     var firstRemoteAt: Date?
     var endedAt: Date?
@@ -56,9 +56,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var outgoing = RecordTrace()
     var incoming = RecordTrace()
 
-    init(_ connection: NWConnection, proxy: String) {
+    init(_ connection: NWConnection, proxy: String, key: String) {
       self.connection = connection
       self.proxy = proxy
+      self.key = key
     }
 
     func noteRecord(_ data: Data, incoming isIncoming: Bool) {
@@ -578,8 +579,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       try await reserveStreamSlot()
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let stream = Stream(connection, proxy: proxy)
-      stream.key = String(id.prefix(8))
+      let stream = Stream(connection, proxy: proxy, key: String(id.prefix(8)))
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false
