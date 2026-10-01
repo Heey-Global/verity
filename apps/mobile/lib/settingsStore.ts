@@ -232,7 +232,7 @@ export function saveVeritySettings(
         publish({
           settings: next,
           savedAt: next.updatedAt,
-          applyPending: state.applyPending || requiresContainerApply(patch),
+          ...pendingApply(requiresContainerApply(patch)),
           error: failedPatches[0]?.error,
         });
         return 'saved';
@@ -286,13 +286,39 @@ export function patchVeritySettingsLocally(
   loadGeneration += 1;
   publish({
     settings: change(state.settings),
-    applyPending: state.applyPending || requiresApply,
+    ...pendingApply(requiresApply),
   });
 }
 
-/** Note that running containers now match the saved settings. */
-export function clearApplyPending(): void {
-  publish({ applyPending: false });
+// Bumped by every change running containers have not received yet, so a
+// reprovision can tell whether it covered the latest one.
+let applyGeneration = 0;
+
+function pendingApply(
+  requiresApply: boolean,
+): Partial<Pick<VeritySettingsState, 'applyPending' | 'applyRun'>> {
+  if (!requiresApply) return {};
+  applyGeneration += 1;
+  // A finished run's outcome describes settings that are no longer the latest;
+  // the banner goes back to asking for an apply.
+  return {
+    applyPending: true,
+    applyRun: state.applyRun.phase === 'running' ? state.applyRun : { phase: 'idle' },
+  };
+}
+
+/** The current apply generation, taken when a reprovision starts. */
+export function applyPendingGeneration(): number {
+  return applyGeneration;
+}
+
+/**
+ * Note that running containers now match the saved settings — unless a change
+ * landed after `generation` was taken, which the containers recreated before it
+ * did not receive.
+ */
+export function clearApplyPending(generation: number): void {
+  if (generation === applyGeneration) publish({ applyPending: false });
 }
 
 /** Record the progress of the apply-settings reprovision. */

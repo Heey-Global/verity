@@ -168,6 +168,53 @@ describe('apply-settings banner', () => {
     expect(recreateProjectContainer).toHaveBeenCalledTimes(1);
   });
 
+  // A finished run is kept so its outcome can be read; left in place, a later
+  // save would show it as this change's result — "Not applied to ." beside a
+  // Retry for a run that succeeded.
+  it('asks again for a change saved after a clean run', async () => {
+    const client = await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+      recreateProjectContainer: jest.fn().mockResolvedValue(undefined),
+    });
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(APPLY));
+    await screen.findByText('Applied to 1 running container.');
+
+    await act(async () => {
+      await saveVeritySettings(client, { gitUserName: 'newer-bot' });
+    });
+
+    expect(screen.getByText(/keep the old settings/)).toBeOnTheScreen();
+    expect(screen.queryByText(/Not applied/)).toBeNull();
+  });
+
+  // Containers recreated before the save came back with the old settings, so
+  // clearing the prompt at the end of the run would strand that change.
+  it('keeps asking for a change saved while a run was underway', async () => {
+    let finish: (() => void) | undefined;
+    const client = await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+      recreateProjectContainer: jest.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    });
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(APPLY));
+    await waitFor(() => expect(finish).toBeDefined());
+
+    await act(async () => {
+      await saveVeritySettings(client, { gitUserName: 'newer-bot' });
+    });
+    await act(async () => finish?.());
+
+    expect(await screen.findByText(/keep the old settings/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(APPLY)).toBeEnabled();
+    expect(screen.queryByText(/Applied to/)).toBeNull();
+  });
+
   it('surfaces a failed project listing and stays retryable', async () => {
     await saveIdentityChange({
       listProjects: jest.fn().mockRejectedValue(new VerityApiError(503, 'store sealed')),

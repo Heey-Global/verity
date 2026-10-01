@@ -12,6 +12,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { createVerityClient } from '../../lib/client';
 import {
+  applyPendingGeneration,
   clearApplyPending,
   setApplyRun,
   setVeritySettingsError,
@@ -31,6 +32,7 @@ export function ApplyPendingBanner() {
     const current = veritySettingsSnapshot();
     if (client === null || current.applyRun.phase === 'running' || current.saving > 0) return;
     setVeritySettingsError(undefined);
+    const generation = applyPendingGeneration();
     setApplyRun({ phase: 'running', total: 0, done: 0 });
     void (async () => {
       try {
@@ -40,10 +42,16 @@ export function ApplyPendingBanner() {
           (projectId) => client.recreateProjectContainer(projectId),
           (progress) => setApplyRun({ phase: 'running', ...progress }),
         );
+        // A save during the run missed the containers recreated before it, so
+        // every container needs another pass and this run's result is moot.
+        if (generation !== applyPendingGeneration()) {
+          setApplyRun({ phase: 'idle' });
+          return;
+        }
         setApplyRun({ phase: 'done', total: result.total, failed: result.failed });
         // A container that failed to come back still runs the old settings, so
         // the prompt stays until every one of them has been recreated.
-        if (result.failed.length === 0) clearApplyPending();
+        if (result.failed.length === 0) clearApplyPending(generation);
       } catch (caught) {
         setVeritySettingsError(
           caught instanceof VerityApiError ? caught.message : 'Could not reprovision',
