@@ -1,16 +1,15 @@
 {
   "schema": 1,
-  "version": "1.46.3",
+  "version": "1.46.4",
   "runtime": "1.46.0",
   "channel": "testflight",
-  "commit": "f64d8a1c0a0fcbec77a04381eb3a7e41f183028b",
-  "tag": "mobile-v1.46.3",
-  "branch": "staging-mobile-v1.46.3-f64d8a1c0a0fcbec77a04381eb3a7e41f183028b",
-  "baseline": "mobile-v1.46.2",
-  "group": "bfa93c19-8508-443f-bb00-037735cd20c0",
+  "commit": "55bfcd626fbef940a07c93a3660cfae9c26939d9",
+  "tag": "mobile-v1.46.4",
+  "branch": "staging-mobile-v1.46.4-55bfcd626fbef940a07c93a3660cfae9c26939d9",
+  "baseline": "mobile-v1.46.3",
+  "group": "76a59ced-45b3-4fb1-b9a3-e408f0c37901",
   "notes": [
-    "pick what to share before setting up the preview link (#952)",
-    "report a server update the Updater accepted instead of a failed start (#947)",
-    "clarify editable session names and disable unchanged saves (#948)"
+    "add session Calendar and Contacts with incremental consent (#956)",
+    "redesign live meeting screen (#951)"
   ]
 }
