@@ -4,11 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 
 describe('Google Drive connection routes', () => {
-  it('revokes every session Gmail grant when the shared Google account disconnects', async () => {
+  it('revokes every session Gmail and Calendar grant when the shared Google account disconnects', async () => {
     const clearSessionGmailConnections = vi.fn().mockResolvedValue(undefined);
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const eventStore = {
       clearSessionGmailConnections,
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
       updateVeritySettings,
       getVeritySettings: vi.fn(),
       getSession: vi.fn(),
@@ -33,11 +34,13 @@ describe('Google Drive connection routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(clearSessionGmailConnections).toHaveBeenCalledOnce();
+    expect(eventStore.clearSessionCalendarConnections).toHaveBeenCalledOnce();
     expect(updateVeritySettings).toHaveBeenCalledWith(
       expect.objectContaining({
         googleDriveRefreshToken: null,
         googleDriveAccountEmail: null,
         gmailAuthorized: false,
+        calendarAuthorized: false,
       }),
     );
     await app.close();
@@ -48,6 +51,7 @@ describe('Google Drive connection routes', () => {
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const eventStore = {
       clearSessionGmailConnections,
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
       updateVeritySettings,
       getVeritySettings: vi.fn().mockResolvedValue({
         googleDriveAccountEmail: 'old@example.test',
@@ -100,6 +104,7 @@ describe('Google Drive connection routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(clearSessionGmailConnections).toHaveBeenCalledOnce();
+    expect(eventStore.clearSessionCalendarConnections).toHaveBeenCalledOnce();
     expect(updateVeritySettings).toHaveBeenCalledWith(
       expect.objectContaining({ gmailAuthorized: false }),
     );

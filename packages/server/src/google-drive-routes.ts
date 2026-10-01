@@ -20,6 +20,7 @@ import {
   type DriveFileList,
   type SharedDriveList,
 } from './google-drive.js';
+import { hasGoogleCalendarScopes } from './google-oauth-scopes.js';
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
 import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
@@ -79,6 +80,7 @@ interface GoogleDriveRouteDeps {
       | 'clearSessionWorkspaceFile'
       | 'listRecentGoogleWorkspaceFileIds'
       | 'clearSessionGmailConnections'
+      | 'clearSessionCalendarConnections'
       | 'getProject'
       | 'getProjectSettings'
       | 'updateProjectSettings'
@@ -165,19 +167,23 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         accountEmail = undefined;
       }
       const previous = await deps.eventStore.getVeritySettings();
+      const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
+      const accountChanged =
+        previous?.googleDriveAccountEmail !== null &&
+        previous?.googleDriveAccountEmail !== undefined &&
+        previous.googleDriveAccountEmail.toLowerCase() !== accountEmail?.toLowerCase();
       const gmailAuthorized =
         tokens.scopes?.includes('https://www.googleapis.com/auth/gmail.readonly') === true &&
         tokens.scopes.includes('https://www.googleapis.com/auth/gmail.compose') &&
         tokens.scopes.includes('https://www.googleapis.com/auth/gmail.settings.basic');
-      if (
-        !gmailAuthorized ||
-        (previous?.googleDriveAccountEmail !== null &&
-          previous?.googleDriveAccountEmail !== undefined &&
-          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail?.toLowerCase())
-      ) {
+      if (!gmailAuthorized || accountChanged) {
         await deps.eventStore.clearSessionGmailConnections();
       }
+      if (!calendarAuthorized || accountChanged) {
+        await deps.eventStore.clearSessionCalendarConnections();
+      }
       await deps.eventStore.updateVeritySettings({
+        calendarAuthorized,
         googleDriveClientId: clientId,
         googleDriveRefreshToken: tokens.refreshToken,
         googleDriveAccountEmail: accountEmail ?? null,
@@ -194,11 +200,13 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
   app.post('/google-drive/disconnect', async () => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
     await deps.eventStore.clearSessionGmailConnections();
+    await deps.eventStore.clearSessionCalendarConnections();
     await deps.eventStore.updateVeritySettings({
       googleDriveClientId: null,
       googleDriveRefreshToken: null,
       googleDriveAccountEmail: null,
       gmailAuthorized: false,
+      calendarAuthorized: false,
     });
     accessToken.invalidate();
     return { connected: false as const };

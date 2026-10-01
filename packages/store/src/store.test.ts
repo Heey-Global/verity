@@ -301,6 +301,57 @@ describe('EventStore — session Google Slides assignment', () => {
     await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
   });
 
+  it('enables Calendar per session idempotently and cascades the grant on session deletion', async () => {
+    await ctx.store.createSession(session);
+    const first = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    const second = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+
+    expect(second).toEqual(first);
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toEqual(first);
+
+    const rebound = await ctx.store.enableSessionCalendar('s1', 'other@example.test');
+    expect(rebound.accountEmail).toBe('other@example.test');
+
+    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.disableSessionCalendar('s1');
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await ctx.store.deleteSession('s1');
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+  });
+
+  it('clears every Calendar grant while preserving Gmail access', async () => {
+    await ctx.store.createSession(session);
+    await ctx.store.createSession({ ...session, sessionId: 's2', worktree: '/wt/agent-s2' });
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await ctx.store.enableSessionCalendar('s2', 'me@example.test');
+    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.clearSessionCalendarConnections();
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s2')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+  });
+
+  it('persists Calendar authorization independently of Gmail and preserves omitted settings', async () => {
+    await expect(
+      ctx.store.updateVeritySettings({ calendarAuthorized: true }),
+    ).resolves.toMatchObject({
+      calendarAuthorized: true,
+      gmailAuthorized: false,
+    });
+    await ctx.store.updateVeritySettings({ gmailAuthorized: true });
+    await expect(ctx.store.getVeritySettingsRaw()).resolves.toMatchObject({
+      calendarAuthorized: true,
+      gmailAuthorized: true,
+    });
+    await ctx.store.updateVeritySettings({ calendarAuthorized: false });
+    await expect(ctx.store.getVeritySettings()).resolves.toMatchObject({
+      calendarAuthorized: false,
+      gmailAuthorized: true,
+    });
+  });
+
   it('keeps exactly one deck per session and clears it without deleting the session', async () => {
     await ctx.store.createSession(session);
     const firstAssignment = await ctx.store.setSessionSlideDeck({

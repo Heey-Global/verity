@@ -76,6 +76,7 @@ import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-g
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createGoogleDocsTool } from './google-docs-tool.js';
+import { createGoogleCalendarTool } from './google-calendar-tool.js';
 import { createGmailTool } from './gmail-tool.js';
 import { createGoogleSheetsTool } from './google-sheets-tool.js';
 import { createGoogleDriveAgentTool } from './google-drive-agent-tool.js';
@@ -1871,6 +1872,9 @@ export async function buildEmbeddedServer(
   const googleSheetsTool = createGoogleSheetsTool({ eventStore, googleAccessToken });
   const invokeGoogleSheets: typeof googleSheetsTool.invoke = (input) =>
     googleSheetsTool.invoke(input);
+  const googleCalendarTool = createGoogleCalendarTool({ eventStore, googleAccessToken });
+  const invokeGoogleCalendar: typeof googleCalendarTool.invoke = (input) =>
+    googleCalendarTool.invoke(input);
   const gmailTool = createGmailTool({ eventStore, googleAccessToken });
   const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
   const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
@@ -1948,6 +1952,7 @@ export async function buildEmbeddedServer(
             'verity_knowledge',
             'verity_google_sheets',
             'verity_gmail',
+            'verity_google_calendar',
             'verity_google_drive',
           ]
         : [
@@ -1960,6 +1965,7 @@ export async function buildEmbeddedServer(
             'verity_knowledge',
             'verity_google_sheets',
             'verity_gmail',
+            'verity_google_calendar',
             'verity_google_drive',
           ],
     // Control-plane session tools are handled in `buildServer`, which owns session
@@ -1994,6 +2000,7 @@ export async function buildEmbeddedServer(
       googleDocs: invokeGoogleDocs,
       googleSheets: invokeGoogleSheets,
       gmail: invokeGmail,
+      googleCalendar: invokeGoogleCalendar,
       googleDrive: invokeGoogleDrive,
     }),
     recordCall: async ({ projectId, kind, ...gateway }) => {

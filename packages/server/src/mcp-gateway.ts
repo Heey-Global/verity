@@ -1,3 +1,4 @@
+import { googleCalendarRequestSchema } from './google-calendar.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import { randomUUID } from 'node:crypto';
 import { KnowledgeError } from '@verity/store';
@@ -311,6 +312,7 @@ const TOOL_SCHEMAS = {
       requests: z.array(z.record(z.string(), z.unknown())).min(1).max(25).optional(),
     })
     .strict(),
+  verity_google_calendar: googleCalendarRequestSchema,
   verity_gmail: z.discriminatedUnion('action', [
     z
       .object({
@@ -399,6 +401,8 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; edit accepts any structurally valid Google Docs batchUpdate request and requires the revisionId returned by the read.',
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or any structurally valid Google Sheets batchUpdate request.',
+  verity_google_calendar:
+    'Read Google Calendar calendars and events when access is enabled for this session. Creating, updating, and deleting events always require user approval. Read an event before updating or deleting it and use its etag as expectedEtag to avoid overwriting concurrent changes. Use sendUpdates: all only when invitations or updates should be emailed to attendees.',
   verity_gmail:
     'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:

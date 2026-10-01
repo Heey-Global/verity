@@ -61,6 +61,16 @@ export async function runGmailAuth(clientId: string): Promise<GoogleDriveAuthRes
   return runGoogleAuth(clientId, [...SCOPES, ...GMAIL_SCOPES]);
 }
 
+/** Calendar mutations are gated by per-action approval on the server. */
+export async function runCalendarAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  return runGoogleAuth(clientId, [
+    ...SCOPES,
+    'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+    'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/userinfo.email',
+  ]);
+}
+
 async function runGoogleAuth(clientId: string, scopes: string[]): Promise<GoogleDriveAuthResult> {
   const redirectUri = googleDriveRedirectUri(clientId);
   const request = new AuthSession.AuthRequest({

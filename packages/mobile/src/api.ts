@@ -791,6 +791,7 @@ const gmailSessionConnectionSchema = z.object({
   connected: z.boolean(),
 });
 export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
+export type CalendarSessionConnection = GmailSessionConnection;
 
 export const googleDriveImportResultSchema = z.object({
   root: z.literal('knowledge'),
@@ -2606,6 +2607,38 @@ export class VerityClient {
 
   async disableSessionGmail(sessionId: string): Promise<void> {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, { method: 'DELETE' });
+  }
+
+  async getSessionCalendarConnection(sessionId: string): Promise<CalendarSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async connectCalendar(input: {
+    code: string;
+    codeVerifier: string;
+    redirectUri: string;
+  }): Promise<{ accountEmail: string | null }> {
+    const res = await this.request('/calendar/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const parsed = googleDriveConnectResultSchema.parse(await res.json());
+    return { accountEmail: parsed.accountEmail };
+  }
+
+  async enableSessionCalendar(sessionId: string): Promise<CalendarSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableSessionCalendar(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, { method: 'DELETE' });
   }
 
   async connectProjectGoogleDriveFolder(

@@ -51,6 +51,15 @@ export function createMcpGatewayToolExecutor(options: {
         request: unknown;
       }) => Promise<unknown>)
     | undefined;
+  googleCalendar?:
+    | ((input: {
+        projectId: string;
+        sessionId: string;
+        turnId: string;
+        invocationId: string;
+        request: unknown;
+      }) => Promise<unknown>)
+    | undefined;
   googleDrive?:
     | ((input: {
         projectId: string;
@@ -92,6 +101,10 @@ export function createMcpGatewayToolExecutor(options: {
     if (toolName === 'verity_google_sheets') {
       if (options.googleSheets === undefined) throw new Error('Google Sheets is unavailable');
       return options.googleSheets({ projectId, sessionId, turnId, invocationId, request });
+    }
+    if (toolName === 'verity_google_calendar') {
+      if (options.googleCalendar === undefined) throw new Error('Google Calendar is unavailable');
+      return options.googleCalendar({ projectId, sessionId, turnId, invocationId, request });
     }
     if (toolName === 'verity_gmail') {
       if (options.gmail === undefined) throw new Error('Gmail is unavailable');

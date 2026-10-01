@@ -379,6 +379,49 @@ describe('VerityClient Gmail session access', () => {
   });
 });
 
+describe('VerityClient Calendar session access', () => {
+  it('connects the account and toggles access for one encoded session', async () => {
+    const connection = {
+      enabled: true,
+      accountEmail: 'person@example.com',
+      clientId: 'google-client-id',
+      connected: true,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ ...connection, enabled: false, connected: false }),
+      json({ connected: true, accountEmail: 'person@example.com' }),
+      json(connection),
+      json({}),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.getSessionCalendarConnection('session/1')).resolves.toMatchObject({
+      enabled: false,
+      connected: false,
+    });
+    await client.connectCalendar({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
+    await expect(client.enableSessionCalendar('session/1')).resolves.toEqual(connection);
+    await client.disableSessionCalendar('session/1');
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/session%2F1/calendar',
+      'http://host/calendar/connect',
+      'http://host/sessions/session%2F1/calendar',
+      'http://host/sessions/session%2F1/calendar',
+    ]);
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
+  });
+});
+
 describe('VerityClient health capabilities', () => {
   it('surfaces pushEnabled and remains compatible with older servers', async () => {
     const current = new VerityClient({

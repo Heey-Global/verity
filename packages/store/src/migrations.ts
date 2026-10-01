@@ -3378,6 +3378,21 @@ const migrations: Record<string, Migration> = {
       await sql`alter table live_meetings drop column speaker_names_json`.execute(db);
     },
   },
+  '0122_calendar_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table verity_settings
+        add column calendar_authorized boolean not null default false`.execute(db);
+      await sql`create table session_calendar_connections (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        account_email text not null,
+        enabled_at timestamptz not null default now()
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_calendar_connections`.execute(db);
+      await sql`alter table verity_settings drop column calendar_authorized`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

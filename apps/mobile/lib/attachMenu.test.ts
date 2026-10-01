@@ -8,6 +8,7 @@ const handlers = {
   onPickMeetingAudio: jest.fn(),
   onLiveMeeting: jest.fn(),
   onConnectGmail: jest.fn(),
+  onConnectCalendar: jest.fn(),
 };
 
 function labels(rows: AttachMenuRow[]): string[] {
@@ -28,6 +29,7 @@ describe('attachMenuRows', () => {
       '—',
       '[Connect]',
       'Gmail',
+      'Google Calendar',
     ]);
     expect(
       attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
@@ -44,6 +46,7 @@ describe('attachMenuRows', () => {
       '—',
       '[Connect]',
       'Gmail',
+      'Google Calendar',
     ]);
   });
 
@@ -55,6 +58,16 @@ describe('attachMenuRows', () => {
     expect(row?.icon).toBe('mic');
     row?.onPress();
     expect(handlers.onPickMeetingAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes Calendar separately from Gmail', () => {
+    const row = attachMenuRows(handlers).find(
+      (candidate): candidate is Extract<AttachMenuRow, { label: string }> =>
+        'label' in candidate && candidate.label === 'Google Calendar',
+    );
+    row?.onPress();
+    expect(handlers.onConnectCalendar).toHaveBeenCalledTimes(1);
+    expect(handlers.onConnectGmail).not.toHaveBeenCalled();
   });
 
   it('is reachable in this build — meeting audio ships enabled', () => {

@@ -93,6 +93,7 @@ import {
   type CodexUsageHealth,
   type CodexUsageService,
 } from './codexUsage.js';
+import { googleCalendarHasStandingAuthorization } from './google-calendar-tool.js';
 import { gmailHasStandingAuthorization } from './gmail-tool.js';
 import { assertSafeGmailSendSnapshot, type GmailDraftSendSnapshot } from './gmail.js';
 import {
@@ -206,6 +207,7 @@ import {
 import { SandboxUnavailableError } from './sandbox-git.js';
 import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
+import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
@@ -4891,6 +4893,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerGoogleCalendarRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.onGoogleCredentialsChanged !== undefined
+      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
+      : {}),
+  });
 
   // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────
   // The cipher holds the at-rest key in memory only. `status` reports the
@@ -5594,9 +5604,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           toolName === 'verity_google_slides' ||
           toolName === 'verity_google_docs' ||
           toolName === 'verity_google_sheets' ||
-          toolName === 'verity_gmail'
+          toolName === 'verity_gmail' ||
+          toolName === 'verity_google_calendar'
         ) {
           const session = await deps.eventStore.getSession(sessionId);
+          if (toolName === 'verity_google_calendar') {
+            const connection = await deps.eventStore.getSessionCalendarConnection(sessionId);
+            const settings = await deps.eventStore.getVeritySettings();
+            if (
+              session?.projectId !== projectId ||
+              connection === undefined ||
+              settings?.calendarAuthorized !== true ||
+              !settings.googleDriveRefreshToken?.trim() ||
+              settings.googleDriveAccountEmail?.toLowerCase() !==
+                connection.accountEmail.toLowerCase()
+            ) {
+              throw new ControlPlaneSessionAuthorityError(
+                'Google Calendar requires access enabled for the calling session',
+              );
+            }
+            return;
+          }
           if (toolName === 'verity_gmail') {
             if (
               typeof input.request === 'object' &&
@@ -5721,11 +5749,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           toolName !== 'verity_google_slides' &&
           toolName !== 'verity_google_docs' &&
           toolName !== 'verity_google_sheets' &&
-          toolName !== 'verity_gmail'
+          toolName !== 'verity_gmail' &&
+          toolName !== 'verity_google_calendar'
         )
           return false;
         const session = await deps.eventStore.getSession(sessionId);
         if (session === undefined || session.projectId !== projectId) return false;
+        if (toolName === 'verity_google_calendar') {
+          if (!googleCalendarHasStandingAuthorization(request)) return false;
+          const connection = await deps.eventStore.getSessionCalendarConnection(sessionId);
+          const settings = await deps.eventStore.getVeritySettings();
+          return (
+            connection !== undefined &&
+            settings?.calendarAuthorized === true &&
+            Boolean(settings.googleDriveRefreshToken?.trim()) &&
+            settings.googleDriveAccountEmail?.toLowerCase() ===
+              connection.accountEmail.toLowerCase()
+          );
+        }
         if (toolName === 'verity_gmail') {
           if (!gmailHasStandingAuthorization(request)) return false;
           const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
