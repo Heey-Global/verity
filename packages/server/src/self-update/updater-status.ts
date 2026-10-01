@@ -948,7 +948,7 @@ export const UPDATER_REQUEST_TIMEOUT_MS = 2_000;
  * still waiting. Abandoning it after the general allowance turned an accepted
  * update into a reported failure while Verity went on replacing itself.
  */
-export const UPDATER_UPDATE_REQUEST_TIMEOUT_MS = 15_000;
+const UPDATER_UPDATE_REQUEST_TIMEOUT_MS = 15_000;
 
 interface UpdaterCallOptions {
   readonly socketPath: string;
