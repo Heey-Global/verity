@@ -1,7 +1,7 @@
 // One shared copy of the Verity settings behind every Settings screen.
 //
 // The surface is a stack of sibling routes (index, GitHub, services, MCP,
-// maintenance), and expo-router mounts and unmounts each of them independently.
+// server update), and expo-router mounts and unmounts each of them independently.
 // If every screen kept its own fetch, its own save state and its own idea of
 // what is configured, the index's setup checklist would go stale the moment the
 // operator fixed something one screen deeper — and "Saving…" would vanish when

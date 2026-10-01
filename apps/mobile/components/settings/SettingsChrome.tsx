@@ -17,6 +17,7 @@ import { Icon, type IconName } from '../Icon';
 import { StatusPill } from '../StatusPill';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useVeritySettings } from '../../lib/settingsStore';
+import { ApplyPendingBanner } from './ApplyPendingBanner';
 import { settingsStyles as styles } from './settingsStyles';
 
 /**
@@ -57,6 +58,9 @@ export function SettingsScaffold({
     <View style={styles.flex}>
       <Stack.Screen options={{ title }} />
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
+      {/* Only on screens backed by the Verity settings store — that store is
+          where a container-affecting save is recorded. */}
+      {state === undefined ? <ApplyPendingBanner /> : null}
       {saving > 0 ? (
         <View style={styles.autoSaveBanner} accessibilityLiveRegion="polite">
           <ActivityIndicator size="small" color={theme.colors.setup.text} />

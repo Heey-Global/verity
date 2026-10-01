@@ -35,10 +35,10 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
     const navigateToSession = (sessionId: string): void => {
       router.push({ pathname: '/session/[id]', params: { id: sessionId } });
     };
-    // Where the update can actually be started — the same destination the header
-    // dot points at, so the announcement and the chrome lead to one place.
+    // Where the update can actually be started — the same destination the overview
+    // banner opens, so the announcement and the chrome lead to one place.
     const navigateToSettings = (): void => {
-      router.push('/settings/maintenance');
+      router.push('/settings/server-update');
     };
 
     // Retry until it sticks: a launch while offline (or a transient /healthz blip)

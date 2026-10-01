@@ -50,7 +50,7 @@ describe('settings index — destinations', () => {
   it.each([
     ['GitHub', '/settings/github'],
     ['Connected services', '/settings/services'],
-    ['Maintenance', '/settings/maintenance'],
+    ['Server update', '/settings/server-update'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage paired devices', '/devices'],
   ])('routes %s to %s', async (label, href) => {
@@ -79,7 +79,7 @@ describe('settings index — destinations', () => {
     await screen.findByLabelText('GitHub');
     expect(screen.queryByLabelText('Commit name')).toBeNull();
     expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
-    expect(screen.queryByLabelText('Reprovision running containers now')).toBeNull();
+    expect(screen.queryByLabelText('Apply saved settings to running containers')).toBeNull();
     expect(screen.queryByLabelText('Set master password')).toBeNull();
   });
 
@@ -104,10 +104,9 @@ describe('settings index — destinations', () => {
     expect(await screen.findByText('Locked')).toBeOnTheScreen();
   });
 
-  // The header's update dot points at Settings because that is where an update
-  // can be started — which is now one screen further in. Without this badge the
-  // dot would lead to a screen that says nothing about the update it announced.
-  it('carries a waiting server update through to the Maintenance row', async () => {
+  // Settings is the way back to an update once the overview banner has been
+  // scrolled past or the push dismissed, so the row names the waiting version.
+  it('names a waiting server update on its row', async () => {
     const serverImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
@@ -120,15 +119,15 @@ describe('settings index — destinations', () => {
     );
     render(<SettingsIndexScreen />);
 
-    expect(await screen.findByText('Update available')).toBeOnTheScreen();
+    expect(await screen.findByText('Version 1.4.0 available')).toBeOnTheScreen();
   });
 
-  it('does not badge Maintenance on a deployment Verity does not manage', async () => {
+  it('does not badge Server update on a deployment Verity does not manage', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Maintenance');
-    expect(screen.queryByText('Update available')).toBeNull();
+    await screen.findByLabelText('Server update');
+    expect(screen.queryByText(/available$/)).toBeNull();
   });
 });
 
