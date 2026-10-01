@@ -198,7 +198,8 @@ async function tunnelStopReason(): Promise<string | null> {
 // One token per recent stream, fixed fields only: bytes each way, milliseconds
 // to Core's first bytes and to the end, which side ended it, the proxy dialect,
 // the TLS record types seen each way and Core's first handshake message.
-// The `k` key is absent from native builds that predate Core's stream records.
+// The `k` key and the `fo`/`fi` frame counts are absent from native builds
+// that predate Core's stream records; a summary without them must still parse.
 const STREAM_TRACE =
   String.raw`s\d{1,2}=(?:k[0-9A-Fa-f]{8}\.)?up\d{1,9}\.dn\d{1,9}(?:\.fo\d{1,7}\.fi\d{1,7})?\.t(?:none|\d{1,7})\.d\d{1,8}` +
   String.raw`\.(?:open|local|remote|reset|stopped)\.p(?:socks|connect)` +
