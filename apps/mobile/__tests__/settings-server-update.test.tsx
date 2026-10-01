@@ -214,6 +214,32 @@ describe('recreate banner after a save', () => {
     expect(screen.queryByText(/Recreated /)).toBeNull();
   });
 
+  // The save makes the run's success moot, but not its failure: dropping it
+  // would leave a broken container unnamed behind the generic prompt.
+  it('still names a failure from a run a save overtook', async () => {
+    let fail: ((error: Error) => void) | undefined;
+    const client = await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+      recreateProjectContainer: jest.fn().mockImplementation(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            fail = reject;
+          }),
+      ),
+    });
+    render(<GitHubSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+    await waitFor(() => expect(fail).toBeDefined());
+
+    await act(async () => {
+      await saveVeritySettings(client, { gitUserName: 'newer-bot' });
+    });
+    await act(async () => fail?.(new Error('boom')));
+
+    expect(await screen.findByText('Could not recreate acme/one.')).toBeOnTheScreen();
+    expect(screen.getByLabelText(RECREATE)).toBeEnabled();
+  });
+
   // Re-pairing resets the store, but a run against the old server is still in
   // flight. Its progress describes containers the app no longer talks to, and
   // landing on the new server's banner would disable its Recreate.

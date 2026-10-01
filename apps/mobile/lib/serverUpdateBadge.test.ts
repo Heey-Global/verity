@@ -14,7 +14,7 @@ const baseUrl = getVerityBaseUrl as jest.MockedFunction<typeof getVerityBaseUrl>
 
 const available = {
   state: 'available',
-  release: { version: 'v11.1.0' },
+  release: { version: '11.1.0' },
   operation: null,
 } as unknown as ServerUpdateStatus;
 
@@ -38,7 +38,7 @@ describe('useServerUpdateBadge', () => {
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
 
-    await waitFor(() => expect(result.current).toBe('v11.1.0'));
+    await waitFor(() => expect(result.current).toBe('11.1.0'));
     expect(getServerUpdates).toHaveBeenCalledTimes(1);
   });
 
@@ -75,7 +75,7 @@ describe('useServerUpdateBadge', () => {
       jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
     });
     expect(getServerUpdates).toHaveBeenCalledTimes(1);
-    expect(result.current).toBe('v11.1.0');
+    expect(result.current).toBe('11.1.0');
   });
 });
 
@@ -92,7 +92,7 @@ describe('when the server changes underneath it', () => {
     createClient.mockReturnValue(fakeClient(getServerUpdates));
 
     const { result, rerender } = renderHook(() => useServerUpdateBadge(true));
-    await waitFor(() => expect(result.current).toBe('v11.1.0'));
+    await waitFor(() => expect(result.current).toBe('11.1.0'));
 
     // The operator points the app at a different server. Nothing has been asked
     // of it yet, so the dot must go dark rather than inherit the old answer.
@@ -112,7 +112,7 @@ describe('when the server changes underneath it', () => {
 
     const { result, rerender } = renderHook(() => useServerUpdateBadge(true));
     await act(async () => undefined);
-    expect(result.current).toBe('v11.1.0');
+    expect(result.current).toBe('11.1.0');
 
     baseUrl.mockReturnValue('http://server-b');
     getServerUpdates.mockRejectedValue(new Error('unreachable'));
@@ -130,7 +130,7 @@ describe('when the server changes underneath it', () => {
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
     await act(async () => undefined);
-    expect(result.current).toBe('v11.1.0');
+    expect(result.current).toBe('11.1.0');
 
     getServerUpdates.mockRejectedValue(new Error('update cutover'));
     await act(async () => {
@@ -146,7 +146,7 @@ describe('when the server changes underneath it', () => {
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
     await act(async () => undefined);
-    expect(result.current).toBe('v11.1.0');
+    expect(result.current).toBe('11.1.0');
 
     // No server configured any more: there is nothing the dot could be about.
     createClient.mockReturnValue(null);
@@ -169,7 +169,7 @@ describe('when the server changes underneath it', () => {
     const { result, rerender } = renderHook(({ on }: { on: boolean }) => useServerUpdateBadge(on), {
       initialProps: { on: true },
     });
-    await waitFor(() => expect(result.current).toBe('v11.1.0'));
+    await waitFor(() => expect(result.current).toBe('11.1.0'));
 
     rerender({ on: false });
     // Back on the overview, with a server that now answers nothing: the dot must

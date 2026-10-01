@@ -37,9 +37,15 @@ export function startRecreateRun(): void {
         (progress) => setApplyRun({ phase: 'running', ...progress }, scope),
       );
       // A save during the run missed the containers recreated before it, so
-      // every container needs another pass and this run's result is moot.
+      // every container needs another pass and a clean result is moot. A
+      // failure still names a container the operator may need to look at.
       if (generation !== applyPendingGeneration()) {
-        setApplyRun({ phase: 'idle' }, scope);
+        setApplyRun(
+          result.failed.length === 0
+            ? { phase: 'idle' }
+            : { phase: 'done', total: result.total, failed: result.failed },
+          scope,
+        );
         return;
       }
       setApplyRun({ phase: 'done', total: result.total, failed: result.failed }, scope);
