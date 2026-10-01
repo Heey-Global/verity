@@ -771,6 +771,28 @@ describe('dev server tab', () => {
     );
   });
 
+  it('keeps someone browsing folders in the explorer when the probe answers late', async () => {
+    let resolveServers!: (servers: (typeof vite)[]) => void;
+    renderSheet({
+      listSessionStaticPreviewEntries: jest.fn(async (_session: string, path: string) =>
+        path ? { directories: [], files: ['index.html'] } : { directories: ['site'], files: [] },
+      ),
+      listSessionDevServers: jest.fn(
+        () =>
+          new Promise<(typeof vite)[]>((resolve) => {
+            resolveServers = resolve;
+          }),
+      ),
+    });
+
+    fireEvent.press(await screen.findByLabelText('Open folder site'));
+    await act(async () => resolveServers([vite]));
+    expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
+      true,
+    );
+  });
+
   it('keeps a picked folder on its tab when the server probe answers late', async () => {
     let resolveServers!: (servers: (typeof vite)[]) => void;
     renderSheet({
@@ -832,11 +854,15 @@ describe('dev server tab', () => {
       const listSessionDevServers = jest
         .fn<Promise<(typeof vite)[]>, [string]>()
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValue([vite]);
       renderSheet({ listSessionDevServers });
 
+      // The opening probe and the tab's own first load both find nothing, so only
+      // the interval can bring the server in.
       fireEvent.press(await screen.findByRole('tab', { name: 'Dev server' }));
       expect(await screen.findByText('No dev server running')).toBeTruthy();
+      expect(listSessionDevServers).toHaveBeenCalledTimes(2);
       await act(async () => {
         jest.advanceTimersByTime(4_000);
       });

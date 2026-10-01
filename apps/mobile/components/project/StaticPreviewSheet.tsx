@@ -151,6 +151,8 @@ export function StaticPreviewSheet({
   const stoppedShareIds = useRef(new Set<string>());
 
   const navigate = (nextPath: string) => {
+    // Browsing settles the tab as much as tapping one does.
+    tabChosen.current = true;
     requestGeneration.current += 1;
     setDirectories([]);
     setFiles([]);
@@ -894,7 +896,12 @@ export function StaticPreviewSheet({
                       }
                     >
                       <View style={styles.serverMain}>
-                        <View style={styles.serverDot} />
+                        <View
+                          style={[
+                            styles.serverDot,
+                            server.reachable ? null : styles.serverDotLocal,
+                          ]}
+                        />
                         {text}
                         {live ? (
                           <View style={styles.livePill}>
