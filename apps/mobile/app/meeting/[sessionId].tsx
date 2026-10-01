@@ -959,19 +959,24 @@ export default function MeetingScreen() {
           title={insight.summary}
           source={insight.sourcePath ? `Source: ${insight.sourcePath}` : null}
           actions={[
+            ...(contradiction || insight.kind === 'research'
+              ? [
+                  {
+                    label: contradiction ? 'Let Verity check' : 'Let Verity research',
+                    accessibilityLabel: contradiction ? 'Check meeting claim' : 'Research insight',
+                    primary: true,
+                    disabled: sendingInsight,
+                    onPress: () =>
+                      void openResearch(
+                        contradiction
+                          ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
+                          : insight.evidenceA,
+                      ),
+                  },
+                ]
+              : []),
+            ...(note ? [note] : []),
             {
-              label: contradiction ? 'Let Verity check' : 'Let Verity research',
-              accessibilityLabel: contradiction ? 'Check meeting claim' : 'Research insight',
-              primary: true,
-              disabled: sendingInsight,
-              onPress: () =>
-                void openResearch(
-                  contradiction
-                    ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
-                    : insight.evidenceA,
-                ),
-            },
-            note ?? {
               label: 'Not now',
               onPress: () => setDismissed((current) => [...current, insight.id]),
             },
@@ -1382,7 +1387,6 @@ export default function MeetingScreen() {
       1,
       Math.round(((meeting.endedAt ?? now) - meeting.startedAt) / 60_000),
     );
-    const readyAnswers = visibleAnswers.filter((card) => card.status === 'ready');
     const openPoints = noticedCards().slice(visibleAnswers.length);
     const unnamed = speakers.find((speaker) => !meeting.speakerNames?.[speaker]);
     return (
@@ -1438,7 +1442,7 @@ export default function MeetingScreen() {
           ) : null}
           {visibleAnswers.length ? (
             <View style={styles.block}>
-              <SectionLabel>{`ANSWERS · ${readyAnswers.length}`}</SectionLabel>
+              <SectionLabel>{`ANSWERS · ${visibleAnswers.length}`}</SectionLabel>
               {noticedCards().slice(0, visibleAnswers.length)}
             </View>
           ) : null}

@@ -373,7 +373,6 @@ it('shows the transcript once when its text no longer matches the timed words', 
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
   expect(screen.getByText('Revised meeting text')).toBeOnTheScreen();
-  expect(screen.getByText('Revised meeting text')).toBeOnTheScreen();
   expect(screen.queryByText('Speaker 1: Old')).not.toBeOnTheScreen();
 });
 
@@ -1318,6 +1317,7 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
   );
 
   expect(screen.getByText('Is the release still Friday?')).toBeOnTheScreen();
-  fireEvent.press(screen.getByText('Not now'));
+  // The open question is the last card, after the insight it did not come from.
+  fireEvent.press(screen.getAllByText('Not now').at(-1)!);
   expect(screen.queryByText('Is the release still Friday?')).toBeNull();
 });
