@@ -2032,16 +2032,19 @@ describe('shared sandbox mount contract', () => {
       const hostBinds = [
         standardMountBind('agentSeed', '/seed/releases/.current'),
         standardMountBind('disabledTokenScript', '/dev/null'),
-        ...publicSshBinds('id_ed25519.pub', '/data/secrets/git/id_ed25519.pub', true),
-        ...publicSshBinds('known_hosts', '/data/secrets/git/known_hosts', false),
-        ...publicSshBinds('allowed_signers', '/data/secrets/git/allowed_signers', false),
       ];
+      dataBinds.push(
+        ...publicSshBinds('id_ed25519.pub', '/data/secrets/git/id_ed25519.pub', true),
+        ...publicSshBinds('known_hosts', '/data/secrets/git/known_hosts', true),
+        ...publicSshBinds('allowed_signers', '/data/secrets/git/allowed_signers', true),
+      );
       const mounts = [...dataBinds, ...hostBinds].map((bind, index) => {
         const [source, destination, access] = bind.split(':');
         return type === 'volume' && index < dataBinds.length
           ? {
               type: 'volume',
               name: 'verity-data',
+              source: '/var/lib/docker/volumes/verity-data/_data',
               subpath: source!.slice('/data/'.length),
               destination,
               readWrite: access !== 'ro',
@@ -2054,6 +2057,30 @@ describe('shared sandbox mount contract', () => {
       ).resolves.toMatchObject({ state: 'active' });
     },
   );
+
+  it.each([
+    { name: 'other-volume', subpath: 'secrets/git/allowed_signers', readWrite: false },
+    { name: 'verity-data', subpath: 'secrets/git/private-key', readWrite: false },
+    { name: 'verity-data', subpath: 'secrets/git/allowed_signers', readWrite: true },
+  ])('rejects mismatched public SSH volume metadata: %j', async (metadata) => {
+    const { manager, docker, inspect, edge } = fixture();
+    docker.inspectContainer.mockResolvedValue({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          source: '/var/lib/docker/volumes/verity-data/_data',
+          destination: '/home/dev/.ssh/allowed_signers',
+          ...metadata,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
 
   it('rejects a writable knowledge mount even when its source is correct', async () => {
     const { manager, docker, inspect, edge } = fixture();

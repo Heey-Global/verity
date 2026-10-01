@@ -1436,7 +1436,14 @@ async function assertEligibleSandbox(
     if (
       mount.readWrite === false &&
       allowedSourceSuffix !== undefined &&
-      mount.source?.endsWith(allowedSourceSuffix) === true
+      ((options.dataVolumeRoot !== undefined &&
+        mountMatchesProjectData(
+          mount,
+          `secrets${allowedSourceSuffix}`,
+          options.dataVolume,
+          options.dataVolumeRoot,
+        )) ||
+        (mount.type === 'bind' && mount.source?.endsWith(allowedSourceSuffix) === true))
     ) {
       continue;
     }
