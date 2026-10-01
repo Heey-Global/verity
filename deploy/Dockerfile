@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS builder
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS builder-deps
 
 WORKDIR /app
 
@@ -43,6 +43,8 @@ COPY apps/mobile/package.json apps/mobile/
 # build time. The server's deps (fastify, zod, ws, pglite, kysely) are pure JS/wasm
 # and need no build step; `tsc -b` compiles from source below.
 RUN npm ci --ignore-scripts
+
+FROM builder-deps AS builder
 
 # Only the server-reachable packages need compiling; the mobile app is not built
 # in the Server image. tsconfig.json references build the server's dep graph
