@@ -1,14 +1,16 @@
 {
   "schema": 1,
-  "version": "1.46.2",
+  "version": "1.46.3",
   "runtime": "1.46.0",
   "channel": "testflight",
-  "commit": "95038d10b4723efc4b9d1fc45e8a01d83198f24e",
-  "tag": "mobile-v1.46.2",
-  "branch": "staging-mobile-v1.46.2-95038d10b4723efc4b9d1fc45e8a01d83198f24e",
-  "baseline": "mobile-v1.46.1",
-  "group": "c11d6d79-94fd-4dc6-a804-6622cf1df82f",
+  "commit": "f64d8a1c0a0fcbec77a04381eb3a7e41f183028b",
+  "tag": "mobile-v1.46.3",
+  "branch": "staging-mobile-v1.46.3-f64d8a1c0a0fcbec77a04381eb3a7e41f183028b",
+  "baseline": "mobile-v1.46.2",
+  "group": "bfa93c19-8508-443f-bb00-037735cd20c0",
   "notes": [
-    "retry stalled Remote Control reads through alternate proxy (#945)"
+    "pick what to share before setting up the preview link (#952)",
+    "report a server update the Updater accepted instead of a failed start (#947)",
+    "clarify editable session names and disable unchanged saves (#948)"
   ]
 }
