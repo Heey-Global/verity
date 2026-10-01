@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.47.0](https://github.com/Heey-Global/verity/compare/mobile-v1.46.0...mobile-v1.47.0) (2026-10-01)
+
+
+### Features
+
+* **google:** add session Calendar and Contacts with incremental consent ([#956](https://github.com/Heey-Global/verity/issues/956)) ([55bfcd6](https://github.com/Heey-Global/verity/commit/55bfcd626fbef940a07c93a3660cfae9c26939d9))
+* **mobile:** announce server updates with a banner and a dedicated screen ([#962](https://github.com/Heey-Global/verity/issues/962)) ([fda350c](https://github.com/Heey-Global/verity/commit/fda350c8dfc92503995980c55e0667a167aed669))
+* **mobile:** pick what to share before setting up the preview link ([#952](https://github.com/Heey-Global/verity/issues/952)) ([f64d8a1](https://github.com/Heey-Global/verity/commit/f64d8a1c0a0fcbec77a04381eb3a7e41f183028b))
+* **mobile:** redesign live meeting screen ([#951](https://github.com/Heey-Global/verity/issues/951)) ([999772f](https://github.com/Heey-Global/verity/commit/999772fedadca11579583186f400e2d12e34fab7))
+* **mobile:** show release notes for a pending server update ([#964](https://github.com/Heey-Global/verity/issues/964)) ([0d9f94d](https://github.com/Heey-Global/verity/commit/0d9f94de5414bd3cee4ab5238ff9581cf69aacdc))
+
+
+### Bug Fixes
+
+* **mobile:** clarify editable session names and disable unchanged saves ([#948](https://github.com/Heey-Global/verity/issues/948)) ([95451f1](https://github.com/Heey-Global/verity/commit/95451f11b145909af658fe07c824792cf6aba69f))
+* **mobile:** expose remote diagnostics without Core settings ([#963](https://github.com/Heey-Global/verity/issues/963)) ([d0961b2](https://github.com/Heey-Global/verity/commit/d0961b272d67218dabc8901131797af060beaead))
+* **mobile:** float the project picker over session settings ([#941](https://github.com/Heey-Global/verity/issues/941)) ([d5d5185](https://github.com/Heey-Global/verity/commit/d5d51851883f1649636dca41242f55d6af0751e7))
+* **mobile:** retry stalled Remote Control reads through alternate proxy ([#945](https://github.com/Heey-Global/verity/issues/945)) ([c1fddb9](https://github.com/Heey-Global/verity/commit/c1fddb9fc0223c7cf7301a3f7d63b4c3672ddb58))
+* **release:** keep mobile fixtures out of server releases ([#939](https://github.com/Heey-Global/verity/issues/939)) ([c90a278](https://github.com/Heey-Global/verity/commit/c90a2789ee338ece2d59636f15c5106df720a2c5))
+* report a server update the Updater accepted instead of a failed start ([#947](https://github.com/Heey-Global/verity/issues/947)) ([6c830db](https://github.com/Heey-Global/verity/commit/6c830db7a6852a9a15baa4f9d9d0a296c1c91b08))
+
 ## [1.46.0](https://github.com/Heey-Global/verity/compare/mobile-v1.45.0...mobile-v1.46.0) (2026-09-30)
 
 
