@@ -1227,37 +1227,16 @@ jobs:
           # public package; this build reads it without logging in.
           cache-from: type=registry,ref=ghcr.io/heey-global/verity/verity-matrix-connector:buildcache-amd64
 
-  server-image:
+  server-image-build:
     needs: changes
     if: needs.changes.outputs.server_image == 'true'
     runs-on: ubuntu-24.04
-    # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
-    # cache-janitor.yml). The janitor only deletes entries nothing has read for
-    # that long, and that is the whole reason it cannot pull a cache out from
-    # under a build still restoring it — but a job with no `timeout-minutes`
-    # inherits GitHub's 360-minute default and can outlive the window six times
-    # over. This is a single-arch amd64 build that finishes in minutes, so the
-    # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
-    # every step in the repo that reads or writes a gha cache.
     timeout-minutes: 45
-    # Two legs, one per installer acceptance. Each boots its own empty Docker
-    # host and loads the whole image into it, which is minutes of work apiece;
-    # serialized on one runner they were the bulk of the slowest PR check. Each
-    # leg builds the image itself from the shared cache — cheaper than moving a
-    # multi-GB image between runners — and the quick image checks run once, in
-    # the compose leg. Not fail-fast: each leg is a separate verdict.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - installer: compose
-          - installer: managed
-    # Namespace every mutable smoke-test resource. This remains useful for local
-    # reproduction and protects against future runner-layout changes.
+    # Failed installer reruns reuse the successful producer from the same run.
     env:
-      VERITY_CI_IMAGE: verity-server:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_IMAGE: verity-server:ci-${{ github.run_id }}
       # Under $RUNNER_TEMP; `runner` is not available to job-level env.
-      VERITY_CI_IMAGE_ARCHIVE: verity-server-ci-${{ github.run_id }}-${{ github.run_attempt }}.tar
+      VERITY_CI_IMAGE_ARCHIVE: verity-server-ci-${{ github.run_id }}.tar
       VERITY_CI_SERVER: verity-server-ci-${{ github.run_id }}-${{ github.run_attempt }}
       VERITY_CI_POSTGRES: verity-postgres-ci-${{ github.run_id }}-${{ github.run_attempt }}
       VERITY_CI_NETWORK: verity-ci-net-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1394,9 +1373,77 @@ jobs:
           # was evicting the very blobs being written.
           cache-from: type=gha,scope=verity-server-amd64
           #
-          # One writer per run: both matrix legs build the same image, and two
-          # exports into one scope only race each other for the same index.
-          cache-to: ${{ github.event_name != 'pull_request' && matrix.installer == 'compose' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
+          # One producer writes this scope; both installer legs only load its archive.
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
+      # Avoid recompressing the multi-GB Docker archive on the runner.
+      - name: Upload Server image archive
+        # renovate: datasource=github-actions depName=actions/upload-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/${{ env.VERITY_CI_IMAGE_ARCHIVE }}
+          compression-level: 0
+          overwrite: true
+          # Failed-job reruns can reuse the successful build for 30 days.
+          retention-days: 30
+          if-no-files-found: error
+      - name: Bound persistent build cache
+        if: always()
+        run: docker buildx prune --builder verity-ci-bounded-v1 --force --keep-storage 40GB >/dev/null 2>&1 || true
+      - name: Clean image archive
+        if: always()
+        run: rm -f "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+
+  server-image:
+    needs: [changes, server-image-build]
+    if: needs.changes.outputs.server_image == 'true'
+    runs-on: ubuntu-24.04
+    # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
+    # cache-janitor.yml). The janitor only deletes entries nothing has read for
+    # that long, and that is the whole reason it cannot pull a cache out from
+    # under a build still restoring it — but a job with no `timeout-minutes`
+    # inherits GitHub's 360-minute default and can outlive the window six times
+    # over. This is a single-arch amd64 build that finishes in minutes, so the
+    # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
+    # every step in the repo that reads or writes a gha cache.
+    timeout-minutes: 45
+    # Both installer paths exercise the exact same archive from one build.
+    # Independent verdicts remain visible when either installer fails.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - installer: compose
+          - installer: managed
+    # Namespace every mutable smoke-test resource. This remains useful for local
+    # reproduction and protects against future runner-layout changes.
+    env:
+      VERITY_CI_IMAGE: verity-server:ci-${{ github.run_id }}
+      # Under $RUNNER_TEMP; `runner` is not available to job-level env.
+      VERITY_CI_IMAGE_ARCHIVE: verity-server-ci-${{ github.run_id }}.tar
+      VERITY_CI_SERVER: verity-server-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_POSTGRES: verity-postgres-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_NETWORK: verity-ci-net-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_CLEAN_DIND: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_CLEAN_DIND_VOLUME: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}-data
+      VERITY_CI_MANAGED_DIND: verity-managed-install-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_MANAGED_DIND_VOLUME: verity-managed-install-dind-${{ github.run_id }}-${{ github.run_attempt }}-data
+      # The relay-only server validates an immutable relay reference at startup.
+      # The image is never pulled in this health-only smoke because no project is
+      # provisioned.
+      VERITY_CI_RELAY_IMAGE: ghcr.io/heey-global/verity/verity-project-relay@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      # Health-only smoke values. No gateway is contacted until a Claude turn;
+      # these exercise the server's mandatory routing configuration at boot.
+      VERITY_CI_GATEWAY_UNSEAL_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download Server image archive
+        # renovate: datasource=github-actions depName=actions/download-artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: server-image-${{ github.run_id }}
+          path: ${{ runner.temp }}
       - name: Load Verity server image into the runner's Docker
         if: matrix.installer == 'compose'
         run: docker load --input "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
@@ -1721,6 +1768,7 @@ jobs:
         mobile,
         mobile-app,
         matrix-connector-image,
+        server-image-build,
         server-image,
         agent-seed-drift,
       ]
@@ -1773,5 +1821,6 @@ jobs:
           require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.changes.outputs.mobile }}"
           require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.changes.outputs.mobile_app }}"
           require_success matrix-connector-image "${{ needs.matrix-connector-image.result }}"
+          require_when_changed server-image-build "${{ needs.server-image-build.result }}" "${{ needs.changes.outputs.server_image }}"
           require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.changes.outputs.server_image }}"
           echo "all required CI jobs succeeded"
