@@ -45,15 +45,17 @@ function fixture(failPatch = false) {
   `,
   );
   chmodSync(join(root, 'bin/npm'), 0o755);
+  writeFileSync(join(root, 'apps/mobile/package.json'), JSON.stringify(app));
   const trace = join(root, 'trace');
   return {
     root,
-    run(eas: string, verify = false) {
+    run(eas: string, verify = false, profile = 'development') {
       return spawnSync(process.execPath, [entry, ...(verify ? ['--verify'] : [])], {
         cwd: join(root, 'apps/mobile'),
         env: {
           ...process.env,
           EAS_BUILD: eas,
+          EAS_BUILD_PROFILE: profile,
           PATH: `${join(root, 'bin')}:${process.env.PATH}`,
           TRACE: trace,
         },
@@ -76,6 +78,36 @@ describe('EAS archive preparation', () => {
       cwd: f.root,
     });
   });
+
+  it('excludes development pods only from the isolated TestFlight manifest', () => {
+    const f = fixture();
+    const path = join(f.root, 'apps/mobile/package.json');
+    const app = JSON.parse(readFileSync(path, 'utf8'));
+    app.expo = { autolinking: { ios: { exclude: ['existing-module'] } } };
+    writeFileSync(path, JSON.stringify(app));
+    expect(f.run('true', false, 'testflight').status).toBe(0);
+    const prepared = JSON.parse(readFileSync(path, 'utf8'));
+    expect(prepared.expo.autolinking.ios.exclude).toEqual([
+      'existing-module',
+      'expo-dev-client',
+      'expo-dev-menu',
+      'expo-dev-launcher',
+    ]);
+    expect(prepared.dependencies).toEqual(app.dependencies);
+    expect(f.run('true', false, 'testflight').status).toBe(0);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prepared);
+  });
+
+  it.each(['development', 'preview', 'production', 'simulator'])(
+    'preserves the manifest for the %s profile',
+    (profile) => {
+      const f = fixture();
+      const path = join(f.root, 'apps/mobile/package.json');
+      const original = readFileSync(path, 'utf8');
+      expect(f.run('true', false, profile).status).toBe(0);
+      expect(readFileSync(path, 'utf8')).toBe(original);
+    },
+  );
 
   it('runs the shipped workspace lifecycle during an isolated npm ci', () => {
     const f = fixture();
