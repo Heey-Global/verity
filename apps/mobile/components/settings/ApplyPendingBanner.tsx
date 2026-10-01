@@ -88,7 +88,9 @@ export function ApplyPendingBanner() {
 
   const running = repro.phase === 'running';
   const message = running
-    ? `Applying to running containers… ${String(repro.done)}/${String(repro.total)}`
+    ? repro.total === 0
+      ? 'Applying to running containers…'
+      : `Applying to running containers… ${String(repro.done)}/${String(repro.total)}`
     : repro.phase === 'done'
       ? `Not applied to ${repro.failed.join(', ')}.`
       : 'Saved. Running containers keep the old settings until they are recreated.';
