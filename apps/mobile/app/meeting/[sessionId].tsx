@@ -881,7 +881,11 @@ export default function MeetingScreen() {
     void saveNote(note).then(
       async () => {
         // Finalizing marks it ready for the next sync; until then it is pending like any note.
-        if (await finalizeNote(note.id, note.text).catch(() => false)) setSyncError(true);
+        const finalized = await finalizeNote(note.id, note.text).catch((reason) => {
+          setError(`Note could not be finished: ${String(reason)}`);
+          return false;
+        });
+        if (finalized) setSyncError(true);
       },
       (reason) => {
         setNotes((current) => current.filter((entry) => entry.id !== note.id));
@@ -1282,6 +1286,11 @@ export default function MeetingScreen() {
             </Pressable>
           </View>
           {error ? <Text style={styles.error}>{error}</Text> : null}
+          {noteUnsaved ? (
+            <Text style={styles.error}>
+              A note from the last meeting is not saved yet. Cancel to retry it.
+            </Text>
+          ) : null}
           <View style={styles.block}>
             <SectionLabel>WHO IS THERE?</SectionLabel>
             <View style={styles.segmented}>

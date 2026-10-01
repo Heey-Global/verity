@@ -885,6 +885,7 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   expect(screen.getByLabelText('Start meeting')).toBeOnTheScreen();
   expect(screen.queryByLabelText('Open full transcript')).toBeNull();
   expect(screen.queryByLabelText('Retry saving note')).toBeNull();
+  expect(screen.getByText(/A note from the last meeting is not saved yet/)).toBeOnTheScreen();
   fireEvent.press(screen.getByText('Cancel'));
 
   fireEvent.press(screen.getByLabelText('Retry saving note'));
