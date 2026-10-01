@@ -273,8 +273,11 @@ describe('remote control connector', () => {
     // 24 live streams; the app's schema admits at most 16 and would otherwise
     // drop the whole diagnostics response, status fields included.
     await vi.waitFor(() => expect(f.localConnections()).toBe(24));
-    expect(f.recentStreams()).toHaveLength(8);
-    expect(f.recentStreams().every((record) => record.state === 'open')).toBe(true);
+    const listed = f.recentStreams();
+    expect(listed).toHaveLength(8);
+    expect(listed.every((record) => record.state === 'open')).toBe(true);
+    // The stream the user just tested is the newest; the oldest sessions' streams go.
+    expect(listed.map((record) => record.sessionId)).toEqual(Array(8).fill('session_c'));
     for (const reservation of reservations) reservation.release('test complete');
   });
 

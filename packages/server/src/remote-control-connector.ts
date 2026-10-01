@@ -132,11 +132,13 @@ export function createRemoteConnectorPool(options: RemoteConnectorPoolOptions): 
   };
   return {
     // Bounded as a whole: the app rejects an oversized list, and many live
-    // streams is exactly the situation this view is read in.
+    // streams is exactly the situation this view is read in. The newest live
+    // streams are the ones the user just tested, so they are what survives.
     recentStreams: () => {
       const live = [...sessions]
         .flatMap((session) => session.liveStreams())
-        .slice(0, RECENT_STREAMS);
+        .sort((a, b) => a.startedAt - b.startedAt)
+        .slice(-RECENT_STREAMS);
       return [...live, ...ended.slice(Math.max(0, ended.length - (RECENT_STREAMS - live.length)))];
     },
     reserve: (request, signal) => {
@@ -305,7 +307,8 @@ class ConnectorSession implements RemoteConnectorReservation {
       writtenToLocalBytes: stream.writtenToLocalBytes,
       receivedFromLocalBytes: stream.receivedFromLocalBytes,
       sentToUplinkBytes: stream.sentToUplinkBytes,
-      state,
+      // Reasons are fixed literals, but the app drops the whole list on an overlong one.
+      state: state.slice(0, 64),
     };
   }
 
