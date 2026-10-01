@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.3.0](https://github.com/Heey-Global/verity/compare/v4.2.0...v4.3.0) (2026-10-01)
+
+
+### Features
+
+* **remote-control:** show Core tunnel streams in mobile diagnostics ([#970](https://github.com/Heey-Global/verity/issues/970)) ([dcb210c](https://github.com/Heey-Global/verity/commit/dcb210cebda6ebe974f7db00b2018c14238fb0a2))
+
+
+### Performance Improvements
+
+* **mobile:** shorten session and settings loading paths ([#969](https://github.com/Heey-Global/verity/issues/969)) ([1447db8](https://github.com/Heey-Global/verity/commit/1447db8cd77819406a61592ea2f502f8064272e0))
+* reuse pinned HTTP connections and cache event projections ([#975](https://github.com/Heey-Global/verity/issues/975)) ([aba7a34](https://github.com/Heey-Global/verity/commit/aba7a342800bae353675d05a51963aac38f8a79c))
+
 ## [4.2.0](https://github.com/Heey-Global/verity/compare/v4.1.1...v4.2.0) (2026-10-01)
 
 
