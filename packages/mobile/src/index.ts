@@ -316,6 +316,7 @@ export {
   type SessionGoogleWorkspaceFile,
   type GmailSessionConnection,
   type CalendarSessionConnection,
+  type ContactsSessionConnection,
   type SessionSummary,
   type SessionListEnvelope,
   type AttentionSignal,

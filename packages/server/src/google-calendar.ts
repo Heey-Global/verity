@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import type { GoogleFetch } from './google-drive.js';
@@ -49,6 +50,11 @@ export const googleCalendarRequestSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('create_event'),
+      addGoogleMeet: z
+        .boolean()
+        .describe(
+          'Ask the user whether to add Google Meet before creating every event. Use their explicit answer; never assume a default.',
+        ),
       calendarId,
       event: calendarEventSchema
         .required({ summary: true, start: true, end: true })
@@ -104,6 +110,8 @@ function eventResult(value: unknown): unknown {
       'etag',
       'status',
       'htmlLink',
+      'hangoutLink',
+      'conferenceData',
       'summary',
       'description',
       'location',
@@ -153,9 +161,24 @@ export async function invokeGoogleCalendarApi(
               ? 'PATCH'
               : 'DELETE';
         params.set('sendUpdates', request.sendUpdates);
+        if (request.action === 'update_event') params.set('conferenceDataVersion', '1');
         if (request.action !== 'create_event') headers['If-Match'] = request.expectedEtag;
         if (request.action !== 'delete_event') {
-          body = JSON.stringify(request.event);
+          const event = { ...request.event };
+          if (request.action === 'create_event' && request.addGoogleMeet) {
+            params.set('conferenceDataVersion', '1');
+            body = JSON.stringify({
+              ...event,
+              conferenceData: {
+                createRequest: {
+                  requestId: randomUUID(),
+                  conferenceSolutionKey: { type: 'hangoutsMeet' },
+                },
+              },
+            });
+          } else {
+            body = JSON.stringify(event);
+          }
           headers['Content-Type'] = 'application/json';
         }
       }

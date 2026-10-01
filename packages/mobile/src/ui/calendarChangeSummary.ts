@@ -18,6 +18,14 @@ export function calendarChangeSummary(input: unknown): CalendarChangeSummary | n
   )
     return null;
   const details = [`Calendar: ${value['calendarId']}`];
+  if (action === 'create_event') {
+    if (typeof value['addGoogleMeet'] !== 'boolean') return null;
+    details.push(
+      value['addGoogleMeet']
+        ? 'Google Meet: add a video meeting.'
+        : 'Google Meet: no video meeting.',
+    );
+  }
   if (typeof value['eventId'] === 'string') details.push(`Event: ${value['eventId']}`);
   if (typeof event === 'object' && event !== null && !Array.isArray(event)) {
     const data = event as Record<string, unknown>;

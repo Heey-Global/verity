@@ -3393,6 +3393,39 @@ const migrations: Record<string, Migration> = {
       await sql`alter table verity_settings drop column calendar_authorized`.execute(db);
     },
   },
+  '0123_google_contacts_and_granted_scopes': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table verity_settings
+        add column contacts_authorized boolean not null default false,
+        add column google_granted_scopes jsonb not null default '[]'::jsonb`.execute(db);
+      // Every legacy Google connection requested the full workspace bundle. Preserve
+      // its known grant without inferring Contacts consent from an existing token.
+      await sql`update verity_settings set google_granted_scopes = '["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/presentations","https://www.googleapis.com/auth/documents","https://www.googleapis.com/auth/spreadsheets"]'::jsonb
+        where google_drive_refresh_token is not null and google_drive_refresh_token <> ''`.execute(
+        db,
+      );
+      await sql`update verity_settings set google_granted_scopes = google_granted_scopes ||
+        '["https://www.googleapis.com/auth/gmail.readonly","https://www.googleapis.com/auth/gmail.compose","https://www.googleapis.com/auth/gmail.settings.basic"]'::jsonb
+        where gmail_authorized = true and google_drive_refresh_token is not null and google_drive_refresh_token <> ''`.execute(
+        db,
+      );
+      await sql`update verity_settings set google_granted_scopes = google_granted_scopes ||
+        '["https://www.googleapis.com/auth/calendar.calendarlist.readonly","https://www.googleapis.com/auth/calendar.events","https://www.googleapis.com/auth/userinfo.email"]'::jsonb
+        where calendar_authorized = true and google_drive_refresh_token is not null and google_drive_refresh_token <> ''`.execute(
+        db,
+      );
+      await sql`create table session_contacts_connections (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        account_email text not null,
+        enabled_at timestamptz not null default now()
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_contacts_connections`.execute(db);
+      await sql`alter table verity_settings drop column contacts_authorized,
+        drop column google_granted_scopes`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

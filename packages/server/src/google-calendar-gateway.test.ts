@@ -11,6 +11,7 @@ import { buildServer } from './server.js';
 import { startProjectInternalUnixListener } from './internal-listener.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { createGoogleCalendarTool } from './google-calendar-tool.js';
+import { createGoogleContactsTool } from './google-contacts-tool.js';
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -34,10 +35,12 @@ async function harness(
   run: (h: {
     store: EventStore;
     calendar: ReturnType<typeof vi.fn>;
+    contacts: ReturnType<typeof vi.fn>;
     approvals: ReturnType<typeof vi.fn>;
     call: (
       args: unknown,
       projectId?: string,
+      toolName?: 'verity_google_calendar' | 'verity_google_contacts',
     ) => Promise<{ result?: { isError?: boolean }; error?: unknown }>;
   }) => Promise<void>,
   onApproval?: (store: EventStore) => Promise<void>,
@@ -63,14 +66,29 @@ async function harness(
   });
   await store.updateVeritySettings({
     calendarAuthorized: true,
+    contactsAuthorized: true,
+    googleGrantedScopes: [
+      'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/contacts.readonly',
+    ],
     googleDriveRefreshToken: 'refresh',
     googleDriveAccountEmail: 'me@example.test',
   });
   await store.enableSessionCalendar('s1', 'me@example.test');
+  await store.enableSessionContacts('s1', 'me@example.test');
   const calendar = vi.fn().mockResolvedValue({ id: 'event' });
   const tool = createGoogleCalendarTool({
     eventStore: store,
     calendar,
+    googleAccessToken: async () => 'token',
+  });
+  const contacts = vi.fn().mockResolvedValue({
+    contacts: [{ names: ['Alice'], emailAddresses: ['alice@example.test'] }],
+  });
+  const contactsTool = createGoogleContactsTool({
+    eventStore: store,
+    contacts,
     googleAccessToken: async () => 'token',
   });
   const approvals = vi.fn(async () => {
@@ -84,9 +102,12 @@ async function harness(
     secretCipher: cipher,
     conductor: { requestExternalPermission: approvals } as unknown as Conductor,
     mcpGateway: {
-      servedTools: ['verity_google_calendar'],
+      servedTools: ['verity_google_calendar', 'verity_google_contacts'],
       resolveCaller: async (input) => tokens.resolve(input),
-      invokeTool: (input) => tool.invoke(input),
+      invokeTool: (input) =>
+        input.toolName === 'verity_google_contacts'
+          ? contactsTool.invoke(input)
+          : tool.invoke(input),
       recordCall: async () => {},
       requestMac: async ({ request: input }) => ({
         requestMac: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
@@ -107,14 +128,15 @@ async function harness(
     await run({
       store,
       calendar,
+      contacts,
       approvals,
-      call: async (args, projectId = 'p1') => {
+      call: async (args, projectId = 'p1', toolName = 'verity_google_calendar') => {
         const token = tokens.issue({ projectId, sessionId: 's1', turnId: 't1' });
         const payload = JSON.stringify({
           jsonrpc: '2.0',
           id: ++id,
           method: 'tools/call',
-          params: { name: 'verity_google_calendar', arguments: args },
+          params: { name: toolName, arguments: args },
         });
         return new Promise((resolve, reject) => {
           const req = request(
@@ -171,6 +193,7 @@ it('uses the server standing authorization only for Calendar reads', async () =>
     for (const args of [
       {
         action: 'create_event',
+        addGoogleMeet: false,
         calendarId: 'primary',
         event: { summary: 'Meeting', start: { date: '2026-10-01' }, end: { date: '2026-10-02' } },
       },
@@ -213,5 +236,53 @@ it('rejects project and Google account mismatches before raising a Calendar card
     expect(wrongAccount.error !== undefined || wrongAccount.result?.isError === true).toBe(true);
     expect(approvals).not.toHaveBeenCalled();
     expect(calendar).not.toHaveBeenCalled();
+  });
+});
+
+it('searches Contacts without a card and disconnects Contacts independently of Calendar', async () => {
+  await harness(async ({ call, store, contacts, calendar, approvals }) => {
+    const search = { action: 'search_contacts', query: 'Alice' };
+    expect((await call(search, 'p1', 'verity_google_contacts')).result).toBeDefined();
+    expect(contacts).toHaveBeenCalledTimes(1);
+    expect(approvals).not.toHaveBeenCalled();
+    await store.disableSessionContacts('s1');
+    const removed = await call(search, 'p1', 'verity_google_contacts');
+    expect(removed.error !== undefined || removed.result?.isError === true).toBe(true);
+    expect((await call({ action: 'list_calendars' })).result).toBeDefined();
+    expect(calendar).toHaveBeenCalledTimes(1);
+    expect(contacts).toHaveBeenCalledTimes(1);
+    expect(approvals).not.toHaveBeenCalled();
+  });
+});
+
+it('blocks Contacts account and project mismatches before approval or Google access', async () => {
+  await harness(async ({ call, store, contacts, approvals }) => {
+    const search = { action: 'search_contacts', query: 'Alice' };
+    await store.setSessionProject('s1', 'p2');
+    const wrongProject = await call(search, 'p1', 'verity_google_contacts');
+    expect(wrongProject.error !== undefined || wrongProject.result?.isError === true).toBe(true);
+    await store.setSessionProject('s1', 'p1');
+    await store.enableSessionContacts('s1', 'other@example.test');
+    const wrongAccount = await call(search, 'p1', 'verity_google_contacts');
+    expect(wrongAccount.error !== undefined || wrongAccount.result?.isError === true).toBe(true);
+    expect(approvals).not.toHaveBeenCalled();
+    expect(contacts).not.toHaveBeenCalled();
+  });
+});
+
+it('rejects Contacts write actions and malformed searches before any card', async () => {
+  await harness(async ({ call, contacts, approvals }) => {
+    for (const args of [
+      { action: 'create_contact', name: 'Alice' },
+      { action: 'update_contact', resourceName: 'people/alice' },
+      { action: 'delete_contact', resourceName: 'people/alice' },
+      { action: 'search_contacts', query: '' },
+      { action: 'search_contacts', query: 'Alice', maxResults: 21 },
+    ]) {
+      const response = await call(args, 'p1', 'verity_google_contacts');
+      expect(response.error !== undefined || response.result?.isError === true).toBe(true);
+    }
+    expect(contacts).not.toHaveBeenCalled();
+    expect(approvals).not.toHaveBeenCalled();
   });
 });

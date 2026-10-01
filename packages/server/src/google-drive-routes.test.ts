@@ -9,6 +9,7 @@ describe('Google Drive connection routes', () => {
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const eventStore = {
       clearSessionGmailConnections,
+      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
       clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
       updateVeritySettings,
       getVeritySettings: vi.fn(),
@@ -51,6 +52,7 @@ describe('Google Drive connection routes', () => {
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const eventStore = {
       clearSessionGmailConnections,
+      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
       clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
       updateVeritySettings,
       getVeritySettings: vi.fn().mockResolvedValue({
@@ -109,6 +111,26 @@ describe('Google Drive connection routes', () => {
       expect.objectContaining({ gmailAuthorized: false }),
     );
     vi.unstubAllGlobals();
+    await app.close();
+  });
+  it('does not advertise Drive for a Contacts-only Google credential', async () => {
+    const app = Fastify();
+    registerGoogleDriveRoutes(app, {
+      eventStore: {
+        getVeritySettings: vi.fn().mockResolvedValue({
+          googleDriveRefreshToken: 'refresh',
+          googleDriveClientId: 'client',
+          googleDriveAccountEmail: 'me@example.test',
+          googleGrantedScopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+        }),
+      } as never,
+    });
+    const response = await app.inject({ method: 'GET', url: '/google-drive/connection' });
+    expect(response.json()).toMatchObject({
+      connected: false,
+      accountEmail: null,
+      scopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+    });
     await app.close();
   });
 });

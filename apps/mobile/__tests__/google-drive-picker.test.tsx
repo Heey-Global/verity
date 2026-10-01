@@ -17,6 +17,8 @@ jest.mock('../lib/client', () => ({
 }));
 jest.mock('../lib/googleDrive', () => ({
   runGoogleDriveAuth: (...args: unknown[]) => mockRunGoogleDriveAuth(...args),
+  runGoogleWorkspaceAuth: (...args: unknown[]) => mockRunGoogleDriveAuth(...args),
+  ensureGoogleWorkspaceAccess: jest.fn().mockResolvedValue(true),
 }));
 
 import GoogleDrivePickerScreen from '../app/google-drive/[sessionId]';

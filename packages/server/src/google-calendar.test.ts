@@ -42,6 +42,9 @@ describe('Google Calendar API', () => {
     await expect(invokeGoogleCalendarApi('token', request, fetch)).rejects.toThrow(
       'Calendar event changed',
     );
+    expect(
+      new URL(fetch.mock.calls[0]![0] as string).searchParams.get('conferenceDataVersion'),
+    ).toBe('1');
     expect(fetch.mock.calls[0]![1]).toMatchObject({
       method: 'PATCH',
       headers: { 'If-Match': '"old"' },
@@ -75,6 +78,7 @@ describe('Google Calendar API', () => {
     };
     const request = googleCalendarRequestSchema.parse({
       action: 'create_event',
+      addGoogleMeet: false,
       calendarId: 'primary',
       event,
       sendUpdates: 'all',
@@ -125,7 +129,7 @@ describe('Google Calendar API', () => {
         expectedEtag: '*',
       }).success,
     ).toBe(false);
-    const base = { action: 'create_event', calendarId: 'primary' };
+    const base = { action: 'create_event', addGoogleMeet: false, calendarId: 'primary' };
     for (const event of [
       { summary: 'Meeting', start: { date: '2026-10-02' }, end: { date: '2026-10-01' } },
       {
@@ -137,4 +141,55 @@ describe('Google Calendar API', () => {
     ])
       expect(googleCalendarRequestSchema.safeParse({ ...base, event }).success).toBe(false);
   });
+});
+
+// Missing a Meet decision must never silently create an event without asking.
+it('requires an explicit Meet choice and returns the actual conference status and link', async () => {
+  const event = { summary: 'Meeting', start: { date: '2026-10-01' }, end: { date: '2026-10-02' } };
+  const base = { action: 'create_event', calendarId: 'primary', event };
+  expect(googleCalendarRequestSchema.safeParse(base).success).toBe(false);
+  const conferenceData = { createRequest: { status: { statusCode: 'pending' } } };
+  const fetch = vi
+    .fn()
+    .mockResolvedValue({ ok: true, json: async () => ({ id: 'new', conferenceData }) });
+  expect(
+    await invokeGoogleCalendarApi(
+      'token',
+      googleCalendarRequestSchema.parse({ ...base, addGoogleMeet: true }),
+      fetch,
+    ),
+  ).toEqual({ id: 'new', conferenceData });
+  const url = new URL(fetch.mock.calls[0]![0] as string);
+  expect(url.searchParams.get('conferenceDataVersion')).toBe('1');
+  const options = fetch.mock.calls[0]![1] as { body: string };
+  expect(JSON.parse(options.body)).toEqual({
+    ...event,
+    conferenceData: {
+      createRequest: {
+        requestId: expect.any(String),
+        conferenceSolutionKey: { type: 'hangoutsMeet' },
+      },
+    },
+  });
+  fetch.mockResolvedValueOnce({
+    ok: true,
+    json: async () => ({
+      id: 'new',
+      hangoutLink: 'https://meet.google.com/abc-defg-hij',
+      conferenceData: {
+        entryPoints: [{ entryPointType: 'video', uri: 'https://meet.google.com/abc-defg-hij' }],
+      },
+    }),
+  });
+  expect(
+    await invokeGoogleCalendarApi(
+      'token',
+      googleCalendarRequestSchema.parse({
+        action: 'read_event',
+        calendarId: 'primary',
+        eventId: 'new',
+      }),
+      fetch,
+    ),
+  ).toMatchObject({ hangoutLink: 'https://meet.google.com/abc-defg-hij' });
 });

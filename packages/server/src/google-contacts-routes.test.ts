@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 
 function googleResponse(payload: unknown, ok = true, status = 200) {
   return {
@@ -13,13 +13,13 @@ function googleResponse(payload: unknown, ok = true, status = 200) {
   };
 }
 
-describe('Calendar routes', () => {
+describe('Contacts routes', () => {
   it('stores expanded Google consent and enables it only for an existing session', async () => {
     let settings = {
       googleDriveClientId: 'client',
       googleDriveRefreshToken: null as string | null,
       googleDriveAccountEmail: null as string | null,
-      calendarAuthorized: false,
+      contactsAuthorized: false,
     };
     let connection: { sessionId: string; enabledAt: Date } | undefined;
     const store = {
@@ -29,17 +29,17 @@ describe('Calendar routes', () => {
         return settings;
       }),
       getSession: vi.fn(async (id: string) => (id === 's1' ? { sessionId: id } : undefined)),
-      getSessionCalendarConnection: vi.fn(async () => connection),
-      enableSessionCalendar: vi.fn(async (sessionId: string) => {
+      getSessionContactsConnection: vi.fn(async () => connection),
+      enableSessionContacts: vi.fn(async (sessionId: string) => {
         connection ??= { sessionId, enabledAt: new Date('2026-09-23T12:00:00.000Z') };
         return connection;
       }),
-      disableSessionCalendar: vi.fn(async () => {
+      disableSessionContacts: vi.fn(async () => {
         connection = undefined;
       }),
       clearSessionGmailConnections: vi.fn().mockResolvedValue(undefined),
-      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
-      clearSessionCalendarConnections: vi.fn(async () => {
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
+      clearSessionContactsConnections: vi.fn(async () => {
         connection = undefined;
       }),
     };
@@ -51,13 +51,13 @@ describe('Calendar routes', () => {
           refresh_token: 'refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/userinfo.email',
         }),
       )
       .mockResolvedValueOnce(googleResponse({ email: 'you@example.com' }));
     const app = Fastify();
     const onCredentialsChanged = vi.fn();
-    registerGoogleCalendarRoutes(app, {
+    registerGoogleContactsRoutes(app, {
       eventStore: store as never,
       googleClientId: 'client',
       fetch,
@@ -65,18 +65,18 @@ describe('Calendar routes', () => {
     });
     await app.ready();
 
-    expect((await app.inject({ method: 'GET', url: '/sessions/s1/calendar' })).json()).toEqual({
+    expect((await app.inject({ method: 'GET', url: '/sessions/s1/contacts' })).json()).toEqual({
       enabled: false,
       connected: false,
       clientId: 'client',
       accountEmail: null,
     });
-    expect((await app.inject({ method: 'PUT', url: '/sessions/s1/calendar' })).statusCode).toBe(
+    expect((await app.inject({ method: 'PUT', url: '/sessions/s1/contacts' })).statusCode).toBe(
       409,
     );
     const connected = await app.inject({
       method: 'POST',
-      url: '/calendar/connect',
+      url: '/contacts/connect',
       payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
     });
     expect(connected.statusCode).toBe(200);
@@ -84,11 +84,11 @@ describe('Calendar routes', () => {
     expect(settings).toMatchObject({
       googleDriveRefreshToken: 'refresh',
       googleDriveAccountEmail: 'you@example.com',
-      calendarAuthorized: true,
+      contactsAuthorized: true,
     });
     expect(onCredentialsChanged).toHaveBeenCalledOnce();
 
-    const enabled = await app.inject({ method: 'PUT', url: '/sessions/s1/calendar' });
+    const enabled = await app.inject({ method: 'PUT', url: '/sessions/s1/contacts' });
     expect(enabled.json()).toEqual({
       enabled: true,
       connected: true,
@@ -96,35 +96,35 @@ describe('Calendar routes', () => {
       accountEmail: 'you@example.com',
     });
     expect(
-      (await app.inject({ method: 'PUT', url: '/sessions/missing/calendar' })).statusCode,
+      (await app.inject({ method: 'PUT', url: '/sessions/missing/contacts' })).statusCode,
     ).toBe(404);
 
-    expect((await app.inject({ method: 'DELETE', url: '/sessions/s1/calendar' })).statusCode).toBe(
+    expect((await app.inject({ method: 'DELETE', url: '/sessions/s1/contacts' })).statusCode).toBe(
       204,
     );
     await app.close();
   });
 
-  it('rejects partial Calendar consent without persisting authorization', async () => {
+  it('rejects partial Contacts consent without persisting authorization', async () => {
     const updateVeritySettings = vi.fn();
     const store = {
       getVeritySettings: vi.fn(async () => ({
         googleDriveClientId: 'client',
         googleDriveRefreshToken: null,
         googleDriveAccountEmail: null,
-        calendarAuthorized: false,
+        contactsAuthorized: false,
       })),
       updateVeritySettings,
       getSession: vi.fn(),
-      getSessionCalendarConnection: vi.fn(),
-      enableSessionCalendar: vi.fn(),
-      disableSessionCalendar: vi.fn(),
+      getSessionContactsConnection: vi.fn(),
+      enableSessionContacts: vi.fn(),
+      disableSessionContacts: vi.fn(),
       clearSessionGmailConnections: vi.fn().mockResolvedValue(undefined),
-      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
-      clearSessionCalendarConnections: vi.fn(),
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
+      clearSessionContactsConnections: vi.fn(),
     };
     const app = Fastify();
-    registerGoogleCalendarRoutes(app, {
+    registerGoogleContactsRoutes(app, {
       eventStore: store as never,
       googleClientId: 'client',
       fetch: vi.fn().mockResolvedValue(
@@ -132,7 +132,7 @@ describe('Calendar routes', () => {
           access_token: 'access',
           refresh_token: 'refresh',
           expires_in: 3600,
-          scope: 'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+          scope: 'https://www.googleapis.com/auth/contacts.readonly',
         }),
       ),
     });
@@ -140,7 +140,7 @@ describe('Calendar routes', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/calendar/connect',
+      url: '/contacts/connect',
       payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
     });
     expect(response.statusCode).toBe(400);
@@ -148,23 +148,23 @@ describe('Calendar routes', () => {
     await app.close();
   });
 
-  it('revokes existing session grants when Calendar changes accounts', async () => {
-    const clearSessionCalendarConnections = vi.fn().mockResolvedValue(undefined);
+  it('revokes existing session grants when Contacts changes accounts', async () => {
+    const clearSessionContactsConnections = vi.fn().mockResolvedValue(undefined);
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const store = {
       getVeritySettings: vi.fn(async () => ({
         googleDriveClientId: 'client',
         googleDriveRefreshToken: 'old-refresh',
         googleDriveAccountEmail: 'old@example.com',
-        calendarAuthorized: true,
+        contactsAuthorized: true,
       })),
       updateVeritySettings,
       getSession: vi.fn(),
-      getSessionCalendarConnection: vi.fn(),
-      enableSessionCalendar: vi.fn(),
-      disableSessionCalendar: vi.fn(),
-      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
-      clearSessionCalendarConnections,
+      getSessionContactsConnection: vi.fn(),
+      enableSessionContacts: vi.fn(),
+      disableSessionContacts: vi.fn(),
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
+      clearSessionContactsConnections,
       clearSessionGmailConnections: vi.fn().mockResolvedValue(undefined),
     };
     const fetch = vi
@@ -175,12 +175,12 @@ describe('Calendar routes', () => {
           refresh_token: 'new-refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/userinfo.email',
         }),
       )
       .mockResolvedValueOnce(googleResponse({ email: 'new@example.com' }));
     const app = Fastify();
-    registerGoogleCalendarRoutes(app, {
+    registerGoogleContactsRoutes(app, {
       eventStore: store as never,
       googleClientId: 'client',
       fetch,
@@ -191,35 +191,35 @@ describe('Calendar routes', () => {
       (
         await app.inject({
           method: 'POST',
-          url: '/calendar/connect',
+          url: '/contacts/connect',
           payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
         })
       ).statusCode,
     ).toBe(200);
-    expect(clearSessionCalendarConnections).toHaveBeenCalledOnce();
+    expect(clearSessionContactsConnections).toHaveBeenCalledOnce();
     expect(store.clearSessionGmailConnections).toHaveBeenCalled();
     expect(updateVeritySettings).toHaveBeenCalledWith(
       expect.objectContaining({ googleDriveAccountEmail: 'new@example.com' }),
     );
     await app.close();
   });
-  it('preserves Gmail and Calendar grants on same-account expanded consent', async () => {
-    const clearSessionCalendarConnections = vi.fn().mockResolvedValue(undefined);
+  it('preserves Gmail and Contacts grants on same-account expanded consent', async () => {
+    const clearSessionContactsConnections = vi.fn().mockResolvedValue(undefined);
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const store = {
       getVeritySettings: vi.fn(async () => ({
         googleDriveClientId: 'client',
         googleDriveRefreshToken: 'old-refresh',
         googleDriveAccountEmail: 'old@example.com',
-        calendarAuthorized: true,
+        contactsAuthorized: true,
       })),
       updateVeritySettings,
       getSession: vi.fn(),
-      getSessionCalendarConnection: vi.fn(),
-      enableSessionCalendar: vi.fn(),
-      disableSessionCalendar: vi.fn(),
-      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
-      clearSessionCalendarConnections,
+      getSessionContactsConnection: vi.fn(),
+      enableSessionContacts: vi.fn(),
+      disableSessionContacts: vi.fn(),
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
+      clearSessionContactsConnections,
       clearSessionGmailConnections: vi.fn().mockResolvedValue(undefined),
     };
     const fetch = vi
@@ -230,12 +230,12 @@ describe('Calendar routes', () => {
           refresh_token: 'new-refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
+            'https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
         }),
       )
       .mockResolvedValueOnce(googleResponse({ email: 'old@example.com' }));
     const app = Fastify();
-    registerGoogleCalendarRoutes(app, {
+    registerGoogleContactsRoutes(app, {
       eventStore: store as never,
       googleClientId: 'client',
       fetch,
@@ -246,18 +246,18 @@ describe('Calendar routes', () => {
       (
         await app.inject({
           method: 'POST',
-          url: '/calendar/connect',
+          url: '/contacts/connect',
           payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
         })
       ).statusCode,
     ).toBe(200);
-    expect(clearSessionCalendarConnections).not.toHaveBeenCalled();
+    expect(clearSessionContactsConnections).not.toHaveBeenCalled();
     expect(store.clearSessionGmailConnections).not.toHaveBeenCalled();
     expect(updateVeritySettings).toHaveBeenCalledWith(
       expect.objectContaining({
         googleDriveAccountEmail: 'old@example.com',
         gmailAuthorized: true,
-        calendarAuthorized: true,
+        contactsAuthorized: true,
       }),
     );
     await app.close();

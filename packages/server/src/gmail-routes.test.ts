@@ -37,6 +37,7 @@ describe('Gmail routes', () => {
       disableSessionGmail: vi.fn(async () => {
         connection = undefined;
       }),
+      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
       clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
       clearSessionGmailConnections: vi.fn(async () => {
         connection = undefined;
@@ -50,7 +51,7 @@ describe('Gmail routes', () => {
           refresh_token: 'refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
+            'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
         }),
       )
       .mockResolvedValueOnce(googleResponse({ emailAddress: 'you@example.com' }));
@@ -178,6 +179,7 @@ describe('Gmail routes', () => {
       enableSessionGmail: vi.fn(),
       disableSessionGmail: vi.fn(),
       clearSessionGmailConnections,
+      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
       clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
     };
     const fetch = vi
@@ -188,7 +190,7 @@ describe('Gmail routes', () => {
           refresh_token: 'new-refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic' +
+            'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic' +
             (calendarScopes
               ? ' https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events'
               : ''),

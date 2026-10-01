@@ -20,7 +20,12 @@ import {
   type DriveFileList,
   type SharedDriveList,
 } from './google-drive.js';
-import { hasGoogleCalendarScopes } from './google-oauth-scopes.js';
+import {
+  hasGoogleCalendarScopes,
+  hasGoogleContactsScopes,
+  hasGoogleGmailScopes,
+  hasGoogleDriveScopes,
+} from './google-oauth-scopes.js';
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
 import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
@@ -81,6 +86,7 @@ interface GoogleDriveRouteDeps {
       | 'listRecentGoogleWorkspaceFileIds'
       | 'clearSessionGmailConnections'
       | 'clearSessionCalendarConnections'
+      | 'clearSessionContactsConnections'
       | 'getProject'
       | 'getProjectSettings'
       | 'updateProjectSettings'
@@ -89,6 +95,7 @@ interface GoogleDriveRouteDeps {
   googleDriveClientId?: string;
   secretCipher?: SealableSecretCipher;
   dataRoot?: string;
+  onCredentialsChanged?: () => void;
 }
 
 /** Google Drive PKCE connection, browsing, and reference-document import routes. */
@@ -121,7 +128,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     }
     const clientId = settings?.googleDriveClientId ?? '';
     const refreshToken = settings?.googleDriveRefreshToken ?? '';
-    return clientId && refreshToken ? { clientId, refreshToken } : undefined;
+    return clientId && refreshToken && hasGoogleDriveScopes(settings?.googleGrantedScopes)
+      ? { clientId, refreshToken }
+      : undefined;
   };
   const accessToken = createCachedGoogleAccessToken(resolveCredentials);
   registerProjectGoogleDriveRoutes(app, {
@@ -133,6 +142,21 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     },
     googleAccessToken: accessToken,
     ...(deps.dataRoot === undefined ? {} : { dataRoot: deps.dataRoot }),
+  });
+  app.get('/google-drive/connection', async () => {
+    const settings =
+      deps.secretCipher?.isSealed() === true
+        ? undefined
+        : await deps.eventStore.getVeritySettings();
+    const connected =
+      Boolean(settings?.googleDriveRefreshToken?.trim()) &&
+      hasGoogleDriveScopes(settings?.googleGrantedScopes);
+    return {
+      connected,
+      clientId: deps.googleDriveClientId ?? settings?.googleDriveClientId ?? null,
+      accountEmail: connected ? (settings?.googleDriveAccountEmail ?? null) : null,
+      scopes: settings?.googleGrantedScopes ?? [],
+    };
   });
   app.post(
     '/google-drive/connect',
@@ -160,6 +184,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           error: 'Google did not return a refresh token — reconnect and allow offline access',
         };
       }
+      if (!hasGoogleDriveScopes(tokens.scopes)) {
+        reply.code(400);
+        return { error: 'Google did not grant Drive access' };
+      }
       let accountEmail: string | undefined;
       try {
         accountEmail = await getDriveAccountEmail(tokens.accessToken);
@@ -172,10 +200,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         previous?.googleDriveAccountEmail !== null &&
         previous?.googleDriveAccountEmail !== undefined &&
         previous.googleDriveAccountEmail.toLowerCase() !== accountEmail?.toLowerCase();
-      const gmailAuthorized =
-        tokens.scopes?.includes('https://www.googleapis.com/auth/gmail.readonly') === true &&
-        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.compose') &&
-        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.settings.basic');
+      const gmailAuthorized = hasGoogleGmailScopes(tokens.scopes);
+      const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
+      if (!contactsAuthorized || accountChanged)
+        await deps.eventStore.clearSessionContactsConnections();
       if (!gmailAuthorized || accountChanged) {
         await deps.eventStore.clearSessionGmailConnections();
       }
@@ -183,6 +211,8 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         await deps.eventStore.clearSessionCalendarConnections();
       }
       await deps.eventStore.updateVeritySettings({
+        contactsAuthorized,
+        googleGrantedScopes: tokens.scopes ?? [],
         calendarAuthorized,
         googleDriveClientId: clientId,
         googleDriveRefreshToken: tokens.refreshToken,
@@ -193,6 +223,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       // existing grant. Its server-side scopes still changed, so keying only on
       // that string would keep serving the cached read-only access token.
       accessToken.invalidate();
+      deps.onCredentialsChanged?.();
       return { connected: true as const, accountEmail: accountEmail ?? null };
     },
   );
@@ -201,14 +232,18 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
     await deps.eventStore.clearSessionGmailConnections();
     await deps.eventStore.clearSessionCalendarConnections();
+    await deps.eventStore.clearSessionContactsConnections();
     await deps.eventStore.updateVeritySettings({
       googleDriveClientId: null,
       googleDriveRefreshToken: null,
       googleDriveAccountEmail: null,
       gmailAuthorized: false,
       calendarAuthorized: false,
+      contactsAuthorized: false,
+      googleGrantedScopes: [],
     });
     accessToken.invalidate();
+    deps.onCredentialsChanged?.();
     return { connected: false as const };
   });
 
@@ -388,6 +423,15 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         reply.code(415);
         return { error: 'Only native Google Slides, Docs, and Sheets files can be assigned' };
       }
+      const requiredScope =
+        kind === 'slides' ? 'presentations' : kind === 'docs' ? 'documents' : 'spreadsheets';
+      const settings = await deps.eventStore.getVeritySettings();
+      if (
+        !settings?.googleGrantedScopes.includes(`https://www.googleapis.com/auth/${requiredScope}`)
+      ) {
+        reply.code(409);
+        return { error: 'Reconnect Google Drive to grant Workspace editing access' };
+      }
       if (driveFile.canEdit !== true) {
         reply.code(403);
         return { error: 'You need edit access to assign this Google Workspace file' };
@@ -429,7 +473,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           ? error.reason
           : 'assignment_failed';
       if (reason.startsWith('http_403')) {
-        reply.code(403);
+        reply.code(409);
         return { error: 'Reconnect Google Drive to grant Workspace editing access' };
       }
       reply.code(reason.startsWith('http_400') ? 415 : 502);
@@ -478,6 +522,13 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       if (file.canEdit !== true) {
         reply.code(403);
         return { error: 'You need edit access to assign this Google Slides deck' };
+      }
+      const settings = await deps.eventStore.getVeritySettings();
+      if (
+        !settings?.googleGrantedScopes.includes('https://www.googleapis.com/auth/presentations')
+      ) {
+        reply.code(409);
+        return { error: 'Reconnect Google Drive to grant presentation editing access' };
       }
       const presentation = await getSlidesPresentation(token, fileId);
       const deck = await deps.eventStore.setSessionSlideDeck({

@@ -9,7 +9,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { GoogleDriveError, exchangeGoogleAuthCode, type GoogleFetch } from './google-drive.js';
-import { hasGoogleCalendarScopes } from './google-oauth-scopes.js';
+import {
+  hasGoogleCalendarScopes,
+  hasGoogleContactsScopes,
+  hasGoogleGmailScopes,
+} from './google-oauth-scopes.js';
 
 const connectBody = z.object({
   code: z.string().trim().min(1).max(4096),
@@ -22,13 +26,7 @@ const sessionParams = z.object({
     .min(1)
     .regex(/^[A-Za-z0-9_-]+$/),
 });
-const REQUIRED_CALENDAR_SCOPES = new Set([
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/presentations',
-  'https://www.googleapis.com/auth/documents',
-  'https://www.googleapis.com/auth/spreadsheets',
-  'https://www.googleapis.com/auth/userinfo.email',
-]);
+const REQUIRED_CALENDAR_SCOPES = new Set(['https://www.googleapis.com/auth/userinfo.email']);
 
 type CalendarRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
   Pick<
@@ -38,6 +36,7 @@ type CalendarRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySe
     | 'enableSessionCalendar'
     | 'disableSessionCalendar'
     | 'clearSessionCalendarConnections'
+    | 'clearSessionContactsConnections'
     | 'clearSessionGmailConnections'
   >;
 
@@ -122,7 +121,7 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
           [...REQUIRED_CALENDAR_SCOPES].some((scope) => !tokens.scopes?.includes(scope))
         ) {
           reply.code(400);
-          return { error: 'Google did not grant the required Workspace and Calendar permissions' };
+          return { error: 'Google did not grant the required Calendar permissions' };
         }
         let accountEmail: string;
         try {
@@ -136,6 +135,7 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
           return { error: 'Could not verify the connected Calendar account' };
         }
         const previous = await settings();
+        const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
         if (
           previous?.googleDriveAccountEmail !== null &&
           previous?.googleDriveAccountEmail !== undefined &&
@@ -143,12 +143,14 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
         ) {
           await deps.eventStore.clearSessionCalendarConnections();
           await deps.eventStore.clearSessionGmailConnections();
+          await deps.eventStore.clearSessionContactsConnections();
         }
-        const gmailAuthorized = ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'].every(
-          (scope) => tokens.scopes?.includes(`https://www.googleapis.com/auth/${scope}`),
-        );
+        const gmailAuthorized = hasGoogleGmailScopes(tokens.scopes);
+        if (!contactsAuthorized) await deps.eventStore.clearSessionContactsConnections();
         if (!gmailAuthorized) await deps.eventStore.clearSessionGmailConnections();
         await deps.eventStore.updateVeritySettings({
+          googleGrantedScopes: tokens.scopes ?? [],
+          contactsAuthorized,
           googleDriveClientId: clientId,
           googleDriveRefreshToken: tokens.refreshToken,
           googleDriveAccountEmail: accountEmail,

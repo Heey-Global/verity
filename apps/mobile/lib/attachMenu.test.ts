@@ -9,6 +9,7 @@ const handlers = {
   onLiveMeeting: jest.fn(),
   onConnectGmail: jest.fn(),
   onConnectCalendar: jest.fn(),
+  onConnectContacts: jest.fn(),
 };
 
 function labels(rows: AttachMenuRow[]): string[] {
@@ -30,6 +31,7 @@ describe('attachMenuRows', () => {
       '[Connect]',
       'Gmail',
       'Google Calendar',
+      'Google Contacts',
     ]);
     expect(
       attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
@@ -47,6 +49,7 @@ describe('attachMenuRows', () => {
       '[Connect]',
       'Gmail',
       'Google Calendar',
+      'Google Contacts',
     ]);
   });
 

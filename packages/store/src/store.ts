@@ -708,6 +708,10 @@ export interface VeritySettingsRecord {
   gmailAuthorized: boolean;
   /** True after OAuth consent has explicitly included Calendar event scopes. */
   calendarAuthorized: boolean;
+  /** True after explicit consent to read Google Contacts. */
+  contactsAuthorized: boolean;
+  /** Scopes actually granted to the shared Google credential. */
+  googleGrantedScopes: string[];
   /** Verity Uplink subscription credential, encrypted at rest. */
   uplinkSubscriptionKey?: string | null;
   /** Stable identity assigned and validated by the Uplink. */
@@ -749,6 +753,8 @@ type VeritySettingsKey =
   | 'googleDriveRefreshToken'
   | 'gmailAuthorized'
   | 'calendarAuthorized'
+  | 'contactsAuthorized'
+  | 'googleGrantedScopes'
   | 'uplinkSubscriptionKey'
   | 'uplinkInstallationId';
 
@@ -763,6 +769,12 @@ export interface SessionGmailConnection {
 }
 
 export interface SessionCalendarConnection {
+  sessionId: string;
+  accountEmail: string;
+  enabledAt: Date;
+}
+
+export interface SessionContactsConnection {
   sessionId: string;
   accountEmail: string;
   enabledAt: Date;
@@ -1986,6 +1998,55 @@ export class EventStore implements EventSink {
 
   async clearSessionCalendarConnections(): Promise<void> {
     await this.db.deleteFrom('session_calendar_connections').execute();
+  }
+
+  async getSessionContactsConnection(
+    sessionId: string,
+  ): Promise<SessionContactsConnection | undefined> {
+    const row = await this.db
+      .selectFrom('session_contacts_connections')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : {
+          sessionId: row.session_id,
+          accountEmail: row.account_email,
+          enabledAt: row.enabled_at,
+        };
+  }
+
+  async enableSessionContacts(
+    sessionId: string,
+    accountEmail: string,
+  ): Promise<SessionContactsConnection> {
+    const row = await this.db
+      .insertInto('session_contacts_connections')
+      .values({ session_id: sessionId, account_email: accountEmail })
+      .onConflict((conflict) =>
+        conflict.column('session_id').doUpdateSet({ account_email: accountEmail }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    return (
+      (await this.getSessionContactsConnection(sessionId)) ?? {
+        sessionId,
+        accountEmail,
+        enabledAt: row!.enabled_at,
+      }
+    );
+  }
+
+  async disableSessionContacts(sessionId: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_contacts_connections')
+      .where('session_id', '=', sessionId)
+      .execute();
+  }
+
+  async clearSessionContactsConnections(): Promise<void> {
+    await this.db.deleteFrom('session_contacts_connections').execute();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.
@@ -5839,6 +5900,8 @@ export class EventStore implements EventSink {
       google_drive_refresh_token: string | null;
       gmail_authorized: boolean;
       calendar_authorized: boolean;
+      contacts_authorized: boolean;
+      google_granted_scopes: string[];
       uplink_subscription_key: string | null;
       uplink_installation_id: string | null;
       advanced_mode_enabled: boolean;
@@ -5897,6 +5960,8 @@ export class EventStore implements EventSink {
         : row.google_drive_refresh_token,
       gmailAuthorized: row.gmail_authorized,
       calendarAuthorized: row.calendar_authorized,
+      contactsAuthorized: row.contacts_authorized,
+      googleGrantedScopes: row.google_granted_scopes,
       uplinkSubscriptionKey: decrypt
         ? this.decryptSecret(row.uplink_subscription_key)
         : row.uplink_subscription_key,
@@ -5938,6 +6003,8 @@ export class EventStore implements EventSink {
     'google_drive_refresh_token',
     'gmail_authorized',
     'calendar_authorized',
+    'contacts_authorized',
+    'google_granted_scopes',
     'uplink_subscription_key',
     'uplink_installation_id',
     'advanced_mode_enabled',
@@ -6008,6 +6075,8 @@ export class EventStore implements EventSink {
       ),
       gmail_authorized: patch.gmailAuthorized ?? false,
       calendar_authorized: patch.calendarAuthorized ?? false,
+      contacts_authorized: patch.contactsAuthorized ?? false,
+      google_granted_scopes: JSON.stringify(patch.googleGrantedScopes ?? []),
       uplink_subscription_key: this.encryptSecret(normalizeSetting(patch.uplinkSubscriptionKey)),
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
     };
@@ -6126,6 +6195,12 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.calendarAuthorized !== undefined
             ? { calendar_authorized: patch.calendarAuthorized }
+            : {}),
+          ...(patch.contactsAuthorized !== undefined
+            ? { contacts_authorized: patch.contactsAuthorized }
+            : {}),
+          ...(patch.googleGrantedScopes !== undefined
+            ? { google_granted_scopes: JSON.stringify(patch.googleGrantedScopes) }
             : {}),
           ...(patch.uplinkSubscriptionKey !== undefined
             ? {

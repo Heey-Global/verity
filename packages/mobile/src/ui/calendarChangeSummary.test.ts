@@ -7,6 +7,7 @@ describe('calendarChangeSummary', () => {
     expect(
       calendarChangeSummary({
         action: 'create_event',
+        addGoogleMeet: false,
         calendarId: 'primary',
         sendUpdates: 'all',
         event: {
@@ -20,6 +21,7 @@ describe('calendarChangeSummary', () => {
       title: 'Create calendar event?',
       details: [
         'Calendar: primary',
+        'Google Meet: no video meeting.',
         'summary: Team meeting',
         'start: 2026-10-02T10:00:00Z',
         'end: 2026-10-02T11:00:00Z',
@@ -56,4 +58,15 @@ it('recognizes the registered Calendar tool in the session approval card', () =>
   );
   const calendarTool = screen.match(/const isCalendar = pending\.tool === '([^']+)'/)?.[1];
   expect(calendarTool).toBe(registeredName);
+});
+
+it('shows the explicit Meet decision and falls back when it is missing', () => {
+  const input = { action: 'create_event', calendarId: 'primary', event: { summary: 'Meeting' } };
+  expect(calendarChangeSummary(input)).toBeNull();
+  expect(calendarChangeSummary({ ...input, addGoogleMeet: true })?.details).toContain(
+    'Google Meet: add a video meeting.',
+  );
+  expect(calendarChangeSummary({ ...input, addGoogleMeet: false })?.details).toContain(
+    'Google Meet: no video meeting.',
+  );
 });
