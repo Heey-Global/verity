@@ -92,3 +92,19 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
     exit(result == "success" ? EXIT_SUCCESS : EXIT_FAILURE)
   }
 }
+
+// Current iOS SDKs refuse to launch even a test-only app without scene
+// adoption; the harness then waits out its deadline for a result file that
+// was never going to appear.
+final class PinnedTLSSmokeSceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions) {
+    guard let windowScene = scene as? UIWindowScene else { return }
+    let window = UIWindow(windowScene: windowScene)
+    window.rootViewController = UIViewController()
+    self.window = window
+    window.makeKeyAndVisible()
+  }
+}

@@ -919,6 +919,9 @@ const remoteStreamRecordSchema = z.object({
   writtenToLocalBytes: z.number().int().min(0),
   receivedFromLocalBytes: z.number().int().min(0),
   sentToUplinkBytes: z.number().int().min(0),
+  // Absent on a Core that predates the frame counts.
+  framesFromApp: z.number().int().min(0).optional(),
+  framesToApp: z.number().int().min(0).optional(),
   state: z.string().max(64),
 });
 export type RemoteStreamRecord = z.infer<typeof remoteStreamRecordSchema>;

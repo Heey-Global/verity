@@ -75,6 +75,8 @@ describe('buildControlPlane', () => {
           writtenToLocalBytes: 1_911,
           receivedFromLocalBytes: 3_080,
           sentToUplinkBytes: 3_080,
+          framesFromApp: 2,
+          framesToApp: 3,
           state: 'open',
         },
       ],

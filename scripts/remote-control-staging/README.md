@@ -75,11 +75,13 @@ terminations from each side. `lastReset` retains the latest direction and fixed
 code even after another stream opens.
 
 `streams=` lists up to three recent streams as fixed tokens, for example
-`s1=k3F0A9C1E.up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2`: the
+`s1=k3F0A9C1E.up1806.dn6801.fo3.fi4.t210.d520.local.psocks.o22.i22-23-23.h2`: the
 first characters of the stream ID (the same ID Core reports under "Core
 streams" in the app's connection diagnostics, so both ends of one stream can
-be read side by side), bytes sent and
-received, milliseconds until Core's first bytes (`tnone` if none arrived) and
+be read side by side), bytes sent and received, `stream.data` frames sent
+(`fo`) and received (`fi`, compare with Core's "frames" on the same stream to
+see at which frame a reply stopped arriving), milliseconds until Core's first
+bytes (`tnone` if none arrived) and
 until the stream ended, which side ended it (`local` is the app's own TLS
 client closing, `remote` is Core), the proxy dialect the app used (`socks` or
 `connect`), the TLS record types seen in each direction (22 handshake, 20

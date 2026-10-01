@@ -175,11 +175,65 @@ describe('remote control connector', () => {
         writtenToLocalBytes: 3,
         receivedFromLocalBytes: 3,
         sentToUplinkBytes: 3,
+        framesFromApp: 1,
+        framesToApp: 1,
         firstLocalReplyMs: expect.any(Number),
         state: 'complete',
       }),
     ]);
     expect(JSON.stringify(f.recentStreams())).not.toContain('installation_ticket');
+    reservation.release('test complete');
+  });
+
+  it('sends a large local reply towards the app in frames of at most 8 KiB', async () => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'stream_big', channel: 'remote', meta: {} }),
+    );
+    // The echo ingress answers with the same 25 KB the app would get for a
+    // response that, sent as one frame, never reached the device through the
+    // hosted relay while the 3 KB handshake frames before it did.
+    const body = Buffer.alloc(25_000, 7);
+    f.peer().send(
+      JSON.stringify({
+        type: 'stream.data',
+        streamId: 'stream_big',
+        seq: 0,
+        payload: body.toString('base64'),
+      }),
+    );
+    const dataFrames = () =>
+      f.received.filter(
+        (frame): frame is { type: string; streamId: string; seq: number; payload: string } =>
+          (frame as { type: string }).type === 'stream.data',
+      );
+    await vi.waitFor(() =>
+      expect(
+        dataFrames().reduce((sum, frame) => sum + Buffer.from(frame.payload, 'base64').length, 0),
+      ).toBe(body.length),
+    );
+    const sizes = dataFrames().map((frame) => Buffer.from(frame.payload, 'base64').length);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(8 * 1_024);
+    expect(sizes.length).toBeGreaterThanOrEqual(4);
+    expect(dataFrames().map((frame) => frame.seq)).toEqual(sizes.map((_, index) => index));
+    expect(
+      Buffer.concat(dataFrames().map((frame) => Buffer.from(frame.payload, 'base64'))),
+    ).toEqual(body);
     reservation.release('test complete');
   });
 

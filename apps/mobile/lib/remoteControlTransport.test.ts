@@ -669,6 +669,22 @@ describe('remote diagnostics', () => {
   });
 
   it.each([
+    // Native builds before and after the stream key and frame counts.
+    's1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
+    's1=k8C2A065A.up1932.dn3080.fo4.fi7.t57.d60329.local.psocks.o22-20-23-23-23.i22-20-23-23-23-23-23.h2',
+  ])('accepts a stream trace from either native build: %s', async (trace) => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
+    const summary = `local=1, opened=1, received=0, last=stream_opened, sentBytes=0, receivedBytes=0, deliveredBytes=0, localResets=0, remoteResets=0, lastReset=none, streams=${trace}`;
+    mockDiagnosticSummary.mockResolvedValue(summary);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: `probe (Remote Core probe failed.; tunnel ${summary})`,
+    });
+  });
+
+  it.each([
     'streams=s1=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s2=https://x',
     'streams=s1=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s2=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s3=up1.dn1.t1.d1.local.psocks.o22.i22.h2;s4=up1.dn1.t1.d1.local.psocks.o22.i22.h2',
     'streams=s1=up1.dn1.t1.d1.local.pother.o22.i22.h2',
