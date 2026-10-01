@@ -9,28 +9,28 @@ jest.mock('expo-router', () => ({
   useFocusEffect: jest.fn(),
   useLocalSearchParams: () => ({}),
 }));
-jest.mock('../../../lib/client', () => ({ createVerityClient: () => ({}) }));
-jest.mock('../../../lib/settingsStore', () => ({
+jest.mock('../lib/client', () => ({ createVerityClient: () => ({}) }));
+jest.mock('../lib/settingsStore', () => ({
   useLoadVeritySettings: () => jest.fn(),
   useVeritySettings: () => ({ settings: undefined, secretStatus: undefined }),
 }));
-jest.mock('../../../lib/useSettingsFields', () => ({
+jest.mock('../lib/useSettingsFields', () => ({
   useSettingsFields: () => ({ dirty: false, values: {}, commit: jest.fn() }),
 }));
-jest.mock('../../../lib/useSecretFields', () => ({
+jest.mock('../lib/useSecretFields', () => ({
   useSecretFields: () => ({ dirty: false, values: {}, commit: jest.fn() }),
 }));
-jest.mock('../../../components/AgentLoginPanel', () => ({ AgentLoginPanel: () => null }));
-jest.mock('../../../components/settings/SecretStoreSection', () => ({
+jest.mock('../components/AgentLoginPanel', () => ({ AgentLoginPanel: () => null }));
+jest.mock('../components/settings/SecretStoreSection', () => ({
   SecretStoreSection: () => null,
 }));
-jest.mock('../../../components/settings/PublicPreviewDiagnostics', () => ({
+jest.mock('../components/settings/PublicPreviewDiagnostics', () => ({
   PublicPreviewDiagnostics: () => {
     const { Text: NativeText } = require('react-native');
     return <NativeText>Remote diagnostic available</NativeText>;
   },
 }));
-jest.mock('../../../components/settings/SettingsChrome', () => {
+jest.mock('../components/settings/SettingsChrome', () => {
   const { View: NativeView } = require('react-native');
   return {
     SettingsScaffold: ({ children }: { children: React.ReactNode }) => (
@@ -47,7 +47,7 @@ jest.mock('../../../components/settings/SettingsChrome', () => {
   };
 });
 
-import ServicesSettingsScreen from './index';
+import ServicesSettingsScreen from '../app/settings/services';
 
 it('keeps connection diagnostics reachable when Core settings cannot load', () => {
   render(<ServicesSettingsScreen />);
