@@ -16,7 +16,7 @@ jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMo
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
 import ServerUpdateScreen from '../app/settings/server-update';
-import { saveVeritySettings } from '../lib/settingsStore';
+import { resetVeritySettingsStore, saveVeritySettings } from '../lib/settingsStore';
 import {
   makeClient,
   makeProject,
@@ -213,6 +213,33 @@ describe('apply-settings banner', () => {
     expect(await screen.findByText(/keep the old settings/)).toBeOnTheScreen();
     expect(screen.getByLabelText(APPLY)).toBeEnabled();
     expect(screen.queryByText(/Applied to/)).toBeNull();
+  });
+
+  // Re-pairing resets the store, but a run against the old server is still in
+  // flight. Its progress describes containers the app no longer talks to, and
+  // landing on the new server's banner would disable that server's Apply.
+  it('keeps a run against the previous server off the new one', async () => {
+    const pending: (() => void)[] = [];
+    await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one'), makeProject('two')]),
+      recreateProjectContainer: jest.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            pending.push(resolve);
+          }),
+      ),
+    });
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(APPLY));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    act(() => resetVeritySettingsStore());
+    await saveIdentityChange();
+    await act(async () => pending[0]?.());
+
+    expect(screen.queryByText(/Applying/)).toBeNull();
+    expect(screen.getByText(/keep the old settings/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(APPLY)).toBeEnabled();
   });
 
   it('surfaces a failed project listing and stays retryable', async () => {

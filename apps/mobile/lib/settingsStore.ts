@@ -321,8 +321,18 @@ export function clearApplyPending(generation: number): void {
   if (generation === applyGeneration) publish({ applyPending: false });
 }
 
-/** Record the progress of the apply-settings reprovision. */
-export function setApplyRun(applyRun: ApplyRun): void {
+/** The server a reprovision belongs to; pass it back to {@link setApplyRun}. */
+export function applyRunScope(): number {
+  return storeGeneration;
+}
+
+/**
+ * Record the progress of the apply-settings reprovision. A run started against
+ * a server the app has since left keeps reporting as it finishes; its `scope`
+ * no longer matches, so none of that lands on the new server's banner.
+ */
+export function setApplyRun(applyRun: ApplyRun, scope = storeGeneration): void {
+  if (scope !== storeGeneration) return;
   publish({ applyRun });
 }
 
@@ -337,6 +347,8 @@ export function resetVeritySettingsStore(): void {
   loadGeneration += 1;
   secretStatusGeneration += 1;
   storeGeneration += 1;
+  // A run still finishing for the previous server must not clear this one's prompt.
+  applyGeneration += 1;
   settingsFailed = false;
   secretStatusFailed = false;
   failedPatches = [];
