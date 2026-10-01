@@ -1,3 +1,4 @@
+import { STANDARD_MOUNTS, standardKnowledgeBinds } from './sandbox-standard-mounts.js';
 import { constants as fsConstants } from 'node:fs';
 import { mkdir, open, readdir, rename, rmdir, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -72,10 +73,7 @@ export const PROJECT_KNOWLEDGE_TOP_LEVEL_DIRS = [
 export const OVERVIEW_FILE_NAME = 'overview.md';
 
 /** Where a project folder is mounted inside every one of its sandboxes. */
-export const KNOWLEDGE_MOUNT_TARGET = '/knowledge';
-
-/** Where the shared folder is mounted, nested inside {@link KNOWLEDGE_MOUNT_TARGET}. */
-const SHARED_KNOWLEDGE_MOUNT_TARGET = `${KNOWLEDGE_MOUNT_TARGET}/${SHARED_KNOWLEDGE_DIR}`;
+export const KNOWLEDGE_MOUNT_TARGET = STANDARD_MOUNTS.knowledge.target;
 
 /**
  * Project ids are app-generated UUIDs, so anything outside this alphabet is
@@ -216,11 +214,7 @@ async function makeInsightsHandleWritable(handle: Awaited<ReturnType<typeof open
  */
 export function knowledgeSandboxBinds(dataRoot: string | undefined, projectId: string): string[] {
   if (dataRoot === undefined || dataRoot.length === 0) return [];
-  return [
-    `${projectKnowledgeDir(dataRoot, projectId)}:${KNOWLEDGE_MOUNT_TARGET}:ro`,
-    `${join(projectKnowledgeDir(dataRoot, projectId), KNOWLEDGE_INSIGHTS_DIR)}:${KNOWLEDGE_MOUNT_TARGET}/${KNOWLEDGE_INSIGHTS_DIR}`,
-    `${sharedKnowledgeDir(dataRoot)}:${SHARED_KNOWLEDGE_MOUNT_TARGET}:ro`,
-  ];
+  return standardKnowledgeBinds(dataRoot, projectId);
 }
 
 async function migrateLegacyDirectory(

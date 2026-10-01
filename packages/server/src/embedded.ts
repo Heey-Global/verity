@@ -2423,6 +2423,9 @@ export async function buildEmbeddedServer(
       ...(config.dataVolume ? { dataVolume: config.dataVolume } : {}),
       ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
       ...(config.hostCloneRoot ? { hostCloneRoot: config.hostCloneRoot } : {}),
+      ...(config.agentSeedHostPath !== undefined
+        ? { agentSeedHostPath: config.agentSeedHostPath }
+        : {}),
       isDevServerRunning: async ({ project, devServer }) => {
         const status = await new DockerProjectRuntime({
           dockerBaseUrl: config.dockerBaseUrl,

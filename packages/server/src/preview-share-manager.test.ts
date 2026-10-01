@@ -1,9 +1,18 @@
+import {
+  STANDARD_MOUNTS,
+  standardMountBind,
+  standardDataMountPaths,
+  publicSshBinds,
+  GATEWAY_MOUNTS,
+} from './sandbox-standard-mounts.js';
+import { knowledgeSandboxBinds } from './knowledge-folder.js';
 import type { EventStore } from '@verity/store';
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { ContainerInspect, DockerClient } from './docker.js';
+import { sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';
 import {
   PreviewShareConflictError,
   PreviewShareInputError,
@@ -14,6 +23,8 @@ import {
 } from './preview-share-manager.js';
 import {
   codexGatewayConfig,
+  openCodeSettingsConfig,
+  materializeOpenCodeSettings,
   projectNetworkName,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
@@ -30,6 +41,7 @@ function fixture(
   options: {
     inspectArtifact?: PreviewShareManagerOptions['inspectArtifact'];
     listArtifactDirectory?: PreviewShareManagerOptions['listArtifactDirectory'];
+    agentSeedHostPath?: string | undefined;
   } = {},
 ) {
   const record = {
@@ -124,6 +136,9 @@ function fixture(
     ...(options.listArtifactDirectory === undefined
       ? {}
       : { listArtifactDirectory: options.listArtifactDirectory }),
+    ...(options.agentSeedHostPath === undefined
+      ? {}
+      : { agentSeedHostPath: options.agentSeedHostPath }),
   });
   return {
     manager,
@@ -722,6 +737,51 @@ describe('PreviewShareManager', () => {
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it('accepts the agent seed from the source the provisioner resolves', async () => {
+    // Resolved through the same function server-main hands the provisioner, so a
+    // layout change there (as `.current` was) cannot silently block every share.
+    const agentSeedHostPath = sandboxAgentSeedHostPath({
+      VERITY_AGENT_SEED_ROOT_HOST_PATH: '/srv/verity/seed-root',
+    });
+    expect(agentSeedHostPath).toBe('/srv/verity/seed-root/.current');
+    const { manager, docker, inspect } = fixture({ agentSeedHostPath });
+    docker.inspectContainer.mockResolvedValue({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'bind',
+          source: agentSeedHostPath,
+          destination: '/opt/agent-seed',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it.each([
+    ['another source', '/srv/verity/secrets/.current', false],
+    ['a writable seed', '/srv/verity/seed-root/.current', true],
+  ])('rejects an agent seed mount from %s', async (_label, source, readWrite) => {
+    const { manager, docker, edge, inspect } = fixture({
+      agentSeedHostPath: '/srv/verity/seed-root/.current',
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [{ type: 'bind', source, destination: '/opt/agent-seed', readWrite }],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+    warning.mockRestore();
   });
 
   it('blocks unrecognized mounts even when their paths look harmless', async () => {
@@ -1951,5 +2011,257 @@ describe('session port previews', () => {
     await manager.reconcile();
 
     expect(edge.remove).toHaveBeenCalled();
+  });
+});
+
+describe('shared sandbox mount contract', () => {
+  it.each(['bind', 'volume'] as const)(
+    'accepts provisioned standard mounts as %s mounts',
+    async (type) => {
+      const { manager, store, docker, inspect } = fixture({
+        agentSeedHostPath: '/seed/releases/.current',
+      });
+      store.getProject.mockResolvedValue({ ...project, cloneDir: 'p1' } as typeof project);
+      const paths = standardDataMountPaths('p1', 'p1');
+      const dataBinds = [
+        ...knowledgeSandboxBinds('/data', 'p1'),
+        ...(['workspace', 'gitConfig', 'runner', 'dns'] as const).map((kind) =>
+          standardMountBind(kind, join('/data', paths[kind])),
+        ),
+      ];
+      const hostBinds = [
+        standardMountBind('agentSeed', '/seed/releases/.current'),
+        standardMountBind('disabledTokenScript', '/dev/null'),
+        ...publicSshBinds('id_ed25519.pub', '/data/secrets/git/id_ed25519.pub', true),
+        ...publicSshBinds('known_hosts', '/data/secrets/git/known_hosts', false),
+        ...publicSshBinds('allowed_signers', '/data/secrets/git/allowed_signers', false),
+      ];
+      const mounts = [...dataBinds, ...hostBinds].map((bind, index) => {
+        const [source, destination, access] = bind.split(':');
+        return type === 'volume' && index < dataBinds.length
+          ? {
+              type: 'volume',
+              name: 'verity-data',
+              subpath: source!.slice('/data/'.length),
+              destination,
+              readWrite: access !== 'ro',
+            }
+          : { type: 'bind', source, destination, readWrite: access !== 'ro' };
+      });
+      docker.inspectContainer.mockResolvedValue({ ...inspect, mounts, mountCount: mounts.length });
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).resolves.toMatchObject({ state: 'active' });
+    },
+  );
+
+  it('rejects a writable knowledge mount even when its source is correct', async () => {
+    const { manager, docker, inspect, edge } = fixture();
+    const paths = standardDataMountPaths('p1', 'p1');
+    docker.inspectContainer.mockResolvedValue({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'bind',
+          source: join('/data', paths.knowledge),
+          destination: STANDARD_MOUNTS.knowledge.target,
+          readWrite: true,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+});
+
+function gatewayPreviewFixture(
+  kind: 'codex' | 'opencode',
+  contents: string,
+  extraFiles: Record<string, string> = {},
+) {
+  const spec = GATEWAY_MOUNTS[kind];
+  const result = fixture({
+    inspectArtifact: async (path) => {
+      if (kind === 'opencode' && path.endsWith(`/${spec.subdir}`))
+        return { uid: 1000, gid: 1000, mode: 0o755, kind: 'directory' };
+      const filename = path.split('/').at(-1)!;
+      return {
+        uid: 1000,
+        gid: 1000,
+        mode: 0o644,
+        kind: 'file',
+        contents: filename === spec.filename ? contents : (extraFiles[filename] ?? ''),
+      };
+    },
+    listArtifactDirectory: async () => [spec.filename, ...Object.keys(extraFiles)],
+  });
+  const subpath = `secrets/${spec.subdir}${kind === 'codex' ? `/${spec.filename}` : ''}`;
+  result.docker.inspectContainer.mockResolvedValue({
+    ...result.inspect,
+    mountCount: 1,
+    mounts: [
+      {
+        type: 'volume',
+        name: 'verity-data',
+        subpath,
+        destination: kind === 'codex' ? `${spec.directory}/${spec.filename}` : spec.directory,
+        readWrite: false,
+      },
+    ],
+  });
+  return result;
+}
+
+interface TestOpenCodeConfig {
+  theme?: string;
+  model?: string;
+  permission?: unknown;
+  provider: {
+    verity: {
+      options: Record<string, string | number>;
+      models: Record<string, Record<string, unknown>>;
+    };
+    other?: { options: { apiKey: string } };
+  };
+}
+
+function generatedOpenCodeConfig(): TestOpenCodeConfig {
+  return JSON.parse(
+    openCodeSettingsConfig({
+      opencodeBaseUrl: 'https://provider.example/v1',
+      opencodeApiKey: 'server-only-test-credential',
+      opencodeModels: 'model-a',
+    } as Parameters<typeof openCodeSettingsConfig>[0])!,
+  ) as TestOpenCodeConfig;
+}
+
+describe('compatible gateway configuration', () => {
+  it('accepts Codex comments, spacing and model preferences', async () => {
+    const contents = `# Gateway configuration\nmodel = "model-a"\nmodel_reasoning_effort = "high"\n${codexGatewayConfig(47821).replaceAll(' = ', '  =  ')}\n# End\n`;
+    const { manager } = gatewayPreviewFixture('codex', contents);
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it.each([
+    [
+      'credential header',
+      (value: string) => value.replace('verity-codex-gateway-placeholder-v1', 'actual-secret'),
+    ],
+    ['external endpoint', (value: string) => value.replace('127.0.0.1', 'provider.example')],
+    ['extra auth setting', (value: string) => `${value}\napi_key = "actual-secret"`],
+    [
+      'duplicate endpoint',
+      (value: string) => `${value}\nbase_url = "http://127.0.0.1:47821/codex"`,
+    ],
+    [
+      'wrong TOML section',
+      (value: string) =>
+        value.replace('[model_providers.verity_gateway]\n', '') +
+        '\n[model_providers.verity_gateway]',
+    ],
+  ])('rejects Codex %s', async (_label, change) => {
+    const { manager, edge } = gatewayPreviewFixture('codex', change(codexGatewayConfig(47821)));
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts OpenCode presentation settings, model metadata and its .gitignore', async () => {
+    const config = generatedOpenCodeConfig();
+    config.theme = 'system';
+    config.model = 'verity/model-a';
+    config.provider.verity.models['model-a'] = {
+      name: 'Friendly model name',
+      limit: { context: 100000, output: 1000 },
+      cost: { input: 0, output: 0 },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      reasoning: true,
+    };
+    config.provider.verity.options.timeout = 60000;
+    // Key order has no meaning in JSON, but the old equality check rejected it.
+    config.permission = {
+      external_directory: { '/knowledge/**': 'allow' },
+      read: { '/knowledge/**': 'allow' },
+    };
+    const { manager } = gatewayPreviewFixture('opencode', JSON.stringify(config), {
+      '.gitignore': 'node_modules\n*.log\n',
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it('accepts the provisioner fallback when no OpenCode provider is configured', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-gateway-config-'));
+    try {
+      const directory = materializeOpenCodeSettings(undefined, root);
+      const contents = await readFile(join(directory, GATEWAY_MOUNTS.opencode.filename), 'utf8');
+      const { manager } = gatewayPreviewFixture('opencode', contents);
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).resolves.toMatchObject({ state: 'active' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      'provider key',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.verity.options.apiKey = 'actual-secret';
+      },
+    ],
+    [
+      'extra provider',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.other = { options: { apiKey: 'actual-secret' } };
+      },
+    ],
+    [
+      'nested credential',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.verity.models['model-a']!.cost = { input: 0, apiKey: 'actual-secret' };
+      },
+    ],
+    [
+      'external endpoint',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.verity.options.baseURL = 'https://provider.example/v1';
+      },
+    ],
+  ])('rejects OpenCode %s with otherwise compatible additions', async (_label, change) => {
+    const config = generatedOpenCodeConfig();
+    config.theme = 'system';
+    change(config);
+    const { manager, edge } = gatewayPreviewFixture('opencode', JSON.stringify(config));
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenCode ancillary file validation', () => {
+  it.each([
+    ['credential file', { 'auth.json': '{"apiKey":"actual-secret"}' }],
+    ['credentials in .gitignore', { '.gitignore': 'apiKey = actual-secret' }],
+    ['unrecognized file', { 'credentials.txt': 'actual-secret' }],
+  ])('rejects %s beside a valid generated gateway config', async (_label, extraFiles) => {
+    const { manager, edge } = gatewayPreviewFixture(
+      'opencode',
+      JSON.stringify(generatedOpenCodeConfig()),
+      extraFiles,
+    );
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
   });
 });
