@@ -1131,7 +1131,9 @@ it('keeps the retry draft when Done note is pressed after remount during a faile
   expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('Recover me');
 });
 
-it('keeps a historical transcript open while the live meeting updates', async () => {
+// Finished meetings are filed in the project knowledge and linked from the session,
+// so the meeting screen no longer offers its own way back into them.
+it('stays on the live meeting without listing earlier meetings', async () => {
   const live: MeetingRecord = {
     id: 'live',
     sessionId: 'session-1',
@@ -1150,44 +1152,20 @@ it('keeps a historical transcript open while the live meeting updates', async ()
     state: 'ended',
     transcript: 'Historical transcript',
   };
-  let resolveLiveNotes!: (notes: MeetingNote[]) => void;
-  let resolvePastNotes!: (notes: MeetingNote[]) => void;
-  const liveNotes = new Promise<MeetingNote[]>((resolve) => {
-    resolveLiveNotes = resolve;
-  });
-  const pastNotes = new Promise<MeetingNote[]>((resolve) => {
-    resolvePastNotes = resolve;
-  });
-  jest
-    .mocked(listNotes)
-    .mockImplementation((meetingId) => (meetingId === 'live' ? liveNotes : pastNotes));
-  let notify!: (meeting: MeetingRecord | null) => void;
   jest.mocked(currentMeeting).mockReturnValue(live);
   jest.mocked(listMeetings).mockResolvedValue([live, past]);
   jest.mocked(subscribeMeeting).mockImplementation((listener) => {
-    notify = listener;
     listener(live);
     return jest.fn();
   });
 
   render(<MeetingScreen />);
   await waitFor(() => expect(listNotes).toHaveBeenCalledWith('live'));
-  fireEvent.press(await screen.findByText(/ended/));
+  expect(screen.queryByText(/EARLIER MEETINGS/)).toBeNull();
+  expect(screen.queryByText(/· ended/)).toBeNull();
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
-  await screen.findByText('Historical transcript');
-  await waitFor(() => expect(listNotes).toHaveBeenCalledWith('past'));
-  act(() =>
-    resolvePastNotes([{ id: 'past-note', meetingId: 'past', atSeconds: 2, text: 'Past note' }]),
-  );
-  await screen.findByText(/Past note/);
-  await act(async () => {
-    resolveLiveNotes([{ id: 'live-note', meetingId: 'live', atSeconds: 2, text: 'Live note' }]);
-  });
-  act(() => notify({ ...live, transcript: 'New live words' }));
-  expect(screen.getByText('Historical transcript')).toBeOnTheScreen();
-  expect(screen.getByText(/Past note/)).toBeOnTheScreen();
-  expect(screen.queryByText(/Live note/)).toBeNull();
-  expect(screen.queryByText('New live words')).toBeNull();
+  await screen.findByText('Live text');
+  expect(screen.queryByText('Historical transcript')).toBeNull();
 });
 
 it('follows new transcript text until the reader scrolls away', async () => {

@@ -80,6 +80,7 @@ import {
   trustedCliSummary,
   splitSearchHighlights,
   sessionFilePathFromLocalLink,
+  sessionFileTargetFromLocalLink,
   splitRichText,
   toolCallView,
   trustedCliUnlockCandidate,
@@ -501,7 +502,8 @@ const KnowledgeSaveContext = createContext<{
   save(messageId: string, text: string): Promise<void>;
 } | null>(null);
 
-const SessionFileOpenContext = createContext<((path: string) => void) | null>(null);
+type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
+const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
 const SessionFileImageSourceContext = createContext<
   ((path: string) => ImageSource | undefined) | null
 >(null);
@@ -2069,8 +2071,10 @@ export function SessionChat({
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
-  const openSessionFile = useCallback((path: string) => {
+  const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
+  const openSessionFile = useCallback((path: string, root: SessionFileRoot = 'worktree') => {
     setFilesInitialPath(path);
+    setFilesInitialRoot(root);
     setFilesOpen(true);
   }, []);
   // Index of a bookmarked message id in the current rows, or -1 if not loaded yet.
@@ -3543,6 +3547,7 @@ export function SessionChat({
           projectId={projectId ?? null}
           baseUrl={baseUrl}
           initialFilePath={filesInitialPath}
+          initialRoot={filesInitialRoot}
           onClose={() => setFilesOpen(false)}
         />
       ) : null}
@@ -4172,6 +4177,7 @@ function SessionFilesSheet({
   projectId,
   baseUrl,
   initialFilePath,
+  initialRoot = 'worktree',
   onClose,
 }: {
   client: VerityClient;
@@ -4179,12 +4185,13 @@ function SessionFilesSheet({
   projectId: string | null;
   baseUrl: string;
   initialFilePath: string | null;
+  initialRoot?: SessionFileRoot;
   onClose: () => void;
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
-  const [root, setRoot] = useState<SessionFileRoot>('worktree');
+  const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -4243,7 +4250,7 @@ function SessionFilesSheet({
     setError(null);
     setPreviewLoading(true);
     void client
-      .getSessionFileContent(sessionId, initialFilePath, 'worktree')
+      .getSessionFileContent(sessionId, initialFilePath, initialRoot)
       .then((file) => {
         if (active()) setPreview({ path: file.path, content: file.content });
       })
@@ -4263,7 +4270,7 @@ function SessionFilesSheet({
     return () => {
       previewRequest.current += 1;
     };
-  }, [client, sessionId, initialFilePath]);
+  }, [client, sessionId, initialFilePath, initialRoot]);
 
   useEffect(() => {
     if (driveActive) return;
@@ -5608,11 +5615,11 @@ function AgentMarkdown({
   // "file is not a text file"; show the image full screen instead.
   const openLocalFile = useMemo(() => {
     if (openSessionFile === null) return null;
-    return (path: string) => {
-      if (sessionFileImageSource !== null && isSessionImageFilePath(path)) {
+    return (path: string, root: SessionFileRoot = 'worktree') => {
+      if (root === 'worktree' && sessionFileImageSource !== null && isSessionImageFilePath(path)) {
         setImagePathViewer(path);
       } else {
-        openSessionFile(path);
+        openSessionFile(path, root);
       }
     };
   }, [openSessionFile, sessionFileImageSource]);
@@ -5793,7 +5800,7 @@ function MarkdownText({
   onOpenImage,
 }: {
   content: string;
-  onOpenLocalFile: ((path: string) => void) | null;
+  onOpenLocalFile: OpenLocalFile | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
@@ -5882,7 +5889,7 @@ function MarkdownLine({
   onOpenImage,
 }: {
   line: string;
-  onOpenLocalFile: ((path: string) => void) | null;
+  onOpenLocalFile: OpenLocalFile | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
@@ -6062,7 +6069,7 @@ function Inline({
   onOpenLocalFile,
 }: {
   text: string;
-  onOpenLocalFile: ((path: string) => void) | null;
+  onOpenLocalFile: OpenLocalFile | null;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -6083,8 +6090,8 @@ function Inline({
           );
         }
         if (span.t === 'link') {
-          const localPath = span.external ? null : sessionFilePathFromLocalLink(span.url);
-          const canOpenLocal = localPath !== null && onOpenLocalFile !== null;
+          const local = span.external ? null : sessionFileTargetFromLocalLink(span.url);
+          const canOpenLocal = local !== null && onOpenLocalFile !== null;
           return (
             <Text
               key={i}
@@ -6098,7 +6105,7 @@ function Inline({
                 span.external
                   ? () => void Linking.openURL(span.url).catch(() => undefined)
                   : canOpenLocal
-                    ? () => onOpenLocalFile(localPath)
+                    ? () => onOpenLocalFile(local.path, local.root)
                     : undefined
               }
               accessibilityRole={span.external || canOpenLocal ? 'link' : undefined}

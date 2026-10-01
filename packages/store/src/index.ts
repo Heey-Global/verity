@@ -94,6 +94,7 @@ export {
   LiveMeetingStore,
   type LiveMeetingSyncRecord,
   type LiveMeetingNoteSyncRecord,
+  type LiveMeetingInsight,
 } from './live-meetings.js';
 export {
   migrationProvider,

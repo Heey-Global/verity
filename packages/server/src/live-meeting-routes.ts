@@ -140,8 +140,23 @@ export function registerLiveMeetingRoutes(
     knowledge?: (sessionId: string, transcript: string) => Promise<MeetingKnowledgeExcerpt[]>;
     delayMs?: number;
     minIntervalMs?: number;
+    /** Files a finished meeting. Called again after later notes or speaker edits, so
+     * it must be idempotent. Uploads are acknowledged only after filing succeeds. */
+    onFinished?: (sessionId: string, meetingId: string) => Promise<void>;
   } = {},
 ): void {
+  const fileFinished = async (sessionId: string, meetingId: string) => {
+    if (!opts.onFinished) return;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await opts.onFinished(sessionId, meetingId);
+        return;
+      } catch (error) {
+        if (attempt >= 2) throw error;
+        app.log.warn({ err: error, sessionId, meetingId }, 'retrying live meeting filing');
+      }
+    }
+  };
   const queued = new Map<
     string,
     {
@@ -248,6 +263,7 @@ export function registerLiveMeetingRoutes(
               createdAt: Date.now(),
             });
           }
+          if (current.terminal) await fileFinished(current.sessionId, meetingId);
           lastAnalyzed.set(meetingId, {
             length: current.transcript.length,
             hash: createHash('sha256').update(current.transcript).digest('hex'),
@@ -327,7 +343,7 @@ export function registerLiveMeetingRoutes(
       reply.code(409);
       return { error: 'meeting owner or session mismatch' };
     }
-    if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision)
+    if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision) {
       scheduleAnalysis(
         sessionId,
         meetingId,
@@ -335,6 +351,8 @@ export function registerLiveMeetingRoutes(
         body.transcript,
         body.state !== 'active',
       );
+      if (body.state !== 'active') await fileFinished(sessionId, meetingId);
+    }
     return { accepted: true };
   });
 
@@ -463,6 +481,10 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'meeting not found in session' };
     }
+    // Persisted state survives restarts and does not file active recordings.
+    const stored = await store.liveMeetings.changes(sessionId, 0);
+    if (stored.meetings.some((item) => item.id === meetingId && item.state !== 'active'))
+      await fileFinished(sessionId, meetingId);
     return { accepted: true };
   });
 }
