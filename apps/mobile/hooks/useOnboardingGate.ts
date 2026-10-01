@@ -11,7 +11,7 @@ import {
   type OnboardingStatus,
 } from '@verity/mobile';
 import { useGlobalSearchParams, usePathname, useSegments } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import { getAuthToken, hasStoredAuthToken } from '../lib/authToken';
@@ -50,6 +50,8 @@ export function useOnboardingGate(): OnboardingGateState {
   // the operator into the wizard mid-reconnect would defeat the screen's purpose.
   // The sealed→unlock and missing-auth-token→unlock redirects still apply.
   const inGithubConnect = segments[0] === 'github-connect';
+  const route = useRef({ pathname, searchParams });
+  route.current = { pathname, searchParams };
   const [state, setState] = useState<OnboardingGateState>({ status: 'checking' });
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export function useOnboardingGate(): OnboardingGateState {
     let interval: ReturnType<typeof setInterval> | undefined;
 
     const currentReturnTo = (): string => {
+      const { pathname, searchParams } = route.current;
       if (!pathname || pathname.length === 0 || pathname === '/unlock-device') return '/';
       const query = new URLSearchParams();
       for (const [key, value] of Object.entries(searchParams)) {
@@ -210,7 +213,7 @@ export function useOnboardingGate(): OnboardingGateState {
       if (interval !== undefined) clearInterval(interval);
       subscription.remove();
     };
-  }, [inOnboarding, inUnlockDevice, inGithubConnect, pathname, searchParams]);
+  }, [inOnboarding, inUnlockDevice, inGithubConnect]);
 
   return state;
 }

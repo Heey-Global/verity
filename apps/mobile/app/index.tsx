@@ -75,7 +75,6 @@ import { WorkingDot } from '../components/WorkingDot';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
-import { prefetchBranches } from '../lib/branchesPrefetch';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
@@ -408,10 +407,9 @@ function SessionList({ client }: { client: VerityClient }) {
   // at its current event count, clearing its unread dot.
   const onOpenSession = useCallback(
     (session: SessionSummary) => {
-      prefetchBranches(client, session.sessionId);
       markSeen(session.sessionId, session.eventCount);
     },
-    [client, markSeen],
+    [markSeen],
   );
 
   const updateProjectSandbox = useCallback(

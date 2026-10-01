@@ -537,6 +537,46 @@ export function SessionChat({
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const { theme } = useUnistyles();
+  const {
+    session,
+    streamError,
+    sending,
+    sendError,
+    cancelError,
+    resumable,
+    knowledgeAccessRevoked,
+    name,
+    model: currentModel,
+    projectId,
+    kind,
+    switchingModel,
+    modelSwitchPending,
+    terminationUnconfirmed,
+    switchModelError,
+    loaded,
+    locallyCreated,
+    busy,
+    working,
+    waitingMessages,
+    pendingMessages,
+    branch: liveBranch,
+    decidingPermission,
+    permissionError,
+    sendTurn,
+    cancel,
+    cancelWaiting,
+    dismissPending,
+    decidePermission,
+    switchModel,
+    hasOlder,
+    oldestHistorySeq,
+    loadingOlder,
+    olderLoadStalled,
+    olderLoadNeedsContinuation,
+    olderLoadGeneration,
+    loadOlder,
+    loadOlderUntil,
+  } = useSession(client, sessionId, baseUrl);
   const [linkedSessions, setLinkedSessions] = useState<
     Awaited<ReturnType<VerityClient['listSessionLinks']>>
   >([]);
@@ -549,6 +589,7 @@ export function SessionChat({
   );
   useFocusEffect(
     useCallback(() => {
+      if (!loaded) return;
       let active = true;
       setLinkedSessions([]);
       const refresh = () => {
@@ -565,10 +606,11 @@ export function SessionChat({
         active = false;
         clearInterval(interval);
       };
-    }, [client, sessionId]),
+    }, [client, sessionId, loaded]),
   );
   useFocusEffect(
     useCallback(() => {
+      if (!loaded) return;
       let active = true;
       setPendingLinkedMessages([]);
       const refresh = () => {
@@ -585,7 +627,7 @@ export function SessionChat({
         active = false;
         clearInterval(interval);
       };
-    }, [client, sessionId]),
+    }, [client, sessionId, loaded]),
   );
   const decideLinkedMessage = (id: string, decision: PermissionDecision): void => {
     setDecidingLinkedMessage(id);
@@ -627,46 +669,6 @@ export function SessionChat({
   };
   const compactLandscape =
     Platform.OS === 'ios' && !Platform.isPad && windowWidth > windowHeight && !embedded;
-  const {
-    session,
-    streamError,
-    sending,
-    sendError,
-    cancelError,
-    resumable,
-    knowledgeAccessRevoked,
-    name,
-    model: currentModel,
-    projectId,
-    kind,
-    switchingModel,
-    modelSwitchPending,
-    terminationUnconfirmed,
-    switchModelError,
-    loaded,
-    locallyCreated,
-    busy,
-    working,
-    waitingMessages,
-    pendingMessages,
-    branch: liveBranch,
-    decidingPermission,
-    permissionError,
-    sendTurn,
-    cancel,
-    cancelWaiting,
-    dismissPending,
-    decidePermission,
-    switchModel,
-    hasOlder,
-    oldestHistorySeq,
-    loadingOlder,
-    olderLoadStalled,
-    olderLoadNeedsContinuation,
-    olderLoadGeneration,
-    loadOlder,
-    loadOlderUntil,
-  } = useSession(client, sessionId, baseUrl);
   usePermissionHaptic(loaded, session.pendingPermission?.toolUseId);
   const sessionFileImageSource = useCallback(
     (path: string): ImageSource | undefined => {
@@ -685,7 +687,7 @@ export function SessionChat({
   // taps open a picker to switch the session's backend mid-flight (#switch-engine).
   // `currentModel` is the persisted choice (survives a switch + remount); fall back
   // to the reducer's spawn model until the detail loads.
-  const { models, modelOrder, moreModels, refresh: refreshModels } = useModels(client);
+  const { models, modelOrder, moreModels, refresh: refreshModels } = useModels(client, loaded);
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const effectiveModel = currentModel ?? session.model;
   const [agentLoop, setAgentLoop] = useState<AgentLoop | null>(null);
@@ -755,11 +757,12 @@ export function SessionChat({
       .catch(() => undefined);
   }, [client, projectId, sessionId]);
   useEffect(() => {
+    if (!loaded) return;
     refreshStaticPreview();
     // Short enough that a server the agent just started lights the dot up soon.
     const timer = setInterval(refreshStaticPreview, 20_000);
     return () => clearInterval(timer);
-  }, [refreshStaticPreview]);
+  }, [refreshStaticPreview, loaded]);
 
   const editAgentLoop = useCallback(() => {
     if (!agentLoop || sending || busy) return;
@@ -845,7 +848,7 @@ export function SessionChat({
   const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
-  const branches = useBranches(client, sessionId);
+  const branches = useBranches(client, sessionId, loaded);
   const branchesRefresh = branches.refresh;
   const [switcherOpen, setSwitcherOpen] = useState(false);
   // The chip names the CURRENT BRANCH; fall back to the session label while the

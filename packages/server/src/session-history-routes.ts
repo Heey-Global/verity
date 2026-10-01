@@ -65,11 +65,15 @@ export function registerSessionHistoryRoutes(
     },
   );
 
-  app.get('/sessions/:id/events', async (request, reply): Promise<unknown> => {
-    const { id } = sessionParams.parse(request.params);
-    const { beforeSeq, limit } = historyQuery.parse(request.query);
-    return deps.history(reply, id, limit, beforeSeq);
-  });
+  app.get(
+    '/sessions/:id/events',
+    { compress: { encodings: ['gzip', 'deflate'] } },
+    async (request, reply): Promise<unknown> => {
+      const { id } = sessionParams.parse(request.params);
+      const { beforeSeq, limit } = historyQuery.parse(request.query);
+      return deps.history(reply, id, limit, beforeSeq);
+    },
+  );
   app.get('/sessions/:id/diagnostics', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     return deps.diagnostics(reply, id);

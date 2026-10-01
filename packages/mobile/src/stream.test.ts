@@ -50,6 +50,38 @@ function recordingConnect(): { connect: (url: string) => FakeSocket; sockets: Fa
 }
 
 describe('SessionStream', () => {
+  it.each(['expired', 'paused', 'stopped'] as const)(
+    'discards a prepared ticket when %s',
+    async (reason) => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      const { connect, sockets } = recordingConnect();
+      const getStreamTicket = vi.fn().mockResolvedValue('ticket');
+      const stream = new SessionStream({
+        baseUrl: 'http://host',
+        sessionId: 's1',
+        connect,
+        getStreamTicket,
+      });
+      try {
+        stream.prepareConnection();
+        expect(getStreamTicket).toHaveBeenCalledTimes(1);
+        expect(sockets).toHaveLength(0);
+        if (reason === 'expired') now.mockReturnValue(11_000);
+        if (reason === 'paused') stream.pause();
+        if (reason === 'stopped') stream.stop();
+        stream.start();
+        if (reason === 'paused') stream.resume();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(getStreamTicket).toHaveBeenCalledTimes(reason === 'stopped' ? 1 : 2);
+        expect(sockets).toHaveLength(reason === 'stopped' ? 0 : 1);
+      } finally {
+        stream.stop();
+        now.mockRestore();
+      }
+    },
+  );
+
   it.each(['resolve', 'reject'] as const)(
     'retries authorization on resume while a stale ticket is pending (%s)',
     async (outcome) => {

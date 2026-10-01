@@ -12,7 +12,7 @@
 // in-memory fake we control per test.
 import { VerityApiError } from '@verity/mobile';
 import type { VerityClient, OnboardingStatus } from '@verity/mobile';
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 jest.mock('expo-application', () => ({ nativeApplicationVersion: '1.30.0' }));
 
@@ -150,6 +150,35 @@ describe('onboarding wizard shell — step screen', () => {
 });
 
 describe('onboarding first-run gate', () => {
+  it('does not refetch on ordinary navigation and uses the latest route when sealed', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchStatus = jest
+        .fn()
+        .mockResolvedValue(makeStatus({ complete: true, sealed: false, masterPasswordSet: true }));
+      const secretStatus = jest.fn().mockResolvedValue('unlocked');
+      mockCreateVerityClient.mockReturnValue(makeClient(fetchStatus, secretStatus));
+      const view = render(<GateProbe />);
+      await screen.findByText('gate:done');
+      mockPathname = '/session/new';
+      mockSegments = ['session', 'new'];
+      mockSearchParams = { targetMessageId: '42' };
+      view.rerender(<GateProbe />);
+      expect(fetchStatus).toHaveBeenCalledTimes(1);
+      expect(secretStatus).toHaveBeenCalledTimes(1);
+      secretStatus.mockResolvedValue('sealed');
+      await act(async () => jest.advanceTimersByTime(15_000));
+      expect(
+        screen.getByText(
+          'gate:done:/unlock-device?returnTo=%2Fsession%2Fnew%3FtargetMessageId%3D42&serverSecret=1',
+        ),
+      ).toBeOnTheScreen();
+      view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('redirects to welcome when the device has no base URL (never fetches status)', async () => {
     mockGetVerityBaseUrl.mockReturnValue(null);
     mockHasConfiguredVerityBaseUrl.mockReturnValue(false);

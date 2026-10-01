@@ -7,6 +7,7 @@ import {
   subscribeSettledPermissions,
 } from '@verity/mobile';
 import { AppState } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 export interface UseSessionList extends SessionListState {
@@ -45,26 +46,32 @@ export function useSessionList(client: VerityClient): UseSessionList {
 
   useEffect(() => {
     setState({ ...model.state, loading: true });
-    if (AppState.currentState === 'active') model.start();
-    const appState = AppState.addEventListener('change', (nextState) => {
-      // Native timers may be suspended or dropped while the app is backgrounded.
-      // Recreate the interval and refresh immediately whenever it becomes active.
-      if (nextState === 'active') model.start();
-      else model.stop();
-    });
-    return () => {
-      appState.remove();
-      model.stop();
-    };
   }, [model]);
+
+  const [focused, setFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      if (AppState.currentState === 'active') model.start();
+      const appState = AppState.addEventListener('change', (nextState) => {
+        if (nextState === 'active') model.start();
+        else model.stop();
+      });
+      return () => {
+        setFocused(false);
+        appState.remove();
+        model.stop();
+      };
+    }, [model]),
+  );
 
   useEffect(
     () =>
       subscribeSettledPermissions((sessionId, toolUseId) => {
         model.settlePermission(sessionId, toolUseId);
-        void model.refresh({ silent: true });
+        if (focused) void model.refresh({ silent: true });
       }),
-    [model],
+    [model, focused],
   );
 
   useEffect(
@@ -72,16 +79,16 @@ export function useSessionList(client: VerityClient): UseSessionList {
       subscribeSessionStatusMutations((sessionId, status) => {
         model.applySessionStatus(sessionId, status);
       }),
-    [model],
+    [model, focused],
   );
 
   useEffect(
     () =>
       subscribePullRequestStatusMutations(({ sessionId, pr }) => {
         if (pr !== undefined) model.applyPullRequestStatus(sessionId, pr);
-        void model.refresh({ silent: true });
+        if (focused) void model.refresh({ silent: true });
       }),
-    [model],
+    [model, focused],
   );
 
   const refresh = useCallback(

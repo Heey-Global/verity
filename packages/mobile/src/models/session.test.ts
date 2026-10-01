@@ -79,6 +79,59 @@ function metadataHistoryEvent(seq: number): { seq: number; event: AgentEvent } {
 }
 
 describe('SessionModel — stream', () => {
+  it('publishes REST history while the parallel stream ticket is still pending', async () => {
+    const { connect, sockets } = recordingConnect();
+    let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getHistory']>>) => void;
+    let resolveTicket!: (ticket: string) => void;
+    const client = stubClient();
+    const getHistory = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        resolveHistory = resolve;
+      }),
+    );
+    client.getHistory = getHistory;
+    const getActivity = vi.fn().mockResolvedValue({ busy: false, queued: [] });
+    client.getActivity = getActivity;
+    const getStreamTicket = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        resolveTicket = resolve;
+      }),
+    );
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      baseUrl: 'http://host',
+      connect,
+      getStreamTicket,
+    });
+    try {
+      model.start();
+      expect(getStreamTicket).toHaveBeenCalledTimes(1);
+      expect(getHistory).toHaveBeenCalledTimes(1);
+      expect(getActivity).not.toHaveBeenCalled();
+      resolveHistory({
+        events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+        hasMore: true,
+      });
+      await flush();
+      // A delayed handshake must not hide a complete REST transcript.
+      expect(model.state.loaded).toBe(true);
+      expect(agentTexts(model.state)).toEqual(['tail']);
+      expect(model.state.hasOlder).toBe(true);
+      expect(sockets).toHaveLength(0);
+      expect(getActivity).toHaveBeenCalledTimes(1);
+      resolveTicket('initial');
+      await flush();
+      expect(getStreamTicket).toHaveBeenCalledTimes(1);
+      expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
+      sockets[0]?.emitEvent(101, { t: 'text', delta: ' replay' });
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 101 }));
+      expect(agentTexts(model.state)).toEqual(['tail replay']);
+    } finally {
+      model.stop();
+    }
+  });
+
   it.each(['resolve', 'reject'] as const)(
     'opens on resume when the initial history probe settles in background (%s)',
     async (outcome) => {
@@ -107,7 +160,7 @@ describe('SessionModel — stream', () => {
         }
         await flush();
         expect(sockets).toHaveLength(0);
-        expect(model.state.loaded).toBe(false);
+        expect(model.state.loaded).toBe(outcome === 'resolve');
 
         // A completed probe must not strand the unstarted stream behind the loading screen.
         model.resume();

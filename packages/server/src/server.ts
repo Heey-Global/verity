@@ -151,6 +151,7 @@ import {
 } from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import rateLimitPlugin from '@fastify/rate-limit';
+import compressPlugin from '@fastify/compress';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -3202,6 +3203,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // Install the limiter's manual API. The auth hook below invokes it only after
   // a protected request has failed bearer-token verification.
   app.register(rateLimitPlugin, { global: false });
+  // Opt in only large history reads: global compression would also transform
+  // credential responses and opaque brokered HTTP payloads.
+  app.register(compressPlugin, {
+    global: false,
+    globalDecompression: false,
+    encodings: ['gzip', 'deflate'],
+  });
   let checkInvalidBearer: ReturnType<FastifyInstance['createRateLimit']> | undefined;
 
   // Session file uploads are streamed directly to disk. Returning the raw request
@@ -8454,121 +8462,127 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // worktree's live branch (#110) so the header label auto-updates on an
   // external/agent `git checkout`; both reads are best-effort — on any failure the
   // poll falls back to raw `isBusy` and omits name/branch, never a 500.
-  registerSessionHistoryRoutes(app, {
-    activity: async (reply, id) => {
-      const pendingLinks = (await deps.eventStore.pendingSessionLinkMessageIds([id])).get(id) ?? [];
-      const base = {
-        busy: conductor.isBusy(id) || hasMeetingJob(id),
-        queued: conductor.queuedItems(id),
-        pendingPermissions: [...new Set([...conductor.pendingPermissions(id), ...pendingLinks])],
-        modelSwitchPending:
-          conductor.hasDeferredAfterCurrentTurn(id) || conductor.isBackendHandoffPending(id),
-        // Busy for a reason the operator cannot see otherwise: a stop that could not
-        // establish the worker exited keeps the session RESERVED (nothing is running
-        // for them) until termination is confirmed. Without this the state is
-        // indistinguishable from an endlessly working turn.
-        terminationUnconfirmed: conductor.hasUnconfirmedTermination(id),
-      };
-      try {
+  app.register((instance, _opts, done) => {
+    registerSessionHistoryRoutes(instance, {
+      activity: async (reply, id) => {
+        const pendingLinks =
+          (await deps.eventStore.pendingSessionLinkMessageIds([id])).get(id) ?? [];
+        const base = {
+          busy: conductor.isBusy(id) || hasMeetingJob(id),
+          queued: conductor.queuedItems(id),
+          pendingPermissions: [...new Set([...conductor.pendingPermissions(id), ...pendingLinks])],
+          modelSwitchPending:
+            conductor.hasDeferredAfterCurrentTurn(id) || conductor.isBackendHandoffPending(id),
+          // Busy for a reason the operator cannot see otherwise: a stop that could not
+          // establish the worker exited keeps the session RESERVED (nothing is running
+          // for them) until termination is confirmed. Without this the state is
+          // indistinguishable from an endlessly working turn.
+          terminationUnconfirmed: conductor.hasUnconfirmedTermination(id),
+        };
+        try {
+          const session = await deps.eventStore.getSession(id);
+          if (!session) {
+            reply.code(404);
+            return { error: `session ${id} not found` };
+          }
+          // In-flight OR log-derived running (open background task). `||` short-circuits,
+          // so a busy session skips the event-log read entirely — only an idle-looking
+          // conductor pays the hydration to catch the settled-turn/open-task gap. Carry
+          // the display name so the header reflects an auto-generated (or externally
+          // renamed) title within a poll, without a remount. `branch` is still gated on
+          // the branch-switching dep (a git read).
+          // The read is narrowed to the projection slice, and then to its tail —
+          // see `activityProjection`. `task` and every kind the status derivation
+          // reads are in the slice, and nothing else here looks at the log, so an
+          // idle session with a long transcript stops re-hydrating it once per
+          // poll. The SLICE ONLY, deliberately: this response carries neither
+          // `eventCount` nor `lastActivityAt`, and counting a whole log is the one
+          // part of the projection read that is still linear in its length.
+          //
+          // Log hydration exists specifically for a background task that outlived
+          // conductor tracking. Neutral notices (including meeting progress) are
+          // not turns and must not make an otherwise-finished session busy forever.
+          const { events, hasTaskLifecycle } = base.busy
+            ? EMPTY_ACTIVITY_PROJECTION
+            : await activityProjection(id);
+          // `events.length` stands in for the total count, and only ever behind
+          // `hasTaskLifecycle`: the count exists solely to tell an empty log (idle)
+          // from one holding nothing the projection reads (running), and a slice
+          // containing a `task` event is not empty either way.
+          const busy =
+            base.busy ||
+            (hasTaskLifecycle &&
+              deriveSessionStatusFromProjection(events, events.length) === 'running');
+          const branches = await branchesForSession(session);
+          const branch = branches
+            ? await currentBranchCached(branches, session.worktree)
+            : undefined;
+          return {
+            ...base,
+            busy,
+            name: session.name,
+            ...(branch !== undefined ? { branch } : {}),
+          };
+        } catch {
+          return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive
+        }
+      },
+      recordScrollDiagnostic: async (reply, id, body) => {
         const session = await deps.eventStore.getSession(id);
         if (!session) {
           reply.code(404);
           return { error: `session ${id} not found` };
         }
-        // In-flight OR log-derived running (open background task). `||` short-circuits,
-        // so a busy session skips the event-log read entirely — only an idle-looking
-        // conductor pays the hydration to catch the settled-turn/open-task gap. Carry
-        // the display name so the header reflects an auto-generated (or externally
-        // renamed) title within a poll, without a remount. `branch` is still gated on
-        // the branch-switching dep (a git read).
-        // The read is narrowed to the projection slice, and then to its tail —
-        // see `activityProjection`. `task` and every kind the status derivation
-        // reads are in the slice, and nothing else here looks at the log, so an
-        // idle session with a long transcript stops re-hydrating it once per
-        // poll. The SLICE ONLY, deliberately: this response carries neither
-        // `eventCount` nor `lastActivityAt`, and counting a whole log is the one
-        // part of the projection read that is still linear in its length.
-        //
-        // Log hydration exists specifically for a background task that outlived
-        // conductor tracking. Neutral notices (including meeting progress) are
-        // not turns and must not make an otherwise-finished session busy forever.
-        const { events, hasTaskLifecycle } = base.busy
-          ? EMPTY_ACTIVITY_PROJECTION
-          : await activityProjection(id);
-        // `events.length` stands in for the total count, and only ever behind
-        // `hasTaskLifecycle`: the count exists solely to tell an empty log (idle)
-        // from one holding nothing the projection reads (running), and a slice
-        // containing a `task` event is not empty either way.
-        const busy =
-          base.busy ||
-          (hasTaskLifecycle &&
-            deriveSessionStatusFromProjection(events, events.length) === 'running');
-        const branches = await branchesForSession(session);
-        const branch = branches ? await currentBranchCached(branches, session.worktree) : undefined;
-        return {
-          ...base,
-          busy,
-          name: session.name,
-          ...(branch !== undefined ? { branch } : {}),
-        };
-      } catch {
-        return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive
-      }
-    },
-    recordScrollDiagnostic: async (reply, id, body) => {
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      const diagnostic = parseScrollDiagnostic(body);
-      app.log.info(
-        {
-          sessionId: id,
-          projectId: session.projectId,
-          scroll: {
-            event: redactScrollDiagnosticEvent(diagnostic.event),
-            seq: diagnostic.seq,
-            at: diagnostic.at,
-            data: redactScrollDiagnosticData(diagnostic.data),
+        const diagnostic = parseScrollDiagnostic(body);
+        app.log.info(
+          {
+            sessionId: id,
+            projectId: session.projectId,
+            scroll: {
+              event: redactScrollDiagnosticEvent(diagnostic.event),
+              seq: diagnostic.seq,
+              at: diagnostic.at,
+              data: redactScrollDiagnosticData(diagnostic.data),
+            },
           },
-        },
-        'verity: mobile scroll diagnostic',
-      );
-      return { ok: true };
-    },
-    // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
-    // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
-    // a long session with only its tail and fetch older turns on scroll-up, instead
-    // of replaying the whole event log. Live updates still arrive over the WS stream.
-    history: async (reply, id, limit, beforeSeq) => {
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      return deps.eventStore.getEventsBeforeSeq(id, limit ?? DEFAULT_HISTORY_PAGE, beforeSeq);
-    },
-    diagnostics: async (reply, id) => {
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      // Diagnostics are scalar metadata only; the transcript and raw agent output
-      // never cross this endpoint.
-      const diagnostics = [];
-      let beforeSeq: number | undefined;
-      // A sparse or older session may have no diagnostics at all. Bound the
-      // backward scan independently of the number of matches.
-      for (let pageNumber = 0; pageNumber < 10 && diagnostics.length < 100; pageNumber += 1) {
-        const page = await deps.eventStore.getEventsBeforeSeq(id, 500, beforeSeq);
-        diagnostics.unshift(...recentSessionDiagnostics(page.events, 100));
-        if (!page.hasMore || page.events.length === 0) break;
-        beforeSeq = page.events[0]?.seq;
-      }
-      return diagnostics.slice(-100);
-    },
+          'verity: mobile scroll diagnostic',
+        );
+        return { ok: true };
+      },
+      // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
+      // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
+      // a long session with only its tail and fetch older turns on scroll-up, instead
+      // of replaying the whole event log. Live updates still arrive over the WS stream.
+      history: async (reply, id, limit, beforeSeq) => {
+        const session = await deps.eventStore.getSession(id);
+        if (!session) {
+          reply.code(404);
+          return { error: `session ${id} not found` };
+        }
+        return deps.eventStore.getEventsBeforeSeq(id, limit ?? DEFAULT_HISTORY_PAGE, beforeSeq);
+      },
+      diagnostics: async (reply, id) => {
+        const session = await deps.eventStore.getSession(id);
+        if (!session) {
+          reply.code(404);
+          return { error: `session ${id} not found` };
+        }
+        // Diagnostics are scalar metadata only; the transcript and raw agent output
+        // never cross this endpoint.
+        const diagnostics = [];
+        let beforeSeq: number | undefined;
+        // A sparse or older session may have no diagnostics at all. Bound the
+        // backward scan independently of the number of matches.
+        for (let pageNumber = 0; pageNumber < 10 && diagnostics.length < 100; pageNumber += 1) {
+          const page = await deps.eventStore.getEventsBeforeSeq(id, 500, beforeSeq);
+          diagnostics.unshift(...recentSessionDiagnostics(page.events, 100));
+          if (!page.hasMore || page.events.length === 0) break;
+          beforeSeq = page.events[0]?.seq;
+        }
+        return diagnostics.slice(-100);
+      },
+    });
+    done();
   });
 
   // Edit a session's registry metadata: rename it (set/clear its display name)
