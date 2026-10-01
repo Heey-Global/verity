@@ -1,5 +1,5 @@
 import type { VerityClient } from '@verity/mobile';
-import { Alert } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import {
   ensureGoogleWorkspaceAccess,
@@ -107,4 +107,22 @@ it('uses a complete Workspace bundle without asking for consent again', async ()
     ensureGoogleWorkspaceAccess(client, 'application/vnd.google-apps.document'),
   ).resolves.toBe(true);
   expect(AuthSession.AuthRequest).not.toHaveBeenCalled();
+});
+
+// Web Alert callbacks never run; consent must resolve without the native dialog.
+it.each([true, false])('resolves browser consent with acceptance=%s', async (accepted) => {
+  jest.replaceProperty(Platform, 'OS', 'web');
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'confirm');
+  const confirm = jest.fn().mockReturnValue(accepted);
+  Object.defineProperty(globalThis, 'confirm', { configurable: true, value: confirm });
+  try {
+    const result = await runContactsAuth('client');
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('calendar invitations'));
+    expect(Alert.alert).not.toHaveBeenCalled();
+    expect(result.kind).toBe(accepted ? 'success' : 'cancelled');
+    expect(AuthSession.AuthRequest).toHaveBeenCalledTimes(accepted ? 1 : 0);
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'confirm', original);
+    else Reflect.deleteProperty(globalThis, 'confirm');
+  }
 });

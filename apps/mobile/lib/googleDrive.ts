@@ -4,7 +4,7 @@
 // the iOS OAuth client and hand the resulting one-time `code` + PKCE verifier to
 // the server, which does the token exchange outbound and keeps the refresh token.
 import type { VerityClient } from '@verity/mobile';
-import { Alert } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 
@@ -131,6 +131,12 @@ export async function runGoogleWorkspaceAuth(
 }
 
 function explainGoogleAccess(service: string, purpose: string): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    return Promise.resolve(
+      typeof globalThis.confirm === 'function' &&
+        globalThis.confirm(`Connect ${service}?\n\n${purpose}`),
+    );
+  }
   return new Promise((resolve) =>
     Alert.alert(
       `Connect ${service}?`,
