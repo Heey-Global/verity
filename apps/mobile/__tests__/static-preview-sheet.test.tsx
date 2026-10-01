@@ -793,6 +793,22 @@ describe('dev server tab', () => {
     expect(screen.queryByTestId('dev-server-tab-dot')).toBeNull();
   });
 
+  // The sheet opens on the explorer, so an error shown only on the other tab
+  // would leave existing links unlisted with nothing saying why.
+  it('shows a failed share list on the folder tab it opens on', async () => {
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => []),
+      listPublicPreviewShares: jest.fn(async () => {
+        throw new Error('Uplink offline');
+      }),
+    });
+
+    expect(await screen.findByText('Uplink offline')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
+      true,
+    );
+  });
+
   // Detection only marks the tab. Switching to it made the sheet wait on the
   // probe and moved the explorer away from someone already using it.
   it('stays on Folder and marks the Dev server tab when a server runs', async () => {

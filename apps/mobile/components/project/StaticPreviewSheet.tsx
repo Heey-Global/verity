@@ -982,6 +982,7 @@ export function StaticPreviewSheet({
               </View>
               <View style={styles.footer}>
                 {folderError ? <Text style={styles.error}>{folderError}</Text> : null}
+                {error ? <Text style={styles.error}>{error}</Text> : null}
                 <Pressable
                   onPress={() => pick({ kind: 'folder', path })}
                   disabled={!folderReady}
