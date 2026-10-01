@@ -293,6 +293,9 @@ export function StaticPreviewSheet({
   };
 
   const pick = (next: PreviewTarget) => {
+    // A pick is a choice of tab too; a late probe must not move the sheet away
+    // from where the link is about to appear.
+    tabChosen.current = true;
     setError(undefined);
     setStopped(undefined);
     setTarget(next);

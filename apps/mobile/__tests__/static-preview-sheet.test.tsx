@@ -771,6 +771,35 @@ describe('dev server tab', () => {
     );
   });
 
+  it('keeps a picked folder on its tab when the server probe answers late', async () => {
+    let resolveServers!: (servers: (typeof vite)[]) => void;
+    renderSheet({
+      listSessionDevServers: jest.fn(
+        () =>
+          new Promise<(typeof vite)[]>((resolve) => {
+            resolveServers = resolve;
+          }),
+      ),
+      createSessionStaticPreviewShare: jest.fn(async () =>
+        portShare({
+          id: 'folder-share',
+          targetKind: 'static-folder',
+          targetPort: null,
+          staticPath: '.',
+          publicOrigin: 'https://folder.example',
+        }),
+      ),
+    });
+
+    await pickFolder();
+    await act(async () => resolveServers([vite]));
+    fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
+    expect(await screen.findByText('https://folder.example')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
+      true,
+    );
+  });
+
   // Only the opening look picks the tab: a server the agent starts later must not
   // pull the folder list away from someone browsing it.
   it('stays on the folder tab when a server starts after the sheet opened', async () => {
