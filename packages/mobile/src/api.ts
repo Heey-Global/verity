@@ -929,8 +929,9 @@ export const uplinkDiagnosticsSchema = z.object({
   remoteControl: z.enum(['ready', 'unavailable']),
   reason: z.enum(['unknown_key', 'revoked', 'expired']).optional(),
   lastCloseCode: z.number().int().min(0).max(4999).optional(),
-  /** Absent on a Core older than the diagnostics view. */
-  remoteStreams: z.array(remoteStreamRecordSchema).max(16).optional(),
+  // Absent on a Core older than the diagnostics view. A record that drifts
+  // from this shape drops the list, not the status fields beside it.
+  remoteStreams: z.array(remoteStreamRecordSchema).max(16).optional().catch(undefined),
 });
 export type UplinkDiagnostics = z.infer<typeof uplinkDiagnosticsSchema>;
 

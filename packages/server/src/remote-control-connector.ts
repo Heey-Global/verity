@@ -78,8 +78,6 @@ export interface RemoteConnectorPoolOptions {
   connectLocal?: (host: string, port: number) => Socket;
   /** Records why sessions end and streams reset; otherwise a failure only surfaces as a generic app error. */
   log?: Pick<Console, 'info' | 'warn'>;
-  /** @internal Set by the pool to retain ended streams for diagnostics. */
-  onStreamEnded?: (record: RemoteStreamRecord) => void;
 }
 
 export function remoteDataUrlForControl(controlUrl: string): string {
@@ -128,22 +126,28 @@ export function createRemoteConnectorPool(options: RemoteConnectorPoolOptions): 
   }
   const sessions = new Set<ConnectorSession>();
   const ended: RemoteStreamRecord[] = [];
-  const sessionOptions: RemoteConnectorPoolOptions = {
-    ...options,
-    onStreamEnded: (record) => {
-      ended.push(record);
-      if (ended.length > RECENT_STREAMS) ended.shift();
-    },
+  const retain = (record: RemoteStreamRecord): void => {
+    ended.push(record);
+    if (ended.length > RECENT_STREAMS) ended.shift();
   };
   return {
+    // Bounded as a whole: the app rejects an oversized list, and many live
+    // streams is exactly the situation this view is read in.
     recentStreams: () => {
-      const live = [...sessions].flatMap((session) => session.liveStreams());
+      const live = [...sessions]
+        .flatMap((session) => session.liveStreams())
+        .slice(0, RECENT_STREAMS);
       return [...live, ...ended.slice(Math.max(0, ended.length - (RECENT_STREAMS - live.length)))];
     },
     reserve: (request, signal) => {
       if (signal.aborted) return Promise.resolve('unavailable');
       if (sessions.size >= MAX_SESSIONS) return Promise.resolve('limit_reached');
-      const session = new ConnectorSession(sessionOptions, request, () => sessions.delete(session));
+      const session = new ConnectorSession(
+        options,
+        request,
+        () => sessions.delete(session),
+        retain,
+      );
       sessions.add(session);
       signal.addEventListener('abort', () => session.release('admission aborted'), { once: true });
       if (signal.aborted) session.release('admission aborted');
@@ -170,6 +174,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     private readonly options: RemoteConnectorPoolOptions,
     private readonly request: RemoteConnectorRequest,
     private readonly onRelease: () => void,
+    private readonly onStreamEnded: (record: RemoteStreamRecord) => void = () => undefined,
   ) {
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
@@ -386,7 +391,7 @@ class ConnectorSession implements RemoteConnectorReservation {
   private dropStream(id: string, reason: string): void {
     const stream = this.streams.get(id);
     if (!stream) return;
-    this.options.onStreamEnded?.(this.record(id, stream, reason));
+    this.onStreamEnded(this.record(id, stream, reason));
     this.options.log?.info(
       {
         sessionId: this.request.sessionId,

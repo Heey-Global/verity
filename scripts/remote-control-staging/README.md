@@ -75,7 +75,7 @@ terminations from each side. `lastReset` retains the latest direction and fixed
 code even after another stream opens.
 
 `streams=` lists up to three recent streams as fixed tokens, for example
-`s1=k3f0a9c1e.up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2`: the
+`s1=k3F0A9C1E.up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2`: the
 first characters of the stream ID (the same ID Core reports under "Core
 streams" in the app's connection diagnostics, so both ends of one stream can
 be read side by side), bytes sent and

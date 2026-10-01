@@ -579,7 +579,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let stream = Stream(connection, proxy: proxy)
-      stream.key = String(id.prefix(8)).lowercased()
+      stream.key = String(id.prefix(8))
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false

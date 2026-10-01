@@ -239,6 +239,45 @@ describe('remote control connector', () => {
     await vi.waitFor(() => expect(f.recentStreams()[0]?.state).toBe('session_ended'));
   });
 
+  it('bounds the stream list however many streams are live', async () => {
+    const f = await fixture();
+    const reservations: RemoteConnectorReservation[] = [];
+    for (const sessionId of ['session_a', 'session_b', 'session_c']) {
+      const reservation = await reserve(f, sessionId);
+      const attached = reservation.attach(
+        'ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() =>
+        expect(
+          f.received.filter((frame) => (frame as { type: string }).type === 'attach'),
+        ).toHaveLength(reservations.length + 1),
+      );
+      f.peer().send(
+        JSON.stringify({ type: 'attached', sessionId, capability: 'remote-control-v1' }),
+      );
+      await attached;
+      for (let index = 0; index < 8; index += 1) {
+        f.peer().send(
+          JSON.stringify({
+            type: 'stream.open',
+            streamId: `${sessionId}_${String(index)}`,
+            channel: 'remote',
+            meta: {},
+          }),
+        );
+      }
+      reservations.push(reservation);
+    }
+    // 24 live streams; the app's schema admits at most 16 and would otherwise
+    // drop the whole diagnostics response, status fields included.
+    await vi.waitFor(() => expect(f.localConnections()).toBe(24));
+    expect(f.recentStreams()).toHaveLength(8);
+    expect(f.recentStreams().every((record) => record.state === 'open')).toBe(true);
+    for (const reservation of reservations) reservation.release('test complete');
+  });
+
   it('rejects data before the attachment barrier and never opens the local ingress', async () => {
     const f = await fixture();
     const reservation = await reserve(f);

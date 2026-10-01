@@ -3458,3 +3458,18 @@ it('moves a session with a stable retry key and parses the retained-workspace re
   expect(calls[0]?.init?.method).toBe('POST');
   expect(JSON.parse(calls[0]?.init?.body as string)).toEqual(body);
 });
+
+describe('Uplink diagnostics schema', () => {
+  it('keeps the status fields when a Core stream record is out of shape', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    // Core's stream records evolve separately; a drifted one must not take the
+    // control, sharing and remote-control status down with it.
+    const parsed = uplinkDiagnosticsSchema.parse({
+      control: 'connected',
+      sharing: 'ready',
+      remoteControl: 'ready',
+      remoteStreams: [{ sessionId: 'session_one', streamId: 'abcdef01', state: 'open' }],
+    });
+    expect(parsed).toEqual({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
+  });
+});
