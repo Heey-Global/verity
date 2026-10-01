@@ -1,11 +1,9 @@
-import { type Href, router } from 'expo-router';
+import { router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { SERVER_UPDATE_ROUTE } from '../lib/serverUpdateRoute';
 import { Icon } from './Icon';
-
-/** The screen the update is started from — the banner and the push both lead here. */
-export const SERVER_UPDATE_ROUTE = '/settings/server-update' as Href;
 
 /**
  * A full-width strip under the overview header announcing a Server release.

@@ -10,6 +10,7 @@ import {
 } from '../lib/pushNotifications';
 import { getAuthTokenId, getStoredAuthTokenId } from '../lib/authToken';
 import { createPushRegistrationAttempt } from '../lib/pushRegistrationAttempt';
+import { SERVER_UPDATE_ROUTE } from '../lib/serverUpdateRoute';
 
 /**
  * Mount push notifications once from the root authenticated screen. Registers this
@@ -38,7 +39,7 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
     // Where the update can actually be started — the same destination the overview
     // banner opens, so the announcement and the chrome lead to one place.
     const navigateToSettings = (): void => {
-      router.push('/settings/server-update');
+      router.push(SERVER_UPDATE_ROUTE);
     };
 
     // Retry until it sticks: a launch while offline (or a transient /healthz blip)

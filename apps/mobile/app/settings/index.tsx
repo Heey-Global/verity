@@ -36,6 +36,7 @@ import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
+import { SERVER_UPDATE_ROUTE } from '../../lib/serverUpdateRoute';
 import {
   retryFailedVeritySettings,
   saveVeritySettings,
@@ -191,7 +192,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
                 : 'Updates and container recreate'
             }
             status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
-            onPress={() => router.push('/settings/server-update')}
+            onPress={() => router.push(SERVER_UPDATE_ROUTE)}
           />
         </SettingsListPanel>
       </SettingsGroup>

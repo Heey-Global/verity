@@ -9,7 +9,8 @@ jest.mock('expo-router', () => ({
   },
 }));
 
-import { SERVER_UPDATE_ROUTE, ServerUpdateBanner } from '../components/ServerUpdateBanner';
+import { ServerUpdateBanner } from '../components/ServerUpdateBanner';
+import { SERVER_UPDATE_ROUTE } from '../lib/serverUpdateRoute';
 
 // The route the banner opens must be a real screen; a renamed file would leave
 // the banner tapping into "unmatched route" while every type still checks.

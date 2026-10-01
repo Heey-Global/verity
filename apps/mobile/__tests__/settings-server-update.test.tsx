@@ -405,6 +405,21 @@ describe('settings/server-update', () => {
     expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
   });
 
+  // The banner, the push and the Settings row all land here, so a first check
+  // that never reaches Verity must not leave the screen on a spinner for good.
+  it('offers another check when the first one never reached Verity', async () => {
+    const getServerUpdates = jest
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Network request failed'))
+      .mockResolvedValue({ state: 'available', release: RELEASE, operation: null });
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { getServerUpdates }));
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Check again'));
+
+    expect(await screen.findByText('Version 1.4.0 available')).toBeOnTheScreen();
+  });
+
   it('refreshes a transiently unreachable release channel when the screen regains focus', async () => {
     const getServerUpdates = jest
       .fn()

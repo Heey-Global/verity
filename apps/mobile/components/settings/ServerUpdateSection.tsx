@@ -40,6 +40,9 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const [unanswered, setUnanswered] = useState<string | undefined>(undefined);
   const unansweredRef = useRef<{ key: string; deadline: number } | undefined>(undefined);
   const refreshGeneration = useRef(0);
+  // The last check never reached Verity. It only matters before the first
+  // answer: afterwards the last known status stays on screen instead.
+  const [unreached, setUnreached] = useState(false);
 
   // Adopt what Verity reports after an install request that did not come back
   // cleanly. Only a panel that would send the very same request again means
@@ -65,6 +68,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         .getServerUpdates()
         .then((next) => {
           if (generation !== refreshGeneration.current) return;
+          setUnreached(false);
           const pending = unansweredRef.current;
           // An unchanged status is not yet proof that nothing started: the
           // request may still be on its way into the Updater's journal.
@@ -82,7 +86,9 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         // A poll that fails mid-cutover is expected: the old server is gone and
         // the new one is not serving yet. Keep the last known operation on
         // screen rather than blanking the panel.
-        .catch(() => undefined)
+        .catch(() => {
+          if (generation === refreshGeneration.current) setUnreached(true);
+        })
     );
   }, [client, settle]);
 
@@ -158,6 +164,25 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     [client, settle, starting],
   );
 
+  if (status === undefined && unreached) {
+    return (
+      <SettingsPanel>
+        <Text style={styles.updateDetail}>Could not reach Verity to check for updates.</Text>
+        <Pressable
+          style={({ pressed }) => [
+            styles.primaryButton,
+            styles.updateButton,
+            pressed ? styles.pressed : null,
+          ]}
+          onPress={() => void refresh()}
+          accessibilityRole="button"
+          accessibilityLabel="Check again"
+        >
+          <Text style={styles.primaryButtonLabel}>Check again</Text>
+        </Pressable>
+      </SettingsPanel>
+    );
+  }
   if (status === undefined) {
     return (
       <View style={styles.centered}>
