@@ -146,17 +146,30 @@ export function parseInline(text: string): InlineSpan[] {
 }
 
 export function sessionFilePathFromLocalLink(url: string): string | null {
+  const target = sessionFileTargetFromLocalLink(url);
+  return target?.root === 'worktree' ? target.path : null;
+}
+
+/** A local link resolved to the file root it opens in. Paths under the sandbox's
+ * `/knowledge` mount open in the project knowledge (or, below `/knowledge/shared`,
+ * the shared knowledge) instead of the session worktree. */
+export function sessionFileTargetFromLocalLink(
+  url: string,
+): { root: 'worktree' | 'knowledge' | 'shared'; path: string } | null {
   const withoutHash = url.split('#')[0] ?? '';
   const withoutLine = withoutHash.replace(/:\d+(?::\d+)?$/, '');
   const withoutFileScheme = withoutLine.startsWith('file://')
     ? withoutLine.slice('file://'.length)
     : withoutLine;
   const sessionWorktree = /^\/work\/\.verity-sessions\/[^/]+\/(.+)$/.exec(withoutFileScheme);
-  if (withoutFileScheme.startsWith('/') && sessionWorktree === null) return null;
+  const knowledge = /^\/knowledge\/(?:(shared)\/)?(.+)$/.exec(withoutFileScheme);
+  if (withoutFileScheme.startsWith('/') && sessionWorktree === null && knowledge === null) {
+    return null;
+  }
   if (!withoutFileScheme.startsWith('/') && /^[a-z][a-z0-9+.-]*:/i.test(withoutFileScheme)) {
     return null;
   }
-  const candidate = sessionWorktree?.[1] ?? withoutFileScheme;
+  const candidate = sessionWorktree?.[1] ?? knowledge?.[2] ?? withoutFileScheme;
   const normalized = candidate
     .replace(/\\/g, '/')
     .split('/')
@@ -164,7 +177,8 @@ export function sessionFilePathFromLocalLink(url: string): string | null {
     .join('/');
   if (normalized.length === 0) return null;
   if (normalized.split('/').some((part) => part === '..' || part === '.git')) return null;
-  return normalized;
+  const root = knowledge === null ? 'worktree' : knowledge[1] ? 'shared' : 'knowledge';
+  return { root, path: normalized };
 }
 
 export function isSessionImageFilePath(path: string): boolean {
