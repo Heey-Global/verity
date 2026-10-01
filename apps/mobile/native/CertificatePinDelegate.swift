@@ -8,6 +8,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
   private let failureLock = NSLock()
   private var storedFailure: String?
   private var storedPhase = "NO_AUTH_CHALLENGE"
+  private var storedMetrics = "tx0,proxy0,connect0,tls0,response0"
   var onOpen: (() -> Void)?
   var onClose: ((String?) -> Void)?
 
@@ -21,6 +22,28 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     failureLock.lock()
     defer { failureLock.unlock() }
     return storedPhase
+  }
+
+  // Counts and connection milestones only. URLs, addresses, headers and TLS
+  // contents must never enter an on-screen diagnostic.
+  var connectionDiagnostic: String {
+    failureLock.lock()
+    defer { failureLock.unlock() }
+    return "\(storedPhase);\(storedMetrics)"
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask,
+    didFinishCollecting metrics: URLSessionTaskMetrics) {
+    let transactions = metrics.transactionMetrics
+    let last = transactions.last
+    let summary = "tx\(min(transactions.count, 99))"
+      + ",proxy\(last?.isProxyConnection == true ? 1 : 0)"
+      + ",connect\(last?.connectStartDate != nil ? 1 : 0)"
+      + ",tls\(last?.secureConnectionStartDate != nil ? 1 : 0)"
+      + ",response\(last?.responseStartDate != nil ? 1 : 0)"
+    failureLock.lock()
+    storedMetrics = summary
+    failureLock.unlock()
   }
 
   // NSError descriptions/userInfo may contain URLs, headers, or peer-controlled text.

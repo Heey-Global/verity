@@ -42,6 +42,8 @@ export {
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
+  type SessionCalendarConnection,
+  type SessionContactsConnection,
   type GoogleWorkspaceFileKind,
   type GoogleSlideImageCleanupRecord,
   type SessionInput,

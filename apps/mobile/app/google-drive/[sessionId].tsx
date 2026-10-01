@@ -27,7 +27,11 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
 import { createVerityClient } from '../../lib/client';
-import { runGoogleDriveAuth } from '../../lib/googleDrive';
+import {
+  ensureGoogleWorkspaceAccess,
+  runGoogleDriveAuth,
+  runGoogleWorkspaceAuth,
+} from '../../lib/googleDrive';
 import { pickSessionFiles } from '../../lib/attachments';
 
 type Crumb = { id: string; name: string };
@@ -213,34 +217,39 @@ function GoogleDrivePicker({
     void loadFiles(parentId, debouncedQuery, false);
   }, [connected, debouncedQuery, driveView, loadFiles, parentId]);
 
-  const connect = useCallback(async (): Promise<boolean> => {
-    if (clientId.length === 0) {
-      Alert.alert(
-        'Google Drive not set up',
-        'This Verity server does not provide Google Workspace sign-in. Update the server or configure GOOGLE_AUTH_ID on a custom deployment.',
-      );
-      return false;
-    }
-    setConnecting(true);
-    try {
-      const result = await runGoogleDriveAuth(clientId);
-      if (result.kind === 'cancelled') return false;
-      await client.connectGoogleDrive({
-        code: result.code,
-        codeVerifier: result.codeVerifier,
-        redirectUri: result.redirectUri,
-      });
-      await loadSettings();
-      return true;
-    } catch (err) {
-      const message =
-        err instanceof VerityApiError ? err.message : 'Google sign-in failed. Please try again.';
-      Alert.alert('Could not connect', message);
-      return false;
-    } finally {
-      setConnecting(false);
-    }
-  }, [client, clientId, loadSettings, purpose]);
+  const connect = useCallback(
+    async (mimeType?: string): Promise<boolean> => {
+      if (clientId.length === 0) {
+        Alert.alert(
+          'Google Drive not set up',
+          'This Verity server does not provide Google Workspace sign-in. Update the server or configure GOOGLE_AUTH_ID on a custom deployment.',
+        );
+        return false;
+      }
+      setConnecting(true);
+      try {
+        const result = mimeType
+          ? await runGoogleWorkspaceAuth(clientId, mimeType)
+          : await runGoogleDriveAuth(clientId);
+        if (result.kind === 'cancelled') return false;
+        await client.connectGoogleDrive({
+          code: result.code,
+          codeVerifier: result.codeVerifier,
+          redirectUri: result.redirectUri,
+        });
+        await loadSettings();
+        return true;
+      } catch (err) {
+        const message =
+          err instanceof VerityApiError ? err.message : 'Google sign-in failed. Please try again.';
+        Alert.alert('Could not connect', message);
+        return false;
+      } finally {
+        setConnecting(false);
+      }
+    },
+    [client, clientId, loadSettings, purpose],
+  );
 
   const openFolder = useCallback(
     (folder: DriveFile) => {
@@ -332,6 +341,7 @@ function GoogleDrivePicker({
       setImportingId(file.id);
       void (async () => {
         try {
+          if (!(await ensureGoogleWorkspaceAccess(client, file.mimeType))) return;
           await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
           router.back();
         } catch (err) {
@@ -339,7 +349,7 @@ function GoogleDrivePicker({
             err instanceof VerityApiError ? err.message : 'Could not assign this Workspace file.';
           if (
             err instanceof VerityApiError &&
-            err.status === 403 &&
+            (err.status === 403 || err.status === 409) &&
             message === 'Reconnect Google Drive to grant Workspace editing access'
           ) {
             Alert.alert(
@@ -353,7 +363,7 @@ function GoogleDrivePicker({
                     setImportingId(file.id);
                     void (async () => {
                       try {
-                        if (!(await connect())) return;
+                        if (!(await connect(file.mimeType))) return;
                         await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
                         router.back();
                       } catch (retryError) {

@@ -17,6 +17,8 @@ export interface AttachMenuHandlers {
   onPickMeetingAudio: () => void;
   onLiveMeeting: () => void;
   onConnectGmail: () => void;
+  onConnectCalendar: () => void;
+  onConnectContacts: () => void;
 }
 
 /**
@@ -53,6 +55,18 @@ export function attachMenuRows(
       label: 'Gmail',
       detail: 'Read & draft',
       onPress: handlers.onConnectGmail,
+    },
+    {
+      icon: 'calendar',
+      label: 'Google Calendar',
+      detail: 'Read & approve changes',
+      onPress: handlers.onConnectCalendar,
+    },
+    {
+      icon: 'users',
+      label: 'Google Contacts',
+      detail: 'Read names & emails',
+      onPress: handlers.onConnectContacts,
     },
   ];
 }

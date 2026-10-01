@@ -1,3 +1,5 @@
+import { googleContactsRequestSchema } from './google-contacts.js';
+import { googleCalendarRequestSchema } from './google-calendar.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import { randomUUID } from 'node:crypto';
 import { KnowledgeError } from '@verity/store';
@@ -311,6 +313,8 @@ const TOOL_SCHEMAS = {
       requests: z.array(z.record(z.string(), z.unknown())).min(1).max(25).optional(),
     })
     .strict(),
+  verity_google_calendar: googleCalendarRequestSchema,
+  verity_google_contacts: googleContactsRequestSchema,
   verity_gmail: z.discriminatedUnion('action', [
     z
       .object({
@@ -399,6 +403,10 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; edit accepts any structurally valid Google Docs batchUpdate request and requires the revisionId returned by the read.',
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or any structurally valid Google Sheets batchUpdate request.',
+  verity_google_contacts:
+    'Search the Google Contacts address book explicitly connected to this session by name or email. Read-only: returns names and email addresses for Gmail recipients and Calendar attendees. If multiple contacts or email addresses match, ask the user to select or confirm the intended address; never guess. Use only the confirmed email address when inviting or emailing.',
+  verity_google_calendar:
+    'Read Google Calendar calendars and events when access is enabled for this session. Creating, updating, and deleting events always require user approval. Before EVERY create_event, ask the user whether to add Google Meet and set required addGoogleMeet to their explicit answer; never assume a default. Use only attendee email addresses supplied or confirmed by the user; use verity_google_contacts only when Contacts access is separately enabled for this session. Google Meet creation may be pending: inspect conferenceData.createRequest.status and read_event later to retrieve the link; do not create another event or report a link before Google returns it. Read an event before updating or deleting it and use its etag as expectedEtag to avoid overwriting concurrent changes. Use sendUpdates: all only when invitations or updates should be emailed to attendees.',
   verity_gmail:
     'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:

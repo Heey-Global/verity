@@ -1596,6 +1596,35 @@ jobs:
           docker buildx imagetools create --prefer-index=false \
             -t "${image}:latest" "${image}@${digest}"
 
+  save-script-sandbox-cache:
+    # Recovery inputs must never seed a cache later consumed by main.
+    needs: [release-please, prepare-server-build-context]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.release-please.outputs.backend-sha == github.sha &&
+      needs.prepare-server-build-context.outputs.compiler-cache-hit != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      # Only consume this run's already verified compiler outputs; no checkout
+      # or candidate code executes in the cache-writing job.
+      # renovate: datasource=github-actions depName=actions/download-artifact
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: trusted-server-build-context-v${{ needs.release-please.outputs.backend-version }}
+          path: features/verity-sandbox-toolkit
+      # renovate: datasource=github-actions depName=actions/cache
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/linux-arm64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/sha256sums.txt
+          key: ${{ needs.prepare-server-build-context.outputs.compiler-cache-key }}
+
   prepare-server-build-context:
     # These local compiler/ledger inputs do not consume published images. Prepare
     # them during the smoke; build-server still waits for the gate and siblings.
@@ -1605,6 +1634,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    outputs:
+      compiler-cache-key: ${{ steps.script-sandbox-cache.outputs.cache-primary-key }}
+      compiler-cache-hit: ${{ steps.script-sandbox-cache.outputs.cache-hit }}
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1629,8 +1661,29 @@ jobs:
             cpu-period=100000
             cpu-quota=300000
 
+      # This job can restore trusted outputs, but never writes cache entries.
+      # A warm release restores the tiny binaries instead of reinstalling Zig.
+      # renovate: datasource=github-actions depName=actions/cache
+      - name: Cache script sandbox compiler outputs
+        id: script-sandbox-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/linux-arm64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/sha256sums.txt
+          key: script-sandbox-v1-${{ hashFiles('features/verity-sandbox-toolkit/bin/verity-script-sandbox.c', 'features/verity-sandbox-toolkit/prebuilt/Dockerfile', 'scripts/build-script-sandbox-prebuilts.sh') }}
+
       - name: Build attested script sandbox artifacts
+        if: steps.script-sandbox-cache.outputs.cache-hit != 'true'
         run: scripts/build-script-sandbox-prebuilts.sh
+
+      - name: Verify restored compiler outputs
+        working-directory: features/verity-sandbox-toolkit/prebuilt
+        run: |
+          sha256sum --check --strict sha256sums.txt
+          # Artifact downloads strip executable bits before the cache is saved.
+          chmod 0755 linux-amd64/verity-script-sandbox linux-arm64/verity-script-sandbox
 
       - name: Assemble toolkit compatibility ledger
         run: node scripts/update-toolkit-ledger.mjs
@@ -1858,8 +1911,27 @@ jobs:
           # run its artifact.
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:builddeps-${{ matrix.architecture }}
             type=gha,scope=verity-server-${{ matrix.architecture }}
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }},mode=min,ignore-error=true
+
+      # Save only the dependency stage, with a short budget: compiler/source
+      # intermediates must not delay publication with a mode=max upload.
+      # renovate: datasource=github-actions depName=docker/build-push-action
+      - name: Cache Server build dependencies
+        timeout-minutes: 2
+        continue-on-error: true
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: builder-deps
+          platforms: linux/${{ matrix.architecture }}
+          outputs: type=cacheonly
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:builddeps-${{ matrix.architecture }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.architecture }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:builddeps-${{ matrix.architecture }},mode=min,ignore-error=true
 
   publish-server:
     # Also gated on the sandbox image and toolkit Feature, not just the relay: a

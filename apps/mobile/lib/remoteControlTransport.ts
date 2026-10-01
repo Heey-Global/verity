@@ -309,12 +309,15 @@ async function probeCore(
           diagnosticTimeout = setTimeout(() => resolve(undefined), 250);
         }),
       ]);
-      const knownPhase =
-        typeof phase === 'string' &&
-        ['NO_AUTH_CHALLENGE', 'AUTH_CHALLENGE_RECEIVED', 'PIN_AND_CHAIN_TRUST_ACCEPTED'].includes(
-          phase,
-        );
-      throw new Error(`Remote Core probe timed out${knownPhase ? ` [TLS:${phase}]` : ''}.`);
+      const safePhase =
+        typeof phase === 'string'
+          ? /^(NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)(?:;(tx\d{1,2},proxy[01],connect[01],tls[01],response[01]))?$/u.exec(
+              phase,
+            )
+          : null;
+      throw new Error(
+        `Remote Core probe timed out${safePhase ? ` [TLS:${safePhase[1]}${safePhase[2] ? `; ${safePhase[2]}` : ''}]` : ''}.`,
+      );
     } finally {
       if (diagnosticTimeout !== undefined) clearTimeout(diagnosticTimeout);
     }
@@ -635,7 +638,7 @@ function safeRemoteFailure(error: unknown): string | null {
   if (!(error instanceof Error)) return null;
   const message = error.message;
   if (
-    /^Remote Core probe timed out \[TLS:(NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)\]\.$/u.test(
+    /^Remote Core probe timed out \[TLS:(NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)(?:; tx\d{1,2},proxy[01],connect[01],tls[01],response[01])?\]\.$/u.test(
       message,
     )
   )

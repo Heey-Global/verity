@@ -63,6 +63,12 @@ class VerityPinnedTransport: Module {
     requestsLock.unlock()
   }
 
+  private func takeRequest(_ id: String) -> (URLSession, CertificatePinDelegate)? {
+    requestsLock.lock()
+    defer { requestsLock.unlock() }
+    return requests.removeValue(forKey: id)
+  }
+
   private func socket(
     _ id: String
   ) -> (URLSession, URLSessionWebSocketTask, CertificatePinDelegate)? {
@@ -201,14 +207,15 @@ class VerityPinnedTransport: Module {
       self.proxyModeLock.unlock()
     }
 
-    AsyncFunction("cancelRequest") { (requestId: String) -> String? in
-      self.requestsLock.lock()
-      let entry = self.requests.removeValue(forKey: requestId)
-      self.requestsLock.unlock()
-      // Capture before cancellation changes the delegate or completes the request.
-      let phase = entry?.1.phase
+    AsyncFunction("cancelRequest") { (requestId: String) async -> String? in
+      let entry = self.takeRequest(requestId)
       entry?.0.invalidateAndCancel()
-      return phase
+      // URLSession delivers task metrics on its delegate queue, often only as
+      // cancellation completes. Only the explicit diagnostic waits for them.
+      if requestId.hasPrefix("remote-probe-") {
+        try? await Task.sleep(nanoseconds: 100_000_000)
+      }
+      return entry?.1.connectionDiagnostic
     }
 
     AsyncFunction("verifyIdentity") {

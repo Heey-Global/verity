@@ -69,6 +69,7 @@ on:
       # bump can change it with no first-party file touched at all. Without these
       # two, that is a drift the bundle-match step never runs on — and the review
       # exclusion below assumes it always runs.
+      - 'scripts/image-lock-changes.mjs'
       - 'package-lock.json'
       - 'packages/*/package.json'
       - 'packages/adapter-claude/src/**'
@@ -103,7 +104,32 @@ env:
   IMAGE_NAME_NEW: heey-global/verity/verity-sandbox
 
 jobs:
+  dependency-changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      relevant: ${{ steps.classify.outputs.relevant }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          relevant=true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            relevant="$(node scripts/image-lock-changes.mjs "$BASE_SHA" HEAD sandbox)"
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
   architecture-smoke:
+    needs: dependency-changes
+    if: needs.dependency-changes.outputs.relevant == 'true'
     name: smoke-test (${{ matrix.architecture }})
     strategy:
       fail-fast: false
@@ -667,10 +693,18 @@ jobs:
   # Preserve the original required-check name while the work runs as a matrix.
   smoke-test:
     if: ${{ always() }}
-    needs: architecture-smoke
+    needs: [dependency-changes, architecture-smoke]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every architecture smoke to pass
         env:
+          CLASSIFICATION_RESULT: ${{ needs.dependency-changes.result }}
+          RELEVANT: ${{ needs.dependency-changes.outputs.relevant }}
           ARCHITECTURE_SMOKE_RESULT: ${{ needs.architecture-smoke.result }}
-        run: test "$ARCHITECTURE_SMOKE_RESULT" = success
+        run: |
+          test "$CLASSIFICATION_RESULT" = success
+          if [ "$RELEVANT" = false ]; then
+            test "$ARCHITECTURE_SMOKE_RESULT" = skipped
+          else
+            test "$ARCHITECTURE_SMOKE_RESULT" = success
+          fi

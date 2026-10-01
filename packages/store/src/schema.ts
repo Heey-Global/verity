@@ -102,6 +102,20 @@ interface SessionGmailConnectionsTable {
   enabled_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Explicit Calendar access grant for one session. */
+interface SessionCalendarConnectionsTable {
+  session_id: string;
+  account_email: string;
+  enabled_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Explicit Contacts access grant for one session. */
+interface SessionContactsConnectionsTable {
+  session_id: string;
+  account_email: string;
+  enabled_at: ColumnType<Date, string | undefined, never>;
+}
+
 /** Workspace file ids ordered by their latest explicit assignment. */
 interface RecentGoogleSlideDecksTable {
   file_id: string;
@@ -445,6 +459,10 @@ export interface VeritySettingsTable {
   google_drive_refresh_token: ColumnType<string | null, string | null | undefined, string | null>;
   /** Whether the shared Google grant has been expanded with Gmail scopes. */
   gmail_authorized: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Whether the shared Google grant has been expanded with Calendar scopes. */
+  calendar_authorized: ColumnType<boolean, boolean | undefined, boolean>;
+  contacts_authorized: ColumnType<boolean, boolean | undefined, boolean>;
+  google_granted_scopes: ColumnType<string[], string | undefined, string>;
   /** Paid Uplink credential. Encrypted at rest; never sourced from an environment
    * variable or materialized to a host file. The installation id is public and
    * is assigned by the Uplink during the first successful handshake. */
@@ -1283,6 +1301,8 @@ export interface Database {
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
   session_gmail_connections: SessionGmailConnectionsTable;
+  session_calendar_connections: SessionCalendarConnectionsTable;
+  session_contacts_connections: SessionContactsConnectionsTable;
   recent_google_slide_decks: RecentGoogleSlideDecksTable;
   google_slide_image_cleanup: GoogleSlideImageCleanupTable;
   google_slide_invocations: GoogleSlideInvocationsTable;
