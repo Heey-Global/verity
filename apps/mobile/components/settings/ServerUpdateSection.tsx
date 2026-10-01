@@ -22,12 +22,37 @@ import { useUnistyles } from 'react-native-unistyles';
 import { SettingsDisclosure } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
 
+// Cadence for asking whether an unanswered install request started anything.
+const UNANSWERED_POLL_MS = 2_000;
+
 export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
+  // Key of an install request that neither Verity nor the follow-up status
+  // check answered — exactly what a server replacing itself looks like. Until a
+  // status arrives, its outcome is unknown rather than failed.
+  const [unanswered, setUnanswered] = useState<string | undefined>(undefined);
+  const unansweredRef = useRef<string | undefined>(undefined);
   const refreshGeneration = useRef(0);
+
+  // Adopt what Verity reports after an install request that did not come back
+  // cleanly. Only a panel that would send the very same request again means
+  // nothing started: a new operation, a finished one, or "up to date" all
+  // describe themselves, and keeping the stale "available" panel instead would
+  // offer an install the server has already done — and then refuse with a 409.
+  const settle = useCallback((current: ServerUpdateStatus, sentKey: string) => {
+    refreshGeneration.current += 1;
+    unansweredRef.current = undefined;
+    setUnanswered(undefined);
+    setStarting(false);
+    setStatus(current);
+    publishServerUpdateStatusMutation(current);
+    if (describeServerUpdate(current).idempotencyKey === sentKey) {
+      setActionError('Could not start the update.');
+    }
+  }, []);
 
   const refresh = useCallback(() => {
     const generation = ++refreshGeneration.current;
@@ -35,17 +60,21 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
       client
         .getServerUpdates()
         .then((next) => {
-          if (generation === refreshGeneration.current) {
-            setStatus(next);
-            publishServerUpdateStatusMutation(next);
+          if (generation !== refreshGeneration.current) return;
+          const sentKey = unansweredRef.current;
+          if (sentKey !== undefined) {
+            settle(next, sentKey);
+            return;
           }
+          setStatus(next);
+          publishServerUpdateStatusMutation(next);
         })
         // A poll that fails mid-cutover is expected: the old server is gone and
         // the new one is not serving yet. Keep the last known operation on
         // screen rather than blanking the panel.
         .catch(() => undefined)
     );
-  }, [client]);
+  }, [client, settle]);
 
   // Expo Router can keep this route mounted after navigating away. Refresh on
   // every focus so a transient `unreachable` result does not remain on screen
@@ -57,7 +86,8 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   );
 
   const operation = status?.operation ?? null;
-  const pollMs = serverUpdatePollMs(operation);
+  const pollMs =
+    serverUpdatePollMs(operation) ?? (unanswered !== undefined ? UNANSWERED_POLL_MS : null);
   useEffect(() => {
     if (pollMs === null) return;
     const timer = setInterval(() => void refresh(), pollMs);
@@ -75,6 +105,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         .requestServerUpdate({ idempotencyKey, targetDigest })
         .then((accepted) => {
           refreshGeneration.current += 1;
+          setStarting(false);
           setStatus((current) => {
             if (current === undefined) return current;
             const next = { ...current, operation: accepted };
@@ -83,25 +114,26 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           });
         })
         .catch(async (caught) => {
-          // A refused request is final. Anything else may be a lost response to
-          // a request the server did accept — asking once tells the two apart,
-          // and finding an operation resumes polling instead of leaving the
-          // panel idle while Verity is already replacing itself.
+          // A refused request is final. Anything else — a dropped response, or
+          // a 409 because the update already went through — is settled by
+          // asking Verity what it is doing now rather than by the error itself.
           if (caught instanceof VerityApiError && caught.status === 403) {
+            setStarting(false);
             setActionError('Set a master password before updating Verity.');
             return;
           }
           const current = await client.getServerUpdates().catch(() => undefined);
-          if (current !== undefined && serverUpdatePollMs(current.operation) !== null) {
-            setStatus(current);
-            publishServerUpdateStatusMutation(current);
+          if (current !== undefined) {
+            settle(current, idempotencyKey);
             return;
           }
-          setActionError('Could not start the update.');
-        })
-        .finally(() => setStarting(false));
+          // No answer at all: keep the button busy and poll until Verity is
+          // back, then let that status decide.
+          unansweredRef.current = idempotencyKey;
+          setUnanswered(idempotencyKey);
+        });
     },
-    [client, starting],
+    [client, settle, starting],
   );
 
   if (status === undefined || !showsServerUpdatePanel(status)) return null;
