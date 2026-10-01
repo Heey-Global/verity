@@ -791,6 +791,8 @@ const gmailSessionConnectionSchema = z.object({
   connected: z.boolean(),
 });
 export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
+export type CalendarSessionConnection = GmailSessionConnection;
+export type ContactsSessionConnection = GmailSessionConnection;
 
 export const googleDriveImportResultSchema = z.object({
   root: z.literal('knowledge'),
@@ -2572,6 +2574,23 @@ export class VerityClient {
     return { accountEmail: parsed.accountEmail };
   }
 
+  async getGoogleDriveConnection(): Promise<{
+    connected: boolean;
+    clientId: string | null;
+    accountEmail: string | null;
+    scopes: string[];
+  }> {
+    const res = await this.request('/google-drive/connection', { method: 'GET' });
+    return z
+      .object({
+        connected: z.boolean(),
+        clientId: z.string().nullable(),
+        accountEmail: z.string().nullable(),
+        scopes: z.array(z.string()),
+      })
+      .parse(await res.json());
+  }
+
   async disconnectGoogleDrive(): Promise<void> {
     await this.request('/google-drive/disconnect', { method: 'POST' });
   }
@@ -2606,6 +2625,70 @@ export class VerityClient {
 
   async disableSessionGmail(sessionId: string): Promise<void> {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, { method: 'DELETE' });
+  }
+
+  async getSessionCalendarConnection(sessionId: string): Promise<CalendarSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async connectCalendar(input: {
+    code: string;
+    codeVerifier: string;
+    redirectUri: string;
+  }): Promise<{ accountEmail: string | null }> {
+    const res = await this.request('/calendar/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const parsed = googleDriveConnectResultSchema.parse(await res.json());
+    return { accountEmail: parsed.accountEmail };
+  }
+
+  async enableSessionCalendar(sessionId: string): Promise<CalendarSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableSessionCalendar(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, { method: 'DELETE' });
+  }
+
+  async getSessionContactsConnection(sessionId: string): Promise<ContactsSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/contacts`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async connectContacts(input: {
+    code: string;
+    codeVerifier: string;
+    redirectUri: string;
+  }): Promise<{ accountEmail: string | null }> {
+    const res = await this.request('/contacts/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const parsed = googleDriveConnectResultSchema.parse(await res.json());
+    return { accountEmail: parsed.accountEmail };
+  }
+
+  async enableSessionContacts(sessionId: string): Promise<ContactsSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/contacts`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableSessionContacts(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/contacts`, { method: 'DELETE' });
   }
 
   async connectProjectGoogleDriveFolder(

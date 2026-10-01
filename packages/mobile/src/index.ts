@@ -316,6 +316,8 @@ export {
   type SessionStatus,
   type SessionGoogleWorkspaceFile,
   type GmailSessionConnection,
+  type CalendarSessionConnection,
+  type ContactsSessionConnection,
   type SessionSummary,
   type SessionListEnvelope,
   type AttentionSignal,
@@ -485,3 +487,5 @@ export {
   type KnowledgeGrant,
   type KnowledgeExport,
 } from './api.js';
+
+export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';

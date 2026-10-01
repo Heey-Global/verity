@@ -40,6 +40,7 @@ import {
   frozenTranscriptRows,
   gmailPreviewHtml,
   gmailSendSummary,
+  calendarChangeSummary,
   githubRefUrl,
   isPullRequestConflicted,
   isSessionImageFilePath,
@@ -87,6 +88,8 @@ import {
   type AgentEventTone,
   type FrozenTranscriptTail,
   type GmailSessionConnection,
+  type CalendarSessionConnection,
+  type ContactsSessionConnection,
   type RestoredQueuedTurn,
   type Row,
   type ToolCallTone,
@@ -184,7 +187,12 @@ import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
-import { runGmailAuth } from '../../lib/googleDrive';
+import {
+  runCalendarAuth,
+  runContactsAuth,
+  runGmailAuth,
+  ensureGoogleWorkspaceAccess,
+} from '../../lib/googleDrive';
 import {
   type ClickModifiers,
   type DragFileItem,
@@ -536,6 +544,9 @@ export function SessionChat({
     Awaited<ReturnType<VerityClient['listPendingLinkedMessages']>>
   >([]);
   const [decidingLinkedMessage, setDecidingLinkedMessage] = useState<string | null>(null);
+  const [contactsConnection, setContactsConnection] = useState<ContactsSessionConnection | null>(
+    null,
+  );
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2234,6 +2245,9 @@ export function SessionChat({
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
   const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
+  const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
+    null,
+  );
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2247,6 +2261,18 @@ export function SessionChat({
         .getSessionGmailConnection(sessionId)
         .then((connection) => {
           if (active) setGmailConnection(connection);
+        })
+        .catch(() => undefined);
+      void client
+        .getSessionCalendarConnection(sessionId)
+        .then((connection) => {
+          if (active) setCalendarConnection(connection);
+        })
+        .catch(() => undefined);
+      void client
+        .getSessionContactsConnection(sessionId)
+        .then((connection) => {
+          if (active) setContactsConnection(connection);
         })
         .catch(() => undefined);
       return () => {
@@ -2845,7 +2871,7 @@ export function SessionChat({
     setAttachMenuOpen(false);
     void (async () => {
       try {
-        let connection = gmailConnection ?? (await client.getSessionGmailConnection(sessionId));
+        let connection = await client.getSessionGmailConnection(sessionId);
         if (!connection.connected) {
           if (!connection.clientId) {
             Alert.alert(
@@ -2862,6 +2888,12 @@ export function SessionChat({
             redirectUri: auth.redirectUri,
           });
         }
+        setCalendarConnection(
+          await client.getSessionCalendarConnection(sessionId).catch(() => null),
+        );
+        setContactsConnection(
+          await client.getSessionContactsConnection(sessionId).catch(() => null),
+        );
         connection = await client.enableSessionGmail(sessionId);
         setGmailConnection(connection);
       } catch (error) {
@@ -2871,7 +2903,7 @@ export function SessionChat({
         );
       }
     })();
-  }, [client, gmailConnection, sessionId]);
+  }, [client, sessionId]);
   const disableGmail = useCallback(() => {
     void client
       .disableSessionGmail(sessionId)
@@ -2883,6 +2915,106 @@ export function SessionChat({
       .catch((error: unknown) =>
         Alert.alert(
           'Could not disconnect Gmail',
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+  }, [client, sessionId]);
+  const onConnectCalendar = useCallback(() => {
+    setAttachMenuOpen(false);
+    void (async () => {
+      try {
+        let connection = await client.getSessionCalendarConnection(sessionId);
+        if (!connection.connected) {
+          if (!connection.clientId) {
+            Alert.alert(
+              'Google Calendar not set up',
+              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+            );
+            return;
+          }
+          const auth = await runCalendarAuth(connection.clientId);
+          if (auth.kind === 'cancelled') return;
+          await client.connectCalendar({
+            code: auth.code,
+            codeVerifier: auth.codeVerifier,
+            redirectUri: auth.redirectUri,
+          });
+        }
+        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
+        setContactsConnection(
+          await client.getSessionContactsConnection(sessionId).catch(() => null),
+        );
+        connection = await client.enableSessionCalendar(sessionId);
+        setCalendarConnection(connection);
+      } catch (error) {
+        Alert.alert(
+          'Could not connect Calendar',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  }, [client, sessionId]);
+  const disableCalendar = useCallback(() => {
+    void client
+      .disableSessionCalendar(sessionId)
+      .then(() =>
+        setCalendarConnection((connection) =>
+          connection === null ? null : { ...connection, enabled: false },
+        ),
+      )
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not disconnect Calendar',
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+  }, [client, sessionId]);
+  const onConnectContacts = useCallback(() => {
+    setAttachMenuOpen(false);
+    void (async () => {
+      try {
+        let connection = await client.getSessionContactsConnection(sessionId);
+        if (!connection.connected) {
+          if (!connection.clientId) {
+            Alert.alert(
+              'Google Contacts not set up',
+              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+            );
+            return;
+          }
+          const auth = await runContactsAuth(connection.clientId);
+          if (auth.kind === 'cancelled') return;
+          await client.connectContacts({
+            code: auth.code,
+            codeVerifier: auth.codeVerifier,
+            redirectUri: auth.redirectUri,
+          });
+        }
+        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
+        setCalendarConnection(
+          await client.getSessionCalendarConnection(sessionId).catch(() => null),
+        );
+        connection = await client.enableSessionContacts(sessionId);
+        setContactsConnection(connection);
+      } catch (error) {
+        Alert.alert(
+          'Could not connect Contacts',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  }, [client, sessionId]);
+  const disableContacts = useCallback(() => {
+    void client
+      .disableSessionContacts(sessionId)
+      .then(() =>
+        setContactsConnection((connection) =>
+          connection === null ? null : { ...connection, enabled: false },
+        ),
+      )
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not disconnect Contacts',
           error instanceof Error ? error.message : String(error),
         ),
       );
@@ -3516,6 +3648,44 @@ export function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {calendarConnection?.enabled ? (
+        <View style={styles.workspaceFileBar}>
+          <View style={styles.slideDeckLink}>
+            <Icon name="calendar" size={16} color={theme.colors.primary} />
+            <Text style={styles.slideDeckName} numberOfLines={1}>
+              Google Calendar
+              {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
+            </Text>
+          </View>
+          <Pressable
+            onPress={disableCalendar}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Disconnect Google Calendar from this session"
+          >
+            <Icon name="x" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
+      ) : null}
+      {contactsConnection?.enabled ? (
+        <View style={styles.workspaceFileBar}>
+          <View style={styles.slideDeckLink}>
+            <Icon name="users" size={16} color={theme.colors.primary} />
+            <Text style={styles.slideDeckName} numberOfLines={1}>
+              Google Contacts
+              {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
+            </Text>
+          </View>
+          <Pressable
+            onPress={disableContacts}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Disconnect Google Contacts from this session"
+          >
+            <Icon name="x" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
+      ) : null}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
       ) : null}
@@ -3997,6 +4167,8 @@ export function SessionChat({
         onPickMeetingAudio={onPickMeetingAudio}
         onLiveMeeting={onLiveMeeting}
         onConnectGmail={onConnectGmail}
+        onConnectCalendar={onConnectCalendar}
+        onConnectContacts={onConnectContacts}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
@@ -4462,9 +4634,11 @@ function SessionFilesSheet({
                   text: 'Use in this chat',
                   onPress: () => {
                     setMutating(true);
-                    void client
-                      .assignSessionGoogleWorkspaceFile(sessionId, file.id)
-                      .then(() => onClose())
+                    void (async () => {
+                      if (!(await ensureGoogleWorkspaceAccess(client, file.mimeType))) return;
+                      await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
+                      onClose();
+                    })()
                       .catch((caught: unknown) =>
                         Alert.alert(
                           'Could not use file in chat',
@@ -7159,6 +7333,8 @@ function PermissionPrompt({
   const isSessionProgress = pending.tool === 'verity_session_progress';
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
   const isGmail = pending.tool === 'verity_gmail';
+  const isCalendar = pending.tool === 'verity_google_calendar';
+  const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
@@ -7199,7 +7375,8 @@ function PermissionPrompt({
     (isListSessions && listingSummary === null) ||
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
-    (isGmail && gmailSummary === null)
+    (isGmail && gmailSummary === null) ||
+    (isCalendar && calendarSummary === null)
       ? permissionInputText(pending.input)
       : null;
   // The fallback path only — `brokeredRequestDetails` is non-null exactly when no summariser
@@ -7238,6 +7415,7 @@ function PermissionPrompt({
       recentSummary === null
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
+      calendarSummary?.title ?? null,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
@@ -7387,6 +7565,14 @@ function PermissionPrompt({
             redacted, but free text may still contain sensitive material. Another page requires a
             new approval.
           </Text>
+        </View>
+      ) : calendarSummary !== null ? (
+        <View>
+          {calendarSummary.details.map((detail, index) => (
+            <Text key={index} style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(detail)}
+            </Text>
+          ))}
         </View>
       ) : gmailSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
@@ -8226,6 +8412,8 @@ function AttachMenu({
   onPickMeetingAudio,
   onLiveMeeting,
   onConnectGmail,
+  onConnectCalendar,
+  onConnectContacts,
   onClose,
   onDismiss,
 }: {
@@ -8237,6 +8425,8 @@ function AttachMenu({
   onPickMeetingAudio: () => void;
   onLiveMeeting: () => void;
   onConnectGmail: () => void;
+  onConnectCalendar: () => void;
+  onConnectContacts: () => void;
   onClose: () => void;
   onDismiss: () => void;
 }) {
@@ -8249,6 +8439,8 @@ function AttachMenu({
     onPickMeetingAudio,
     onLiveMeeting,
     onConnectGmail,
+    onConnectCalendar,
+    onConnectContacts,
   });
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).

@@ -8,8 +8,12 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { hasGoogleCalendarScopes, hasGoogleContactsScopes } from './google-oauth-scopes.js';
 import { GoogleDriveError, exchangeGoogleAuthCode, type GoogleFetch } from './google-drive.js';
+import {
+  hasGoogleCalendarScopes,
+  hasGoogleContactsScopes,
+  hasGoogleGmailScopes,
+} from './google-oauth-scopes.js';
 
 const connectBody = z.object({
   code: z.string().trim().min(1).max(4096),
@@ -22,50 +26,44 @@ const sessionParams = z.object({
     .min(1)
     .regex(/^[A-Za-z0-9_-]+$/),
 });
-const REQUIRED_GMAIL_SCOPES = new Set([
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.settings.basic',
-]);
+const REQUIRED_CONTACTS_SCOPES = new Set(['https://www.googleapis.com/auth/userinfo.email']);
 
-type GmailRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
+type ContactsRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
   Pick<
     EventStore,
     | 'getSession'
-    | 'getSessionGmailConnection'
-    | 'enableSessionGmail'
-    | 'disableSessionGmail'
-    | 'clearSessionGmailConnections'
-    | 'clearSessionCalendarConnections'
+    | 'getSessionContactsConnection'
+    | 'enableSessionContacts'
+    | 'disableSessionContacts'
     | 'clearSessionContactsConnections'
+    | 'clearSessionCalendarConnections'
+    | 'clearSessionGmailConnections'
   >;
 
-interface GmailRouteDeps {
-  eventStore: GmailRouteStore;
+interface ContactsRouteDeps {
+  eventStore: ContactsRouteStore;
   googleClientId?: string;
   secretCipher?: SealableSecretCipher;
   fetch?: GoogleFetch;
   onCredentialsChanged?: () => void;
 }
 
-async function gmailAccountEmail(
+async function contactsAccountEmail(
   accessToken: string,
   doFetch: GoogleFetch = fetch,
 ): Promise<string | undefined> {
-  const response = await doFetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+  const response = await doFetch('https://www.googleapis.com/oauth2/v2/userinfo', {
     headers: { Authorization: `Bearer ${accessToken}` },
     signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok)
-    throw new GoogleDriveError('Gmail profile request failed', `http_${response.status}`);
-  const body = (await response.json().catch(() => ({}))) as { emailAddress?: unknown };
-  return typeof body.emailAddress === 'string' && body.emailAddress.length > 0
-    ? body.emailAddress
-    : undefined;
+    throw new GoogleDriveError('Contacts profile request failed', `http_${response.status}`);
+  const body = (await response.json().catch(() => ({}))) as { email?: unknown };
+  return typeof body.email === 'string' && body.email.length > 0 ? body.email : undefined;
 }
 
-/** Shared-Google-account Gmail consent and explicit per-session enablement. */
-export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps): void {
+/** Shared-Google-account Contacts consent and explicit per-session enablement. */
+export function registerGoogleContactsRoutes(app: FastifyInstance, deps: ContactsRouteDeps): void {
   app.register(async (instance) => {
     await instance.register(rateLimitPlugin, { global: false });
 
@@ -79,10 +77,10 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       }
     };
 
-    instance.get('/gmail/connection', async () => {
+    instance.get('/contacts/connection', async () => {
       const current = await settings();
       const connected =
-        current?.gmailAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
+        current?.contactsAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
       return {
         connected,
         accountEmail: connected ? (current?.googleDriveAccountEmail ?? null) : null,
@@ -90,7 +88,7 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
     });
 
     instance.post(
-      '/gmail/connect',
+      '/contacts/connect',
       { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
       async (request, reply) => {
         if (deps.secretCipher?.isSealed() === true) throw new SealedError();
@@ -108,7 +106,7 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
           );
         } catch (error) {
           const reason = error instanceof GoogleDriveError ? error.reason : 'exchange_failed';
-          request.log.error({ reason }, 'verity: Gmail code exchange failed');
+          request.log.error({ reason }, 'verity: Contacts code exchange failed');
           reply.code(502);
           return { error: `Google sign-in failed (${reason})` };
         }
@@ -119,60 +117,61 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
           };
         }
         if (
-          tokens.scopes === undefined ||
-          [...REQUIRED_GMAIL_SCOPES].some((scope) => !tokens.scopes?.includes(scope))
+          !hasGoogleContactsScopes(tokens.scopes) ||
+          [...REQUIRED_CONTACTS_SCOPES].some((scope) => !tokens.scopes?.includes(scope))
         ) {
           reply.code(400);
-          return { error: 'Google did not grant the required Gmail permissions' };
+          return { error: 'Google did not grant the required Contacts permissions' };
         }
         let accountEmail: string;
         try {
           accountEmail =
-            (await gmailAccountEmail(tokens.accessToken, deps.fetch)) ??
+            (await contactsAccountEmail(tokens.accessToken, deps.fetch)) ??
             (() => {
-              throw new Error('missing Gmail account email');
+              throw new Error('missing Contacts account email');
             })();
         } catch {
           reply.code(502);
-          return { error: 'Could not verify the connected Gmail account' };
+          return { error: 'Could not verify the connected Contacts account' };
         }
         const previous = await settings();
-        const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
         const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
-        const accountChanged =
+        if (
           previous?.googleDriveAccountEmail !== null &&
           previous?.googleDriveAccountEmail !== undefined &&
-          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail.toLowerCase();
-        if (!contactsAuthorized || accountChanged)
+          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail.toLowerCase()
+        ) {
           await deps.eventStore.clearSessionContactsConnections();
-        if (accountChanged) await deps.eventStore.clearSessionGmailConnections();
-        if (!calendarAuthorized || accountChanged) {
+          await deps.eventStore.clearSessionGmailConnections();
           await deps.eventStore.clearSessionCalendarConnections();
         }
+        const gmailAuthorized = hasGoogleGmailScopes(tokens.scopes);
+        if (!calendarAuthorized) await deps.eventStore.clearSessionCalendarConnections();
+        if (!gmailAuthorized) await deps.eventStore.clearSessionGmailConnections();
         await deps.eventStore.updateVeritySettings({
           googleGrantedScopes: tokens.scopes ?? [],
-          contactsAuthorized,
+          calendarAuthorized,
           googleDriveClientId: clientId,
           googleDriveRefreshToken: tokens.refreshToken,
           googleDriveAccountEmail: accountEmail,
-          gmailAuthorized: true,
-          calendarAuthorized,
+          contactsAuthorized: true,
+          gmailAuthorized,
         });
         deps.onCredentialsChanged?.();
         return { connected: true as const, accountEmail };
       },
     );
 
-    instance.get('/sessions/:id/gmail', async (request, reply) => {
+    instance.get('/sessions/:id/contacts', async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
       if ((await deps.eventStore.getSession(id)) === undefined) {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-      const connection = await deps.eventStore.getSessionGmailConnection(id);
+      const connection = await deps.eventStore.getSessionContactsConnection(id);
       const current = await settings();
       const connected =
-        current?.gmailAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
+        current?.contactsAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
       return {
         enabled: connection !== undefined,
         connected,
@@ -181,23 +180,23 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       };
     });
 
-    instance.put('/sessions/:id/gmail', async (request, reply) => {
+    instance.put('/sessions/:id/contacts', async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
       if ((await deps.eventStore.getSession(id)) === undefined) {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
       const current = await settings();
-      if (current?.gmailAuthorized !== true || !current.googleDriveRefreshToken?.trim()) {
+      if (current?.contactsAuthorized !== true || !current.googleDriveRefreshToken?.trim()) {
         reply.code(409);
-        return { error: 'Gmail is not connected' };
+        return { error: 'Contacts is not connected' };
       }
       const accountEmail = current.googleDriveAccountEmail;
       if (!accountEmail) {
         reply.code(409);
-        return { error: 'Gmail account identity is unavailable' };
+        return { error: 'Contacts account identity is unavailable' };
       }
-      await deps.eventStore.enableSessionGmail(id, accountEmail);
+      await deps.eventStore.enableSessionContacts(id, accountEmail);
       return {
         enabled: true as const,
         connected: true as const,
@@ -206,13 +205,13 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       };
     });
 
-    instance.delete('/sessions/:id/gmail', async (request, reply) => {
+    instance.delete('/sessions/:id/contacts', async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
       if ((await deps.eventStore.getSession(id)) === undefined) {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-      await deps.eventStore.disableSessionGmail(id);
+      await deps.eventStore.disableSessionContacts(id);
       reply.code(204);
     });
   });

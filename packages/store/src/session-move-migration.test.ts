@@ -24,6 +24,8 @@ it('upgrades an existing database without reordering the released migrations', a
       'session_moves',
       'session_links',
       'session_gmail_connections',
+      'session_calendar_connections',
+      'session_contacts_connections',
       'integration_accounts',
       'matrix_connector_config',
     ]) {
