@@ -1677,11 +1677,11 @@ export default function MeetingScreen() {
           ) : null}
           {earlierMeetings}
         </ScrollView>
-        {composing === 'note' || noteUnsaved || draft?.text ? (
+        {composing === 'note' || noteUnsaved ? (
           <View style={styles.composerLine}>
             <View style={styles.fill}>{noteComposer(composing === 'note')}</View>
-            {/* A note with text or a failed save keeps the field open until it is saved. */}
-            {draft?.text || noteUnsaved ? null : (
+            {/* A failed save keeps the field open until it is retried; a draft stays autosaved. */}
+            {noteUnsaved ? null : (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Close note"
@@ -1711,7 +1711,12 @@ export default function MeetingScreen() {
               style={styles.barButton}
             >
               <Text style={styles.barButtonText}>
-                ✎ Note{finalizedNotes.length ? ` · ${finalizedNotes.length}` : ''}
+                ✎ Note
+                {draft?.text
+                  ? ' · draft'
+                  : finalizedNotes.length
+                    ? ` · ${finalizedNotes.length}`
+                    : ''}
               </Text>
             </Pressable>
             <Pressable

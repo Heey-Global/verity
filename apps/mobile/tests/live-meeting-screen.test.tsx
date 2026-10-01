@@ -1122,7 +1122,10 @@ it('keeps the retry draft when Done note is pressed after remount during a faile
   fireEvent.changeText(await noteInput(), 'Recover me');
   first.unmount();
   render(<MeetingScreen />);
-  fireEvent.press(await screen.findByLabelText('Add note'));
+  // The remounted screen keeps the draft behind the Note button.
+  expect(await screen.findByText(/· draft/)).toBeOnTheScreen();
+  await noteInput();
+  fireEvent.press(screen.getByLabelText('Add note'));
   await act(async () => rejectSave(new Error('disk full')));
 
   expect(await screen.findByLabelText('Retry saving note')).toBeOnTheScreen();
