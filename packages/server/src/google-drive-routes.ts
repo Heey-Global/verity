@@ -427,7 +427,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         kind === 'slides' ? 'presentations' : kind === 'docs' ? 'documents' : 'spreadsheets';
       const settings = await deps.eventStore.getVeritySettings();
       if (
-        !settings?.googleGrantedScopes.includes(`https://www.googleapis.com/auth/${requiredScope}`)
+        !settings?.googleGrantedScopes.some(
+          (granted) => granted === `https://www.googleapis.com/auth/${requiredScope}`,
+        )
       ) {
         reply.code(409);
         return { error: 'Reconnect Google Drive to grant Workspace editing access' };
@@ -525,7 +527,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       }
       const settings = await deps.eventStore.getVeritySettings();
       if (
-        !settings?.googleGrantedScopes.includes('https://www.googleapis.com/auth/presentations')
+        !settings?.googleGrantedScopes.some(
+          (granted) => granted === 'https://www.googleapis.com/auth/presentations',
+        )
       ) {
         reply.code(409);
         return { error: 'Reconnect Google Drive to grant presentation editing access' };
