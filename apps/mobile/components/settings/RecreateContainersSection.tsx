@@ -2,10 +2,11 @@
 // knows about changes this app made since it started; one saved before a
 // restart, or from another device, would otherwise have no way to land short of
 // recreating each project by hand.
+import { useEffect } from 'react';
 import { ActivityIndicator, Pressable, Text } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { useVeritySettings } from '../../lib/settingsStore';
+import { setApplyRun, useVeritySettings, veritySettingsSnapshot } from '../../lib/settingsStore';
 import { RECREATE_LABEL } from './RecreatePendingBanner';
 import { recreateRunMessage, startRecreateRun } from './recreateContainers';
 import { SettingsPanel } from './SettingsChrome';
@@ -14,6 +15,16 @@ import { settingsStyles as styles } from './settingsStyles';
 export function RecreateContainersSection() {
   const { theme } = useUnistyles();
   const { applyPending, applyRun: run, saving } = useVeritySettings();
+  // A result read here is done with once the operator leaves; kept, it would
+  // turn up as a banner on whichever screen comes next. A run still going when
+  // they leave is reported there, since nothing else would.
+  useEffect(
+    () => () => {
+      if (veritySettingsSnapshot().applyRun.phase === 'done') setApplyRun({ phase: 'idle' });
+    },
+    [],
+  );
+
   const running = run.phase === 'running';
   const busy = running || saving > 0;
   const message =

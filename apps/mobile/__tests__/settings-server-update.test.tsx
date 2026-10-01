@@ -275,6 +275,24 @@ describe('standing recreate entry', () => {
     expect(recreateProjectContainer.mock.calls.map(([id]) => id)).toEqual(['one']);
   });
 
+  it('does not leave its result behind as a banner on the next screen', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+        recreateProjectContainer: jest.fn().mockResolvedValue(undefined),
+      }),
+    );
+    const view = render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+    await screen.findByText('Recreated 1 running container.');
+
+    view.unmount();
+    render(<GitHubSettingsScreen />);
+    await act(async () => undefined);
+
+    expect(screen.queryByText(/Recreated/)).toBeNull();
+  });
+
   // The banner would offer the same run a second time on the same screen.
   it('replaces the banner there rather than sitting next to it', async () => {
     const initial = makeSettings();
