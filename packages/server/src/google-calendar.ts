@@ -11,7 +11,7 @@ const eventTimeSchema = z.union([
     })
     .strict(),
 ]);
-export const calendarEventSchema = z
+const calendarEventSchema = z
   .object({
     summary: z.string().min(1).max(1024).optional(),
     description: z.string().max(100_000).optional(),
