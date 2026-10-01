@@ -3426,6 +3426,39 @@ const migrations: Record<string, Migration> = {
         drop column google_granted_scopes`.execute(db);
     },
   },
+  '0124_remove_retired_knowledge_state': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The retired maintenance runner has no consumers; source data and provenance remain active.
+      await sql`drop table knowledge_wiki_jobs, knowledge_maintenance_queue`.execute(db);
+      await sql`alter table project_knowledge_spaces
+        drop column legacy_memory, drop column reconcile_due_at`.execute(db);
+      await sql`alter table verity_settings drop column knowledge_model`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      // Restore the historical schema for explicit rollback without resurrecting retired jobs.
+      await sql`alter table project_knowledge_spaces
+        add column legacy_memory text, add column reconcile_due_at timestamptz`.execute(db);
+      await sql`alter table verity_settings add column knowledge_model text`.execute(db);
+      await sql`create table knowledge_wiki_jobs (
+        id text primary key,
+        project_id text not null references projects(id) on delete cascade,
+        session_id text not null unique references sessions(session_id) on delete cascade,
+        kind text not null constraint knowledge_wiki_jobs_kind_check check(kind in ('ingest','check','reconcile')),
+        status text not null check(status in ('pending','running','completed','failed')),
+        source_revisions text not null,
+        error text,
+        created_at timestamptz not null default now(),
+        model text,
+        constraint knowledge_wiki_jobs_retired check (false)
+      )`.execute(db);
+      await sql`create table knowledge_maintenance_queue (
+        project_id text not null references projects(id) on delete cascade,
+        source_document_id text not null references knowledge_documents(id) on delete cascade,
+        due_at timestamptz not null,
+        primary key(project_id,source_document_id)
+      )`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

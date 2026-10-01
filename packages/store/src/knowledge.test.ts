@@ -50,7 +50,7 @@ async function setup() {
   return { k, parent, child, secret, doc, hidden };
 }
 describe('managed knowledge', () => {
-  it('queues ordinary documents created in project Sources', async () => {
+  it('retains ordinary documents created in project Sources', async () => {
     await ctx.store.upsertProject({
       id: 'p',
       owner: 'test',
@@ -69,9 +69,10 @@ describe('managed knowledge', () => {
       title: 'decision',
       bodyMarkdown: 'Use the blue design.',
     });
-    expect(await ctx.store.knowledge.listWikiMaintenance('p')).toEqual([
-      expect.objectContaining({ projectId: 'p', sourceDocumentId: source.id }),
-    ]);
+    expect(await ctx.store.knowledge.getDocument(source.id)).toMatchObject({
+      folderId: nested.id,
+      bodyMarkdown: 'Use the blue design.',
+    });
   });
   it('filters discovery before returning metadata and refuses direct ids and historical revisions', async () => {
     const { k, parent, child, secret, doc, hidden } = await setup();

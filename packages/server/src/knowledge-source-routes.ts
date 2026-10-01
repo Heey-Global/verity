@@ -68,11 +68,9 @@ export function registerKnowledgeSourceRoutes(
         source.processingNote,
         ...source.locators.map((part) => `## ${part.label}\n\n${part.text}`),
       ].join('\n\n');
-      const projectId = await knowledge.projectForSourceFolder(body.folderId);
       const document = await knowledge.createSourceDocument(
         { folderId: body.folderId, title: body.filename, bodyMarkdown },
         (tx, doc) => knowledge.sources.attachRevision(tx, doc.currentRevisionId, source),
-        projectId ?? undefined,
       );
       return {
         document,
@@ -156,13 +154,10 @@ export function registerKnowledgeSourceRoutes(
         source.processingNote,
         ...source.locators.map((part) => `## ${part.label}\n\n${part.text}`),
       ].join('\n\n');
-      const current = await knowledge.getDocument(documentId);
-      const projectId = await knowledge.projectForSourceFolder(current.folderId);
       const document = await knowledge.updateSourceDocument(
         documentId,
         { expectedRevisionId: body.expectedRevisionId, title: body.filename, bodyMarkdown },
         (tx, doc) => knowledge.sources.attachRevision(tx, doc.currentRevisionId, source),
-        projectId ?? undefined,
       );
       return {
         document,

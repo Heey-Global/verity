@@ -871,10 +871,8 @@ function publicVeritySettings(
     googleDriveRefreshToken,
     uplinkSubscriptionKey,
     advancedModeEnabled,
-    knowledgeModel,
     ...rest
   } = settings;
-  void knowledgeModel;
   return {
     ...rest,
     advancedModeEnabled: advancedModeEnabled === true,
