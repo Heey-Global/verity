@@ -552,3 +552,26 @@ it('files a finished meeting once its late notes have arrived', async () => {
     await filing.close();
   }
 });
+
+it('recovers persisted finished meetings on an incremental sync and retries filing failures', async () => {
+  await app.inject({ method: 'PUT', url, payload: { ...meeting, state: 'ended', endedAt: 200 } });
+  const onFinished = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('temporary failure'))
+    .mockResolvedValue(undefined);
+  const restarted = Fastify();
+  registerLiveMeetingRoutes(restarted, ctx.store, { onFinished, fileDelayMs: 10 });
+  try {
+    await restarted.inject({ method: 'GET', url: '/sessions/session-1/live-meetings?after=999' });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    expect(onFinished).toHaveBeenLastCalledWith('session-1', 'meeting-1');
+    await restarted.inject({
+      method: 'PUT',
+      url: `${url}/notes/late`,
+      payload: { atSeconds: 5, text: 'After restart', revision: 1 },
+    });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(3));
+  } finally {
+    await restarted.close();
+  }
+});

@@ -2066,27 +2066,30 @@ async function fileLiveMeeting(input: {
 }): Promise<void> {
   const session = await input.eventStore.getSession(input.sessionId);
   if (!session) return;
-  const changes = await input.eventStore.liveMeetings.changes(input.sessionId, 0);
-  const meeting = changes.meetings.find((candidate) => candidate.id === input.meetingId);
-  if (!meeting || meeting.state === 'active') return;
-  // Same rule as uploaded recordings: with a data root, meetings belong to a project.
-  if (input.dataRoot !== undefined && session.projectId === null) return;
+  const load = async () => {
+    const changes = await input.eventStore.liveMeetings.changes(input.sessionId, 0);
+    const meeting = changes.meetings.find((candidate) => candidate.id === input.meetingId);
+    if (!meeting || meeting.state === 'active') return null;
+    const notes = changes.notes.filter((note) => note.meetingId === meeting.id);
+    const insights = await input.eventStore.liveMeetings.insights(input.sessionId, meeting.id);
+    return { meeting, notes, insights: insights ?? [] };
+  };
+  const first = await load();
+  if (!first) return;
   const knowledge = input.dataRoot !== undefined && session.projectId !== null;
   const meetingDir = knowledge
     ? await ensureMeetingDirectory(input.dataRoot!, session.projectId!)
     : await ensureLegacyMeetingDirectory(session.worktree);
-  const title = liveMeetingTitle(meeting);
-  const hash = createHash('sha256').update(meeting.id).digest('hex').slice(0, 8);
-  const baseName = `${new Date(meeting.startedAt).toISOString().slice(0, 10)}-live-meeting-${hash}`;
-  const relPath = knowledge
-    ? `${KNOWLEDGE_MEETINGS_DIR}/${baseName}.md`
-    : `docs/meetings/${baseName}.md`;
-  const markdown = renderLiveMeetingMarkdown({
-    meeting,
-    notes: changes.notes.filter((note) => note.meetingId === meeting.id),
-    insights: (await input.eventStore.liveMeetings.insights(input.sessionId, meeting.id)) ?? [],
-  });
+  const title = liveMeetingTitle(first.meeting);
+  const hash = createHash('sha256').update(first.meeting.id).digest('hex').slice(0, 8);
+  const date = new Date(first.meeting.startedAt).toISOString().slice(0, 10);
+  const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
   await withMeetingTranscriptCommitLock(meetingDir, relPath, async () => {
+    // Read again under the lock: an overlapping filing that read earlier must not
+    // overwrite a later note or speaker name with its older snapshot.
+    const current = await load();
+    if (!current) return;
+    const markdown = renderLiveMeetingMarkdown(current);
     const written = await writeMeetingTranscript({ meetingDir, relPath, markdown });
     if (!written.created) {
       // writeMeetingTranscript has already refused a symlink or non-file here. Write
@@ -2098,19 +2101,28 @@ async function fileLiveMeeting(input: {
         await unlink(temporary).catch(() => undefined);
         throw error;
       });
-      return;
     }
-    await appendMeetingIndex(meetingDir, relPath, title);
-    await emitNotice({
-      eventStore: input.eventStore,
-      bus: input.bus,
-      sessionId: input.sessionId,
-      role: 'agent',
-      text: liveMeetingSavedMessage(
+    {
+      await appendMeetingIndex(meetingDir, relPath, title);
+      const text = liveMeetingSavedMessage(
         knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
         title,
-      ),
-    });
+      );
+      const announced = (await input.eventStore.getEvents(input.sessionId)).some(
+        (event) => event.t === 'notice' && event.text === text,
+      );
+      if (announced) return;
+      await emitNotice({
+        eventStore: input.eventStore,
+        bus: input.bus,
+        sessionId: input.sessionId,
+        role: 'agent',
+        text: liveMeetingSavedMessage(
+          knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
+          title,
+        ),
+      });
+    }
   });
 }
 

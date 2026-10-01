@@ -108,6 +108,11 @@ function inline(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+/** For text that starts its own line: also keeps its first word from being markup. */
+function paragraph(text: string): string {
+  return inline(text).replace(/^(#|>|[-*+](?=\s)|\d+[.)](?=\s))/, '\\$1');
+}
+
 export function liveMeetingTitle(meeting: Pick<Meeting, 'startedAt'>): string {
   const started = new Date(meeting.startedAt).toISOString();
   return `Live meeting ${started.slice(0, 10)} ${started.slice(11, 16)} UTC`;
@@ -180,7 +185,7 @@ export function renderLiveMeetingMarkdown(input: {
   if (!rows.length) transcript.push('_Nothing was transcribed._', '');
   for (const row of rows) {
     const text = inline(row.text);
-    if (!row.speaker) transcript.push(text, '');
+    if (!row.speaker) transcript.push(paragraph(row.text), '');
     else if (row.at === null) transcript.push(`**${row.speaker}:** ${text}`, '');
     else transcript.push(`**${row.speaker}** (${clock(row.at)}): ${text}`, '');
   }

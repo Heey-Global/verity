@@ -149,8 +149,7 @@ export function registerLiveMeetingRoutes(
   // The device uploads the ended meeting before its last notes, and speaker names
   // can still change afterwards; waiting a moment files all of it at once.
   const fileTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  const finished = new Set<string>();
-  const scheduleFiling = (sessionId: string, meetingId: string) => {
+  const scheduleFiling = (sessionId: string, meetingId: string, attempt = 0) => {
     const onFinished = opts.onFinished;
     if (!onFinished) return;
     clearTimeout(fileTimers.get(meetingId));
@@ -160,6 +159,7 @@ export function registerLiveMeetingRoutes(
         fileTimers.delete(meetingId);
         onFinished(sessionId, meetingId).catch((error: unknown) => {
           app.log.warn({ err: error, sessionId, meetingId }, 'live meeting filing failed');
+          if (attempt < 2) scheduleFiling(sessionId, meetingId, attempt + 1);
         });
       }, opts.fileDelayMs ?? 3000),
     );
@@ -325,7 +325,13 @@ export function registerLiveMeetingRoutes(
     const { after } = z
       .object({ after: z.coerce.number().int().nonnegative().default(0) })
       .parse(request.query);
-    return store.liveMeetings.changes(sessionId, after);
+    const changes = await store.liveMeetings.changes(sessionId, after);
+    const stored = after === 0 ? changes : await store.liveMeetings.changes(sessionId, 0);
+    for (const meeting of stored.meetings) {
+      if (meeting.state !== 'active' && !fileTimers.has(meeting.id))
+        scheduleFiling(sessionId, meeting.id);
+    }
+    return changes;
   });
 
   app.put('/sessions/:id/live-meetings/:meetingId', async (request, reply) => {
@@ -359,11 +365,7 @@ export function registerLiveMeetingRoutes(
         body.transcript,
         body.state !== 'active',
       );
-      if (body.state === 'active') finished.delete(meetingId);
-      else {
-        finished.add(meetingId);
-        scheduleFiling(sessionId, meetingId);
-      }
+      if (body.state !== 'active') scheduleFiling(sessionId, meetingId);
     }
     return { accepted: true };
   });
@@ -493,7 +495,10 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'meeting not found in session' };
     }
-    if (finished.has(meetingId)) scheduleFiling(sessionId, meetingId);
+    // Persisted state survives restarts and does not file active recordings.
+    const stored = await store.liveMeetings.changes(sessionId, 0);
+    if (stored.meetings.some((item) => item.id === meetingId && item.state !== 'active'))
+      scheduleFiling(sessionId, meetingId);
     return { accepted: true };
   });
 }

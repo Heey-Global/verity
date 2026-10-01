@@ -1340,3 +1340,22 @@ it('does not show a noticed-point note whose save failed', async () => {
   expect(finalizeNote).not.toHaveBeenCalled();
   expect(screen.queryByText(/note not saved/)).toBeNull();
 });
+
+it('keeps device-only recordings reachable after removing server history', async () => {
+  const past: MeetingRecord = {
+    id: 'local-past',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now() - 60000,
+    endedAt: Date.now(),
+    state: 'ended',
+    transcript: 'Device-only words',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([past]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText(/· local only/));
+  fireEvent.press(await screen.findByLabelText('Open full transcript'));
+  expect(await screen.findByText('Device-only words')).toBeOnTheScreen();
+});

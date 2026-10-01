@@ -72,6 +72,13 @@ describe('renderLiveMeetingMarkdown', () => {
       insights: [],
     });
     expect(markdown).toContain('## Transcript\n\nSomething else entirely');
+    expect(
+      renderLiveMeetingMarkdown({
+        meeting: { ...meeting, transcript: '# Not a heading' },
+        notes: [],
+        insights: [],
+      }),
+    ).toContain('\n\\# Not a heading\n');
     expect(markdown).toContain('the recording was interrupted');
   });
 
@@ -83,11 +90,10 @@ describe('renderLiveMeetingMarkdown', () => {
       return ['resolvedSpeaker', 'reconcileTimedTranscript', 'speakerLines'].map((name) => {
         const start = source.indexOf(`function ${name}(`);
         expect(start).toBeGreaterThanOrEqual(0);
-        // From the end of the signature, which the two files format differently.
-        const signature = /\)(?:: [^{\n]+)? \{\n/g;
-        signature.lastIndex = start;
-        const open = (signature.exec(source)?.index ?? -1) + 1;
-        return source.slice(source.indexOf('\n', open), source.indexOf('\n}\n', open));
+        const lines = source.slice(start, source.indexOf('\n}\n', start)).split('\n');
+        // The body starts after the unindented line that closes the signature, which
+        // the two files format and type differently.
+        return lines.slice(lines.findIndex((line) => /^\S.*\{$/.test(line)) + 1);
       });
     };
     expect(body('live-meeting-export.ts')).toEqual(

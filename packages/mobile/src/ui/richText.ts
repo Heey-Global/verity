@@ -162,7 +162,7 @@ export function sessionFileTargetFromLocalLink(
     ? withoutLine.slice('file://'.length)
     : withoutLine;
   const sessionWorktree = /^\/work\/\.verity-sessions\/[^/]+\/(.+)$/.exec(withoutFileScheme);
-  const knowledge = /^\/knowledge\/(?:(shared)\/)?(.+)$/.exec(withoutFileScheme);
+  const knowledge = /^\/knowledge\/(?:(shared)(?:\/|$))?(.*)$/.exec(withoutFileScheme);
   if (withoutFileScheme.startsWith('/') && sessionWorktree === null && knowledge === null) {
     return null;
   }

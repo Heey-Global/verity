@@ -223,6 +223,8 @@ describe('sessionFileTargetFromLocalLink', () => {
   it('rejects traversal out of the knowledge mount', () => {
     expect(sessionFileTargetFromLocalLink('/knowledge/../etc/passwd')).toBeNull();
     expect(sessionFileTargetFromLocalLink('/knowledge/')).toBeNull();
+    expect(sessionFileTargetFromLocalLink('/knowledge/shared')).toBeNull();
+    expect(sessionFileTargetFromLocalLink('/knowledge/shared/')).toBeNull();
     expect(sessionFileTargetFromLocalLink('/knowledgebase/a.md')).toBeNull();
   });
 });
