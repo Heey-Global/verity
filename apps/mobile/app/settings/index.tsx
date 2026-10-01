@@ -185,7 +185,11 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="download"
             title="Server update"
-            subtitle={updateVersion !== null ? `Version ${updateVersion} available` : undefined}
+            subtitle={
+              updateVersion !== null
+                ? `Version ${updateVersion} available`
+                : 'Updates and container recreate'
+            }
             status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
             onPress={() => router.push('/settings/server-update')}
           />

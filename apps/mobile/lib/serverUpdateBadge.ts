@@ -35,12 +35,12 @@ export const SERVER_UPDATE_BADGE_POLL_MS = 5 * 60_000;
  * `enabled` is the screen asking for the badge, not a preference. Every screen in
  * the stack renders this header and the previous ones stay mounted behind it, so a
  * hook that polled unconditionally would run one timer per screen the operator has
- * pushed and fire a request on every navigation — for a dot only the overview
+ * pushed and fire a request on every navigation — for a banner only the overview
  * draws. Passing the caller's own `isHome` keeps exactly one poller alive.
  */
 export function useServerUpdateBadge(enabled: boolean): string | null {
   /**
-   * The server an update is pending for, rather than a bare flag — the dot is a
+   * The server an update is pending for, rather than a bare flag — the banner is a
    * claim about one particular server, and this hook outlives the choice of it.
    * The header stays mounted while the operator re-pairs, so a plain boolean would
    * carry an old server's `true` onto a new one and keep it there: the poll below
@@ -76,7 +76,7 @@ export function useServerUpdateBadge(enabled: boolean): string | null {
       const baseUrl = getVerityBaseUrl();
       const client = createVerityClient();
       if (client === null || baseUrl === null) {
-        // No server configured — there is nothing a dot could be about.
+        // No server configured — there is nothing a banner could be about.
         setPending(null);
         return;
       }
