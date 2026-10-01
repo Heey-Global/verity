@@ -144,7 +144,7 @@ function buildRows(
  * preserved; sub-agent children are lifted out of the top level and nested under
  * their dispatch. A child whose parent isn't present (it hasn't streamed in yet,
  * or was dropped) falls back to the top level so it is never lost. */
-export function groupRows(messages: readonly Message[]): Row[] {
+export function groupRows(messages: readonly Message[], previousRows: readonly Row[] = []): Row[] {
   // The set of tool ids that actually exist as messages — a parent must be real
   // for its children to nest (else the child is an orphan, kept at top level).
   const toolIds = new Set<string>();
@@ -164,7 +164,40 @@ export function groupRows(messages: readonly Message[]): Row[] {
     const parent = messageParentToolId(m);
     return parent === undefined || !toolIds.has(parent);
   });
-  return buildRows(topLevel, childrenByParent, new Set());
+  return reconcileTranscriptRows(buildRows(topLevel, childrenByParent, new Set()), previousRows);
+}
+
+/** Reuse unchanged rows without retaining rows from previous history pages. */
+export function reconcileTranscriptRows(rows: Row[], previousRows: readonly Row[]): Row[] {
+  const previous = new Map(previousRows.map((row) => [rowKey(row), row]));
+  const reconciled = rows.map((row): Row => {
+    const old = previous.get(rowKey(row));
+    if (old === undefined || old.kind !== row.kind) return row;
+    switch (row.kind) {
+      case 'message':
+        return old.kind === 'message' && old.message === row.message ? old : row;
+      case 'tool-group':
+      case 'todo-group':
+        return (old.kind === 'tool-group' || old.kind === 'todo-group') &&
+          row.tools.length === old.tools.length &&
+          row.tools.every((tool, index) => tool === old.tools[index])
+          ? old
+          : row;
+      case 'delegated-agent': {
+        if (old.kind !== 'delegated-agent') return row;
+        const childRows = reconcileTranscriptRows(row.childRows, old.childRows);
+        return row.parent === old.parent &&
+          row.toolCount === old.toolCount &&
+          childRows === old.childRows
+          ? old
+          : { ...row, childRows };
+      }
+    }
+  });
+  return reconciled.length === previousRows.length &&
+    reconciled.every((row, index) => row === previousRows[index])
+    ? (previousRows as Row[])
+    : reconciled;
 }
 
 /** The stable React key for a row: the group/delegation id, else the message id. */

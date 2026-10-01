@@ -709,6 +709,7 @@ export class SessionModel {
     this.emit();
     const fetchedPages: SessionHistoryPage['events'][] = [];
     let fetchedHasMore: boolean = this._hasOlder;
+    let producedVisibleRows = false;
     try {
       let cursor = beforeSeq;
 
@@ -723,7 +724,9 @@ export class SessionModel {
         });
         fetchedPages.push(page.events);
         fetchedHasMore = page.hasMore;
-        if (!page.hasMore || this.historyPageRendersMessages(page.events)) break;
+        const pageRendersMessages = this.historyPageRendersMessages(page.events);
+        producedVisibleRows ||= pageRendersMessages;
+        if (!page.hasMore || pageRendersMessages) break;
 
         const nextBeforeSeq = page.events[0]?.seq;
         // A malformed/non-progressing page must not create an unbounded request loop.
@@ -740,11 +743,8 @@ export class SessionModel {
       this._olderLoadStalled = true;
     } finally {
       if (fetchedPages.length > 0) {
-        const producedVisibleRows = fetchedPages.some((events) =>
-          this.historyPageRendersMessages(events),
-        );
         const events = fetchedPages.reverse().flat();
-        this.stream.prependHistory(events); // one anchored snapshot via onUpdate
+        this.installOlderHistory(events);
         this._hasOlder = fetchedHasMore;
         this._olderLoadNeedsContinuation =
           fetchedHasMore && !this._olderLoadStalled && !producedVisibleRows;
@@ -753,6 +753,15 @@ export class SessionModel {
       this._olderLoadGeneration += 1;
       this.emit();
     }
+  }
+
+  private installOlderHistory(events: SessionHistoryPage['events']): void {
+    // Publishing through onUpdate here exposes new rows with the previous cursor
+    // and loading flags, making the list anchor twice for one completed page.
+    this.stream.prependHistory(events, { notify: false });
+    this._session = this.stream.state;
+    this.retirePending();
+    this._streamError = undefined;
   }
 
   /**
@@ -782,7 +791,7 @@ export class SessionModel {
         beforeSeq,
         limit: beforeSeq - targetSeq,
       });
-      this.stream.prependHistory(page.events); // emits a fresh snapshot via onUpdate
+      this.installOlderHistory(page.events);
       this._hasOlder = page.hasMore;
     } catch {
       // transient — leave _hasOlder as-is so a later attempt retries

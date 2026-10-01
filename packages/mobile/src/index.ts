@@ -74,7 +74,13 @@ export {
   type InlineSpan,
   type RichBlock,
 } from './ui/richText.js';
-export { groupRows, rowKey, rowRecycleType, type Row } from './ui/transcriptRows.js';
+export {
+  groupRows,
+  reconcileTranscriptRows,
+  rowKey,
+  rowRecycleType,
+  type Row,
+} from './ui/transcriptRows.js';
 export {
   freezeTranscriptTail,
   frozenTranscriptRows,

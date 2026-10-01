@@ -45,6 +45,7 @@ import {
   isPullRequestConflicted,
   isSessionImageFilePath,
   groupRows,
+  reconcileTranscriptRows,
   pullRequestStatusText,
   markdownSectionTitle,
   modelRateLimited,
@@ -167,6 +168,8 @@ import {
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
 import { useModels } from '../../hooks/useModels';
+import { useTranscriptNavigation } from '../../hooks/useTranscriptNavigation';
+import { TranscriptRow } from '../../components/TranscriptRow';
 import { isProjectSessionModel } from '../../lib/projectSessionModels';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
@@ -516,6 +519,15 @@ const SessionFileImageSourceContext = createContext<
   ((path: string) => ImageSource | undefined) | null
 >(null);
 const SearchHighlightContext = createContext<string | null>(null);
+
+function useTranscriptRows(messages: readonly Message[]): Row[] {
+  const previous = useRef<Row[]>([]);
+  return useMemo(() => {
+    const rows = groupRows(messages, previous.current);
+    previous.current = rows;
+    return rows;
+  }, [messages]);
+}
 
 export function SessionChat({
   client,
@@ -954,9 +966,9 @@ export function SessionChat({
   // Group consecutive tool calls into one collapsible row (Claude-app style: a run
   // of tools reads as a single rolling line, not N stacked cards). The reducer keeps
   // messages chronological; grouping needs that order.
-  const transcriptData = useMemo(() => groupRows(session.messages), [session.messages]);
-  const localMeetingData = useMemo(() => groupRows(localMeetingMessages), [localMeetingMessages]);
-  const pendingEchoData = useMemo(() => groupRows(pendingEchoMessages), [pendingEchoMessages]);
+  const transcriptData = useTranscriptRows(session.messages);
+  const localMeetingData = useTranscriptRows(localMeetingMessages);
+  const pendingEchoData = useTranscriptRows(pendingEchoMessages);
   const liveChronologicalData = useMemo(
     () => [...transcriptData, ...localMeetingData, ...pendingEchoData],
     [transcriptData, localMeetingData, pendingEchoData],
@@ -965,10 +977,17 @@ export function SessionChat({
   // below and lib/../transcriptFreeze.ts for why the list itself cannot hold their
   // position against a growing row 0. `null` = following the live edge.
   const [frozenTail, setFrozenTail] = useState<FrozenTranscriptTail | null>(null);
-  const frozenRows = useMemo(
-    () => (frozenTail === null ? null : frozenTranscriptRows(messages, frozenTail)),
-    [frozenTail, messages],
-  );
+  const previousFrozenRows = useRef<Row[]>([]);
+  const frozenRows = useMemo(() => {
+    const rows = frozenTail === null ? null : frozenTranscriptRows(messages, frozenTail);
+    if (rows === null) {
+      previousFrozenRows.current = [];
+      return null;
+    }
+    const stableRows = reconcileTranscriptRows(rows, previousFrozenRows.current);
+    previousFrozenRows.current = stableRows;
+    return stableRows;
+  }, [frozenTail, messages]);
   const chronologicalData = frozenRows ?? liveChronologicalData;
   // Both assigned during render (same reasoning as `dataRef` below): the freeze is
   // driven from scroll callbacks and effects that must see the CURRENT transcript,
@@ -1404,8 +1423,8 @@ export function SessionChat({
   // newest visible row (visually at the bottom) and backs the saved re-entry anchor;
   // the LARGEST is the visually topmost row and drives message navigation and the
   // history edge.
-  const [oldestVisibleIndex, setOldestVisibleIndex] = useState(0);
-  const oldestVisibleIndexRef = useRef(0);
+  const { oldestVisibleIndexRef, prevUserIndex, nextUserIndex, updateVisibleIndex } =
+    useTranscriptNavigation(userRowIndices);
   const newestVisibleIndexRef = useRef(0);
   const newestVisibleAnchorRef = useRef<ScrollAnchor | null>(null);
   const visualTopAnchorRef = useRef<ScrollAnchor | null>(null);
@@ -1425,8 +1444,7 @@ export function SessionChat({
       newestVisibleAnchorRef.current = anchorFromRow(dataRef.current[min], false, null);
     }
     if (max >= 0) {
-      oldestVisibleIndexRef.current = max;
-      setOldestVisibleIndex(max);
+      updateVisibleIndex(max);
       visualTopAnchorRef.current = anchorFromRow(dataRef.current[max], false, null);
       // This also covers an initial tail shorter than the viewport: there may be no
       // scroll event at all, but the oldest loaded row is already visible and older
@@ -1440,25 +1458,6 @@ export function SessionChat({
   // Newest-first data: an OLDER user message has a LARGER index, a newer one a
   // smaller. Both cursors are taken from the visually topmost row, so "previous"
   // reads as "the prompt above what I'm looking at" either way.
-  const userRowAfterIndex = useCallback(
-    (index: number) => {
-      for (const idx of userRowIndices) if (idx > index) return idx;
-      return -1;
-    },
-    [userRowIndices],
-  );
-  const prevUserIndex = useMemo(
-    () => userRowAfterIndex(oldestVisibleIndex),
-    [userRowAfterIndex, oldestVisibleIndex],
-  );
-  const nextUserIndex = useMemo(() => {
-    let found = -1;
-    for (const idx of userRowIndices) {
-      if (idx < oldestVisibleIndex) found = idx;
-      else break;
-    }
-    return found;
-  }, [userRowIndices, oldestVisibleIndex]);
   const canJumpToPreviousUser = prevUserIndex >= 0 || hasOlder;
   const [jumpTarget, setJumpTarget] = useState<ScrollAnchor | null>(null);
   const scrollToUserRow = useCallback(
@@ -1515,18 +1514,26 @@ export function SessionChat({
     readingAwayFromBottomRef.current = true;
     const currentData = dataRef.current;
     visualTopAnchorRef.current =
-      currentData[oldestVisibleIndex] !== undefined
-        ? anchorFromRow(currentData[oldestVisibleIndex], false, null)
+      currentData[oldestVisibleIndexRef.current] !== undefined
+        ? anchorFromRow(currentData[oldestVisibleIndexRef.current], false, null)
         : visualTopAnchorRef.current;
     userJumpCursorRef.current = undefined;
     setPendingUserJump('previous');
-  }, [cancelPendingUserScrollSettle, hasOlder, prevUserIndex, scrollToUserRow, oldestVisibleIndex]);
+  }, [
+    cancelPendingUserScrollSettle,
+    hasOlder,
+    prevUserIndex,
+    scrollToUserRow,
+    oldestVisibleIndexRef,
+  ]);
   useEffect(() => {
     if (pendingUserJump !== 'previous') return;
     const anchor = visualTopAnchorRef.current;
     const anchorIndex =
-      anchor === null ? oldestVisibleIndex : findAnchorIndex(data, anchor, 'newest-first');
-    const cursor = anchorIndex >= 0 ? anchorIndex : oldestVisibleIndex;
+      anchor === null
+        ? oldestVisibleIndexRef.current
+        : findAnchorIndex(data, anchor, 'newest-first');
+    const cursor = anchorIndex >= 0 ? anchorIndex : oldestVisibleIndexRef.current;
     // Older = larger index, so the nearest previous prompt is the first one past the
     // cursor. The appended page can only add rows behind it, never renumber it.
     let target = -1;
@@ -1558,7 +1565,7 @@ export function SessionChat({
   }, [
     pendingUserJump,
     data,
-    oldestVisibleIndex,
+    oldestVisibleIndexRef,
     userRowIndices,
     loadingOlder,
     hasOlder,
@@ -3215,7 +3222,9 @@ export function SessionChat({
       const key = rowKey(item);
       const isLatestTranscriptRow =
         latestTranscriptRowKey !== null && key === latestTranscriptRowKey;
-      const rendered = renderRow(item, isLatestTranscriptRow);
+      const rendered = (
+        <TranscriptRow item={item} isLatest={isLatestTranscriptRow} renderContent={renderRow} />
+      );
       // Counter-flip each row so the inverted list reads the right way up.
       return rendered ? (
         <View style={styles.invertedItem}>
@@ -6519,7 +6528,14 @@ function DelegatedAgent({ row }: { row: Extract<Row, { kind: 'delegated-agent' }
       {expanded ? (
         <View style={styles.delegatedSubtree}>
           {row.childRows.map((r) => (
-            <View key={rowKey(r)}>{renderRow(r, false, false)}</View>
+            <View key={rowKey(r)}>
+              <TranscriptRow
+                item={r}
+                isLatest={false}
+                bookmarkable={false}
+                renderContent={renderRow}
+              />
+            </View>
           ))}
         </View>
       ) : null}

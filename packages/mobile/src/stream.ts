@@ -208,12 +208,14 @@ export class SessionStream {
    * so this rebuilds it over the combined event list — correct across the page
    * boundary (e.g. a tool_call in the older page paired with its tool_result in the
    * loaded tail). Events not strictly older than the current head are ignored
-   * (idempotent against overlap). Emits a fresh snapshot.
+   * (idempotent against overlap). Callers publishing their own paging snapshot
+   * can suppress the intermediate notification.
    */
   prependHistory(
     events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
+    options: { notify?: boolean } = {},
   ): void {
-    this.installHistory(events, true);
+    this.installHistory(events, options.notify ?? true);
   }
 
   /** Install and publish the complete REST tail before the socket opens.
@@ -248,12 +250,14 @@ export class SessionStream {
         event: e.event,
       }));
     if (fresh.length === 0) return;
+    const previousMessages = this.reducer.messages;
     this.eventFrames = [...fresh, ...this.eventFrames];
     this.reducer = new SessionReducer();
     for (const frame of this.eventFrames) this.reducer.applyFrame(frame);
     // Replaying the frames re-raises every `permission` in them. Re-settle the ones
     // the server already answered so scroll-up can't resurrect a dismissed card.
     for (const toolUseId of this.resolvedPermissions) this.reducer.resolvePermission(toolUseId);
+    this.reducer.reuseMessageSnapshots(previousMessages);
     if (notify) this.opts.onUpdate?.(this.reducer.state);
   }
 

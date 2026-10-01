@@ -1,6 +1,7 @@
 import type { AgentEvent } from '@verity/events';
 import { describe, expect, it, vi } from 'vitest';
 import { VerityApiError, type VerityClient } from '../api.js';
+import { SessionReducer } from '../reducer.js';
 import type { StreamSocket } from '../stream.js';
 import { SessionModel, type SessionModelState } from './session.js';
 
@@ -1543,6 +1544,76 @@ describe('SessionModel — switchModel (engine switch)', () => {
 });
 
 describe('SessionModel — loadOlder (backward pagination)', () => {
+  it.each(['page', 'bookmark'] as const)(
+    'publishes %s history once with final paging flags',
+    async (mode) => {
+      const { connect } = recordingConnect();
+      const client = stubClient();
+      client.getHistory = vi
+        .fn()
+        .mockResolvedValueOnce({
+          events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+          hasMore: true,
+        })
+        .mockResolvedValueOnce({
+          events: [{ seq: 50, event: { t: 'prompt', text: 'older' } }],
+          hasMore: false,
+        });
+      const updates: SessionModelState[] = [];
+      const model = new SessionModel({
+        client,
+        sessionId: 's1',
+        baseUrl: 'http://host',
+        connect,
+        onChange: (state) => updates.push(state),
+      });
+      model.start();
+      await flush();
+      updates.length = 0;
+      if (mode === 'page') await model.loadOlder();
+      else await model.loadOlderUntil(50);
+      // New rows paired with stale paging flags make the list anchor twice.
+      expect(
+        updates.map((state) => ({
+          loading: state.loadingOlder,
+          hasOlder: state.hasOlder,
+          generation: state.olderLoadGeneration,
+          rows: state.session.messages.length,
+        })),
+      ).toEqual([
+        { loading: true, hasOlder: true, generation: 0, rows: 1 },
+        { loading: false, hasOlder: false, generation: 1, rows: 2 },
+      ]);
+      model.stop();
+    },
+  );
+
+  it('reduces a visible older page only for visibility and canonical replay', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    client.getHistory = vi
+      .fn()
+      .mockResolvedValueOnce({
+        events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        events: [{ seq: 50, event: { t: 'prompt', text: 'older' } }],
+        hasMore: true,
+      });
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    model.start();
+    await flush();
+    const apply = vi.spyOn(SessionReducer.prototype, 'applyFrame');
+    try {
+      await model.loadOlder();
+      expect(apply.mock.calls.filter(([frame]) => frame.seq === 50)).toHaveLength(2);
+    } finally {
+      apply.mockRestore();
+      model.stop();
+    }
+  });
+
   it('opens from the tail, then loads + prepends an older page on demand', async () => {
     const { connect, sockets } = recordingConnect();
     const getHistory = vi
