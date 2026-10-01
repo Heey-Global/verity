@@ -140,8 +140,30 @@ export function registerLiveMeetingRoutes(
     knowledge?: (sessionId: string, transcript: string) => Promise<MeetingKnowledgeExcerpt[]>;
     delayMs?: number;
     minIntervalMs?: number;
+    /** Files a finished meeting. Called again after later notes or speaker edits, so
+     * it must be idempotent; calls for one meeting are coalesced by `fileDelayMs`. */
+    onFinished?: (sessionId: string, meetingId: string) => Promise<void>;
+    fileDelayMs?: number;
   } = {},
 ): void {
+  // The device uploads the ended meeting before its last notes, and speaker names
+  // can still change afterwards; waiting a moment files all of it at once.
+  const fileTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const finished = new Set<string>();
+  const scheduleFiling = (sessionId: string, meetingId: string) => {
+    const onFinished = opts.onFinished;
+    if (!onFinished) return;
+    clearTimeout(fileTimers.get(meetingId));
+    fileTimers.set(
+      meetingId,
+      setTimeout(() => {
+        fileTimers.delete(meetingId);
+        onFinished(sessionId, meetingId).catch((error: unknown) => {
+          app.log.warn({ err: error, sessionId, meetingId }, 'live meeting filing failed');
+        });
+      }, opts.fileDelayMs ?? 3000),
+    );
+  };
   const queued = new Map<
     string,
     {
@@ -288,6 +310,8 @@ export function registerLiveMeetingRoutes(
     queued.set(meetingId, { timer, sessionId, revision, transcript, terminal });
   };
   app.addHook('onClose', () => {
+    for (const timer of fileTimers.values()) clearTimeout(timer);
+    fileTimers.clear();
     for (const { timer } of queued.values()) clearTimeout(timer);
     queued.clear();
     for (const controller of inFlight.values()) controller.abort();
@@ -327,7 +351,7 @@ export function registerLiveMeetingRoutes(
       reply.code(409);
       return { error: 'meeting owner or session mismatch' };
     }
-    if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision)
+    if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision) {
       scheduleAnalysis(
         sessionId,
         meetingId,
@@ -335,6 +359,12 @@ export function registerLiveMeetingRoutes(
         body.transcript,
         body.state !== 'active',
       );
+      if (body.state === 'active') finished.delete(meetingId);
+      else {
+        finished.add(meetingId);
+        scheduleFiling(sessionId, meetingId);
+      }
+    }
     return { accepted: true };
   });
 
@@ -463,6 +493,7 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'meeting not found in session' };
     }
+    if (finished.has(meetingId)) scheduleFiling(sessionId, meetingId);
     return { accepted: true };
   });
 }

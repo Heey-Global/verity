@@ -496,3 +496,59 @@ it('checks one spoken request per session at a time', async () => {
     await checked.close();
   }
 });
+
+it('files a finished meeting once its late notes have arrived', async () => {
+  const onFinished = vi.fn(async () => undefined);
+  const filing = Fastify();
+  registerLiveMeetingRoutes(filing, ctx.store, { onFinished, fileDelayMs: 20 });
+  await filing.ready();
+  try {
+    await filing.inject({ method: 'PUT', url, payload: meeting });
+    await filing.inject({
+      method: 'PUT',
+      url: `${url}/notes/note-1`,
+      payload: { atSeconds: 1, text: 'During', revision: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    // A running meeting is not filed, however many notes it collects.
+    expect(onFinished).not.toHaveBeenCalled();
+
+    await filing.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, state: 'ended', endedAt: 200, revision: 2 },
+    });
+    // The device sends the final note after the ended meeting: both are one filing.
+    await filing.inject({
+      method: 'PUT',
+      url: `${url}/notes/note-2`,
+      payload: { atSeconds: 3, text: 'Last word', revision: 1 },
+    });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(1));
+    expect(onFinished).toHaveBeenCalledWith('session-1', 'meeting-1');
+
+    // A rename after the end files the meeting again so the document follows it.
+    await filing.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        state: 'ended',
+        endedAt: 200,
+        speakerNames: { '0': 'Anna' },
+        revision: 3,
+      },
+    });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    // A stale upload that the store rejects does not file anything.
+    await filing.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, state: 'ended', endedAt: 200, revision: 2 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(onFinished).toHaveBeenCalledTimes(2);
+  } finally {
+    await filing.close();
+  }
+});

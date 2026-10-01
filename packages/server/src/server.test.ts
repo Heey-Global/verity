@@ -1403,6 +1403,95 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     }
   });
 
+  it('files an ended live meeting into project knowledge and links it in the session', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'verity-live-meeting-test-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'verity-live-meeting-knowledge-'));
+    const meetingApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      dataRoot,
+      liveMeetingFileDelayMs: 10,
+    });
+    const url = '/sessions/s1/live-meetings/live-1';
+    const meeting = {
+      engine: 'fluid-nemotron',
+      startedAt: Date.UTC(2026, 9, 1, 9, 30),
+      endedAt: Date.UTC(2026, 9, 1, 9, 45),
+      state: 'ended',
+      transcript: 'We ship on Friday.',
+      timedWords: [{ text: 'We ship on Friday.', start: 4, end: 6 }],
+      speakerTurns: [{ speaker: 0, start: 3, end: 7 }],
+      captureStatus: 'listening',
+      ownerToken: 'o'.repeat(64),
+      revision: 2,
+    };
+    try {
+      await ctx.store.upsertProject({
+        id: 'meeting-project',
+        owner: 'test',
+        repo: 'meeting',
+        containerName: 'meeting-project',
+        state: 'active',
+      });
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree,
+        model: 'm',
+        projectId: 'meeting-project',
+      });
+      expect((await meetingApp.inject({ method: 'PUT', url, payload: meeting })).statusCode).toBe(
+        200,
+      );
+      expect(
+        (
+          await meetingApp.inject({
+            method: 'PUT',
+            url: `${url}/notes/n1`,
+            payload: { atSeconds: 5, text: 'Friday release', revision: 1 },
+          })
+        ).statusCode,
+      ).toBe(200);
+
+      const notices = async () =>
+        (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
+      await vi.waitFor(async () => expect(await notices()).toHaveLength(1));
+      const [notice] = await notices();
+      const link = /\]\((\/knowledge\/sources\/meetings\/[^)]+\.md)\)/.exec(
+        notice?.t === 'notice' ? notice.text : '',
+      )?.[1];
+      expect(link).toMatch(
+        /^\/knowledge\/sources\/meetings\/2026-10-01-live-meeting-[a-f0-9]{8}\.md$/,
+      );
+      const knowledgeRoot = join(dataRoot, 'knowledge', 'meeting-project');
+      const filed = join(knowledgeRoot, link!.slice('/knowledge/'.length));
+      // The last note reaches the server after the ended meeting and still lands in the file.
+      await vi.waitFor(() =>
+        expect(readFileSync(filed, 'utf8')).toContain('(00:05) Friday release'),
+      );
+      expect(readFileSync(filed, 'utf8')).toContain('**Speaker 1** (00:04): We ship on Friday.');
+      expect(readFileSync(join(knowledgeRoot, 'sources/meetings/index.md'), 'utf8')).toContain(
+        `(${link!.split('/').at(-1)})`,
+      );
+
+      // Naming a speaker afterwards rewrites the same document without a second message.
+      await meetingApp.inject({
+        method: 'PUT',
+        url,
+        payload: { ...meeting, speakerNames: { '0': 'Anna' }, revision: 3 },
+      });
+      await vi.waitFor(() =>
+        expect(readFileSync(filed, 'utf8')).toContain('**Anna** (00:04): We ship on Friday.'),
+      );
+      expect(await notices()).toHaveLength(1);
+    } finally {
+      await meetingApp.close();
+      rmSync(worktree, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('streams long audio and continues transcription after returning 202', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-stream-test-'));
     let finishTranscription!: (value: MeetingTranscriptResult) => void;
