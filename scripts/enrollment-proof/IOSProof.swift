@@ -13,6 +13,10 @@ final class EnrollmentProofApp: UIResponder, UIApplicationDelegate {
       let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
       let result = directory.appendingPathComponent("result.txt")
       do {
+        // A fresh simulator container may not have a Documents directory yet.
+        // Otherwise both the proof output and its failure report disappear.
+        try FileManager.default.createDirectory(at: directory,
+          withIntermediateDirectories: true)
         try Self.run(phase, service, directory)
         try "success".write(to: result, atomically: true, encoding: .utf8)
       } catch {

@@ -77,7 +77,12 @@ for phase in create verify; do
     [[ -f "$result" ]] && break
     sleep 1
   done
-  if [[ ! -f "$result" ]]; then echo "No result for $phase" >&2; exit 1; fi
+  if [[ ! -f "$result" ]]; then
+    echo "No result for $phase" >&2
+    xcrun simctl spawn "$simulator" log show --last 2m --style compact \
+      --predicate 'process == "EnrollmentProof" OR eventMessage CONTAINS "app.verity.enrollment-proof"' || true
+    exit 1
+  fi
   cat "$result"
   [[ "$(cat "$result")" == success ]] || exit 1
   # A fresh process must retrieve the original key; it cannot reuse process memory.
