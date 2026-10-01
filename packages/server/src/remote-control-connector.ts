@@ -10,6 +10,13 @@ const MAX_STREAMS = 8;
 const MAX_STREAM_IDS = 4_096;
 const MAX_FRAME_BYTES = 96 * 1_024;
 const MAX_CHUNK_BYTES = 64 * 1_024;
+// What Core sends per stream.data frame towards the app. The protocol allows
+// 64 KiB, and the hosted Uplink delivered every frame of a TLS handshake flight
+// (about 3 KB each) while the response frames behind them, about 30 KB each,
+// never reached the paired device, with no reset and no close to say why.
+// Smaller frames keep each one well inside whatever the relay actually passes;
+// the incoming bound above stays at the protocol's 64 KiB.
+const SEND_CHUNK_BYTES = 8 * 1_024;
 const MAX_STREAM_QUEUE_BYTES = 256 * 1_024;
 const MAX_SOCKET_QUEUE_BYTES = 1_024 * 1_024;
 const LOCAL_DIAL_TIMEOUT_MS = 10_000;
@@ -533,8 +540,8 @@ class ConnectorSession implements RemoteConnectorReservation {
       socket.on('data', (chunk: Buffer) => {
         if (this.terminated || !this.streams.has(id)) return;
         this.recordBytes(id, stream, 'receivedFromLocalBytes', chunk.length);
-        for (let offset = 0; offset < chunk.length; offset += MAX_CHUNK_BYTES) {
-          const piece = chunk.subarray(offset, offset + MAX_CHUNK_BYTES);
+        for (let offset = 0; offset < chunk.length; offset += SEND_CHUNK_BYTES) {
+          const piece = chunk.subarray(offset, offset + SEND_CHUNK_BYTES);
           this.send(
             {
               type: 'stream.data',

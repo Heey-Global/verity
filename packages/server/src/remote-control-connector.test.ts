@@ -183,6 +183,60 @@ describe('remote control connector', () => {
     reservation.release('test complete');
   });
 
+  it('sends a large local reply towards the app in frames of at most 8 KiB', async () => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'stream_big', channel: 'remote', meta: {} }),
+    );
+    // The echo ingress answers with the same 25 KB the app would get for a
+    // response that, as one 64 KiB chunk, never reached the device through
+    // the hosted relay while the 3 KB handshake frames before it did.
+    const body = Buffer.alloc(25_000, 7);
+    for (let offset = 0; offset < body.length; offset += 60_000) {
+      f.peer().send(
+        JSON.stringify({
+          type: 'stream.data',
+          streamId: 'stream_big',
+          seq: offset / 60_000,
+          payload: body.subarray(offset, offset + 60_000).toString('base64'),
+        }),
+      );
+    }
+    const dataFrames = () =>
+      f.received.filter(
+        (frame): frame is { type: string; streamId: string; seq: number; payload: string } =>
+          (frame as { type: string }).type === 'stream.data',
+      );
+    await vi.waitFor(() =>
+      expect(
+        dataFrames().reduce((sum, frame) => sum + Buffer.from(frame.payload, 'base64').length, 0),
+      ).toBe(body.length),
+    );
+    const sizes = dataFrames().map((frame) => Buffer.from(frame.payload, 'base64').length);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(8 * 1_024);
+    expect(sizes.length).toBeGreaterThanOrEqual(4);
+    expect(dataFrames().map((frame) => frame.seq)).toEqual(sizes.map((_, index) => index));
+    expect(
+      Buffer.concat(dataFrames().map((frame) => Buffer.from(frame.payload, 'base64'))),
+    ).toEqual(body);
+    reservation.release('test complete');
+  });
+
   it('lists a live stream that Core has not answered before any ended one', async () => {
     // An ingress that accepts the bytes and never answers.
     const swallowed: Socket[] = [];
