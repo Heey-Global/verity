@@ -141,28 +141,21 @@ export function registerLiveMeetingRoutes(
     delayMs?: number;
     minIntervalMs?: number;
     /** Files a finished meeting. Called again after later notes or speaker edits, so
-     * it must be idempotent; calls for one meeting are coalesced by `fileDelayMs`. */
+     * it must be idempotent. Uploads are acknowledged only after filing succeeds. */
     onFinished?: (sessionId: string, meetingId: string) => Promise<void>;
-    fileDelayMs?: number;
   } = {},
 ): void {
-  // The device uploads the ended meeting before its last notes, and speaker names
-  // can still change afterwards; waiting a moment files all of it at once.
-  const fileTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  const scheduleFiling = (sessionId: string, meetingId: string, attempt = 0) => {
-    const onFinished = opts.onFinished;
-    if (!onFinished) return;
-    clearTimeout(fileTimers.get(meetingId));
-    fileTimers.set(
-      meetingId,
-      setTimeout(() => {
-        fileTimers.delete(meetingId);
-        onFinished(sessionId, meetingId).catch((error: unknown) => {
-          app.log.warn({ err: error, sessionId, meetingId }, 'live meeting filing failed');
-          if (attempt < 2) scheduleFiling(sessionId, meetingId, attempt + 1);
-        });
-      }, opts.fileDelayMs ?? 3000),
-    );
+  const fileFinished = async (sessionId: string, meetingId: string) => {
+    if (!opts.onFinished) return;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await opts.onFinished(sessionId, meetingId);
+        return;
+      } catch (error) {
+        if (attempt >= 2) throw error;
+        app.log.warn({ err: error, sessionId, meetingId }, 'retrying live meeting filing');
+      }
+    }
   };
   const queued = new Map<
     string,
@@ -270,6 +263,7 @@ export function registerLiveMeetingRoutes(
               createdAt: Date.now(),
             });
           }
+          if (current.terminal) await fileFinished(current.sessionId, meetingId);
           lastAnalyzed.set(meetingId, {
             length: current.transcript.length,
             hash: createHash('sha256').update(current.transcript).digest('hex'),
@@ -310,8 +304,6 @@ export function registerLiveMeetingRoutes(
     queued.set(meetingId, { timer, sessionId, revision, transcript, terminal });
   };
   app.addHook('onClose', () => {
-    for (const timer of fileTimers.values()) clearTimeout(timer);
-    fileTimers.clear();
     for (const { timer } of queued.values()) clearTimeout(timer);
     queued.clear();
     for (const controller of inFlight.values()) controller.abort();
@@ -359,7 +351,7 @@ export function registerLiveMeetingRoutes(
         body.transcript,
         body.state !== 'active',
       );
-      if (body.state !== 'active') scheduleFiling(sessionId, meetingId);
+      if (body.state !== 'active') await fileFinished(sessionId, meetingId);
     }
     return { accepted: true };
   });
@@ -492,7 +484,7 @@ export function registerLiveMeetingRoutes(
     // Persisted state survives restarts and does not file active recordings.
     const stored = await store.liveMeetings.changes(sessionId, 0);
     if (stored.meetings.some((item) => item.id === meetingId && item.state !== 'active'))
-      scheduleFiling(sessionId, meetingId);
+      await fileFinished(sessionId, meetingId);
     return { accepted: true };
   });
 }

@@ -1414,7 +1414,6 @@ export interface ServerDeps {
    *  server runs the configured local transcription command. */
   meetingTranscriber?: MeetingTranscriber | undefined;
   /** How long a finished live meeting waits for late notes before it is filed. */
-  liveMeetingFileDelayMs?: number | undefined;
   /** Test/deployment seam for per-project session worktrees. Omit to create
    * git worktrees under `<project clone>/.verity-sessions`. */
   projectWorktrees?:
@@ -7404,9 +7403,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         meetingId,
       }),
-    ...(deps.liveMeetingFileDelayMs !== undefined
-      ? { fileDelayMs: deps.liveMeetingFileDelayMs }
-      : {}),
     knowledge: async (sessionId, transcript) => {
       if (!deps.dataRoot) return [];
       const session = await deps.eventStore.getSession(sessionId);

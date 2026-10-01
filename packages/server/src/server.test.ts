@@ -1412,7 +1412,6 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       conductor,
       spawnWorktreeRoot: worktreeRoot,
       dataRoot,
-      liveMeetingFileDelayMs: 10,
     });
     const url = '/sessions/s1/live-meetings/live-1';
     const meeting = {

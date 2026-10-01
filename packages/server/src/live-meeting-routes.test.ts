@@ -497,10 +497,10 @@ it('checks one spoken request per session at a time', async () => {
   }
 });
 
-it('files a finished meeting once its late notes have arrived', async () => {
+it('files finished uploads before acknowledging them and includes late notes', async () => {
   const onFinished = vi.fn(async () => undefined);
   const filing = Fastify();
-  registerLiveMeetingRoutes(filing, ctx.store, { onFinished, fileDelayMs: 20 });
+  registerLiveMeetingRoutes(filing, ctx.store, { onFinished });
   await filing.ready();
   try {
     await filing.inject({ method: 'PUT', url, payload: meeting });
@@ -518,13 +518,13 @@ it('files a finished meeting once its late notes have arrived', async () => {
       url,
       payload: { ...meeting, state: 'ended', endedAt: 200, revision: 2 },
     });
-    // The device sends the final note after the ended meeting: both are one filing.
+    // The device sends the final note after the ended meeting: the note updates the filed document.
     await filing.inject({
       method: 'PUT',
       url: `${url}/notes/note-2`,
       payload: { atSeconds: 3, text: 'Last word', revision: 1 },
     });
-    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
     expect(onFinished).toHaveBeenCalledWith('session-1', 'meeting-1');
 
     // A rename after the end files the meeting again so the document follows it.
@@ -539,7 +539,7 @@ it('files a finished meeting once its late notes have arrived', async () => {
         revision: 3,
       },
     });
-    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(3));
     // A stale upload that the store rejects does not file anything.
     await filing.inject({
       method: 'PUT',
@@ -547,7 +547,7 @@ it('files a finished meeting once its late notes have arrived', async () => {
       payload: { ...meeting, state: 'ended', endedAt: 200, revision: 2 },
     });
     await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(onFinished).toHaveBeenCalledTimes(2);
+    expect(onFinished).toHaveBeenCalledTimes(3);
   } finally {
     await filing.close();
   }
@@ -560,7 +560,7 @@ it('files late notes after a restart and retries filing failures', async () => {
     .mockRejectedValueOnce(new Error('temporary failure'))
     .mockResolvedValue(undefined);
   const restarted = Fastify();
-  registerLiveMeetingRoutes(restarted, ctx.store, { onFinished, fileDelayMs: 10 });
+  registerLiveMeetingRoutes(restarted, ctx.store, { onFinished });
   try {
     await restarted.inject({
       method: 'PUT',
