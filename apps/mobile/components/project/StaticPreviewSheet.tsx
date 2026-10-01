@@ -132,13 +132,10 @@ export function StaticPreviewSheet({
   const [devServersSupported, setDevServersSupported] = useState(
     typeof client.listSessionDevServers === 'function',
   );
-  // Folder is the default; the first look at the session switches to the Dev
-  // server tab only when a server is running there. After that the tab stays
-  // put, so a server starting mid-browse cannot yank the folder list away.
+  // The sheet always opens on Folder and never switches tabs by itself; a
+  // running server only marks the Dev server tab, so nothing waits on detection
+  // and nothing moves under the user's finger.
   const [tab, setTab] = useState<PreviewTab>('folder');
-  const tabChosen = useRef(false);
-  const liveFolderLink = useRef(false);
-  const [devServersProbed, setDevServersProbed] = useState(false);
   const [devServers, setDevServers] = useState<SessionDevServer[]>([]);
   const [devServersLoading, setDevServersLoading] = useState(devServersSupported);
   const [devServerError, setDevServerError] = useState<string>();
@@ -151,8 +148,6 @@ export function StaticPreviewSheet({
   const stoppedShareIds = useRef(new Set<string>());
 
   const navigate = (nextPath: string) => {
-    // Browsing settles the tab as much as tapping one does.
-    tabChosen.current = true;
     requestGeneration.current += 1;
     setDirectories([]);
     setFiles([]);
@@ -207,18 +202,6 @@ export function StaticPreviewSheet({
             );
             return [...local, ...remote];
           });
-          // Reopening lands on the live link: a port link opens the Dev server
-          // tab, a folder link alone keeps the sheet on Folder.
-          const live = nextShares.filter((share) => share.sessionId === sessionId && isLive(share));
-          if (!tabChosen.current && live.some(isPortShare)) {
-            setTab('server');
-          } else if (
-            !tabChosen.current &&
-            live.some((share) => share.targetKind === 'static-folder')
-          ) {
-            liveFolderLink.current = true;
-            setTab('folder');
-          }
         }
       })
       .catch((caught: unknown) => {
@@ -239,65 +222,54 @@ export function StaticPreviewSheet({
     };
   }, [refresh]);
 
-  // Servers come and go as the agent starts them; poll while the tab is shown so
-  // a freshly started one appears without reopening the sheet. Until the first
-  // answer the sheet asks once on the Folder tab too, to pick its opening tab.
-  const serverTab = tab === 'server';
-  const pollDevServers = devServersSupported && (serverTab || !devServersProbed);
+  // Servers come and go as the agent starts them; poll while the sheet is open so
+  // a freshly started one appears, and marks its tab, without reopening.
   useEffect(() => {
-    if (!pollDevServers) return;
+    if (!devServersSupported) return;
     let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // The next look is scheduled only after an answer, so a Core without the
+    // route is asked once, and a slow answer never overlaps the next request.
     const load = () =>
       client
         .listSessionDevServers(sessionId)
         .then((servers) => {
-          if (!active) return;
+          if (!active) return false;
           if (servers === null) {
             setDevServersSupported(false);
             setTab('folder');
-            return;
+            return false;
           }
           setDevServers(servers);
           setDevServerError(undefined);
-          if (servers.length > 0 && !tabChosen.current && !liveFolderLink.current) {
-            setTab('server');
-          }
+          return true;
         })
         .catch((caught: unknown) => {
-          if (!active) return;
+          if (!active) return false;
           setDevServerError(
             caught instanceof Error ? caught.message : 'Could not look for dev servers',
           );
+          return true;
         })
-        .finally(() => {
+        .then((again) => {
           if (!active) return;
           setDevServersLoading(false);
-          setDevServersProbed(true);
+          if (again) timer = setTimeout(() => void load(), 4_000);
         });
     void load();
-    if (!serverTab) {
-      return () => {
-        active = false;
-      };
-    }
-    const timer = setInterval(() => void load(), 4_000);
     return () => {
       active = false;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
-  }, [client, pollDevServers, serverTab, sessionId]);
+  }, [client, devServersSupported, sessionId]);
 
   const selectTab = (next: PreviewTab) => {
-    tabChosen.current = true;
     setError(undefined);
     setTarget(undefined);
     setTab(next);
   };
 
   const pick = (next: PreviewTarget) => {
-    // A pick is a choice of tab too; a late probe must not move the sheet away
-    // from where the link is about to appear.
-    tabChosen.current = true;
     setError(undefined);
     setStopped(undefined);
     setTarget(next);
@@ -455,18 +427,27 @@ export function StaticPreviewSheet({
                   ['folder', 'Folder'],
                   ['server', 'Dev server'],
                 ] as const
-              ).map(([value, label]) => (
-                <Pressable
-                  key={value}
-                  onPress={() => selectTab(value)}
-                  accessibilityRole="tab"
-                  accessibilityLabel={label}
-                  accessibilityState={{ selected: tab === value }}
-                  style={[styles.tab, tab === value ? styles.tabActive : null]}
-                >
-                  <Text style={tab === value ? styles.tabTextActive : styles.tabText}>{label}</Text>
-                </Pressable>
-              ))}
+              ).map(([value, label]) => {
+                // The same green dot as the header's Preview button: a server is
+                // running, without the sheet switching to it.
+                const marked = value === 'server' && devServers.length > 0;
+                return (
+                  <Pressable
+                    key={value}
+                    onPress={() => selectTab(value)}
+                    accessibilityRole="tab"
+                    accessibilityLabel={label}
+                    accessibilityHint={marked ? 'A dev server is running' : undefined}
+                    accessibilityState={{ selected: tab === value }}
+                    style={[styles.tab, tab === value ? styles.tabActive : null]}
+                  >
+                    <Text style={tab === value ? styles.tabTextActive : styles.tabText}>
+                      {label}
+                    </Text>
+                    {marked ? <View testID="dev-server-tab-dot" style={styles.tabDot} /> : null}
+                  </Pressable>
+                );
+              })}
             </View>
           ) : null}
           {serverDetails && !target ? (
@@ -1241,10 +1222,13 @@ const styles = StyleSheet.create((theme) => ({
   tab: {
     flex: 1,
     minHeight: 36,
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.sm + 1,
   },
+  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.tone.done },
   tabActive: { backgroundColor: theme.colors.surface },
   tabText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
   tabTextActive: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },

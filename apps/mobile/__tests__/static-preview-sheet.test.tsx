@@ -708,6 +708,9 @@ describe('dev server tab', () => {
         onClose={jest.fn()}
       />,
     );
+  // The sheet always opens on Folder, so every server test starts with a tap.
+  const openServers = async () =>
+    fireEvent.press(await screen.findByRole('tab', { name: 'Dev server' }));
 
   it('shares the picked server after the link step and shows its live link', async () => {
     const createSessionPortPreviewShare = jest.fn(async () => portShare());
@@ -716,6 +719,7 @@ describe('dev server tab', () => {
       createSessionPortPreviewShare,
     });
 
+    await openServers();
     const row = await screen.findByRole('button', { name: 'Share Vite on port 5173' });
     expect(screen.getByText('web · node node_modules/.bin/vite --host 0.0.0.0')).toBeTruthy();
     expect(screen.queryByText('LINK EXPIRES AFTER')).toBeNull();
@@ -750,6 +754,7 @@ describe('dev server tab', () => {
       createSessionPortPreviewShare,
     });
 
+    await openServers();
     fireEvent.press(await screen.findByRole('button', { name: 'Share API on port 3000' }));
     expect(await screen.findByText('Share API :3000')).toBeTruthy();
     fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
@@ -767,6 +772,7 @@ describe('dev server tab', () => {
       createSessionPortPreviewShare: jest.fn(),
     });
 
+    await openServers();
     expect(await screen.findByText('Local only')).toBeTruthy();
     expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Share Vite on port 5173' })).toBeNull();
@@ -784,71 +790,25 @@ describe('dev server tab', () => {
     expect(tabs.map((tab) => tab.props.accessibilityState.selected)).toEqual([true, false]);
     expect(screen.getByRole('tab', { name: 'Folder' })).toBe(tabs[0]);
     expect(screen.queryByText('No dev server running')).toBeNull();
+    expect(screen.queryByTestId('dev-server-tab-dot')).toBeNull();
   });
 
-  it('switches to the Dev server tab when the sheet opens on a running server', async () => {
+  // Detection only marks the tab. Switching to it made the sheet wait on the
+  // probe and moved the explorer away from someone already using it.
+  it('stays on Folder and marks the Dev server tab when a server runs', async () => {
     renderSheet({ listSessionDevServers: jest.fn(async () => [vite]) });
 
-    expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Dev server' }).props.accessibilityState.selected).toBe(
-      true,
-    );
-  });
-
-  it('keeps someone browsing folders in the explorer when the probe answers late', async () => {
-    let resolveServers!: (servers: (typeof vite)[]) => void;
-    renderSheet({
-      listSessionStaticPreviewEntries: jest.fn(async (_session: string, path: string) =>
-        path ? { directories: [], files: ['index.html'] } : { directories: ['site'], files: [] },
-      ),
-      listSessionDevServers: jest.fn(
-        () =>
-          new Promise<(typeof vite)[]>((resolve) => {
-            resolveServers = resolve;
-          }),
-      ),
-    });
-
-    fireEvent.press(await screen.findByLabelText('Open folder site'));
-    await act(async () => resolveServers([vite]));
-    expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+    expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
       true,
     );
-  });
-
-  it('keeps a picked folder on its tab when the server probe answers late', async () => {
-    let resolveServers!: (servers: (typeof vite)[]) => void;
-    renderSheet({
-      listSessionDevServers: jest.fn(
-        () =>
-          new Promise<(typeof vite)[]>((resolve) => {
-            resolveServers = resolve;
-          }),
-      ),
-      createSessionStaticPreviewShare: jest.fn(async () =>
-        portShare({
-          id: 'folder-share',
-          targetKind: 'static-folder',
-          targetPort: null,
-          staticPath: '.',
-          publicOrigin: 'https://folder.example',
-        }),
-      ),
-    });
-
-    await pickFolder();
-    await act(async () => resolveServers([vite]));
-    fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-    expect(await screen.findByText('https://folder.example')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
-      true,
+    expect(screen.getByRole('tab', { name: 'Dev server' }).props.accessibilityHint).toBe(
+      'A dev server is running',
     );
+    expect(screen.getByRole('button', { name: 'Share this folder' })).toBeTruthy();
   });
 
-  // Only the opening look picks the tab: a server the agent starts later must not
-  // pull the folder list away from someone browsing it.
-  it('stays on the folder tab when a server starts after the sheet opened', async () => {
+  it('marks the Dev server tab when a server starts while the sheet is open', async () => {
     jest.useFakeTimers();
     try {
       const listSessionDevServers = jest
@@ -857,11 +817,12 @@ describe('dev server tab', () => {
         .mockResolvedValue([vite]);
       renderSheet({ listSessionDevServers });
 
-      expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
+      await waitFor(() => expect(listSessionDevServers).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId('dev-server-tab-dot')).toBeNull();
       await act(async () => {
-        jest.advanceTimersByTime(12_000);
+        jest.advanceTimersByTime(4_000);
       });
-      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
+      expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
       expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
         true,
       );
@@ -878,15 +839,12 @@ describe('dev server tab', () => {
       const listSessionDevServers = jest
         .fn<Promise<(typeof vite)[]>, [string]>()
         .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
         .mockResolvedValue([vite]);
       renderSheet({ listSessionDevServers });
 
-      // The opening probe and the tab's own first load both find nothing, so only
-      // the interval can bring the server in.
-      fireEvent.press(await screen.findByRole('tab', { name: 'Dev server' }));
+      await openServers();
       expect(await screen.findByText('No dev server running')).toBeTruthy();
-      expect(listSessionDevServers).toHaveBeenCalledTimes(2);
+      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
       await act(async () => {
         jest.advanceTimersByTime(4_000);
       });
@@ -943,6 +901,7 @@ describe('dev server tab', () => {
       listPublicPreviewShares: jest.fn(async () => [portShare()]),
     });
 
+    await openServers();
     fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
     expect(await screen.findByText('https://vite.example')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
