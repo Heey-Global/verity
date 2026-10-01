@@ -885,7 +885,7 @@ export default function MeetingScreen() {
   const noticedCards = (): ReactNode[] => {
     const cards: ReactNode[] = visibleAnswers.map((card) => {
       const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
-      const note = card.status === 'ready' ? asNote(compactMeetingAnswer(card.answer)) : null;
+      const note = card.status === 'ready' ? asNote(card.answer) : null;
       return (
         <NoticedCard
           key={card.id}
@@ -1493,7 +1493,10 @@ export default function MeetingScreen() {
           </View>
           <Pressable
             accessibilityRole="button"
-            onPress={() => setShowNewMeeting(true)}
+            onPress={() => {
+              setTranscriptExpanded(false);
+              setShowNewMeeting(true);
+            }}
             style={styles.centered}
           >
             <Text style={styles.link}>Start another meeting</Text>
@@ -1669,13 +1672,16 @@ export default function MeetingScreen() {
         {composing === 'note' || noteUnsaved || draft?.text ? (
           <View style={styles.composerLine}>
             <View style={styles.fill}>{noteComposer(composing === 'note')}</View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close note"
-              onPress={() => setComposing(null)}
-            >
-              <Icon name="x" size={20} color={theme.colors.textMuted} />
-            </Pressable>
+            {/* A note with text or a failed save keeps the field open until it is saved. */}
+            {draft?.text || noteUnsaved ? null : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close note"
+                onPress={() => setComposing(null)}
+              >
+                <Icon name="x" size={20} color={theme.colors.textMuted} />
+              </Pressable>
+            )}
           </View>
         ) : composing === 'ask' ? (
           <View style={styles.composerLine}>
