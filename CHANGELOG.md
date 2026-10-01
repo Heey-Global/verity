@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.1](https://github.com/Heey-Global/verity/compare/v4.1.0...v4.1.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **previews:** share standard mount contracts and tolerate gateway metadata ([#954](https://github.com/Heey-Global/verity/issues/954)) ([5c78442](https://github.com/Heey-Global/verity/commit/5c784427d82b8f764e8a4aede27bb44f7e19baf3))
+* report a server update the Updater accepted instead of a failed start ([#947](https://github.com/Heey-Global/verity/issues/947)) ([6c830db](https://github.com/Heey-Global/verity/commit/6c830db7a6852a9a15baa4f9d9d0a296c1c91b08))
+
 ## [4.1.0](https://github.com/Heey-Global/verity/compare/v4.0.1...v4.1.0) (2026-10-01)
 
 
