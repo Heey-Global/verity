@@ -118,7 +118,7 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
       }
     }
     let summary = tunnel.diagnosticSummary
-    guard summary.contains(", streams=s1=up"), summary.contains(connect ? ".pconnect." : ".psocks."),
+    guard summary.contains(", streams=s1=k"), summary.contains(connect ? ".pconnect." : ".psocks."),
       summary.contains(".o22"), summary.contains(".i22")
     else { throw ProductionProbeFailure.transport("stream trace missing: \(summary)") }
     print("production app case passed: \(expectedFailure.isEmpty ? "valid-private-ca" : expectedFailure) via \(connect ? "connect" : "socks")")
