@@ -773,6 +773,13 @@ describe('PreviewShareManager', () => {
     ).resolves.toMatchObject({ state: 'active' });
   });
 
+  const nodeModulesMount = {
+    type: 'volume',
+    name: projectNodeModulesVolumeName('p1'),
+    destination: NODE_MODULES_TARGET,
+    readWrite: true,
+  };
+
   // The provisioner mounts this volume into every Node project's sandbox, so
   // without it no dev server in such a project could be shared at all.
   it('accepts the project node_modules volume the provisioner mounts', async () => {
@@ -780,33 +787,24 @@ describe('PreviewShareManager', () => {
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
       mountCount: 1,
-      mounts: [
-        {
-          type: 'volume',
-          name: projectNodeModulesVolumeName('p1'),
-          destination: NODE_MODULES_TARGET,
-          readWrite: true,
-        },
-      ],
+      mounts: [nodeModulesMount],
     });
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).resolves.toMatchObject({ state: 'active' });
   });
 
-  it('rejects another project node_modules volume', async () => {
+  it.each([
+    ['another project', { name: projectNodeModulesVolumeName('other') }],
+    ['another destination', { destination: '/work/vendor' }],
+    ['a host bind', { type: 'bind', source: '/srv/node_modules' }],
+    ['a read-only mount', { readWrite: false }],
+  ])('rejects a node_modules volume from %s', async (_case, change) => {
     const { manager, docker, edge, inspect } = fixture();
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
       mountCount: 1,
-      mounts: [
-        {
-          type: 'volume',
-          name: projectNodeModulesVolumeName('other'),
-          destination: NODE_MODULES_TARGET,
-          readWrite: true,
-        },
-      ],
+      mounts: [{ ...nodeModulesMount, ...change }],
     });
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),

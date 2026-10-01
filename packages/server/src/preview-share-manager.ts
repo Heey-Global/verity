@@ -1463,9 +1463,9 @@ async function assertEligibleSandbox(
     ) {
       continue;
     }
-    // A Node project's dependencies live on their own volume over the workspace's
-    // node_modules. It holds only what the workspace installed, so it exposes
-    // nothing the dev server could not already read from /work.
+    // A Node project's dependencies live on their own volume over /work/node_modules.
+    // Like /work it is this project's and shared by its sessions, and the dev
+    // server can already write /work, so it widens nothing a share exposes.
     if (
       mount.destination === NODE_MODULES_TARGET &&
       mount.type === 'volume' &&
