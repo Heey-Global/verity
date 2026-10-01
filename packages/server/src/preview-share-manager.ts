@@ -17,9 +17,11 @@ import { containerPathFor } from './project-backend.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import {
   codexGatewayConfig,
+  NODE_MODULES_TARGET,
   OPENCODE_KNOWLEDGE_READ_PERMISSION,
   projectClonePath,
   projectNetworkName,
+  projectNodeModulesVolumeName,
   RUNNER_AGENT_UID,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
@@ -1458,6 +1460,17 @@ async function assertEligibleSandbox(
       mount.name === options.dataVolume &&
       mount.readWrite === true &&
       mount.subpath === `runners/${projectId}`
+    ) {
+      continue;
+    }
+    // A Node project's dependencies live on their own volume over the workspace's
+    // node_modules. It holds only what the workspace installed, so it exposes
+    // nothing the dev server could not already read from /work.
+    if (
+      mount.destination === NODE_MODULES_TARGET &&
+      mount.type === 'volume' &&
+      mount.name === projectNodeModulesVolumeName(projectId) &&
+      mount.readWrite === true
     ) {
       continue;
     }

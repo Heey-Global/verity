@@ -14,7 +14,9 @@ import {
 } from './preview-share-manager.js';
 import {
   codexGatewayConfig,
+  NODE_MODULES_TARGET,
   projectNetworkName,
+  projectNodeModulesVolumeName,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
 
@@ -769,6 +771,47 @@ describe('PreviewShareManager', () => {
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  // The provisioner mounts this volume into every Node project's sandbox, so
+  // without it no dev server in such a project could be shared at all.
+  it('accepts the project node_modules volume the provisioner mounts', async () => {
+    const { manager, docker, inspect } = fixture();
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: projectNodeModulesVolumeName('p1'),
+          destination: NODE_MODULES_TARGET,
+          readWrite: true,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it('rejects another project node_modules volume', async () => {
+    const { manager, docker, edge, inspect } = fixture();
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: projectNodeModulesVolumeName('other'),
+          destination: NODE_MODULES_TARGET,
+          readWrite: true,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
   });
 
   it('rejects a standard mount redirected to another project', async () => {
