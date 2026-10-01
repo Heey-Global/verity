@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.2.0](https://github.com/Heey-Global/verity/compare/v4.1.1...v4.2.0) (2026-10-01)
+
+
+### Features
+
+* **google:** add session Calendar and Contacts with incremental consent ([#956](https://github.com/Heey-Global/verity/issues/956)) ([55bfcd6](https://github.com/Heey-Global/verity/commit/55bfcd626fbef940a07c93a3660cfae9c26939d9))
+* **mobile:** redesign live meeting screen ([#951](https://github.com/Heey-Global/verity/issues/951)) ([999772f](https://github.com/Heey-Global/verity/commit/999772fedadca11579583186f400e2d12e34fab7))
+
 ## [4.1.1](https://github.com/Heey-Global/verity/compare/v4.1.0...v4.1.1) (2026-10-01)
 
 
