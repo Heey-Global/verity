@@ -44,6 +44,7 @@ import {
   publishControlToken,
   startUpdaterStatusServer,
   updaterControlTokenPath,
+  UPDATER_REQUEST_TIMEOUT_MS,
   UpdaterRequestError,
   type UpdaterErrorCode,
   type UpdaterStatusServer,
@@ -381,6 +382,39 @@ describe('managed Updater update action', () => {
     const { socketPath, token } = await fixture({ managed: true });
     await expect(readUpdaterOperation({ socketPath, token })).resolves.toBeNull();
   });
+
+  // The Updater journals and runs an accepted update whether or not the Server
+  // is still waiting for its answer. Giving up after the general allowance
+  // reported a failed start to the device for an update that then ran anyway.
+  it('waits out an Updater that answers the update request slowly', async () => {
+    const real = await fixture({ managed: true });
+    const operation = await requestUpdaterOperation({
+      ...real,
+      idempotencyKey: 'k1',
+      targetDigest: image('b'),
+    });
+    const root = await mkdtemp(join(tmpdir(), 'verity-updater-slow-'));
+    const socketPath = join(root, 'updater.sock');
+    const slow = createHttpServer((_req, res) => {
+      setTimeout(
+        () => res.writeHead(202).end(JSON.stringify({ operation })),
+        UPDATER_REQUEST_TIMEOUT_MS + 500,
+      );
+    });
+    await new Promise<void>((resolve) => slow.listen(socketPath, resolve));
+    try {
+      await expect(
+        requestUpdaterOperation({
+          socketPath,
+          token: real.token,
+          idempotencyKey: 'k1',
+          targetDigest: image('b'),
+        }),
+      ).resolves.toEqual(operation);
+    } finally {
+      await new Promise((resolve) => slow.close(resolve));
+    }
+  }, 15_000);
 
   it('journals an accepted request and hands it to the executor exactly once', async () => {
     const { socketPath, token, managedRoot, accepted } = await fixture({ managed: true });

@@ -354,6 +354,150 @@ describe('settings/maintenance — server updates', () => {
     expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
   });
 
+  // The reported failure: the update ran to completion while the request was
+  // in flight, so the new server reports "current" and refuses a repeat with a
+  // 409. Keeping the stale "available" panel then offered an install already
+  // done and called it a failed start.
+  it('reports an update that already went through instead of a failed start', async () => {
+    const completed = {
+      state: 'current',
+      release: RELEASE,
+      operation: {
+        updateId: 'update-1',
+        state: 'completed',
+        phase: 'completed',
+        step: 14,
+        totalSteps: 14,
+        generation: 1,
+        previousDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+        targetDigest: SERVER_IMAGE,
+        failureCode: null,
+        startedAt: '2026-08-10T00:00:00.000Z',
+        updatedAt: '2026-08-10T00:01:00.000Z',
+      },
+    };
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest
+          .fn()
+          .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null })
+          .mockResolvedValue(completed),
+        requestServerUpdate: jest
+          .fn()
+          .mockRejectedValue(new VerityApiError(409, 'no update is available (current)')),
+      }),
+    );
+    render(<MaintenanceSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Server update'));
+    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+
+    expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
+    expect(screen.queryByText('Could not start the update.')).toBeNull();
+    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+  });
+
+  // Mid-cutover neither the request nor the follow-up check is answered. That is
+  // an unknown outcome, not a failure: the panel has to keep asking until the
+  // new server is up instead of freezing on an error and a stale Install button.
+  it('keeps asking when Verity goes silent after an install request', async () => {
+    jest.useFakeTimers();
+    const getServerUpdates = jest
+      .fn()
+      .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null })
+      .mockRejectedValueOnce(new Error('network'))
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({ state: 'current', release: RELEASE, operation: null });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates,
+        requestServerUpdate: jest.fn().mockRejectedValue(new Error('network')),
+      }),
+    );
+    render(<MaintenanceSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Server update'));
+    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    expect(await screen.findByText('Starting…')).toBeOnTheScreen();
+    expect(screen.queryByText('Could not start the update.')).toBeNull();
+
+    await act(() => jest.advanceTimersByTimeAsync(4_000));
+
+    expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
+    expect(screen.queryByText('Could not start the update.')).toBeNull();
+    jest.useRealTimers();
+  });
+
+  // The Server gives up on the Updater after its own timeout and answers 503,
+  // while the Updater goes on to journal and run the update. A status read in
+  // that window still shows the previous operation; concluding "did not start"
+  // from it is how the first tap reported failure for an update that ran.
+  it('waits for an update the Updater accepted after the server gave up on it', async () => {
+    jest.useFakeTimers();
+    const idle = { state: 'available', release: RELEASE, operation: null };
+    const getServerUpdates = jest
+      .fn()
+      .mockResolvedValueOnce(idle)
+      .mockResolvedValueOnce(idle)
+      .mockResolvedValue({
+        state: 'available',
+        release: RELEASE,
+        operation: {
+          updateId: 'update-1',
+          state: 'preparing',
+          phase: 'pulling',
+          step: 2,
+          totalSteps: 14,
+          generation: 1,
+          previousDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+          targetDigest: SERVER_IMAGE,
+          failureCode: null,
+          startedAt: '2026-08-10T00:00:00.000Z',
+          updatedAt: '2026-08-10T00:00:05.000Z',
+        },
+      });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates,
+        requestServerUpdate: jest
+          .fn()
+          .mockRejectedValue(new VerityApiError(503, 'updater is unavailable')),
+      }),
+    );
+    render(<MaintenanceSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Server update'));
+    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    await act(() => jest.advanceTimersByTimeAsync(2_000));
+
+    expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
+    expect(screen.queryByText('Could not start the update.')).toBeNull();
+    jest.useRealTimers();
+  });
+
+  it('says the update did not start once Verity keeps offering the same install', async () => {
+    jest.useFakeTimers();
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest
+          .fn()
+          .mockResolvedValue({ state: 'available', release: RELEASE, operation: null }),
+        requestServerUpdate: jest.fn().mockRejectedValue(new VerityApiError(503, 'unavailable')),
+      }),
+    );
+    render(<MaintenanceSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Server update'));
+    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    await act(() => jest.advanceTimersByTimeAsync(10_000));
+    expect(screen.queryByText('Could not start the update.')).toBeNull();
+
+    await act(() => jest.advanceTimersByTimeAsync(14_000));
+    expect(await screen.findByText('Could not start the update.')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Install 1.4.0')).toBeOnTheScreen();
+    jest.useRealTimers();
+  });
+
   it('explains a rejected update instead of leaving the button silent', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
