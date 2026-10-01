@@ -1,5 +1,6 @@
-// Server update: Verity replacing itself, plus the apply-settings banner every
-// settings screen carries while a saved change has not reached running containers.
+// Server update: Verity replacing itself, the recreate banner every other
+// settings screen carries while a saved change has not reached running
+// containers, and the standing recreate entry on the Server update screen.
 //
 // The update panel talks to the thing being replaced, so requests are expected
 // to fail mid-cutover; most of what follows is about not turning those expected
@@ -15,7 +16,9 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
+import GitHubSettingsScreen from '../app/settings/github';
 import ServerUpdateScreen from '../app/settings/server-update';
+import { RECREATE_LABEL as RECREATE } from '../components/settings/RecreatePendingBanner';
 import { resetVeritySettingsStore, saveVeritySettings } from '../lib/settingsStore';
 import {
   makeClient,
@@ -38,9 +41,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('apply-settings banner', () => {
-  const APPLY = 'Apply saved settings to running containers';
-
+describe('recreate banner after a save', () => {
   /** A container-affecting save, made on some other settings screen. */
   async function saveIdentityChange(overrides: Parameters<typeof makeClient>[1] = {}) {
     const initial = makeSettings();
@@ -60,12 +61,11 @@ describe('apply-settings banner', () => {
 
   // The banner replaced a permanent Maintenance row; showing it with nothing to
   // apply would just be that row again, in a louder place.
-  it('stays hidden while nothing saved needs applying', async () => {
+  it('stays hidden while nothing saved needs recreating', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-    render(<ServerUpdateScreen />);
-
-    await screen.findByText(/updates itself externally/);
-    expect(screen.queryByLabelText(APPLY)).toBeNull();
+    render(<GitHubSettingsScreen />);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText(RECREATE)).toBeNull();
   });
 
   it('does not offer a reprovision for a change only this app reads', async () => {
@@ -80,10 +80,9 @@ describe('apply-settings banner', () => {
     await act(async () => {
       await saveVeritySettings(client, { advancedModeEnabled: true });
     });
-    render(<ServerUpdateScreen />);
-
-    await screen.findByText(/updates itself externally/);
-    expect(screen.queryByLabelText(APPLY)).toBeNull();
+    render(<GitHubSettingsScreen />);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText(RECREATE)).toBeNull();
   });
 
   it('recreates every active container and skips the rest', async () => {
@@ -98,14 +97,14 @@ describe('apply-settings banner', () => {
         ]),
       recreateProjectContainer,
     });
-    render(<ServerUpdateScreen />);
+    render(<GitHubSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText(APPLY));
+    fireEvent.press(await screen.findByLabelText(RECREATE));
 
-    expect(await screen.findByText('Applied to 2 running containers.')).toBeOnTheScreen();
+    expect(await screen.findByText('Recreated 2 running containers.')).toBeOnTheScreen();
     // A non-active container has no recreate to perform — the server 409s on it.
     expect(recreateProjectContainer.mock.calls.map(([id]) => id)).toEqual(['one', 'three']);
-    expect(screen.queryByLabelText(APPLY)).toBeNull();
+    expect(screen.queryByLabelText(RECREATE)).toBeNull();
   });
 
   it('says there was nothing running rather than reporting a silent success', async () => {
@@ -113,9 +112,9 @@ describe('apply-settings banner', () => {
       listProjects: jest.fn().mockResolvedValue([makeProject('one', 'absent')]),
       recreateProjectContainer: jest.fn(),
     });
-    render(<ServerUpdateScreen />);
+    render(<GitHubSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText(APPLY));
+    fireEvent.press(await screen.findByLabelText(RECREATE));
     expect(await screen.findByText(/No running containers/)).toBeOnTheScreen();
   });
 
@@ -128,12 +127,12 @@ describe('apply-settings banner', () => {
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(new Error('daemon refused')),
     });
-    render(<ServerUpdateScreen />);
+    render(<GitHubSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText(APPLY));
+    fireEvent.press(await screen.findByLabelText(RECREATE));
 
-    expect(await screen.findByText('Not applied to acme/two.')).toBeOnTheScreen();
-    expect(screen.getByLabelText(APPLY)).toBeOnTheScreen();
+    expect(await screen.findByText('Could not recreate acme/two.')).toBeOnTheScreen();
+    expect(screen.getByLabelText(RECREATE)).toBeOnTheScreen();
     expect(screen.getByText('Retry')).toBeOnTheScreen();
   });
 
@@ -154,38 +153,38 @@ describe('apply-settings banner', () => {
     });
     render(
       <>
-        <ServerUpdateScreen />
+        <GitHubSettingsScreen />
         <ServerUpdateScreen />
       </>,
     );
 
-    const [first] = await screen.findAllByLabelText(APPLY);
+    const [first] = await screen.findAllByLabelText(RECREATE);
     fireEvent.press(first!);
     await waitFor(() => expect(recreateProjectContainer).toHaveBeenCalledTimes(1));
-    for (const button of screen.getAllByLabelText(APPLY)) expect(button).toBeDisabled();
+    for (const button of screen.getAllByLabelText(RECREATE)) expect(button).toBeDisabled();
 
     await act(async () => finish?.());
     expect(recreateProjectContainer).toHaveBeenCalledTimes(1);
   });
 
   // A finished run is kept so its outcome can be read; left in place, a later
-  // save would show it as this change's result — "Not applied to ." beside a
+  // save would show it as this change's result — "Could not recreate ." beside a
   // Retry for a run that succeeded.
   it('asks again for a change saved after a clean run', async () => {
     const client = await saveIdentityChange({
       listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
       recreateProjectContainer: jest.fn().mockResolvedValue(undefined),
     });
-    render(<ServerUpdateScreen />);
-    fireEvent.press(await screen.findByLabelText(APPLY));
-    await screen.findByText('Applied to 1 running container.');
+    render(<GitHubSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+    await screen.findByText('Recreated 1 running container.');
 
     await act(async () => {
       await saveVeritySettings(client, { gitUserName: 'newer-bot' });
     });
 
     expect(screen.getByText(/keep the old settings/)).toBeOnTheScreen();
-    expect(screen.queryByText(/Not applied/)).toBeNull();
+    expect(screen.queryByText(/Could not recreate/)).toBeNull();
   });
 
   // Containers recreated before the save came back with the old settings, so
@@ -201,8 +200,8 @@ describe('apply-settings banner', () => {
           }),
       ),
     });
-    render(<ServerUpdateScreen />);
-    fireEvent.press(await screen.findByLabelText(APPLY));
+    render(<GitHubSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
     await waitFor(() => expect(finish).toBeDefined());
 
     await act(async () => {
@@ -211,13 +210,13 @@ describe('apply-settings banner', () => {
     await act(async () => finish?.());
 
     expect(await screen.findByText(/keep the old settings/)).toBeOnTheScreen();
-    expect(screen.getByLabelText(APPLY)).toBeEnabled();
-    expect(screen.queryByText(/Applied to/)).toBeNull();
+    expect(screen.getByLabelText(RECREATE)).toBeEnabled();
+    expect(screen.queryByText(/Recreated /)).toBeNull();
   });
 
   // Re-pairing resets the store, but a run against the old server is still in
   // flight. Its progress describes containers the app no longer talks to, and
-  // landing on the new server's banner would disable that server's Apply.
+  // landing on the new server's banner would disable its Recreate.
   it('keeps a run against the previous server off the new one', async () => {
     const pending: (() => void)[] = [];
     await saveIdentityChange({
@@ -229,28 +228,71 @@ describe('apply-settings banner', () => {
           }),
       ),
     });
-    render(<ServerUpdateScreen />);
-    fireEvent.press(await screen.findByLabelText(APPLY));
+    render(<GitHubSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
     await waitFor(() => expect(pending).toHaveLength(1));
 
     act(() => resetVeritySettingsStore());
     await saveIdentityChange();
     await act(async () => pending[0]?.());
 
-    expect(screen.queryByText(/Applying/)).toBeNull();
+    expect(screen.queryByText(/Recreating/)).toBeNull();
     expect(screen.getByText(/keep the old settings/)).toBeOnTheScreen();
-    expect(screen.getByLabelText(APPLY)).toBeEnabled();
+    expect(screen.getByLabelText(RECREATE)).toBeEnabled();
   });
 
   it('surfaces a failed project listing and stays retryable', async () => {
     await saveIdentityChange({
       listProjects: jest.fn().mockRejectedValue(new VerityApiError(503, 'store sealed')),
     });
+    render(<GitHubSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+    expect(await screen.findByText('store sealed')).toBeOnTheScreen();
+    await waitFor(() => expect(screen.getByLabelText(RECREATE)).toBeEnabled());
+  });
+});
+
+// The banner only knows about saves this app made since it started. A change
+// saved before a restart, or from another device, needs a way in that does not
+// depend on that — short of recreating each project by hand.
+describe('standing recreate entry', () => {
+  it('is offered on the Server update screen with nothing pending', async () => {
+    const recreateProjectContainer = jest.fn().mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listProjects: jest
+          .fn()
+          .mockResolvedValue([makeProject('one'), makeProject('two', 'absent')]),
+        recreateProjectContainer,
+      }),
+    );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText(APPLY));
-    expect(await screen.findByText('store sealed')).toBeOnTheScreen();
-    await waitFor(() => expect(screen.getByLabelText(APPLY)).toBeEnabled());
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+
+    expect(await screen.findByText('Recreated 1 running container.')).toBeOnTheScreen();
+    expect(recreateProjectContainer.mock.calls.map(([id]) => id)).toEqual(['one']);
+  });
+
+  // The banner would offer the same run a second time on the same screen.
+  it('replaces the banner there rather than sitting next to it', async () => {
+    const initial = makeSettings();
+    const client = makeClient('unlocked', {
+      settings: initial,
+      updateVeritySettings: jest
+        .fn()
+        .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch })),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    await act(async () => {
+      await saveVeritySettings(client, { gitUserName: 'new-bot' });
+    });
+    render(<ServerUpdateScreen />);
+
+    expect(await screen.findByText(/have not reached the running containers/)).toBeOnTheScreen();
+    expect(screen.getAllByLabelText(RECREATE)).toHaveLength(1);
+    expect(screen.queryByText(/keep the old settings/)).toBeNull();
   });
 });
 

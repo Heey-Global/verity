@@ -1,10 +1,16 @@
-// Server update: Verity replacing itself. Reached from the overview banner, the
-// update push, and the Settings index.
+// Server update: Verity replacing itself, and recreating the project containers
+// it runs. Reached from the overview banner, the update push, and the Settings
+// index.
 import { type VerityClient } from '@verity/mobile';
 import { useMemo } from 'react';
 
+import { RecreateContainersSection } from '../../components/settings/RecreateContainersSection';
 import { ServerUpdateSection } from '../../components/settings/ServerUpdateSection';
-import { SettingsMessage, SettingsScaffold } from '../../components/settings/SettingsChrome';
+import {
+  SettingsGroup,
+  SettingsMessage,
+  SettingsScaffold,
+} from '../../components/settings/SettingsChrome';
 import { createVerityClient } from '../../lib/client';
 import { retryFailedVeritySettings, useLoadVeritySettings } from '../../lib/settingsStore';
 
@@ -28,6 +34,7 @@ function ServerUpdateView({ client }: { client: VerityClient }) {
     <SettingsScaffold
       title="Server update"
       detail
+      recreateBanner={false}
       onRetry={() =>
         void retryFailedVeritySettings(client).then((retried) => {
           if (!retried) reload();
@@ -35,6 +42,9 @@ function ServerUpdateView({ client }: { client: VerityClient }) {
       }
     >
       <ServerUpdateSection client={client} />
+      <SettingsGroup title="Project containers">
+        <RecreateContainersSection />
+      </SettingsGroup>
     </SettingsScaffold>
   );
 }

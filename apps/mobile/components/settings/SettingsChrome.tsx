@@ -17,7 +17,7 @@ import { Icon, type IconName } from '../Icon';
 import { StatusPill } from '../StatusPill';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useVeritySettings } from '../../lib/settingsStore';
-import { ApplyPendingBanner } from './ApplyPendingBanner';
+import { RecreatePendingBanner } from './RecreatePendingBanner';
 import { settingsStyles as styles } from './settingsStyles';
 
 /**
@@ -35,6 +35,7 @@ export function SettingsScaffold({
   onRetry,
   detail = false,
   state,
+  recreateBanner = true,
   children,
 }: {
   title: string;
@@ -42,6 +43,9 @@ export function SettingsScaffold({
   onRetry?: () => void;
   /** Detail routes use a calmer reading width on tablets and desktop. */
   detail?: boolean;
+  /** False on the screen that carries the standing recreate entry, which
+   *  reports the same run itself. */
+  recreateBanner?: boolean;
   /** Banner state for screens that are not backed by the Verity settings store
    *  (the project settings routes). Omitted → the shared store's error and
    *  save state drive the banners. */
@@ -60,7 +64,7 @@ export function SettingsScaffold({
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
       {/* Only on screens backed by the Verity settings store — that store is
           where a container-affecting save is recorded. */}
-      {state === undefined ? <ApplyPendingBanner /> : null}
+      {state === undefined && recreateBanner ? <RecreatePendingBanner /> : null}
       {saving > 0 ? (
         <View style={styles.autoSaveBanner} accessibilityLiveRegion="polite">
           <ActivityIndicator size="small" color={theme.colors.setup.text} />

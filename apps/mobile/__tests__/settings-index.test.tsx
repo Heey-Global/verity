@@ -79,7 +79,7 @@ describe('settings index — destinations', () => {
     await screen.findByLabelText('GitHub');
     expect(screen.queryByLabelText('Commit name')).toBeNull();
     expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
-    expect(screen.queryByLabelText('Apply saved settings to running containers')).toBeNull();
+    expect(screen.queryByLabelText('Recreate running containers')).toBeNull();
     expect(screen.queryByLabelText('Set master password')).toBeNull();
   });
 
