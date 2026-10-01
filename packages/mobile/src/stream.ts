@@ -129,6 +129,7 @@ export class SessionStream {
   // then we apply events but suppress `onUpdate`, batching the backlog into one
   // render (see onMessage) so opening a session doesn't scroll wildly.
   private caughtUp = false;
+  private preparedTicket: { promise: Promise<string>; requestedAt: number } | undefined;
 
   constructor(private readonly opts: SessionStreamOptions) {
     this.wsBaseUrl = opts.baseUrl.replace(/\/$/, '').replace(/^http/, 'ws');
@@ -215,12 +216,12 @@ export class SessionStream {
     this.installHistory(events, true);
   }
 
-  /** Install the initial REST tail before the socket opens. The first visible
-   * snapshot remains gated on `caught_up`, matching a stream-replayed backlog. */
+  /** Install and publish the complete REST tail before the socket opens.
+   * Socket replay still waits for its own `caught_up` watermark. */
   seedHistory(
     events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
   ): void {
-    this.installHistory(events, false);
+    this.installHistory(events, true);
   }
 
   private installHistory(
@@ -256,6 +257,15 @@ export class SessionStream {
     if (notify) this.opts.onUpdate?.(this.reducer.state);
   }
 
+  /** Fetch the initial ticket alongside REST history without opening a socket. */
+  prepareConnection(): void {
+    if (this.stopped || this.paused || !this.opts.getStreamTicket || this.preparedTicket) return;
+    const promise = this.opts.getStreamTicket();
+    // History can fail or the screen can close before the ticket is consumed.
+    void promise.catch(() => undefined);
+    this.preparedTicket = { promise, requestedAt: Date.now() };
+  }
+
   /** Open the stream. No-op if already started (call-once) or stopped. */
   start(): void {
     this.started = true;
@@ -270,6 +280,7 @@ export class SessionStream {
     this.paused = true;
     this.setConnectionState('paused');
     this.reconnectGeneration += 1;
+    this.preparedTicket = undefined;
     // The invalidated ticket request must not block a fresh request on resume.
     this.opening = false;
     const socket = this.socket;
@@ -291,6 +302,7 @@ export class SessionStream {
     this.setConnectionState('stopped');
     this.paused = false;
     this.reconnectGeneration += 1;
+    this.preparedTicket = undefined;
     const socket = this.socket;
     this.socket = null;
     socket?.close();
@@ -303,7 +315,13 @@ export class SessionStream {
     // stream confirms it has caught up.
     this.caughtUp = false;
     this.setConnectionState(this.reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
-    const ticketPromise = this.opts.getStreamTicket?.();
+    const prepared = this.preparedTicket;
+    this.preparedTicket = undefined;
+    // Tickets expire after 30s on Core; slow history scans need a fresh ticket.
+    const ticketPromise =
+      prepared && Date.now() - prepared.requestedAt < 10_000
+        ? prepared.promise
+        : this.opts.getStreamTicket?.();
     if (ticketPromise !== undefined) {
       this.opening = true;
       const generation = this.reconnectGeneration;

@@ -319,6 +319,7 @@ export class SessionModel {
   // while its session was still being created never got that far, so its resume
   // has to OPEN the stream rather than resume a socket that does not exist.
   private _opened = false;
+  private _historyAttemptComplete = false;
 
   constructor(private readonly opts: SessionModelOptions) {
     this.stream = new SessionStream({
@@ -333,9 +334,7 @@ export class SessionModel {
         // shows both (the echo's whole job ends here).
         this.retirePending();
         this._streamError = undefined; // a fresh event means the stream is healthy
-        // The stream only emits onUpdate at/after `caught_up`, so the first snapshot
-        // means the backlog has drained — latch loaded so the screen can show its
-        // empty-state without it flashing during the initial load.
+        // A complete REST snapshot or drained socket backlog can render immediately.
         this._loaded = true;
         this.emit();
       },
@@ -571,7 +570,6 @@ export class SessionModel {
     this._opened = true;
     void this.openStreamFromTail();
     void this.loadDetail();
-    this.startActivityPoll();
   }
 
   /** Suspend the socket + activity poll while the app is backgrounded. */
@@ -594,7 +592,7 @@ export class SessionModel {
         return;
       }
       this.stream.resume();
-      this.startActivityPoll();
+      if (this._historyAttemptComplete) this.startActivityPoll();
     });
   }
 
@@ -645,6 +643,7 @@ export class SessionModel {
    * On any failure before a snapshot is seeded, fall back to a full replay.
    */
   private async openStreamFromTail(): Promise<void> {
+    this.stream.prepareConnection();
     try {
       let page = await this.opts.client.getHistory(this.opts.sessionId, { limit: HISTORY_PAGE });
       const pages = [page.events];
@@ -662,10 +661,11 @@ export class SessionModel {
         pages.push(page.events);
         oldest = page.events[0]?.seq;
       }
+      if (!this._running) return;
       if (newest !== undefined) {
-        this.stream.seedHistory(pages.reverse().flat());
-        this.stream.setSinceSeq(newest);
         this._hasOlder = page.hasMore;
+        this.stream.setSinceSeq(newest);
+        this.stream.seedHistory(pages.reverse().flat());
       }
     } catch {
       // No complete REST snapshot was installed, so seq 0 remains the safe cursor.
@@ -673,7 +673,9 @@ export class SessionModel {
     if (!this._running) return;
     // Register the start even in background: the stream defers its socket until
     // resume, otherwise a probe settling while paused leaves it unstarted forever.
+    this._historyAttemptComplete = true;
     this.stream.start();
+    if (!this._paused) this.startActivityPoll();
   }
 
   private historyPageRendersMessages(

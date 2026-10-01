@@ -5,7 +5,7 @@
 // here is that every row and every checklist item reaches a screen that can act
 // on it — a row that explains a problem and goes nowhere is the failure this
 // suite is watching for.
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { settingsChecklist, settingsChecklistHeadline } from '@verity/mobile';
 import { Alert } from 'react-native';
 
@@ -39,6 +39,20 @@ afterEach(() => {
 });
 
 describe('settings index — destinations', () => {
+  it('keeps destinations usable while settings are pending', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getVeritySettings: jest.fn().mockReturnValue(new Promise(() => undefined)),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    fireEvent.press(screen.getByLabelText('Manage paired devices'));
+    expect(mockPush).toHaveBeenCalledWith('/devices');
+    expect(screen.getByLabelText('Advanced mode')).toBeDisabled();
+    expect(screen.queryByText('Needs setup')).toBeNull();
+    await act(async () => undefined);
+  });
+
   it('renders a not-connected message when no server URL is configured', () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<SettingsIndexScreen />);

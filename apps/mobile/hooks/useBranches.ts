@@ -69,7 +69,7 @@ export interface UseBranches {
  * glue hook (no headless model) in the spirit of {@link useSession} /
  * {@link useSessionList}.
  */
-export function useBranches(client: VerityClient, sessionId: string): UseBranches {
+export function useBranches(client: VerityClient, sessionId: string, enabled = true): UseBranches {
   const [current, setCurrent] = useState<string | undefined>(undefined);
   const [switchable, setSwitchable] = useState<string[]>([]);
   const [previewable, setPreviewable] = useState<string[]>([]);
@@ -131,9 +131,9 @@ export function useBranches(client: VerityClient, sessionId: string): UseBranche
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
-      if (appActive) void load();
+      if (appActive && enabled) void load();
       return () => setFocused(false);
-    }, [appActive, load]),
+    }, [appActive, load, enabled]),
   );
 
   useEffect(() => {
@@ -149,7 +149,7 @@ export function useBranches(client: VerityClient, sessionId: string): UseBranche
 
   useEffect(() => {
     // Only poll while the screen is focused (see above).
-    if (!focused || !appActive) return undefined;
+    if (!focused || !appActive || !enabled) return undefined;
     if (workspaceMissing) return undefined;
     // Poll even with no PR yet: one the agent opens AFTER this screen mounts must
     // surface without a full app reload (the activity poll carries only the branch
@@ -177,11 +177,11 @@ export function useBranches(client: VerityClient, sessionId: string): UseBranche
     };
     const timer = setInterval(poll, intervalMs);
     return () => clearInterval(timer);
-  }, [load, pullRequest, focused, appActive, workspaceMissing]);
+  }, [load, pullRequest, focused, appActive, workspaceMissing, enabled]);
 
   const refresh = useCallback(() => {
-    void load();
-  }, [load]);
+    if (enabled) void load();
+  }, [load, enabled]);
 
   const switchTo = useCallback<UseBranches['switchTo']>(
     async (opts) => {

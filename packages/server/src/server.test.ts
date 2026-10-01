@@ -14,6 +14,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { Readable } from 'node:stream';
+import { gunzipSync } from 'node:zlib';
 import {
   BackendTerminationUnconfirmedError,
   InMemoryEventBus,
@@ -2753,6 +2754,31 @@ describe('POST /sessions/:id/debug/scroll', () => {
 });
 
 describe('GET /sessions/:id/events (backward pagination)', () => {
+  it('negotiates compression for history while leaving other responses untouched', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'history '.repeat(1_000) });
+    const plain = await app.inject({ method: 'GET', url: '/sessions/s1/events' });
+    const compressed = await app.inject({
+      method: 'GET',
+      url: '/sessions/s1/events',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    // Verify composition: a route-only fixture can hide a missing compressor.
+    expect(compressed.statusCode).toBe(200);
+    expect(compressed.headers['content-encoding']).toBe('gzip');
+    expect(compressed.headers.vary).toContain('accept-encoding');
+    expect(gunzipSync(compressed.rawPayload).toString()).toBe(plain.body);
+    expect(compressed.rawPayload.length).toBeLessThan(plain.rawPayload.length);
+    expect(plain.headers['content-encoding']).toBeUndefined();
+    const settings = await app.inject({
+      method: 'GET',
+      url: '/settings',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.headers['content-encoding']).toBeUndefined();
+  });
+
   it('returns the newest page (ascending) with hasMore, then the older page', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const seqs: number[] = [];

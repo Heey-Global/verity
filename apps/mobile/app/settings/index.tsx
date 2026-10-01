@@ -18,8 +18,7 @@ import {
 import * as Application from 'expo-application';
 import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
   SettingsGroup,
@@ -84,7 +83,6 @@ export default function SettingsIndexScreen() {
 }
 
 function SettingsIndexView({ client }: { client: VerityClient }) {
-  const { theme } = useUnistyles();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
@@ -113,14 +111,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
     verifiedCommitsReady(settings);
   const servicesNeedsUnlock = secretStoreManaged(secretStatus) && !secretStoreReady(secretStatus);
 
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
-      </View>
-    );
-  }
-
   return (
     <SettingsScaffold
       title="Settings"
@@ -130,7 +120,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         })
       }
     >
-      {checklist.kind === 'ready' && checklist.remaining > 0 ? (
+      {!loading && checklist.kind === 'ready' && checklist.remaining > 0 ? (
         <View style={styles.checklistPanel}>
           <Text style={styles.checklistHeadline} accessibilityRole="header">
             {settingsChecklistHeadline(checklist)}
@@ -169,17 +159,25 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             icon="github"
             title="GitHub"
             subtitle="Repository access, commit author, signing key"
-            status={{
-              intent: githubReady ? 'ready' : 'needsSetup',
-              label: githubReady ? 'Ready' : 'Needs setup',
-            }}
+            status={
+              loading
+                ? undefined
+                : {
+                    intent: githubReady ? 'ready' : 'needsSetup',
+                    label: githubReady ? 'Ready' : 'Needs setup',
+                  }
+            }
             onPress={() => router.push('/settings/github')}
           />
           <SettingsNavRow
             icon="key"
             title="Connected services"
             subtitle="Secret store, AI logins, transcription, MCP, Matrix"
-            status={servicesNeedsUnlock ? { intent: 'needsSetup', label: 'Locked' } : undefined}
+            status={
+              !loading && servicesNeedsUnlock
+                ? { intent: 'needsSetup', label: 'Locked' }
+                : undefined
+            }
             onPress={() => router.push('/settings/services')}
           />
           <SettingsNavRow
@@ -230,7 +228,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsToggleRow
             label="Advanced mode"
             value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
-            disabled={pendingAdvancedMode !== undefined}
+            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
             onValueChange={(value) => {
               setPendingAdvancedMode(value);
               void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
