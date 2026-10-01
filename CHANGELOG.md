@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.3.1](https://github.com/Heey-Global/verity/compare/v4.3.0...v4.3.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **previews:** accept public SSH volume subpaths ([#976](https://github.com/Heey-Global/verity/issues/976)) ([a1105f4](https://github.com/Heey-Global/verity/commit/a1105f48c96473fcf5421de15c1f8317a474e555))
+
 ## [4.3.0](https://github.com/Heey-Global/verity/compare/v4.2.0...v4.3.0) (2026-10-01)
 
 
