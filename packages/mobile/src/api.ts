@@ -909,7 +909,7 @@ export const remoteControlDescriptorSchema = z.discriminatedUnion('enabled', [
 export type RemoteControlDescriptor = z.infer<typeof remoteControlDescriptorSchema>;
 
 /** Core's byte counts for one tunnel stream; the app shows them beside its own. */
-export const remoteStreamRecordSchema = z.object({
+const remoteStreamRecordSchema = z.object({
   sessionId: z.string().max(128),
   streamId: z.string().max(8),
   startedAt: z.number(),
