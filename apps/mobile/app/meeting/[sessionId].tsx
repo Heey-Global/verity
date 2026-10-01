@@ -102,8 +102,6 @@ export default function MeetingScreen() {
   const wide = width >= 900;
   const { theme } = useUnistyles();
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [history, setHistory] = useState<MeetingRecord[]>([]);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
   const [answers, setAnswers] = useState<MeetingAnswerCard[]>([]);
@@ -219,11 +217,9 @@ export default function MeetingScreen() {
   const refresh = useCallback(async () => {
     if (!sessionId) return;
     const saved = await listMeetings(sessionId);
-    setHistory(saved);
     setMeeting((current) => {
       const local = currentMeeting();
       const serverId = getActiveMeetingServerId();
-      if (selectedId) return saved.find((item) => item.id === selectedId) ?? null;
       if (
         local?.sessionId === sessionId &&
         local.state === 'active' &&
@@ -232,7 +228,7 @@ export default function MeetingScreen() {
         return local;
       return saved[0] ?? ((current?.serverId ?? null) === serverId ? current : null);
     });
-  }, [sessionId, selectedId]);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -356,8 +352,7 @@ export default function MeetingScreen() {
     return subscribeMeeting((active) => {
       if (
         active?.sessionId === sessionId &&
-        (active.serverId == null || active.serverId === getActiveMeetingServerId()) &&
-        (selectedId === null || selectedId === active.id)
+        (active.serverId == null || active.serverId === getActiveMeetingServerId())
       ) {
         setMeeting(active);
       }
@@ -365,7 +360,7 @@ export default function MeetingScreen() {
         void refresh().catch((reason) => setError(String(reason)));
       }
     });
-  }, [refresh, selectedId, sessionId]);
+  }, [refresh, sessionId]);
 
   useEffect(() => {
     if (!meeting) return;
@@ -623,7 +618,6 @@ export default function MeetingScreen() {
           'Finish the current meeting before starting another.',
         );
       } else {
-        setSelectedId(null);
         setMeeting(existing);
       }
       return;
@@ -633,7 +627,6 @@ export default function MeetingScreen() {
     try {
       const next = await startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4);
       setSyncError(true);
-      setSelectedId(null);
       setMeeting(next);
       setShowNewMeeting(false);
       await refresh();
@@ -1236,34 +1229,6 @@ export default function MeetingScreen() {
     </Modal>
   ) : null;
 
-  const earlierMeetings =
-    history.length > 1 || (history.length === 1 && !meeting) ? (
-      <View style={styles.block}>
-        <SectionLabel>EARLIER MEETINGS</SectionLabel>
-        {history
-          .filter((item) => item.id !== meeting?.id)
-          .map((item) => (
-            <Pressable
-              key={item.id}
-              accessibilityRole="button"
-              style={styles.row}
-              onPress={() => {
-                const running = currentMeeting();
-                setSelectedId(item.id === running?.id ? null : item.id);
-                setMeeting(item.id === running?.id ? running : item);
-                setShowNewMeeting(false);
-              }}
-            >
-              <Text style={styles.rowText}>
-                {new Date(item.startedAt).toLocaleString()} · {item.state}
-                {item.serverId === null ? ' · local only' : ''}
-              </Text>
-              <Icon name="chevron-right" size={16} color={theme.colors.textFaint} />
-            </Pressable>
-          ))}
-      </View>
-    ) : null;
-
   // Starting replaces the previous meeting's content instead of stacking under it, so the
   // start button can never be pushed below the screen.
   if (!live && (!meeting || showNewMeeting)) {
@@ -1392,7 +1357,6 @@ export default function MeetingScreen() {
               </>
             )}
           </Pressable>
-          {earlierMeetings}
         </ScrollView>
       </View>
     );
@@ -1519,7 +1483,6 @@ export default function MeetingScreen() {
           >
             <Text style={styles.link}>Start another meeting</Text>
           </Pressable>
-          {earlierMeetings}
         </ScrollView>
         {transcriptSheet}
       </KeyboardAvoidingView>
@@ -1647,7 +1610,6 @@ export default function MeetingScreen() {
                 keyboardShouldPersistTaps="handled"
               >
                 {noticed}
-                {earlierMeetings}
               </ScrollView>
               {askComposer(false)}
             </View>
@@ -1685,7 +1647,6 @@ export default function MeetingScreen() {
               {noteRows([lastNote])}
             </View>
           ) : null}
-          {earlierMeetings}
         </ScrollView>
         {composing === 'note' || noteUnsaved ? (
           <View style={styles.composerLine}>
