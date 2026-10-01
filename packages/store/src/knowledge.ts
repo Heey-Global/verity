@@ -21,17 +21,6 @@ export interface KnowledgeProjectSpace {
   wikiFolderId: string;
   generalFolderId: string;
 }
-export interface KnowledgeWikiJob {
-  id: string;
-  projectId: string;
-  sessionId: string;
-  kind: 'ingest' | 'check' | 'reconcile';
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  sourceRevisions: { documentId: string; revisionId: string }[];
-  model: string | null;
-  createdAt: Date;
-  error: string | null;
-}
 export interface KnowledgeFolder {
   role?: 'project' | 'general' | 'sources' | 'wiki';
   projectId?: string;
@@ -202,19 +191,11 @@ export class KnowledgeStore {
       if (doc.currentRevisionId !== expectedRevisionId) throw new KnowledgeError('conflict');
       if (doc.bodyMarkdown.length > 8000)
         throw new KnowledgeError('invalid', 'Project overview must fit within 8000 characters');
-      const settings = await tx
-        .selectFrom('project_settings')
-        .select('memory')
-        .where('project_id', '=', projectId)
-        .executeTakeFirst();
       await tx
         .updateTable('project_knowledge_spaces')
         .set({
           overview_document_id: documentId,
           overview_revision_id: expectedRevisionId,
-          ...(!space.overview_revision_id
-            ? { legacy_memory: settings?.memory ?? space.legacy_memory }
-            : {}),
         })
         .where('project_id', '=', projectId)
         .execute();
@@ -222,7 +203,6 @@ export class KnowledgeStore {
   }
   async clearProjectOverview(projectId: string): Promise<void> {
     await this.transaction(async (tx) => {
-      // Legacy memory remains in project_settings: clearing the pin explicitly restores its use.
       await tx
         .updateTable('project_knowledge_spaces')
         .set({ overview_document_id: null, overview_revision_id: null })
@@ -230,212 +210,13 @@ export class KnowledgeStore {
         .execute();
     });
   }
-  private wikiJob(row: {
-    id: string;
-    project_id: string;
-    session_id: string;
-    kind: 'ingest' | 'check' | 'reconcile';
-    status: KnowledgeWikiJob['status'];
-    source_revisions: string;
-    model: string | null;
-    created_at: Date;
-    error: string | null;
-  }): KnowledgeWikiJob {
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      sessionId: row.session_id,
-      kind: row.kind,
-      status: row.status,
-      sourceRevisions: JSON.parse(row.source_revisions) as KnowledgeWikiJob['sourceRevisions'],
-      model: row.model,
-      createdAt: row.created_at,
-      error: row.error,
-    };
-  }
-  async getWikiJob(id: string): Promise<KnowledgeWikiJob | null> {
-    const row = await this.db
-      .selectFrom('knowledge_wiki_jobs')
-      .selectAll()
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? this.wikiJob(row) : null;
-  }
-  async getWikiJobForSession(sessionId: string): Promise<KnowledgeWikiJob | null> {
-    const row = await this.db
-      .selectFrom('knowledge_wiki_jobs')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row ? this.wikiJob(row) : null;
-  }
-  async listWikiJobs(projectId?: string): Promise<KnowledgeWikiJob[]> {
-    let query = this.db.selectFrom('knowledge_wiki_jobs').selectAll();
-    if (projectId) query = query.where('project_id', '=', projectId);
-    return (await query.orderBy('created_at', 'desc').execute()).map((row) => this.wikiJob(row));
-  }
-  async recoverWikiJobs(): Promise<number> {
-    return this.transaction(async (tx) => {
-      const rows = await tx
-        .updateTable('knowledge_wiki_jobs')
-        .set({
-          status: 'failed',
-          error: 'Server restarted before this Wiki job finished; start a new job.',
-        })
-        .where('status', 'in', ['pending', 'running'])
-        .returning('id')
-        .execute();
-      return rows.length;
-    });
-  }
-  async updateWikiJob(
-    id: string,
-    input: { status: KnowledgeWikiJob['status']; error?: string | null },
-  ): Promise<void> {
-    await this.transaction(async (tx) => {
-      const job = await tx
-        .selectFrom('knowledge_wiki_jobs')
-        .selectAll()
-        .where('id', '=', id)
-        .executeTakeFirst();
-      if (!job) throw new KnowledgeError('not_found');
-      if ((job.status === 'completed' || job.status === 'failed') && input.status !== job.status)
-        throw new KnowledgeError('conflict', 'Wiki job is already finished');
-      await tx
-        .updateTable('knowledge_wiki_jobs')
-        .set({ status: input.status, error: input.error ?? null })
-        .where('id', '=', id)
-        .execute();
-    });
-  }
-  async createWikiJob(input: {
-    projectId: string;
-    sessionId: string;
-    sourceDocumentIds: string[];
-    kind: 'ingest' | 'check' | 'reconcile';
-    model?: string;
-  }): Promise<KnowledgeWikiJob> {
-    return this.transaction(async (tx) => {
-      const space = await tx
-        .selectFrom('project_knowledge_spaces')
-        .selectAll()
-        .where('project_id', '=', input.projectId)
-        .executeTakeFirst();
-      const session = await tx
-        .selectFrom('sessions')
-        .select('project_id')
-        .where('session_id', '=', input.sessionId)
-        .executeTakeFirst();
-      if (!space || session?.project_id !== input.projectId) throw new KnowledgeError('forbidden');
-      if (
-        await tx
-          .selectFrom('knowledge_access_events')
-          .select('id')
-          .where('session_id', '=', input.sessionId)
-          .executeTakeFirst()
-      )
-        throw new KnowledgeError('forbidden', 'Wiki jobs require a fresh session');
-      const used = await sql<{
-        used: boolean;
-      }>`select exists(select 1 from events where session_id=${input.sessionId})
-        or exists(select 1 from transcript_lines where session_id=${input.sessionId})
-        or exists(select 1 from session_backend_state where session_id=${input.sessionId}) as used`.execute(
-        tx,
-      );
-      if (used.rows[0]?.used)
-        throw new KnowledgeError(
-          'forbidden',
-          'Wiki jobs require a fresh session without prior context',
-        );
-      const sourceAccess = this.effective(await this.folders(tx), [
-        { folderId: space.sources_folder_id, mode: 'read' },
-      ]);
-      const selectedIds = [...new Set(input.sourceDocumentIds)];
-      if (selectedIds.length > 100 || (input.kind === 'ingest' && !selectedIds.length))
-        throw new KnowledgeError('invalid');
-      const wikiFolders = [
-        ...this.effective(await this.folders(tx), [
-          { folderId: space.wiki_folder_id, mode: 'read' },
-        ]).keys(),
-      ];
-      const lineage = await tx
-        .selectFrom('knowledge_documents as d')
-        .innerJoin('knowledge_document_revisions as r', 'r.document_id', 'd.id')
-        .innerJoin('knowledge_provenance as p', 'p.revision_id', 'r.id')
-        .select('p.source_revisions')
-        .where('d.folder_id', 'in', wikiFolders)
-        .execute();
-      // Existing Wiki content is readable only when all of its transitive
-      // dependencies still belong to this project's Sources. Existing originals
-      // advance to their current revision; moved/deleted dependencies make that
-      // page unavailable to ingest jobs without blocking unrelated work.
-      const inherited = new Map<string, { documentId: string; revisionId: string }>();
-      for (const record of lineage)
-        for (const source of JSON.parse(
-          record.source_revisions,
-        ) as KnowledgeWikiJob['sourceRevisions']) {
-          try {
-            const doc = await this.document(tx, source.documentId);
-            if (!sourceAccess.has(doc.folderId)) continue;
-            inherited.set(source.documentId, {
-              documentId: source.documentId,
-              revisionId: doc.currentRevisionId,
-            });
-          } catch (error) {
-            if (!(error instanceof KnowledgeError) || error.code !== 'not_found') throw error;
-            // A deleted dependency makes its derived page stale. Ingest jobs
-            // cannot read that page (enforced below), so it must not become a
-            // provenance dependency that has no enforceable source audience.
-          }
-        }
-      const selected = new Map<string, { documentId: string; revisionId: string }>();
-      for (const id of selectedIds) {
-        let doc: KnowledgeDocument;
-        try {
-          doc = await this.document(tx, id);
-        } catch (error) {
-          if (
-            (input.kind === 'check' || input.kind === 'reconcile') &&
-            error instanceof KnowledgeError &&
-            error.code === 'not_found'
-          )
-            continue;
-          throw error;
-        }
-        if (!sourceAccess.has(doc.folderId))
-          throw new KnowledgeError('forbidden', 'Wiki jobs may only process their own Sources');
-        selected.set(id, { documentId: id, revisionId: doc.currentRevisionId });
-      }
-      const sourceRevisions = [...inherited.values(), ...selected.values()].filter(
-        (source, index, all) =>
-          all.findLastIndex((candidate) => candidate.documentId === source.documentId) === index,
-      );
-      const row = await tx
-        .insertInto('knowledge_wiki_jobs')
-        .values({
-          id: randomUUID(),
-          project_id: input.projectId,
-          session_id: input.sessionId,
-          kind: input.kind,
-          status: 'pending',
-          source_revisions: JSON.stringify(sourceRevisions),
-          model: input.model ?? null,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return this.wikiJob(row);
-    });
-  }
   async createSourceDocument(
     input: KnowledgeDocumentInput,
     attach: (tx: Tx, document: KnowledgeDocument) => Promise<void>,
-    maintenanceProjectId?: string,
   ): Promise<KnowledgeDocument> {
     return this.transaction(async (tx) => {
       const doc = await this.create(tx, input);
       await attach(tx, doc);
-      if (maintenanceProjectId)
-        await this.queueWikiMaintenanceTx(tx, maintenanceProjectId, [doc.id], new Date(), false);
       return doc;
     });
   }
@@ -483,7 +264,6 @@ export class KnowledgeStore {
       source?: KnowledgeSourceInput;
       sha256?: string;
     }[],
-    maintenanceProjectId?: string,
   ): Promise<KnowledgeDocument[]> {
     return this.transaction(async (tx) => {
       const documents: KnowledgeDocument[] = [];
@@ -510,118 +290,8 @@ export class KnowledgeStore {
           await this.sources.attachRevision(tx, document.currentRevisionId, input.source);
         documents.push(document);
       }
-      if (maintenanceProjectId)
-        await this.queueWikiMaintenanceTx(
-          tx,
-          maintenanceProjectId,
-          documents.map((document) => document.id),
-          new Date(),
-          false,
-        );
       return documents;
     });
-  }
-  async queueWikiMaintenance(
-    projectId: string,
-    sourceDocumentIds: string[],
-    dueAt: Date,
-    debounceExisting = true,
-  ): Promise<void> {
-    await this.transaction((tx) =>
-      this.queueWikiMaintenanceTx(tx, projectId, sourceDocumentIds, dueAt, debounceExisting),
-    );
-  }
-  private async queueWikiMaintenanceTx(
-    tx: Tx,
-    projectId: string,
-    sourceDocumentIds: string[],
-    dueAt: Date,
-    debounceExisting: boolean,
-  ): Promise<void> {
-    if (debounceExisting)
-      await tx
-        .updateTable('knowledge_maintenance_queue')
-        .set({ due_at: dueAt })
-        .where('project_id', '=', projectId)
-        .execute();
-    if (sourceDocumentIds.length)
-      await tx
-        .insertInto('knowledge_maintenance_queue')
-        .values(
-          [...new Set(sourceDocumentIds)].map((sourceDocumentId) => ({
-            project_id: projectId,
-            source_document_id: sourceDocumentId,
-            due_at: dueAt,
-          })),
-        )
-        .onConflict((conflict) =>
-          conflict.columns(['project_id', 'source_document_id']).doUpdateSet({ due_at: dueAt }),
-        )
-        .execute();
-  }
-  private async sourceProject(tx: Tx, folderId: string): Promise<string | undefined> {
-    const project = await sql<{ project_id: string }>`with recursive ancestors as (
-      select id,parent_id from knowledge_folders where id=${folderId}
-      union all
-      select f.id,f.parent_id from knowledge_folders f join ancestors a on a.parent_id=f.id
-    ) select s.project_id from project_knowledge_spaces s join ancestors a on a.id=s.sources_folder_id limit 1`.execute(
-      tx,
-    );
-    return project.rows[0]?.project_id;
-  }
-  private async queueSourceMaintenance(tx: Tx, document: KnowledgeDocument): Promise<void> {
-    const projectId = await this.sourceProject(tx, document.folderId);
-    if (projectId)
-      await this.queueWikiMaintenanceTx(tx, projectId, [document.id], new Date(), false);
-  }
-  async listWikiMaintenance(
-    projectId?: string,
-  ): Promise<{ projectId: string; sourceDocumentId: string; dueAt: Date }[]> {
-    let query = this.db.selectFrom('knowledge_maintenance_queue').selectAll();
-    if (projectId) query = query.where('project_id', '=', projectId);
-    return (await query.orderBy('due_at').execute()).map((row) => ({
-      projectId: row.project_id,
-      sourceDocumentId: row.source_document_id,
-      dueAt: row.due_at,
-    }));
-  }
-  async clearWikiMaintenance(
-    records: { projectId: string; sourceDocumentId: string; dueAt: Date }[],
-  ): Promise<void> {
-    if (!records.length) return;
-    await this.transaction(async (tx) => {
-      for (const record of records)
-        await tx
-          .deleteFrom('knowledge_maintenance_queue')
-          .where('project_id', '=', record.projectId)
-          .where('source_document_id', '=', record.sourceDocumentId)
-          .where('due_at', '=', record.dueAt)
-          .execute();
-    });
-  }
-  async queueWikiReconciliation(projectId: string, dueAt: Date): Promise<void> {
-    await this.db
-      .updateTable('project_knowledge_spaces')
-      .set({ reconcile_due_at: dueAt })
-      .where('project_id', '=', projectId)
-      .execute();
-  }
-  async listWikiReconciliations(): Promise<{ projectId: string; dueAt: Date }[]> {
-    return (
-      await this.db
-        .selectFrom('project_knowledge_spaces')
-        .select(['project_id', 'reconcile_due_at'])
-        .where('reconcile_due_at', 'is not', null)
-        .execute()
-    ).map((row) => ({ projectId: row.project_id, dueAt: row.reconcile_due_at! }));
-  }
-  async clearWikiReconciliation(projectId: string, dueAt: Date): Promise<void> {
-    await this.db
-      .updateTable('project_knowledge_spaces')
-      .set({ reconcile_due_at: null })
-      .where('project_id', '=', projectId)
-      .where('reconcile_due_at', '=', dueAt)
-      .execute();
   }
   async projectForSourceFolder(folderId: string): Promise<string | null> {
     const result = await sql<{ project_id: string }>`with recursive ancestors as (
@@ -637,13 +307,10 @@ export class KnowledgeStore {
     id: string,
     input: KnowledgeDocumentEdit,
     attach: (tx: Tx, document: KnowledgeDocument) => Promise<void>,
-    maintenanceProjectId?: string,
   ): Promise<KnowledgeDocument> {
     return this.transaction(async (tx) => {
       const doc = await this.edit(tx, id, input);
       await attach(tx, doc);
-      if (maintenanceProjectId)
-        await this.queueWikiMaintenanceTx(tx, maintenanceProjectId, [doc.id], new Date(), false);
       return doc;
     });
   }
@@ -987,7 +654,9 @@ export class KnowledgeStore {
     const dependencies = rows
       .map((row) => ({
         folderId: row.folder_id,
-        sourceIds: (JSON.parse(row.source_revisions) as KnowledgeWikiJob['sourceRevisions'])
+        sourceIds: (
+          JSON.parse(row.source_revisions) as { documentId: string; revisionId: string }[]
+        )
           .filter((source) => moved.has(source.documentId))
           .map((source) => source.documentId),
       }))
@@ -1025,7 +694,6 @@ export class KnowledgeStore {
       const folders = await this.folders(tx);
       const old = folders.find((f) => f.id === id);
       if (!old) throw new KnowledgeError('not_found');
-      const previousSourceProject = await this.sourceProject(tx, id);
       if (old.role && (input.parentId !== undefined || input.name !== undefined))
         throw new KnowledgeError('forbidden', 'Managed folders cannot be renamed or moved');
       if (input.parentId !== undefined && input.parentId !== old.parentId) {
@@ -1076,23 +744,6 @@ export class KnowledgeStore {
           tx,
           sources.map((source) => source.id),
         );
-        const nextSourceProject = await this.sourceProject(tx, id);
-        const sourceIds = sources.map((source) => source.id);
-        if (previousSourceProject && previousSourceProject !== nextSourceProject) {
-          if (sourceIds.length)
-            await tx
-              .deleteFrom('knowledge_maintenance_queue')
-              .where('project_id', '=', previousSourceProject)
-              .where('source_document_id', 'in', sourceIds)
-              .execute();
-          await tx
-            .updateTable('project_knowledge_spaces')
-            .set({ reconcile_due_at: new Date() })
-            .where('project_id', '=', previousSourceProject)
-            .execute();
-        }
-        if (nextSourceProject && nextSourceProject !== previousSourceProject)
-          await this.queueWikiMaintenanceTx(tx, nextSourceProject, sourceIds, new Date(), false);
       }
       return next;
     }, input.expectedPolicyToken);
@@ -1117,19 +768,12 @@ export class KnowledgeStore {
         );
       if ((await this.folders(tx)).find((f) => f.id === id)?.role)
         throw new KnowledgeError('forbidden', 'Managed folders cannot be deleted');
-      const sourceProject = await this.sourceProject(tx, id);
       const row = await tx
         .deleteFrom('knowledge_folders')
         .where('id', '=', id)
         .returning('id')
         .executeTakeFirst();
       if (!row) throw new KnowledgeError('not_found');
-      if (sourceProject)
-        await tx
-          .updateTable('project_knowledge_spaces')
-          .set({ reconcile_due_at: new Date() })
-          .where('project_id', '=', sourceProject)
-          .execute();
     });
   }
   async getGrants(projectId: string): Promise<KnowledgeGrant[]> {
@@ -1187,9 +831,10 @@ export class KnowledgeStore {
           .where('d.folder_id', 'in', provenanceFolders)
           .execute();
         for (const d of derived)
-          for (const source of JSON.parse(
-            d.source_revisions,
-          ) as KnowledgeWikiJob['sourceRevisions']) {
+          for (const source of JSON.parse(d.source_revisions) as {
+            documentId: string;
+            revisionId: string;
+          }[]) {
             const original = await tx
               .selectFrom('knowledge_documents')
               .select('folder_id')
@@ -1229,7 +874,7 @@ export class KnowledgeStore {
       .execute();
     const captured = provenance.map((row) => ({
       revisionId: row.revision_id,
-      sources: JSON.parse(row.source_revisions) as KnowledgeWikiJob['sourceRevisions'],
+      sources: JSON.parse(row.source_revisions) as { documentId: string; revisionId: string }[],
     }));
     const ids = [
       ...new Set(captured.flatMap((row) => row.sources.map((source) => source.documentId))),
@@ -1282,7 +927,6 @@ export class KnowledgeStore {
     tx: Tx,
     input: { folderId?: string; query?: string; offset?: number; limit?: number },
     permitted?: Map<string, KnowledgeMode>,
-    documentIds?: Set<string>,
   ): Promise<KnowledgeDocumentSummary[]> {
     if (input.query !== undefined && (typeof input.query !== 'string' || input.query.length > 200))
       throw new KnowledgeError('invalid');
@@ -1311,10 +955,7 @@ export class KnowledgeStore {
       if (permitted.size === 0) return [];
       q = q.where('d.folder_id', 'in', [...permitted.keys()]);
     }
-    if (documentIds) {
-      if (documentIds.size === 0) return [];
-      q = q.where('d.id', 'in', [...documentIds]);
-    }
+
     if (input.folderId !== undefined) q = q.where('d.folder_id', '=', input.folderId);
     if (input.query) {
       const pattern = '%' + input.query.replace(/[\\%_]/g, '\\$&') + '%';
@@ -1418,7 +1059,6 @@ export class KnowledgeStore {
   async createDocument(input: KnowledgeDocumentInput, author?: string): Promise<KnowledgeDocument> {
     return this.transaction(async (tx) => {
       const document = await this.create(tx, input, author);
-      await this.queueSourceMaintenance(tx, document);
       return document;
     });
   }
@@ -1466,7 +1106,6 @@ export class KnowledgeStore {
           .insertInto('knowledge_provenance')
           .values({ ...provenance, revision_id: updated.currentRevisionId })
           .execute();
-      await this.queueSourceMaintenance(tx, updated);
       return provenance ? this.document(tx, id) : updated;
     });
   }
@@ -1549,7 +1188,6 @@ export class KnowledgeStore {
           .insertInto('knowledge_provenance')
           .values({ ...provenance, revision_id: restored.currentRevisionId })
           .execute();
-      await this.queueSourceMaintenance(tx, restored);
       return this.document(tx, restored.id);
     });
   }
@@ -1560,8 +1198,6 @@ export class KnowledgeStore {
   ): Promise<KnowledgeDocument> {
     return this.policyMutation(async (tx) => {
       const d = await this.document(tx, id);
-      const previousSourceProject = await this.sourceProject(tx, d.folderId);
-      const nextSourceProject = await this.sourceProject(tx, folderId);
       const fs = await this.folders(tx);
       const subtree = (role: 'wiki' | 'sources', folder: string) =>
         fs.some(
@@ -1581,20 +1217,6 @@ export class KnowledgeStore {
         .execute();
       if (d.folderId !== folderId) await this.assertMovedSourceAudiences(tx, [id]);
       const moved = await this.document(tx, id);
-      if (previousSourceProject && previousSourceProject !== nextSourceProject) {
-        await tx
-          .deleteFrom('knowledge_maintenance_queue')
-          .where('project_id', '=', previousSourceProject)
-          .where('source_document_id', '=', id)
-          .execute();
-        await tx
-          .updateTable('project_knowledge_spaces')
-          .set({ reconcile_due_at: new Date() })
-          .where('project_id', '=', previousSourceProject)
-          .execute();
-      }
-      if (nextSourceProject && nextSourceProject !== previousSourceProject)
-        await this.queueWikiMaintenanceTx(tx, nextSourceProject, [id], new Date(), false);
       return moved;
     }, expectedPolicyToken);
   }
@@ -1611,8 +1233,7 @@ export class KnowledgeStore {
           'conflict',
           'Clear the approved project overview before deleting its document',
         );
-      const document = await this.document(tx, id);
-      const sourceProject = await this.sourceProject(tx, document.folderId);
+      await this.document(tx, id);
       if (
         !(await tx
           .deleteFrom('knowledge_documents')
@@ -1621,12 +1242,6 @@ export class KnowledgeStore {
           .executeTakeFirst())
       )
         throw new KnowledgeError('not_found');
-      if (sourceProject)
-        await tx
-          .updateTable('project_knowledge_spaces')
-          .set({ reconcile_due_at: new Date() })
-          .where('project_id', '=', sourceProject)
-          .execute();
     });
   }
   async exportDocuments(folderId?: string, includeOriginals = false): Promise<KnowledgeFile[]> {
@@ -1703,8 +1318,6 @@ export class KnowledgeStore {
     return this.transaction(async (tx) => {
       if (!(await this.folders(tx)).some((f) => f.id === folderId))
         throw new KnowledgeError('not_found');
-      const sourceProject = await this.sourceProject(tx, folderId);
-      const importedDocumentIds: string[] = [];
       for (const file of files) {
         if (typeof file.path !== 'string' || !file.path.endsWith('.md'))
           throw new KnowledgeError('invalid', 'Import accepts relative Markdown paths');
@@ -1723,7 +1336,6 @@ export class KnowledgeStore {
           title,
           bodyMarkdown: file.bodyMarkdown,
         });
-        importedDocumentIds.push(document.id);
         if (file.original) {
           if (!includeOriginals)
             throw new KnowledgeError('invalid', 'Use the original-source bundle import');
@@ -1737,14 +1349,6 @@ export class KnowledgeStore {
           await this.sources.attachRevision(tx, document.currentRevisionId, { ...original, bytes });
         }
       }
-      if (sourceProject)
-        await this.queueWikiMaintenanceTx(
-          tx,
-          sourceProject,
-          importedDocumentIds,
-          new Date(),
-          false,
-        );
       return files.length;
     });
   }
@@ -1799,119 +1403,27 @@ export class KnowledgeStore {
             .executeTakeFirst())
         )
           throw new KnowledgeError('forbidden');
-        let permitted = await this.access(tx, actor.projectId);
+        const permitted = await this.access(tx, actor.projectId);
         const allFolders = await this.folders(tx);
-        const jobRow = await tx
-          .selectFrom('knowledge_wiki_jobs')
-          .selectAll()
-          .where('session_id', '=', actor.sessionId)
-          .executeTakeFirst();
-        const job = jobRow ? this.wikiJob(jobRow) : null;
         const managedWiki = this.effective(
           allFolders,
           allFolders
             .filter((f) => f.role === 'wiki')
             .map((f) => ({ folderId: f.id, mode: 'read' })),
         );
-        let captured: Map<string, string> | null = null;
-        let capturedWiki: Map<string, string> | null = null;
-        const capturedSourceFolders = new Set<string>();
-        if (job) {
-          if (job.status !== 'running' || job.projectId !== actor.projectId)
-            throw new KnowledgeError('forbidden', 'Wiki job is not running');
-          const space = await tx
-            .selectFrom('project_knowledge_spaces')
-            .selectAll()
-            .where('project_id', '=', actor.projectId)
-            .executeTakeFirst();
-          if (!space) throw new KnowledgeError('forbidden');
-          const scope = this.effective(allFolders, [
-            { folderId: space.sources_folder_id, mode: 'read' },
-            { folderId: space.wiki_folder_id, mode: 'read_write' },
-          ]);
-          permitted = new Map(
-            [...permitted]
-              .filter(([id]) => scope.has(id))
-              .map(([id, mode]) => [id, scope.get(id) === 'read' ? 'read' : mode]),
-          );
-          captured = new Map(job.sourceRevisions.map((r) => [r.documentId, r.revisionId]));
-          for (const [documentId, revisionId] of captured) {
-            let current: KnowledgeDocument;
-            try {
-              current = await this.document(tx, documentId);
-            } catch (error) {
-              if (error instanceof KnowledgeError && error.code === 'not_found')
-                throw new KnowledgeError(
-                  'conflict',
-                  'A captured source was deleted; start a new Wiki job',
-                );
-              throw error;
-            }
-            capturedSourceFolders.add(current.folderId);
-            if (!permitted.has(current.folderId) || current.currentRevisionId !== revisionId)
-              throw new KnowledgeError(
-                'conflict',
-                'A captured source changed; start a new Wiki job',
-              );
-          }
-          const wikiRows = await tx
-            .selectFrom('knowledge_documents as d')
-            .innerJoin('knowledge_document_revisions as r', 'r.id', 'd.current_revision_id')
-            .leftJoin('knowledge_provenance as p', 'p.revision_id', 'r.id')
-            .select([
-              'd.id',
-              'r.id as revision_id',
-              'r.created_at',
-              'p.job_id',
-              'p.source_revisions',
-            ])
-            .where('d.folder_id', 'in', [...managedWiki.keys()])
-            .execute();
-          capturedWiki = new Map(
-            wikiRows
-              .filter(
-                (row) =>
-                  (row.created_at <= job.createdAt || row.job_id === job.id) &&
-                  (job.kind === 'check' ||
-                    job.kind === 'reconcile' ||
-                    row.source_revisions === null ||
-                    (JSON.parse(row.source_revisions) as KnowledgeWikiJob['sourceRevisions']).every(
-                      (source) => captured?.has(source.documentId) === true,
-                    )),
-              )
-              .map((row) => [row.id, row.revision_id]),
-          );
-        }
         const requireFolder = (id: unknown, write = false): string => {
-          if (write && job?.kind === 'check')
-            throw new KnowledgeError('forbidden', 'Wiki checks are read-only');
           if (
             typeof id !== 'string' ||
             !permitted.has(id) ||
             (write && permitted.get(id) !== 'read_write')
           )
             throw new KnowledgeError('forbidden');
-          if (write && managedWiki.has(id) && !job)
+          if (write && managedWiki.has(id))
             throw new KnowledgeError(
               'forbidden',
               'Use the explicit Wiki action to update managed Wiki pages',
             );
           return id;
-        };
-        const requireSafeWikiAudience = async (folderId: string): Promise<void> => {
-          if (!job) return;
-          const projects = await tx.selectFrom('projects').select('id').execute();
-          for (const project of projects) {
-            const audience = this.effective(allFolders, await this.grants(tx, project.id));
-            if (
-              audience.has(folderId) &&
-              [...capturedSourceFolders].some((sourceFolder) => !audience.has(sourceFolder))
-            )
-              throw new KnowledgeError(
-                'forbidden',
-                'This Wiki is shared with a project that cannot read every source; change sharing before incorporating these sources',
-              );
-          }
         };
         const requireDocument = async (id: unknown, write = false): Promise<string> => {
           if (typeof id !== 'string') throw new KnowledgeError('forbidden');
@@ -1921,13 +1433,6 @@ export class KnowledgeStore {
             .where('id', '=', id)
             .executeTakeFirst();
           requireFolder(doc?.folder_id, write);
-          if (capturedWiki && doc && managedWiki.has(doc.folder_id) && !capturedWiki.has(id))
-            throw new KnowledgeError(
-              'forbidden',
-              'This Wiki page is outside the job snapshot; start a new Wiki job',
-            );
-          if (captured && doc && !managedWiki.has(doc.folder_id) && !captured.has(id))
-            throw new KnowledgeError('forbidden', 'This source was not selected for the Wiki job');
           if (
             write &&
             (await tx
@@ -1941,7 +1446,6 @@ export class KnowledgeStore {
               'forbidden',
               'Original source files cannot be edited by agents',
             );
-          if (write && doc) await requireSafeWikiAudience(doc.folder_id);
           return id;
         };
         const string = (key: string): string => {
@@ -1953,9 +1457,6 @@ export class KnowledgeStore {
           ...(input.offset === undefined ? {} : { offset: Number(input.offset) }),
           ...(input.limit === undefined ? {} : { limit: Number(input.limit) }),
         };
-        const capturedDocuments = captured
-          ? new Set([...(captured?.keys() ?? []), ...(capturedWiki?.keys() ?? [])])
-          : undefined;
         let value: unknown;
         if (operation === 'list') {
           if (input.folderId !== undefined) {
@@ -1964,12 +1465,7 @@ export class KnowledgeStore {
               folders: (await this.folders(tx)).filter(
                 (f) => f.parentId === folderId && permitted.has(f.id),
               ),
-              documents: await this.documents(
-                tx,
-                { folderId, ...pagination },
-                permitted,
-                capturedDocuments,
-              ),
+              documents: await this.documents(tx, { folderId, ...pagination }, permitted),
             };
           } else {
             // Hidden ancestors must not disclose their identifiers or names through navigation.
@@ -1994,16 +1490,13 @@ export class KnowledgeStore {
               ...(typeof input.folderId === 'string' ? { folderId: input.folderId } : {}),
             },
             permitted,
-            capturedDocuments,
           );
         } else if (operation === 'read' || operation === 'read_original') {
           const id = await requireDocument(input.documentId);
           const doc = await this.document(
             tx,
             id,
-            captured?.get(id) ??
-              capturedWiki?.get(id) ??
-              (typeof input.revisionId === 'string' ? input.revisionId : undefined),
+            typeof input.revisionId === 'string' ? input.revisionId : undefined,
           );
           revisionId = doc.currentRevisionId;
           value =
@@ -2012,7 +1505,6 @@ export class KnowledgeStore {
               : doc;
         } else if (operation === 'create') {
           const folderId = requireFolder(input.folderId, true);
-          await requireSafeWikiAudience(folderId);
           const doc = await this.create(
             tx,
             { folderId, title: string('title'), bodyMarkdown: string('bodyMarkdown') },
@@ -2036,25 +1528,6 @@ export class KnowledgeStore {
           revisionId = doc.currentRevisionId;
           value = doc;
         } else throw new KnowledgeError('invalid');
-        if (captured && (operation === 'search' || operation === 'list')) {
-          const visible = (d: { id: string; folderId: string }) =>
-            managedWiki.has(d.folderId) ? capturedWiki?.has(d.id) === true : captured.has(d.id);
-          if (Array.isArray(value)) value = (value as KnowledgeDocumentSummary[]).filter(visible);
-          else if (value && typeof value === 'object' && 'documents' in value)
-            (value as { documents: KnowledgeDocumentSummary[] }).documents = (
-              value as { documents: KnowledgeDocumentSummary[] }
-            ).documents.filter(visible);
-        }
-        if (job && revisionId && (operation === 'create' || operation === 'edit')) {
-          await tx
-            .insertInto('knowledge_provenance')
-            .values({
-              revision_id: revisionId,
-              job_id: job.id,
-              source_revisions: JSON.stringify(job.sourceRevisions),
-            })
-            .execute();
-        }
         await this.audit(tx, actor, operation, target, revisionId, 'allow');
         return { value };
       } catch (error) {
