@@ -325,13 +325,7 @@ export function registerLiveMeetingRoutes(
     const { after } = z
       .object({ after: z.coerce.number().int().nonnegative().default(0) })
       .parse(request.query);
-    const changes = await store.liveMeetings.changes(sessionId, after);
-    const stored = after === 0 ? changes : await store.liveMeetings.changes(sessionId, 0);
-    for (const meeting of stored.meetings) {
-      if (meeting.state !== 'active' && !fileTimers.has(meeting.id))
-        scheduleFiling(sessionId, meeting.id);
-    }
-    return changes;
+    return store.liveMeetings.changes(sessionId, after);
   });
 
   app.put('/sessions/:id/live-meetings/:meetingId', async (request, reply) => {

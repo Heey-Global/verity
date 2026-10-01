@@ -553,7 +553,7 @@ it('files a finished meeting once its late notes have arrived', async () => {
   }
 });
 
-it('recovers persisted finished meetings on an incremental sync and retries filing failures', async () => {
+it('files late notes after a restart and retries filing failures', async () => {
   await app.inject({ method: 'PUT', url, payload: { ...meeting, state: 'ended', endedAt: 200 } });
   const onFinished = vi
     .fn()
@@ -562,7 +562,11 @@ it('recovers persisted finished meetings on an incremental sync and retries fili
   const restarted = Fastify();
   registerLiveMeetingRoutes(restarted, ctx.store, { onFinished, fileDelayMs: 10 });
   try {
-    await restarted.inject({ method: 'GET', url: '/sessions/session-1/live-meetings?after=999' });
+    await restarted.inject({
+      method: 'PUT',
+      url: `${url}/notes/first-late`,
+      payload: { atSeconds: 4, text: 'Late note', revision: 1 },
+    });
     await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
     expect(onFinished).toHaveBeenLastCalledWith('session-1', 'meeting-1');
     await restarted.inject({

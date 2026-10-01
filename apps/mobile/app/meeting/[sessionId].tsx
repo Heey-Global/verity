@@ -101,8 +101,6 @@ export default function MeetingScreen() {
   const { width } = useWindowDimensions();
   const wide = width >= 900;
   const { theme } = useUnistyles();
-  const [localRecordings, setLocalRecordings] = useState<MeetingRecord[]>([]);
-  const [selectedLocalId, setSelectedLocalId] = useState<string | null>(null);
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
@@ -219,9 +217,7 @@ export default function MeetingScreen() {
   const refresh = useCallback(async () => {
     if (!sessionId) return;
     const saved = await listMeetings(sessionId);
-    setLocalRecordings(saved.filter((item) => item.state !== 'active' && item.serverId == null));
     setMeeting((current) => {
-      if (selectedLocalId) return saved.find((item) => item.id === selectedLocalId) ?? current;
       const local = currentMeeting();
       const serverId = getActiveMeetingServerId();
       if (
@@ -232,7 +228,7 @@ export default function MeetingScreen() {
         return local;
       return saved[0] ?? ((current?.serverId ?? null) === serverId ? current : null);
     });
-  }, [sessionId, selectedLocalId]);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -355,7 +351,6 @@ export default function MeetingScreen() {
     void refresh().catch((reason) => setError(String(reason)));
     return subscribeMeeting((active) => {
       if (
-        !selectedLocalId &&
         active?.sessionId === sessionId &&
         (active.serverId == null || active.serverId === getActiveMeetingServerId())
       ) {
@@ -365,7 +360,7 @@ export default function MeetingScreen() {
         void refresh().catch((reason) => setError(String(reason)));
       }
     });
-  }, [refresh, sessionId, selectedLocalId]);
+  }, [refresh, sessionId]);
 
   useEffect(() => {
     if (!meeting) return;
@@ -630,7 +625,6 @@ export default function MeetingScreen() {
     setBusy(true);
     setError(null);
     try {
-      setSelectedLocalId(null);
       const next = await startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4);
       setSyncError(true);
       setMeeting(next);
@@ -1235,24 +1229,6 @@ export default function MeetingScreen() {
     </Modal>
   ) : null;
 
-  const localRecordingLinks = localRecordings.length ? (
-    <View>
-      <SectionLabel>LOCAL RECORDINGS</SectionLabel>
-      {localRecordings.map((item) => (
-        <Pressable
-          key={item.id}
-          accessibilityRole="button"
-          onPress={() => {
-            setSelectedLocalId(item.id);
-            setShowNewMeeting(false);
-          }}
-        >
-          <Text style={styles.link}>{new Date(item.startedAt).toLocaleString()} · local only</Text>
-        </Pressable>
-      ))}
-    </View>
-  ) : null;
-
   // Starting replaces the previous meeting's content instead of stacking under it, so the
   // start button can never be pushed below the screen.
   if (!live && (!meeting || showNewMeeting)) {
@@ -1266,7 +1242,6 @@ export default function MeetingScreen() {
           contentContainerStyle={[styles.content, styles.narrow]}
           keyboardShouldPersistTaps="handled"
         >
-          {localRecordingLinks}
           <View style={styles.titleRow}>
             <Text style={styles.title}>New meeting</Text>
             <Pressable
@@ -1413,7 +1388,6 @@ export default function MeetingScreen() {
         >
           <View style={styles.titleRow}>
             <Text style={styles.title}>Meeting</Text>
-            {localRecordingLinks}
             <Pressable accessibilityRole="button" onPress={() => router.back()}>
               <Text style={styles.link}>Done</Text>
             </Pressable>
