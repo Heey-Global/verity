@@ -13,7 +13,11 @@
  */
 
 import { useEffect, useState } from 'react';
-import { serverUpdateAwaitsAttention, subscribeServerUpdateStatusMutations } from '@verity/mobile';
+import {
+  serverUpdateAwaitsAttention,
+  subscribeServerUpdateStatusMutations,
+  type ServerUpdateStatus,
+} from '@verity/mobile';
 import { createVerityClient, getVerityBaseUrl } from './client';
 
 /**
@@ -25,13 +29,16 @@ import { createVerityClient, getVerityBaseUrl } from './client';
 export const SERVER_UPDATE_BADGE_POLL_MS = 5 * 60_000;
 
 /**
+ * The version waiting to be installed, or null when there is nothing to announce.
+ * A version rather than a flag because the overview banner names it.
+ *
  * `enabled` is the screen asking for the badge, not a preference. Every screen in
  * the stack renders this header and the previous ones stay mounted behind it, so a
  * hook that polled unconditionally would run one timer per screen the operator has
  * pushed and fire a request on every navigation — for a dot only the overview
  * draws. Passing the caller's own `isHome` keeps exactly one poller alive.
  */
-export function useServerUpdateBadge(enabled: boolean): boolean {
+export function useServerUpdateBadge(enabled: boolean): string | null {
   /**
    * The server an update is pending for, rather than a bare flag — the dot is a
    * claim about one particular server, and this hook outlives the choice of it.
@@ -41,14 +48,13 @@ export function useServerUpdateBadge(enabled: boolean): boolean {
    * to the base URL, an answer expires the moment it stops being about the server
    * in front of the operator.
    */
-  const [pendingFor, setPendingFor] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ baseUrl: string; version: string } | null>(null);
 
   useEffect(
     () =>
       subscribeServerUpdateStatusMutations((status) => {
         if (!enabled) return;
-        const baseUrl = getVerityBaseUrl();
-        setPendingFor(baseUrl !== null && serverUpdateAwaitsAttention(status) ? baseUrl : null);
+        setPending(pendingRelease(getVerityBaseUrl(), status));
       }),
     [enabled],
   );
@@ -58,7 +64,7 @@ export function useServerUpdateBadge(enabled: boolean): boolean {
       // Nothing is polling any more, so nothing is keeping this fresh. Whatever
       // was true when the operator navigated away must be re-earned on the way
       // back rather than shown while the first request is still in flight.
-      setPendingFor(null);
+      setPending(null);
       return;
     }
     let cancelled = false;
@@ -71,13 +77,13 @@ export function useServerUpdateBadge(enabled: boolean): boolean {
       const client = createVerityClient();
       if (client === null || baseUrl === null) {
         // No server configured — there is nothing a dot could be about.
-        setPendingFor(null);
+        setPending(null);
         return;
       }
       void client
         .getServerUpdates()
         .then((status) => {
-          if (!cancelled) setPendingFor(serverUpdateAwaitsAttention(status) ? baseUrl : null);
+          if (!cancelled) setPending(pendingRelease(baseUrl, status));
         })
         // A server that cannot answer is not evidence that an update is waiting.
         // In particular, the previous `true` may be the answer from immediately
@@ -86,7 +92,7 @@ export function useServerUpdateBadge(enabled: boolean): boolean {
         // server disappears, retaining `true` turns a transient outage into a
         // stale badge for the full five-minute poll interval.
         .catch(() => {
-          if (!cancelled) setPendingFor(null);
+          if (!cancelled) setPending(null);
         });
     };
 
@@ -98,5 +104,17 @@ export function useServerUpdateBadge(enabled: boolean): boolean {
     };
   }, [enabled]);
 
-  return enabled && pendingFor !== null && pendingFor === getVerityBaseUrl();
+  return enabled && pending !== null && pending.baseUrl === getVerityBaseUrl()
+    ? pending.version
+    : null;
+}
+
+function pendingRelease(
+  baseUrl: string | null,
+  status: ServerUpdateStatus,
+): { baseUrl: string; version: string } | null {
+  if (baseUrl === null || !serverUpdateAwaitsAttention(status)) return null;
+  // `serverUpdateAwaitsAttention` only answers yes for `available`, which always
+  // carries a release; the narrowing is for the compiler.
+  return status.state === 'available' ? { baseUrl, version: status.release.version } : null;
 }

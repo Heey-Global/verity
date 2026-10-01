@@ -458,6 +458,23 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     textAlign: 'center',
   },
+  updateHeader: {
+    gap: 2,
+  },
+  updateTitle: {
+    color: theme.colors.text,
+    fontSize: theme.text.lg,
+    fontWeight: '700',
+  },
+  updateDetail: {
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+    lineHeight: 20 * theme.fontScale,
+  },
+  // Full width: this is the one action the screen exists for.
+  updateButton: {
+    alignSelf: 'stretch',
+  },
   updateProgressRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -19,7 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { SettingsDisclosure } from './SettingsChrome';
+import { SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
 
 // Cadence for asking whether an unanswered install request started anything.
@@ -158,19 +158,40 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     [client, settle, starting],
   );
 
-  if (status === undefined || !showsServerUpdatePanel(status)) return null;
+  if (status === undefined) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator color={theme.colors.setup.text} />
+      </View>
+    );
+  }
+  if (!showsServerUpdatePanel(status)) {
+    return (
+      <SettingsPanel>
+        <Text style={styles.updateDetail}>
+          This deployment was not installed by Verity, so it updates itself externally.
+        </Text>
+      </SettingsPanel>
+    );
+  }
   const view = describeServerUpdate(status);
   const target = view.targetDigest;
   const attempt = view.idempotencyKey;
 
+  const publishedAt =
+    'release' in status ? formatReleaseDate(status.release.publishedAt) : undefined;
+
   return (
-    <SettingsDisclosure
-      title="Server update"
-      icon="download"
-      summary={view.title}
-      attention={starting || view.progress !== null || actionError !== undefined}
-    >
-      <Text style={styles.reproSubtitle}>{view.detail}</Text>
+    <SettingsPanel>
+      <View style={styles.updateHeader}>
+        <Text style={styles.updateTitle} accessibilityRole="header">
+          {view.title}
+        </Text>
+        {publishedAt !== undefined ? (
+          <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
+        ) : null}
+      </View>
+      <Text style={styles.updateDetail}>{view.detail}</Text>
       {view.progress !== null ? (
         <View style={styles.updateProgressRow}>
           <ActivityIndicator size="small" color={theme.colors.setup.text} />
@@ -182,7 +203,8 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
       {view.action !== null && target !== null && attempt !== null ? (
         <Pressable
           style={({ pressed }) => [
-            styles.reproButton,
+            styles.primaryButton,
+            styles.updateButton,
             starting ? styles.buttonDisabled : null,
             pressed ? styles.pressed : null,
           ]}
@@ -191,11 +213,18 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           accessibilityRole="button"
           accessibilityLabel={view.action}
         >
-          {starting ? <ActivityIndicator size="small" color={theme.colors.setup.text} /> : null}
-          <Text style={styles.reproButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
+          {starting ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+          <Text style={styles.primaryButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
         </Pressable>
       ) : null}
       {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
-    </SettingsDisclosure>
+    </SettingsPanel>
   );
+}
+
+/** "12 Aug 2026" — a release is a day, not an instant. Unparseable → omitted. */
+function formatReleaseDate(iso: string): string | undefined {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }

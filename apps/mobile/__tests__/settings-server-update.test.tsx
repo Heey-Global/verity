@@ -1,5 +1,5 @@
-// Maintenance: replacing the Verity server, and pushing saved settings into
-// project containers that are already running.
+// Server update: Verity replacing itself, plus the apply-settings banner every
+// settings screen carries while a saved change has not reached running containers.
 //
 // The update panel talks to the thing being replaced, so requests are expected
 // to fail mid-cutover; most of what follows is about not turning those expected
@@ -15,8 +15,8 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
-import MaintenanceSettingsScreen from '../app/settings/maintenance';
-import { saveVeritySettings } from '../lib/settingsStore';
+import ServerUpdateScreen from '../app/settings/server-update';
+import { resetVeritySettingsStore, saveVeritySettings } from '../lib/settingsStore';
 import {
   makeClient,
   makeProject,
@@ -38,155 +38,236 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('settings/maintenance — project containers', () => {
+describe('apply-settings banner', () => {
+  const APPLY = 'Apply saved settings to running containers';
+
+  /** A container-affecting save, made on some other settings screen. */
+  async function saveIdentityChange(overrides: Parameters<typeof makeClient>[1] = {}) {
+    const initial = makeSettings();
+    const client = makeClient('unlocked', {
+      settings: initial,
+      updateVeritySettings: jest
+        .fn()
+        .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch })),
+      ...overrides,
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    await act(async () => {
+      await saveVeritySettings(client, { gitUserName: 'new-bot' });
+    });
+    return client;
+  }
+
+  // The banner replaced a permanent Maintenance row; showing it with nothing to
+  // apply would just be that row again, in a louder place.
+  it('stays hidden while nothing saved needs applying', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<ServerUpdateScreen />);
+
+    await screen.findByText(/updates itself externally/);
+    expect(screen.queryByLabelText(APPLY)).toBeNull();
+  });
+
+  it('does not offer a reprovision for a change only this app reads', async () => {
+    const initial = makeSettings();
+    const client = makeClient('unlocked', {
+      settings: initial,
+      updateVeritySettings: jest
+        .fn()
+        .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch })),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    await act(async () => {
+      await saveVeritySettings(client, { advancedModeEnabled: true });
+    });
+    render(<ServerUpdateScreen />);
+
+    await screen.findByText(/updates itself externally/);
+    expect(screen.queryByLabelText(APPLY)).toBeNull();
+  });
+
   it('recreates every active container and skips the rest', async () => {
-    const listProjects = jest
-      .fn()
-      .mockResolvedValue([makeProject('one'), makeProject('two', 'absent'), makeProject('three')]);
     const recreateProjectContainer = jest.fn().mockResolvedValue(undefined);
-    mockCreateVerityClient.mockReturnValue(
-      makeClient('unlocked', { listProjects, recreateProjectContainer }),
-    );
-    render(<MaintenanceSettingsScreen />);
-    if (screen.queryByLabelText('Running containers'))
-      fireEvent.press(screen.getByLabelText('Running containers'));
+    await saveIdentityChange({
+      listProjects: jest
+        .fn()
+        .mockResolvedValue([
+          makeProject('one'),
+          makeProject('two', 'absent'),
+          makeProject('three'),
+        ]),
+      recreateProjectContainer,
+    });
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
+    fireEvent.press(await screen.findByLabelText(APPLY));
 
-    await waitFor(() => expect(screen.getByText(/Reprovisioned 2\/2/)).toBeOnTheScreen());
+    expect(await screen.findByText('Applied to 2 running containers.')).toBeOnTheScreen();
     // A non-active container has no recreate to perform — the server 409s on it.
     expect(recreateProjectContainer.mock.calls.map(([id]) => id)).toEqual(['one', 'three']);
+    expect(screen.queryByLabelText(APPLY)).toBeNull();
   });
 
   it('says there was nothing running rather than reporting a silent success', async () => {
-    mockCreateVerityClient.mockReturnValue(
-      makeClient('unlocked', {
-        listProjects: jest.fn().mockResolvedValue([makeProject('one', 'absent')]),
-        recreateProjectContainer: jest.fn(),
-      }),
-    );
-    render(<MaintenanceSettingsScreen />);
-    if (screen.queryByLabelText('Running containers'))
-      fireEvent.press(screen.getByLabelText('Running containers'));
+    await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one', 'absent')]),
+      recreateProjectContainer: jest.fn(),
+    });
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
-    expect(await screen.findByText('No running containers to reprovision.')).toBeOnTheScreen();
+    fireEvent.press(await screen.findByLabelText(APPLY));
+    expect(await screen.findByText(/No running containers/)).toBeOnTheScreen();
   });
 
-  it('names the containers that did not come back', async () => {
-    const recreateProjectContainer = jest
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValue(new Error('daemon refused'));
-    mockCreateVerityClient.mockReturnValue(
-      makeClient('unlocked', {
-        listProjects: jest.fn().mockResolvedValue([makeProject('one'), makeProject('two')]),
-        recreateProjectContainer,
-      }),
-    );
-    render(<MaintenanceSettingsScreen />);
-    if (screen.queryByLabelText('Running containers'))
-      fireEvent.press(screen.getByLabelText('Running containers'));
-
-    fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
-    // One failure does not abort the run: the second container is still tried.
-    expect(await screen.findByText(/failed: acme\/two/)).toBeOnTheScreen();
-  });
-
-  // The prompt is the only thing telling the operator their saved change has not
-  // reached anything yet. It may only be cleared by a run that actually got
-  // every container back — a failed one is still running the old settings.
-  it('keeps the pending prompt until every container has been recreated', async () => {
-    const initial = makeSettings();
-    const client = makeClient('unlocked', {
-      settings: initial,
-      updateVeritySettings: jest
+  // A container that failed to come back still runs the old settings.
+  it('keeps the prompt, naming what failed, until every container is recreated', async () => {
+    await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one'), makeProject('two')]),
+      recreateProjectContainer: jest
         .fn()
-        .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch })),
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('daemon refused')),
+    });
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(APPLY));
+
+    expect(await screen.findByText('Not applied to acme/two.')).toBeOnTheScreen();
+    expect(screen.getByLabelText(APPLY)).toBeOnTheScreen();
+    expect(screen.getByText('Retry')).toBeOnTheScreen();
+  });
+
+  // Every settings screen mounts this banner and the ones behind stay mounted.
+  // A run that only one of them knew about would leave the other's button live,
+  // and a second tap would recreate each container twice at once.
+  it('does not start a second run from another mounted screen', async () => {
+    let finish: (() => void) | undefined;
+    const recreateProjectContainer = jest.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await saveIdentityChange({
       listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
-      recreateProjectContainer: jest.fn().mockRejectedValueOnce(new Error('daemon refused')),
+      recreateProjectContainer,
     });
-    mockCreateVerityClient.mockReturnValue(client);
-    // A save made elsewhere in Settings — the shared store is what carries it to
-    // this screen after the screen that made it was popped.
-    await act(async () => {
-      await saveVeritySettings(client, { gitUserName: 'new-bot' });
-    });
-    render(<MaintenanceSettingsScreen />);
-    if (screen.queryByLabelText('Running containers'))
-      fireEvent.press(screen.getByLabelText('Running containers'));
+    render(
+      <>
+        <ServerUpdateScreen />
+        <ServerUpdateScreen />
+      </>,
+    );
 
-    expect(
-      await screen.findByText('Settings changed since these containers started.'),
-    ).toBeOnTheScreen();
+    const [first] = await screen.findAllByLabelText(APPLY);
+    fireEvent.press(first!);
+    await waitFor(() => expect(recreateProjectContainer).toHaveBeenCalledTimes(1));
+    for (const button of screen.getAllByLabelText(APPLY)) expect(button).toBeDisabled();
 
-    fireEvent.press(screen.getByLabelText('Reprovision running containers now'));
-    await screen.findByText(/failed: acme\/one/);
-    expect(screen.getByText('Settings changed since these containers started.')).toBeOnTheScreen();
+    await act(async () => finish?.());
+    expect(recreateProjectContainer).toHaveBeenCalledTimes(1);
   });
 
-  it('clears the pending prompt after a clean run', async () => {
-    const initial = makeSettings();
-    const client = makeClient('unlocked', {
-      settings: initial,
-      updateVeritySettings: jest
-        .fn()
-        .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch })),
+  // A finished run is kept so its outcome can be read; left in place, a later
+  // save would show it as this change's result — "Not applied to ." beside a
+  // Retry for a run that succeeded.
+  it('asks again for a change saved after a clean run', async () => {
+    const client = await saveIdentityChange({
       listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
       recreateProjectContainer: jest.fn().mockResolvedValue(undefined),
     });
-    mockCreateVerityClient.mockReturnValue(client);
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(APPLY));
+    await screen.findByText('Applied to 1 running container.');
+
     await act(async () => {
-      await saveVeritySettings(client, { gitUserName: 'new-bot' });
+      await saveVeritySettings(client, { gitUserName: 'newer-bot' });
     });
-    render(<MaintenanceSettingsScreen />);
-    if (screen.queryByLabelText('Running containers'))
-      fireEvent.press(screen.getByLabelText('Running containers'));
 
-    fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
-
-    await waitFor(() =>
-      expect(screen.queryByText('Settings changed since these containers started.')).toBeNull(),
-    );
+    expect(screen.getByText(/keep the old settings/)).toBeOnTheScreen();
+    expect(screen.queryByText(/Not applied/)).toBeNull();
   });
 
-  it('surfaces a failed project listing instead of an idle button', async () => {
-    mockCreateVerityClient.mockReturnValue(
-      makeClient('unlocked', {
-        listProjects: jest.fn().mockRejectedValue(new VerityApiError(503, 'store sealed')),
-      }),
-    );
-    render(<MaintenanceSettingsScreen />);
-    if (screen.queryByLabelText('Running containers'))
-      fireEvent.press(screen.getByLabelText('Running containers'));
+  // Containers recreated before the save came back with the old settings, so
+  // clearing the prompt at the end of the run would strand that change.
+  it('keeps asking for a change saved while a run was underway', async () => {
+    let finish: (() => void) | undefined;
+    const client = await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+      recreateProjectContainer: jest.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    });
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(APPLY));
+    await waitFor(() => expect(finish).toBeDefined());
 
-    fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
+    await act(async () => {
+      await saveVeritySettings(client, { gitUserName: 'newer-bot' });
+    });
+    await act(async () => finish?.());
+
+    expect(await screen.findByText(/keep the old settings/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(APPLY)).toBeEnabled();
+    expect(screen.queryByText(/Applied to/)).toBeNull();
+  });
+
+  // Re-pairing resets the store, but a run against the old server is still in
+  // flight. Its progress describes containers the app no longer talks to, and
+  // landing on the new server's banner would disable that server's Apply.
+  it('keeps a run against the previous server off the new one', async () => {
+    const pending: (() => void)[] = [];
+    await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one'), makeProject('two')]),
+      recreateProjectContainer: jest.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            pending.push(resolve);
+          }),
+      ),
+    });
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(APPLY));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    act(() => resetVeritySettingsStore());
+    await saveIdentityChange();
+    await act(async () => pending[0]?.());
+
+    expect(screen.queryByText(/Applying/)).toBeNull();
+    expect(screen.getByText(/keep the old settings/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(APPLY)).toBeEnabled();
+  });
+
+  it('surfaces a failed project listing and stays retryable', async () => {
+    await saveIdentityChange({
+      listProjects: jest.fn().mockRejectedValue(new VerityApiError(503, 'store sealed')),
+    });
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(APPLY));
     expect(await screen.findByText('store sealed')).toBeOnTheScreen();
-    // Back to idle, so the run can be retried once the store is open.
-    await waitFor(() =>
-      expect(screen.getByLabelText('Reprovision running containers now')).toBeEnabled(),
-    );
-  });
-
-  it('renders a not-connected message when no server URL is configured', () => {
-    mockCreateVerityClient.mockReturnValue(null);
-    render(<MaintenanceSettingsScreen />);
-    if (screen.queryByLabelText('Running containers'))
-      fireEvent.press(screen.getByLabelText('Running containers'));
-    expect(screen.getByText('Not connected')).toBeOnTheScreen();
+    await waitFor(() => expect(screen.getByLabelText(APPLY)).toBeEnabled());
   });
 });
 
-describe('settings/maintenance — server updates', () => {
-  it('hides the update panel on a deployment Verity does not manage', async () => {
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-    render(<MaintenanceSettingsScreen />);
+describe('settings/server-update', () => {
+  it('renders a not-connected message when no server URL is configured', () => {
+    mockCreateVerityClient.mockReturnValue(null);
+    render(<ServerUpdateScreen />);
+    expect(screen.getByText('Not connected')).toBeOnTheScreen();
+  });
 
-    // The panel is gone, but the screen is not: reprovisioning is available on
-    // every deployment.
-    fireEvent.press(await screen.findByLabelText('Running containers'));
-    expect(await screen.findByLabelText('Reprovision running containers now')).toBeOnTheScreen();
-    expect(screen.queryByText('Updates are managed elsewhere')).toBeNull();
+  // The screen is reachable from the Settings index on every deployment, so an
+  // unmanaged one must say why there is nothing to install rather than go blank.
+  it('explains a deployment Verity does not manage instead of offering an install', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<ServerUpdateScreen />);
+
+    expect(await screen.findByText(/updates itself externally/)).toBeOnTheScreen();
     expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
   });
 
@@ -201,7 +282,7 @@ describe('settings/maintenance — server updates', () => {
       })
       .mockResolvedValue({ state: 'available', release: RELEASE, operation: null });
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { getServerUpdates }));
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
     expect(await screen.findByText('Update check unavailable')).toBeOnTheScreen();
     await act(async () => refocus());
@@ -219,7 +300,7 @@ describe('settings/maintenance — server updates', () => {
       .mockReturnValueOnce(first)
       .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null });
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { getServerUpdates }));
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
     await waitFor(() => expect(getServerUpdates).toHaveBeenCalledTimes(1));
     await act(async () => refocus());
@@ -259,9 +340,8 @@ describe('settings/maintenance — server updates', () => {
         requestServerUpdate,
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
 
     await waitFor(() => expect(requestServerUpdate).toHaveBeenCalledTimes(1));
@@ -300,9 +380,8 @@ describe('settings/maintenance — server updates', () => {
         requestServerUpdate,
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     expect(await screen.findByText('The new version could not be downloaded.')).toBeOnTheScreen();
     fireEvent.press(await screen.findByLabelText('Try again'));
 
@@ -344,9 +423,8 @@ describe('settings/maintenance — server updates', () => {
         requestServerUpdate: jest.fn().mockRejectedValue(new Error('network')),
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
 
     expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
@@ -387,9 +465,8 @@ describe('settings/maintenance — server updates', () => {
           .mockRejectedValue(new VerityApiError(409, 'no update is available (current)')),
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
 
     expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
@@ -414,9 +491,8 @@ describe('settings/maintenance — server updates', () => {
         requestServerUpdate: jest.fn().mockRejectedValue(new Error('network')),
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
     expect(await screen.findByText('Starting…')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
@@ -464,9 +540,8 @@ describe('settings/maintenance — server updates', () => {
           .mockRejectedValue(new VerityApiError(503, 'updater is unavailable')),
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
     await act(() => jest.advanceTimersByTimeAsync(2_000));
 
@@ -485,9 +560,8 @@ describe('settings/maintenance — server updates', () => {
         requestServerUpdate: jest.fn().mockRejectedValue(new VerityApiError(503, 'unavailable')),
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
     await act(() => jest.advanceTimersByTimeAsync(10_000));
     expect(screen.queryByText('Could not start the update.')).toBeNull();
@@ -509,9 +583,8 @@ describe('settings/maintenance — server updates', () => {
           .mockRejectedValue(new VerityApiError(403, 'updates require a paired device')),
       }),
     );
-    render(<MaintenanceSettingsScreen />);
+    render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
 
     expect(

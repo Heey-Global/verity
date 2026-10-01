@@ -89,7 +89,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
-  const updateAwaits = useServerUpdateBadge(true);
+  const updateVersion = useServerUpdateBadge(true);
 
   const checkForManualUpdate = useCallback(() => {
     if (checkingForUpdate) return;
@@ -183,15 +183,11 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() => router.push('/settings/services')}
           />
           <SettingsNavRow
-            icon="tool"
-            title="Maintenance"
-            subtitle="Server updates and reprovisioning"
-            // The header's update dot points at Settings because that is where an
-            // update can be started — which is now one screen further in. The row
-            // carries the badge on, so the dot never leads to a screen that says
-            // nothing about the update it announced.
-            status={updateAwaits ? { intent: 'needsSetup', label: 'Update available' } : undefined}
-            onPress={() => router.push('/settings/maintenance')}
+            icon="download"
+            title="Server update"
+            subtitle={updateVersion !== null ? `Version ${updateVersion} available` : undefined}
+            status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
+            onPress={() => router.push('/settings/server-update')}
           />
         </SettingsListPanel>
       </SettingsGroup>
