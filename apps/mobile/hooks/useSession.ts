@@ -56,15 +56,32 @@ export interface UseSession extends SessionModelState {
  * leaves the model ungated exactly as before.
  */
 export function useSession(client: VerityClient, sessionId: string, baseUrl: string): UseSession {
-  const model = useMemo(() => {
+  const binding = useMemo(() => {
+    let active = false;
+    let frame: number | undefined;
+    let latest: SessionModelState | undefined;
+    const flush = (): void => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      if (active && latest !== undefined) setState(latest);
+      latest = undefined;
+    };
+    const publish = (snapshot: SessionModelState): void => {
+      if (!active) return;
+      latest = snapshot;
+      // Socket bursts can contain many deltas in one display frame. Publish the
+      // newest snapshot once while still reducing every event in the model.
+      if (frame === undefined) frame = requestAnimationFrame(flush);
+    };
+
     const ready = pendingSession(sessionId);
-    return new SessionModel({
+    const model = new SessionModel({
       client,
       sessionId,
       baseUrl,
       connect: createWebSocket,
       getStreamTicket: async () => (await client.createStreamTicket(sessionId)).ticket,
-      onChange: (s) => setState(s),
+      onChange: publish,
       onPermissionSettled: (toolUseId, accepted) => {
         if (accepted) publishSessionStatusMutation(sessionId, 'running');
         publishSettledPermission(sessionId, toolUseId);
@@ -72,24 +89,46 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
       onTurnCancelled: () => publishSessionStatusMutation(sessionId, 'idle'),
       ...(ready !== undefined ? { ready } : {}),
     });
+    return {
+      model,
+      flush,
+      activate: () => {
+        active = true;
+      },
+      deactivate: () => {
+        active = false;
+        if (frame !== undefined) cancelAnimationFrame(frame);
+        frame = undefined;
+        latest = undefined;
+      },
+    };
   }, [client, sessionId, baseUrl]);
+  const { model } = binding;
 
   // Seed from the model (empty transcript) so the first frame is consistent.
   const [state, setState] = useState<SessionModelState>(() => model.state);
 
   useEffect(() => {
+    binding.activate();
     setState(model.state);
     model.start();
-    if (AppState.currentState === 'background') model.pause();
+    if (AppState.currentState === 'background') {
+      model.pause();
+      binding.flush();
+    }
     const appState = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'background') model.pause();
-      else if (nextState === 'active') model.resume();
+      if (nextState === 'background') {
+        model.pause();
+        // Native animation frames stop in background; do not strand the latest state.
+        binding.flush();
+      } else if (nextState === 'active') model.resume();
     });
     return () => {
       appState.remove();
+      binding.deactivate();
       model.stop();
     };
-  }, [model]);
+  }, [model, binding]);
 
   const sendTurn = useCallback(
     (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => {

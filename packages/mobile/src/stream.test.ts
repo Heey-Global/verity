@@ -178,35 +178,91 @@ describe('SessionStream', () => {
     expect(updates.length).toBe(1); // one batched update at caught_up
   });
 
-  it('prepends older history, rebuilding the transcript across the page boundary', () => {
+  it.each([true, false])(
+    'prepends older history across the page boundary (notify=%s)',
+    (notify) => {
+      const { connect, sockets } = recordingConnect();
+      const updates: number[] = [];
+      const stream = new SessionStream({
+        baseUrl: 'http://host',
+        sessionId: 's1',
+        connect,
+        onUpdate: (state) => updates.push(state.messages.length),
+      });
+      stream.start();
+      const s = sockets[0];
+      // Tail: a tool_result whose matching tool_call lives in the OLDER page.
+      s?.emitEvent(10, { t: 'session', id: 's1', model: 'm', worktree: '/wt' });
+      s?.emitEvent(11, { t: 'tool_result', id: 'tool1', output: 'done', isError: false });
+      s?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+      expect(stream.oldestSeq).toBe(10);
+      const afterTail = updates.length;
+
+      stream.prependHistory(
+        [
+          { seq: 8, event: { t: 'prompt', text: 'do it' } },
+          {
+            seq: 9,
+            event: { t: 'tool_call', id: 'tool1', name: 'Bash', input: { command: 'ls' } },
+          },
+        ],
+        { notify },
+      );
+
+      expect(stream.oldestSeq).toBe(8); // cursor moved back for the next page
+      expect(updates.length).toBe(afterTail + (notify ? 1 : 0));
+      // The older tool_call pairs with the tail's tool_result → one completed tool,
+      // and the older prompt is ordered first.
+      expect(stream.state.messages[0]).toMatchObject({ kind: 'user-text', text: 'do it' });
+      expect(stream.state.messages.filter((m) => m.kind === 'tool-call')).toMatchObject([
+        { tool: { state: 'completed', result: 'done' } },
+      ]);
+    },
+  );
+
+  it('preserves unchanged replay snapshots and invalidates later live text and tool updates', () => {
     const { connect, sockets } = recordingConnect();
-    const updates: number[] = [];
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      onUpdate: (state) => updates.push(state.messages.length),
-    });
+    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
     stream.start();
-    const s = sockets[0];
-    // Tail: a tool_result whose matching tool_call lives in the OLDER page.
-    s?.emitEvent(10, { t: 'session', id: 's1', model: 'm', worktree: '/wt' });
-    s?.emitEvent(11, { t: 'tool_result', id: 'tool1', output: 'done', isError: false });
-    s?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
-    expect(stream.oldestSeq).toBe(10);
-    const afterTail = updates.length;
+    const socket = sockets[0];
+    socket?.emitEvent(10, { t: 'text', delta: 'closed' });
+    socket?.emitEvent(11, { t: 'tool_call', id: 't1', name: 'Bash', input: {} });
+    socket?.emitEvent(12, { t: 'text', delta: 'live' });
+    socket?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 12 }));
+    const before = stream.state.messages;
+    stream.prependHistory([{ seq: 9, event: { t: 'prompt', text: 'older' } }]);
+    const replayed = stream.state.messages;
+    // Replaying unchanged rows must not invalidate every memoized transcript row.
+    expect(replayed.slice(1)).toEqual(before);
+    before.forEach((message, index) => expect(replayed[index + 1]).toBe(message));
+    socket?.emitEvent(13, { t: 'text', delta: ' update' });
+    expect(stream.state.messages[3]).not.toBe(before[2]);
+    expect(stream.state.messages[3]).toMatchObject({ text: 'live update' });
+    expect(before[2]).toMatchObject({ text: 'live' });
+    socket?.emitEvent(14, { t: 'tool_result', id: 't1', output: 'done', isError: false });
+    expect(stream.state.messages[2]).not.toBe(before[1]);
+    expect(stream.state.messages[2]).toMatchObject({
+      tool: { state: 'completed', result: 'done' },
+    });
+    expect(before[1]).toMatchObject({ tool: { state: 'running' } });
+    expect(stream.state.messages[1]).toBe(before[0]);
+  });
 
-    stream.prependHistory([
-      { seq: 8, event: { t: 'prompt', text: 'do it' } },
-      { seq: 9, event: { t: 'tool_call', id: 'tool1', name: 'Bash', input: { command: 'ls' } } },
-    ]);
-
-    expect(stream.oldestSeq).toBe(8); // cursor moved back for the next page
-    expect(updates.length).toBe(afterTail + 1); // emitted a fresh snapshot
-    // The older tool_call pairs with the tail's tool_result → one completed tool,
-    // and the older prompt is ordered first.
-    expect(stream.state.messages[0]).toMatchObject({ kind: 'user-text', text: 'do it' });
-    expect(stream.state.messages.filter((m) => m.kind === 'tool-call')).toHaveLength(1);
+  it('publishes merged text freshly when an older page continues the loaded head', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, { t: 'text', delta: 'tail' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 10 }));
+    const before = stream.state.messages[0];
+    stream.prependHistory([{ seq: 9, event: { t: 'text', delta: 'head ' } }]);
+    const merged = stream.state.messages[0];
+    expect(merged).not.toBe(before);
+    expect(merged).toMatchObject({ id: 'text-9', text: 'head tail' });
+    expect(before).toMatchObject({ id: 'text-10', text: 'tail' });
+    sockets[0]?.emitEvent(11, { t: 'text', delta: ' live' });
+    expect(stream.state.messages[0]).toMatchObject({ text: 'head tail live' });
+    expect(merged).toMatchObject({ text: 'head tail' });
   });
 
   it('keeps a resolved permission dismissed across a reducer rebuild', () => {

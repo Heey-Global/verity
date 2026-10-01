@@ -213,3 +213,45 @@ describe('rowRecycleType', () => {
     );
   });
 });
+
+describe('groupRows reference sharing', () => {
+  it('reuses rows and arrays while replacing only an updated text row', () => {
+    const prompt = userText('prompt');
+    const text = agentText('text');
+    const before = groupRows([prompt, text]);
+    expect(groupRows([prompt, text], before)).toBe(before);
+    const updated = { ...text, text: 'updated' } as Message;
+    const after = groupRows([prompt, updated], before);
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).not.toBe(before[1]);
+    expect(after[1]).toMatchObject({ message: { text: 'updated' } });
+  });
+
+  it('updates a tool group on completion and preserves prepend boundary keys', () => {
+    const older = toolCall('older');
+    const tool = toolCall('tool');
+    const prompt = userText('prompt');
+    const before = groupRows([tool, prompt]);
+    const completed = { ...tool, tool: { ...tool.tool, result: 'output' } };
+    const after = groupRows([completed, prompt], before);
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    const prepended = groupRows([older, completed, prompt], after);
+    expect(rowKey(prepended[0]!)).toBe(rowKey(after[0]!));
+    expect(prepended[0]).toMatchObject({ tools: [older, completed] });
+    expect(prepended[1]).toBe(after[1]);
+  });
+
+  it('updates delegations for changed children while sharing unaffected subtrees', () => {
+    const parent = toolCall('tool-parent', { name: 'Agent' });
+    const child = agentText('child', 'parent');
+    const other = userText('other');
+    const before = groupRows([parent, child, other]);
+    expect(groupRows([parent, child, other], before)).toBe(before);
+    const updated = { ...child, text: 'new child text' } as Message;
+    const after = groupRows([parent, updated, other], before);
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    expect(after[0]).toMatchObject({ childRows: [{ message: { text: 'new child text' } }] });
+  });
+});
