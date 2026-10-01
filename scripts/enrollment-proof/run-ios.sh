@@ -38,7 +38,14 @@ with open(sys.argv[1], 'wb') as f:
  plistlib.dump(dict(CFBundleExecutable='EnrollmentProof', CFBundleIdentifier='app.verity.enrollment-proof',
  CFBundleName='EnrollmentProof',CFBundlePackageType='APPL',CFBundleShortVersionString='1.0',
  CFBundleVersion='1',CFBundleSupportedPlatforms=['iPhoneSimulator'],MinimumOSVersion='17.0',
- LSRequiresIPhoneOS=True,UILaunchScreen={}),f)
+ LSRequiresIPhoneOS=True,UILaunchScreen={},
+ UIApplicationSceneManifest={
+   'UIApplicationSupportsMultipleScenes': False,
+   'UISceneConfigurations': {'UIWindowSceneSessionRoleApplication': [{
+     'UISceneConfigurationName': 'EnrollmentProof',
+     'UISceneDelegateClassName': 'EnrollmentProof.EnrollmentProofSceneDelegate',
+   }]},
+ }),f)
 PY
 # The standalone simulator app has no Xcode-generated signing identity.
 # Without an application identifier, securityd rejects SecItemAdd with -34018.
@@ -52,7 +59,7 @@ with open(sys.argv[2], 'wb') as f:
 PYENT
 # Simulator securityd reads the simulated app's entitlements from Mach-O.
 # Keep these out of the host macOS ad-hoc signature.
-xcrun --sdk iphonesimulator swiftc -parse-as-library \
+xcrun --sdk iphonesimulator swiftc -parse-as-library -module-name EnrollmentProof \
   -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
   -target "$(uname -m)-apple-ios17.0-simulator" scripts/enrollment-proof/IOSProof.swift \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements \

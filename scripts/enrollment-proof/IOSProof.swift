@@ -73,3 +73,17 @@ final class EnrollmentProofApp: UIResponder, UIApplicationDelegate {
     try check(SecItemCopyMatching(lookup as CFDictionary, &deleted) == errSecItemNotFound, "deletion")
   }
 }
+
+// Current iOS SDKs reject even test-only applications without scene adoption.
+final class EnrollmentProofSceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions) {
+    guard let windowScene = scene as? UIWindowScene else { return }
+    let window = UIWindow(windowScene: windowScene)
+    window.rootViewController = UIViewController()
+    self.window = window
+    window.makeKeyAndVisible()
+  }
+}
