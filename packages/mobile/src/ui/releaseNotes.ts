@@ -14,8 +14,9 @@ import { z } from 'zod';
 export const SERVER_RELEASES_URL =
   'https://api.github.com/repos/Heey-Global/verity/releases?per_page=100';
 
+const RELEASE_PAGE_PREFIX = 'https://github.com/Heey-Global/verity/releases/tag/';
 const releasePageUrl = (version: string): string =>
-  `https://github.com/Heey-Global/verity/releases/tag/v${version}`;
+  `${RELEASE_PAGE_PREFIX}v${version.replace(/^v/, '')}`;
 
 export interface ReleaseNoteSection {
   readonly title: string;
@@ -158,5 +159,8 @@ export function serverReleaseNotes(
   if (sections.length === 0) return null;
 
   const targetRelease = included.find(({ version }) => compare(version, targetVersion) === 0);
-  return { sections, url: targetRelease?.release.html_url ?? releasePageUrl(target) };
+  // The link is opened as given, so an unsigned answer may not pick where to.
+  const reported = targetRelease?.release.html_url;
+  const url = reported?.startsWith(RELEASE_PAGE_PREFIX) ? reported : releasePageUrl(target);
+  return { sections, url };
 }

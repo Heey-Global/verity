@@ -75,6 +75,23 @@ describe('serverReleaseNotes', () => {
     expect(items.filter((item) => /only$/.test(item))).toEqual([]);
   });
 
+  // The link is opened without asking, so it must not be whatever GitHub — or
+  // anything answering in its place — chose to put there.
+  it('links only to this repository’s release page', () => {
+    const hostile = releases.map((release) =>
+      (release as { tag_name: string }).tag_name === 'v4.2.0'
+        ? { ...(release as object), html_url: 'intent://evil' }
+        : release,
+    );
+
+    expect(serverReleaseNotes(hostile, '4.1.1', '4.2.0')?.url).toBe(
+      'https://github.com/Heey-Global/verity/releases/tag/v4.2.0',
+    );
+    expect(serverReleaseNotes(releases, '4.1.1', 'v4.2.0')?.url).toBe(
+      'https://github.com/Heey-Global/verity/releases/tag/v4.2.0',
+    );
+  });
+
   it('returns null rather than an empty section for nothing readable', () => {
     expect(serverReleaseNotes(releases, '4.2.0', '4.2.0')).toBeNull();
     expect(serverReleaseNotes({ message: 'API rate limit exceeded' }, '4.1.1', '4.2.0')).toBeNull();
