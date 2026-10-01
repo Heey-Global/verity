@@ -319,6 +319,26 @@ describe('preview tunnel', () => {
     expect(anonymous.status).toBe(303);
     expect(anonymous.headers.get('location')).toContain('/__verity/login');
 
+    const codeLink = await fetch(`http://127.0.0.1:${edgePort}/hello?from=external&pin=246810`, {
+      redirect: 'manual',
+    });
+    expect(codeLink.status).toBe(303);
+    expect(codeLink.headers.get('location')).toBe('/hello?from=external');
+    expect(codeLink.headers.get('set-cookie')).toContain('__Host-verity-preview=');
+
+    const badCodeLink = await fetch(`http://127.0.0.1:${edgePort}/hello?pin=000000`, {
+      redirect: 'manual',
+    });
+    expect(badCodeLink.status).toBe(401);
+    expect(await badCodeLink.text()).toContain('Invalid code. Please try again.');
+
+    const directLogin = await fetch(
+      `http://127.0.0.1:${edgePort}/__verity/login?pin=246810&next=%2Fhello%3Fpin%3D000000`,
+      { redirect: 'manual' },
+    );
+    expect(directLogin.status).toBe(303);
+    expect(directLogin.headers.get('location')).toBe('/hello');
+
     const login = await fetch(`http://127.0.0.1:${edgePort}/__verity/login`, {
       method: 'POST',
       redirect: 'manual',
@@ -342,6 +362,14 @@ describe('preview tunnel', () => {
       host: `127.0.0.1:${targetPort}`,
     });
     expect(forwarded.headers.get('set-cookie')).toBeNull();
+
+    const applicationPin = await fetch(`http://127.0.0.1:${edgePort}/hello?pin=app-value`, {
+      headers: { cookie: cookie!.split(';')[0]! },
+    });
+    expect(applicationPin.status).toBe(200);
+    expect(await applicationPin.json()).toEqual(
+      expect.objectContaining({ path: '/hello?pin=app-value' }),
+    );
 
     const redirected = await fetch(`http://127.0.0.1:${edgePort}/redirect`, {
       redirect: 'manual',
