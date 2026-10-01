@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.0](https://github.com/Heey-Global/verity/compare/v4.3.1...v4.4.0) (2026-10-01)
+
+
+### Features
+
+* **remote-control:** show Core's side of each tunnel stream in the app ([#978](https://github.com/Heey-Global/verity/issues/978)) ([b83532a](https://github.com/Heey-Global/verity/commit/b83532a64bf5b56d01fa7aa6eea40c3918eb9dee))
+
 ## [4.3.1](https://github.com/Heey-Global/verity/compare/v4.3.0...v4.3.1) (2026-10-01)
 
 
