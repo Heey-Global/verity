@@ -198,10 +198,11 @@ async function tunnelStopReason(): Promise<string | null> {
 // One token per recent stream, fixed fields only: bytes each way, milliseconds
 // to Core's first bytes and to the end, which side ended it, the proxy dialect,
 // the TLS record types seen each way and Core's first handshake message.
+// The `k` key is absent from native builds that predate Core's stream records.
 const STREAM_TRACE =
-  String.raw`s\d{1,2}=up\d{1,9}\.dn\d{1,9}\.t(?:none|\d{1,7})\.d\d{1,8}` +
+  String.raw`s\d{1,2}=(?:k[0-9a-f]{8}\.)?up\d{1,9}\.dn\d{1,9}\.t(?:none|\d{1,7})\.d\d{1,8}` +
   String.raw`\.(?:open|local|remote|reset|stopped)\.p(?:socks|connect)` +
-  String.raw`\.o(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.i(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.h(?:none|hrr|\d{1,3})`;
+  String.raw`\.o(?:none|\d{1,3}(?:-\d{1,3}){0,7})\.i(?:none|\d{1,3}(?:-\d{1,3}){0,7})\.h(?:none|hrr|\d{1,3})`;
 const TUNNEL_SUMMARY = new RegExp(
   String.raw`^(local=\d+, opened=\d+, received=\d+, last=[a-z_.]+` +
     String.raw`(?:, sentBytes=\d+, receivedBytes=\d+, deliveredBytes=\d+, localResets=\d+, remoteResets=\d+, ` +

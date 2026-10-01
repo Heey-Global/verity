@@ -1054,7 +1054,11 @@ export interface ServerDeps {
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: PreviewShareManager | undefined;
   remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
-  uplinkDiagnostics?: (() => import('./uplink-control-client.js').UplinkDiagnostics) | undefined;
+  uplinkDiagnostics?:
+    | (() => import('./uplink-control-client.js').UplinkDiagnostics & {
+        remoteStreams?: import('./remote-control-connector.js').RemoteStreamRecord[];
+      })
+    | undefined;
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: (() => void) | undefined;
   /** Rewrite the OpenCode config directory after its central settings change. */

@@ -3894,7 +3894,14 @@ export async function buildEmbeddedServer(
       ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
       : {}),
     ...(uplinkControl !== undefined
-      ? { uplinkDiagnostics: () => uplinkControl.diagnostics() }
+      ? {
+          uplinkDiagnostics: () => ({
+            ...uplinkControl.diagnostics(),
+            ...(remoteConnector === undefined
+              ? {}
+              : { remoteStreams: remoteConnector.recentStreams() }),
+          }),
+        }
       : {}),
     ...(uplinkControl !== undefined
       ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }

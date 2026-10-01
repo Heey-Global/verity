@@ -908,12 +908,29 @@ export const remoteControlDescriptorSchema = z.discriminatedUnion('enabled', [
 ]);
 export type RemoteControlDescriptor = z.infer<typeof remoteControlDescriptorSchema>;
 
+/** Core's byte counts for one tunnel stream; the app shows them beside its own. */
+export const remoteStreamRecordSchema = z.object({
+  sessionId: z.string().max(128),
+  streamId: z.string().max(8),
+  startedAt: z.number(),
+  durationMs: z.number().int().min(0),
+  firstLocalReplyMs: z.number().int().min(0).nullable(),
+  receivedFromAppBytes: z.number().int().min(0),
+  writtenToLocalBytes: z.number().int().min(0),
+  receivedFromLocalBytes: z.number().int().min(0),
+  sentToUplinkBytes: z.number().int().min(0),
+  state: z.string().max(64),
+});
+export type RemoteStreamRecord = z.infer<typeof remoteStreamRecordSchema>;
+
 export const uplinkDiagnosticsSchema = z.object({
   control: z.enum(['connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
   sharing: z.enum(['ready', 'unavailable']),
   remoteControl: z.enum(['ready', 'unavailable']),
   reason: z.enum(['unknown_key', 'revoked', 'expired']).optional(),
   lastCloseCode: z.number().int().min(0).max(4999).optional(),
+  /** Absent on a Core older than the diagnostics view. */
+  remoteStreams: z.array(remoteStreamRecordSchema).max(16).optional(),
 });
 export type UplinkDiagnostics = z.infer<typeof uplinkDiagnosticsSchema>;
 

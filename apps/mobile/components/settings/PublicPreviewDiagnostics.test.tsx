@@ -41,6 +41,57 @@ it('finishes the tunnel test while the separate Core status refresh is pending',
   expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
 });
 
+it("shows Core's side of each tunnel stream beside the phone test result", async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  const getUplinkDiagnostics = jest.fn().mockResolvedValue({
+    control: 'connected',
+    sharing: 'ready',
+    remoteControl: 'ready',
+    remoteStreams: [
+      {
+        sessionId: 'session_one',
+        streamId: 'abcdef01',
+        startedAt: 1,
+        durationMs: 31_052,
+        firstLocalReplyMs: 53,
+        receivedFromAppBytes: 1_911,
+        writtenToLocalBytes: 1_911,
+        receivedFromLocalBytes: 3_080,
+        sentToUplinkBytes: 3_080,
+        state: 'open',
+      },
+      {
+        sessionId: 'session_one',
+        streamId: 'abcdef02',
+        startedAt: 1,
+        durationMs: 30_813,
+        firstLocalReplyMs: null,
+        receivedFromAppBytes: 1_529,
+        writtenToLocalBytes: 1_529,
+        receivedFromLocalBytes: 0,
+        sentToUplinkBytes: 0,
+        state: 'open',
+      },
+    ],
+  });
+
+  render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+  fireEvent.press(screen.getByText('Refresh status'));
+  // Without Core's view a request the ingress swallowed is indistinguishable
+  // from one Uplink never delivered.
+  await waitFor(() =>
+    expect(
+      screen.getByText(
+        /abcdef01: from phone 1911 B, to Core 1911 B, Core answered after 53 ms, from Core 3080 B, to phone 3080 B, open, 31\.1 s/u,
+      ),
+    ).toBeOnTheScreen(),
+  );
+  expect(screen.getByText(/abcdef02: .*Core never answered, from Core 0 B/u)).toBeOnTheScreen();
+});
+
 it('offers the tunnel test when Core settings and status are unavailable', async () => {
   mockGetServerProfile.mockReturnValue({
     activeUrl: 'https://verity.example',
