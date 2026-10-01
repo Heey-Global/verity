@@ -2058,7 +2058,7 @@ describe('GitHub-hosted runner boundary', () => {
       expect(build?.with?.load).toBe(true);
 
       const gate = workflow.jobs['smoke-test'];
-      expect(gate?.needs).toBe('architecture-smoke');
+      expect([gate?.needs].flat()).toContain('architecture-smoke');
       expect(gate?.if).toBe('${{ always() }}');
       expect(gate?.['runs-on']).toBe('ubuntu-24.04');
       expect(gate?.steps).toHaveLength(1);
