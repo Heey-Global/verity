@@ -69,6 +69,9 @@ export interface RemoteStreamRecord {
   writtenToLocalBytes: number;
   receivedFromLocalBytes: number;
   sentToUplinkBytes: number;
+  /** stream.data frames each way; against the app's count they show where a frame was lost. */
+  framesFromApp: number;
+  framesToApp: number;
   /** 'open' while live; otherwise the fixed reason the stream ended with. */
   state: string;
 }
@@ -314,6 +317,8 @@ class ConnectorSession implements RemoteConnectorReservation {
       writtenToLocalBytes: stream.writtenToLocalBytes,
       receivedFromLocalBytes: stream.receivedFromLocalBytes,
       sentToUplinkBytes: stream.sentToUplinkBytes,
+      framesFromApp: stream.incomingSeq,
+      framesToApp: stream.outgoingSeq,
       // Reasons are fixed literals, but the app drops the whole list on an overlong one.
       state: state.slice(0, 64),
     };

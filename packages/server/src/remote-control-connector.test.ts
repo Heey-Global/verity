@@ -175,6 +175,8 @@ describe('remote control connector', () => {
         writtenToLocalBytes: 3,
         receivedFromLocalBytes: 3,
         sentToUplinkBytes: 3,
+        framesFromApp: 1,
+        framesToApp: 1,
         firstLocalReplyMs: expect.any(Number),
         state: 'complete',
       }),
@@ -204,19 +206,17 @@ describe('remote control connector', () => {
       JSON.stringify({ type: 'stream.open', streamId: 'stream_big', channel: 'remote', meta: {} }),
     );
     // The echo ingress answers with the same 25 KB the app would get for a
-    // response that, as one 64 KiB chunk, never reached the device through
-    // the hosted relay while the 3 KB handshake frames before it did.
+    // response that, sent as one frame, never reached the device through the
+    // hosted relay while the 3 KB handshake frames before it did.
     const body = Buffer.alloc(25_000, 7);
-    for (let offset = 0; offset < body.length; offset += 60_000) {
-      f.peer().send(
-        JSON.stringify({
-          type: 'stream.data',
-          streamId: 'stream_big',
-          seq: offset / 60_000,
-          payload: body.subarray(offset, offset + 60_000).toString('base64'),
-        }),
-      );
-    }
+    f.peer().send(
+      JSON.stringify({
+        type: 'stream.data',
+        streamId: 'stream_big',
+        seq: 0,
+        payload: body.toString('base64'),
+      }),
+    );
     const dataFrames = () =>
       f.received.filter(
         (frame): frame is { type: string; streamId: string; seq: number; payload: string } =>

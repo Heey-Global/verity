@@ -77,7 +77,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let list: ([UInt8]) -> String = {
         $0.isEmpty ? "none" : $0.map { String($0) }.joined(separator: "-")
       }
-      return "k\(key).up\(min(sentBytes, 999_999_999)).dn\(min(receivedBytes, 999_999_999)).t\(firstRemote)"
+      return "k\(key).up\(min(sentBytes, 999_999_999)).dn\(min(receivedBytes, 999_999_999))"
+        + ".fo\(min(outgoingSequence, 9_999_999)).fi\(min(incomingSequence, 9_999_999)).t\(firstRemote)"
         + ".d\(millis(ended, 99_999_999)).\(endedBy).p\(proxy)"
         + ".o\(list(outgoing.types)).i\(list(incoming.types)).h\(incoming.firstHandshake)"
     }
