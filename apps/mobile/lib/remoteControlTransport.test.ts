@@ -383,6 +383,7 @@ describe('remote diagnostics', () => {
     mockProfile.mockReturnValue(profile);
     mockToken.mockReturnValue('device-bearer');
     mockRequest.mockRejectedValue(new Error('offline'));
+    mockDiagnosticSummary.mockReset().mockResolvedValue(null);
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     jest.spyOn(console, 'info').mockImplementation(() => undefined);
   });
@@ -453,6 +454,101 @@ describe('remote diagnostics', () => {
       ready: false,
       detail: 'probe (Remote Core probe failed.)',
     });
+    expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries CONNECT when a health check on an active SOCKS tunnel stalls after Core answered', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    let mode = 'socks';
+    mockSetProxyMode = jest.fn(async (next: string) => {
+      mode = next;
+    });
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    mockRequest.mockImplementation(async () => {
+      if (mode === 'socks') {
+        throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+      }
+      return { status: 200 };
+    });
+    mockDiagnosticSummary.mockResolvedValue(
+      'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
+    );
+
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: true,
+      detail: 'Core health check passed through Uplink',
+    });
+    expect(mockSetProxyMode.mock.calls).toEqual([['socks'], ['connect']]);
+    expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('names both proxy failures on an active tunnel', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockSetProxyMode = jest.fn().mockResolvedValue(undefined);
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    mockRequest.mockRejectedValue(
+      new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].'),
+    );
+    mockDiagnosticSummary.mockResolvedValue(
+      'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
+    );
+
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toMatchObject({
+      ready: false,
+      detail: expect.stringContaining('via connect Remote Core probe timed out'),
+    });
+    expect(mockSetProxyMode.mock.calls).toEqual([['socks'], ['connect'], ['socks']]);
+  });
+
+  it('recovers a failed read on the active tunnel without another admission', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    let mode = 'socks';
+    mockSetProxyMode = jest.fn(async (next: string) => {
+      mode = next;
+    });
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    mockRequest.mockImplementation(async () => {
+      if (mode === 'socks') {
+        throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+      }
+      return { status: 200 };
+    });
+    mockDiagnosticSummary.mockResolvedValue(
+      'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
+    );
+
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(true);
+    expect(mockSetProxyMode.mock.calls).toEqual([['socks'], ['connect']]);
     expect(mockStart).toHaveBeenCalledTimes(1);
   });
 

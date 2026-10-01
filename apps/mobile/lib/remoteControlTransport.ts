@@ -390,7 +390,7 @@ export async function testRemoteControlForUrl(
         if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
           const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
           if (pin !== undefined) {
-            await probeCore(target, pin, attachment.port);
+            await probeCoreThroughEitherProxy(target, pin, attachment.port);
             return { ready: true, detail: 'Core health check passed through Uplink' };
           }
         }
@@ -399,7 +399,7 @@ export async function testRemoteControlForUrl(
         const summary = await tunnelDiagnosticSummary();
         return {
           ready: false,
-          detail: `probe (${safeRemoteFailure(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
+          detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
         };
       }
     }
@@ -407,6 +407,31 @@ export async function testRemoteControlForUrl(
     return port > 0
       ? { ready: true, detail: 'Core health check passed through Uplink' }
       : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
+  });
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  return selected;
+}
+
+/** A failed read may recover on the other loopback proxy without replacing its tunnel. */
+export async function recoverRemoteControlRead(url: string, port: number): Promise<boolean> {
+  const selected = operation.then(async () => {
+    const target = new URL(url).origin;
+    const key = keyFor(target);
+    if (key === null || active?.key !== key || active.port !== port) return false;
+    const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
+    if (pin === undefined) return false;
+    try {
+      if (!(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive())) {
+        return false;
+      }
+      await probeCoreThroughEitherProxy(target, pin, port);
+      return active?.key === key && active.port === port;
+    } catch {
+      return false;
+    }
   });
   operation = selected.then(
     () => undefined,
