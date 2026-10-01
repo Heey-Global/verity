@@ -14,6 +14,14 @@ import type { ColumnType, Generated } from 'kysely';
  * `resetsAt` epoch seconds) are well within that range.
  */
 
+interface SessionEventStatsTable {
+  session_id: string;
+  event_count: ColumnType<string, string | number, string | number>;
+  last_event_seq: ColumnType<string, string | number, string | number>;
+  last_activity_at: ColumnType<Date | null, string | null, string | null>;
+  revision: ColumnType<string, string | number, string | number>;
+}
+
 export interface SessionsTable {
   /** The Claude Code session id — also the `--resume` handle. */
   session_id: string;
@@ -1285,6 +1293,7 @@ export interface Database {
   google_slide_image_cleanup: GoogleSlideImageCleanupTable;
   google_slide_invocations: GoogleSlideInvocationsTable;
   events: EventsTable;
+  session_event_stats: SessionEventStatsTable;
   messages: MessagesTable;
   message_projection_state: MessageProjectionStateTable;
   transcript_lines: TranscriptLinesTable;

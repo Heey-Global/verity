@@ -1,4 +1,6 @@
 const mockRequest = jest.fn();
+const mockRequestV2 = jest.fn();
+let mockRequestV2Enabled = false;
 const mockUpload = jest.fn();
 const mockDownload = jest.fn();
 const mockCancelRequest = jest.fn();
@@ -25,6 +27,9 @@ jest.mock('./remoteControlTransport', () => ({
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: () => ({
     request: mockRequest,
+    get requestV2() {
+      return mockRequestV2Enabled ? mockRequestV2 : undefined;
+    },
     upload: mockUpload,
     download: mockDownload,
     cancelRequest: mockCancelRequest,
@@ -66,6 +71,8 @@ import { createPinnedFetch, downloadPinnedFile } from './pinnedTransport';
 describe('pinned native file transport', () => {
   beforeEach(() => {
     mockRequest.mockReset();
+    mockRequestV2.mockReset();
+    mockRequestV2Enabled = false;
     mockUpload.mockReset();
     mockDownload.mockReset();
     mockCancelRequest.mockReset();
@@ -581,6 +588,83 @@ describe('pinned native file transport', () => {
     // Without this the next request is routed directly again, into the same
     // dead address, instead of through Uplink.
     expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
+  });
+
+  it('uses native UTF-8 text without decoding or transferring a Base64 body', async () => {
+    mockRequestV2Enabled = true;
+    const json = JSON.stringify({ title: 'Plötzlich größer 🚀' });
+    mockRequestV2.mockResolvedValue({
+      status: 200,
+      headers: { 'Content-Type': 'application/problem+json' },
+      bodyText: json,
+    });
+    const decode = jest.spyOn(globalThis, 'atob').mockImplementation(() => {
+      throw new Error('Text response must not decode Base64');
+    });
+    try {
+      const response = await createPinnedFetch(`sha256-${'a'.repeat(43)}`)(
+        'https://192.0.2.1/sessions',
+      );
+      expect(response.body).toBe(json);
+      expect(mockRequestV2).toHaveBeenCalledTimes(1);
+      expect(mockRequest).not.toHaveBeenCalled();
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it.each(['\uFEFFtext', '\uFEFF\uFEFFtext'])(
+    'matches TextDecoder BOM semantics for native text %j',
+    async (text) => {
+      mockRequestV2Enabled = true;
+      mockRequestV2.mockResolvedValue({
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+        bodyText: text,
+      });
+      const response = await createPinnedFetch(`sha256-${'a'.repeat(43)}`)(
+        'https://192.0.2.1/text',
+      );
+      expect(response.body).toBe(new TextDecoder().decode(new TextEncoder().encode(text)));
+    },
+  );
+
+  it('keeps binary bytes when the V2 endpoint returns Base64', async () => {
+    mockRequestV2Enabled = true;
+    mockRequestV2.mockResolvedValue({
+      status: 200,
+      headers: { 'content-type': 'application/octet-stream' },
+      bodyBase64: 'AP+A',
+    });
+    const response = await createPinnedFetch(`sha256-${'a'.repeat(43)}`)(
+      'https://192.0.2.1/download',
+    );
+    const body = (response as unknown as { body: BodyInit }).body;
+    expect(body).toBeInstanceOf(ArrayBuffer);
+    expect([...new Uint8Array(body as ArrayBuffer)]).toEqual([0, 255, 128]);
+  });
+
+  it.each([204, 205, 304])('ignores a native text body for bodyless status %s', async (status) => {
+    mockRequestV2Enabled = true;
+    mockRequestV2.mockResolvedValue({ status, headers: {}, bodyText: 'ignored' });
+    const response = await createPinnedFetch(`sha256-${'a'.repeat(43)}`)(
+      'https://192.0.2.1/status',
+    );
+    expect(response.body).toBeNull();
+  });
+
+  it('does not replay a failed V2 mutation through the legacy endpoint', async () => {
+    mockRequestV2Enabled = true;
+    mockRequestV2.mockRejectedValue(new Error('native transport error'));
+    await expect(
+      createPinnedFetch(`sha256-${'a'.repeat(43)}`)('https://192.0.2.1/turn', {
+        method: 'POST',
+        body: 'prompt',
+      }),
+    ).rejects.toThrow();
+    expect(mockRequestV2).toHaveBeenCalledTimes(1);
+    expect(mockRequest).not.toHaveBeenCalled();
   });
 
   it.each([204, 205, 304])('constructs a bodyless response for status %s', async (status) => {

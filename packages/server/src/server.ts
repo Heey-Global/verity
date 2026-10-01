@@ -1544,12 +1544,7 @@ interface ActivityProjection {
   hasTaskLifecycle: boolean;
 }
 
-/** What a busy session contributes: the conductor already said it is running, so
- *  the log is never read. Frozen — it is shared across every such poll. */
-const EMPTY_ACTIVITY_PROJECTION: ActivityProjection = Object.freeze({
-  events: [],
-  hasTaskLifecycle: false,
-});
+const ACTIVITY_BUSY_CACHE_MAX_SESSIONS = 512;
 const DEFAULT_MEETING_AUDIO_STREAM_BYTES = 500_000_000;
 // The streamed upload route acknowledges first; transcription of a two-hour
 // recording is allowed to continue server-side without an HTTP request deadline.
@@ -4701,6 +4696,46 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         events.some((event) => event.t === 'task') ||
         (truncated && (await deps.eventStore.sessionHasTaskLifecycleEvent(id))),
     };
+  };
+
+  const activityBusyCache = new Map<
+    string,
+    { revision: string; lastEventSeq: number; busy: Promise<boolean> }
+  >();
+  const activityLogBusy = async (id: string): Promise<boolean> => {
+    const stats = await deps.eventStore.getSessionEventStats(id);
+    const cached = activityBusyCache.get(id);
+    if (
+      stats !== undefined &&
+      cached?.revision === stats.revision &&
+      cached.lastEventSeq === stats.lastEventSeq
+    ) {
+      // Refresh insertion order so sessions no longer polled leave the bounded cache.
+      activityBusyCache.delete(id);
+      activityBusyCache.set(id, cached);
+      return cached.busy;
+    }
+    activityBusyCache.delete(id);
+    const busy = activityProjection(id).then(
+      ({ events, hasTaskLifecycle }) =>
+        hasTaskLifecycle && deriveSessionStatusFromProjection(events, events.length) === 'running',
+    );
+    if (stats === undefined) return busy;
+    // Cache only the pure log result, never conductor state or payload arrays.
+    // Revision catches lower-seq commits and removed provisional events; seq
+    // separates a deleted/recreated session whose revision starts over.
+    const entry = { revision: stats.revision, lastEventSeq: stats.lastEventSeq, busy };
+    activityBusyCache.set(id, entry);
+    if (activityBusyCache.size > ACTIVITY_BUSY_CACHE_MAX_SESSIONS) {
+      const oldest = activityBusyCache.keys().next().value;
+      if (oldest !== undefined) activityBusyCache.delete(oldest);
+    }
+    try {
+      return await busy;
+    } catch (error) {
+      if (activityBusyCache.get(id) === entry) activityBusyCache.delete(id);
+      throw error;
+    }
   };
 
   const summarizeSession = async (session: SessionRecord): Promise<SessionSummary> => {
@@ -8484,6 +8519,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         try {
           const session = await deps.eventStore.getSession(id);
           if (!session) {
+            activityBusyCache.delete(id);
             reply.code(404);
             return { error: `session ${id} not found` };
           }
@@ -8493,28 +8529,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // the display name so the header reflects an auto-generated (or externally
           // renamed) title within a poll, without a remount. `branch` is still gated on
           // the branch-switching dep (a git read).
-          // The read is narrowed to the projection slice, and then to its tail —
-          // see `activityProjection`. `task` and every kind the status derivation
-          // reads are in the slice, and nothing else here looks at the log, so an
-          // idle session with a long transcript stops re-hydrating it once per
-          // poll. The SLICE ONLY, deliberately: this response carries neither
-          // `eventCount` nor `lastActivityAt`, and counting a whole log is the one
-          // part of the projection read that is still linear in its length.
+          // The durable mutation marker gates projection hydration. An unchanged
+          // log reuses its pure busy result; live conductor fields above and the
+          // session's metadata and branch below still update on every poll.
           //
           // Log hydration exists specifically for a background task that outlived
           // conductor tracking. Neutral notices (including meeting progress) are
           // not turns and must not make an otherwise-finished session busy forever.
-          const { events, hasTaskLifecycle } = base.busy
-            ? EMPTY_ACTIVITY_PROJECTION
-            : await activityProjection(id);
-          // `events.length` stands in for the total count, and only ever behind
-          // `hasTaskLifecycle`: the count exists solely to tell an empty log (idle)
-          // from one holding nothing the projection reads (running), and a slice
-          // containing a `task` event is not empty either way.
-          const busy =
-            base.busy ||
-            (hasTaskLifecycle &&
-              deriveSessionStatusFromProjection(events, events.length) === 'running');
+          const busy = base.busy || (await activityLogBusy(id));
           const branches = await branchesForSession(session);
           const branch = branches
             ? await currentBranchCached(branches, session.worktree)

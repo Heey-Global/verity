@@ -36,6 +36,10 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
           failures.append("expected \(expected) for \(url), got \(actual)")
         }
       }
+      if let url = URL(string: origin) {
+        do { try verifyPinnedHTTPPool(origin: url, pin: pin) }
+        catch { failures.append("pooled HTTP smoke failed: \(error)") }
+      } else { failures.append("invalid pooled HTTP origin") }
       Self.finish(failures.isEmpty ? "success" : failures.joined(separator: "\n"), at: resultPath)
     }
     return true

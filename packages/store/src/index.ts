@@ -38,6 +38,7 @@ export {
   type AttachmentBlob,
   type SequencedEvent,
   type SessionProjectionFacts,
+  type SessionEventStats,
   type SessionRecord,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,

@@ -899,6 +899,14 @@ function emptyUsageTotals(): UsageTotals {
  * What the overview projections need from one session's log — see
  * {@link EventStore.listSessionProjectionFacts}.
  */
+export interface SessionEventStats {
+  eventCount: number;
+  lastEventSeq: number;
+  lastActivityAt: number | null;
+  /** Changes on every log mutation, including deletions below the latest seq. */
+  revision: string;
+}
+
 export interface SessionProjectionFacts {
   /** Total persisted events (#387) — the unread counter, and the ONLY thing that
    *  distinguishes an empty log (status `idle`) from one holding nothing the
@@ -2802,6 +2810,22 @@ export class EventStore implements EventSink {
     return result.numDeletedRows > 0n;
   }
 
+  /** Constant-size log marker; a never-written session has no stats row. */
+  async getSessionEventStats(sessionId: string): Promise<SessionEventStats | undefined> {
+    const row = await this.db
+      .selectFrom('session_event_stats')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    return {
+      eventCount: Number(row.event_count),
+      lastEventSeq: Number(row.last_event_seq),
+      lastActivityAt: row.last_activity_at?.getTime() ?? null,
+      revision: String(row.revision),
+    };
+  }
+
   async latestEventSeq(sessionId: string): Promise<number> {
     const row = await this.db
       .selectFrom('events')
@@ -3807,15 +3831,10 @@ export class EventStore implements EventSink {
    *   slice. That is the caller's proof to make (`projectionTailIsSelfContained`
    *   in the server), which is why `eventsTruncated` comes back with it.
    *
-   * WHAT IT DOES NOT REMOVE: the counters still scan one index entry per event,
-   * because both are exact facts about the whole log — `count(*)` for the unread
-   * badge, `max(id)` for "last activity", which an event OUTSIDE the slice (a
-   * streaming `text`) also moves. So this is still linear in log length, just
-   * index-only rather than a heap sweep. Making it sublinear means maintaining a
-   * per-session counter on the append path, which is a bigger change than a read
-   * path can make on its own. A caller that does not need the counters should ask
-   * {@link listSessionProjectionEvents} instead and skip that scan entirely —
-   * which is what the activity poll, the most frequent of these routes, does.
+   * Exact counters and the newest event timestamp come from the trigger-maintained
+   * `session_event_stats` row. Every event mutation updates it transactionally,
+   * including writes from older server generations and provisional fence removal.
+   * The counters therefore stay constant-size reads as text history grows.
    *
    * BATCHED ON PURPOSE: `GET /sessions` needs every session at once, so this
    * answers all of them in four queries (tails, rate-limit states, sums,
@@ -3870,31 +3889,14 @@ export class EventStore implements EventSink {
         await this.readLatestRateLimits(chunks, facts, tx);
         await this.readUsageTotals(chunks, facts, tx);
 
-        // `count(*)` and the newest row's timestamp, in one index scan per session.
-        //
-        // The timestamp rides along as a correlated subquery keyed by the group's own
-        // `max(id)` — a primary-key lookup per session, not a second scan — rather than
-        // as a follow-up statement. That is one round trip instead of two, and it puts
-        // the count and the timestamp in ONE snapshot, so they can no longer disagree
-        // about where the log ends.
-        //
-        // The timestamp is that of the row with the highest id rather than
-        // `max(created_at)`: `created_at` defaults to `now()`, which is transaction-
-        // START time, so two events appended from overlapping transactions can carry
-        // timestamps in the opposite order from their seq. The transcript's own
-        // ordering is by seq, and this has to agree with it.
+        // Triggers keep exact counters in the same transaction as every event
+        // mutation, so this read shares the tail/usage snapshot without scanning
+        // one index entry per streamed delta on every overview poll.
         for (const ids of chunks) {
           const totals = await tx
-            .selectFrom('events')
-            .select((eb) => [
-              'session_id',
-              eb.fn.countAll<string | number | bigint>().as('event_count'),
-              eb.fn.max<string | number>('id').as('last_event_seq'),
-              sql<Date | null>`(select newest.created_at from events as newest
-                 where newest.id = max(events.id))`.as('last_activity_at'),
-            ])
+            .selectFrom('session_event_stats')
+            .select(['session_id', 'event_count', 'last_event_seq', 'last_activity_at'])
             .where('session_id', 'in', ids)
-            .groupBy('session_id')
             .execute();
           for (const row of totals) {
             const entry = facts.get(row.session_id);
@@ -4101,12 +4103,8 @@ export class EventStore implements EventSink {
    * `GET /sessions/:id/activity` is the whole reason this exists. It polls every
    * 1.5 s per open session, and it reads the log for exactly one question: is a
    * background task still open behind a turn that already reported its result. It
-   * never returns `eventCount` or `lastActivityAt` — and those are the half of
-   * {@link listSessionProjectionFacts} that stays LINEAR in log length, because
-   * `count(*)` is an exact fact about the whole log while the slice is an index
-   * range over eight discriminants. Charging the hottest poll a full-log index
-   * scan for two numbers it discards is the same shape of waste this change
-   * removed from the routes, one level down.
+   * never returns counters, usage, or quota states, so fetching the other
+   * projection facts would add work whose result this caller discards.
    *
    * A separate method rather than a flag on the other one, because the flag would
    * have to leave `eventCount: 0` behind — and a zero count is not an absence,
