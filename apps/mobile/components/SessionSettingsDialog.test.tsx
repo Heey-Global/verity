@@ -163,7 +163,7 @@ it('contains the dialog on tablets and keeps project options collapsed until req
   // Without a width cap the modal covers the entire split-view screen.
   expect(screen.getByTestId('session-settings-card')).toHaveStyle({ maxWidth: 440, width: '100%' });
   expect(screen.queryByText('Other project')).toBeNull();
-  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   selectTarget();
   expect(screen.queryByText('Other project')).toBeNull();
   expect(screen.getByRole('button', { name: 'Project' })).toHaveAccessibilityValue({
@@ -356,4 +356,16 @@ it('locks an open project picker while moving and retains the destination on ret
   move();
   await screen.findByText(/Moved to Target project/);
   expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+});
+
+it('enables Save only while the trimmed name or project has changed', () => {
+  setup(jest.fn());
+  // A bright no-op Save makes unchanged settings look like an unsaved edit.
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  fireEvent.changeText(screen.getByLabelText('Session name'), 'New name');
+  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  fireEvent.changeText(screen.getByLabelText('Session name'), ' Product images ');
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  selectTarget();
+  expect(screen.getByRole('button', { name: 'Save and move' })).toBeEnabled();
 });

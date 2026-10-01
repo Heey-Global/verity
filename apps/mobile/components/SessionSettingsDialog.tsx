@@ -232,6 +232,7 @@ export function SessionSettingsDialog({
   const canSave =
     !busy &&
     !linkBusy &&
+    (draftName.trim() !== (savedName ?? '') || willMove) &&
     (!willMove || (canMove && !!target && (!commitConfirmation || leaveCommits)));
   const save = async () => {
     if (!canSave) return;
@@ -411,7 +412,7 @@ export function SessionSettingsDialog({
                 editable={!busy && !unresolved}
                 maxLength={80}
                 placeholder={displayName}
-                placeholderTextColor={theme.colors.textFaint}
+                placeholderTextColor={theme.colors.textMuted}
                 style={[styles.nameInput, nameFocused && styles.inputFocused]}
                 onFocus={() => setNameFocused(true)}
                 onBlur={() => setNameFocused(false)}
@@ -1050,7 +1051,7 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     nameInput: {
       minHeight: 48,
       borderWidth: 1,
-      borderColor: 'transparent',
+      borderColor: theme.colors.border,
       borderRadius: 12,
       paddingHorizontal: 14,
       paddingVertical: 10,
