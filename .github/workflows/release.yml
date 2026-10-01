@@ -945,7 +945,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # Reuse only compiler objects, never credentials, IPAs, or EAS work directories.
-      # No broad restore prefix: compiler, dependencies and patch policy must agree.
+      # Restore across dependency updates only within the same toolchain and policy.
       # app.config.ts contains the release version, which changes for every native
       # release. ccache validates source content and compiler arguments itself;
       # hashing that file here would discard reusable objects at every release.
@@ -954,7 +954,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/verity-mobile-ccache
-          key: mobile-ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('package-lock.json', 'apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}
+          key: mobile-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            mobile-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}-
 
       - name: Reset native compiler cache statistics
         run: ccache --zero-stats

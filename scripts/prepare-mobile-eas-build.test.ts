@@ -156,7 +156,7 @@ describe('EAS archive preparation', () => {
     expect(() => f.trace()).toThrow();
   });
 
-  it('keeps the cache bounded, strict and confined to compiler objects', () => {
+  it('keeps the cache bounded and enables Clang module reuse within toolchain and policy', () => {
     const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
     const steps = workflow.jobs['publish-mobile-native'].steps as {
       id?: string;
@@ -168,7 +168,9 @@ describe('EAS archive preparation', () => {
     const setup = steps.find((s: { id?: string }) => s.id === 'compiler-cache');
     const cache = steps.find((s: { name?: string }) => s.name === 'Restore native compiler cache');
     expect(cache!.with.path).toBe('${{ runner.temp }}/verity-mobile-ccache');
-    expect(cache!.with['restore-keys']).toBeUndefined();
+    expect(cache!.with['restore-keys']).toContain('steps.compiler-cache.outputs.toolchain');
+    expect(cache!.with['restore-keys']).toContain('apps/mobile/build/ccache.conf');
+    expect(cache!.with['restore-keys']).not.toContain('package-lock.json');
     expect(cache!.with.key).toContain('steps.compiler-cache.outputs.toolchain');
     expect(cache!.with.key).toContain('package-lock.json');
     expect(cache!.with.key).toContain('patch-mobile-native-deps.mjs');
@@ -186,7 +188,10 @@ describe('EAS archive preparation', () => {
       .join('\n');
     expect(config).toContain('max_size = 512MiB');
     expect(config).toContain('compiler_check = content');
-    expect(config).not.toMatch(/sloppiness\s*=/);
+    // Without module support a successful release can save an empty cache.
+    expect(config).toMatch(/^sloppiness = modules,ivfsoverlay$/m);
+    expect(config).toContain('direct_mode = true');
+    expect(config).toContain('depend_mode = true');
     const stats = steps.find(
       (s: { name?: string }) => s.name === 'Report native compiler cache statistics',
     );
