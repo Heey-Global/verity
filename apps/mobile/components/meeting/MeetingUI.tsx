@@ -100,7 +100,7 @@ export type CardAction = {
   disabled?: boolean;
 };
 
-export function ActionRow({ actions }: { actions: CardAction[] }) {
+function ActionRow({ actions }: { actions: CardAction[] }) {
   if (!actions.length) return null;
   return (
     <View style={styles.actions}>
