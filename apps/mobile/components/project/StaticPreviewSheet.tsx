@@ -429,15 +429,25 @@ export function StaticPreviewSheet({
                 ] as const
               ).map(([value, label]) => {
                 // The same green dot as the header's Preview button: a server is
-                // running, without the sheet switching to it.
-                const marked = value === 'server' && devServers.length > 0;
+                // running, or a port link is still public even though discovery
+                // no longer sees its server, without the sheet switching to it.
+                const marked =
+                  value === 'server' &&
+                  (devServers.length > 0 ||
+                    shares.some((share) => isPortShare(share) && isLive(share)));
                 return (
                   <Pressable
                     key={value}
                     onPress={() => selectTab(value)}
                     accessibilityRole="tab"
                     accessibilityLabel={label}
-                    accessibilityHint={marked ? 'A dev server is running' : undefined}
+                    accessibilityHint={
+                      !marked
+                        ? undefined
+                        : devServers.length > 0
+                          ? 'A dev server is running'
+                          : 'A port link is still shared'
+                    }
                     accessibilityState={{ selected: tab === value }}
                     style={[styles.tab, tab === value ? styles.tabActive : null]}
                   >

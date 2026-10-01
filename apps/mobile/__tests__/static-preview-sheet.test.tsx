@@ -901,6 +901,8 @@ describe('dev server tab', () => {
       listPublicPreviewShares: jest.fn(async () => [portShare()]),
     });
 
+    // A public link nobody can see from Folder is easy to forget running.
+    expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
     await openServers();
     fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
     expect(await screen.findByText('https://vite.example')).toBeTruthy();
