@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.1.0](https://github.com/Heey-Global/verity/compare/v4.0.1...v4.1.0) (2026-10-01)
+
+
+### Features
+
+* **preview:** accept PIN from share URL query ([#944](https://github.com/Heey-Global/verity/issues/944)) ([2f9539d](https://github.com/Heey-Global/verity/commit/2f9539dc3d2e79249d43ec6ad9361298c0ddd279))
+
+
+### Bug Fixes
+
+* **deps:** update dependency sharp to v0.35.5 ([#942](https://github.com/Heey-Global/verity/issues/942)) ([6957589](https://github.com/Heey-Global/verity/commit/6957589b7b211401ea42ff579c4da81338820d32))
+* **release:** keep mobile fixtures out of server releases ([#939](https://github.com/Heey-Global/verity/issues/939)) ([c90a278](https://github.com/Heey-Global/verity/commit/c90a2789ee338ece2d59636f15c5106df720a2c5))
+
 ## [4.0.1](https://github.com/Heey-Global/verity/compare/v4.0.0...v4.0.1) (2026-09-30)
 
 
