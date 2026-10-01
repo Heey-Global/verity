@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.46.4",
-  "runtime": "1.46.0",
+  "version": "1.47.1",
+  "runtime": "1.47.0",
   "channel": "testflight",
-  "commit": "55bfcd626fbef940a07c93a3660cfae9c26939d9",
-  "tag": "mobile-v1.46.4",
-  "branch": "staging-mobile-v1.46.4-55bfcd626fbef940a07c93a3660cfae9c26939d9",
-  "baseline": "mobile-v1.46.3",
-  "group": "76a59ced-45b3-4fb1-b9a3-e408f0c37901",
+  "commit": "1447db8cd77819406a61592ea2f502f8064272e0",
+  "tag": "mobile-v1.47.1",
+  "branch": "staging-mobile-v1.47.1-1447db8cd77819406a61592ea2f502f8064272e0",
+  "baseline": "mobile-v1.47.0",
+  "group": "ed25e2e5-bff0-4233-b2ff-f218888842c9",
   "notes": [
-    "add session Calendar and Contacts with incremental consent (#956)",
-    "redesign live meeting screen (#951)"
+    "shorten session and settings loading paths (#969)"
   ]
 }
