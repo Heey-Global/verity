@@ -16,9 +16,12 @@ export function RecreatePendingBanner() {
   const { theme } = useUnistyles();
   const { applyPending, applyRun: run, saving } = useVeritySettings();
 
+  // Nothing saved, nothing running: nothing to say. A run is reported wherever
+  // it was started — the standing entry included — so a failure stays in view.
+  if (!applyPending && run.phase === 'idle') return null;
+
   // A clean run clears `applyPending`; its outcome is still worth one line.
-  if (!applyPending) {
-    if (run.phase !== 'done' || run.failed.length > 0) return null;
+  if (run.phase === 'done' && run.failed.length === 0) {
     return (
       <View style={styles.banner} accessibilityLiveRegion="polite">
         <Text style={styles.bannerText}>{recreateRunMessage(run)}</Text>

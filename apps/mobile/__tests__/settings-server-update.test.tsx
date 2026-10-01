@@ -293,6 +293,50 @@ describe('standing recreate entry', () => {
     expect(screen.queryByText(/Recreated/)).toBeNull();
   });
 
+  it('keeps a failure from there in view on the next screen', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+        recreateProjectContainer: jest.fn().mockRejectedValue(new Error('boom')),
+      }),
+    );
+    const view = render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+    await screen.findByText('Could not recreate acme/one.');
+
+    view.unmount();
+    render(<GitHubSettingsScreen />);
+
+    expect(await screen.findByText('Could not recreate acme/one.')).toBeOnTheScreen();
+    expect(screen.getByLabelText(RECREATE)).toBeEnabled();
+  });
+
+  it('reports a run still going when the operator left', async () => {
+    let finish: (() => void) | undefined;
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listProjects: jest.fn().mockResolvedValue([makeProject('one'), makeProject('two')]),
+        recreateProjectContainer: jest.fn().mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finish = resolve;
+            }),
+        ),
+      }),
+    );
+    const view = render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+    await waitFor(() => expect(finish).toBeDefined());
+
+    view.unmount();
+    render(<GitHubSettingsScreen />);
+
+    expect(await screen.findByText(/Recreating running containers/)).toBeOnTheScreen();
+    await act(async () => finish?.());
+    await act(async () => finish?.());
+    expect(await screen.findByText('Recreated 2 running containers.')).toBeOnTheScreen();
+  });
+
   // The banner would offer the same run a second time on the same screen.
   it('replaces the banner there rather than sitting next to it', async () => {
     const initial = makeSettings();

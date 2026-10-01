@@ -15,12 +15,15 @@ import { settingsStyles as styles } from './settingsStyles';
 export function RecreateContainersSection() {
   const { theme } = useUnistyles();
   const { applyPending, applyRun: run, saving } = useVeritySettings();
-  // A result read here is done with once the operator leaves; kept, it would
-  // turn up as a banner on whichever screen comes next. A run still going when
-  // they leave is reported there, since nothing else would.
+  // A success read here is done with once the operator leaves; kept, it would
+  // turn up as a banner on whichever screen comes next. A failure keeps its
+  // Retry there, and a run still going is reported there when it ends.
   useEffect(
     () => () => {
-      if (veritySettingsSnapshot().applyRun.phase === 'done') setApplyRun({ phase: 'idle' });
+      const { applyRun } = veritySettingsSnapshot();
+      if (applyRun.phase === 'done' && applyRun.failed.length === 0) {
+        setApplyRun({ phase: 'idle' });
+      }
     },
     [],
   );
