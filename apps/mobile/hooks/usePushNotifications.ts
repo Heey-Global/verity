@@ -39,7 +39,7 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
     // Where the update can actually be started — the same destination the overview
     // banner opens, so the announcement and the chrome lead to one place.
     const navigateToSettings = (): void => {
-      router.push(SERVER_UPDATE_ROUTE);
+      router.navigate(SERVER_UPDATE_ROUTE);
     };
 
     // Retry until it sticks: a launch while offline (or a transient /healthz blip)
