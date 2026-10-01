@@ -24,17 +24,21 @@ import { settingsStyles as styles } from './settingsStyles';
 
 // Cadence for asking whether an unanswered install request started anything.
 const UNANSWERED_POLL_MS = 2_000;
+// How long an unchanged status may still be the Updater catching up with a
+// request whose answer was lost. The server gives the Updater 15 s to journal
+// the operation; a status read before that lands still shows the old one.
+const UNANSWERED_GRACE_MS = 20_000;
 
 export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
-  // Key of an install request that neither Verity nor the follow-up status
-  // check answered — exactly what a server replacing itself looks like. Until a
-  // status arrives, its outcome is unknown rather than failed.
+  // Key of an install request whose outcome is still unknown: it was not
+  // answered, and no status since has shown whether it started — which is what
+  // a server replacing itself, or an Updater still journaling, looks like.
   const [unanswered, setUnanswered] = useState<string | undefined>(undefined);
-  const unansweredRef = useRef<string | undefined>(undefined);
+  const unansweredRef = useRef<{ key: string; deadline: number } | undefined>(undefined);
   const refreshGeneration = useRef(0);
 
   // Adopt what Verity reports after an install request that did not come back
@@ -61,9 +65,15 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         .getServerUpdates()
         .then((next) => {
           if (generation !== refreshGeneration.current) return;
-          const sentKey = unansweredRef.current;
-          if (sentKey !== undefined) {
-            settle(next, sentKey);
+          const pending = unansweredRef.current;
+          // An unchanged status is not yet proof that nothing started: the
+          // request may still be on its way into the Updater's journal.
+          if (
+            pending !== undefined &&
+            (describeServerUpdate(next).idempotencyKey !== pending.key ||
+              Date.now() >= pending.deadline)
+          ) {
+            settle(next, pending.key);
             return;
           }
           setStatus(next);
@@ -114,22 +124,34 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           });
         })
         .catch(async (caught) => {
-          // A refused request is final. Anything else — a dropped response, or
-          // a 409 because the update already went through — is settled by
-          // asking Verity what it is doing now rather than by the error itself.
           if (caught instanceof VerityApiError && caught.status === 403) {
             setStarting(false);
             setActionError('Set a master password before updating Verity.');
             return;
           }
+          // Any other outcome is settled by asking Verity what it is doing now
+          // rather than by the error itself: a 409 may mean the update already
+          // went through. A refusal (4xx) is a closed answer, so one status read
+          // settles it. Anything else — a 503 because the Server stopped waiting
+          // for the Updater, a dropped connection — may belong to a request the
+          // Updater accepted anyway, and a status read right away can still show
+          // the previous operation. That one gets a grace period of polling.
+          const refused =
+            caught instanceof VerityApiError && caught.status >= 400 && caught.status < 500;
           const current = await client.getServerUpdates().catch(() => undefined);
-          if (current !== undefined) {
+          if (
+            current !== undefined &&
+            (refused || describeServerUpdate(current).idempotencyKey !== idempotencyKey)
+          ) {
             settle(current, idempotencyKey);
             return;
           }
-          // No answer at all: keep the button busy and poll until Verity is
-          // back, then let that status decide.
-          unansweredRef.current = idempotencyKey;
+          // Keep the button busy and poll; a status that moves on — or the
+          // grace period running out — decides.
+          unansweredRef.current = {
+            key: idempotencyKey,
+            deadline: Date.now() + UNANSWERED_GRACE_MS,
+          };
           setUnanswered(idempotencyKey);
         });
     },
