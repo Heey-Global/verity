@@ -1,12 +1,13 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
+  Modal,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   useWindowDimensions,
@@ -14,6 +15,7 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
 
 import {
@@ -60,13 +62,17 @@ import {
   reconcileTimedTranscript,
   type SpeakerLine,
 } from '../../lib/liveMeetingSpeakers';
+import { Icon } from '../../components/Icon';
+import {
+  type CardAction,
+  NoticedCard,
+  SectionLabel,
+  SpeakerAvatar,
+  speakerTone,
+} from '../../components/meeting/MeetingUI';
 
 type TranscriptRow = SpeakerLine | { text: string };
 
-const ACCENT = '#bd8bff';
-const TEXT = '#eee9f7';
-const MUTED = '#aaa2ba';
-const CARD = '#1b1928';
 const pendingDrafts = new Map<string, MeetingNote>();
 const pendingNoteErrors = new Map<string, string>();
 const pendingNoteWrites = new Map<string, Promise<void>>();
@@ -93,6 +99,8 @@ export default function MeetingScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const wide = width >= 900;
+  const { theme } = useUnistyles();
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<MeetingRecord[]>([]);
@@ -123,6 +131,9 @@ export default function MeetingScreen() {
   const [insightQuestion, setInsightQuestion] = useState('');
   const [sendingInsight, setSendingInsight] = useState(false);
   const [voiceSending, setVoiceSending] = useState(false);
+  const [composing, setComposing] = useState<'note' | 'ask' | null>(null);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const [showEngines, setShowEngines] = useState(false);
   const noteSaveErrorRef = useRef<string | null>(null);
   const speakerEditDraft = useRef<{
     meetingId: string;
@@ -454,11 +465,6 @@ export default function MeetingScreen() {
       ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
     ].slice(-4);
   }, [answers, queuedAnswers, localAnswers]);
-  const transcriptPreview = useMemo(() => {
-    const text = meeting?.transcript.trim() ?? '';
-    return text.length > 180 ? `…${text.slice(-180)}` : text;
-  }, [meeting?.transcript]);
-
   const speakerLabel = (speaker: number | null) =>
     speaker === null
       ? 'Unknown speaker'
@@ -805,70 +811,216 @@ export default function MeetingScreen() {
     },
     (_, speaker) => speaker,
   ).filter((speaker) => resolvedSpeaker(speaker, meeting?.speakerMerges ?? {}) === speaker);
-  return (
-    <KeyboardAvoidingView
-      style={[styles.root, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 12 }]}
-    >
-      <Stack.Screen options={{ headerShown: false }} />
-      <Pressable
-        onPress={() => {
-          if (live && !active && meeting) followRemoteMeeting(meeting.sessionId, meeting.id);
-          router.back();
-        }}
-        accessibilityRole="button"
-      >
-        <Text style={styles.back}>‹ Back to session</Text>
-      </Pressable>
-      <View style={styles.header}>
-        <Text style={styles.title}>Live Meeting</Text>
-        {live ? (
-          <Pressable
-            onPress={() => {
-              if (!active && meeting) followRemoteMeeting(meeting.sessionId, meeting.id);
-              router.back();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Minimize meeting"
-          >
-            <Text style={styles.minimize}>⌄</Text>
-          </Pressable>
-        ) : null}
-      </View>
+  const merges = meeting?.speakerMerges ?? {};
+  const activeVoice =
+    meeting?.lastSpeakerAt !== undefined && now - meeting.lastSpeakerAt < 2500
+      ? resolvedSpeaker(meeting.activeSpeaker ?? null, merges)
+      : null;
+  const speakerInitial = (speaker: number) =>
+    meeting?.speakerNames?.[speaker]?.trim().charAt(0).toUpperCase() || String(speaker + 1);
+  const speakerMinutes = (speaker: number) =>
+    Math.round(
+      (meeting?.speakerTurns ?? [])
+        .filter((turn) => resolvedSpeaker(turn.speaker, merges) === speaker)
+        .reduce((total, turn) => total + Math.max(0, turn.end - turn.start), 0) / 60,
+    );
+  const finalizedNotes = notes.filter(
+    (note) => !(live || noteUnsaved || draft) || note.id !== draft?.id,
+  );
+  const composerVisible = live || noteUnsaved || !!draft;
+  const where = active
+    ? meeting?.serverId === null
+      ? 'Saved only on this device'
+      : 'Saving to server'
+    : 'Live from recording device';
+  const statusText = noteUnsaved
+    ? active
+      ? '● Recording · note not saved'
+      : `${meeting?.state === 'interrupted' ? 'Interrupted' : 'Ended'} · note not saved`
+    : live
+      ? meeting.captureStatus === 'paused'
+        ? `Ⅱ Paused · ${where}`
+        : meeting.captureStatus === 'downloading'
+          ? 'Preparing language model…'
+          : meeting.captureStatus === 'preparing'
+            ? 'Preparing microphone…'
+            : `● Transcribing · ${where}`
+      : meeting
+        ? meeting.serverId === null
+          ? `${meeting.state === 'interrupted' ? 'Interrupted' : 'Ended'} · saved only on this device`
+          : meeting.state === 'interrupted'
+            ? meeting.error?.startsWith('Local save failed')
+              ? 'Interrupted · local save failed'
+              : syncError
+                ? 'Interrupted · server sync pending'
+                : 'Interrupted · saved on server'
+            : syncError
+              ? 'Ended · server sync pending'
+              : 'Ended · saved on server'
+        : 'Ready to record';
+  const asNote = (text: string): CardAction | null =>
+    meeting?.state === 'active'
+      ? { label: '+ As note', accessibilityLabel: 'Save as note', onPress: () => addNoteText(text) }
+      : null;
+  const minimize = () => {
+    if (live && !active && meeting) followRemoteMeeting(meeting.sessionId, meeting.id);
+    router.back();
+  };
+
+  const addNoteText = (text: string) => {
+    if (!meeting || meeting.state !== 'active' || !text.trim()) return;
+    const note: MeetingNote = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      meetingId: meeting.id,
+      atSeconds: (Date.now() - meeting.startedAt) / 1000,
+      text: text.trim().slice(0, 10_000),
+    };
+    setNotes((current) => [...current, note].sort((a, b) => a.atSeconds - b.atSeconds));
+    void queueNoteSave(note)
+      .then(() => finalizeNote(note.id, note.text))
+      .then(() => setSyncError(true))
+      .catch((reason) => setError(`Note could not be saved: ${String(reason)}`));
+  };
+
+  const noticedCards = (): ReactNode[] => {
+    const cards: ReactNode[] = visibleAnswers.map((card) => {
+      const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
+      const note = card.status === 'ready' ? asNote(compactMeetingAnswer(card.answer)) : null;
+      return (
+        <NoticedCard
+          key={card.id}
+          label={
+            card.status === 'ready'
+              ? 'ANSWER READY'
+              : card.status === 'failed'
+                ? 'REQUEST INTERRUPTED'
+                : 'VERITY IS WORKING'
+          }
+          tone={
+            card.status === 'ready'
+              ? theme.colors.tone.done
+              : card.status === 'failed'
+                ? theme.colors.tone.danger
+                : theme.colors.primary
+          }
+          working={card.status === 'working'}
+          quote={card.request}
+          title={
+            card.status === 'ready'
+              ? expandedAnswer === card.id
+                ? card.answer
+                : compactMeetingAnswer(card.answer)
+              : card.status === 'failed'
+                ? 'Verity stopped before answering.'
+                : 'Project knowledge and the web …'
+          }
+          source={source ? `Source: ${source}` : null}
+          actions={
+            card.status === 'ready'
+              ? [
+                  {
+                    label: 'Open in chat ›',
+                    accessibilityLabel: 'Open answer in chat',
+                    primary: true,
+                    onPress: () =>
+                      router.push({ pathname: '/session/[id]', params: { id: sessionId } }),
+                  },
+                  ...(card.answer.length > 360
+                    ? [
+                        {
+                          label: expandedAnswer === card.id ? 'Show less' : 'Show full answer',
+                          accessibilityLabel:
+                            expandedAnswer === card.id
+                              ? 'Collapse meeting answer'
+                              : 'Expand meeting answer',
+                          onPress: () =>
+                            setExpandedAnswer((current) => (current === card.id ? null : card.id)),
+                        },
+                      ]
+                    : []),
+                  ...(note ? [note] : []),
+                ]
+              : []
+          }
+        />
+      );
+    });
+    for (const insight of insights.slice(0, 4)) {
+      if (dismissed.includes(insight.id)) continue;
+      const contradiction = insight.kind === 'contradiction';
+      const note = asNote(insight.summary);
+      cards.push(
+        <NoticedCard
+          key={insight.id}
+          label={contradiction ? 'CONTRADICTS PROJECT' : 'WORTH CHECKING'}
+          tone={contradiction ? theme.colors.accent : theme.colors.primary}
+          time={timeOfDay(insight.createdAt)}
+          quote={`“${insight.evidenceA}”${insight.evidenceB ? ` · “${insight.evidenceB}”` : ''}`}
+          title={insight.summary}
+          source={insight.sourcePath ? `Source: ${insight.sourcePath}` : null}
+          actions={[
+            {
+              label: contradiction ? 'Let Verity check' : 'Let Verity research',
+              accessibilityLabel: contradiction ? 'Check meeting claim' : 'Research insight',
+              primary: true,
+              disabled: sendingInsight,
+              onPress: () =>
+                void openResearch(
+                  contradiction
+                    ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
+                    : insight.evidenceA,
+                ),
+            },
+            note ?? {
+              label: 'Not now',
+              onPress: () => setDismissed((current) => [...current, insight.id]),
+            },
+          ]}
+        />,
+      );
+    }
+    if (
+      suggestedQuestion &&
+      !dismissed.includes(suggestedQuestion) &&
+      !insights.some((insight) => insight.evidenceA.includes(suggestedQuestion))
+    )
+      cards.push(
+        <NoticedCard
+          key="question"
+          label="OPEN QUESTION"
+          tone={theme.colors.primary}
+          title={suggestedQuestion}
+          actions={[
+            {
+              label: 'Let Verity research',
+              accessibilityLabel: 'Research meeting question',
+              primary: true,
+              disabled: sendingInsight,
+              onPress: () => void openResearch(suggestedQuestion),
+            },
+            {
+              label: 'Not now',
+              onPress: () => setDismissed((current) => [...current, suggestedQuestion]),
+            },
+          ]}
+        />,
+      );
+    return cards;
+  };
+
+  const statusLines = (
+    <>
       {error || meeting?.error ? <Text style={styles.error}>{error ?? meeting?.error}</Text> : null}
-      {voiceSending ? <Text style={styles.status}>Sending voice request…</Text> : null}
-      <Text
-        style={[
-          styles.status,
-          meeting?.captureStatus === 'paused' && styles.statusPaused,
-          (noteUnsaved || meeting?.state === 'interrupted') && styles.statusError,
-        ]}
-      >
-        {noteUnsaved
-          ? active
-            ? '● Recording · note not saved'
-            : `${meeting?.state === 'interrupted' ? 'Interrupted' : 'Ended'} · note not saved`
-          : live
-            ? meeting.captureStatus === 'paused'
-              ? `Ⅱ Paused   ${elapsed(meeting.startedAt, now)}   ${active ? (meeting.serverId === null ? 'Saved only on this device' : 'Saving to server') : 'Live from recording device'}`
-              : meeting.captureStatus === 'downloading'
-                ? 'Preparing language model…'
-                : meeting.captureStatus === 'preparing'
-                  ? 'Preparing microphone…'
-                  : `● Transcribing   ${elapsed(meeting.startedAt, now)}   ${active ? (meeting.serverId === null ? 'Saved only on this device' : 'Saving to server') : 'Live from recording device'}`
-            : meeting
-              ? meeting.serverId === null
-                ? `${meeting.state === 'interrupted' ? 'Interrupted' : 'Ended'} · saved only on this device`
-                : meeting.state === 'interrupted'
-                  ? meeting.error?.startsWith('Local save failed')
-                    ? 'Interrupted · local save failed'
-                    : syncError
-                      ? 'Interrupted · server sync pending'
-                      : 'Interrupted · saved on server'
-                  : syncError
-                    ? 'Ended · server sync pending'
-                    : 'Ended · saved on server'
-              : 'Ready to record'}
-      </Text>
+      {meeting ? (
+        <Text
+          style={[
+            styles.status,
+            (noteUnsaved || meeting.state === 'interrupted') && styles.statusError,
+          ]}
+        >
+          {statusText}
+        </Text>
+      ) : null}
       {pendingCommand ? (
         <Text style={styles.status}>
           {recorderOnline
@@ -876,609 +1028,924 @@ export default function MeetingScreen() {
             : 'Recording device unreachable. Open Verity there to apply this command.'}
         </Text>
       ) : null}
-      {syncError && meeting?.serverId !== null ? (
-        <Text style={styles.statusPaused}>Saved locally · server sync pending</Text>
+      {syncError && meeting?.serverId !== null && meeting?.state === 'active' ? (
+        <Text style={styles.status}>Saved locally · server sync pending</Text>
       ) : null}
-      {meeting ? (
-        <>
-          <View style={styles.speakerCard}>
-            <Text style={styles.section}>In the room</Text>
-            {speakers.length ? (
-              <View style={styles.participantChoices}>
-                {speakers.map((speaker) => (
-                  <Pressable
-                    key={speaker}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Rename ${speakerLabel(speaker)}`}
-                    accessibilityHint="Long press to merge this speaker with another"
-                    disabled={!meeting.ownerToken}
-                    onPress={() => renameSpeaker(speaker)}
-                    onLongPress={() => mergeSpeaker(speaker, speakers)}
-                    style={[
-                      styles.speakerBadge,
-                      resolvedSpeaker(
-                        meeting.activeSpeaker ?? null,
-                        meeting.speakerMerges ?? {},
-                      ) === speaker &&
-                        meeting.lastSpeakerAt !== undefined &&
-                        now - meeting.lastSpeakerAt < 2500 &&
-                        styles.speakerBadgeActive,
-                    ]}
-                  >
-                    <Text style={styles.speakerText}>{speakerLabel(speaker)}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            ) : (
-              <Text style={styles.muted}>
-                {active
-                  ? meeting.speakerStatus === 'unavailable'
-                    ? 'Speaker labels unavailable; transcription continues.'
-                    : meeting.speakerStatus === 'loading'
-                      ? 'Preparing speaker recognition…'
-                      : 'Listening for voices…'
-                  : 'No speaker labels yet.'}
-              </Text>
-            )}
-            {meeting.ownerToken && speakers.length > 0 ? (
-              <Text style={styles.muted}>Tap to name · Hold to merge</Text>
-            ) : null}
-            {meeting.ownerToken && Object.keys(meeting.speakerMerges ?? {}).length ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Restore merged speaker"
-                onPress={() => {
-                  Alert.alert('Restore merged speaker', 'Choose the speaker to separate again.', [
-                    ...Object.keys(meeting.speakerMerges ?? {}).map((source) => ({
-                      text: meeting.speakerNames?.[source] ?? `Speaker ${Number(source) + 1}`,
-                      onPress: () => {
-                        const merges = {
-                          ...(speakerEditDraft.current?.merges ?? meeting.speakerMerges ?? {}),
-                        };
-                        delete merges[source];
-                        void persistSpeakerEdits({ merges });
-                      },
-                    })),
-                    { text: 'Cancel', style: 'cancel' },
-                  ]);
-                }}
-              >
-                <Text style={styles.muted}>Restore merged speaker</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          <View style={styles.transcriptCard}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={
-                transcriptExpanded ? 'Collapse transcript' : 'Open full transcript'
-              }
-              onPress={() => setTranscriptExpanded((expanded) => !expanded)}
-              style={styles.transcriptHeader}
-            >
-              <Text style={styles.listeningIcon}>{live ? '●' : '○'}</Text>
-              <View style={styles.transcriptHeaderText}>
-                <Text style={styles.section}>Live transcript</Text>
-                {!transcriptExpanded ? (
-                  <Text style={styles.preview} numberOfLines={width < 600 ? 2 : 3}>
-                    {transcriptPreview || 'Recognized speech will appear here.'}
-                  </Text>
-                ) : null}
-              </View>
-              <Text style={styles.expandLabel}>{transcriptExpanded ? 'Close' : 'Full ›'}</Text>
-            </Pressable>
-            {transcriptExpanded ? (
-              <FlatList
-                ref={transcriptList}
-                testID="meeting-transcript"
-                style={styles.transcript}
-                data={chunks}
-                keyExtractor={(_, index) => String(index)}
-                renderItem={({ item }) =>
-                  'start' in item ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Correct speaker for ${item.text}`}
-                      disabled={!meeting.ownerToken}
-                      onPress={() => correctSpeaker(item, speakerChoices)}
-                    >
-                      <Text style={styles.transcriptText}>
-                        {speakerLabel(item.speaker)}: {item.text}
-                      </Text>
-                    </Pressable>
-                  ) : (
-                    <Text style={styles.transcriptText}>{item.text}</Text>
-                  )
-                }
-                ListEmptyComponent={
-                  <Text style={styles.muted}>Recognized speech will appear here.</Text>
-                }
-                onScrollBeginDrag={() => {
-                  transcriptAtEnd.current = false;
-                }}
-                onScrollEndDrag={({ nativeEvent }) => {
-                  const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-                  transcriptAtEnd.current =
-                    contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
-                }}
-                onMomentumScrollEnd={({ nativeEvent }) => {
-                  const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-                  transcriptAtEnd.current =
-                    contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
-                }}
-                scrollEventThrottle={100}
-                onContentSizeChange={() => {
-                  if (transcriptAtEnd.current)
-                    transcriptList.current?.scrollToEnd({ animated: true });
-                }}
-              />
-            ) : null}
-          </View>
-          <View style={styles.insightsCard}>
-            <Text style={styles.section}>Live Insights</Text>
-            <ScrollView style={styles.insightList} keyboardShouldPersistTaps="handled">
-              {visibleAnswers.map((card) => (
-                <View key={card.id} style={styles.suggestion}>
-                  <Text style={styles.suggestionLabel}>
-                    {card.status === 'ready'
-                      ? 'ANSWER READY'
-                      : card.status === 'failed'
-                        ? 'REQUEST INTERRUPTED'
-                        : 'VERITY IS WORKING'}
-                  </Text>
-                  <Text style={styles.suggestionText}>{card.request}</Text>
-                  {card.status === 'ready' ? (
-                    <>
-                      <Text style={styles.evidence}>
-                        {expandedAnswer === card.id
-                          ? card.answer
-                          : compactMeetingAnswer(card.answer)}
-                      </Text>
-                      {meetingAnswerSource(card.answer) ? (
-                        <Text style={styles.evidence}>
-                          Source: {meetingAnswerSource(card.answer)}
-                        </Text>
-                      ) : null}
-                      {card.answer.length > 360 ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={
-                            expandedAnswer === card.id
-                              ? 'Collapse meeting answer'
-                              : 'Expand meeting answer'
-                          }
-                          onPress={() =>
-                            setExpandedAnswer((current) => (current === card.id ? null : card.id))
-                          }
-                        >
-                          <Text style={styles.researchButtonText}>
-                            {expandedAnswer === card.id ? 'Show less' : 'Show full answer'}
-                          </Text>
-                        </Pressable>
-                      ) : null}
-                    </>
-                  ) : null}
-                  {card.status === 'ready' ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Open answer in chat"
-                      onPress={() =>
-                        router.push({ pathname: '/session/[id]', params: { id: sessionId } })
-                      }
-                      style={styles.researchButton}
-                    >
-                      <Text style={styles.researchButtonText}>Open in chat ›</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              ))}
-              {insights.slice(0, 4).map((insight) => (
-                <View key={insight.id} style={styles.suggestion}>
-                  <Text style={styles.suggestionLabel}>
-                    {insight.kind === 'contradiction' ? 'POSSIBLE CONTRADICTION' : 'WORTH CHECKING'}
-                  </Text>
-                  <Text style={styles.suggestionText}>{insight.summary}</Text>
-                  <Text style={styles.evidence}>“{insight.evidenceA}”</Text>
-                  {insight.evidenceB ? (
-                    <Text style={styles.evidence}>“{insight.evidenceB}”</Text>
-                  ) : null}
-                  {insight.sourcePath ? (
-                    <Text style={styles.evidence}>Source: {insight.sourcePath}</Text>
-                  ) : null}
-                  {insight.kind === 'research' || insight.kind === 'contradiction' ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        insight.kind === 'contradiction'
-                          ? 'Check meeting claim'
-                          : 'Research insight'
-                      }
-                      disabled={sendingInsight}
-                      onPress={() =>
-                        void openResearch(
-                          insight.kind === 'contradiction'
-                            ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
-                            : insight.evidenceA,
-                        )
-                      }
-                      style={styles.researchButton}
-                    >
-                      <Text style={styles.researchButtonText}>
-                        {insight.kind === 'contradiction'
-                          ? 'Let Verity check ›'
-                          : 'Let Verity research ›'}
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              ))}
-              {suggestedQuestion &&
-              !insights.some((insight) => insight.evidenceA.includes(suggestedQuestion)) ? (
-                <View style={styles.suggestion}>
-                  <Text style={styles.suggestionLabel}>QUESTION HEARD</Text>
-                  <Text style={styles.suggestionText}>{suggestedQuestion}</Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Research meeting question"
-                    disabled={sendingInsight}
-                    onPress={() => void openResearch(suggestedQuestion)}
-                    style={styles.researchButton}
-                  >
-                    <Text style={styles.researchButtonText}>Let Verity research ›</Text>
-                  </Pressable>
-                </View>
-              ) : insights.length === 0 ? (
-                <Text style={styles.muted}>Questions from the conversation will appear here.</Text>
-              ) : null}
-            </ScrollView>
-            <View style={styles.insightComposer}>
-              <TextInput
-                accessibilityLabel="Ask Verity about this meeting"
-                placeholder="Ask here or say “Verity, research…”"
-                placeholderTextColor={MUTED}
-                value={insightQuestion}
-                onChangeText={setInsightQuestion}
-                onSubmitEditing={() => void openResearch(insightQuestion, 'request')}
-                returnKeyType="go"
-                style={styles.insightInput}
-              />
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Ask Verity in meeting"
-                disabled={!insightQuestion.trim() || sendingInsight}
-                onPress={() => void openResearch(insightQuestion, 'request')}
-                style={styles.insightGo}
-              >
-                <Text style={styles.insightGoText}>Go ›</Text>
-              </Pressable>
-            </View>
-          </View>
-          <View style={styles.notesCard}>
-            <Text style={styles.section}>Meeting notes</Text>
-            <ScrollView style={styles.notes} keyboardShouldPersistTaps="handled">
-              {notes
-                .filter((note) => !(live || noteUnsaved || draft) || note.id !== draft?.id)
-                .map((note) => (
-                  <Text key={note.id} testID="meeting-note" style={styles.note}>
-                    <Text style={styles.noteTime}>
-                      {noteClockTime(meeting.startedAt, note.atSeconds)}{' '}
-                    </Text>
-                    {note.text}
-                  </Text>
-                ))}
-            </ScrollView>
-            {live || noteUnsaved || draft ? (
-              <View style={styles.composer}>
-                <TextInput
-                  accessibilityLabel="Add a meeting note"
-                  maxLength={10_000}
-                  placeholder="Add a note…"
-                  placeholderTextColor={MUTED}
-                  multiline
-                  submitBehavior="submit"
-                  value={draft?.text ?? ''}
-                  onChangeText={editNote}
-                  onSubmitEditing={submitNote}
-                  style={styles.input}
-                />
-                <Pressable
-                  onPress={submitNote}
-                  accessibilityRole="button"
-                  accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Add note'}
-                  style={styles.addNote}
-                >
-                  <Text style={styles.addNoteText}>{noteUnsaved ? '↻' : '+'}</Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </View>
-          {live ? (
-            <View style={styles.controls}>
-              <Pressable
-                disabled={
-                  busy ||
-                  !!pendingCommand ||
-                  (meeting.captureStatus !== 'paused' && meeting.captureStatus !== 'listening')
-                }
-                onPress={togglePause}
-                style={[styles.button, styles.pauseButton]}
-                accessibilityRole="button"
-              >
-                <Text style={styles.pauseButtonText}>
-                  {meeting.captureStatus === 'paused' ? '▶  Resume' : 'Ⅱ  Pause'}
-                </Text>
-              </Pressable>
-              <Pressable
-                disabled={busy || pendingCommand === 'stop'}
-                onPress={end}
-                style={[styles.button, styles.endButton]}
-                accessibilityRole="button"
-              >
-                <Text style={styles.buttonText}>End meeting</Text>
-              </Pressable>
-            </View>
-          ) : null}
-        </>
-      ) : null}
-      {!live && (!meeting || showNewMeeting) ? (
-        <View>
-          <Text style={styles.section}>People in this meeting</Text>
-          <View style={styles.participantChoices}>
-            {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, null] as const).map((count) => (
-              <Pressable
-                key={count ?? 'unknown'}
-                accessibilityRole="radio"
-                accessibilityLabel={count === null ? 'Not sure' : `${count} people`}
-                accessibilityState={{ selected: expectedParticipants === count }}
-                disabled={busy}
-                onPress={() => setExpectedParticipants(count)}
-                style={[
-                  styles.participantChoice,
-                  expectedParticipants === count && styles.participantChoiceSelected,
-                ]}
-              >
-                <Text
-                  style={
-                    expectedParticipants === count ? styles.participantSelectedText : styles.muted
-                  }
-                >
-                  {count ?? 'Not sure'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+    </>
+  );
+
+  const speakerAvatars = (captions: boolean) =>
+    speakers.map((speaker) => (
+      <SpeakerAvatar
+        key={speaker}
+        initial={speakerInitial(speaker)}
+        tone={speakerTone(theme.colors, speaker)}
+        active={activeVoice === speaker}
+        dashed={!meeting?.speakerNames?.[speaker]}
+        size={captions ? 44 : 36}
+        caption={captions ? speakerLabel(speaker) : undefined}
+        detail={captions && !live ? `${speakerMinutes(speaker)} min` : undefined}
+        accessibilityLabel={`Rename ${speakerLabel(speaker)}`}
+        accessibilityHint="Long press to merge this speaker with another"
+        disabled={!meeting?.ownerToken}
+        onPress={() => renameSpeaker(speaker)}
+        onLongPress={() => mergeSpeaker(speaker, speakers)}
+      />
+    ));
+
+  const restoreMerged =
+    meeting?.ownerToken && Object.keys(merges).length ? (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Restore merged speaker"
+        onPress={() => {
+          Alert.alert('Restore merged speaker', 'Choose the speaker to separate again.', [
+            ...Object.keys(merges).map((source) => ({
+              text: meeting.speakerNames?.[source] ?? `Speaker ${Number(source) + 1}`,
+              onPress: () => {
+                const next = { ...(speakerEditDraft.current?.merges ?? merges) };
+                delete next[source];
+                void persistSpeakerEdits({ merges: next });
+              },
+            })),
+            { text: 'Cancel', style: 'cancel' },
+          ]);
+        }}
+      >
+        <Text style={styles.link}>Restore merged speaker</Text>
+      </Pressable>
+    ) : null;
+
+  const speakerStatus = active
+    ? meeting?.speakerStatus === 'unavailable'
+      ? 'Speaker labels unavailable; transcription continues.'
+      : meeting?.speakerStatus === 'loading'
+        ? 'Preparing speaker recognition…'
+        : 'Listening for voices…'
+    : 'No speaker labels yet.';
+
+  const noteRows = (rows: MeetingNote[]) =>
+    rows.map((note) => (
+      <Text key={note.id} testID="meeting-note" style={styles.note}>
+        <Text style={styles.noteTime}>{noteClockTime(meeting!.startedAt, note.atSeconds)} </Text>
+        {note.text}
+      </Text>
+    ));
+
+  const noteComposer = (autoFocus: boolean) => (
+    <View style={styles.composer}>
+      <Text style={styles.composerTime}>
+        {meeting
+          ? noteClockTime(
+              meeting.startedAt,
+              draft?.atSeconds ?? (Date.now() - meeting.startedAt) / 1000,
+            )
+          : ''}
+      </Text>
+      <TextInput
+        accessibilityLabel="Add a meeting note"
+        autoFocus={autoFocus}
+        maxLength={10_000}
+        placeholder="Add a note…"
+        placeholderTextColor={theme.colors.textFaint}
+        multiline
+        submitBehavior="submit"
+        value={draft?.text ?? ''}
+        onChangeText={editNote}
+        onSubmitEditing={submitNote}
+        style={styles.composerInput}
+      />
+      <Pressable
+        onPress={submitNote}
+        accessibilityRole="button"
+        accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Add note'}
+        style={styles.composerSend}
+      >
+        <Icon name={noteUnsaved ? 'rotate-cw' : 'check'} size={18} color={theme.colors.onPrimary} />
+      </Pressable>
+    </View>
+  );
+
+  const askComposer = (autoFocus: boolean) => (
+    <View style={styles.composer}>
+      <Text style={[styles.composerTime, { color: theme.colors.accent }]}>✦</Text>
+      <TextInput
+        accessibilityLabel="Ask Verity about this meeting"
+        autoFocus={autoFocus}
+        placeholder="Ask Verity about this meeting…"
+        placeholderTextColor={theme.colors.textFaint}
+        value={insightQuestion}
+        onChangeText={setInsightQuestion}
+        onSubmitEditing={() => void openResearch(insightQuestion, 'request')}
+        returnKeyType="go"
+        style={styles.composerInput}
+      />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Ask Verity in meeting"
+        disabled={!insightQuestion.trim() || sendingInsight}
+        onPress={() => void openResearch(insightQuestion, 'request')}
+        style={styles.composerSend}
+      >
+        <Icon name="arrow-up" size={18} color={theme.colors.onPrimary} />
+      </Pressable>
+    </View>
+  );
+
+  const transcriptSheet = meeting ? (
+    <Modal
+      visible={transcriptExpanded}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={() => setTranscriptExpanded(false)}
+    >
+      <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
+        <View style={styles.sheetHeader}>
+          <Text style={styles.sheetTitle}>Transcript</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Collapse transcript"
+            onPress={() => setTranscriptExpanded(false)}
+          >
+            <Text style={styles.link}>Done</Text>
+          </Pressable>
         </View>
-      ) : null}
-      {!live && (!meeting || showNewMeeting) ? (
-        <View>
-          <Text style={styles.section}>Engine for next meeting</Text>
-          {engines.map((engine) => (
+        {meeting.ownerToken && speakers.length ? (
+          <Text style={styles.hint}>Tap a line to correct its speaker.</Text>
+        ) : null}
+        <FlatList
+          ref={transcriptList}
+          testID="meeting-transcript"
+          data={chunks}
+          keyExtractor={(_, index) => String(index)}
+          contentContainerStyle={styles.transcriptContent}
+          renderItem={({ item }) =>
+            'start' in item ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Correct speaker for ${item.text}`}
+                disabled={!meeting.ownerToken}
+                onPress={() => correctSpeaker(item, speakerChoices)}
+              >
+                <Text style={styles.transcriptText}>
+                  {speakerLabel(item.speaker)}: {item.text}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.transcriptText}>{item.text}</Text>
+            )
+          }
+          ListEmptyComponent={<Text style={styles.hint}>Recognized speech will appear here.</Text>}
+          onScrollBeginDrag={() => {
+            transcriptAtEnd.current = false;
+          }}
+          onScrollEndDrag={({ nativeEvent }) => {
+            const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
+            transcriptAtEnd.current =
+              contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+          }}
+          onMomentumScrollEnd={({ nativeEvent }) => {
+            const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
+            transcriptAtEnd.current =
+              contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+          }}
+          scrollEventThrottle={100}
+          onContentSizeChange={() => {
+            if (transcriptAtEnd.current) transcriptList.current?.scrollToEnd({ animated: true });
+          }}
+        />
+      </View>
+    </Modal>
+  ) : null;
+
+  const earlierMeetings =
+    history.length > 1 || (history.length === 1 && !meeting) ? (
+      <View style={styles.block}>
+        <SectionLabel>EARLIER MEETINGS</SectionLabel>
+        {history
+          .filter((item) => item.id !== meeting?.id)
+          .map((item) => (
             <Pressable
-              key={engine.id}
-              accessibilityRole="radio"
-              accessibilityState={{
-                selected: selectedEngine === engine.id,
-                disabled: !engine.available,
+              key={item.id}
+              accessibilityRole="button"
+              style={styles.row}
+              onPress={() => {
+                const running = currentMeeting();
+                setSelectedId(item.id === running?.id ? null : item.id);
+                setMeeting(item.id === running?.id ? running : item);
+                setShowNewMeeting(false);
               }}
-              disabled={!engine.available || busy}
-              onPress={() => setSelectedEngine(engine.id)}
-              style={styles.engineChoice}
             >
-              <Text style={{ color: selectedEngine === engine.id ? ACCENT : TEXT }}>
-                {selectedEngine === engine.id ? '● ' : '○ '}
-                {engine.name}
-                {engine.available ? '' : ' · unavailable'}
+              <Text style={styles.rowText}>
+                {new Date(item.startedAt).toLocaleString()} · {item.state}
+                {item.serverId === null ? ' · local only' : ''}
               </Text>
+              <Icon name="chevron-right" size={16} color={theme.colors.textFaint} />
             </Pressable>
           ))}
-        </View>
-      ) : null}
-      {!live && (!meeting || showNewMeeting) ? (
-        <Pressable disabled={busy} onPress={start} style={[styles.button, styles.startButton]}>
-          {busy ? (
-            <ActivityIndicator color={TEXT} />
-          ) : (
-            <Text style={[styles.buttonText, styles.startButtonText]}>
-              {runningMeeting?.state === 'active' && runningMeeting.sessionId === sessionId
-                ? 'Return to live meeting'
-                : 'Start meeting'}
+      </View>
+    ) : null;
+
+  // Starting replaces the previous meeting's content instead of stacking under it, so the
+  // start button can never be pushed below the screen.
+  if (!live && (!meeting || showNewMeeting)) {
+    const returning = runningMeeting?.state === 'active' && runningMeeting.sessionId === sessionId;
+    const engine = engines.find((item) => item.id === selectedEngine);
+    return (
+      <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <ScrollView
+          style={styles.fill}
+          contentContainerStyle={[styles.content, styles.narrow]}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>New meeting</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => (meeting ? setShowNewMeeting(false) : router.back())}
+            >
+              <Text style={styles.link}>Cancel</Text>
+            </Pressable>
+          </View>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <View style={styles.block}>
+            <SectionLabel>WHO IS THERE?</SectionLabel>
+            <View style={styles.segmented}>
+              {(
+                [
+                  [4, 'Up to 4 people'],
+                  [10, 'Larger group'],
+                ] as const
+              ).map(([count, label]) => {
+                const selected = (expectedParticipants ?? 4) === count;
+                return (
+                  <Pressable
+                    key={count}
+                    accessibilityRole="radio"
+                    accessibilityLabel={label}
+                    accessibilityState={{ selected }}
+                    disabled={busy}
+                    onPress={() => setExpectedParticipants(count)}
+                    style={[styles.segment, selected && styles.segmentSelected]}
+                  >
+                    <Text style={selected ? styles.segmentTextSelected : styles.segmentText}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={styles.hint}>
+              {(expectedParticipants ?? 4) > 4
+                ? 'Separates up to 10 voices, with more mix-ups between similar ones.'
+                : 'Keeps voices apart most reliably.'}{' '}
+              Can’t be changed once the meeting runs.
             </Text>
-          )}
+          </View>
+          <View style={styles.block}>
+            <SectionLabel>PRIVACY</SectionLabel>
+            <Text style={styles.body}>
+              Audio stays on this device and is not saved. Text goes to your Verity server only.
+            </Text>
+          </View>
+          <View style={styles.block}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Speech recognition"
+              accessibilityState={{ expanded: showEngines }}
+              onPress={() => setShowEngines((shown) => !shown)}
+              style={styles.row}
+            >
+              <Text style={styles.rowText}>Speech recognition</Text>
+              <Text style={styles.rowValue}>{engine?.name ?? 'On device'}</Text>
+              <Icon
+                name={showEngines ? 'chevron-down' : 'chevron-right'}
+                size={16}
+                color={theme.colors.textFaint}
+              />
+            </Pressable>
+            {showEngines
+              ? engines.map((item) => (
+                  <Pressable
+                    key={item.id}
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: selectedEngine === item.id,
+                      disabled: !item.available,
+                    }}
+                    disabled={!item.available || busy}
+                    onPress={() => setSelectedEngine(item.id)}
+                    style={styles.engineChoice}
+                  >
+                    <Text
+                      style={
+                        selectedEngine === item.id ? styles.segmentTextSelected : styles.rowText
+                      }
+                    >
+                      {selectedEngine === item.id ? '● ' : '○ '}
+                      {item.name}
+                      {item.available ? '' : ' · unavailable'}
+                    </Text>
+                  </Pressable>
+                ))
+              : null}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Start meeting"
+            disabled={busy}
+            onPress={start}
+            style={styles.startButton}
+          >
+            {busy ? (
+              <ActivityIndicator color={theme.colors.primary} />
+            ) : (
+              <>
+                {returning ? null : <View style={styles.recordDot} />}
+                <Text style={styles.startButtonText}>
+                  {returning ? 'Return to live meeting' : 'Start recording'}
+                </Text>
+              </>
+            )}
+          </Pressable>
+          {earlierMeetings}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (!meeting) return null;
+
+  if (!live) {
+    const minutes = Math.max(
+      1,
+      Math.round(((meeting.endedAt ?? now) - meeting.startedAt) / 60_000),
+    );
+    const readyAnswers = visibleAnswers.filter((card) => card.status === 'ready');
+    const openPoints = noticedCards().slice(visibleAnswers.length);
+    const unnamed = speakers.find((speaker) => !meeting.speakerNames?.[speaker]);
+    return (
+      <KeyboardAvoidingView
+        behavior="padding"
+        style={[styles.root, { paddingTop: insets.top + 12 }]}
+      >
+        <Stack.Screen options={{ headerShown: false }} />
+        <ScrollView
+          style={styles.fill}
+          contentContainerStyle={[
+            styles.content,
+            styles.narrow,
+            { paddingBottom: insets.bottom + 24 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>Meeting</Text>
+            <Pressable accessibilityRole="button" onPress={() => router.back()}>
+              <Text style={styles.link}>Done</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.subtitle}>
+            {new Date(meeting.startedAt).toLocaleString([], {
+              dateStyle: 'medium',
+              timeStyle: 'short',
+            })}{' '}
+            · {minutes} min
+            {speakers.length ? ` · ${speakers.length} people` : ''} · {finalizedNotes.length} notes
+          </Text>
+          <View style={styles.savedCard}>
+            <Icon
+              name={
+                noteUnsaved || meeting.state === 'interrupted' || syncError
+                  ? 'alert-circle'
+                  : 'check-circle'
+              }
+              size={22}
+              color={
+                noteUnsaved || meeting.state === 'interrupted'
+                  ? theme.colors.tone.danger
+                  : theme.colors.tone.done
+              }
+            />
+            <View style={styles.fill}>{statusLines}</View>
+          </View>
+          {openPoints.length ? (
+            <View style={styles.block}>
+              <SectionLabel>{`OPEN POINTS · ${openPoints.length}`}</SectionLabel>
+              {openPoints}
+            </View>
+          ) : null}
+          {visibleAnswers.length ? (
+            <View style={styles.block}>
+              <SectionLabel>{`ANSWERS · ${readyAnswers.length}`}</SectionLabel>
+              {noticedCards().slice(0, visibleAnswers.length)}
+            </View>
+          ) : null}
+          <View style={styles.block}>
+            <SectionLabel>{`YOUR NOTES · ${finalizedNotes.length}`}</SectionLabel>
+            {finalizedNotes.length ? (
+              noteRows(finalizedNotes)
+            ) : (
+              <Text style={styles.hint}>No notes in this meeting.</Text>
+            )}
+            {composerVisible ? noteComposer(false) : null}
+          </View>
+          <View style={styles.block}>
+            <SectionLabel>PEOPLE</SectionLabel>
+            {speakers.length ? (
+              <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
+            ) : (
+              <Text style={styles.hint}>{speakerStatus}</Text>
+            )}
+            {unnamed !== undefined && meeting.ownerToken ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => renameSpeaker(unnamed)}
+                style={styles.row}
+              >
+                <Text style={styles.rowValue}>{speakerLabel(unnamed)} has no name yet</Text>
+                <Text style={styles.link}>Name ›</Text>
+              </Pressable>
+            ) : null}
+            {restoreMerged}
+          </View>
+          <View style={styles.bottomBar}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open full transcript"
+              onPress={() => setTranscriptExpanded(true)}
+              style={styles.barButton}
+            >
+              <Text style={styles.barButtonText}>Transcript</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.push({ pathname: '/session/[id]', params: { id: sessionId } })}
+              style={[styles.barButton, styles.barButtonPrimary]}
+            >
+              <Text style={styles.barButtonPrimaryText}>Continue in chat</Text>
+            </Pressable>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setShowNewMeeting(true)}
+            style={styles.centered}
+          >
+            <Text style={styles.link}>Start another meeting</Text>
+          </Pressable>
+          {earlierMeetings}
+        </ScrollView>
+        {transcriptSheet}
+      </KeyboardAvoidingView>
+    );
+  }
+
+  const paused = meeting.captureStatus === 'paused';
+  const preparing =
+    meeting.captureStatus === 'preparing' || meeting.captureStatus === 'downloading';
+  const header = (
+    <View style={styles.header}>
+      <Pressable
+        onPress={minimize}
+        accessibilityRole="button"
+        accessibilityLabel="Minimize meeting"
+        style={styles.circleButton}
+      >
+        <Icon name="chevron-down" size={22} color={theme.colors.text} />
+      </Pressable>
+      <View style={styles.fill} />
+      <View
+        style={[styles.pill, voiceSending && { borderColor: theme.colors.accent }]}
+        accessibilityLabel={paused ? 'Paused' : `Recording ${elapsed(meeting.startedAt, now)}`}
+      >
+        {voiceSending ? (
+          <Text style={[styles.pillText, { color: theme.colors.accent }]}>✦ Sending request…</Text>
+        ) : (
+          <>
+            <BreathingDot
+              color={paused ? theme.colors.tone.attention : theme.colors.tone.danger}
+              breathing={!paused && !preparing}
+            />
+            <Text style={[styles.pillText, paused && { color: theme.colors.tone.attention }]}>
+              {paused ? 'Paused' : preparing ? 'Preparing…' : elapsed(meeting.startedAt, now)}
+            </Text>
+          </>
+        )}
+      </View>
+      <Pressable
+        disabled={busy || !!pendingCommand || (!paused && meeting.captureStatus !== 'listening')}
+        onPress={togglePause}
+        style={styles.circleButton}
+        accessibilityRole="button"
+        accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
+      >
+        <Icon name={paused ? 'play' : 'pause'} size={18} color={theme.colors.text} />
+      </Pressable>
+      <Pressable
+        disabled={busy || pendingCommand === 'stop'}
+        onPress={end}
+        style={styles.endButton}
+        accessibilityRole="button"
+        accessibilityLabel="End meeting"
+      >
+        <Text style={styles.endButtonText}>End</Text>
+      </Pressable>
+    </View>
+  );
+  const speakerRow = (captions: boolean) => (
+    <View style={styles.block}>
+      <View style={styles.avatarLine}>
+        {speakers.length ? (
+          <View style={[styles.avatarRow, styles.fill]}>{speakerAvatars(captions)}</View>
+        ) : (
+          <Text style={[styles.hint, styles.fill]}>{speakerStatus}</Text>
+        )}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open full transcript"
+          onPress={() => setTranscriptExpanded(true)}
+        >
+          <Text style={styles.hint}>
+            {speakers.length ? `${speakers.length} voices · ` : ''}Transcript ›
+          </Text>
         </Pressable>
-      ) : null}
-      {!live && meeting && !showNewMeeting ? (
-        <Pressable onPress={() => setShowNewMeeting(true)} accessibilityRole="button">
-          <Text style={styles.link}>Start another meeting</Text>
-        </Pressable>
-      ) : null}
-      {history.length > 1 || (history.length === 1 && !meeting) ? (
-        <View style={styles.history}>
-          <Text style={styles.section}>Earlier meetings</Text>
-          <ScrollView>
-            {history
-              .filter((item) => item.id !== meeting?.id)
-              .map((item) => (
-                <Pressable
-                  key={item.id}
-                  onPress={() => {
-                    const running = currentMeeting();
-                    setSelectedId(item.id === running?.id ? null : item.id);
-                    setMeeting(item.id === running?.id ? running : item);
-                  }}
-                >
-                  <Text style={styles.link}>
-                    {new Date(item.startedAt).toLocaleString()} · {item.state}
-                    {item.serverId === null ? ' · local only' : ''}
-                  </Text>
-                </Pressable>
-              ))}
-          </ScrollView>
+      </View>
+      {restoreMerged}
+    </View>
+  );
+  const cards = noticedCards();
+  const noticed = (
+    <View style={styles.block}>
+      <View style={styles.noticedHeader}>
+        <Text style={[styles.sparkle, { color: theme.colors.accent }]}>✦</Text>
+        <Text style={styles.noticedTitle}>Verity noticed</Text>
+        {cards.length ? <Text style={styles.hint}>{cards.length}</Text> : null}
+      </View>
+      {cards.length ? (
+        cards
+      ) : (
+        <Text style={styles.hint}>
+          Questions and contradictions from the conversation appear here.
+        </Text>
+      )}
+    </View>
+  );
+
+  if (wide)
+    return (
+      <KeyboardAvoidingView
+        behavior="padding"
+        style={[styles.root, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}
+      >
+        <Stack.Screen options={{ headerShown: false }} />
+        <View style={styles.page}>
+          {header}
+          {statusLines}
+          <View style={styles.columns}>
+            <View style={styles.column}>
+              <SectionLabel>IN THE ROOM</SectionLabel>
+              {speakerRow(true)}
+              <SectionLabel right="Return saves a line">{`NOTES · ${finalizedNotes.length}`}</SectionLabel>
+              <View style={styles.notesCard}>
+                <ScrollView style={styles.fill} keyboardShouldPersistTaps="handled">
+                  {noteRows(finalizedNotes)}
+                </ScrollView>
+                {noteComposer(false)}
+              </View>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.column}>
+              <ScrollView
+                style={styles.fill}
+                contentContainerStyle={styles.content}
+                keyboardShouldPersistTaps="handled"
+              >
+                {noticed}
+                {earlierMeetings}
+              </ScrollView>
+              {askComposer(false)}
+            </View>
+          </View>
         </View>
-      ) : null}
+        {transcriptSheet}
+      </KeyboardAvoidingView>
+    );
+
+  const lastNote = finalizedNotes.at(-1);
+  return (
+    <KeyboardAvoidingView
+      behavior="padding"
+      style={[styles.root, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}
+    >
+      <Stack.Screen options={{ headerShown: false }} />
+      <View style={styles.page}>
+        {header}
+        <ScrollView
+          style={styles.fill}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+        >
+          {statusLines}
+          {speakerRow(false)}
+          {noticed}
+          {composing === 'note' && finalizedNotes.length ? (
+            <View style={styles.block}>
+              <SectionLabel>{`NOTES · ${finalizedNotes.length}`}</SectionLabel>
+              {noteRows(finalizedNotes)}
+            </View>
+          ) : lastNote ? (
+            <View style={styles.block}>
+              <SectionLabel>LAST NOTE</SectionLabel>
+              {noteRows([lastNote])}
+            </View>
+          ) : null}
+          {earlierMeetings}
+        </ScrollView>
+        {composing === 'note' || noteUnsaved || draft?.text ? (
+          <View style={styles.composerLine}>
+            <View style={styles.fill}>{noteComposer(composing === 'note')}</View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close note"
+              onPress={() => setComposing(null)}
+            >
+              <Icon name="x" size={20} color={theme.colors.textMuted} />
+            </Pressable>
+          </View>
+        ) : composing === 'ask' ? (
+          <View style={styles.composerLine}>
+            <View style={styles.fill}>{askComposer(true)}</View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close question"
+              onPress={() => setComposing(null)}
+            >
+              <Icon name="x" size={20} color={theme.colors.textMuted} />
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.bottomBar}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Write a note"
+              onPress={() => setComposing('note')}
+              style={styles.barButton}
+            >
+              <Text style={styles.barButtonText}>
+                ✎ Note{finalizedNotes.length ? ` · ${finalizedNotes.length}` : ''}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Ask Verity"
+              onPress={() => setComposing('ask')}
+              style={[styles.barButton, styles.barButtonPrimary]}
+            >
+              <Text style={styles.barButtonPrimaryText}>✦ Ask Verity</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
+      {transcriptSheet}
     </KeyboardAvoidingView>
   );
 }
 
-const styles = StyleSheet.create({
-  root: {
+// The recording dot breathes while capture runs and holds still when paused.
+function BreathingDot({ color, breathing }: { color: string; breathing: boolean }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!breathing) {
+      opacity.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.35, duration: 1100, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1, duration: 1100, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [breathing, opacity]);
+  return (
+    <View style={[styles.dotRing, { borderColor: color }]}>
+      <Animated.View style={[styles.dot, { backgroundColor: color, opacity }]} />
+    </View>
+  );
+}
+
+function timeOfDay(at: number) {
+  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+const styles = StyleSheet.create((theme) => ({
+  root: { flex: 1, backgroundColor: theme.colors.background },
+  fill: { flex: 1 },
+  page: {
     flex: 1,
     width: '100%',
-    maxWidth: 900,
+    maxWidth: 1200,
     alignSelf: 'center',
-    padding: 16,
-    backgroundColor: '#0e0c16',
-    gap: 14,
+    paddingHorizontal: theme.spacing.lg,
+    gap: theme.spacing.md,
   },
-  back: { color: '#c6bdd8', fontSize: 14, paddingVertical: 6 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  title: { color: TEXT, fontSize: 28, fontWeight: '700' },
-  minimize: { color: TEXT, fontSize: 28, paddingHorizontal: 8 },
-  muted: { color: MUTED },
-  participantChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
-  participantChoice: {
+  content: { padding: theme.spacing.lg, gap: theme.spacing.xl, paddingBottom: theme.spacing.xl },
+  narrow: { width: '100%', maxWidth: 640, alignSelf: 'center' },
+  block: { gap: theme.spacing.md },
+  header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  circleButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#433a5c',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  participantChoiceSelected: { borderColor: ACCENT },
-  participantSelectedText: { color: ACCENT },
-  speakerCard: {
-    backgroundColor: CARD,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#433a5c',
-    padding: 16,
-    gap: 10,
-  },
-  speakerBadge: {
-    borderWidth: 1,
-    borderColor: '#433a5c',
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  speakerBadgeActive: { borderColor: ACCENT },
-  speakerText: { color: TEXT },
-  status: { color: '#a8f4c5', fontSize: 13 },
-  statusPaused: { color: '#f3c579' },
-  statusError: { color: '#ffaba5' },
-  card: {
-    flex: 1,
-    minHeight: 120,
-    backgroundColor: CARD,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#433a5c',
-    padding: 16,
-    gap: 12,
-  },
-  transcriptCard: {
-    backgroundColor: CARD,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#433a5c',
-    padding: 14,
-    gap: 10,
-    maxHeight: '42%',
-  },
-  transcriptHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  transcriptHeaderText: { flex: 1, gap: 4 },
-  listeningIcon: { color: '#7de5a7', fontSize: 22 },
-  preview: { color: TEXT, fontSize: 14, lineHeight: 20 },
-  expandLabel: { color: ACCENT, fontSize: 13 },
-  insightsCard: {
-    flex: 1,
-    minHeight: 92,
-    backgroundColor: CARD,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#433a5c',
-    padding: 14,
-    gap: 10,
-  },
-  suggestion: {
-    backgroundColor: '#29243a',
-    borderRadius: 12,
-    padding: 12,
-    gap: 8,
-    marginBottom: 10,
-  },
-  suggestionLabel: { color: ACCENT, fontSize: 11, fontWeight: '700' },
-  suggestionText: { color: TEXT, fontSize: 15 },
-  evidence: { color: MUTED, fontSize: 13 },
-  insightList: { flex: 1 },
-  researchButton: { alignSelf: 'flex-start', paddingVertical: 6 },
-  researchButtonText: { color: ACCENT, fontWeight: '700' },
-  insightComposer: {
+  pill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#262238',
-    borderRadius: 12,
-    marginTop: 'auto',
+    gap: theme.spacing.sm,
+    minHeight: 40,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
-  insightInput: { flex: 1, color: TEXT, minHeight: 48, paddingHorizontal: 12 },
-  insightGo: { paddingHorizontal: 14, paddingVertical: 12 },
-  insightGoText: { color: ACCENT, fontWeight: '700' },
+  pillText: {
+    color: theme.colors.text,
+    fontSize: theme.text.md,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  dotRing: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dot: { width: 10, height: 10, borderRadius: 5 },
+  endButton: {
+    minHeight: 40,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
+  },
+  endButtonText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.md },
+  status: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  statusError: { color: theme.colors.tone.danger },
+  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
+  hint: { color: theme.colors.textFaint, fontSize: theme.text.sm },
+  body: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
+  link: { color: theme.colors.primary, fontSize: theme.text.md },
+  centered: { alignItems: 'center', paddingVertical: theme.spacing.sm },
+  avatarLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  avatarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
+  noticedHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  sparkle: { fontSize: theme.text.md },
+  noticedTitle: { flex: 1, color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+  note: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
+  noteTime: { color: theme.colors.textFaint, fontWeight: '700' },
   notesCard: {
     flex: 1,
-    minHeight: 88,
-    backgroundColor: CARD,
-    borderRadius: 18,
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
     borderWidth: 1,
-    borderColor: '#433a5c',
-    padding: 14,
-    gap: 10,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
   },
-  section: { color: TEXT, fontSize: 18, fontWeight: '700' },
-  transcript: { flex: 1 },
-  transcriptText: { color: TEXT, fontSize: 16, lineHeight: 25 },
-  notes: { flex: 1, minHeight: 40 },
-  note: { color: TEXT, paddingVertical: 14, borderBottomWidth: 1, borderColor: '#393349' },
-  noteTime: { color: '#a89bc6' },
+  composerLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+  },
   composer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#262238',
-    borderRadius: 14,
+    gap: theme.spacing.sm,
     borderWidth: 1,
-    borderColor: '#433a5c',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.lg,
+    paddingLeft: theme.spacing.md,
+    paddingRight: theme.spacing.xs,
+    paddingVertical: theme.spacing.xs,
   },
-  input: {
+  composerTime: { color: theme.colors.primary, fontWeight: '700', fontSize: theme.text.sm },
+  composerInput: {
     flex: 1,
-    color: TEXT,
-    minHeight: 48,
-    maxHeight: 110,
-    padding: 12,
+    color: theme.colors.text,
+    fontSize: theme.text.md,
+    minHeight: 40,
+    maxHeight: 120,
+    paddingVertical: theme.spacing.sm,
   },
-  addNote: {
-    backgroundColor: ACCENT,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  composerSend: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 8,
   },
-  addNoteText: { color: '#130f1e', fontSize: 26, lineHeight: 30 },
-  button: {
-    backgroundColor: '#291b28',
-    borderColor: '#a9475d',
+  bottomBar: { flexDirection: 'row', gap: theme.spacing.md, paddingVertical: theme.spacing.sm },
+  barButton: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 16,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  controls: { flexDirection: 'row', gap: 10 },
-  pauseButton: { flex: 1, backgroundColor: CARD, borderColor: '#655b82' },
-  endButton: { flex: 1 },
-  pauseButtonText: { color: TEXT, fontWeight: '700' },
-  buttonText: { color: '#ff6878', fontWeight: '700' },
-  startButton: { backgroundColor: '#7146a7', borderColor: '#7146a7' },
-  startButtonText: { color: TEXT },
-  link: { color: ACCENT, paddingVertical: 8 },
-  error: { color: '#ffaba5' },
-  history: { maxHeight: 160 },
-  engineChoice: { paddingVertical: 5 },
-});
+  barButtonText: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
+  barButtonPrimary: { borderColor: theme.colors.primary, backgroundColor: 'transparent' },
+  barButtonPrimaryText: { color: theme.colors.primary, fontSize: theme.text.md, fontWeight: '700' },
+  columns: { flex: 1, flexDirection: 'row', gap: theme.spacing.xl, paddingTop: theme.spacing.md },
+  column: { flex: 1, gap: theme.spacing.md },
+  divider: { width: 1, backgroundColor: theme.colors.border },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  title: { color: theme.colors.text, fontSize: theme.text.xl, fontWeight: '800' },
+  subtitle: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    marginTop: -theme.spacing.lg,
+  },
+  segmented: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderRadius: theme.radius.pill,
+    padding: theme.spacing.xs,
+  },
+  segment: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  segmentSelected: { borderColor: theme.colors.primary, backgroundColor: theme.colors.background },
+  segmentText: { color: theme.colors.textMuted, fontSize: theme.text.md },
+  segmentTextSelected: { color: theme.colors.primary, fontSize: theme.text.md, fontWeight: '700' },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+  },
+  rowText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md },
+  rowValue: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.sm, textAlign: 'right' },
+  engineChoice: { paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.sm },
+  startButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.md,
+    minHeight: 56,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  recordDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: theme.colors.tone.danger },
+  startButtonText: { color: theme.colors.primary, fontSize: theme.text.lg, fontWeight: '700' },
+  savedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+  },
+  sheet: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sheetTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+  transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
+  transcriptText: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 24 },
+}));
