@@ -264,7 +264,7 @@ mkdir -p "$app"
 xcrun swiftc \
   -sdk "$simulator_sdk" \
   -target "$(uname -m)-apple-ios${target_version}-simulator" \
-  -parse-as-library \
+  -parse-as-library -module-name VerityPinnedTLSSmoke \
   apps/mobile/native/CertificatePinDelegate.swift \
   apps/mobile/native/PinnedHTTPSessionPool.swift \
   scripts/pinned-http-pool-smoke.swift \
@@ -288,6 +288,16 @@ cat >"$app/Info.plist" <<PLIST
   <key>MinimumOSVersion</key><string>${target_version}</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
+  <!-- Current iOS SDKs refuse to launch an app without scene adoption. -->
+  <key>UIApplicationSceneManifest</key><dict>
+    <key>UIApplicationSupportsMultipleScenes</key><false/>
+    <key>UISceneConfigurations</key><dict>
+      <key>UIWindowSceneSessionRoleApplication</key><array><dict>
+        <key>UISceneConfigurationName</key><string>VerityPinnedTLSSmoke</string>
+        <key>UISceneDelegateClassName</key><string>VerityPinnedTLSSmoke.PinnedTLSSmokeSceneDelegate</string>
+      </dict></array>
+    </dict>
+  </dict>
 </dict></plist>
 PLIST
 # Canonical JSON, so the comparison below is about content: PlistBuddy prints a
