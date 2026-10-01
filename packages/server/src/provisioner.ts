@@ -1,3 +1,12 @@
+import {
+  STANDARD_MOUNTS,
+  DEFAULT_AGENT_SEED_SOURCE,
+  PUBLIC_SSH_MOUNTS,
+  standardDataMountPaths,
+  GATEWAY_MOUNTS,
+  standardMountBind,
+  publicSshBinds,
+} from './sandbox-standard-mounts.js';
 /**
  * Provisioning worker (multi-repo fleet registry, concept §19.3, Refs #174).
  * Drives one `projects` row from `state='absent'` to `state='active'`:
@@ -221,7 +230,7 @@ const DEVCONTAINER_BUILD_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 /** How many genuinely legacy or broken project relays may be repaired at once,
  * without letting every project's container create hit the host in one instant. */
 const RELAY_MIGRATION_CONCURRENCY = 4;
-export const RUNNER_RUNTIME_TARGET = '/run/verity-runner';
+export const RUNNER_RUNTIME_TARGET = STANDARD_MOUNTS.runner.target;
 export const RUNNER_AGENT_UID = 1000;
 export const RUNNER_AGENT_GID = 1000;
 export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'] as const;
@@ -241,7 +250,7 @@ const GH_BROKER_CAPABILITY_FILE = '/run/verity/gh-token-capability';
  *  Everything that names this path has to agree: {@link gitSettingsBinds} mounts
  *  it, the broker `GIT_CONFIG_*` block configures git against it, and the
  *  remoteUser readiness probe checks it is readable. */
-const SSH_SIGNING_PUBLIC_KEY_FILE = '/run/verity/ssh/id_ed25519.pub';
+const SSH_SIGNING_PUBLIC_KEY_FILE = PUBLIC_SSH_MOUNTS['id_ed25519.pub'][1];
 
 /**
  * Whether {@link gitSettingsBinds} produced the signing-key mount for this
@@ -1739,8 +1748,9 @@ function codexGatewayConfigBind(
 ): string[] {
   if (!secretRoot || connectorPort === undefined) return [];
   const config = codexGatewayConfig(connectorPort);
-  const path = writeSecretFile(secretRoot, 'config.toml', config, 'codex', 0o644);
-  return [`${path}:${codexHome}/config.toml:ro`];
+  const spec = GATEWAY_MOUNTS.codex;
+  const path = writeSecretFile(secretRoot, spec.filename, config, spec.subdir, spec.mode);
+  return [`${path}:${codexHome}/${spec.filename}:ro`];
 }
 
 /** Build the complete OpenCode provider configuration from server-owned settings.
@@ -1793,7 +1803,7 @@ function openCodeSettingsBind(
   // separate read-only directory through OPENCODE_CONFIG instead. The directory
   // bind is intentional: atomic replacements of opencode.json then remain visible
   // in already-running sandboxes.
-  const target = '/run/verity/opencode-config';
+  const target = GATEWAY_MOUNTS.opencode.directory;
   return [`${directory}:${target}:ro`];
 }
 
@@ -1818,8 +1828,9 @@ export function materializeOpenCodeSettings(
     );
   // This directory is mounted as the non-root agent's XDG config root. It holds
   // only the local gateway address, a fixed placeholder, and model names.
-  writeSecretFile(secretRoot, 'opencode.json', config, 'opencode', 0o644, 0o755);
-  return join(secretRoot, 'opencode');
+  const spec = GATEWAY_MOUNTS.opencode;
+  writeSecretFile(secretRoot, spec.filename, config, spec.subdir, spec.mode, 0o755);
+  return join(secretRoot, spec.subdir);
 }
 
 /**
@@ -1880,24 +1891,21 @@ function gitSettingsBinds(
     // The public key is what `user.signingkey` points at; mount it at both
     // conventions too (see the private-key note above). ssh-keygen -Y sign reads
     // the private key sitting next to it in the same dir.
-    if (includeHome) binds.push(`${publicKeyPath}:/home/dev/.ssh/id_ed25519.pub:ro`);
-    binds.push(`${publicKeyPath}:${SSH_SIGNING_PUBLIC_KEY_FILE}:ro`);
+    binds.push(...publicSshBinds('id_ed25519.pub', publicKeyPath, includeHome));
   }
   const knownHostsPath =
     settings?.gitKnownHosts && secretRoot
       ? writeSecretFile(secretRoot, 'known_hosts', settings.gitKnownHosts, 'git', 0o644)
       : settings?.gitKnownHostsPath;
   if (knownHostsPath) {
-    if (includeHome) binds.push(`${knownHostsPath}:/home/dev/.ssh/known_hosts:ro`);
-    binds.push(`${knownHostsPath}:/run/verity/ssh/known_hosts:ro`);
+    binds.push(...publicSshBinds('known_hosts', knownHostsPath, includeHome));
   }
   const allowedSignersPath =
     settings?.gitAllowedSigners && secretRoot
       ? writeSecretFile(secretRoot, 'allowed_signers', settings.gitAllowedSigners, 'git', 0o644)
       : settings?.gitAllowedSignersPath;
   if (allowedSignersPath) {
-    if (includeHome) binds.push(`${allowedSignersPath}:/home/dev/.ssh/allowed_signers:ro`);
-    binds.push(`${allowedSignersPath}:/run/verity/ssh/allowed_signers:ro`);
+    binds.push(...publicSshBinds('allowed_signers', allowedSignersPath, includeHome));
   }
   return binds;
 }
@@ -1964,7 +1972,7 @@ function localCloneConfigBind(
   state: LocalConfigState,
 ): string[] {
   if (!isLocalProject(project)) return [];
-  return state === 'file' ? [`${clonePath}/.git/config:/work/.git/config:ro`] : [];
+  return state === 'file' ? [standardMountBind('gitConfig', `${clonePath}/.git/config`)] : [];
 }
 
 /**
@@ -2295,7 +2303,7 @@ export class ProvisionerImpl implements Provisioner {
     if (root === undefined || root.length === 0) {
       throw new ProvisioningError('Runner supervisor requires dataVolumeRoot');
     }
-    const path = join(root, 'runners', projectId);
+    const path = join(root, standardDataMountPaths(projectId, '').runner);
     const uid = this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID;
     const gid = this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID;
     if (this.opts.prepareRunnerRuntime !== undefined) {
@@ -4925,13 +4933,13 @@ export class ProvisionerImpl implements Provisioner {
         }
         const resolvPath = writeSecretFile(
           this.opts.gitSecretRoot,
-          `resolv.${project.id}.conf`,
+          standardDataMountPaths(project.id, '').dns.split('/').at(-1)!,
           sandboxResolvConf(servers),
           'dns',
           0o644,
           0o755,
         );
-        gvisorResolvBinds = [`${resolvPath}:/etc/resolv.conf:ro`];
+        gvisorResolvBinds = [standardMountBind('dns', resolvPath)];
       } catch (cause) {
         const message = `gVisor Sandbox name resolution could not be prepared: ${failureMessage(cause)}`;
         await this.opts.store.updateProjectState(project.id, 'failed', message);
@@ -5234,7 +5242,7 @@ export class ProvisionerImpl implements Provisioner {
       : pathMode === 'neutral'
         ? '/run/verity/claude'
         : '/home/dev/.claude';
-    const codexHome = '/run/verity/codex';
+    const codexHome = GATEWAY_MOUNTS.codex.directory;
     if (runnerRuntimeEnabled && this.opts.dockerHostForBuild === undefined) {
       const message = 'Runner supervisor requires dockerHostForBuild';
       await this.opts.store.updateProjectState(project.id, 'failed', message);
@@ -5248,7 +5256,7 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
     }
-    const agentSeedHostPath = this.opts.agentSeedHostPath ?? '/opt/agent-seed';
+    const agentSeedHostPath = this.opts.agentSeedHostPath ?? DEFAULT_AGENT_SEED_SOURCE;
     // Strip the local clone's config down to what Verity recognizes BEFORE the mount
     // below freezes it, so an entry an earlier session wrote is removed rather than
     // preserved for good. Failing here fails the provision on purpose. Probed once:
@@ -5288,14 +5296,14 @@ export class ProvisionerImpl implements Provisioner {
     // stay host binds. With no data volume configured, everything stays a bind.
     const { binds: specBinds, volumeMounts } = partitionProjectMounts(
       [
-        `${dirs.clonePath}:/work`,
+        standardMountBind('workspace', dirs.clonePath),
         ...localCloneConfigBind(project, dirs.clonePath, localConfig),
         ...(runnerRuntimePath !== undefined
-          ? [`${runnerRuntimePath}:${RUNNER_RUNTIME_TARGET}`]
+          ? [standardMountBind('runner', runnerRuntimePath)]
           : []),
         ...knowledgeBinds,
-        `${agentSeedHostPath}:/opt/agent-seed:ro`,
-        '/dev/null:/etc/profile.d/gh-token.sh:ro',
+        standardMountBind('agentSeed', agentSeedHostPath),
+        standardMountBind('disabledTokenScript', '/dev/null'),
         ...ghTokenBrokerBinds,
         ...claudeEgressBinds,
         ...openCodeBinds,

@@ -1,3 +1,10 @@
+import {
+  STANDARD_MOUNTS,
+  DEFAULT_AGENT_SEED_SOURCE,
+  GATEWAY_MOUNTS,
+  standardDataMountPaths,
+  PUBLIC_SSH_MOUNTS,
+} from './sandbox-standard-mounts.js';
 import { randomBytes } from 'node:crypto';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import {
@@ -80,6 +87,9 @@ export interface PreviewShareManagerOptions {
   dataVolume?: string;
   dataVolumeRoot?: string;
   hostCloneRoot?: string;
+  /** Host source the provisioner binds onto `/opt/agent-seed`. Legacy
+   *  unversioned seed sources remain supported for existing containers. */
+  agentSeedHostPath?: string;
   isDevServerRunning: (input: {
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>;
     devServer: NonNullable<Awaited<ReturnType<EventStore['getDevServer']>>>;
@@ -1345,7 +1355,11 @@ async function assertEligibleSandbox(
   workspaceSubpath: string,
   options: Pick<
     PreviewShareManagerOptions,
-    'dataVolume' | 'dataVolumeRoot' | 'inspectArtifact' | 'listArtifactDirectory'
+    | 'dataVolume'
+    | 'dataVolumeRoot'
+    | 'agentSeedHostPath'
+    | 'inspectArtifact'
+    | 'listArtifactDirectory'
   >,
   staticFolder = false,
 ): Promise<void> {
@@ -1411,14 +1425,11 @@ async function assertEligibleSandbox(
   // Static shares mount only their selected directory into the connector. Other
   // mounts on the agent sandbox cannot become visible through that connector.
   if (staticFolder) return;
-  const publicSshDestinations = new Map([
-    ['/home/dev/.ssh/id_ed25519.pub', '/git/id_ed25519.pub'],
-    ['/home/dev/.ssh/known_hosts', '/git/known_hosts'],
-    ['/home/dev/.ssh/allowed_signers', '/git/allowed_signers'],
-    ['/run/verity/ssh/id_ed25519.pub', '/git/id_ed25519.pub'],
-    ['/run/verity/ssh/known_hosts', '/git/known_hosts'],
-    ['/run/verity/ssh/allowed_signers', '/git/allowed_signers'],
-  ]);
+  const publicSshDestinations = new Map<string, string>(
+    Object.entries(PUBLIC_SSH_MOUNTS).flatMap(([filename, targets]) =>
+      targets.map((target) => [target, `/git/${filename}`] as const),
+    ),
+  );
   for (const mount of sandbox.mounts) {
     const allowedSourceSuffix =
       mount.destination === undefined ? undefined : publicSshDestinations.get(mount.destination);
@@ -1429,35 +1440,22 @@ async function assertEligibleSandbox(
     ) {
       continue;
     }
+    // Compare against the source the provisioner actually binds, not a guessed
+    // suffix: since seeds are published atomically the source is `<root>/.current`,
+    // and a hard-coded suffix rejected every share once that layout changed.
     if (
-      mount.destination === '/work' &&
-      mount.type === 'volume' &&
-      mount.name === options.dataVolume &&
-      mount.readWrite === true &&
-      mount.subpath === workspaceSubpath
+      mount.readWrite === STANDARD_MOUNTS.agentSeed.writable &&
+      mount.destination === STANDARD_MOUNTS.agentSeed.target &&
+      mount.source !== undefined &&
+      (mount.source === (options.agentSeedHostPath ?? DEFAULT_AGENT_SEED_SOURCE) ||
+        mount.source.endsWith('/agent-seed'))
     ) {
       continue;
     }
     if (
-      mount.readWrite === false &&
-      mount.destination === '/opt/agent-seed' &&
-      mount.source?.endsWith('/agent-seed') === true
-    ) {
-      continue;
-    }
-    if (
-      mount.readWrite === false &&
-      mount.destination === '/etc/profile.d/gh-token.sh' &&
+      mount.readWrite === STANDARD_MOUNTS.disabledTokenScript.writable &&
+      mount.destination === STANDARD_MOUNTS.disabledTokenScript.target &&
       mount.source === '/dev/null'
-    ) {
-      continue;
-    }
-    if (
-      mount.destination === '/run/verity-runner' &&
-      mount.type === 'volume' &&
-      mount.name === options.dataVolume &&
-      mount.readWrite === true &&
-      mount.subpath === `runners/${projectId}`
     ) {
       continue;
     }
@@ -1487,8 +1485,8 @@ function isPreviewArtifactDestination(destination: string | undefined): boolean 
     '/run/verity/claude-egress/ca.crt',
     '/run/verity/claude-egress/client.crt',
     '/run/verity/claude-egress/client.key',
-    '/run/verity/codex/config.toml',
-    '/run/verity/opencode-config',
+    `${GATEWAY_MOUNTS.codex.directory}/${GATEWAY_MOUNTS.codex.filename}`,
+    GATEWAY_MOUNTS.opencode.directory,
   ]).has(destination ?? '');
 }
 
@@ -1499,30 +1497,15 @@ function knownStandardPreviewMount(
   options: Pick<PreviewShareManagerOptions, 'dataVolume' | 'dataVolumeRoot'>,
 ): boolean {
   if (options.dataVolumeRoot === undefined) return false;
-  const entries = [
-    ['/knowledge', `knowledge/${projectId}`, false],
-    ['/knowledge/insights', `knowledge/${projectId}/insights`, true],
-    ['/knowledge/shared', 'knowledge/shared', false],
-    ['/etc/resolv.conf', `secrets/dns/resolv.${projectId}.conf`, false],
-  ] as const;
-  for (const [destination, subpath, writable] of entries) {
-    if (
-      mount.destination === destination &&
-      mount.readWrite === writable &&
-      mountMatchesProjectData(mount, subpath, options.dataVolume, options.dataVolumeRoot)
-    )
-      return true;
-  }
-  return (
-    mount.destination === '/work/.git/config' &&
-    mount.readWrite === false &&
-    mountMatchesProjectData(
-      mount,
-      `${workspaceSubpath}/.git/config`,
-      options.dataVolume,
-      options.dataVolumeRoot,
-    )
-  );
+  const paths = standardDataMountPaths(projectId, workspaceSubpath);
+  return Object.entries(paths).some(([kind, subpath]) => {
+    const expected = STANDARD_MOUNTS[kind as keyof typeof paths];
+    return (
+      mount.destination === expected.target &&
+      mount.readWrite === expected.writable &&
+      mountMatchesProjectData(mount, subpath, options.dataVolume, options.dataVolumeRoot!)
+    );
+  });
 }
 
 function projectWorkspaceSubpath(
@@ -1591,19 +1574,19 @@ async function knownPreviewArtifact(
       kind: 'file' as const,
     },
     {
-      destination: '/run/verity/codex/config.toml',
-      relative: 'secrets/codex/config.toml',
-      mode: 0o644,
+      destination: `${GATEWAY_MOUNTS.codex.directory}/${GATEWAY_MOUNTS.codex.filename}`,
+      relative: `secrets/${GATEWAY_MOUNTS.codex.subdir}/${GATEWAY_MOUNTS.codex.filename}`,
+      mode: GATEWAY_MOUNTS.codex.mode,
       kind: 'file' as const,
       validate: validCodexGatewayConfig,
     },
     {
-      destination: '/run/verity/opencode-config',
-      relative: 'secrets/opencode',
+      destination: GATEWAY_MOUNTS.opencode.directory,
+      relative: `secrets/${GATEWAY_MOUNTS.opencode.subdir}`,
       mode: 0o755,
       kind: 'directory' as const,
-      child: 'opencode.json',
-      childMode: 0o644,
+      child: GATEWAY_MOUNTS.opencode.filename,
+      childMode: GATEWAY_MOUNTS.opencode.mode,
       validate: validOpenCodeGatewayConfig,
     },
   ];
@@ -1631,7 +1614,24 @@ async function knownPreviewArtifact(
   if (spec.child !== undefined) {
     const directory = join(options.dataVolumeRoot, relative);
     const entries = await listArtifactDirectory(options, directory).catch(() => undefined);
-    if (entries === undefined || entries.length !== 1 || entries[0] !== spec.child) return false;
+    if (
+      entries === undefined ||
+      !entries.includes(spec.child) ||
+      entries.some((entry) => entry !== spec.child && entry !== '.gitignore')
+    )
+      return false;
+    if (entries.includes('.gitignore')) {
+      const ignore = await inspect(join(directory, '.gitignore'), true).catch(() => undefined);
+      if (
+        ignore === undefined ||
+        ignore.kind !== 'file' ||
+        ignore.uid !== ownerUid ||
+        (ignore.mode & 0o022) !== 0 ||
+        ignore.contents === undefined ||
+        !/^[a-zA-Z0-9.*_!/?\-\r\n]*$/u.test(ignore.contents)
+      )
+        return false;
+    }
     const child = await inspect(join(directory, spec.child), true).catch(() => undefined);
     return (
       child !== undefined &&
@@ -1656,11 +1656,49 @@ async function listArtifactDirectory(
   return readdir(path);
 }
 
+// Whitespace and comments do not change a TOML value. Preserve quoted contents
+// so a credential cannot be disguised as a formatting-only change.
+function normalizedTomlLine(line: string): string {
+  let quoted = false;
+  let escaped = false;
+  let result = '';
+  for (const char of line) {
+    if (!quoted && char === '#') break;
+    if (char === '"' && !escaped) quoted = !quoted;
+    if (quoted || !/\s/u.test(char)) result += char;
+    escaped = quoted && char === '\\' && !escaped;
+  }
+  return result;
+}
+
 function validCodexGatewayConfig(contents: string): boolean {
-  const port = /^base_url = "http:\/\/127\.0\.0\.1:(\d+)\/codex"$/mu.exec(contents)?.[1];
+  const lines = contents.split(/\r?\n/u).map(normalizedTomlLine).filter(Boolean);
+  const port = lines.join('\n').match(/^base_url="http:\/\/127\.0\.0\.1:(\d+)\/codex"$/mu)?.[1];
   if (port === undefined) return false;
   try {
-    return contents.trim() === codexGatewayConfig(Number(port)).trim();
+    const required = new Set(codexGatewayConfig(Number(port)).split('\n').map(normalizedTomlLine));
+    const seen = new Set<string>();
+    let providerSection = false;
+    for (const line of lines) {
+      if (required.has(line)) {
+        if (seen.has(line)) return false;
+        // TOML keys must stay in the table where the gateway reads them.
+        if (line.startsWith('model_provider=') && providerSection) return false;
+        if (line.startsWith('[')) providerSection = true;
+        else if (!line.startsWith('model_provider=') && !providerSection) return false;
+        seen.add(line);
+      } else if (
+        providerSection ||
+        !/^(model|model_reasoning_effort|model_verbosity)="[a-zA-Z0-9._/:-]+"$/u.test(line)
+      ) {
+        return false;
+      } else {
+        const key = line.split('=', 1)[0]!;
+        if (seen.has(key)) return false;
+        seen.add(key);
+      }
+    }
+    return [...required].every((line) => seen.has(line));
   } catch {
     return false;
   }
@@ -1670,11 +1708,96 @@ function exactKeys(value: object, allowed: readonly string[]): boolean {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
+function validKnowledgePermission(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const actual = value as Record<string, unknown>;
+  return (
+    exactKeys(actual, Object.keys(OPENCODE_KNOWLEDGE_READ_PERMISSION)) &&
+    Object.entries(OPENCODE_KNOWLEDGE_READ_PERMISSION).every(([key, expected]) => {
+      const rule = actual[key];
+      return (
+        typeof rule === 'object' &&
+        rule !== null &&
+        !Array.isArray(rule) &&
+        exactKeys(rule, Object.keys(expected)) &&
+        Object.entries(expected).every(
+          ([pattern, action]) => (rule as Record<string, unknown>)[pattern] === action,
+        )
+      );
+    })
+  );
+}
+
+function validModelMetadata(value: object): boolean {
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'name') {
+      if (typeof child !== 'string') return false;
+    } else if (['attachment', 'reasoning', 'temperature', 'tool_call'].includes(key)) {
+      if (typeof child !== 'boolean') return false;
+    } else if (key === 'limit' || key === 'cost') {
+      if (typeof child !== 'object' || child === null || Array.isArray(child)) return false;
+      const allowed =
+        key === 'limit'
+          ? ['input', 'output', 'context']
+          : ['input', 'output', 'cache_read', 'cache_write'];
+      if (
+        !exactKeys(child, allowed) ||
+        !Object.values(child).every(
+          (number) => typeof number === 'number' && Number.isFinite(number) && number >= 0,
+        )
+      )
+        return false;
+    } else if (key === 'modalities') {
+      if (
+        typeof child !== 'object' ||
+        child === null ||
+        Array.isArray(child) ||
+        !exactKeys(child, ['input', 'output'])
+      )
+        return false;
+      if (
+        !Object.values(child).every(
+          (list) =>
+            Array.isArray(list) &&
+            list.every(
+              (item: unknown) =>
+                typeof item === 'string' &&
+                ['text', 'audio', 'image', 'video', 'pdf'].includes(item),
+            ),
+        )
+      )
+        return false;
+    } else return false;
+  }
+  return true;
+}
+
 function validOpenCodeGatewayConfig(contents: string): boolean {
   try {
     const parsed = JSON.parse(contents) as unknown;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
-    if (!exactKeys(parsed, ['$schema', 'autoupdate', 'permission', 'provider'])) return false;
+    if (
+      !exactKeys(parsed, [
+        '$schema',
+        'autoupdate',
+        'permission',
+        'provider',
+        'model',
+        'small_model',
+        'theme',
+        'username',
+        'logLevel',
+      ])
+    )
+      return false;
+    for (const key of ['model', 'small_model', 'theme', 'username', 'logLevel']) {
+      const value = (parsed as Record<string, unknown>)[key];
+      if (
+        value !== undefined &&
+        (typeof value !== 'string' || !/^[a-zA-Z0-9._ /:-]+$/u.test(value))
+      )
+        return false;
+    }
     const { $schema, autoupdate, permission, provider } = parsed as {
       $schema?: unknown;
       autoupdate?: unknown;
@@ -1682,8 +1805,9 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
       provider?: unknown;
     };
     if ($schema !== 'https://opencode.ai/config.json' || autoupdate !== false) return false;
-    if (JSON.stringify(permission) !== JSON.stringify(OPENCODE_KNOWLEDGE_READ_PERMISSION))
-      return false;
+    if (permission !== undefined && !validKnowledgePermission(permission)) return false;
+    // Provisioning also emits a credential-free config when no provider is selected.
+    if (provider === undefined) return true;
     if (typeof provider !== 'object' || provider === null || Array.isArray(provider)) return false;
     if (!exactKeys(provider, ['verity'])) return false;
     const verity = (provider as { verity?: unknown }).verity;
@@ -1702,7 +1826,13 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
     };
     if (npm !== '@ai-sdk/openai-compatible' || name !== 'OpenAI-compatible') return false;
     if (typeof gateway !== 'object' || gateway === null || Array.isArray(gateway)) return false;
-    if (!exactKeys(gateway, ['baseURL', 'apiKey'])) return false;
+    if (!exactKeys(gateway, ['baseURL', 'apiKey', 'timeout'])) return false;
+    const timeout = (gateway as { timeout?: unknown }).timeout;
+    if (
+      timeout !== undefined &&
+      (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0)
+    )
+      return false;
     const { baseURL, apiKey } = gateway as { baseURL?: unknown; apiKey?: unknown };
     if (
       typeof baseURL !== 'string' ||
@@ -1711,12 +1841,25 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
     )
       return false;
     if (typeof models !== 'object' || models === null || Array.isArray(models)) return false;
-    const entries = Object.entries(models as Record<string, unknown>);
+    const entries = Object.values(models as Record<string, unknown>);
     return (
       entries.length > 0 &&
-      entries.every(([model, value]) => {
+      entries.every((value) => {
         if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-        return exactKeys(value, ['name']) && (value as { name?: unknown }).name === model;
+        return (
+          exactKeys(value, [
+            'name',
+            'limit',
+            'cost',
+            'modalities',
+            'attachment',
+            'reasoning',
+            'temperature',
+            'tool_call',
+          ]) &&
+          typeof (value as { name?: unknown }).name === 'string' &&
+          validModelMetadata(value)
+        );
       })
     );
   } catch {
