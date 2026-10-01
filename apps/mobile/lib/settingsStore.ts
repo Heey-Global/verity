@@ -299,12 +299,12 @@ function pendingApply(
 ): Partial<Pick<VeritySettingsState, 'applyPending' | 'applyRun'>> {
   if (!requiresApply) return {};
   applyGeneration += 1;
-  // A finished run's outcome describes settings that are no longer the latest;
-  // the banner goes back to asking for an apply.
-  return {
-    applyPending: true,
-    applyRun: state.applyRun.phase === 'running' ? state.applyRun : { phase: 'idle' },
-  };
+  // A clean run's outcome describes settings that are no longer the latest, so
+  // the banner goes back to asking for a recreate. A failure still names a
+  // container that runs old settings either way, and Retry covers the new save.
+  const run = state.applyRun;
+  const keep = run.phase === 'running' || (run.phase === 'done' && run.failed.length > 0);
+  return { applyPending: true, applyRun: keep ? run : { phase: 'idle' } };
 }
 
 /** The current apply generation, taken when a reprovision starts. */

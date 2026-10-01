@@ -174,7 +174,11 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
             styles.updateButton,
             pressed ? styles.pressed : null,
           ]}
-          onPress={() => void refresh()}
+          onPress={() => {
+            // Back to the spinner, so a slow retry does not look like a dead button.
+            setUnreached(false);
+            void refresh();
+          }}
           accessibilityRole="button"
           accessibilityLabel="Check again"
         >

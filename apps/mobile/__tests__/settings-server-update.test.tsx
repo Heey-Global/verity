@@ -240,6 +240,25 @@ describe('recreate banner after a save', () => {
     expect(screen.getByLabelText(RECREATE)).toBeEnabled();
   });
 
+  // A save after a failed run asks again, but the failure still names a
+  // container that is running old settings whatever was saved since.
+  it('still names a failure when a save follows the run', async () => {
+    const client = await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+      recreateProjectContainer: jest.fn().mockRejectedValue(new Error('boom')),
+    });
+    render(<GitHubSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText(RECREATE));
+    await screen.findByText('Could not recreate acme/one.');
+
+    await act(async () => {
+      await saveVeritySettings(client, { gitUserName: 'newer-bot' });
+    });
+
+    expect(screen.getByText('Could not recreate acme/one.')).toBeOnTheScreen();
+    expect(screen.getByLabelText(RECREATE)).toBeEnabled();
+  });
+
   // Re-pairing resets the store, but a run against the old server is still in
   // flight. Its progress describes containers the app no longer talks to, and
   // landing on the new server's banner would disable its Recreate.
@@ -416,6 +435,7 @@ describe('settings/server-update', () => {
     render(<ServerUpdateScreen />);
 
     fireEvent.press(await screen.findByLabelText('Check again'));
+    expect(screen.queryByLabelText('Check again')).toBeNull();
 
     expect(await screen.findByText('Version 1.4.0 available')).toBeOnTheScreen();
   });
