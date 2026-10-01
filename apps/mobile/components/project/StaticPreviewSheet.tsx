@@ -402,7 +402,13 @@ export function StaticPreviewSheet({
     return () => clearInterval(timer);
   }, [ticking]);
   return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible
+      transparent
+      animationType="slide"
+      // Android back leaves the link step the way its header chevron does.
+      onRequestClose={target ? () => (busy ? undefined : leaveTarget()) : onClose}
+    >
       <KeyboardAvoidingView style={styles.overlay} behavior="padding" automaticOffset>
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityRole="button" />
         <View

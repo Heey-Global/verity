@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert, Share } from 'react-native';
+import { Alert, Modal, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
@@ -644,6 +644,30 @@ it('names the folder the explorer is in on the share button', async () => {
   expect(screen.getByLabelText('File guide.md')).toBeTruthy();
   await pickFolder('Share folder docs');
   expect(screen.getByText('Share docs')).toBeTruthy();
+});
+
+// Android back reaches the sheet through Modal.onRequestClose. Left on onClose,
+// it threw away the whole sheet from the link step instead of going back.
+it('goes back from the link step on Android back instead of closing the sheet', async () => {
+  const onClose = jest.fn();
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => []),
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={onClose}
+    />,
+  );
+  await pickFolder();
+  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
+  expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
+  expect(onClose).not.toHaveBeenCalled();
+  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
+  expect(onClose).toHaveBeenCalledTimes(1);
 });
 
 describe('dev server tab', () => {
