@@ -554,6 +554,10 @@ describe('remote diagnostics', () => {
 
   it.each([
     ['NO_AUTH_CHALLENGE', ' [TLS:NO_AUTH_CHALLENGE]'],
+    [
+      'NO_AUTH_CHALLENGE;tx2,proxy1,connect1,tls1,response0',
+      ' [TLS:NO_AUTH_CHALLENGE; tx2,proxy1,connect1,tls1,response0]',
+    ],
     ['PIN_AND_CHAIN_TRUST_ACCEPTED', ' [TLS:PIN_AND_CHAIN_TRUST_ACCEPTED]'],
     [undefined, ''],
     ['ticket=private-value', ''],

@@ -1,7 +1,6 @@
 // Connected services: the credentials and optional integrations Verity hands to
-// project containers. Everything on this screen is gated on the secret store —
-// while it is sealed the boxes are read-only, because a write would 503 and the
-// operator would be left guessing why.
+// project containers. Writes are gated on the secret store; connection diagnostics
+// remain reachable when Core cannot load settings.
 import {
   secretStoreManaged,
   secretWritable,
@@ -380,13 +379,14 @@ function ServicesSettingsView({
             {!writable ? (
               <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
             ) : null}
-            <PublicPreviewDiagnostics
-              client={client}
-              keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
-            />
           </SettingsDisclosure>
         </SettingsGroup>
       ) : null}
+
+      <PublicPreviewDiagnostics
+        client={client}
+        keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
+      />
 
       <SettingsSaveState dirty={text.dirty || secrets.dirty} />
     </SettingsScaffold>

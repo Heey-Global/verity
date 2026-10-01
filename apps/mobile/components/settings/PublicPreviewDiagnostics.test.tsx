@@ -40,3 +40,25 @@ it('finishes the tunnel test while the separate Core status refresh is pending',
   });
   expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
 });
+
+it('offers the tunnel test when Core settings and status are unavailable', async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  mockTestRemoteControl.mockResolvedValue({ ready: false, detail: 'probe timed out' });
+  const getUplinkDiagnostics = jest.fn().mockRejectedValue(new Error('offline'));
+
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics } as never}
+      keyConfigured={undefined}
+    />,
+  );
+  fireEvent.press(screen.getByText('Refresh status'));
+  await waitFor(() => expect(screen.getByText(/Core status unavailable/u)).toBeOnTheScreen());
+  fireEvent.press(screen.getByRole('button', { name: 'Test Remote Control through Uplink' }));
+  await waitFor(() =>
+    expect(screen.getByText('Remote Control failed at probe timed out.')).toBeOnTheScreen(),
+  );
+});
