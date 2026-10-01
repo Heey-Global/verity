@@ -631,7 +631,7 @@ export default function MeetingScreen() {
     setBusy(true);
     setError(null);
     try {
-      const next = await startMeeting(sessionId, selectedEngine, expectedParticipants);
+      const next = await startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4);
       setSyncError(true);
       setSelectedId(null);
       setMeeting(next);
@@ -859,7 +859,8 @@ export default function MeetingScreen() {
               : 'Ended · saved on server'
         : 'Ready to record';
   const asNote = (text: string): CardAction | null =>
-    meeting?.state === 'active'
+    // A point already saved as a note loses the action, so a second tap cannot duplicate it.
+    meeting?.state === 'active' && !notes.some((note) => note.text === text.trim().slice(0, 10_000))
       ? { label: '+ As note', accessibilityLabel: 'Save as note', onPress: () => addNoteText(text) }
       : null;
   const minimize = () => {

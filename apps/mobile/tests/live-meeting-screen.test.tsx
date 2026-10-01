@@ -750,9 +750,7 @@ it('starts with Nemotron and saves a note at its first edit', async () => {
   );
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Start meeting'));
-  await waitFor(() =>
-    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', null),
-  );
+  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4));
   const input = await noteInput();
   fireEvent.changeText(input, 'Decision: ship locally');
   await waitFor(() =>
@@ -1319,6 +1317,7 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
   expect(await screen.findByTestId('meeting-note')).toHaveTextContent(
     /The delivery dates differ\./,
   );
+  expect(screen.queryByLabelText('Save as note')).toBeNull();
 
   expect(screen.getByText('Is the release still Friday?')).toBeOnTheScreen();
   // The open question is the last card, after the insight it did not come from.
