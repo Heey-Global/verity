@@ -475,6 +475,33 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   updateButton: {
     alignSelf: 'stretch',
   },
+  releaseNotes: {
+    gap: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
+  },
+  releaseNotesTitle: {
+    color: theme.colors.text,
+    fontSize: theme.text.md,
+    fontWeight: '700',
+  },
+  releaseNotesSection: {
+    gap: 2,
+  },
+  releaseNotesHeading: {
+    color: theme.colors.setup.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  releaseNotesItem: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+  },
+  releaseNotesItemText: {
+    flex: 1,
+  },
   updateProgressRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -16,12 +16,14 @@ jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMo
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
 import ServerUpdateScreen from '../app/settings/server-update';
+import { resetServerReleaseNotesCache } from '../lib/serverReleaseNotes';
 import { resetVeritySettingsStore, saveVeritySettings } from '../lib/settingsStore';
 import {
   makeClient,
   makeProject,
   makeSettings,
   mockCreateVerityClient,
+  mockOpenURL,
   refocus,
   resetSettingsHarness,
 } from './support/settingsHarness';
@@ -33,7 +35,18 @@ const RELEASE = {
   publishedAt: '2026-08-10T00:00:00.000Z',
 };
 
+// No test reaches GitHub: an unstubbed fetch fails, which the screen must
+// treat as "no release notes" anyway.
+const realFetch = globalThis.fetch;
+const mockFetch = jest.fn();
+beforeEach(() => {
+  mockFetch.mockReset().mockRejectedValue(new Error('offline'));
+  globalThis.fetch = mockFetch as unknown as typeof fetch;
+});
+
 afterEach(() => {
+  globalThis.fetch = realFetch;
+  resetServerReleaseNotesCache();
   resetSettingsHarness();
   jest.restoreAllMocks();
 });
@@ -251,6 +264,65 @@ describe('apply-settings banner', () => {
     fireEvent.press(await screen.findByLabelText(APPLY));
     expect(await screen.findByText('store sealed')).toBeOnTheScreen();
     await waitFor(() => expect(screen.getByLabelText(APPLY)).toBeEnabled());
+  });
+});
+
+describe('release notes', () => {
+  const githubRelease = (version: string, body: string) => ({
+    tag_name: `v${version}`,
+    draft: false,
+    prerelease: false,
+    html_url: `https://github.com/Heey-Global/verity/releases/tag/v${version}`,
+    body: `## [${version}](https://github.com/Heey-Global/verity/compare) (2026-08-10)\n\n${body}`,
+  });
+  const RELEASES = [
+    githubRelease(
+      '1.4.0',
+      '### Features\n\n* **mobile:** announce updates ([#1](https://x/1)) ([abc1234](https://x/c))',
+    ),
+    githubRelease(
+      '1.3.0',
+      '### Bug Fixes\n\n* **server:** keep sessions alive ([#2](https://x/2))',
+    ),
+    githubRelease('1.2.0', '### Features\n\n* already installed'),
+  ];
+
+  function renderAvailable(running: string | undefined) {
+    const client = makeClient('unlocked', {
+      getServerUpdates: jest
+        .fn()
+        .mockResolvedValue({ state: 'available', release: RELEASE, operation: null }),
+    });
+    (client.getHealth as jest.Mock).mockResolvedValue({ status: 'ok', version: running });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ServerUpdateScreen />);
+  }
+
+  it('lists what changed since the running version under the install button', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(RELEASES) });
+    renderAvailable('1.2.0');
+
+    expect(await screen.findByText("What's new")).toBeOnTheScreen();
+    expect(screen.getByText('Announce updates')).toBeOnTheScreen();
+    // 1.3.0 was skipped, and ships with this update too.
+    expect(screen.getByText('Keep sessions alive')).toBeOnTheScreen();
+    expect(screen.queryByText('Already installed')).toBeNull();
+
+    fireEvent.press(screen.getByLabelText('Full release notes on GitHub'));
+    expect(mockOpenURL).toHaveBeenCalledWith(
+      'https://github.com/Heey-Global/verity/releases/tag/v1.4.0',
+    );
+  });
+
+  // GitHub is a convenience here, not a dependency of updating: a rate limit or
+  // an offline phone must leave the install exactly as it was.
+  it('leaves the install alone when GitHub cannot be read', async () => {
+    mockFetch.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
+    renderAvailable('1.2.0');
+
+    expect(await screen.findByLabelText('Install 1.4.0')).toBeEnabled();
+    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("What's new")).toBeNull());
   });
 });
 

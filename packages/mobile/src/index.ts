@@ -163,6 +163,12 @@ export {
   type ServerUpdateView,
 } from './ui/serverUpdate.js';
 export {
+  SERVER_RELEASES_URL,
+  serverReleaseNotes,
+  type ReleaseNoteSection,
+  type ServerReleaseNotes,
+} from './ui/releaseNotes.js';
+export {
   serverUpdateOperationSchema,
   serverUpdateStatusSchema,
   type ServerUpdateOperation,

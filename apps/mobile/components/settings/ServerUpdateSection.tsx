@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { ServerReleaseNotes } from './ServerReleaseNotes';
 import { SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
 
@@ -218,6 +219,9 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         </Pressable>
       ) : null}
       {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
+      {status.state === 'available' ? (
+        <ServerReleaseNotes client={client} version={status.release.version} />
+      ) : null}
     </SettingsPanel>
   );
 }
