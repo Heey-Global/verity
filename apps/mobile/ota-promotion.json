@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.46.1",
+  "version": "1.46.2",
   "runtime": "1.46.0",
   "channel": "testflight",
-  "commit": "d5d51851883f1649636dca41242f55d6af0751e7",
-  "tag": "mobile-v1.46.1",
-  "branch": "staging-mobile-v1.46.1-d5d51851883f1649636dca41242f55d6af0751e7",
-  "baseline": "mobile-v1.46.0",
-  "group": "0716bf51-ec60-43b3-ac35-ac07df322404",
+  "commit": "95038d10b4723efc4b9d1fc45e8a01d83198f24e",
+  "tag": "mobile-v1.46.2",
+  "branch": "staging-mobile-v1.46.2-95038d10b4723efc4b9d1fc45e8a01d83198f24e",
+  "baseline": "mobile-v1.46.1",
+  "group": "c11d6d79-94fd-4dc6-a804-6622cf1df82f",
   "notes": [
-    "float the project picker over session settings (#941)",
-    "keep mobile fixtures out of server releases (#939)"
+    "retry stalled Remote Control reads through alternate proxy (#945)"
   ]
 }
