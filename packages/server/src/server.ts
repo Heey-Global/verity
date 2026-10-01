@@ -34,6 +34,7 @@ import {
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   statfs,
   unlink,
@@ -112,6 +113,7 @@ import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
   KNOWLEDGE_MEETINGS_DIR,
+  KNOWLEDGE_MOUNT_TARGET,
 } from './knowledge-folder.js';
 import {
   extractKnowledgeFile,
@@ -252,6 +254,11 @@ import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerMeetingTranscriptRoutes } from './meeting-transcript-routes.js';
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
+import {
+  liveMeetingSavedMessage,
+  liveMeetingTitle,
+  renderLiveMeetingMarkdown,
+} from './live-meeting-export.js';
 import { meetingKnowledgeExcerpts } from './live-meeting-knowledge.js';
 import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
@@ -1406,6 +1413,7 @@ export interface ServerDeps {
   /** Server-side meeting transcription with speaker diarization. When omitted, the
    *  server runs the configured local transcription command. */
   meetingTranscriber?: MeetingTranscriber | undefined;
+  /** How long a finished live meeting waits for late notes before it is filed. */
   /** Test/deployment seam for per-project session worktrees. Omit to create
    * git worktrees under `<project clone>/.verity-sessions`. */
   projectWorktrees?:
@@ -2041,6 +2049,80 @@ async function ensureLegacyMeetingDirectory(worktree: string): Promise<string> {
   if (meetingReal !== rootReal && !meetingReal.startsWith(`${rootReal}${sep}`))
     throw new Error('invalid meeting directory');
   return meetingReal;
+}
+
+/**
+ * Files a finished live meeting as Markdown next to the transcribed recordings and
+ * tells the session where it is. The name derives from the meeting id, so a later
+ * call (late notes, renamed speakers) rewrites the same file and stays silent.
+ */
+async function fileLiveMeeting(input: {
+  eventStore: EventStore;
+  bus: EventBus;
+  dataRoot: string | undefined;
+  sessionId: string;
+  meetingId: string;
+}): Promise<void> {
+  const session = await input.eventStore.getSession(input.sessionId);
+  if (!session) return;
+  const load = async () => {
+    const changes = await input.eventStore.liveMeetings.changes(input.sessionId, 0);
+    const meeting = changes.meetings.find((candidate) => candidate.id === input.meetingId);
+    if (!meeting || meeting.state === 'active') return null;
+    const notes = changes.notes.filter((note) => note.meetingId === meeting.id);
+    const insights = await input.eventStore.liveMeetings.insights(input.sessionId, meeting.id);
+    return { meeting, notes, insights: insights ?? [] };
+  };
+  const first = await load();
+  if (!first) return;
+  const knowledge = input.dataRoot !== undefined && session.projectId !== null;
+  const meetingDir = knowledge
+    ? await ensureMeetingDirectory(input.dataRoot!, session.projectId!)
+    : await ensureLegacyMeetingDirectory(session.worktree);
+  const title = liveMeetingTitle(first.meeting);
+  const hash = createHash('sha256').update(first.meeting.id).digest('hex').slice(0, 8);
+  const date = new Date(first.meeting.startedAt).toISOString().slice(0, 10);
+  const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
+  await withMeetingTranscriptCommitLock(meetingDir, relPath, async () => {
+    // Read again under the lock: an overlapping filing that read earlier must not
+    // overwrite a later note or speaker name with its older snapshot.
+    const current = await load();
+    if (!current) return;
+    const markdown = renderLiveMeetingMarkdown(current);
+    const written = await writeMeetingTranscript({ meetingDir, relPath, markdown });
+    if (!written.created) {
+      // writeMeetingTranscript has already refused a symlink or non-file here. Write
+      // beside it and rename over it, so a reader never sees half a meeting.
+      const target = join(meetingDir, basename(relPath));
+      const temporary = join(meetingDir, `.${basename(relPath)}.${randomUUID()}.tmp`);
+      await writeFile(temporary, markdown, { encoding: 'utf8', flag: 'wx', mode: 0o644 });
+      await rename(temporary, target).catch(async (error: unknown) => {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      });
+    }
+    {
+      await appendMeetingIndex(meetingDir, relPath, title);
+      const text = liveMeetingSavedMessage(
+        knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
+        title,
+      );
+      const announced = (await input.eventStore.getEvents(input.sessionId)).some(
+        (event) => event.t === 'notice' && event.text === text,
+      );
+      if (announced) return;
+      await emitNotice({
+        eventStore: input.eventStore,
+        bus: input.bus,
+        sessionId: input.sessionId,
+        role: 'agent',
+        text: liveMeetingSavedMessage(
+          knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
+          title,
+        ),
+      });
+    }
+  });
 }
 
 async function existingMeetingTranscript(
@@ -7313,6 +7395,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
   registerLiveMeetingRoutes(app, deps.eventStore, {
+    onFinished: (sessionId, meetingId) =>
+      fileLiveMeeting({
+        eventStore: deps.eventStore,
+        bus: deps.bus,
+        dataRoot: deps.dataRoot,
+        sessionId,
+        meetingId,
+      }),
     knowledge: async (sessionId, transcript) => {
       if (!deps.dataRoot) return [];
       const session = await deps.eventStore.getSession(sessionId);

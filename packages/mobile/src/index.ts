@@ -69,6 +69,7 @@ export {
   isSessionImageFilePath,
   parseInline,
   sessionFilePathFromLocalLink,
+  sessionFileTargetFromLocalLink,
   splitRichText,
   type InlineSpan,
   type RichBlock,
