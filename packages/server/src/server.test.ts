@@ -14345,11 +14345,8 @@ describe('overview projections read only the narrow event slice', () => {
 
       expect(getEvents).not.toHaveBeenCalled();
       expect(getEventsAfter).not.toHaveBeenCalled();
-      // The list and the detail carry `eventCount`, so they pay for the counters.
-      // The activity poll — the most frequent of the three, and the only one whose
-      // response carries neither counter — must not: `count(*)` is the one part of
-      // the projection read that still grows with the log, and paying it 40 times
-      // a minute per open session is the shape of waste this whole change removed.
+      // Activity needs only the log's busy projection; reading overview facts
+      // would also hydrate usage and quota data that this response never returns.
       expect(countingReads).toHaveBeenCalledTimes(2);
       expect(tailReads).toHaveBeenCalledTimes(1);
       expect(sliceOnlyReads).not.toHaveBeenCalled();
@@ -14428,6 +14425,153 @@ describe('overview projections read only the narrow event slice', () => {
     await ctx.store.appendEvent('s-task', resultEvent);
     const res = await app.inject({ method: 'GET', url: '/sessions/s-task/activity' });
     expect(res.json()).toMatchObject({ busy: true });
+  });
+});
+
+describe('activity polls reuse unchanged log state', () => {
+  let server: FastifyInstance;
+  const result = {
+    t: 'result' as const,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    stopReason: 'end_turn',
+  };
+  const poll = () => server.inject({ method: 'GET', url: '/sessions/activity-cache/activity' });
+
+  beforeEach(async () => {
+    server = buildServer({ eventStore: ctx.store, bus, conductor });
+    await ctx.store.createSession({
+      sessionId: 'activity-cache',
+      worktree: '/wt/cache',
+      model: 'm',
+    });
+    await ctx.store.appendEvent('activity-cache', { t: 'task', id: 'bg', phase: 'started' });
+    await ctx.store.appendEvent('activity-cache', result);
+  });
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it('hydrates once across repeated polls and refreshes after task completion and interruption', async () => {
+    const reads = vi.spyOn(ctx.store, 'listRecentSessionProjectionEvents');
+    try {
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      expect(reads).toHaveBeenCalledTimes(1);
+      await ctx.store.appendEvent('activity-cache', {
+        t: 'task',
+        id: 'bg',
+        phase: 'ended',
+        status: 'completed',
+      });
+      expect((await poll()).json()).toMatchObject({ busy: false });
+      await ctx.store.appendEvent('activity-cache', { t: 'task', id: 'another', phase: 'started' });
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      await ctx.store.appendEvent('activity-cache', { t: 'interrupted' });
+      expect((await poll()).json()).toMatchObject({ busy: false });
+      expect(reads).toHaveBeenCalledTimes(4);
+    } finally {
+      reads.mockRestore();
+    }
+  });
+
+  it('keeps conductor fields and renamed metadata live while the log is cached', async () => {
+    await ctx.store.appendEvent('activity-cache', { t: 'interrupted' });
+    expect((await poll()).json()).toMatchObject({ busy: false });
+    isBusy.mockReturnValue(true);
+    pendingPermissions.mockReturnValue(['permission-now']);
+    hasUnconfirmedTermination.mockReturnValue(true);
+    await ctx.store.renameSession('activity-cache', 'Renamed');
+    expect((await poll()).json()).toMatchObject({
+      busy: true,
+      pendingPermissions: ['permission-now'],
+      terminationUnconfirmed: true,
+      name: 'Renamed',
+    });
+    isBusy.mockReturnValue(false);
+    pendingPermissions.mockReturnValue([]);
+    expect((await poll()).json()).toMatchObject({ busy: false, pendingPermissions: [] });
+  });
+
+  it('invalidates on removal below the maximum sequence and session recreation', async () => {
+    expect((await poll()).json()).toMatchObject({ busy: true });
+    await ctx.db
+      .deleteFrom('events')
+      .where('session_id', '=', 'activity-cache')
+      .where('type', '=', 'task')
+      .execute();
+    expect((await poll()).json()).toMatchObject({ busy: false });
+    await ctx.store.deleteSession('activity-cache');
+    expect((await poll()).statusCode).toBe(404);
+    await ctx.store.createSession({ sessionId: 'activity-cache', worktree: '/wt/new', model: 'm' });
+    await ctx.store.appendEvent('activity-cache', { t: 'task', id: 'new', phase: 'started' });
+    await ctx.store.appendEvent('activity-cache', result);
+    expect((await poll()).json()).toMatchObject({ busy: true });
+  });
+
+  it('refreshes when an older sequence commits without advancing the maximum', async () => {
+    const original = await ctx.db
+      .selectFrom('events')
+      .select(['id'])
+      .where('session_id', '=', 'activity-cache')
+      .where('type', '=', 'task')
+      .executeTakeFirstOrThrow();
+    await ctx.db.deleteFrom('events').where('id', '=', original.id).execute();
+    expect((await poll()).json()).toMatchObject({ busy: false });
+    await ctx.db
+      .insertInto('events')
+      .values({
+        id: original.id,
+        session_id: 'activity-cache',
+        type: 'task',
+        payload: JSON.stringify({ t: 'task', id: 'late', phase: 'started' }),
+      })
+      .execute();
+    expect((await poll()).json()).toMatchObject({ busy: true });
+  });
+
+  it('does not reuse a matching revision when a session is recreated between polls', async () => {
+    expect((await poll()).json()).toMatchObject({ busy: true });
+    const previous = await ctx.store.getSessionEventStats('activity-cache');
+    await ctx.store.deleteSession('activity-cache');
+    await ctx.store.createSession({
+      sessionId: 'activity-cache',
+      worktree: '/wt/recreated',
+      model: 'm',
+    });
+    await ctx.store.appendEvent('activity-cache', { t: 'prompt', text: 'new turn' });
+    await ctx.store.appendEvent('activity-cache', result);
+    const recreated = await ctx.store.getSessionEventStats('activity-cache');
+    expect(recreated?.revision).toBe(previous?.revision);
+    expect(recreated?.lastEventSeq).not.toBe(previous?.lastEventSeq);
+    expect((await poll()).json()).toMatchObject({ busy: false });
+  });
+
+  it('shares simultaneous projection reads and retries after a failed read', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const realRead = ctx.store.listRecentSessionProjectionEvents.bind(ctx.store);
+    const reads = vi
+      .spyOn(ctx.store, 'listRecentSessionProjectionEvents')
+      .mockImplementationOnce(async () => {
+        await gate;
+        throw new Error('temporary read failure');
+      })
+      .mockImplementation(realRead);
+    try {
+      const first = poll();
+      const second = poll();
+      await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      release();
+      expect((await first).json()).toMatchObject({ busy: false });
+      expect((await second).json()).toMatchObject({ busy: false });
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      expect(reads).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      reads.mockRestore();
+    }
   });
 });
 

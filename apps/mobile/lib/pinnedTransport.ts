@@ -10,11 +10,10 @@ import {
   reportDirectRouteSuccess,
 } from './remoteControlTransport';
 
-interface NativeResponse {
+type NativeResponse = {
   status: number;
   headers: Record<string, string>;
-  bodyBase64: string;
-}
+} & ({ bodyBase64: string; bodyText?: never } | { bodyText: string; bodyBase64?: never });
 
 interface NativePinnedTransport {
   request(
@@ -26,6 +25,8 @@ interface NativePinnedTransport {
     tlsPin: string,
     proxyPort: number,
   ): Promise<NativeResponse>;
+  /** New native builds decode textual bodies without a Base64 bridge round-trip. */
+  requestV2?: NativePinnedTransport['request'];
   download(
     url: string,
     headers: Record<string, string>,
@@ -98,6 +99,15 @@ function native(): NativePinnedTransport {
   return nativeModule;
 }
 
+function requestNative(
+  transport: NativePinnedTransport,
+  ...args: Parameters<NativePinnedTransport['request']>
+): Promise<NativeResponse> {
+  // OTA JavaScript also runs on older native builds. Select by capability once
+  // per request; a failed V2 mutation must never be replayed through the old API.
+  return transport.requestV2 ? transport.requestV2(...args) : transport.request(...args);
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
@@ -116,6 +126,10 @@ function base64ToBuffer(encoded: string): ArrayBuffer {
 
 function utf8ResponseBody(response: NativeResponse): BodyInit | null {
   if ([204, 205, 304].includes(response.status)) return null;
+  if (response.bodyText !== undefined) {
+    // Match TextDecoder's default BOM handling, including retaining a second BOM.
+    return response.bodyText.startsWith('\uFEFF') ? response.bodyText.slice(1) : response.bodyText;
+  }
   const buffer = base64ToBuffer(response.bodyBase64);
   const contentType = Object.entries(response.headers).find(
     ([name]) => name.toLowerCase() === 'content-type',
@@ -222,7 +236,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               tlsPin,
               port,
             )
-          : await transport.request(
+          : await requestNative(
+              transport,
               requestId,
               url,
               init.method ?? 'GET',
@@ -247,7 +262,16 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           if (init.signal?.aborted)
             throw new DOMException('The operation was aborted.', 'AbortError');
           try {
-            response = await transport.request(requestId, url, 'GET', headers, null, tlsPin, port);
+            response = await requestNative(
+              transport,
+              requestId,
+              url,
+              'GET',
+              headers,
+              null,
+              tlsPin,
+              port,
+            );
             if (init.signal?.aborted) {
               throw new DOMException('The operation was aborted.', 'AbortError');
             }
@@ -270,7 +294,16 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           try {
             // A failed read has no uncertain mutation to replay. Keep the same
             // paired URL and pin when a reachable direct route can recover it.
-            response = await transport.request(requestId, url, 'GET', headers, null, tlsPin, 0);
+            response = await requestNative(
+              transport,
+              requestId,
+              url,
+              'GET',
+              headers,
+              null,
+              tlsPin,
+              0,
+            );
             if (init.signal?.aborted) {
               throw new DOMException('The operation was aborted.', 'AbortError');
             }
@@ -312,7 +345,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           if (remotePort > 0) {
             remoteAttempted = true;
             try {
-              response = await transport.request(
+              response = await requestNative(
+                transport,
                 requestId,
                 url,
                 'GET',

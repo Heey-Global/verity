@@ -3459,6 +3459,71 @@ const migrations: Record<string, Migration> = {
       )`.execute(db);
     },
   },
+  '0125_session_event_stats': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Older server generations and direct event writers must maintain the same
+      // counters; application-only increments would silently miss their inserts.
+      await sql`lock table events in share row exclusive mode`.execute(db);
+      await sql`create table session_event_stats (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        event_count bigint not null check (event_count >= 0),
+        last_event_seq bigint not null,
+        last_activity_at timestamptz,
+        revision bigint not null
+      )`.execute(db);
+      await sql`insert into session_event_stats
+        (session_id, event_count, last_event_seq, last_activity_at, revision)
+        select session_id, count(*), max(id),
+          (select newest.created_at from events newest where newest.id = max(events.id)),
+          count(*)
+        from events group by session_id`.execute(db);
+      await sql`create function maintain_session_event_stats() returns trigger
+        language plpgsql as $$
+        begin
+          if TG_OP = 'UPDATE' then
+            -- Session moves must lock both counters in a deterministic order.
+            perform session_id from session_event_stats
+              where session_id in (OLD.session_id, NEW.session_id)
+              order by session_id for update;
+          end if;
+          if TG_OP in ('DELETE', 'UPDATE') then
+            update session_event_stats set event_count = event_count - 1,
+              revision = revision + 1 where session_id = OLD.session_id;
+            if exists (select 1 from session_event_stats
+              where session_id = OLD.session_id and last_event_seq = OLD.id) then
+              update session_event_stats set
+                last_event_seq = coalesce((select id from events
+                  where session_id = OLD.session_id order by id desc limit 1), 0),
+                last_activity_at = (select created_at from events
+                  where session_id = OLD.session_id order by id desc limit 1)
+                where session_id = OLD.session_id;
+            end if;
+          end if;
+          if TG_OP in ('INSERT', 'UPDATE') then
+            insert into session_event_stats
+              (session_id, event_count, last_event_seq, last_activity_at, revision)
+              values (NEW.session_id, 1, NEW.id, NEW.created_at, 1)
+              on conflict (session_id) do update set
+                event_count = session_event_stats.event_count + 1,
+                revision = session_event_stats.revision + 1,
+                last_event_seq = greatest(session_event_stats.last_event_seq, NEW.id),
+                last_activity_at = case
+                  when NEW.id >= session_event_stats.last_event_seq then NEW.created_at
+                  else session_event_stats.last_activity_at end;
+          end if;
+          return null;
+        end
+        $$`.execute(db);
+      await sql`create trigger events_session_stats
+        after insert or delete or update on events
+        for each row execute function maintain_session_event_stats()`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop trigger events_session_stats on events`.execute(db);
+      await sql`drop function maintain_session_event_stats()`.execute(db);
+      await sql`drop table session_event_stats`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

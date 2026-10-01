@@ -958,12 +958,11 @@ describe('native iOS compile gate', () => {
     expect(prebuild).toBeGreaterThan(-1);
     // A change to the harness that triggers no run is a smoke nobody notices
     // has stopped working.
-    for (const source of [
-      'scripts/ios-pinned-tls-smoke.sh',
-      'scripts/ios-pinned-tls-smoke.swift',
-      'scripts/ios-pinned-tls-smoke-app.swift',
-    ]) {
-      expect(github.on.pull_request.paths).toContain(source);
+    const harness = readFileSync('scripts/ios-pinned-tls-smoke.sh', 'utf8');
+    const sources = new Set(harness.match(/scripts\/[\w-]+\.swift/g));
+    sources.add('scripts/ios-pinned-tls-smoke.sh');
+    for (const source of sources) {
+      expect(github.on.pull_request.paths, source).toContain(source);
     }
     // The smoke copies App Transport Security out of the generated Info.plist.
     // Ahead of prebuild it would run under its own bundle defaults, which pass
@@ -986,6 +985,7 @@ describe('native iOS compile gate', () => {
     }
     expect(detector).toContain('scripts/enrollment-proof');
     expect(detector).toContain("'scripts/ios-pinned-tls-smoke*'");
+    expect(detector).toContain('scripts/pinned-http-pool-smoke.swift');
     expect(detector).toContain('scripts/remote-control-tunnel');
     expect(detector).not.toMatch(/git diff[^;]*mobile-native-verify\.yml[\s\S]*compile=true/u);
     expect(named('Verify enrollment reference model and macOS Keychain probe')?.if).toContain(
