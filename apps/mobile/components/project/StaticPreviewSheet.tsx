@@ -850,6 +850,17 @@ export function StaticPreviewSheet({
                       </Text>
                     </View>
                   );
+                  // A live link to a server that went localhost-only still needs
+                  // the reason it may not load.
+                  const localHint = server.reachable ? null : (
+                    <View style={styles.localHint}>
+                      <Icon name="info" size={14} color={theme.colors.tone.attention} />
+                      <Text style={styles.localHintText}>
+                        Listens on localhost only, so the link cannot reach it. Restart it with
+                        --host 0.0.0.0 to share it.
+                      </Text>
+                    </View>
+                  );
                   if (!server.reachable && !live) {
                     return (
                       <View
@@ -862,13 +873,7 @@ export function StaticPreviewSheet({
                           {text}
                           <Text style={styles.localOnly}>Local only</Text>
                         </View>
-                        <View style={styles.localHint}>
-                          <Icon name="info" size={14} color={theme.colors.tone.attention} />
-                          <Text style={styles.localHintText}>
-                            Listens on localhost only, so the link cannot reach it. Restart it with
-                            --host 0.0.0.0 to share it.
-                          </Text>
-                        </View>
+                        {localHint}
                       </View>
                     );
                   }
@@ -908,6 +913,7 @@ export function StaticPreviewSheet({
                         ) : null}
                         <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
                       </View>
+                      {localHint}
                     </Pressable>
                   );
                 })}

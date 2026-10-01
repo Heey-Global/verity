@@ -778,6 +778,19 @@ describe('dev server tab', () => {
     expect(screen.queryByRole('button', { name: 'Share Vite on port 5173' })).toBeNull();
   });
 
+  // The link stays reachable from the row, but without the hint nothing says
+  // why it may not load any more.
+  it('keeps the loopback hint on a server whose link is still live', async () => {
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+    });
+
+    await openServers();
+    expect(await screen.findByRole('button', { name: 'Show link for port 5173' })).toBeTruthy();
+    expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
+  });
+
   // Folder is the default and sits first; the sheet must not open on an empty
   // Dev server list just because port detection exists.
   it('opens on the folder tab, left of Dev server, while no server runs', async () => {
