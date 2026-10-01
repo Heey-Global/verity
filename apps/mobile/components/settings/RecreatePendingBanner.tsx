@@ -20,8 +20,10 @@ export function RecreatePendingBanner() {
   // it was started — the standing entry included — so a failure stays in view.
   if (!applyPending && run.phase === 'idle') return null;
 
-  // A clean run clears `applyPending`; its outcome is still worth one line.
-  if (run.phase === 'done' && run.failed.length === 0) {
+  // A clean run clears `applyPending`; its outcome is still worth one line. So
+  // is a failure from the standing entry with no save behind it — but there is
+  // nothing the banner itself still asks for, so it must not stay for good.
+  if (run.phase === 'done' && (run.failed.length === 0 || !applyPending)) {
     return (
       <View style={styles.banner} accessibilityLiveRegion="polite">
         <Text style={styles.bannerText}>{recreateRunMessage(run)}</Text>

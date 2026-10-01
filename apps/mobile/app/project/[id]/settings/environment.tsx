@@ -1,7 +1,8 @@
 // Environment — the project's runtime: run state + one state-driven lifecycle
 // action, plus a slim update affordance when the sandbox image has one. No raw
 // container/Docker jargon; destructive removal lives on the settings index, not
-// here. The project counterpart of the Verity recreate banner.
+// here. The project counterpart of recreating containers after a Verity
+// settings save.
 import {
   VerityApiError,
   PROJECT_IMAGE_REBUILDING_WARNING,

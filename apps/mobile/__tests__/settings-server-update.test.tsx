@@ -334,7 +334,11 @@ describe('standing recreate entry', () => {
     render(<GitHubSettingsScreen />);
 
     expect(await screen.findByText('Could not recreate acme/one.')).toBeOnTheScreen();
-    expect(screen.getByLabelText(RECREATE)).toBeEnabled();
+
+    // Nothing saved is waiting on it, so a container that keeps failing must
+    // not pin the line to every settings screen for the rest of the session.
+    fireEvent.press(screen.getByLabelText('Dismiss'));
+    expect(screen.queryByText(/Could not recreate/)).toBeNull();
   });
 
   it('reports a run still going when the operator left', async () => {
