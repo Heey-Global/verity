@@ -6,10 +6,38 @@ import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
 
-it('generates a PIN that can be replaced before the link is created', async () => {
+const generatedPin = expect.stringMatching(/^\d{12}$/);
+
+// Folder and server rows only pick what to share. Expiry and the link follow
+// on their own step, so every create goes through this second button.
+async function pickFolder(name = 'Share this folder') {
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name }).props.accessibilityState.disabled).toBe(false),
+  );
+  fireEvent.press(screen.getByRole('button', { name }));
+  expect(await screen.findByText('LINK EXPIRES AFTER')).toBeTruthy();
+}
+
+// A PIN shown before the link exists reads as a link that is already out there.
+it('shows no PIN before the link exists and then the one it was created with', async () => {
   const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listSessionStaticPreviewEntries: jest.fn(async () => ({
+      directories: [],
+      files: ['index.html'],
+    })),
     listPublicPreviewShares: jest.fn(async () => []),
+    createSessionStaticPreviewShare: jest.fn(
+      async (_sessionId: string, body: { pin: string; staticPath: string }) => ({
+        id: 'root-share',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: body.staticPath,
+        state: 'active',
+        publicOrigin: 'https://root.example',
+        pin: body.pin,
+        expiresAt: '2030-01-01T01:00:00Z',
+      }),
+    ),
   } as unknown as VerityClient;
   render(
     <StaticPreviewSheet
@@ -20,15 +48,29 @@ it('generates a PIN that can be replaced before the link is created', async () =
     />,
   );
 
-  const input = await screen.findByLabelText('Preview PIN');
-  expect(input.props.value).toMatch(/^\d{12}$/);
-  fireEvent.changeText(input, '987654');
-  expect(screen.getByLabelText('Preview PIN').props.value).toBe('987654');
-  fireEvent.press(screen.getByRole('button', { name: 'Generate a new PIN' }));
-  expect(screen.getByLabelText('Preview PIN').props.value).toMatch(/^\d{12}$/);
+  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+  expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
+  await pickFolder();
+  expect(screen.getByText('Share Worktree')).toBeTruthy();
+  expect(screen.getByText('Protected by a PIN')).toBeTruthy();
+  expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
+  expect(client.createSessionStaticPreviewShare).not.toHaveBeenCalled();
+
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
+  await waitFor(() =>
+    expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
+      staticPath: '.',
+      pin: generatedPin,
+      ttlSeconds: 3600,
+    }),
+  );
+  const [[, { pin }]] = (client.createSessionStaticPreviewShare as jest.Mock).mock.calls as [
+    [string, { pin: string }],
+  ];
+  expect(await screen.findByText(pin.replace(/(\d{3})(?=\d)/g, '$1 '))).toBeTruthy();
 });
 
-it('requires a longer PIN for a 30-day share and submits that duration', async () => {
+it('submits the duration picked on the link step', async () => {
   const client = {
     listSessionStaticPreviewEntries: jest.fn(async () => ({
       directories: [],
@@ -55,17 +97,13 @@ it('requires a longer PIN for a 30-day share and submits that duration', async (
     />,
   );
   expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+  await pickFolder();
   fireEvent.press(screen.getByRole('radio', { name: '30 days' }));
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
-  expect(
-    screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-  ).toBe(true);
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456789012');
   fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
   await waitFor(() =>
     expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
       staticPath: '.',
-      pin: '123456789012',
+      pin: generatedPin,
       ttlSeconds: 30 * 24 * 60 * 60,
     }),
   );
@@ -112,50 +150,6 @@ it('shows and copies the saved PIN on a reopened link and shares it with the URL
   }
 });
 
-it('creates a share for index.html in the worktree root', async () => {
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({
-      directories: [],
-      files: ['index.html'],
-    })),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare: jest.fn(async () => ({
-      id: 'root-share',
-      sessionId: 'session-one',
-      targetKind: 'static-folder',
-      staticPath: '.',
-      state: 'active',
-      publicOrigin: 'https://root.example',
-      pin: '123456',
-      expiresAt: '2030-01-01T01:00:00Z',
-    })),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-    ).toBe(false),
-  );
-  fireEvent.press(screen.getByText('Create link'));
-  await waitFor(() =>
-    expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
-      staticPath: '.',
-      pin: '123456',
-      ttlSeconds: 3600,
-    }),
-  );
-  expect(await screen.findByText('123 456')).toBeTruthy();
-});
-
 it('creates and shows a static share for the folder selected in the session worktree', async () => {
   const share = {
     id: 'share-one',
@@ -187,24 +181,21 @@ it('creates and shows a static share for the folder selected in the session work
 
   fireEvent.press(await screen.findByLabelText('Open folder site'));
   fireEvent.press(await screen.findByLabelText('Open folder site/dist'));
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-    ).toBe(false),
-  );
-  fireEvent.press(screen.getByText('Create link'));
+  await pickFolder('Share folder site/dist');
+  expect(screen.getByText('Share dist')).toBeTruthy();
+  expect(screen.getByText('Worktree / site/dist')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
 
   await waitFor(() =>
     expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
       staticPath: 'site/dist',
-      pin: '123456',
+      pin: generatedPin,
       ttlSeconds: 3600,
     }),
   );
   expect(await screen.findByText('https://preview.example')).toBeTruthy();
   expect(screen.getByText(/left · until/)).toBeTruthy();
-  expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create link' })).toBeNull();
   expect(
     screen.getByRole('link', { name: 'Open preview link https://preview.example' }),
   ).toBeTruthy();
@@ -261,11 +252,11 @@ it('opens directly on the active link when the sheet is reopened', async () => {
   );
   expect(await screen.findByText('https://existing.example')).toBeTruthy();
   expect(screen.getByLabelText('Active preview link')).toBeTruthy();
-  expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Share this folder' })).toBeNull();
   expect(screen.queryByText('Create another link')).toBeNull();
 });
 
-it('keeps the selected folder and PIN after Core is unreachable during link creation', async () => {
+it('stays on the link step for the same folder after Core is unreachable', async () => {
   const client = {
     listSessionStaticPreviewDirectories: jest.fn(async () => ['demo']),
     listPublicPreviewShares: jest.fn(async () => []),
@@ -285,18 +276,14 @@ it('keeps the selected folder and PIN after Core is unreachable during link crea
   );
 
   fireEvent.press(await screen.findByLabelText('Open folder demo'));
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-    ).toBe(false),
-  );
-  fireEvent.press(screen.getByText('Create link'));
+  await pickFolder('Share folder demo');
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
 
   expect(await screen.findByText(/connection to Verity Core is unavailable/)).toBeTruthy();
-  expect(screen.getByText('Worktree / demo')).toBeTruthy();
-  expect(screen.getByLabelText('Preview PIN').props.value).toBe('123456');
-  expect(screen.getByText('Create link')).toBeTruthy();
+  expect(screen.getByText('Share demo')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Create link' })).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Back to folder' }));
+  expect(await screen.findByText('Worktree / demo')).toBeTruthy();
 });
 
 it('explains an Uplink internal error and permits retrying the same folder', async () => {
@@ -328,20 +315,14 @@ it('explains an Uplink internal error and permits retrying the same folder', asy
       onClose={jest.fn()}
     />,
   );
-  // The directory is selected by navigating into it; no second selection step exists.
   fireEvent.press(await screen.findByLabelText('Open folder demo'));
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-    ).toBe(false),
-  );
-  fireEvent.press(screen.getByText('Create link'));
+  await pickFolder('Share folder demo');
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
   expect(
     await screen.findByText('Uplink could not create this link. Please try again later.'),
   ).toBeTruthy();
-  expect(screen.getByLabelText('Back to parent folder')).toBeTruthy();
-  fireEvent.press(screen.getByText('Create link'));
+  expect(screen.getByText('Share demo')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
   expect(await screen.findByText('https://retry.example')).toBeTruthy();
   expect(createSessionStaticPreviewShare).toHaveBeenCalledTimes(2);
 });
@@ -378,71 +359,11 @@ it('keeps a newly created link when the initial share list arrives late', async 
     />,
   );
   fireEvent.press(await screen.findByLabelText('Open folder demo'));
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-    ).toBe(false),
-  );
-  fireEvent.press(screen.getByText('Create link'));
+  await pickFolder('Share folder demo');
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
   expect(await screen.findByText('https://new.example')).toBeTruthy();
   await act(async () => resolveShares([]));
   expect(screen.getByText('https://new.example')).toBeTruthy();
-});
-
-it('finishes loading a new folder when a link creation completes during navigation', async () => {
-  let resolveCreate!: (share: PublicPreviewShare) => void;
-  let resolveOther!: (folders: string[]) => void;
-  const client = {
-    listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) => {
-      if (path === 'other')
-        return await new Promise<string[]>((resolve) => {
-          resolveOther = resolve;
-        });
-      return path ? [] : ['demo', 'other'];
-    }),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare: jest.fn(
-      () =>
-        new Promise<PublicPreviewShare>((resolve) => {
-          resolveCreate = resolve;
-        }),
-    ),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  fireEvent.press(await screen.findByLabelText('Open folder demo'));
-  fireEvent.changeText(screen.getByLabelText('Preview PIN'), '123456');
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-    ).toBe(false),
-  );
-  fireEvent.press(screen.getByText('Create link'));
-  fireEvent.press(screen.getByLabelText('Back to parent folder'));
-  fireEvent.press(await screen.findByLabelText('Open folder other'));
-  await act(async () =>
-    resolveCreate({
-      id: 'share-new',
-      projectId: 'project-one',
-      sessionId: 'session-one',
-      targetKind: 'static-folder',
-      staticPath: 'demo',
-      state: 'active',
-      publicOrigin: 'https://new.example',
-      pin: '123456',
-      expiresAt: '2030-01-01T01:00:00Z',
-    } as PublicPreviewShare),
-  );
-  await act(async () => resolveOther([]));
-  expect(screen.getByText('https://new.example')).toBeTruthy();
-  expect(screen.queryByText('Worktree / other')).toBeNull();
 });
 
 it('ignores a child-folder response after returning to the session root', async () => {
@@ -520,13 +441,8 @@ it('shows progress while a link is being created instead of only dimming the but
       onClose={jest.fn()}
     />,
   );
-  fireEvent.changeText(await screen.findByLabelText('Preview PIN'), '123456');
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'Create link' }).props.accessibilityState.disabled,
-    ).toBe(false),
-  );
-  fireEvent.press(screen.getByText('Create link'));
+  await pickFolder();
+  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
 
   // The Uplink alone spends seconds on a create. A disabled button with no
   // other change reads as a tap that did not register.
@@ -534,6 +450,11 @@ it('shows progress while a link is being created instead of only dimming the but
   expect(button.props.accessibilityState.busy).toBe(true);
   expect(screen.getByText('Creating link…')).toBeTruthy();
   expect(screen.getByText(/This takes a few seconds/)).toBeTruthy();
+  // Leaving mid-create would drop the user back into the explorer while the link
+  // still lands a moment later, unannounced.
+  expect(
+    screen.getByRole('button', { name: 'Back to folder' }).props.accessibilityState.disabled,
+  ).toBe(true);
 
   await act(async () =>
     resolveCreate({
@@ -595,7 +516,7 @@ it('shows the stop in progress and confirms it before offering a new link', asyn
     expect(screen.getByRole('button', { name: 'Stop sharing' }).props.accessibilityState.busy).toBe(
       true,
     );
-    expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Share this folder' })).toBeNull();
 
     await act(async () => resolveStop());
 
@@ -603,10 +524,10 @@ it('shows the stop in progress and confirms it before offering a new link', asyn
     // form as if nothing had happened.
     expect(screen.getByText('Link stopped')).toBeTruthy();
     expect(screen.getByText(/The link for site no longer works/)).toBeTruthy();
-    expect(screen.queryByLabelText('Preview PIN')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Share this folder' })).toBeNull();
 
     fireEvent.press(screen.getByRole('button', { name: 'Create a new link' }));
-    expect(await screen.findByLabelText('Preview PIN')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
   } finally {
     alert.mockRestore();
   }
@@ -692,11 +613,16 @@ it('counts the remaining time down while the sheet stays open', async () => {
   }
 });
 
-it('says whether the selected folder has a start page', async () => {
+// The bottom button shares the folder the explorer is in, so it has to say
+// which one; a stale name would share a different folder than the one shown.
+it('names the folder the explorer is in on the share button', async () => {
+  let resolveDocs!: (entries: { directories: string[]; files: string[] }) => void;
   const client = {
     listSessionStaticPreviewEntries: jest.fn(async (_session: string, path: string) =>
       path === 'docs'
-        ? { directories: [], files: ['guide.md'] }
+        ? await new Promise<{ directories: string[]; files: string[] }>((resolve) => {
+            resolveDocs = resolve;
+          })
         : { directories: ['docs'], files: ['index.html'] },
     ),
     listPublicPreviewShares: jest.fn(async () => []),
@@ -709,11 +635,15 @@ it('says whether the selected folder has a start page', async () => {
       onClose={jest.fn()}
     />,
   );
-  expect(await screen.findByText('index.html opens as the start page')).toBeTruthy();
-
-  fireEvent.press(screen.getByLabelText('Open folder docs'));
-  expect(await screen.findByText('No index.html in this folder')).toBeTruthy();
-  expect(screen.queryByText('index.html opens as the start page')).toBeNull();
+  fireEvent.press(await screen.findByLabelText('Open folder docs'));
+  expect(screen.getByText('Share “docs”')).toBeTruthy();
+  expect(
+    screen.getByRole('button', { name: 'Share folder docs' }).props.accessibilityState.disabled,
+  ).toBe(true);
+  await act(async () => resolveDocs({ directories: [], files: ['guide.md'] }));
+  expect(screen.getByLabelText('File guide.md')).toBeTruthy();
+  await pickFolder('Share folder docs');
+  expect(screen.getByText('Share docs')).toBeTruthy();
 });
 
 describe('dev server tab', () => {
@@ -755,22 +685,25 @@ describe('dev server tab', () => {
       />,
     );
 
-  it('shares a detected server with the generated PIN and shows its live link', async () => {
+  it('shares the picked server after the link step and shows its live link', async () => {
     const createSessionPortPreviewShare = jest.fn(async () => portShare());
     renderSheet({
       listSessionDevServers: jest.fn(async () => [vite]),
       createSessionPortPreviewShare,
     });
 
-    expect(await screen.findByLabelText('Vite on port 5173')).toBeTruthy();
+    const row = await screen.findByRole('button', { name: 'Share Vite on port 5173' });
     expect(screen.getByText('web · node node_modules/.bin/vite --host 0.0.0.0')).toBeTruthy();
-    const pin = screen.getByLabelText('Preview PIN').props.value as string;
-    fireEvent.press(screen.getByRole('button', { name: 'Share port 5173' }));
+    expect(screen.queryByText('LINK EXPIRES AFTER')).toBeNull();
+    fireEvent.press(row);
+    expect(await screen.findByText('Share Vite :5173')).toBeTruthy();
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
 
     await waitFor(() =>
       expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
         targetPort: 5173,
-        pin,
+        pin: generatedPin,
         ttlSeconds: 3600,
       }),
     );
@@ -778,6 +711,30 @@ describe('dev server tab', () => {
     expect(screen.getByText('Vite :5173')).toBeTruthy();
     fireEvent.press(screen.getByRole('button', { name: 'Back to dev servers' }));
     expect(screen.getByRole('button', { name: 'Show link for port 5173' })).toBeTruthy();
+  });
+
+  // With several servers listed, a row tap must share that one and no other.
+  it('shares only the server that was picked from several', async () => {
+    const createSessionPortPreviewShare = jest.fn(async () =>
+      portShare({ targetPort: 3000, publicOrigin: 'https://api.example' }),
+    );
+    renderSheet({
+      listSessionDevServers: jest.fn(async () => [
+        vite,
+        { ...vite, port: 3000, pid: 41, name: 'API', workdir: 'api' },
+      ]),
+      createSessionPortPreviewShare,
+    });
+
+    fireEvent.press(await screen.findByRole('button', { name: 'Share API on port 3000' }));
+    expect(await screen.findByText('Share API :3000')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
+    await waitFor(() => expect(createSessionPortPreviewShare).toHaveBeenCalledTimes(1));
+    expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
+      'session-one',
+      expect.objectContaining({ targetPort: 3000 }),
+    );
+    expect(await screen.findByText('https://api.example')).toBeTruthy();
   });
 
   it('explains why a loopback-only server cannot be shared instead of offering a link', async () => {
@@ -788,7 +745,54 @@ describe('dev server tab', () => {
 
     expect(await screen.findByText('Local only')).toBeTruthy();
     expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Share port 5173' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Share Vite on port 5173' })).toBeNull();
+  });
+
+  // Folder is the default and sits first; the sheet must not open on an empty
+  // Dev server list just because port detection exists.
+  it('opens on the folder tab, left of Dev server, while no server runs', async () => {
+    const listSessionDevServers = jest.fn(async () => []);
+    renderSheet({ listSessionDevServers });
+
+    await waitFor(() => expect(listSessionDevServers).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((tab) => tab.props.accessibilityState.selected)).toEqual([true, false]);
+    expect(screen.getByRole('tab', { name: 'Folder' })).toBe(tabs[0]);
+    expect(screen.queryByText('No dev server running')).toBeNull();
+  });
+
+  it('switches to the Dev server tab when the sheet opens on a running server', async () => {
+    renderSheet({ listSessionDevServers: jest.fn(async () => [vite]) });
+
+    expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Dev server' }).props.accessibilityState.selected).toBe(
+      true,
+    );
+  });
+
+  // Only the opening look picks the tab: a server the agent starts later must not
+  // pull the folder list away from someone browsing it.
+  it('stays on the folder tab when a server starts after the sheet opened', async () => {
+    jest.useFakeTimers();
+    try {
+      const listSessionDevServers = jest
+        .fn<Promise<(typeof vite)[]>, [string]>()
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([vite]);
+      renderSheet({ listSessionDevServers });
+
+      expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
+      await act(async () => {
+        jest.advanceTimersByTime(12_000);
+      });
+      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
+        true,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   // The agent starts servers while the sheet is open; without the poll the list
@@ -802,11 +806,12 @@ describe('dev server tab', () => {
         .mockResolvedValue([vite]);
       renderSheet({ listSessionDevServers });
 
+      fireEvent.press(await screen.findByRole('tab', { name: 'Dev server' }));
       expect(await screen.findByText('No dev server running')).toBeTruthy();
       await act(async () => {
         jest.advanceTimersByTime(4_000);
       });
-      expect(await screen.findByLabelText('Vite on port 5173')).toBeTruthy();
+      expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
     } finally {
       jest.useRealTimers();
     }
@@ -820,7 +825,7 @@ describe('dev server tab', () => {
       const listSessionDevServers = jest.fn(async () => null);
       renderSheet({ listSessionDevServers });
 
-      expect(await screen.findByText('FOLDER TO SHARE')).toBeTruthy();
+      expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
       expect(screen.queryByRole('tab', { name: 'Dev server' })).toBeNull();
       await act(async () => {
         jest.advanceTimersByTime(12_000);
@@ -850,7 +855,7 @@ describe('dev server tab', () => {
       true,
     );
     fireEvent.press(screen.getByRole('tab', { name: 'Dev server' }));
-    expect(await screen.findByRole('button', { name: 'Share port 5173' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
   });
 
   it('keeps an active port link accessible when discovery finds no server', async () => {
