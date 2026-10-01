@@ -6,6 +6,7 @@ import { useMemo } from 'react';
 import { ServerUpdateSection } from '../../components/settings/ServerUpdateSection';
 import { SettingsMessage, SettingsScaffold } from '../../components/settings/SettingsChrome';
 import { createVerityClient } from '../../lib/client';
+import { retryFailedVeritySettings, useLoadVeritySettings } from '../../lib/settingsStore';
 
 export default function ServerUpdateScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -22,8 +23,17 @@ export default function ServerUpdateScreen() {
 }
 
 function ServerUpdateView({ client }: { client: VerityClient }) {
+  const reload = useLoadVeritySettings(client);
   return (
-    <SettingsScaffold title="Server update" detail>
+    <SettingsScaffold
+      title="Server update"
+      detail
+      onRetry={() =>
+        void retryFailedVeritySettings(client).then((retried) => {
+          if (!retried) reload();
+        })
+      }
+    >
       <ServerUpdateSection client={client} />
     </SettingsScaffold>
   );

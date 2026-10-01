@@ -6,42 +6,41 @@
 // nobody visited at the moment it mattered. It now appears where the change
 // was made, and only while there is something to apply.
 import { VerityApiError, reprovisionActiveProjects } from '@verity/mobile';
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { createVerityClient } from '../../lib/client';
 import {
   clearApplyPending,
+  setApplyRun,
   setVeritySettingsError,
   useVeritySettings,
+  veritySettingsSnapshot,
 } from '../../lib/settingsStore';
 import { settingsStyles as styles } from './settingsStyles';
 
-type ReproState =
-  | { phase: 'idle' }
-  | { phase: 'running'; total: number; done: number }
-  | { phase: 'done'; total: number; failed: string[] };
-
 export function ApplyPendingBanner() {
   const { theme } = useUnistyles();
-  const { applyPending, saving } = useVeritySettings();
-  const [repro, setRepro] = useState<ReproState>({ phase: 'idle' });
+  const { applyPending, applyRun: repro, saving } = useVeritySettings();
 
   const apply = useCallback(() => {
     const client = createVerityClient();
-    if (client === null || repro.phase === 'running' || saving > 0) return;
+    // Read from the store, not this render: another screen's banner may have
+    // started a run since, and two runs would recreate each container twice.
+    const current = veritySettingsSnapshot();
+    if (client === null || current.applyRun.phase === 'running' || current.saving > 0) return;
     setVeritySettingsError(undefined);
-    setRepro({ phase: 'running', total: 0, done: 0 });
+    setApplyRun({ phase: 'running', total: 0, done: 0 });
     void (async () => {
       try {
         const projects = await client.listProjects();
         const result = await reprovisionActiveProjects(
           projects,
           (projectId) => client.recreateProjectContainer(projectId),
-          (progress) => setRepro({ phase: 'running', ...progress }),
+          (progress) => setApplyRun({ phase: 'running', ...progress }),
         );
-        setRepro({ phase: 'done', total: result.total, failed: result.failed });
+        setApplyRun({ phase: 'done', total: result.total, failed: result.failed });
         // A container that failed to come back still runs the old settings, so
         // the prompt stays until every one of them has been recreated.
         if (result.failed.length === 0) clearApplyPending();
@@ -49,10 +48,10 @@ export function ApplyPendingBanner() {
         setVeritySettingsError(
           caught instanceof VerityApiError ? caught.message : 'Could not reprovision',
         );
-        setRepro({ phase: 'idle' });
+        setApplyRun({ phase: 'idle' });
       }
     })();
-  }, [repro.phase, saving]);
+  }, []);
 
   // A clean run clears `applyPending`; its outcome is still worth one line.
   if (!applyPending) {
@@ -65,7 +64,7 @@ export function ApplyPendingBanner() {
             : `Applied to ${String(repro.total)} running container${repro.total === 1 ? '' : 's'}.`}
         </Text>
         <Pressable
-          onPress={() => setRepro({ phase: 'idle' })}
+          onPress={() => setApplyRun({ phase: 'idle' })}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Dismiss"

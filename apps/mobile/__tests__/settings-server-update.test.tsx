@@ -137,6 +137,37 @@ describe('apply-settings banner', () => {
     expect(screen.getByText('Retry')).toBeOnTheScreen();
   });
 
+  // Every settings screen mounts this banner and the ones behind stay mounted.
+  // A run that only one of them knew about would leave the other's button live,
+  // and a second tap would recreate each container twice at once.
+  it('does not start a second run from another mounted screen', async () => {
+    let finish: (() => void) | undefined;
+    const recreateProjectContainer = jest.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await saveIdentityChange({
+      listProjects: jest.fn().mockResolvedValue([makeProject('one')]),
+      recreateProjectContainer,
+    });
+    render(
+      <>
+        <ServerUpdateScreen />
+        <ServerUpdateScreen />
+      </>,
+    );
+
+    const [first] = await screen.findAllByLabelText(APPLY);
+    fireEvent.press(first!);
+    await waitFor(() => expect(recreateProjectContainer).toHaveBeenCalledTimes(1));
+    for (const button of screen.getAllByLabelText(APPLY)) expect(button).toBeDisabled();
+
+    await act(async () => finish?.());
+    expect(recreateProjectContainer).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces a failed project listing and stays retryable', async () => {
     await saveIdentityChange({
       listProjects: jest.fn().mockRejectedValue(new VerityApiError(503, 'store sealed')),

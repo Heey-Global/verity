@@ -25,6 +25,11 @@ import {
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useSyncExternalStore } from 'react';
 
+export type ApplyRun =
+  | { phase: 'idle' }
+  | { phase: 'running'; total: number; done: number }
+  | { phase: 'done'; total: number; failed: string[] };
+
 export type VeritySettingsState = {
   /** The server's last word, or `null` before the first successful fetch. */
   settings: VeritySettings | null;
@@ -42,6 +47,10 @@ export type VeritySettingsState = {
   savedAt: string | undefined;
   /** A saved change has not reached already-running project containers yet. */
   applyPending: boolean;
+  /** The reprovision that applies it. Shared rather than per banner: every
+   *  settings screen mounts one and the screens behind stay mounted, so a run
+   *  started on one must disable the button on all of them. */
+  applyRun: ApplyRun;
   /** Last load/save failure, shown as a banner. Cleared by the next attempt. */
   error: string | undefined;
 };
@@ -54,6 +63,7 @@ const INITIAL: VeritySettingsState = {
   saving: 0,
   savedAt: undefined,
   applyPending: false,
+  applyRun: { phase: 'idle' },
   error: undefined,
 };
 
@@ -283,6 +293,11 @@ export function patchVeritySettingsLocally(
 /** Note that running containers now match the saved settings. */
 export function clearApplyPending(): void {
   publish({ applyPending: false });
+}
+
+/** Record the progress of the apply-settings reprovision. */
+export function setApplyRun(applyRun: ApplyRun): void {
+  publish({ applyRun });
 }
 
 /** Show a settings-wide error (e.g. a sealed store discovered by a sub-panel). */
