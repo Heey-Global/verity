@@ -398,6 +398,36 @@ describe('SessionListModel.refresh', () => {
     }
   });
 
+  it('keeps a row for a provider that reports only a model-scoped limit', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_700_000_000_000));
+    try {
+      const { client, listSessions, listProviderLimits } = makeClient();
+      listSessions.mockResolvedValueOnce([]);
+      listProviderLimits.mockResolvedValueOnce([
+        {
+          status: 'allowed',
+          resetsAt: 1_700_000_200,
+          window: 'weekly',
+          usedPercent: 10,
+          providerLabel: 'Claude',
+          scope: 'opus',
+        },
+      ]);
+      const model = new SessionListModel({ client });
+
+      await model.refresh();
+
+      // The reading proves Claude is connected, but a model-scoped limit must not
+      // stand in for the provider-wide meter; Codex never reported, so no row.
+      expect(model.state.providerLimitRows).toEqual([
+        { providerLabel: 'Claude', fiveHour: null, weekly: null },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('merges account-global provider limits into overview meters', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_700_000_000_000));

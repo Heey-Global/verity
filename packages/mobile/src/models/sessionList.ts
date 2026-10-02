@@ -388,8 +388,8 @@ function addProviderLimit(
   nowSeconds: number,
 ): void {
   const providerLabel = rateLimit.providerLabel ?? 'Claude';
-  // Any reading proves the provider is connected, so it keeps its row even once
-  // every window has expired; only the meters themselves go blank.
+  // Any reading proves the provider is connected — an expired window or a
+  // model-scoped limit too — so it keeps its row; only the meters go blank.
   const bucket = byProvider.get(providerLabel) ?? {};
   byProvider.set(providerLabel, bucket);
   if (!isLimitVisible(rateLimit, nowSeconds)) return;
