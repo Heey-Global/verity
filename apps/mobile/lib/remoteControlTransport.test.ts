@@ -684,7 +684,14 @@ describe('remote diagnostics', () => {
     mockDiagnosticSummary.mockResolvedValue(null);
     // A stale stall reason on an attachment that stays live through the grace
     // period must not trigger a replacement.
-    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    jest.useFakeTimers();
+    try {
+      const first = transport.testRemoteControlForUrl(coreUrl);
+      await jest.advanceTimersByTimeAsync(3_500);
+      expect((await first).ready).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
     expect(mockStart).toHaveBeenCalledTimes(1);
     mockIsActive.mockResolvedValue(false);
     mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
