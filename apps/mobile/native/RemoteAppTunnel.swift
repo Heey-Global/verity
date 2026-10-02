@@ -539,8 +539,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
     let task = Task { [weak self] in
       try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
       guard !Task.isCancelled, let self else { return }
+      // Re-checked under the lock, including that this attachment is the one
+      // still running; the instance attaches once, so the check is belt and braces.
       let stalled = self.lock.withLock {
-        !stream.closed && stream.receivedBytes == 0 && self.receivedBytes == receivedWhenArmed
+        !self.stopped && !stream.closed && stream.receivedBytes == 0
+          && self.receivedBytes == receivedWhenArmed
       }
       guard stalled else { return }
       self.lock.withLock { self.logStream(id, stream, event: "stalled") }

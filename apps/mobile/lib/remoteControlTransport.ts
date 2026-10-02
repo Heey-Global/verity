@@ -43,6 +43,15 @@ let proxyMode: ProxyMode = 'socks';
 // failure reads as an ordinary timeout and backs off instead of attaching
 // again. The transport test pins this ordering against the Swift constant.
 export const PROBE_TIMEOUT_MS = 12_000;
+// The watchdog arms on the stream's first sent bytes, the probe timer on the
+// request, so the margin between them shrinks by whatever the loopback
+// handshake took; after a probe timeout the native stop is given this long
+// to land before the failure is classified.
+const STALL_STOP_GRACE_MS = 3_000;
+// One replacement per window: an attachment that passes its probe and then
+// stalls on every read must not be re-admitted every ten seconds.
+const STALL_REPLACEMENT_WINDOW_MS = 60_000;
+let lastStallReplacementAt = 0;
 // Native keeps its own copy; a JavaScript reload must not leave the two apart.
 let proxyModeSynced = false;
 
@@ -190,6 +199,15 @@ async function isTunnelStopped(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function tunnelStoppedWithin(graceMs: number): Promise<boolean> {
+  const deadline = Date.now() + graceMs;
+  while (!(await isTunnelStopped())) {
+    if (Date.now() >= deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  }
+  return true;
 }
 
 // The native tunnel's own account of why it ended. Without it every drop reads
@@ -460,9 +478,16 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
         // `active` is only the key and port; the admission was finished when
         // the attachment opened, and the native tunnel has stopped itself.
         active = null;
-        // Only a stall is replaced here, for this read. Any other end is left
-        // to the next request's route selection, as before.
+        // Only a stall is replaced here, for this read, and only once per
+        // window. Any other end is left to the next request's route
+        // selection, which clears `active` the same way when it finds the
+        // tunnel stopped.
         if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
+        if (Date.now() - lastStallReplacementAt < STALL_REPLACEMENT_WINDOW_MS) {
+          retryAfter = Date.now() + 15_000;
+          return 0;
+        }
+        lastStallReplacementAt = Date.now();
         return await open(target, key, { retryStall: false });
       }
       await probeCoreThroughEitherProxy(target, pin, port);
@@ -664,7 +689,7 @@ async function open(
     // a live one may still report the previous attachment's stall.
     const stalled =
       stage === 'probe' &&
-      (await isTunnelStopped()) &&
+      (await tunnelStoppedWithin(STALL_STOP_GRACE_MS)) &&
       (await tunnelStopReason())?.startsWith('stall') === true;
     if (tunnelStarted) {
       try {
@@ -675,7 +700,13 @@ async function open(
     }
     // An attachment that went dead under its first probe is replaced once at
     // once; a fresh one has answered every time so far. Anything else backs off.
-    if (stalled && options.retryStall && keyFor(coreUrl) === key) {
+    if (
+      stalled &&
+      options.retryStall &&
+      keyFor(coreUrl) === key &&
+      Date.now() - lastStallReplacementAt >= STALL_REPLACEMENT_WINDOW_MS
+    ) {
+      lastStallReplacementAt = Date.now();
       console.warn('Remote Control attachment stalled during its probe; attaching again');
       return open(coreUrl, key, { retryStall: false });
     }

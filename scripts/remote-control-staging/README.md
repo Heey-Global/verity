@@ -77,8 +77,8 @@ code even after another stream opens.
 A stream that has sent its first local bytes and received nothing within
 10 seconds ends the attachment with the stop reason `stall: …` (Core's TLS
 reply to a ClientHello otherwise arrives within milliseconds). The app then
-attaches again at once, once, and retries a read on the fresh attachment; a
-second stall backs off as before.
+attaches again at once and retries its reads on the fresh attachment, at most
+once per minute; a further stall within that minute backs off as before.
 
 `streams=` lists up to three recent streams as fixed tokens, for example
 `s1=k3F0A9C1E.up1806.dn6801.fo3.fi4.t210.d520.local.psocks.o22.i22-23-23.h2`: the
