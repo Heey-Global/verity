@@ -6,7 +6,7 @@ import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
 
-const generatedPin = expect.stringMatching(/^\d{12}$/);
+const generatedPin = expect.stringMatching(/^\d{6}$/);
 
 // Folder and server rows only pick what to share. Expiry and the link follow
 // on their own step, so every create goes through this second button.

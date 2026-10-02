@@ -141,9 +141,9 @@ function fixture(
 describe('public preview duration and PIN policy', () => {
   it.each([
     ['1 hour', 3600, '123456'],
-    ['24 hours', 86400, '123456789012'],
-    ['7 days', 604800, '123456789012'],
-    ['30 days', 2592000, '123456789012'],
+    ['24 hours', 86400, '123456'],
+    ['7 days', 604800, '123456'],
+    ['30 days', 2592000, '123456'],
   ])('creates a %s share', async (_label, ttlSeconds, pin) => {
     const { manager, edge } = fixture();
     await manager.create({ devServerId: 'dev-1', pin, ttlSeconds });
@@ -161,11 +161,11 @@ describe('public preview duration and PIN policy', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
-  it('requires a 12-digit PIN for links lasting at least a day', async () => {
+  it.each(['12345', '1234567', '123456789012', 'abcdef'])('rejects PIN %s', async (pin) => {
     const { manager, edge } = fixture();
     await expect(
-      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 86400 }),
-    ).rejects.toThrow('PIN must contain 12 digits');
+      manager.create({ devServerId: 'dev-1', pin, ttlSeconds: 2592000 }),
+    ).rejects.toThrow('PIN must contain exactly 6 digits');
     expect(edge.create).not.toHaveBeenCalled();
   });
 });

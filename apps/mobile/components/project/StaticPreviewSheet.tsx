@@ -284,7 +284,6 @@ export function StaticPreviewSheet({
     if (!target || busy) return;
     setBusy(true);
     setError(undefined);
-    // Twelve digits satisfy every duration, so nothing has to be typed or checked.
     const pin = generatePreviewPin();
     try {
       const share =

@@ -186,7 +186,7 @@ export function generatePreviewSecret(bytes = 24): string {
 }
 
 export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex')): string {
-  if (!/^\d{6,12}$/.test(pin)) throw new Error('preview PIN must contain 6 to 12 digits');
+  if (!/^\d{6}$/.test(pin)) throw new Error('preview PIN must contain exactly 6 digits');
   return `scrypt:${salt}:${scryptSync(pin, salt, 32).toString('hex')}`;
 }
 
@@ -1822,7 +1822,7 @@ function validatePinHash(value: string): void {
 
 async function verifyPreviewPin(pin: string, encoded: string): Promise<boolean> {
   const [, salt, expected] = encoded.split(':');
-  if (!salt || !expected || !/^\d{6,12}$/.test(pin)) return false;
+  if (!salt || !expected || !/^\d{6}$/.test(pin)) return false;
   const derived = await new Promise<Buffer>((resolve, reject) => {
     scrypt(pin, salt, 32, (error, value) => {
       if (error) reject(error);

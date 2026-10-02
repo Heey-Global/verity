@@ -51,7 +51,7 @@ export function loginPage(next: string, error?: string): string {
   return shell(
     'Enter preview code',
     'Private preview',
-    `<h1 id="page-title">Enter your code</h1><p class="copy">Use the code shared with you to open this preview.</p><form method="post" action="/__verity/login"><input type="hidden" name="next" value="${escapeHtml(next)}">${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ''}<label for="pin">Preview code</label><input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,12}" minlength="6" maxlength="12" placeholder="6–12 digits" required autofocus><button type="submit">Open preview</button></form>`,
+    `<h1 id="page-title">Enter your code</h1><p class="copy">Use the code shared with you to open this preview.</p><form method="post" action="/__verity/login"><input type="hidden" name="next" value="${escapeHtml(next)}">${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ''}<label for="pin">Preview code</label><input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="6 digits" required autofocus><button type="submit">Open preview</button></form>`,
   );
 }
 
