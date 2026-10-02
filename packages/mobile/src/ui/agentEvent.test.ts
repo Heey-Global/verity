@@ -37,6 +37,8 @@ describe('agentEventDescriptor', () => {
     'rate limit exceeded',
     'Your weekly quota has been reached. Internal error: request rejected',
     'Too many requests',
+    "You've hit your session limit · resets 7:30pm (UTC)",
+    "Internal error: You've hit your session limit · resets 7:30pm (UTC)",
   ])('shows a compact system notice for a provider limit: %s', (message) => {
     expect(agentEventDescriptor({ t: 'error', kind: 'run_failed', message })).toEqual({
       kind: 'limit-reached',

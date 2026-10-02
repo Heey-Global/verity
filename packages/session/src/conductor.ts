@@ -46,6 +46,7 @@ export {
 } from './brokered-grants.js';
 import type { PermissionDecision, PermissionRequest } from '@verity/adapter-claude';
 import {
+  isUsageLimitError,
   type RunResult,
   type RunTurnOptions,
   type Spawner,
@@ -5050,6 +5051,18 @@ export class Conductor {
     if (settled) return;
     if (isExternalInterruptionExitCode(result.exitCode)) {
       await this.emitInterrupted(sessionId);
+      return;
+    }
+    // A provider refusal may close ACP before it can persist its own terminal
+    // event. Keep that failure out of the crash row's diagnostic stderr tail.
+    if (isUsageLimitError(result.stderr)) {
+      for (const event of [
+        { t: 'error', kind: 'usage_limit', message: 'Usage limit reached' },
+        { t: 'status', state: 'completed' },
+      ] as const) {
+        const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
+        this.deps.bus?.publish(sessionId, { seq, ts, event });
+      }
       return;
     }
     const tail = result.stderr ? `: ${result.stderr.slice(-500)}` : '';

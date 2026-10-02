@@ -659,6 +659,33 @@ describe('Conductor.sendTurn', () => {
     expect(terminal[0]).toMatchObject({ t: 'error', kind: 'crashed' });
   });
 
+  it('settles a session-limit exit without exposing the crash stderr tail', async () => {
+    await ctx.store.createSession({ sessionId: 's-limit', worktree: '/wt/x', model: 'm' });
+    const backend: Backend = {
+      run: async (opts) => ({
+        sessionId: opts.storeSessionId,
+        exitCode: 1,
+        stderr:
+          "[session/load] diagnostic data\nInternal error: You've hit your session limit · resets 7:30pm (UTC)",
+        aborted: false,
+      }),
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s-limit', 'go');
+    const events = await ctx.store.getEvents('s-limit');
+    expect(events).toContainEqual({
+      t: 'error',
+      kind: 'usage_limit',
+      message: 'Usage limit reached',
+    });
+    expect(events).toContainEqual({ t: 'status', state: 'completed' });
+    expect(events.some((event) => event.t === 'error' && event.kind === 'crashed')).toBe(false);
+  });
+
   it('settles a SIGTERM exit without a terminal event as interrupted, not crashed', async () => {
     await ctx.store.createSession({ sessionId: 's-term', worktree: '/wt/x', model: 'm' });
     const backend: Backend = {

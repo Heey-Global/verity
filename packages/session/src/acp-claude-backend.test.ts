@@ -19,7 +19,7 @@ beforeEach(async () => {
 
 function acpSpawner(
   behavior: {
-    promptError?: boolean;
+    promptError?: boolean | string;
     loadSession?: boolean;
     /** Answer `initialize` with the agent's HTTP MCP capability set the way the
      *  real adapter reports it: an explicit boolean either way, never absent. */
@@ -582,8 +582,18 @@ function acpSpawner(
                 },
               },
             });
-            if (behavior.promptError === true) {
-              push({ jsonrpc: '2.0', id, error: { code: -32603, message: 'agent crashed' } });
+            if (behavior.promptError) {
+              push({
+                jsonrpc: '2.0',
+                id,
+                error: {
+                  code: -32603,
+                  message:
+                    typeof behavior.promptError === 'string'
+                      ? behavior.promptError
+                      : 'agent crashed',
+                },
+              });
             } else {
               push({
                 jsonrpc: '2.0',
@@ -1243,6 +1253,25 @@ describe('AcpClaudeBackend', () => {
       'status',
       'diagnostic',
     ]);
+  });
+
+  it('settles a Claude session limit without a crashed status or replay', async () => {
+    const message = "You've hit your session limit · resets 7:30pm (UTC)";
+    const fake = acpSpawner({ promptError: message });
+    const result = await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-limit',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeExecution).toBeUndefined();
+    const events = await ctx.store.getEvents('verity-session-limit');
+    expect(events).toContainEqual({ t: 'status', state: 'completed' });
+    expect(events).not.toContainEqual({ t: 'status', state: 'crashed' });
+    expect(events).toContainEqual({ t: 'error', kind: 'usage_limit', message });
   });
 
   it('names a permission request by its tool, not by ACP’s command-line title', async () => {
