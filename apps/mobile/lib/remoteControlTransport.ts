@@ -207,7 +207,9 @@ const STREAM_TRACE =
 const TUNNEL_SUMMARY = new RegExp(
   String.raw`^(local=\d+, opened=\d+, received=\d+, last=[a-z_.]+` +
     String.raw`(?:, sentBytes=\d+, receivedBytes=\d+, deliveredBytes=\d+, localResets=\d+, remoteResets=\d+, ` +
-    String.raw`lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout)))?)` +
+    String.raw`lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout))` +
+    // Attachment age and heartbeat liveness; absent from older native builds.
+    String.raw`(?:, age=(?:none|\d{1,8}), pings=\d{1,6}/\d{1,6}, pongAge=(?:none|\d{1,8}))?)?)` +
     String.raw`(?:, streams=([^\n]*))?$`,
   'u',
 );

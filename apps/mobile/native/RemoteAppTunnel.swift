@@ -161,6 +161,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var stopReasonText: String?
   private var heartbeat: Task<Void, Never>?
   private var unansweredPingSince: Date?
+  // Liveness of the inbound half of the data socket, separately from data:
+  // a pong that still arrives while stream frames do not says the relay is
+  // not forwarding; a pong that stops too says the socket's inbound is dead.
+  private var attachedAt: Date?
+  private var pingsSent = 0
+  private var pongsReceived = 0
+  private var lastPongAt: Date?
   private var localConnections = 0
   private var openedStreams = 0
   private var receivedStreamFrames = 0
@@ -181,7 +188,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.withLock {
       let traces = recentStreams.enumerated()
         .map { "s\($0.offset + 1)=\($0.element.traceToken)" }.joined(separator: ";")
+      let now = Date()
+      let age = attachedAt.map { String(min(Int(now.timeIntervalSince($0) * 1000), 99_999_999)) } ?? "none"
+      let pongAge = lastPongAt.map { String(min(Int(now.timeIntervalSince($0) * 1000), 99_999_999)) } ?? "none"
       return "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent), sentBytes=\(sentBytes), receivedBytes=\(receivedBytes), deliveredBytes=\(deliveredBytes), localResets=\(localResets), remoteResets=\(remoteResets), lastReset=\(lastReset)"
+        + ", age=\(age), pings=\(pingsSent)/\(pongsReceived), pongAge=\(pongAge)"
         + (traces.isEmpty ? "" : ", streams=\(traces)")
     }
   }
@@ -281,6 +292,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         guard let self else { return }
         await self.readFrames()
       }
+      lock.withLock { attachedAt = Date() }
       startHeartbeat()
       return port
     } catch {
@@ -354,10 +366,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
           return
         }
         guard due else { continue }
+        self.lock.withLock { self.pingsSent += 1 }
         self.socket.sendPing { [weak self] error in
           guard let self else { return }
           if let error { self.stop(reason: "heartbeat failed: \(error)") }
-          else { self.lock.withLock { self.unansweredPingSince = nil } }
+          else {
+            self.lock.withLock {
+              self.unansweredPingSince = nil
+              self.pongsReceived += 1
+              self.lastPongAt = Date()
+            }
+          }
         }
       }
     }

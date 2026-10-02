@@ -668,6 +668,21 @@ describe('remote diagnostics', () => {
     });
   });
 
+  it('accepts the attachment age and heartbeat liveness of a newer native build', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockRejectedValue(new Error('Remote Core probe failed.'));
+    // A pong that still arrives while stream frames do not says the relay is
+    // not forwarding; without these fields that cannot be told from a dead socket.
+    const summary =
+      'local=11, opened=8, received=17, last=stream_opened, sentBytes=16196, receivedBytes=25725, deliveredBytes=25725, localResets=0, remoteResets=0, lastReset=none, age=61234, pings=4/4, pongAge=1200, streams=s1=kD2910375.up1526.dn0.fo1.fi0.tnone.d14852.open.psocks.o22.inone.hnone';
+    mockDiagnosticSummary.mockResolvedValue(summary);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: false,
+      detail: `probe (Remote Core probe failed.; tunnel ${summary})`,
+    });
+  });
+
   it.each([
     // Native builds before and after the stream key and frame counts.
     's1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
