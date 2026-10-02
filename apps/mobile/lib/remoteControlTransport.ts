@@ -183,6 +183,14 @@ export function remoteControlFailureForUrl(url: string): string | null {
 // as the same "native transport error", which is how an idle timeout went
 // unnoticed for several releases. Clipped and flattened: it lands in an error
 // message shown on screen.
+async function isTunnelStopped(): Promise<boolean> {
+  try {
+    return !(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive());
+  } catch {
+    return false;
+  }
+}
+
 async function tunnelStopReason(): Promise<string | null> {
   try {
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
@@ -420,7 +428,6 @@ export async function testRemoteControlForUrl(
   return selected;
 }
 
-/** A failed read may recover on the other loopback proxy without replacing its tunnel. */
 /**
  * A read failed on the tunnel. Returns the port to retry it on: the same
  * port when the attachment still answers Core, a fresh attachment's port
@@ -441,6 +448,8 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
         const reason = await tunnelStopReason();
         console.warn(`Remote Control tunnel ended: ${reason ?? 'no reason reported'}`);
         active = null;
+        // Only a stall is replaced here, for this read. Any other end is left
+        // to the next request's route selection, as before.
         if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
         return open(target, key, { retryStall: false });
       }
@@ -639,7 +648,12 @@ async function open(
     };
     console.warn(`Remote Control ${stage} failed: ${detail ?? 'unclassified failure'}`);
     admission?.cancel();
-    const stalled = stage === 'probe' && (await tunnelStopReason())?.startsWith('stall') === true;
+    // The reason belongs to this attachment only once it has actually stopped;
+    // a live one may still report the previous attachment's stall.
+    const stalled =
+      stage === 'probe' &&
+      (await isTunnelStopped()) &&
+      (await tunnelStopReason())?.startsWith('stall') === true;
     if (tunnelStarted) {
       try {
         await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();

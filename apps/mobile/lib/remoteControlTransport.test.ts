@@ -613,6 +613,12 @@ describe('remote diagnostics', () => {
     });
     mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
     mockDiagnosticSummary.mockResolvedValue(null);
+    // A stale stall reason on a live attachment must not trigger a replacement.
+    mockIsActive.mockResolvedValueOnce(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    expect(mockStart).toHaveBeenCalledTimes(1);
+    mockIsActive.mockReset().mockResolvedValue(false);
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
     expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
       ready: true,
       detail: 'Core health check passed through Uplink',
@@ -620,7 +626,6 @@ describe('remote diagnostics', () => {
     expect(mockStart).toHaveBeenCalledTimes(2);
     // When the replacement stalls as well it is not replaced again; that is
     // the back-off's job.
-    mockIsActive.mockResolvedValue(false);
     mockStart.mockResolvedValue(4_321);
     mockRequest.mockImplementation(async () => {
       throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');

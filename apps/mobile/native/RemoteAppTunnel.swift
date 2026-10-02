@@ -304,6 +304,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     for (id, stream) in streams {
       logStream(id, stream, event: "session_stopped")
       stream.closed = true
+      stream.stallWatch?.cancel()
       if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
     }
     streams.removeAll()
