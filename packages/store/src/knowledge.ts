@@ -476,29 +476,6 @@ export class KnowledgeStore {
   async previewDocumentMove(id: string, folderId: string) {
     return this.transaction((tx) => this.previewMove(tx, id, folderId, 'document'));
   }
-  private async readableSnapshot(tx: Tx): Promise<Map<string, Set<string>>> {
-    const state = await this.policyState(tx);
-    const result = new Map<string, Set<string>>();
-    for (const projectId of new Set(state.grants.map((g) => g.project_id))) {
-      const access = this.effective(
-        state.folders,
-        state.grants
-          .filter((g) => g.project_id === projectId)
-          .map((g) => ({ folderId: g.folder_id, mode: g.mode })),
-      );
-      result.set(
-        projectId,
-        new Set(
-          [...access.keys()]
-            .map((id) => 'folder:' + id)
-            .concat(
-              state.documents.filter((d) => access.has(d.folder_id)).map((d) => 'document:' + d.id),
-            ),
-        ),
-      );
-    }
-    return result;
-  }
   private async policyMutation<T>(
     fn: (tx: Tx) => Promise<T>,
     expectedPolicyToken?: string,
@@ -506,59 +483,8 @@ export class KnowledgeStore {
     return this.transaction(async (tx) => {
       if (expectedPolicyToken !== undefined && expectedPolicyToken !== (await this.policyToken(tx)))
         throw new KnowledgeError('conflict', 'Knowledge access changed; preview the move again');
-      const before = await this.readableSnapshot(tx);
-      const result = await fn(tx);
-      const after = await this.readableSnapshot(tx);
-      for (const [projectId, ids] of before) {
-        if (![...ids].some((id) => !after.get(projectId)?.has(id))) continue;
-        await tx
-          .updateTable('agent_loops')
-          .set({ session_id: null })
-          .where('project_id', '=', projectId)
-          .execute();
-        const sessions = await tx
-          .selectFrom('sessions')
-          .select('session_id')
-          .where('project_id', '=', projectId)
-          .execute();
-        for (const session of sessions) {
-          await tx
-            .insertInto('knowledge_invalidated_sessions')
-            .values({ session_id: session.session_id })
-            .onConflict((c) => c.column('session_id').doNothing())
-            .execute();
-        }
-      }
-      return result;
+      return fn(tx);
     });
-  }
-  async isSessionInvalidated(sessionId: string): Promise<boolean> {
-    return !!(await this.db
-      .selectFrom('knowledge_invalidated_sessions')
-      .select('session_id')
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst());
-  }
-  async listInvalidatedSessions(): Promise<string[]> {
-    return (
-      await this.db.selectFrom('knowledge_invalidated_sessions').select('session_id').execute()
-    ).map((r) => r.session_id);
-  }
-  async listPendingInvalidatedSessions(): Promise<string[]> {
-    return (
-      await this.db
-        .selectFrom('knowledge_invalidated_sessions')
-        .select('session_id')
-        .where('stopped_at', 'is', null)
-        .execute()
-    ).map((r) => r.session_id);
-  }
-  async markInvalidatedSessionStopped(sessionId: string): Promise<void> {
-    await this.db
-      .updateTable('knowledge_invalidated_sessions')
-      .set({ stopped_at: new Date() })
-      .where('session_id', '=', sessionId)
-      .execute();
   }
   async hasProjectKnowledge(projectId: string): Promise<boolean> {
     return !!(await this.db
@@ -1393,15 +1319,7 @@ export class KnowledgeStore {
           .select('project_id')
           .where('session_id', '=', actor.sessionId)
           .executeTakeFirst();
-        if (
-          session?.project_id !== actor.projectId ||
-          !actor.turnId ||
-          (await tx
-            .selectFrom('knowledge_invalidated_sessions')
-            .select('session_id')
-            .where('session_id', '=', actor.sessionId)
-            .executeTakeFirst())
-        )
+        if (session?.project_id !== actor.projectId || !actor.turnId)
           throw new KnowledgeError('forbidden');
         const permitted = await this.access(tx, actor.projectId);
         const allFolders = await this.folders(tx);

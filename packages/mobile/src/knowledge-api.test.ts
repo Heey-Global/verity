@@ -62,21 +62,21 @@ it('sends the reviewed policy token with a move and preserves pagination paramet
   expect(transport.mock.calls[1]?.[0]).toContain('offset=100&limit=100');
 });
 
-it('preserves the closed-session code so the app can distinguish knowledge revocation', async () => {
+it('preserves structured errors for unavailable knowledge', async () => {
   const client = new VerityClient({
     baseUrl: 'https://example.test',
     fetch: vi
       .fn<typeof fetch>()
       .mockResolvedValue(
         new Response(
-          JSON.stringify({ code: 'knowledgeSessionClosed', error: 'Knowledge access changed' }),
+          JSON.stringify({ code: 'knowledgeUnavailable', error: 'Knowledge source unavailable' }),
           { status: 409 },
         ),
       ),
   });
   await expect(client.listKnowledgeGrants('p')).rejects.toMatchObject({
     status: 409,
-    code: 'knowledgeSessionClosed',
+    code: 'knowledgeUnavailable',
   });
 });
 

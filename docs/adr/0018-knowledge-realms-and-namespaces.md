@@ -1,5 +1,14 @@
 # ADR 0018 — Managed Knowledge Folders and Project Access
 
+> Current lifecycle behavior: deleting or moving Knowledge sources, or changing
+> access, does not invalidate existing sessions, stop runners, clear queued turns,
+> or unlink Agent Loops. Future reads enforce current access and return errors for
+> unavailable sources. Previously read content may remain in the session context.
+> The session invalidation and cleanup design described below is superseded.
+> Migration 0126 removes the historical session invalidation table and its markers.
+
+
+
 **Status:** Accepted · **Date:** 2026-09-15 · **Revised:** 2026-09-20
 
 This revision replaces the original realm-and-namespace proposal with a

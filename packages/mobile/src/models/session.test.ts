@@ -2572,18 +2572,20 @@ describe('SessionModel — a session that is still being created', () => {
   });
 });
 
-it('keeps a knowledge-revoked session readable while disabling further turns', async () => {
+it('keeps a session usable after a missing knowledge error', async () => {
   const { connect } = recordingConnect();
   const client = {
     ...stubClient(),
-    getSession: vi.fn().mockResolvedValue({ resumable: false, knowledgeAccessRevoked: true }),
+    getSession: vi.fn().mockResolvedValue({ resumable: true }),
+    sendTurn: vi.fn().mockRejectedValue(new VerityApiError(404, 'Knowledge source not found')),
   } as unknown as VerityClient;
   const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
   model.start();
   try {
-    await vi.waitFor(() => expect(model.state.knowledgeAccessRevoked).toBe(true));
-    expect(model.state.resumable).toBe(false);
-    expect(model.state.session).toBeDefined();
+    await vi.waitFor(() => expect(model.state.resumable).toBe(true));
+    expect(await model.sendTurn('Read the missing source')).toBe(false);
+    expect(model.state.sendError).toBe('Knowledge source not found');
+    expect(model.state.resumable).toBe(true);
   } finally {
     model.stop();
   }

@@ -3524,6 +3524,18 @@ const migrations: Record<string, Migration> = {
       await sql`drop table session_event_stats`.execute(db);
     },
   },
+  '0126_remove_knowledge_session_invalidations': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table knowledge_invalidated_sessions`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`create table knowledge_invalidated_sessions (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        stopped_at timestamptz,
+        created_at timestamptz not null default now()
+      )`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

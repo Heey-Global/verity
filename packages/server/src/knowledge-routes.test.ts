@@ -1,12 +1,10 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
-import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 
 let ctx: TestDb;
 let app: FastifyInstance;
-const reconcile = vi.fn(async () => {});
 beforeAll(async () => {
   ctx = await createTestDb();
 });
@@ -16,11 +14,9 @@ afterAll(async () => {
 beforeEach(async () => {
   await app?.close();
   await truncateAll(ctx.db);
-  reconcile.mockClear();
   app = Fastify();
   registerKnowledgeRoutes(app, {
     knowledge: ctx.store.knowledge,
-    reconcileInvalidations: reconcile,
   });
   await ctx.store.upsertProject({
     id: 'p',
@@ -103,8 +99,7 @@ describe('knowledge management routes', () => {
         })
       ).statusCode,
     ).toBe(200);
-    expect(reconcile).toHaveBeenCalledOnce();
-    expect(await ctx.store.knowledge.isSessionInvalidated('s')).toBe(true);
+    expect(await ctx.store.getSession('s')).toBeDefined();
   });
   it('preserves relative Markdown paths through import/export and rejects traversal', async () => {
     const folder = await ctx.store.knowledge.createFolder({ name: 'Library' });
@@ -136,32 +131,22 @@ describe('knowledge management routes', () => {
   });
 });
 
-it('keeps invalidation pending after a failed backend stop and retries without deleting history', async () => {
+it('deleting a source preserves the session and reports missing content on a subsequent read', async () => {
   const folder = await ctx.store.knowledge.createFolder({ name: 'Notes' });
-  await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read' }]);
-  await ctx.store.appendEvent('s', { t: 'text', delta: 'Retained history' });
-  await ctx.store.knowledge.setGrants('p', []);
-  const stop = vi.fn(async () => {});
-  stop.mockRejectedValueOnce(new Error('termination unconfirmed'));
-  const closeSession = vi.fn();
-  const cleanup = createKnowledgeInvalidationReconciler({
-    store: ctx.store,
-    conductor: {
-      runBackendHandoff: async (_id, fn) => {
-        await stop();
-        return fn();
-      },
-      clearQueue: async () => [],
-      closeSession,
-    },
+  const document = await ctx.store.knowledge.createDocument({
+    folderId: folder.id,
+    title: 'Removed',
+    bodyMarkdown: 'Content',
   });
-  await expect(cleanup()).rejects.toThrow('termination unconfirmed');
-  expect(await ctx.store.knowledge.listPendingInvalidatedSessions()).toEqual(['s']);
-  await cleanup();
-  expect(await ctx.store.knowledge.listPendingInvalidatedSessions()).toEqual([]);
-  expect(await ctx.store.knowledge.isSessionInvalidated('s')).toBe(true);
+  await ctx.store.appendEvent('s', { t: 'text', delta: 'Retained history' });
+  expect(
+    (await app.inject({ method: 'DELETE', url: `/knowledge/documents/${document.id}` })).statusCode,
+  ).toBe(200);
+  expect(
+    (await app.inject({ method: 'GET', url: `/knowledge/documents/${document.id}` })).statusCode,
+  ).toBe(404);
+  expect(await ctx.store.getSession('s')).toBeDefined();
   expect(await ctx.store.getEvents('s')).toEqual([
     expect.objectContaining({ t: 'text', delta: 'Retained history' }),
   ]);
-  expect(closeSession).toHaveBeenCalledWith('s');
 });

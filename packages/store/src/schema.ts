@@ -1213,11 +1213,6 @@ interface KnowledgeAuditTable {
   outcome: 'allow' | 'deny' | 'conflict';
   created_at: Generated<Date>;
 }
-interface KnowledgeInvalidatedSessionsTable {
-  session_id: string;
-  stopped_at: Generated<Date | null>;
-  created_at: Generated<Date>;
-}
 interface KnowledgeSpacesTable {
   project_id: string;
   root_folder_id: string;
@@ -1280,7 +1275,6 @@ export interface Database {
   knowledge_document_revisions: KnowledgeRevisionsTable;
   project_knowledge_grants: KnowledgeGrantsTable;
   knowledge_access_events: KnowledgeAuditTable;
-  knowledge_invalidated_sessions: KnowledgeInvalidatedSessionsTable;
   http_mcp_connections: HttpMcpConnectionsTable;
   project_mcp_bindings: ProjectMcpBindingsTable;
   control_plane_generation: ControlPlaneGenerationTable;

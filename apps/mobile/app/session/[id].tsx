@@ -556,7 +556,6 @@ export function SessionChat({
     sendError,
     cancelError,
     resumable,
-    knowledgeAccessRevoked,
     name,
     model: currentModel,
     projectId,
@@ -3806,11 +3805,7 @@ export function SessionChat({
       {dead ? (
         <Banner
           tone="attention"
-          text={
-            knowledgeAccessRevoked
-              ? 'Knowledge access changed. Start a new session to continue. The transcript stays available.'
-              : "This session's workspace was cleaned up. The transcript stays available, but new turns need a new agent."
-          }
+          text="This session's workspace was cleaned up. The transcript stays available, but new turns need a new agent."
         />
       ) : null}
       {rateNotice ? (
