@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/Heey-Global/verity/compare/website-v2.0.0...website-v2.0.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **installer:** preserve sudo terminal and filter Docker pairing addresses ([#1013](https://github.com/Heey-Global/verity/issues/1013)) ([6c7b118](https://github.com/Heey-Global/verity/commit/6c7b1184f0814a7d60cca549a4f3628917c76f8f))
+
 ## [2.0.0](https://github.com/Heey-Global/verity/compare/website-v1.6.5...website-v2.0.0) (2026-09-30)
 
 
