@@ -597,12 +597,7 @@ describe('createGitWorktreeProvisioner', () => {
     git('config', 'user.name', 'Test');
     git('config', 'commit.gpgsign', 'false');
     writeFileSync(join(repo, 'README.md'), '# t\n');
-    // As the real repo does, so a checkout's own bookkeeping never shows up as
-    // pending work in what these tests read out of `git status`.
-    writeFileSync(
-      join(repo, '.gitignore'),
-      '.verity-sessions/\n.verity-worktree.json\n.verity-worktree.json.tmp\n',
-    );
+    writeFileSync(join(repo, '.gitignore'), '.verity-sessions/\n');
     git('add', '.');
     git('commit', '-q', '-m', 'init', '--no-gpg-sign');
 
@@ -627,6 +622,30 @@ describe('createGitWorktreeProvisioner', () => {
     rmSync(join(repo, '.git', 'worktrees', name), { recursive: true, force: true });
 
   const sweep = (repo: string) => reregisterPrunedWorktrees(repo, join(repo, '.verity-sessions'));
+
+  it('(integration, real git) locally excludes bookkeeping and backfills existing sessions', async () => {
+    const { repo, worktree, inWorktree } = await repoWithSession(
+      'verity-worktree-exclude-',
+      'agent/exclude',
+    );
+    const exclude = join(repo, '.git', 'info', 'exclude');
+    expect(inWorktree('status', '--porcelain')).toBe('');
+    // A pre-fix session already has an unchanged sidecar, so skipping its
+    // refresh must not skip installing the missing local exclusion.
+    writeFileSync(exclude, 'custom-local-file');
+    writeFileSync(join(worktree, '.verity-worktree.json.tmp'), 'partial');
+    expect(inWorktree('status', '--porcelain')).toContain('.verity-worktree.json');
+    sweep(repo);
+    expect(inWorktree('status', '--porcelain')).toBe('');
+    expect(inWorktree('check-ignore', '.verity-worktree.json', '.verity-worktree.json.tmp')).toBe(
+      '.verity-worktree.json\n.verity-worktree.json.tmp',
+    );
+    const installed = readFileSync(exclude, 'utf8');
+    expect(installed.startsWith('custom-local-file\n')).toBe(true);
+    sweep(repo);
+    expect(readFileSync(exclude, 'utf8')).toBe(installed);
+    expect(readFileSync(join(worktree, '.gitignore'), 'utf8')).toBe('.verity-sessions/\n');
+  });
 
   it('(integration, real git) restores the index, so a rebuilt checkout is not read as wholly deleted', async () => {
     // The incident: a rebuilt entry had no index, and a missing index is an

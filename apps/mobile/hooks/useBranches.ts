@@ -10,6 +10,7 @@ import { AppState } from 'react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { takePrefetchedBranches } from '../lib/branchesPrefetch';
+import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
 
 const ACTIVE_PR_POLL_MS = 2_000;
 // Still discovering: no PR yet, so poll briskly to surface one the agent opens
@@ -58,6 +59,7 @@ export interface UseBranches {
    * when the project has a repository (merging goes through its PR) or the server is
    * older. Drives the local merge bar. */
   localMergeBase: string | undefined;
+  localMergeHasChanges: boolean;
   /** Ask the agent to commit this session's work, then add it to the local project. */
   saveToProject: () => Promise<{ ok: true } | { ok: false; message: string }>;
 }
@@ -80,6 +82,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   const [owner, setOwner] = useState<string | undefined>(undefined);
   const [repo, setRepo] = useState<string | undefined>(undefined);
   const [localMergeBase, setLocalMergeBase] = useState<string | undefined>(undefined);
+  const [localMergeHasChanges, setLocalMergeHasChanges] = useState(false);
   const [loading, setLoading] = useState(true);
   const [workspaceMissing, setWorkspaceMissing] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -112,6 +115,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       setOwner(res.owner);
       setRepo(res.repo);
       setLocalMergeBase(res.localMerge?.base);
+      setLocalMergeHasChanges(hasLocalSaveChanges(res.localMerge));
       setWorkspaceMissing(res.workspaceMissing === true);
       setError(undefined);
     } catch (err) {
@@ -262,6 +266,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     switchTo,
     mergePullRequest,
     localMergeBase,
+    localMergeHasChanges,
     saveToProject,
   };
 }

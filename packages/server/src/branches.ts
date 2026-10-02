@@ -229,6 +229,8 @@ export interface GitBranchService {
   sessionBranches(worktreePath: string): Promise<string[]>;
   /** Whether the worktree has uncommitted (or untracked) changes. */
   isDirty(worktreePath: string): Promise<boolean>;
+  /** Uncommitted files or committed file changes since branching from the project base. */
+  hasProjectChanges(worktreePath: string, base: string): Promise<boolean>;
   /** Local branches the worktree could switch to (not checked out elsewhere). */
   switchable(worktreePath: string): Promise<string[]>;
   /** Pushed branches (`origin/*`) the worktree can PREVIEW (issue #122) — open-PR
@@ -553,6 +555,21 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
 
   async function isDirty(worktreePath: string): Promise<boolean> {
     const out = await git(['-C', worktreePath, 'status', '--porcelain']);
+    return out.trim().length > 0;
+  }
+
+  async function hasProjectChanges(worktreePath: string, base: string): Promise<boolean> {
+    if (await isDirty(worktreePath)) return true;
+    const out = await git([
+      '-C',
+      worktreePath,
+      'diff',
+      '--name-only',
+      '--no-ext-diff',
+      '--no-textconv',
+      `refs/heads/${base}...HEAD`,
+      '--',
+    ]);
     return out.trim().length > 0;
   }
 
@@ -1137,6 +1154,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     current,
     sessionBranches,
     isDirty,
+    hasProjectChanges,
     switchable,
     previewable,
     switch: doSwitch,

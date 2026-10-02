@@ -316,6 +316,7 @@ function rebuildWorktreeAdminDir(repoDir: string, worktreePath: string): boolean
   if (!existsSync(gitFile) || lstatSync(gitFile).isDirectory()) return false;
   const adminName = adminNameFor(worktreePath, gitFile);
   if (adminName === undefined) return false;
+  excludeWorktreeSidecar(repoDir);
   const worktreesDir = join(repoDir, '.git', 'worktrees');
   const adminDir = join(worktreesDir, adminName);
   // Belt and braces around {@link isAdminName}: whatever the name looked like,
@@ -366,6 +367,28 @@ function rebuildWorktreeAdminDir(repoDir: string, worktreePath: string): boolean
     return false;
   }
   return true;
+}
+
+function excludeWorktreeSidecar(repoDir: string): void {
+  // Session bookkeeping must not become pending project work in repositories
+  // that have never added Verity-specific rules to their tracked .gitignore.
+  const infoDir = join(repoDir, '.git', 'info');
+  const file = join(infoDir, 'exclude');
+  try {
+    const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const lines = new Set(existing.split(/\r?\n/u));
+    const missing = [`/${WORKTREE_SIDECAR}`, `/${WORKTREE_SIDECAR}.tmp`].filter(
+      (pattern) => !lines.has(pattern),
+    );
+    if (missing.length === 0) return;
+    mkdirSync(infoDir, { recursive: true });
+    writeFileSync(
+      file,
+      `${existing}${existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`,
+    );
+  } catch {
+    // An unwritable local exclude must not prevent worktree recovery.
+  }
 }
 
 /**

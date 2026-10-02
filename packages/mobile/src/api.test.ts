@@ -2240,10 +2240,17 @@ describe('VerityClient.mergeSessionBranch', () => {
 
   it('reads the local merge base off a branch list, and tolerates its absence', async () => {
     const { fetch } = fakeFetch(
-      json({ current: 'feat/notes', switchable: [], localMerge: { base: 'trunk' } }),
+      json({
+        current: 'feat/notes',
+        switchable: [],
+        localMerge: { base: 'trunk', hasChanges: false },
+      }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect((await client.getBranches('s1')).localMerge?.base).toBe('trunk');
+    expect((await client.getBranches('s1')).localMerge).toEqual({
+      base: 'trunk',
+      hasChanges: false,
+    });
 
     const older = fakeFetch(json({ current: 'main', switchable: [] }));
     const olderClient = new VerityClient({ baseUrl: 'http://host', fetch: older.fetch });

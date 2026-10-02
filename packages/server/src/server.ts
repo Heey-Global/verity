@@ -9339,14 +9339,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         : null;
       // A `local` project has no PR strip to merge from, so the cockpit needs to know
       // that merging into the project's base branch is possible here at all, and what
-      // that base is called. Readiness itself is deliberately NOT precomputed: the
-      // merge endpoint re-checks every precondition anyway and reports a precise
-      // reason, which beats a second opinion that can be stale by the time it's tapped.
+      // that base is called. File changes determine strip visibility; the merge
+      // endpoint still re-checks every precondition when Save is tapped.
       const localBase = await localMergeTarget(session)
         .then(async (target) =>
           target === undefined ? null : await branches.current(target.basePath).catch(() => null),
         )
         .catch(() => null);
+      const hasChanges =
+        localBase !== null
+          ? await branches.hasProjectChanges(session.worktree, localBase).catch(() => false)
+          : false;
       return {
         current,
         switchable,
@@ -9354,7 +9357,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
-        ...(localBase !== null ? { localMerge: { base: localBase } } : {}),
+        ...(localBase !== null ? { localMerge: { base: localBase, hasChanges } } : {}),
       };
     },
   });

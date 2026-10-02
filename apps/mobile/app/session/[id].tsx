@@ -4118,6 +4118,7 @@ export function SessionChat({
         />
       ) : null}
       {!visiblePullRequest &&
+      branches.localMergeHasChanges &&
       branches.localMergeBase !== undefined &&
       branches.current !== undefined &&
       branches.current !== branches.localMergeBase &&
