@@ -421,21 +421,33 @@ export async function testRemoteControlForUrl(
 }
 
 /** A failed read may recover on the other loopback proxy without replacing its tunnel. */
-export async function recoverRemoteControlRead(url: string, port: number): Promise<boolean> {
+/**
+ * A read failed on the tunnel. Returns the port to retry it on: the same
+ * port when the attachment still answers Core, a fresh attachment's port
+ * when the native stall watchdog has ended it, zero when nothing can be
+ * recovered. A dead attachment is replaced here rather than after the
+ * 15 s back-off, since a fresh one has answered every time so far.
+ */
+export async function recoverRemoteControlRead(url: string, port: number): Promise<number> {
   const selected = operation.then(async () => {
     const target = new URL(url).origin;
     const key = keyFor(target);
-    if (key === null || active?.key !== key || active.port !== port) return false;
+    if (key === null || active?.key !== key || active.port !== port) return 0;
     const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
-    if (pin === undefined) return false;
+    if (pin === undefined) return 0;
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     try {
-      if (!(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive())) {
-        return false;
+      if (!(await native.isActive())) {
+        const reason = await tunnelStopReason();
+        console.warn(`Remote Control tunnel ended: ${reason ?? 'no reason reported'}`);
+        active = null;
+        if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
+        return open(target, key, { retryStall: false });
       }
       await probeCoreThroughEitherProxy(target, pin, port);
-      return active?.key === key && active.port === port;
+      return active?.key === key && active.port === port ? port : 0;
     } catch {
-      return false;
+      return 0;
     }
   });
   operation = selected.then(
@@ -572,7 +584,11 @@ async function probeDirect(
   return { reachable, verdict };
 }
 
-async function open(coreUrl: string, key: string): Promise<number> {
+async function open(
+  coreUrl: string,
+  key: string,
+  options: { retryStall: boolean } = { retryStall: true },
+): Promise<number> {
   const profile = getServerProfile();
   const descriptor = profile?.remoteControl;
   const tlsPin = profile?.endpoints.find((entry) => entry.url === coreUrl)?.tlsPin;
@@ -623,12 +639,19 @@ async function open(coreUrl: string, key: string): Promise<number> {
     };
     console.warn(`Remote Control ${stage} failed: ${detail ?? 'unclassified failure'}`);
     admission?.cancel();
+    const stalled = stage === 'probe' && (await tunnelStopReason())?.startsWith('stall') === true;
     if (tunnelStarted) {
       try {
         await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
       } catch {
         // A failed probe still falls back to the direct pinned connection.
       }
+    }
+    // An attachment that went dead under its first probe is replaced once at
+    // once; a fresh one has answered every time so far. Anything else backs off.
+    if (stalled && options.retryStall && keyFor(coreUrl) === key) {
+      console.warn('Remote Control attachment stalled during its probe; attaching again');
+      return open(coreUrl, key, { retryStall: false });
     }
     retryAfter = Date.now() + 15_000;
     return 0;

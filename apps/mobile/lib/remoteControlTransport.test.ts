@@ -384,6 +384,7 @@ describe('remote diagnostics', () => {
     mockToken.mockReturnValue('device-bearer');
     mockRequest.mockRejectedValue(new Error('offline'));
     mockDiagnosticSummary.mockReset().mockResolvedValue(null);
+    mockLastStopReason.mockReset().mockResolvedValue(null);
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     jest.spyOn(console, 'info').mockImplementation(() => undefined);
   });
@@ -547,9 +548,85 @@ describe('remote diagnostics', () => {
       'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
     );
 
-    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(true);
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_321);
     expect(mockSetProxyMode.mock.calls).toEqual([['socks'], ['connect']]);
     expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces an attachment the native stall watchdog ended and retries on it', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    // The attachment carried one stream and then went dead without a close;
+    // the watchdog ended it. Waiting out the 15 s back-off here costs every
+    // read on the screen its own timeout first.
+    mockIsActive.mockResolvedValue(false);
+    mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_999);
+    expect(mockAdmission).toHaveBeenCalledTimes(2);
+    expect(mockStart).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not replace an attachment that ended for another reason', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    mockIsActive.mockResolvedValue(false);
+    mockLastStopReason.mockResolvedValue('heartbeat timeout');
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(0);
+    expect(mockAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches once more when the first attachment stalls under its probe', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    mockRequest.mockReset().mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 4_321)
+        throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+      return { status: 200 };
+    });
+    mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+    mockDiagnosticSummary.mockResolvedValue(null);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: true,
+      detail: 'Core health check passed through Uplink',
+    });
+    expect(mockStart).toHaveBeenCalledTimes(2);
+    // When the replacement stalls as well it is not replaced again; that is
+    // the back-off's job.
+    mockIsActive.mockResolvedValue(false);
+    mockStart.mockResolvedValue(4_321);
+    mockRequest.mockImplementation(async () => {
+      throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+    });
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    expect(mockStart).toHaveBeenCalledTimes(4);
   });
 
   it.each([

@@ -74,6 +74,12 @@ receiving application processed them. `localResets` and `remoteResets` count
 terminations from each side. `lastReset` retains the latest direction and fixed
 code even after another stream opens.
 
+A stream that has sent its first local bytes and received nothing within
+10 seconds ends the attachment with the stop reason `stall: …` (Core's TLS
+reply to a ClientHello otherwise arrives within milliseconds). The app then
+attaches again at once, once, and retries a read on the fresh attachment; a
+second stall backs off as before.
+
 `streams=` lists up to three recent streams as fixed tokens, for example
 `s1=k3F0A9C1E.up1806.dn6801.fo3.fi4.t210.d520.local.psocks.o22.i22-23-23.h2`: the
 first characters of the stream ID (the same ID Core reports under "Core

@@ -252,13 +252,15 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         settled = true;
         let directFailed = port === 0;
         let failure: Error = error instanceof Error ? error : new Error('native transport error');
-        if (
+        // The port to retry on may be a fresh attachment's when the old one stalled.
+        const retryPort =
           port > 0 &&
           replayable &&
           failure.message.includes('NO_AUTH_CHALLENGE') &&
-          !init.signal?.aborted &&
-          (await recoverRemoteControlRead(url, port))
-        ) {
+          !init.signal?.aborted
+            ? await recoverRemoteControlRead(url, port)
+            : 0;
+        if (retryPort > 0) {
           if (init.signal?.aborted)
             throw new DOMException('The operation was aborted.', 'AbortError');
           try {
@@ -270,7 +272,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               headers,
               null,
               tlsPin,
-              port,
+              retryPort,
             );
             if (init.signal?.aborted) {
               throw new DOMException('The operation was aborted.', 'AbortError');
