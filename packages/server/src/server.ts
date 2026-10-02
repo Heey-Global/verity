@@ -1,3 +1,5 @@
+import { measureLatencyPhase } from '@verity/store';
+import { registerRequestLatencyDiagnostics } from './request-latency.js';
 import { registerSessionMoveRoute } from './session-move-route.js';
 import {
   captureMoveSnapshot,
@@ -462,9 +464,9 @@ export function startProjectRelayMigrationScheduler(
     if (running) return;
     running = true;
     try {
-      const projects = deps.listProjects
-        ? await deps.listProjects()
-        : await deps.eventStore.listProjects();
+      const projects = await measureLatencyPhase('project_list', () =>
+        deps.listProjects ? deps.listProjects() : deps.eventStore.listProjects(),
+      );
       const updateStatuses = await deps.sandboxUpdates
         ?.statusAll(projects.filter((project) => project.kind !== 'control_plane'))
         .catch((err: unknown) => {
@@ -3170,6 +3172,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           bodyLimit,
           https: deps.https,
         } satisfies FastifyHttpsOptions<HttpsServer>);
+  if (deps.logger) registerRequestLatencyDiagnostics(app);
   app.decorateRequest('localUserId', null);
   // Derives the auth gate's pre-auth exception set from the routes this instance
   // actually registers; the gate that consumes it is far below, next to the rest
@@ -4641,8 +4644,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<SessionSummary[]> => {
     const ids = sessions.map((session) => session.sessionId);
     const [facts, pendingLinks] = await Promise.all([
-      deps.eventStore.listSessionProjectionFacts(ids, PROJECTION_TAIL),
-      deps.eventStore.pendingSessionLinkMessageIds(ids),
+      measureLatencyPhase('session_projection', () =>
+        deps.eventStore.listSessionProjectionFacts(ids, PROJECTION_TAIL),
+      ),
+      measureLatencyPhase('session_links', () => deps.eventStore.pendingSessionLinkMessageIds(ids)),
     ]);
     return Promise.all(
       sessions.map((session) =>
@@ -4969,13 +4974,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * one keeps getting the array it understands, and costs one query parameter.
    */
   app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
-    const sessions = await deps.eventStore.listSessions();
+    const sessions = await measureLatencyPhase('session_list', () =>
+      deps.eventStore.listSessions(),
+    );
     const liveWorktrees = new Set(sessions.map((s) => s.worktree));
     prunePrSummaryCache(liveWorktrees);
     pruneBranchCache(liveWorktrees);
-    const summaries = await summarizeSessions(sessions);
+    const summaries = await measureLatencyPhase('session_summaries', () =>
+      summarizeSessions(sessions),
+    );
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
-    const attention = await collectAttention();
+    const attention = await measureLatencyPhase('session_attention', collectAttention);
     // Absent when healthy, so the envelope stays quiet in the steady state.
     return { sessions: summaries, ...(attention.length > 0 ? { attention } : {}) };
   });
@@ -6422,15 +6431,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   const publicProjects = async (projects: ProjectRecord[]): Promise<PublicProjectRecord[]> => {
-    const toolkit = await serverToolkitIdentity();
-    const resolved = await Promise.all(projects.map((project) => resolveProjectRelease(project)));
+    const toolkit = await measureLatencyPhase('project_toolkit', serverToolkitIdentity);
+    const resolved = await measureLatencyPhase('project_releases', () =>
+      Promise.all(projects.map((project) => resolveProjectRelease(project))),
+    );
     // One update check for the whole page. Per project this used to re-resolve
     // the default image, its labels and its registry version — the same answer
     // every time — so a ten-project overview poll walked ghcr.io ten times over,
     // and the poll runs several times a minute per client.
     const sandboxUpdates =
-      (await deps.sandboxUpdates?.statusAll(
-        resolved.map(({ project }) => project).filter((project) => !isControlPlaneProject(project)),
+      (await measureLatencyPhase('project_sandbox_updates', async () =>
+        deps.sandboxUpdates?.statusAll(
+          resolved
+            .map(({ project }) => project)
+            .filter((project) => !isControlPlaneProject(project)),
+        ),
       )) ?? new Map<string, SandboxUpdateStatus>();
     const verdicts = sandboxRepairVerdicts();
     return resolved.map(({ project, release }) =>
@@ -6468,17 +6483,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerProjectCollectionRoutes(app, {
     store: deps.eventStore,
     listOverview: async (userId) => {
-      const projects = deps.listProjects
-        ? await deps.listProjects()
-        : await deps.eventStore.listProjects();
+      const projects = await measureLatencyPhase('project_list', () =>
+        deps.listProjects ? deps.listProjects() : deps.eventStore.listProjects(),
+      );
       const readableIds =
-        userId === null ? null : new Set(await deps.eventStore.listReadableProjectIds(userId));
-      return publicProjects(
-        await projectsForOverview(
-          projects.filter(
-            (project) =>
-              appearsInProjectOverview(project) &&
-              (readableIds === null || readableIds.has(project.id)),
+        userId === null
+          ? null
+          : new Set(
+              await measureLatencyPhase('project_permissions', () =>
+                deps.eventStore.listReadableProjectIds(userId),
+              ),
+            );
+      return measureLatencyPhase('project_overview', async () =>
+        publicProjects(
+          await projectsForOverview(
+            projects.filter(
+              (project) =>
+                appearsInProjectOverview(project) &&
+                (readableIds === null || readableIds.has(project.id)),
+            ),
           ),
         ),
       );
