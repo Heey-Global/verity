@@ -49,7 +49,8 @@ export const PROBE_TIMEOUT_MS = 12_000;
 // to land before the failure is classified.
 const STALL_STOP_GRACE_MS = 3_000;
 // One replacement per window: an attachment that passes its probe and then
-// stalls on every read must not be re-admitted every ten seconds.
+// stalls on every read must not be re-admitted every ten seconds. Module
+// state like `active`; the transport tests start from a fresh module each.
 const STALL_REPLACEMENT_WINDOW_MS = 60_000;
 let lastStallReplacement: { key: string; at: number } | null = null;
 
@@ -209,13 +210,27 @@ async function isTunnelStopped(): Promise<boolean> {
   }
 }
 
+// Bounded as a whole, each native call included: this runs inside the
+// serialized tunnel operation, and a native call that hangs would otherwise
+// hold every queued read and route selection behind it.
 async function tunnelStoppedWithin(graceMs: number): Promise<boolean> {
   const deadline = Date.now() + graceMs;
-  while (!(await isTunnelStopped())) {
-    if (Date.now() >= deadline) return false;
-    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stopped = await Promise.race([
+      isTunnelStopped(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), remaining);
+      }),
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+    if (stopped === null) return false;
+    if (stopped) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, remaining)));
   }
-  return true;
 }
 
 // The native tunnel's own account of why it ended. Without it every drop reads
@@ -700,9 +715,10 @@ async function open(
     // The watchdog's stop tears the loopback sockets down, so the probe in
     // flight ends with a transport error when the stop lands first and with a
     // timeout when the probe gives up first; only the latter is worth waiting
-    // on, since any reply bytes disarm the watchdog. The reason belongs to
-    // this attachment only once it has actually stopped; a live one may still
-    // report the previous attachment's stall.
+    // on, since any reply bytes disarm the watchdog. At this stage the native
+    // module holds this attachment (its start succeeded), so once it reports
+    // stopped the reason is this attachment's own; while it is live the
+    // reason may still be the previous attachment's and is not read.
     const stalled =
       stage === 'probe' &&
       ((await isTunnelStopped()) ||
