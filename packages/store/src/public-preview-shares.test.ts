@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 
 let ctx: TestDb;
@@ -48,6 +48,58 @@ describe('EventStore — public preview shares', () => {
     expect(share.pinLocked).toBe(true);
     expect(share.state).toBe('creating');
     expect(await ctx.db.selectFrom('public_preview_pin_locks').selectAll().execute()).toEqual([]);
+  });
+
+  // A lock's zero-row update can finish before create consumes its snapshot.
+  it('keeps the PIN locked when creation overtakes an in-flight lock event', async () => {
+    let finishQuery!: () => void;
+    const queryFinished = new Promise<void>((resolve) => {
+      finishQuery = resolve;
+    });
+    let resume!: () => void;
+    const resumeEvent = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const executor = ctx.db.getExecutor();
+    const executeQuery = executor.executeQuery.bind(executor);
+    let paused = false;
+    const spy = vi.spyOn(executor, 'executeQuery').mockImplementation(async (...args) => {
+      const result = await executeQuery(...args);
+      const compiled = args[0];
+      if (
+        !paused &&
+        compiled.sql.startsWith('update "public_preview_shares"') &&
+        compiled.sql.includes('returning "id"') &&
+        compiled.parameters.includes('share-racing')
+      ) {
+        paused = true;
+        expect(result.rows).toEqual([]);
+        finishQuery();
+        await resumeEvent;
+      }
+      return result;
+    });
+    const lock = ctx.store.lockPublicPreviewSharePin('share-racing');
+    try {
+      await queryFinished;
+      const share = await create('racing');
+      expect(share.pinLocked).toBe(true);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating'], 'active');
+      resume();
+      await lock;
+      expect(await ctx.store.getPublicPreviewShare(share.id)).toMatchObject({
+        pinLocked: true,
+        state: 'active',
+        revokedAt: null,
+      });
+      expect(await ctx.store.listPublicPreviewShares('p1')).toMatchObject([
+        { id: share.id, pinLocked: true, state: 'active' },
+      ]);
+    } finally {
+      resume();
+      await lock;
+      spy.mockRestore();
+    }
   });
 
   it('cleans snapshots too old to belong to a live preview', async () => {
