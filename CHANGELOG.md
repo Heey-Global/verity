@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.2](https://github.com/Heey-Global/verity/compare/v4.4.1...v4.4.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **server:** skip unchanged installation project writes ([#993](https://github.com/Heey-Global/verity/issues/993)) ([360175f](https://github.com/Heey-Global/verity/commit/360175fd61133c5a636ceee322419585a24f05b9))
+
 ## [4.4.1](https://github.com/Heey-Global/verity/compare/v4.4.0...v4.4.1) (2026-10-02)
 
 
