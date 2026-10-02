@@ -69,6 +69,7 @@ function setup(
   };
   const disabled = vi.fn(options.disableFeatures ?? (async () => undefined));
   const expired = vi.fn(async () => undefined);
+  const pinLocked = vi.fn(async () => undefined);
   const socketFactory = vi.fn(() => socket as unknown as WebSocket);
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const client = new UplinkControlClient({
@@ -78,6 +79,7 @@ function setup(
     webSocketFactory: socketFactory,
     onFeaturesDisabled: disabled,
     onShareExpired: expired,
+    onSharePinLocked: pinLocked,
     ...(options.offerRemoteControl !== undefined
       ? { offerRemoteControl: options.offerRemoteControl }
       : {}),
@@ -86,7 +88,7 @@ function setup(
       : {}),
     log,
   });
-  return { client, socket, socketFactory, store, settings, disabled, expired, log };
+  return { client, socket, socketFactory, store, settings, disabled, expired, pinLocked, log };
 }
 
 /** Like `setup`, but mints a fresh socket per dial. The shared-socket fixture
@@ -1804,6 +1806,28 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     expect(store.deletePendingUplinkShareRemoval).toHaveBeenCalledWith('restart-orphan');
+    await client.stop();
+  });
+
+  it('dispatches PIN lock snapshots without expiring the share', async () => {
+    const { client, socket, pinLocked, expired } = setup();
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    socket.message({ type: 'share.pin_locked', shareId: 'locked-share' });
+    socket.message({ type: 'share.pin_locked', shareId: 'locked-share' });
+    await flush();
+    expect(pinLocked).toHaveBeenCalledTimes(2);
+    expect(pinLocked).toHaveBeenCalledWith('locked-share');
+    expect(expired).not.toHaveBeenCalled();
+    expect(socket.close).not.toHaveBeenCalled();
     await client.stop();
   });
 

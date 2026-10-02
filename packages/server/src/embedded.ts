@@ -2421,6 +2421,7 @@ export async function buildEmbeddedServer(
           log: uplinkLog,
           onFeaturesDisabled: (reason) =>
             previewShareManager?.disableAll(reason) ?? Promise.resolve(),
+          onSharePinLocked: (shareId) => eventStore.lockPublicPreviewSharePin(shareId),
           onShareExpired: (shareId) =>
             previewShareManager?.finishExpiredByUplink(shareId) ?? Promise.resolve(),
         })

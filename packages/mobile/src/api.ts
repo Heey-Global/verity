@@ -490,6 +490,7 @@ export interface DevServerCreateRequest {
 export type DevServerPatchRequest = Omit<DevServerCreateRequest, 'sourceKey'>;
 
 const publicPreviewShareSchema = z.object({
+  pinLocked: z.boolean().optional(),
   id: z.string(),
   projectId: z.string(),
   devServerId: z.string().nullable(),

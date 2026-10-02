@@ -109,6 +109,97 @@ it('submits the duration picked on the link step', async () => {
   );
 });
 
+// A locked share stays live for authenticated visitors, but its PIN no longer admits anyone.
+it('explains a locked PIN and lets it be stopped and replaced without sharing the PIN', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+  });
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares: jest.fn(async () => [
+      {
+        id: 'locked-share',
+        sessionId: 'session-one',
+        targetKind: 'static-folder',
+        staticPath: 'site',
+        state: 'active',
+        publicOrigin: 'https://locked.example',
+        pin: '482913',
+        pinLocked: true,
+        expiresAt: '2030-01-01T01:00:00Z',
+      },
+    ]),
+    stopPublicPreviewShare: jest.fn(async () => undefined),
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(/PIN access locked after too many failed attempts/),
+    ).toBeTruthy();
+    expect(screen.getByText('Your preview is live')).toBeTruthy();
+    expect(screen.queryByText('482 913')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy PIN' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Share link and PIN' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open preview in browser' })).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Stop sharing' }));
+    expect(await screen.findByText('Link stopped')).toBeTruthy();
+    expect(client.stopPublicPreviewShare).toHaveBeenCalledWith('locked-share');
+    fireEvent.press(screen.getByRole('button', { name: 'Create a new link' }));
+    expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
+  } finally {
+    alert.mockRestore();
+  }
+});
+
+it('refreshes PIN lock status while the live link is open', async () => {
+  jest.useFakeTimers();
+  const share = {
+    id: 'share-one',
+    sessionId: 'session-one',
+    targetKind: 'static-folder',
+    staticPath: 'site',
+    state: 'active',
+    publicOrigin: 'https://live.example',
+    pin: '123456',
+    expiresAt: '2030-01-01T01:00:00Z',
+  };
+  const listPublicPreviewShares = jest
+    .fn()
+    .mockResolvedValueOnce([share])
+    .mockResolvedValue([{ ...share, pinLocked: true }]);
+  const client = {
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    listPublicPreviewShares,
+  } as unknown as VerityClient;
+  try {
+    render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        onClose={jest.fn()}
+      />,
+    );
+    await act(async () => {});
+    expect(screen.getByRole('button', { name: 'Copy PIN' })).toBeTruthy();
+    await act(async () => {
+      jest.advanceTimersByTime(4_000);
+    });
+    expect(listPublicPreviewShares).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/PIN access locked after too many failed attempts/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Copy PIN' })).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it('shows and copies the saved PIN on a reopened link and shares it with the URL', async () => {
   const shareAction = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
   const client = {

@@ -42,6 +42,44 @@ const create = async (suffix = '1', expiresAt = new Date('2030-01-01T00:00:00Z')
 };
 
 describe('EventStore — public preview shares', () => {
+  it('retains a lock event that precedes share persistence', async () => {
+    await ctx.store.lockPublicPreviewSharePin('share-early');
+    const share = await create('early');
+    expect(share.pinLocked).toBe(true);
+    expect(share.state).toBe('creating');
+    expect(await ctx.db.selectFrom('public_preview_pin_locks').selectAll().execute()).toEqual([]);
+  });
+
+  it('cleans snapshots too old to belong to a live preview', async () => {
+    await ctx.db
+      .insertInto('public_preview_pin_locks')
+      .values({
+        share_id: 'abandoned',
+        created_at: '2000-01-01T00:00:00Z',
+      })
+      .execute();
+    await ctx.store.lockPublicPreviewSharePin('new-snapshot');
+    expect(
+      await ctx.db.selectFrom('public_preview_pin_locks').select('share_id').execute(),
+    ).toEqual([{ share_id: 'new-snapshot' }]);
+  });
+
+  // A lock snapshot must survive reload without revoking access for existing cookies.
+  it('persists an idempotent PIN lock separately from the share lifecycle', async () => {
+    const share = await create();
+    expect(share.pinLocked).toBe(false);
+    await ctx.store.transitionPublicPreviewShare(share.id, ['creating'], 'active');
+    await ctx.store.lockPublicPreviewSharePin(share.id);
+    await ctx.store.lockPublicPreviewSharePin(share.id);
+    expect(await ctx.store.getPublicPreviewShare(share.id)).toMatchObject({
+      pinLocked: true,
+      state: 'active',
+      revokedAt: null,
+    });
+    expect(await ctx.store.listPublicPreviewShares('p1')).toMatchObject([{ pinLocked: true }]);
+    await expect(ctx.store.lockPublicPreviewSharePin('unknown-share')).resolves.toBeUndefined();
+  });
+
   it('persists the session source of a static share for recovery', async () => {
     const share = await ctx.store.createPublicPreviewShare({
       id: 'session-static',

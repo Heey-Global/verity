@@ -187,31 +187,47 @@ export function StaticPreviewSheet({
 
   useEffect(() => {
     let active = true;
-    void client
-      .listPublicPreviewShares(projectId)
-      .then((nextShares) => {
-        if (active) {
-          setShares((current) => {
-            const local = current.filter((share) => createdShareIds.current.has(share.id));
-            const remote = nextShares.filter(
-              (share) =>
-                (share.targetKind === 'static-folder' || isPortShare(share)) &&
-                share.sessionId === sessionId &&
-                !stoppedShareIds.current.has(share.id) &&
-                !createdShareIds.current.has(share.id),
-            );
-            return [...local, ...remote];
-          });
-        }
-      })
-      .catch((caught: unknown) => {
-        if (active) setError(previewError(caught));
-      })
-      .finally(() => {
-        if (active) setSharesLoading(false);
-      });
+    let inFlight = false;
+    const loadShares = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void client
+        .listPublicPreviewShares(projectId)
+        .then((nextShares) => {
+          if (active) {
+            setShares((current) => {
+              const local = current
+                .filter((share) => createdShareIds.current.has(share.id))
+                .map((share) => {
+                  const latest = nextShares.find(
+                    (item) => item.id === share.id && item.sessionId === sessionId,
+                  );
+                  return latest ? { ...share, ...latest } : share;
+                });
+              const remote = nextShares.filter(
+                (share) =>
+                  (share.targetKind === 'static-folder' || isPortShare(share)) &&
+                  share.sessionId === sessionId &&
+                  !stoppedShareIds.current.has(share.id) &&
+                  !createdShareIds.current.has(share.id),
+              );
+              return [...local, ...remote];
+            });
+          }
+        })
+        .catch((caught: unknown) => {
+          if (active) setError(previewError(caught));
+        })
+        .finally(() => {
+          inFlight = false;
+          if (active) setSharesLoading(false);
+        });
+    };
+    loadShares();
+    const timer = setInterval(loadShares, 4_000);
     return () => {
       active = false;
+      clearInterval(timer);
     };
   }, [client, projectId, sessionId]);
 
@@ -619,51 +635,61 @@ export function StaticPreviewSheet({
                             {activeShare.publicOrigin}
                           </Text>
                         </Pressable>
-                        <View style={styles.pinBox}>
-                          <Icon name="lock" size={16} color={theme.colors.textMuted} />
-                          <Text
-                            style={styles.pinValue}
-                            accessibilityLabel={`PIN ${activeShare.pin.split('').join(' ')}`}
-                          >
-                            {pinLabel(activeShare.pin)}
+                        {activeShare.pinLocked ? (
+                          <Text style={styles.error}>
+                            PIN access locked after too many failed attempts. Already signed-in
+                            visitors can still use this link. Stop sharing, then create a new link
+                            to let new visitors in.
                           </Text>
-                          <Pressable
-                            onPress={() =>
-                              void Clipboard.setStringAsync(activeShare.pin).then(() =>
-                                setCopied({ id: activeShare.id, what: 'pin' }),
-                              )
-                            }
-                            disabled={stopping}
-                            hitSlop={10}
-                            accessibilityRole="button"
-                            accessibilityLabel="Copy PIN"
-                          >
-                            <Icon
-                              name={
-                                copied?.id === activeShare.id && copied.what === 'pin'
-                                  ? 'check'
-                                  : 'copy'
+                        ) : (
+                          <View style={styles.pinBox}>
+                            <Icon name="lock" size={16} color={theme.colors.textMuted} />
+                            <Text
+                              style={styles.pinValue}
+                              accessibilityLabel={`PIN ${activeShare.pin.split('').join(' ')}`}
+                            >
+                              {pinLabel(activeShare.pin)}
+                            </Text>
+                            <Pressable
+                              onPress={() =>
+                                void Clipboard.setStringAsync(activeShare.pin).then(() =>
+                                  setCopied({ id: activeShare.id, what: 'pin' }),
+                                )
                               }
-                              size={18}
-                              color={theme.colors.primary}
-                            />
-                          </Pressable>
-                        </View>
+                              disabled={stopping}
+                              hitSlop={10}
+                              accessibilityRole="button"
+                              accessibilityLabel="Copy PIN"
+                            >
+                              <Icon
+                                name={
+                                  copied?.id === activeShare.id && copied.what === 'pin'
+                                    ? 'check'
+                                    : 'copy'
+                                }
+                                size={18}
+                                color={theme.colors.primary}
+                              />
+                            </Pressable>
+                          </View>
+                        )}
                         <View style={styles.actions}>
-                          <Pressable
-                            style={[styles.actionButton, styles.actionButtonPrimary]}
-                            onPress={() =>
-                              void Share.share({ message: shareMessage(activeShare) }).catch(
-                                () => undefined,
-                              )
-                            }
-                            disabled={stopping}
-                            accessibilityRole="button"
-                            accessibilityLabel="Share link and PIN"
-                          >
-                            <Icon name="share" size={16} color={theme.colors.onPrimary} />
-                            <Text style={styles.actionTextPrimary}>Share</Text>
-                          </Pressable>
+                          {!activeShare.pinLocked ? (
+                            <Pressable
+                              style={[styles.actionButton, styles.actionButtonPrimary]}
+                              onPress={() =>
+                                void Share.share({ message: shareMessage(activeShare) }).catch(
+                                  () => undefined,
+                                )
+                              }
+                              disabled={stopping}
+                              accessibilityRole="button"
+                              accessibilityLabel="Share link and PIN"
+                            >
+                              <Icon name="share" size={16} color={theme.colors.onPrimary} />
+                              <Text style={styles.actionTextPrimary}>Share</Text>
+                            </Pressable>
+                          ) : null}
                           <Pressable
                             style={styles.actionButton}
                             onPress={() =>

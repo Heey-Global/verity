@@ -1023,6 +1023,7 @@ export interface DevServerDetectionStateTable {
  * material is encrypted by EventStore before it reaches the three *_secret
  * columns. */
 export interface PublicPreviewSharesTable {
+  pin_locked: ColumnType<boolean, boolean | undefined, boolean>;
   id: string;
   project_id: string;
   dev_server_id: string | null;
@@ -1329,6 +1330,10 @@ export interface Database {
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;
   public_preview_shares: PublicPreviewSharesTable;
+  public_preview_pin_locks: {
+    share_id: string;
+    created_at: ColumnType<Date, string | undefined, never>;
+  };
   uplink_pending_share_removals: UplinkPendingShareRemovalsTable;
   claude_egress_ca: ClaudeEgressCaTable;
   claude_egress_client_certs: ClaudeEgressClientCertTable;

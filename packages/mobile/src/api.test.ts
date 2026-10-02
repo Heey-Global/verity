@@ -3057,6 +3057,31 @@ describe('VerityClient Dev Servers', () => {
     expect(JSON.parse((calls[3]?.init?.body as string) ?? '')).toEqual({ command: 'pnpm dev' });
   });
 
+  it('retains PIN lock status from Core and accepts older Core responses', async () => {
+    const share = {
+      id: 'locked-share',
+      projectId: 'p1',
+      devServerId: null,
+      targetKind: 'static-folder',
+      staticPath: '.',
+      state: 'active',
+      publicOrigin: 'https://share.preview.example',
+      pin: '123456',
+      expiresAt: '2030-01-01T00:00:00Z',
+      createdAt: '2026-01-01T00:00:00Z',
+      failure: null,
+    };
+    const { fetch } = fakeFetchSequence(
+      json({ shares: [{ ...share, pinLocked: true }] }),
+      json({ shares: [share] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.listPublicPreviewShares('p1')).resolves.toEqual([
+      { ...share, pinLocked: true },
+    ]);
+    await expect(client.listPublicPreviewShares('p1')).resolves.toEqual([share]);
+  });
+
   it('creates, lists, and stops public preview shares', async () => {
     const share = {
       id: 'share/one',
