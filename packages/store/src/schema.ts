@@ -1019,6 +1019,11 @@ export interface DevServerDetectionStateTable {
   reviewed_at: ColumnType<Date | null, string | null | undefined, string | null>;
 }
 
+export interface PublicPreviewPinLocksTable {
+  share_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 /** One temporary public link to a generation-bound project dev server. Secret
  * material is encrypted by EventStore before it reaches the three *_secret
  * columns. */
@@ -1330,10 +1335,7 @@ export interface Database {
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;
   public_preview_shares: PublicPreviewSharesTable;
-  public_preview_pin_locks: {
-    share_id: string;
-    created_at: ColumnType<Date, string | undefined, never>;
-  };
+  public_preview_pin_locks: PublicPreviewPinLocksTable;
   uplink_pending_share_removals: UplinkPendingShareRemovalsTable;
   claude_egress_ca: ClaudeEgressCaTable;
   claude_egress_client_certs: ClaudeEgressClientCertTable;
