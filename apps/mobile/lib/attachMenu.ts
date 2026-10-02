@@ -5,6 +5,8 @@
 import type { IconName } from '../components/Icon';
 import { MEETING_AUDIO_ENABLED } from './featureFlags';
 
+export type AttachAnchor = { x: number; y: number; width: number; height: number };
+
 export type AttachMenuRow =
   | { section: string }
   | { divider: true }
