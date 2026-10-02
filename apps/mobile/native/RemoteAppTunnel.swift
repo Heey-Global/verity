@@ -297,7 +297,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
         guard let self else { return }
         await self.readFrames()
       }
-      lock.withLock { attachedAt = Date() }
+      // One attachment per instance (the socket is created in init and resumed
+      // once); reset together anyway so the fields can never mix two lives.
+      lock.withLock {
+        attachedAt = Date()
+        pingsSent = 0
+        pongsReceived = 0
+        lastPongAt = nil
+      }
       startHeartbeat()
       return port
     } catch {
