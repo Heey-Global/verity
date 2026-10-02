@@ -42,6 +42,16 @@ function reactNativeBindings(source: string): string {
 }
 
 describe('keyboard handling', () => {
+  it('gates session keyboard padding on reconciled native visibility', () => {
+    const session = readFileSync(join(MOBILE_ROOT, 'app', 'session', '[id].tsx'), 'utf8');
+    const binding = session.match(/const\s+(\w+)\s*=\s*useSessionKeyboardAvoidance\(\)/);
+    expect(binding).not.toBeNull();
+    // An unused visibility hook leaves the inherited controller height active.
+    const frame = session.match(/<AnimatedKeyboardAvoidingView\b[\s\S]*?>/);
+    expect(frame?.[0]).toContain(`enabled={${binding?.[1]}.enabled}`);
+    expect(frame?.[0]).toContain(`${binding?.[1]}.resetStyle`);
+  });
+
   it('mounts the keyboard provider around the navigator', () => {
     const layout = readFileSync(ROOT_LAYOUT, 'utf8');
 

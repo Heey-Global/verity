@@ -150,6 +150,7 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 import { Image as ExpoImage, type ImageSource } from 'expo-image';
 import { UITextView } from 'react-native-uitextview';
 import { KeyboardAvoidingView, KeyboardStickyView } from 'react-native-keyboard-controller';
+import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -168,6 +169,7 @@ import {
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
 import { useModels } from '../../hooks/useModels';
+import { useSessionKeyboardAvoidance } from '../../hooks/useSessionKeyboardAvoidance';
 import { useTranscriptNavigation } from '../../hooks/useTranscriptNavigation';
 import { TranscriptRow } from '../../components/TranscriptRow';
 import { isProjectSessionModel } from '../../lib/projectSessionModels';
@@ -261,6 +263,8 @@ import {
   type ScrollAnchor,
 } from '../../lib/transcriptAnchor';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
+
+const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(KeyboardAvoidingView);
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -3311,6 +3315,7 @@ export function SessionChat({
   // hardware shortcut bar (send). Both are "shown"; only the height separates them, and
   // taking it from the same event that flips visibility keeps the two in step.
   const [keyboardHeight, setKeyboardHeight] = useState<number | null>(null);
+  const keyboardAvoidance = useSessionKeyboardAvoidance();
   const probingAutofocusRef = useRef(false);
   useEffect(() => {
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -3588,8 +3593,9 @@ export function SessionChat({
   );
 
   return (
-    <KeyboardAvoidingView
-      style={styles.flex}
+    <AnimatedKeyboardAvoidingView
+      style={[styles.flex, keyboardAvoidance.resetStyle]}
+      enabled={keyboardAvoidance.enabled}
       // The composer is pinned to the bottom of this frame, so the frame is what
       // shrinks. `padding` on both platforms now that the keyboard controller
       // drives it — it tracks the keyboard frame-by-frame instead of jumping on
@@ -4184,7 +4190,7 @@ export function SessionChat({
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
-    </KeyboardAvoidingView>
+    </AnimatedKeyboardAvoidingView>
   );
 }
 
