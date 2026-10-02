@@ -10,6 +10,7 @@ import { AppState } from 'react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { takePrefetchedBranches } from '../lib/branchesPrefetch';
+import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
 
 const ACTIVE_PR_POLL_MS = 2_000;
 // Still discovering: no PR yet, so poll briskly to surface one the agent opens
@@ -114,7 +115,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       setOwner(res.owner);
       setRepo(res.repo);
       setLocalMergeBase(res.localMerge?.base);
-      setLocalMergeHasChanges(res.localMerge?.hasChanges === true);
+      setLocalMergeHasChanges(hasLocalSaveChanges(res.localMerge));
       setWorkspaceMissing(res.workspaceMissing === true);
       setError(undefined);
     } catch (err) {
