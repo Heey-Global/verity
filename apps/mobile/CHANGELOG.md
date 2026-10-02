@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.50.0](https://github.com/Heey-Global/verity/compare/mobile-v1.49.0...mobile-v1.50.0) (2026-10-02)
+
+
+### Features
+
+* **mobile:** report heartbeat liveness in the tunnel summary ([#999](https://github.com/Heey-Global/verity/issues/999)) ([91a4e16](https://github.com/Heey-Global/verity/commit/91a4e162e13a9c488ab160dd4ea0f7c82fe745d1))
+
+
+### Bug Fixes
+
+* **knowledge:** keep sessions usable after source deletion ([#998](https://github.com/Heey-Global/verity/issues/998)) ([33e3495](https://github.com/Heey-Global/verity/commit/33e34958815559bf2a9f408b1387f55df2d9edbe))
+* **mobile:** reset keyboard spacing and attachment menu anchors ([#1000](https://github.com/Heey-Global/verity/issues/1000)) ([9d1675f](https://github.com/Heey-Global/verity/commit/9d1675f7f083385c3d29aef3bc8ac098a3191f46))
+
 ## [1.49.0](https://github.com/Heey-Global/verity/compare/mobile-v1.48.0...mobile-v1.49.0) (2026-10-02)
 
 
