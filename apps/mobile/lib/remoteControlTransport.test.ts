@@ -588,6 +588,28 @@ describe('remote diagnostics', () => {
     expect(mockStart).toHaveBeenCalledTimes(2);
   });
 
+  it('does not wait for a native stop after a probe failure that is not a timeout', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    mockRequest
+      .mockReset()
+      .mockRejectedValue(new Error('Pinned TLS verification failed [PIN_MISMATCH].'));
+    mockDiagnosticSummary.mockResolvedValue(null);
+    const startedAt = Date.now();
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    // A rejected pin is answered at once; only a timeout can be a stall.
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(mockIsActive).not.toHaveBeenCalled();
+  });
+
   it('gives the probe longer than the native stall watchdog', () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');

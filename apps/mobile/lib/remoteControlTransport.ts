@@ -51,7 +51,14 @@ const STALL_STOP_GRACE_MS = 3_000;
 // One replacement per window: an attachment that passes its probe and then
 // stalls on every read must not be re-admitted every ten seconds.
 const STALL_REPLACEMENT_WINDOW_MS = 60_000;
-let lastStallReplacementAt = 0;
+let lastStallReplacement: { key: string; at: number } | null = null;
+
+function stallReplacementAllowed(key: string): boolean {
+  return (
+    lastStallReplacement?.key !== key ||
+    Date.now() - lastStallReplacement.at >= STALL_REPLACEMENT_WINDOW_MS
+  );
+}
 // Native keeps its own copy; a JavaScript reload must not leave the two apart.
 let proxyModeSynced = false;
 
@@ -483,11 +490,11 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
         // selection, which clears `active` the same way when it finds the
         // tunnel stopped.
         if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
-        if (Date.now() - lastStallReplacementAt < STALL_REPLACEMENT_WINDOW_MS) {
+        if (!stallReplacementAllowed(key)) {
           retryAfter = Date.now() + 15_000;
           return 0;
         }
-        lastStallReplacementAt = Date.now();
+        lastStallReplacement = { key, at: Date.now() };
         return await open(target, key, { retryStall: false });
       }
       await probeCoreThroughEitherProxy(target, pin, port);
@@ -685,10 +692,14 @@ async function open(
     };
     console.warn(`Remote Control ${stage} failed: ${detail ?? 'unclassified failure'}`);
     admission?.cancel();
-    // The reason belongs to this attachment only once it has actually stopped;
-    // a live one may still report the previous attachment's stall.
+    // A stall can only show as a probe timeout, since any reply bytes disarm
+    // the watchdog; other probe failures keep their latency. The reason
+    // belongs to this attachment only once it has actually stopped; a live
+    // one may still report the previous attachment's stall.
     const stalled =
       stage === 'probe' &&
+      error instanceof Error &&
+      error.message.startsWith('Remote Core probe timed out') &&
       (await tunnelStoppedWithin(STALL_STOP_GRACE_MS)) &&
       (await tunnelStopReason())?.startsWith('stall') === true;
     if (tunnelStarted) {
@@ -700,13 +711,8 @@ async function open(
     }
     // An attachment that went dead under its first probe is replaced once at
     // once; a fresh one has answered every time so far. Anything else backs off.
-    if (
-      stalled &&
-      options.retryStall &&
-      keyFor(coreUrl) === key &&
-      Date.now() - lastStallReplacementAt >= STALL_REPLACEMENT_WINDOW_MS
-    ) {
-      lastStallReplacementAt = Date.now();
+    if (stalled && options.retryStall && keyFor(coreUrl) === key && stallReplacementAllowed(key)) {
+      lastStallReplacement = { key, at: Date.now() };
       console.warn('Remote Control attachment stalled during its probe; attaching again');
       return open(coreUrl, key, { retryStall: false });
     }
