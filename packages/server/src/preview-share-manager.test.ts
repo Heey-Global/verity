@@ -1,3 +1,4 @@
+import { DockerError } from './docker.js';
 import {
   STANDARD_MOUNTS,
   standardMountBind,
@@ -1833,6 +1834,26 @@ describe('session port previews', () => {
     docker.inspectContainer.mockResolvedValueOnce({ ...inspect, running: false });
 
     await expect(manager.listSessionDevServers('s1')).resolves.toEqual([]);
+    expect(listListeningProcesses).not.toHaveBeenCalled();
+  });
+
+  it('reports no dev servers when an active project container has disappeared', async () => {
+    const { manager, docker, listListeningProcesses } = portFixture([listener(5173, 'any')]);
+    // A stale active project must not turn the session's discovery poll into a 500.
+    docker.inspectContainer.mockRejectedValueOnce(
+      new DockerError({ kind: 'container_not_found', id: project.containerName }),
+    );
+
+    await expect(manager.listSessionDevServers('s1')).resolves.toEqual([]);
+    expect(listListeningProcesses).not.toHaveBeenCalled();
+  });
+
+  it('preserves infrastructure errors during dev server discovery', async () => {
+    const { manager, docker, listListeningProcesses } = portFixture([]);
+    const failure = new DockerError({ kind: 'network', cause: new Error('Docker unavailable') });
+    docker.inspectContainer.mockRejectedValueOnce(failure);
+
+    await expect(manager.listSessionDevServers('s1')).rejects.toBe(failure);
     expect(listListeningProcesses).not.toHaveBeenCalled();
   });
 

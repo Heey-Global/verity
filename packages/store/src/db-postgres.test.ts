@@ -1,3 +1,6 @@
+import { CompiledQuery } from 'kysely';
+import { performance } from 'node:perf_hooks';
+import { createRequestLatencyTrace, withRequestLatencyTrace } from './request-latency.js';
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,6 +16,15 @@ class FakePool extends EventEmitter {
   constructor(public readonly config: unknown) {
     super();
     pools.push(this);
+  }
+  readonly options = {};
+  readonly waitingCount = 2;
+  readonly totalCount = 10;
+  connect() {
+    return Promise.resolve({
+      query: () => Promise.resolve({ rows: [] as never[] }),
+      release: () => undefined,
+    });
   }
   // Kysely's PostgresDialect only touches the pool lazily (on a query); these tests
   // never query. Provide end()/query() as inert stubs so a destroy()/GC is harmless.
@@ -119,6 +131,37 @@ describe('createPostgresDb', () => {
       connectionString: 'postgresql://user@localhost:5432/verity',
     });
     await db.destroy();
+  });
+
+  it('attributes checkout and query execution from the production database factory', async () => {
+    const db = createPostgresDb('postgresql://localhost/x');
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const released = vi.fn();
+    vi.spyOn(pools[0]!, 'connect').mockImplementation(async () => {
+      clock.mockReturnValue(100);
+      return {
+        query: async () => {
+          clock.mockReturnValue(400);
+          return { rows: [] };
+        },
+        release: released,
+      };
+    });
+    const trace = createRequestLatencyTrace();
+    try {
+      // Testing only the adapter would stay green if the factory stopped wiring it.
+      await withRequestLatencyTrace(trace, () => db.executeQuery(CompiledQuery.raw('select 1')));
+      expect(trace.poolAcquire).toMatchObject({
+        calls: 1,
+        totalMs: 100,
+        waitingMax: 2,
+        totalMax: 10,
+      });
+      expect(trace.queries).toMatchObject({ calls: 1, totalMs: 300, errors: 0 });
+      expect(released).toHaveBeenCalledOnce();
+    } finally {
+      await db.destroy();
+    }
   });
 
   it('registers a pool error handler that logs and recovers — never rethrows', async () => {

@@ -1,4 +1,11 @@
 export {
+  createRequestLatencyTrace,
+  withRequestLatencyTrace,
+  measureLatencyPhase,
+  recordRequestQuery,
+  type RequestLatencyTrace,
+} from './request-latency.js';
+export {
   createPostgresDb,
   withUnpairedDeviceFence,
   migrateToLatest,

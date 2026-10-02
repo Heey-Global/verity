@@ -1,3 +1,4 @@
+import { instrumentPostgresPool, recordRequestQuery } from './request-latency.js';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator, type Migration, type MigrationProvider } from 'kysely/migration';
 import pg from 'pg';
@@ -580,7 +581,15 @@ export function createPostgresDb(
       console.error(`verity: postgres client error while checked out: ${String(error)}`);
     });
   });
-  return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
+  return new Kysely<Database>({
+    dialect: new PostgresDialect({
+      pool: instrumentPostgresPool(pool, () => ({
+        waiting: pool.waitingCount,
+        total: pool.totalCount,
+      })),
+    }),
+    log: (event) => recordRequestQuery(event.queryDurationMillis, event.level === 'error'),
+  });
 }
 
 /** Hold pairing creation out while a host-only unpaired setup repair commits. */

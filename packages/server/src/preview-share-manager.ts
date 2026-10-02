@@ -251,7 +251,14 @@ export class PreviewShareManager {
     const project = await this.options.store.getProject(session.projectId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (project.state !== 'active') return [];
-    const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    let sandbox;
+    try {
+      sandbox = await this.options.docker.inspectContainer(project.containerName);
+    } catch (error) {
+      // Project state can outlive its container after cleanup or replacement.
+      if (error instanceof DockerError && error.kind === 'container_not_found') return [];
+      throw error;
+    }
     if (!sandbox.running) return [];
     // Without discovery wired there is simply nothing to show; a 409 here would
     // park the sheet's default tab on an error it can never leave.
