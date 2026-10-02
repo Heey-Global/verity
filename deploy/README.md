@@ -21,6 +21,14 @@ Phase A (the ADR lands with PR #303).
 
 ## Prerequisites
 
+For one active project sandbox, plan for **16 GiB of RAM and 4 CPU cores**.
+This is a sizing recommendation, not a tested minimum. The default per-sandbox
+limits are 6 GiB of RAM and a CPU quota of 4 cores, shared against the host's
+available CPU capacity rather than reserved cores. The Server, PostgreSQL,
+other services, and the host also need memory. For smaller hosts, lower the
+[resource limits](#resource-guardrails); allow additional capacity for multiple
+active sandboxes.
+
 - A Docker host with **Docker 25.0+** (the provisioner mounts per-project subdirs
   of a named volume into sibling sandboxes via `volume-subpath`) and the **Compose v2
   plugin** (`docker compose`; the standalone `docker-compose` binary is not used).
@@ -482,15 +490,24 @@ users.
 The reference deployment is designed for a trusted network segment. Everything
 below is what changes when the host is reachable from the public internet.
 
-**The API port (8082) is the defensible surface.** Transport is TLS terminated
-in-process with a certificate the app pins, every route not on the explicit
-pre-auth list requires a per-device bearer token, and `/secret/unlock` and
-`/secret/init` are throttled. A direct server also refuses to boot without
-pairing material, so the first-run window in which no master password exists
-cannot be claimed by an unauthenticated caller. Exposing 8082 is survivable —
-but fewer reachable ports is still fewer, so prefer a VPN (WireGuard,
-Tailscale) or a host firewall that admits only your devices' addresses when
-your setup allows it.
+**The API port (8082) uses TLS and device authentication.** The mobile app pins
+the server certificate, and API routes outside the explicit pre-authentication
+list require a per-device bearer token after pairing. `/secret/unlock` and
+`/secret/init` are throttled. A direct server refuses to boot without pairing
+material. See [SECURITY.md](../SECURITY.md) for the security model and known
+limitations.
+
+The reference Compose deployment publishes port 8082 on all host interfaces.
+Prefer access limited to your devices through a trusted network or VPN such as
+WireGuard or Tailscale. Using a VPN to connect does not itself restrict access
+through other host interfaces.
+
+**Docker-published ports can bypass ufw rules.** Docker forwards incoming traffic
+to containers before the usual ufw input rules apply. An active ufw firewall
+therefore does not establish that port 8082 is blocked. Use network filtering
+that covers Docker's published ports and verify access from both an allowed
+client and a network that should be denied. See Docker's
+[firewall documentation](https://docs.docker.com/engine/network/packet-filtering-firewalls/#docker-and-ufw).
 
 **The Dev Server ranges must not be public.** Host ports `3000–3099` and
 `8000–8099` publish project Dev Servers as raw, unauthenticated HTTP — no
