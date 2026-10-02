@@ -201,12 +201,13 @@ export function remoteControlFailureForUrl(url: string): string | null {
     : `${lastFailure.stage} (${lastFailure.detail})`;
 }
 
-async function isTunnelStopped(): Promise<boolean> {
+// Null when the native module threw: nothing can be recovered through it,
+// and a stop reason read from it would not be this attachment's.
+async function isTunnelStopped(): Promise<boolean | null> {
   try {
     return !(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive());
   } catch {
-    // Nothing can be recovered through a module that throws; do not wait on it.
-    return true;
+    return null;
   }
 }
 
@@ -228,7 +229,7 @@ async function tunnelStoppedWithin(graceMs: number): Promise<boolean> {
       if (timer !== undefined) clearTimeout(timer);
     });
     if (stopped === null) return false;
-    if (stopped) return true;
+    if (stopped === true) return true;
     await new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, remaining)));
   }
 }
@@ -507,6 +508,7 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
         // tunnel stopped.
         if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
         if (!stallReplacementAllowed(key)) {
+          lastFailure = { key, stage: 'probe', detail: 'stall: replaced once already this minute' };
           retryAfter = Date.now() + 15_000;
           return 0;
         }
@@ -515,7 +517,11 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
         // the direct route was found wanting when it was sent; the window
         // above bounds the re-admissions. `open` records the replacement as
         // the active attachment, so the reads queued behind this one find it.
-        return await open(target, key, { retryStall: false });
+        const replacement = await open(target, key, { retryStall: false });
+        // Logged so a watchdog that fires on a merely slow link can be told
+        // from one that caught a dead attachment, and its deadline tuned.
+        console.info('Remote Control stall replacement', { replaced: replacement > 0 });
+        return replacement;
       }
       await probeCoreThroughEitherProxy(target, pin, port);
       return active?.key === key && active.port === port ? port : 0;
@@ -721,7 +727,7 @@ async function open(
     // reason may still be the previous attachment's and is not read.
     const stalled =
       stage === 'probe' &&
-      ((await isTunnelStopped()) ||
+      ((await isTunnelStopped()) === true ||
         (error instanceof Error &&
           error.message.startsWith('Remote Core probe timed out') &&
           (await tunnelStoppedWithin(STALL_STOP_GRACE_MS)))) &&

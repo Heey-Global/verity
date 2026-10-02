@@ -297,6 +297,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   func stop(reason: String = "stopped by app") {
     lock.lock()
+    stopLocked(reason: reason)
+  }
+
+  /// Expects the lock held and releases it; the caller decides under that
+  /// same lock, so nothing can revive the attachment between verdict and stop.
+  private func stopLocked(reason: String) {
     guard !stopped else { lock.unlock(); return }
     stopped = true
     stopReasonText = reason
@@ -539,15 +545,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
     let task = Task { [weak self] in
       try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
       guard !Task.isCancelled, let self else { return }
-      // Re-checked under the lock, including that this attachment is the one
-      // still running; the instance attaches once, so the check is belt and braces.
-      let stalled = self.lock.withLock {
-        !self.stopped && !stream.closed && stream.receivedBytes == 0
-          && self.receivedBytes == receivedWhenArmed
-      }
-      guard stalled else { return }
-      self.lock.withLock { self.logStream(id, stream, event: "stalled") }
-      self.stop(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s")
+      // Verdict and stop under one lock acquisition: a first reply landing in
+      // between must not have a live attachment torn down.
+      self.lock.lock()
+      let stalled = !self.stopped && !stream.closed && stream.receivedBytes == 0
+        && self.receivedBytes == receivedWhenArmed
+      guard stalled else { self.lock.unlock(); return }
+      self.logStream(id, stream, event: "stalled")
+      self.stopLocked(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s")
     }
     let alreadyDone = lock.withLock { () -> Bool in
       if stream.closed || stream.receivedBytes > 0 { return true }
