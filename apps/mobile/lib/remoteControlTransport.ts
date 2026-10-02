@@ -38,6 +38,11 @@ type ProxyMode = 'socks' | 'connect';
 // paths through the system proxy code. Whichever answered is kept for the rest
 // of the process.
 let proxyMode: ProxyMode = 'socks';
+// The native stall watchdog (RemoteAppTunnel.stallDeadlineSeconds) must have
+// ended a dead attachment before the probe gives up on it, or the probe's
+// failure reads as an ordinary timeout and backs off instead of attaching
+// again. The transport test pins this ordering against the Swift constant.
+export const PROBE_TIMEOUT_MS = 12_000;
 // Native keeps its own copy; a JavaScript reload must not leave the two apart.
 let proxyModeSynced = false;
 
@@ -289,7 +294,7 @@ async function probeCore(
   coreUrl: string,
   tlsPin: string,
   port: number,
-  timeoutMs = 12_000,
+  timeoutMs = PROBE_TIMEOUT_MS,
 ): Promise<void> {
   const transport = requireNativeModule<NativePinnedTransport>('VerityPinnedTransport');
   const requestId = `remote-probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -442,7 +447,8 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
     if (key === null || active?.key !== key) return 0;
     // Every read in flight fails at the same moment when the watchdog ends an
     // attachment; the first one here replaces it, the rest retry on the
-    // replacement instead of each reporting a failure.
+    // replacement instead of each reporting a failure. The same holds for any
+    // superseded attachment: whatever is active now was probed when it opened.
     if (active.port !== port) return active.port;
     const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
     if (pin === undefined) return 0;
@@ -451,6 +457,8 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
       if (!(await native.isActive())) {
         const reason = await tunnelStopReason();
         console.warn(`Remote Control tunnel ended: ${reason ?? 'no reason reported'}`);
+        // `active` is only the key and port; the admission was finished when
+        // the attachment opened, and the native tunnel has stopped itself.
         active = null;
         // Only a stall is replaced here, for this read. Any other end is left
         // to the next request's route selection, as before.

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 const mockAppStateListeners: Array<(state: string) => void> = [];
 jest.mock('react-native', () => ({
   AppState: {
@@ -580,6 +583,41 @@ describe('remote diagnostics', () => {
     expect(mockStart).toHaveBeenCalledTimes(2);
   });
 
+  it('gives the probe longer than the native stall watchdog', () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    const swift = readFileSync(join(__dirname, '..', 'native', 'RemoteAppTunnel.swift'), 'utf8');
+    const deadline = Number(swift.match(/stallDeadlineSeconds: UInt64 = (\d+)/u)?.[1]);
+    expect(deadline).toBeGreaterThan(0);
+    // Otherwise a dead attachment's probe reads as an ordinary timeout and
+    // backs off for 15 s instead of attaching again.
+    expect(transport.PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(deadline * 1000 + 1_000);
+  });
+
+  it('retries a read that failed on a superseded attachment on the current one', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    // Route selection replaced the attachment after it ended for another reason.
+    mockIsActive.mockResolvedValueOnce(false);
+    mockLastStopReason.mockResolvedValue('heartbeat timeout');
+    transport.reportDirectRouteFailure(coreUrl);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4_999);
+    // A read that was still failing on the old port retries on the live one without a probe.
+    mockRequest.mockClear();
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_999);
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+
   it('does not replace an attachment that ended for another reason', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
@@ -609,7 +647,7 @@ describe('remote diagnostics', () => {
       cancel: jest.fn(),
     });
     mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
-    mockIsActive.mockReset().mockResolvedValue(true);
+    mockIsActive.mockReset().mockResolvedValue(false).mockResolvedValueOnce(true);
     mockRequest.mockReset().mockImplementation(async (...args: unknown[]) => {
       if (args[6] === 4_321)
         throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
@@ -617,11 +655,9 @@ describe('remote diagnostics', () => {
     });
     mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
     mockDiagnosticSummary.mockResolvedValue(null);
-    // A stale stall reason on a live attachment must not trigger a replacement.
-    mockIsActive.mockResolvedValueOnce(true);
+    // A stale stall reason on an attachment still live must not trigger a replacement.
     expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
     expect(mockStart).toHaveBeenCalledTimes(1);
-    mockIsActive.mockReset().mockResolvedValue(false);
     mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
     expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
       ready: true,
