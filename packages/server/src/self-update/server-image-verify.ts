@@ -3,9 +3,9 @@ import { promisify } from 'node:util';
 import { withCosignBinary } from './cosign-binary.js';
 
 const exec = promisify(execFile);
-export const SERVER_IMAGE_SIGNING_IDENTITY =
+const SERVER_IMAGE_SIGNING_IDENTITY =
   'https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main';
-export const SERVER_IMAGE_SIGNING_ISSUER = 'https://token.actions.githubusercontent.com';
+const SERVER_IMAGE_SIGNING_ISSUER = 'https://token.actions.githubusercontent.com';
 
 /** Networked admission checks the image before the isolated Updater executes it. */
 export async function verifyServerImage(
