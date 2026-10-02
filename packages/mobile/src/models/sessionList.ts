@@ -16,8 +16,6 @@ import {
   type RateLimitWindow,
 } from '../ui/rateLimit.js';
 
-const DEFAULT_PROVIDER_LIMIT_ROWS = ['Claude', 'Codex'] as const;
-
 export interface ProviderLimitState {
   status: string;
   resetsAt: number;
@@ -389,13 +387,16 @@ function addProviderLimit(
   rateLimit: RateLimit,
   nowSeconds: number,
 ): void {
+  const providerLabel = rateLimit.providerLabel ?? 'Claude';
+  // Any reading proves the provider is connected, so it keeps its row even once
+  // every window has expired; only the meters themselves go blank.
+  const bucket = byProvider.get(providerLabel) ?? {};
+  byProvider.set(providerLabel, bucket);
   if (!isLimitVisible(rateLimit, nowSeconds)) return;
   // The overview rows represent the provider-wide quota. Model-specific weekly
   // limits remain available in session data but must not replace "all models".
   if (rateLimit.scope !== undefined && rateLimit.scope !== 'all_models') return;
-  const providerLabel = rateLimit.providerLabel ?? 'Claude';
   const window = providerLimitWindow(rateLimit);
-  const bucket = byProvider.get(providerLabel) ?? {};
   bucket[window] = strongerLimit(bucket[window], {
     status: rateLimit.status,
     resetsAt: rateLimit.resetsAt,
@@ -403,7 +404,6 @@ function addProviderLimit(
     ...(rateLimit.usedPercent !== undefined ? { usedPercent: rateLimit.usedPercent } : {}),
     ...(rateLimit.observedAt !== undefined ? { observedAt: rateLimit.observedAt } : {}),
   });
-  byProvider.set(providerLabel, bucket);
 }
 
 function overviewProviderLimitRows(
@@ -418,9 +418,9 @@ function overviewProviderLimitRows(
     const rateLimits = session.rateLimits ?? (session.rateLimit ? [session.rateLimit] : []);
     for (const rateLimit of rateLimits) addProviderLimit(byProvider, rateLimit, nowSeconds);
   }
-  for (const providerLabel of DEFAULT_PROVIDER_LIMIT_ROWS) {
-    if (!byProvider.has(providerLabel)) byProvider.set(providerLabel, {});
-  }
+  // Only providers that report a limit get a row: the server's probes yield
+  // nothing for an agent without credentials, so a fixed Claude/Codex pair would
+  // show an empty meter for an agent that was never connected.
   return [...byProvider.entries()]
     .sort(([a], [b]) => compareProviderLabels(a, b))
     .map(([providerLabel, limits]) => ({

@@ -158,10 +158,9 @@ describe('SessionListModel.refresh', () => {
     expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a']); // crashed first
     expect(model.state.attentionCount).toBe(1);
     expect(model.state.error).toBeUndefined();
-    expect(model.state.providerLimitRows).toEqual([
-      { providerLabel: 'Claude', fiveHour: null, weekly: null },
-      { providerLabel: 'Codex', fiveHour: null, weekly: null },
-    ]);
+    // Neither the probes nor a session reported a limit, so no agent is shown
+    // as connected — a placeholder row here is a meter for an absent agent.
+    expect(model.state.providerLimitRows).toEqual([]);
     expect(states[0]?.loading).toBe(true); // emitted loading first
     expect(model.state.loading).toBe(false);
     expect(states.at(-1)?.loading).toBe(false);
@@ -379,11 +378,6 @@ describe('SessionListModel.refresh', () => {
 
       expect(model.state.providerLimitRows).toEqual([
         {
-          providerLabel: 'Claude',
-          fiveHour: null,
-          weekly: null,
-        },
-        {
           providerLabel: 'Codex',
           fiveHour: {
             status: 'allowed',
@@ -446,7 +440,6 @@ describe('SessionListModel.refresh', () => {
             usedPercent: 100,
           },
         },
-        { providerLabel: 'Codex', fiveHour: null, weekly: null },
       ]);
     } finally {
       vi.useRealTimers();
