@@ -14359,6 +14359,71 @@ describe('overview projections read only the narrow event slice', () => {
     }
   });
 
+  it('bounds full projection reads across overlapping overview requests', async () => {
+    for (let i = 0; i < 12; i += 1) {
+      await ctx.store.createSession({
+        sessionId: `fallback-${i}`,
+        worktree: `/wt/missing-${i}`,
+        model: 'm',
+      });
+      await ctx.store.appendEvent(`fallback-${i}`, { t: 'prompt', text: 'go' });
+      await ctx.store.appendEvent(`fallback-${i}`, { t: 'status', state: 'running' });
+    }
+    const originalFacts = ctx.store.listSessionProjectionFacts.bind(ctx.store);
+    const facts = vi
+      .spyOn(ctx.store, 'listSessionProjectionFacts')
+      .mockImplementation(async (...args) => {
+        const result = await originalFacts(...args);
+        for (const value of result.values()) {
+          value.eventsTruncated = true;
+          value.events = value.events.filter(({ event }) => event.t !== 'prompt');
+        }
+        return result;
+      });
+    const originalRead = ctx.store.listSessionProjectionEvents.bind(ctx.store);
+    let active = 0;
+    let peak = 0;
+    const reads = vi
+      .spyOn(ctx.store, 'listSessionProjectionEvents')
+      .mockImplementation(async (...args) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          return await originalRead(...args);
+        } finally {
+          active -= 1;
+        }
+      });
+    try {
+      const responses = await Promise.all([
+        app.inject({ method: 'GET', url: '/sessions' }),
+        app.inject({ method: 'GET', url: '/sessions' }),
+      ]);
+      for (const response of responses) {
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toHaveLength(12);
+        expect(
+          response
+            .json<Array<{ status: string }>>()
+            .every((session) => session.status === 'running'),
+        ).toBe(true);
+      }
+      // Identical badges would hide a queue large enough to monopolize the pool.
+      expect(reads).toHaveBeenCalledTimes(24);
+      expect(peak).toBe(1);
+      reads.mockRejectedValueOnce(new Error('projection read failed'));
+      const failed = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      expect(failed.statusCode).toBe(500);
+      const recovered = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      expect(recovered.statusCode).toBe(200);
+      expect(recovered.json()).toMatchObject({ status: 'running' });
+    } finally {
+      facts.mockRestore();
+      reads.mockRestore();
+    }
+  });
+
   it('falls back to the full projection when the recent tail misses the turn boundary', async () => {
     await ctx.store.createSession({ sessionId: 's-long-turn', worktree: '/wt/long', model: 'm' });
     await ctx.store.appendEvent('s-long-turn', { t: 'prompt', text: 'go' });

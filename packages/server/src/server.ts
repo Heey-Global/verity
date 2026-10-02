@@ -46,7 +46,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import type { Server as HttpsServer, ServerOptions as HttpsServerOptions } from 'node:https';
-import { setTimeout as sleep } from 'node:timers/promises';
+import { setImmediate as yieldToEventLoop, setTimeout as sleep } from 'node:timers/promises';
 import {
   ALLOWED_PERMISSION_MODES,
   BackendTerminationUnconfirmedError,
@@ -4587,15 +4587,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * turn can emit an unbounded run of `task` and `permission` events, and being
    * slow on that session is better than being wrong about it.
    */
+  // Full projection reads can hydrate unbounded histories. Keep their pool
+  // demand bounded across overlapping overview and detail requests, and let
+  // sockets and timers run between large result-decoding bursts.
+  let fullProjectionReadTail: Promise<void> = Promise.resolve();
   const projectionEventsFor = async (
     sessionId: string,
     facts: SessionProjectionFacts,
   ): Promise<AgentEvent[]> => {
     const tail = facts.events.map((event) => event.event);
     if (!facts.eventsTruncated || projectionTailIsSelfContained(tail)) return tail;
-    const full = (
-      await deps.eventStore.listSessionProjectionEvents([sessionId], facts.lastEventSeq)
-    ).get(sessionId);
+    const read = fullProjectionReadTail.then(async () => {
+      await yieldToEventLoop();
+      return deps.eventStore.listSessionProjectionEvents([sessionId], facts.lastEventSeq);
+    });
+    // A failed read must not poison later requests.
+    fullProjectionReadTail = read.then(
+      () => undefined,
+      () => undefined,
+    );
+    const full = (await read).get(sessionId);
     return (full ?? []).map((event) => event.event);
   };
 
