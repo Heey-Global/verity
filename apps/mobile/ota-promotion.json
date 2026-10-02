@@ -1,16 +1,18 @@
 {
   "schema": 1,
-  "version": "1.50.1",
+  "version": "1.50.2",
   "runtime": "1.50.0",
   "channel": "testflight",
-  "commit": "2830dabfb05425236e2c989d0897b210ffdcd079",
-  "tag": "mobile-v1.50.1",
-  "branch": "staging-mobile-v1.50.1-2830dabfb05425236e2c989d0897b210ffdcd079",
-  "baseline": "mobile-v1.50.0",
-  "group": "86d69b61-a610-4d23-970c-53b45cfdd6e2",
+  "commit": "b77f133616fa290511edcecb9881180151592de3",
+  "tag": "mobile-v1.50.2",
+  "branch": "staging-mobile-v1.50.2-b77f133616fa290511edcecb9881180151592de3",
+  "baseline": "mobile-v1.50.1",
+  "group": "91ecef76-42bc-4296-94c6-fdc6d0b02ef1",
   "notes": [
-    "present usage limits without crash diagnostics (#1005)",
-    "use six-digit PINs for every share duration (#1004)",
-    "show reusable premium notice for preview sharing (#1003)"
+    "show local save only for project file changes (#1017)",
+    "settle chat navigation jumps against measured layout (#1012)",
+    "recover quick-action lists without closing tags (#1011)",
+    "show quota meters only for connected agents (#1009)",
+    "enforce durable PIN lockout and show locked links (#1006)"
   ]
 }
