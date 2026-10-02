@@ -5013,6 +5013,15 @@ export async function syncProjectsFromInstallation(
     .listInstallationRepos()
     .catch(() => [] as { owner: string; repo: string; archived?: boolean }[]);
 
+  // Repeated overview polls must not acquire the global knowledge lifecycle
+  // lock and rewrite every unchanged repository, starving unrelated reads.
+  const existing = new Map(
+    (await eventStore.listProjects({ includeHidden: true })).map((project) => [
+      `${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`,
+      project,
+    ]),
+  );
+
   // The container_name is the canonical hyphen-slug form derived from the
   // (owner, repo) — `upsertProject` lowercases again on its side, this is just
   // pre-derivation so the input matches what will be persisted.
@@ -5022,6 +5031,17 @@ export async function syncProjectsFromInstallation(
       owner: r.owner.toLowerCase(),
       repo: r.repo.toLowerCase(),
     });
+    const owner = r.owner.toLowerCase();
+    const repo = r.repo.toLowerCase();
+    const current = existing.get(`${owner}/${repo}`);
+    const legacyNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
+    if (
+      current &&
+      current.archived === (r.archived ?? false) &&
+      !legacyNames.includes(current.containerName)
+    ) {
+      continue;
+    }
     try {
       await eventStore.upsertProject({
         id: randomUUID(),

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createGitHubInstallationService,
   type GitHubInstallationService,
@@ -391,6 +391,50 @@ describe('syncProjectsFromInstallation (integration, #174)', () => {
       expect(result.every((p) => p.archived === false)).toBe(true);
       expect(result.every((p) => p.owner === 'heey-global')).toBe(true);
       expect(result.every((p) => p.containerName.startsWith('verity-heey-global-'))).toBe(true);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('does not rewrite unchanged repositories on repeated overview refreshes', async () => {
+    const { createTestDb } = await import('@verity/store/testing');
+    const ctx = await createTestDb();
+    try {
+      const installation = makeFakeInstallation([{ owner: 'Example', repo: 'Repo' }]);
+      await syncProjectsFromInstallation(ctx.store, installation);
+      const upsert = vi.spyOn(ctx.store, 'upsertProject');
+      // An unchanged fleet must not re-enter the global lifecycle lock per repo.
+      const result = await syncProjectsFromInstallation(ctx.store, installation);
+      expect(result).toHaveLength(1);
+      expect(upsert).not.toHaveBeenCalled();
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it.each([
+    { containerName: 'verity-example--repo', archived: true },
+    { containerName: 'dev-example--repo', archived: false },
+    { containerName: 'dev-example-repo', archived: false },
+  ])('refreshes changed installation metadata: %j', async ({ containerName, archived }) => {
+    const { createTestDb } = await import('@verity/store/testing');
+    const ctx = await createTestDb();
+    try {
+      await ctx.store.upsertProject({
+        id: crypto.randomUUID(),
+        owner: 'example',
+        repo: 'repo',
+        containerName,
+        archived,
+        state: 'active',
+      });
+      const result = await syncProjectsFromInstallation(
+        ctx.store,
+        makeFakeInstallation([{ owner: 'Example', repo: 'Repo' }]),
+      );
+      expect(result).toMatchObject([
+        { containerName: 'verity-example--repo', archived: false, state: 'active' },
+      ]);
     } finally {
       await ctx.close();
     }
