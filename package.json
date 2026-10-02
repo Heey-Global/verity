@@ -43,7 +43,7 @@
   },
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.81.2",
-    "@agentclientprotocol/codex-acp": "1.13.1",
+    "@agentclientprotocol/codex-acp": "2.0.0",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.30.1",

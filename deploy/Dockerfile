@@ -235,7 +235,7 @@ RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifec
 # renovate: datasource=npm depName=@openai/codex
 RUN npm install -g @openai/codex@0.159.2
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-RUN npm install -g @agentclientprotocol/codex-acp@1.13.1
+RUN npm install -g @agentclientprotocol/codex-acp@2.0.0
 # renovate: datasource=npm depName=opencode-ai
 RUN npm install -g opencode-ai@1.18.32
 # OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
