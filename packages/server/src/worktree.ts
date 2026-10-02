@@ -1139,6 +1139,11 @@ export function createGitWorktreeProvisioner(opts: GitWorktreeOptions): Worktree
       ) {
         throw new Error('refusing to remove an invalid or symlinked worktree path');
       }
+      // A host/container prefix mismatch can make git report success while
+      // leaving the checkout behind; a prune can erase its registration entirely.
+      // Restore the target's registration before asking git to remove it.
+      rebuildWorktreeAdminDir(opts.repoDir, worktreePath);
+      repairAdminGitdirs(opts.repoDir, opts.worktreeRoot);
       // Read the branch before removal — `worktree remove` deletes the admin
       // dir we read it from.
       const branch = branchOfWorktree(worktreePath);
@@ -1147,6 +1152,10 @@ export function createGitWorktreeProvisioner(opts: GitWorktreeOptions): Worktree
       // an unlocked worktree makes `unlock` error, which we ignore.
       await git(['-C', opts.repoDir, 'worktree', 'unlock', worktreePath]).catch(() => undefined);
       await git(['-C', opts.repoDir, 'worktree', 'remove', worktreePath, '--force']);
+      if (existsSync(worktreePath)) {
+        throw new Error('git worktree remove left the checkout directory behind');
+      }
+
       // A session's branch outlives its worktree, so merged branches pile up in
       // the source repo. Drop it once the worktree is gone — `-d` (safe) only
       // deletes a branch already merged into its upstream/HEAD, so unmerged work
