@@ -147,6 +147,80 @@ describe('SessionListModel server attention', () => {
 });
 
 describe('SessionListModel.refresh', () => {
+  it.each([
+    [false, false, []],
+    [true, false, ['Claude']],
+    [false, true, ['Codex']],
+    [true, true, ['Claude', 'Codex']],
+  ])(
+    'uses configuration even without quota data (%s, %s)',
+    async (claudeConfigured, codexConfigured, labels) => {
+      const { client, listSessions } = makeClient();
+      listSessions.mockResolvedValue([]);
+      const model = new SessionListModel({
+        client: {
+          ...client,
+          listSessions: client.listSessions.bind(client),
+          renameSession: client.renameSession.bind(client),
+          deleteSession: client.deleteSession.bind(client),
+          getOnboardingStatus: async () => ({ claudeConfigured, codexConfigured }),
+        },
+      });
+      await model.refresh();
+      expect(model.state.providerLimitRows).toEqual(
+        labels.map((providerLabel) => ({
+          providerLabel,
+          fiveHour: null,
+          weekly: null,
+        })),
+      );
+    },
+  );
+
+  it('removes a disconnected provider despite historical readings and preserves weekly-only Codex', async () => {
+    const { client, listSessions, listProviderLimits } = makeClient();
+    const reading = {
+      status: 'allowed',
+      resetsAt: Math.floor(Date.now() / 1000) + 3600,
+      window: 'weekly' as const,
+      usedPercent: 42,
+    };
+    listSessions.mockResolvedValue([
+      { ...session('old', 'idle'), rateLimits: [{ ...reading, providerLabel: 'Claude' }] },
+    ]);
+    listProviderLimits.mockResolvedValue([{ ...reading, providerLabel: 'Codex' }]);
+    const getOnboardingStatus = vi
+      .fn()
+      .mockResolvedValue({ claudeConfigured: true, codexConfigured: true });
+    const model = new SessionListModel({
+      client: {
+        ...client,
+        listSessions: client.listSessions.bind(client),
+        renameSession: client.renameSession.bind(client),
+        deleteSession: client.deleteSession.bind(client),
+        listProviderLimits: client.listProviderLimits.bind(client),
+        getOnboardingStatus,
+      },
+    });
+    await model.refresh();
+    expect(model.state.providerLimitRows.map((row) => row.providerLabel)).toEqual([
+      'Claude',
+      'Codex',
+    ]);
+    getOnboardingStatus.mockResolvedValue({ claudeConfigured: false, codexConfigured: true });
+    await model.refresh();
+    expect(model.state.providerLimitRows).toEqual([
+      {
+        providerLabel: 'Codex',
+        fiveHour: null,
+        weekly: { ...reading },
+      },
+    ]);
+    getOnboardingStatus.mockRejectedValue(new Error('offline'));
+    await model.refresh();
+    expect(model.state.providerLimitRows.map((row) => row.providerLabel)).toEqual(['Codex']);
+  });
+
   it('loads sessions attention-first with a count, toggling loading', async () => {
     const { client, listSessions } = makeClient();
     listSessions.mockResolvedValueOnce([session('a', 'running'), session('b', 'crashed')]);

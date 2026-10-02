@@ -1,6 +1,7 @@
 import {
   VerityApiError,
   type AttentionSignal,
+  type OnboardingStatus,
   type VerityClient,
   type ProviderLimitSummary,
   type SessionPr,
@@ -55,6 +56,9 @@ export type CancelPoll = () => void;
 export interface SessionListModelOptions {
   client: Pick<VerityClient, 'listSessions' | 'renameSession' | 'deleteSession'> & {
     listProviderLimits?: () => Promise<ProviderLimitSummary[]>;
+    getOnboardingStatus?: () => Promise<
+      Pick<OnboardingStatus, 'claudeConfigured' | 'codexConfigured'>
+    >;
     /** Optional like {@link listProviderLimits}: absent, the model falls back to
      * the plain list and simply reports no server-level attention. */
     listSessionOverview?: () => Promise<{
@@ -87,6 +91,7 @@ export class SessionListModel {
   private _sessions: SessionSummary[] = [];
   private _attention: AttentionSignal[] = [];
   private _providerLimits: ProviderLimitSummary[] = [];
+  private _configuredProviders: string[] | undefined;
   private _loading = false;
   private _error: string | undefined;
   private cancelPoll: CancelPoll | undefined;
@@ -118,6 +123,7 @@ export class SessionListModel {
         this._sessions,
         this._providerLimits,
         Date.now(),
+        this._configuredProviders,
       ),
       serverAttention: attentionNotice(this._attention),
     };
@@ -133,12 +139,19 @@ export class SessionListModel {
     }
     try {
       const overview = this.opts.client.listSessionOverview;
-      const [list, providerLimits] = await Promise.all([
+      const [list, providerLimits, configuredProviders] = await Promise.all([
         overview === undefined
           ? this.opts.client.listSessions().then((sessions) => ({ sessions, attention: [] }))
           : overview.call(this.opts.client),
         this.opts.client.listProviderLimits?.().catch(() => this._providerLimits) ??
           Promise.resolve([]),
+        this.opts.client
+          .getOnboardingStatus?.()
+          .then((status) => [
+            ...(status.claudeConfigured ? ['Claude'] : []),
+            ...(status.codexConfigured ? ['Codex'] : []),
+          ])
+          .catch(() => this._configuredProviders),
       ]);
       const sessions = list.sessions;
       if (req !== this.reqSeq) return; // superseded
@@ -159,6 +172,7 @@ export class SessionListModel {
         }
       }
       this._providerLimits = providerLimits;
+      this._configuredProviders = configuredProviders;
       this._error = undefined;
     } catch (error) {
       if (req !== this.reqSeq) return;
@@ -388,8 +402,8 @@ function addProviderLimit(
   nowSeconds: number,
 ): void {
   const providerLabel = rateLimit.providerLabel ?? 'Claude';
-  // Any reading proves the provider is connected — an expired window or a
-  // model-scoped limit too — so it keeps its row; only the meters go blank.
+  // Keep expired and model-scoped readings available for older servers without
+  // configuration status; current servers determine row presence separately.
   const bucket = byProvider.get(providerLabel) ?? {};
   byProvider.set(providerLabel, bucket);
   if (!isLimitVisible(rateLimit, nowSeconds)) return;
@@ -410,6 +424,7 @@ function overviewProviderLimitRows(
   sessions: readonly SessionSummary[],
   providerLimits: readonly RateLimit[],
   nowMs: number,
+  configuredProviders?: readonly string[],
 ): ProviderLimitRow[] {
   const nowSeconds = Math.floor(nowMs / 1000);
   const byProvider = new Map<string, Partial<Record<RateLimitWindow, ProviderLimitState>>>();
@@ -418,10 +433,13 @@ function overviewProviderLimitRows(
     const rateLimits = session.rateLimits ?? (session.rateLimit ? [session.rateLimit] : []);
     for (const rateLimit of rateLimits) addProviderLimit(byProvider, rateLimit, nowSeconds);
   }
-  // Only providers that report a limit get a row: the server's probes yield
-  // nothing for an agent without credentials, so a fixed Claude/Codex pair would
-  // show an empty meter for an agent that was never connected.
-  return [...byProvider.entries()]
+  // Configuration is authoritative: historical session limits must not keep a
+  // disconnected provider visible, and missing quota windows must not hide one.
+  const rows =
+    configuredProviders === undefined
+      ? [...byProvider.entries()]
+      : configuredProviders.map((label) => [label, byProvider.get(label) ?? {}] as const);
+  return rows
     .sort(([a], [b]) => compareProviderLabels(a, b))
     .map(([providerLabel, limits]) => ({
       providerLabel,
