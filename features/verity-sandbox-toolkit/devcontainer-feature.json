@@ -43,7 +43,7 @@
     },
     "codexAcpVersion": {
       "type": "string",
-      "default": "1.13.1",
+      "default": "2.0.0",
       "description": "Exact @agentclientprotocol/codex-acp npm version to pin."
     },
     "installOpencode": {
