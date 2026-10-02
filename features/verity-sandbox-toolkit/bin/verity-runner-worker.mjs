@@ -24464,6 +24464,7 @@ function atEndOfBlockComment(text, i) {
 var CHOICES_FENCE_TAG = "verity:choices";
 var CHOICES_FENCE_RE = /```verity:choices[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
 var LEGACY_CHOICES_RE = /^<quick-actions>[ \t]*\r?\n([\s\S]*?)\r?\n<\/quick-actions>[ \t]*$/gm;
+var UNCLOSED_LEGACY_CHOICES_RE = /^<quick-actions>[ \t]*\r?\n((?:[ \t]*[-*•] [^\r\n]+(?:\r?\n|(?![\s\S])))+)[ \t\r\n]*(?![\s\S])/gm;
 function parseLenientJson(body) {
   try {
     return JSON.parse(body);
@@ -24498,9 +24499,12 @@ function parseChoicesBlock(input) {
   return { text: text.trimEnd(), choices };
 }
 function parseLegacyChoices(input) {
-  const matches = [...input.matchAll(LEGACY_CHOICES_RE)];
+  const matches = [
+    ...input.matchAll(LEGACY_CHOICES_RE),
+    ...input.matchAll(UNCLOSED_LEGACY_CHOICES_RE)
+  ].sort((a, b) => a.index - b.index);
   for (let i = matches.length - 1; i >= 0; i--) {
-    const lines = (matches[i][1] ?? "").split(/\r?\n/);
+    const lines = (matches[i][1] ?? "").trimEnd().split(/\r?\n/);
     if (lines.length < 2 || lines.length > 20)
       continue;
     const labels = lines.map((line) => /^[ \t]*[-*•] (.+?)[ \t]*$/.exec(line)?.[1]);

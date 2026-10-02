@@ -509,6 +509,17 @@ describe('AcpEventAdapter', () => {
     ]);
   });
 
+  it('recovers an unclosed quick-action list only when the stream finishes', () => {
+    const stream = new AcpTextStream();
+    expect(stream.push('Choose.\n<quick-actions>\n• First')).toEqual([
+      { t: 'text', delta: 'Choose.' },
+    ]);
+    expect(stream.push('\n• Second')).toEqual([]);
+    expect(stream.flush()).toEqual([
+      { t: 'choices', options: [{ label: 'First' }, { label: 'Second' }] },
+    ]);
+  });
+
   it('streams prose while hiding a choices opener split across ACP chunks', () => {
     const stream = new AcpTextStream();
     expect(stream.push('Working now.\n\n```verity:cho')).toEqual([
