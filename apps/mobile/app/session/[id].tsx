@@ -169,13 +169,14 @@ import {
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
 import { useModels } from '../../hooks/useModels';
+import { useAttachmentMenuAnchor } from '../../hooks/useAttachmentMenuAnchor';
 import { useSessionKeyboardAvoidance } from '../../hooks/useSessionKeyboardAvoidance';
 import { useTranscriptNavigation } from '../../hooks/useTranscriptNavigation';
 import { TranscriptRow } from '../../components/TranscriptRow';
 import { isProjectSessionModel } from '../../lib/projectSessionModels';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
-import { attachMenuRows } from '../../lib/attachMenu';
+import { type AttachAnchor, attachMenuRows } from '../../lib/attachMenu';
 import {
   type DroppedFileDescriptor,
   captureImage,
@@ -8239,11 +8240,7 @@ function InputBar({
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
   const attachBtnRef = useRef<View>(null);
-  const openAttachMenu = useCallback(() => {
-    const node = attachBtnRef.current;
-    if (!node) return;
-    node.measureInWindow((x, y, width, height) => onAttach({ x, y, width, height }));
-  }, [onAttach]);
+  const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
   const suppressReturnChangeRef = useRef(false);
   const returnSubmitValueRef = useRef('');
   const onComposerChangeText = useCallback(
@@ -8421,9 +8418,6 @@ function InputBar({
     </DropZone>
   );
 }
-
-// Screen-space rect of the attach button, so the menu can dock to it.
-type AttachAnchor = { x: number; y: number; width: number; height: number };
 
 // The add menu: the composer's plus button opens this small
 // popover docked to it — a source per row (camera, photo library, or an arbitrary
