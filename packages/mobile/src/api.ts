@@ -114,7 +114,6 @@ export const sessionSummarySchema = z.object({
    * `resumable` yet) must not hard-fail the list parse — a missing value reads as
    * "resumable" (the safe default: don't block sending on absent metadata). */
   resumable: z.boolean().optional(),
-  knowledgeAccessRevoked: z.boolean().optional(),
   /** Compact PR status for this session's current branch (#387), so the overview can
    * mark merge-ready / merge-blocked / CI-failed sessions without a per-session branch fetch. `null` =
    * looked up, no open PR; ABSENT = older server OR GitHub not configured (no

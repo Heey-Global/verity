@@ -13,7 +13,6 @@ import { registerIntegrationRoutes } from './integrations/routes.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createLiveMeetingAnalysisQuery } from './live-meeting-analysis-query.js';
-import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import {
@@ -22,7 +21,6 @@ import {
   moveProjectSource,
 } from './knowledge-import.js';
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
-import { KnowledgeSessionClosedError } from '@verity/session';
 import { execFile } from 'node:child_process';
 import { constants as fsConstants, createReadStream, createWriteStream } from 'node:fs';
 import {
@@ -2871,7 +2869,6 @@ export interface SessionSummary extends SessionRecord {
    * is gone (e.g. an isolated worktree cleaned up after its PR merged). The UI
    * disables the input + flags such a session instead of letting a turn 410. */
   resumable: boolean;
-  knowledgeAccessRevoked?: boolean;
   /** Compact PR status for the current branch (#387). `null` = looked up, no open
    * PR; ABSENT = GitHub not configured (no `branchPrStatus`) or not yet resolved. */
   pr?: SessionPrSummary | null;
@@ -3254,24 +3251,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // background-failure sink can log through it (chicken/egg: the conductor is
   // built before the routes, but the logger exists once `app` does).
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
-  const reconcileKnowledgeInvalidations = createKnowledgeInvalidationReconciler({
-    store: deps.eventStore,
-    conductor,
-  });
-  let knowledgeCleanupTimer: ReturnType<typeof setInterval> | undefined;
-  app.addHook('onReady', () => {
-    if (deps.eventStore.knowledge === undefined) return;
-    knowledgeCleanupTimer = setInterval(() => {
-      void reconcileKnowledgeInvalidations().catch((error: unknown) => {
-        app.log.error({ err: error }, 'knowledge session cleanup will retry');
-      });
-    }, 5_000);
-    knowledgeCleanupTimer.unref();
-  });
-  app.addHook('onClose', async () => {
-    clearInterval(knowledgeCleanupTimer);
-    await reconcileKnowledgeInvalidations.drain();
-  });
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
   // root, nothing may start work on the project or its sessions: a turn
@@ -3613,8 +3592,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<SessionRecord> => {
     if (loop.sessionId) {
       const existing = await deps.eventStore.getSession(loop.sessionId);
-      if (existing && !(await deps.eventStore.knowledge.isSessionInvalidated(existing.sessionId)))
-        return existing;
+      if (existing) return existing;
     }
     const session = await createAgentLoopSession(loop, project, false);
     const linked = await deps.eventStore.linkAgentLoopSessionIfMissing(loop.id, session.sessionId);
@@ -3912,9 +3890,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (recover === undefined) return;
     queuedTurnRecovery = Promise.resolve()
       .then(() => recover())
-      .then(async () => {
-        if (deps.eventStore.knowledge !== undefined) await reconcileKnowledgeInvalidations();
-      })
       .then(() => {
         app.log.info({ reason }, 'verity: queued-turn recovery completed');
       })
@@ -4041,9 +4016,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // client. Invalid input → 400; everything else → a generic 500 (the real
   // error is logged server-side via Fastify's logger when enabled).
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof KnowledgeSessionClosedError) {
-      return reply.code(409).send({ error: error.message, code: 'knowledgeSessionClosed' });
-    }
     if (error instanceof ZodError) {
       request.log.warn(
         {
@@ -4792,11 +4764,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       disconnectedSandboxProjects:
         deps.provisioner?.disconnectedSandboxProjects?.() ?? NO_DISCONNECTED_SANDBOXES,
     });
-    const knowledgeAccessRevoked =
-      (await deps.eventStore.knowledge?.isSessionInvalidated(session.sessionId)) ?? false;
     return {
       ...session,
-      ...(knowledgeAccessRevoked ? { knowledgeAccessRevoked: true } : {}),
       status,
       pendingPermissions,
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
@@ -4809,7 +4778,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       lastActivityAt: facts.lastActivityAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
-      resumable: !knowledgeAccessRevoked && (await worktreeExists(session.worktree)),
+      resumable: await worktreeExists(session.worktree),
       eventCount: facts.eventCount,
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
@@ -5412,7 +5381,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
         if (
-          (await knowledge.isSessionInvalidated(sessionId)) ||
           (await knowledge.hasProjectKnowledge(projectId)) ||
           (await knowledge.hasSessionKnowledgeExposure(sessionId))
         )
@@ -5424,11 +5392,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return true;
         if (await knowledge.hasProjectKnowledge(projectId)) return false;
-        return (
-          sessionId === undefined ||
-          (!(await knowledge.isSessionInvalidated(sessionId)) &&
-            !(await knowledge.hasSessionKnowledgeExposure(sessionId)))
-        );
+        return sessionId === undefined || !(await knowledge.hasSessionKnowledgeExposure(sessionId));
       },
       getSession: (sessionId) => deps.eventStore.getSession(sessionId),
       listProjects: () => deps.eventStore.listProjects(),
@@ -5709,15 +5673,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
-      resolveCaller: async (input) => {
-        const caller = await gatewayDeps.resolveCaller(input);
-        if (
-          caller !== undefined &&
-          (await deps.eventStore.knowledge?.isSessionInvalidated(caller.sessionId))
-        )
-          return undefined;
-        return caller;
-      },
       // Runs before the card, so a caller that may not use these tools is turned away without
       // an operator being asked to read a briefing their answer could not have delivered. The
       // tools re-check it themselves on the way in; this only decides when it is caught.
@@ -5727,10 +5682,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const { projectId, sessionId, toolName } = input;
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
-          if (
-            session?.projectId !== projectId ||
-            (await deps.eventStore.knowledge.isSessionInvalidated(sessionId))
-          ) {
+          if (session?.projectId !== projectId) {
             throw new ControlPlaneSessionAuthorityError(
               'Knowledge access requires an active session in the calling project',
             );
@@ -5909,7 +5861,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           return (
             session?.projectId === projectId &&
-            !(await deps.eventStore.knowledge.isSessionInvalidated(sessionId)) &&
             (request as { operation?: string }).operation !== 'publish_shared'
           );
         }
@@ -6530,7 +6481,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     registerKnowledgeRoutes(app, {
       knowledge: deps.eventStore.knowledge,
-      reconcileInvalidations: reconcileKnowledgeInvalidations,
     });
   }
   // Chat images get their text read by the project's default model in the
@@ -7528,11 +7478,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               ? 'running'
               : 'completed'
             : projectedStatus;
-      const knowledgeAccessRevoked =
-        (await deps.eventStore.knowledge?.isSessionInvalidated(id)) ?? false;
       return {
         ...session,
-        ...(knowledgeAccessRevoked ? { knowledgeAccessRevoked: true } : {}),
         status,
         pendingPermissions,
         ...(status === 'awaiting_input' && pendingPermissions.length > 0
@@ -7541,7 +7488,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         usage: facts.usage,
         ...(rateLimit ? { rateLimit } : {}),
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
-        resumable: !knowledgeAccessRevoked && (await worktreeExists(session.worktree)),
+        resumable: await worktreeExists(session.worktree),
         eventCount: facts.eventCount,
         lastActivityAt: facts.lastActivityAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),

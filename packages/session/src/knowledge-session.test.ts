@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { Conductor, KnowledgeSessionClosedError } from './conductor.js';
+import { Conductor } from './conductor.js';
 import { RUNNER_SUPERVISOR_BACKENDS, type Backend } from './backend.js';
 
 let ctx: TestDb;
@@ -28,45 +28,42 @@ beforeEach(async () => {
   });
 });
 
-describe('knowledge session closure', () => {
-  it('fences direct, background, loop and initial dispatch after a read grant is removed', async () => {
+describe('knowledge changes during a session', () => {
+  it('continues direct, background, loop and initial turns after knowledge is removed', async () => {
     const folder = await ctx.store.knowledge.createFolder({ name: 'Notes' });
     await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read' }]);
     await ctx.store.appendEvent('s', { t: 'text', delta: 'Previously visible knowledge' });
-    await ctx.store.knowledge.setGrants('p', []);
-    const run = vi.fn<Backend['run']>(async () => {
-      throw new Error('closed session reached backend');
+    await ctx.store.knowledge.deleteFolder(folder.id);
+    const run = vi.fn<Backend['run']>(async (opts) => {
+      await opts.onSession?.('s');
+      return { sessionId: 's', exitCode: 0, stderr: '', aborted: false };
     });
     const conductor = new Conductor({
       store: ctx.store,
       backend: { run },
       worktreeExists: async () => true,
     });
-    await expect(conductor.sendTurn('s', 'Continue')).rejects.toBeInstanceOf(
-      KnowledgeSessionClosedError,
-    );
-    await expect(conductor.dispatchTurn('s', 'Continue')).rejects.toBeInstanceOf(
-      KnowledgeSessionClosedError,
-    );
-    await expect(conductor.dispatchTurnWhenIdle('s', 'Continue')).rejects.toBeInstanceOf(
-      KnowledgeSessionClosedError,
-    );
+    // Deleting a source must not silently turn every existing conversation into history.
+    await expect(conductor.sendTurn('s', 'Continue')).resolves.toMatchObject({ exitCode: 0 });
+    await expect(conductor.dispatchTurn('s', 'Continue')).resolves.toEqual({ queued: false });
+    await expect.poll(() => conductor.isBusy('s')).toBe(false);
+    await expect(conductor.dispatchTurnWhenIdle('s', 'Continue')).resolves.toEqual({
+      accepted: true,
+    });
+    await expect.poll(() => conductor.isBusy('s')).toBe(false);
     await expect(
       conductor.startSession({ sessionId: 's', worktree: '/test', prompt: 'Continue' }),
-    ).rejects.toBeInstanceOf(KnowledgeSessionClosedError);
-    expect(run).not.toHaveBeenCalled();
-    expect(conductor.isBusy('s')).toBe(false);
-    expect(await ctx.store.getEvents('s')).toEqual([
-      expect.objectContaining({ t: 'text', delta: 'Previously visible knowledge' }),
-    ]);
+    ).resolves.toEqual({ sessionId: 's' });
+    await expect.poll(() => conductor.isBusy('s')).toBe(false);
+    expect(run).toHaveBeenCalledTimes(4);
     const restarted = new Conductor({
       store: ctx.store,
       backend: { run },
       worktreeExists: async () => true,
     });
-    await expect(restarted.dispatchTurn('s', 'Resume after restart')).rejects.toBeInstanceOf(
-      KnowledgeSessionClosedError,
-    );
+    await expect(restarted.sendTurn('s', 'Resume after restart')).resolves.toMatchObject({
+      exitCode: 0,
+    });
   });
 });
 

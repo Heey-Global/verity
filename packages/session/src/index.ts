@@ -160,5 +160,3 @@ export {
   transcriptPath,
   type TailState,
 } from './transcript-sync.js';
-
-export { KnowledgeSessionClosedError } from './conductor.js';

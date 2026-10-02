@@ -16,35 +16,16 @@ const grantsBody = z
   })
   .strict();
 
-class KnowledgeCleanupPendingError extends Error {
-  constructor() {
-    super(
-      'Access changes were saved. Some sessions are still stopping; cleanup will retry automatically.',
-    );
-  }
-}
-
 export interface KnowledgeRouteDeps {
   knowledge: KnowledgeStore;
-  reconcileInvalidations(): Promise<void>;
 }
 
 /** Operator routes use the server's default paired-device authentication gate. */
 export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRouteDeps): void {
   const store = deps.knowledge;
-  const reconcile = async (): Promise<void> => {
-    try {
-      await deps.reconcileInvalidations();
-    } catch {
-      throw new KnowledgeCleanupPendingError();
-    }
-  };
   // Encapsulation keeps knowledge errors from changing unrelated route behavior.
   void app.register((instance, _options, done) => {
     instance.setErrorHandler((error, _request, reply) => {
-      if (error instanceof KnowledgeCleanupPendingError) {
-        return reply.code(503).send({ error: error.message, code: 'knowledgeCleanupPending' });
-      }
       if (error instanceof z.ZodError) return reply.code(400).send({ error: 'invalid request' });
       if (error instanceof KnowledgeError) {
         return reply.code(error.statusCode).send({ error: error.message, code: error.code });
@@ -81,7 +62,6 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
           ? {}
           : { expectedPolicyToken: body.expectedPolicyToken }),
       });
-      await reconcile();
       return { folder };
     });
     instance.post('/knowledge/folders/:id/move-preview', async (request) => {
@@ -95,7 +75,6 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
     instance.delete('/knowledge/folders/:id', async (request) => {
       const folderId = params.parse(request.params).id;
       await store.deleteFolder(folderId);
-      await reconcile();
       return { ok: true };
     });
     instance.get('/knowledge/documents', async (request) => {
@@ -141,13 +120,11 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
         .parse(request.body);
       const documentId = params.parse(request.params).id;
       const document = await store.moveDocument(documentId, folderId, expectedPolicyToken);
-      await reconcile();
       return { document };
     });
     instance.delete('/knowledge/documents/:id', async (request) => {
       const document = await store.getDocument(params.parse(request.params).id);
       await store.deleteDocument(document.id);
-      await reconcile();
       return { ok: true };
     });
     instance.get('/knowledge/documents/:id/revisions', async (request) => {
@@ -179,7 +156,6 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
     instance.put('/projects/:id/knowledge-grants', async (request) => {
       const projectId = params.parse(request.params).id;
       await store.setGrants(projectId, grantsBody.parse(request.body).grants);
-      await reconcile();
       return { grants: await store.getGrants(projectId) };
     });
     instance.get('/knowledge/export', async (request) => {
