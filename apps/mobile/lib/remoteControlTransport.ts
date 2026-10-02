@@ -42,7 +42,7 @@ let proxyMode: ProxyMode = 'socks';
 // ended a dead attachment before the probe gives up on it, or the probe's
 // failure reads as an ordinary timeout and backs off instead of attaching
 // again. The transport test pins this ordering against the Swift constant.
-export const PROBE_TIMEOUT_MS = 12_000;
+const PROBE_TIMEOUT_MS = 12_000;
 // The watchdog arms on the stream's first sent bytes, the probe timer on the
 // request, so the margin between them shrinks by whatever the loopback
 // handshake took; after a probe timeout the native stop is given this long

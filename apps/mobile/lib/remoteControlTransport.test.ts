@@ -612,14 +612,19 @@ describe('remote diagnostics', () => {
   });
 
   it('gives the probe longer than the native stall watchdog', () => {
-    const transport =
-      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    // Both constants are read out of their sources: a restated value would
+    // keep passing after either side moved.
     const swift = readFileSync(join(__dirname, '..', 'native', 'RemoteAppTunnel.swift'), 'utf8');
     const deadline = Number(swift.match(/stallDeadlineSeconds: UInt64 = (\d+)/u)?.[1]);
+    const transportSource = readFileSync(join(__dirname, 'remoteControlTransport.ts'), 'utf8');
+    const probeTimeout = Number(
+      transportSource.match(/const PROBE_TIMEOUT_MS = ([\d_]+);/u)?.[1]?.replaceAll('_', ''),
+    );
     expect(deadline).toBeGreaterThan(0);
+    expect(probeTimeout).toBeGreaterThan(0);
     // Otherwise a dead attachment's probe reads as an ordinary timeout and
     // backs off for 15 s instead of attaching again.
-    expect(transport.PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(deadline * 1000 + 1_000);
+    expect(probeTimeout).toBeGreaterThanOrEqual(deadline * 1000 + 1_000);
   });
 
   it('retries a read that failed on a superseded attachment on the current one', async () => {
