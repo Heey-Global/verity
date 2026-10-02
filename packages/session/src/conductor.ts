@@ -5055,7 +5055,9 @@ export class Conductor {
     }
     // A provider refusal may close ACP before it can persist its own terminal
     // event. Keep that failure out of the crash row's diagnostic stderr tail.
-    if (isUsageLimitError(result.stderr)) {
+    // Earlier refusals can precede an unrelated fatal error in the same stream.
+    const lastErrorLine = result.stderr.trimEnd().split(/\r?\n/u).at(-1) ?? '';
+    if (isUsageLimitError(lastErrorLine)) {
       for (const event of [
         { t: 'error', kind: 'usage_limit', message: 'Usage limit reached' },
         { t: 'status', state: 'completed' },

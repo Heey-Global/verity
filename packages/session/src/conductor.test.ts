@@ -686,6 +686,27 @@ describe('Conductor.sendTurn', () => {
     expect(events.some((event) => event.t === 'error' && event.kind === 'crashed')).toBe(false);
   });
 
+  it('does not let an earlier usage refusal mask a later crash', async () => {
+    await ctx.store.createSession({ sessionId: 's-limit-crash', worktree: '/wt/x', model: 'm' });
+    const backend: Backend = {
+      run: async (opts) => ({
+        sessionId: opts.storeSessionId,
+        exitCode: 1,
+        stderr: "You've hit your session limit · resets 7:30pm (UTC)\nFatal: connection closed\n",
+        aborted: false,
+      }),
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s-limit-crash', 'go');
+    const events = await ctx.store.getEvents('s-limit-crash');
+    expect(events.some((event) => event.t === 'error' && event.kind === 'crashed')).toBe(true);
+    expect(events).not.toContainEqual({ t: 'status', state: 'completed' });
+  });
+
   it('settles a SIGTERM exit without a terminal event as interrupted, not crashed', async () => {
     await ctx.store.createSession({ sessionId: 's-term', worktree: '/wt/x', model: 'm' });
     const backend: Backend = {
