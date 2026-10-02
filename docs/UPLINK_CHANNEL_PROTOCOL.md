@@ -506,6 +506,7 @@ leaves the other streams flowing.
 ← remove.failed{ requestId, shareId, code }
 
 ← share.expired{ shareId }                  Uplink-initiated at duration end
+← share.pin_locked { shareId }              New PIN logins permanently blocked
 ```
 
 The Uplink creates the share id, connector token and browser-session secret, and creates the public
@@ -526,6 +527,39 @@ and removals on the single control connection cannot be confused. `share.remove`
 
 Duration is validated Uplink-side against the confirmed set (15m, 1h, 2h, 4h, 8h). A client asking
 for anything else receives `duration_rejected`; the client-side list is convenience, not policy.
+
+### Durable preview PIN budget
+
+The hosted Uplink owns the persistent attempt budget. The production edge requires
+`VERITY_PREVIEW_PIN_BUDGET_URL` (internal service base URL) and
+`VERITY_PREVIEW_PIN_BUDGET_TOKEN` (43-character base64url secret scoped to its share).
+These credentials are never sent to Core, the connector, or visitors. Deploy the
+hosted budget endpoints and provision these variables before upgrading the edge.
+
+Before verifying a code from either the POST form or a GET PIN link, the edge calls
+`POST /internal/preview-pin/<shareId>/begin` with `{}` and Bearer authentication.
+HTTP 200 `{state:"allowed",attemptId,failures}` reserves a verification. The edge
+then calls `/finish` with `{attemptId,valid}`. A cookie is issued only after a correct
+code and HTTP 200 `{state:"allowed"}` from finish. Both endpoints may instead return
+HTTP 200 `{state:"cooldown",retryAfterSeconds}` or `{state:"locked"}`. The edge
+returns 429 with Retry-After for cooldown, 403 for lockout, and 503 for unavailable,
+malformed, oversized, timed-out, or non-success responses. Requests have a five-second
+deadline and do not follow redirects. Missing budget configuration prevents the
+production edge from starting. Library callers may inject a budget adapter;
+production must use durable accounting.
+
+The hosted policy keeps the per-IP limit and adds a cumulative failure count across
+IPs: 20 failures impose a 60-second cooldown, each additional ten doubles it up to
+one hour, and 100 failures permanently lock code entry. Successful logins do not
+reset the count. Atomic reservations expire after 30 seconds and count as failures;
+finish must reject a successful reservation if the share became locked meanwhile.
+
+`share.pin_locked` is an authenticated, idempotent control event and is replayed as
+a snapshot after reconnect. Core persists `pinLocked` independently of the share's
+lifecycle and handles snapshots arriving before its local share insert. The app
+shows the lock and permits stopping the link and creating a replacement. A lock
+never revokes already valid browser cookies or stops the connector. New links have
+new budgets; stopping or expiry remains the way to revoke all access.
 
 ## Remote Control
 

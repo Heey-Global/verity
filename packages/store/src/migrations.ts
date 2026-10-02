@@ -3536,6 +3536,20 @@ const migrations: Record<string, Migration> = {
       )`.execute(db);
     },
   },
+  '0127_public_preview_pin_lock': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table public_preview_pin_locks (share_id text primary key, created_at timestamptz not null default now())`.execute(
+        db,
+      );
+      await sql`alter table public_preview_shares add column pin_locked boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table public_preview_shares drop column pin_locked`.execute(db);
+      await sql`drop table public_preview_pin_locks`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

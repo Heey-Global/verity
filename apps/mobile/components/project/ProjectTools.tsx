@@ -1741,6 +1741,12 @@ function PublicPreviewShareControls({
               </Text>
             </Pressable>
           ) : null}
+          {share.pinLocked ? (
+            <Text style={styles.settingsError}>
+              PIN access locked after too many failed attempts. Already signed-in visitors can still
+              use this link. Stop sharing, then create a new link to let new visitors in.
+            </Text>
+          ) : null}
           {share.failure ? <Text style={styles.settingsError}>{share.failure}</Text> : null}
           <View style={styles.lifecycleActions}>
             {share.publicOrigin ? (

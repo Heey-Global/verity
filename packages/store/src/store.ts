@@ -557,6 +557,7 @@ export type PublicPreviewShareState =
   'creating' | 'active' | 'revoking' | 'revoked' | 'expired' | 'failed';
 
 export interface PublicPreviewShareRecord {
+  pinLocked?: boolean;
   id: string;
   projectId: string;
   devServerId: string | null;
@@ -6474,6 +6475,7 @@ export class EventStore implements EventSink {
       edgeUrl: row.edge_url,
       pinHash: this.decryptSecret(row.pin_hash_secret) ?? '',
       pin: this.decryptSecret(row.pin_secret)!,
+      pinLocked: row.pin_locked,
       connectorToken: this.decryptSecret(row.connector_token_secret) ?? '',
       sessionSecret: this.decryptSecret(row.session_secret) ?? '',
       connectorContainerName: row.connector_container_name,
@@ -6512,7 +6514,38 @@ export class EventStore implements EventSink {
       })
       .returningAll()
       .executeTakeFirstOrThrow();
-    return this.publicPreviewShare(row);
+    // The control event may precede this insert; consume the durable snapshot.
+    await this.db
+      .updateTable('public_preview_shares')
+      .set({ pin_locked: true })
+      .where('id', '=', row.id)
+      .where('id', 'in', this.db.selectFrom('public_preview_pin_locks').select('share_id'))
+      .execute();
+    await this.db.deleteFrom('public_preview_pin_locks').where('share_id', '=', row.id).execute();
+    return (await this.getPublicPreviewShare(row.id))!;
+  }
+
+  /** PIN lockout blocks new authentication, never the active connector or cookies. */
+  async lockPublicPreviewSharePin(id: string): Promise<void> {
+    await this.db
+      .insertInto('public_preview_pin_locks')
+      .values({ share_id: id })
+      .onConflict((conflict) => conflict.column('share_id').doNothing())
+      .execute();
+    const updated = await this.db
+      .updateTable('public_preview_shares')
+      .set({ pin_locked: true, updated_at: new Date().toISOString() })
+      .where('id', '=', id)
+      .returning('id')
+      .executeTakeFirst();
+    if (updated) {
+      await this.db.deleteFrom('public_preview_pin_locks').where('share_id', '=', id).execute();
+    }
+    // Unknown snapshots cannot belong to a live share after the maximum 30-day TTL.
+    await this.db
+      .deleteFrom('public_preview_pin_locks')
+      .where('created_at', '<', new Date(Date.now() - 31 * 86400_000))
+      .execute();
   }
 
   async addPendingUplinkShareRemoval(shareId: string): Promise<void> {

@@ -95,6 +95,7 @@ export interface UplinkControlClientOptions {
   serverVersion: string;
   webSocketFactory?: (url: string, options: { maxPayload: number }) => WebSocket;
   onFeaturesDisabled?: (reason: string) => Promise<void>;
+  onSharePinLocked?: (shareId: string) => Promise<void>;
   onShareExpired?: (shareId: string) => Promise<void>;
   /** Remote admission is offered only when explicitly enabled. */
   offerRemoteControl?: boolean;
@@ -662,6 +663,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
       );
       this.clearAuthority(reason);
       this.socket?.close(4003, closeReason(reason, 'rejected'));
+      return;
+    }
+    if (frame.type === 'share.pin_locked') {
+      await this.options.onSharePinLocked?.(stringField(frame, 'shareId'));
       return;
     }
     if (frame.type === 'share.expired') {

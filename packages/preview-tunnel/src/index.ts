@@ -33,6 +33,7 @@ import {
   type WsAcceptMeta,
   type WsOpenMeta,
 } from './framing.js';
+import type { PreviewPinBudget, PinBudgetResult } from './pin-budget.js';
 import { StreamRegistry } from './streams.js';
 import { expiredPage, loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
@@ -48,6 +49,8 @@ const CONNECTOR_HEARTBEAT_MS = 15_000;
 
 export interface PreviewEdgeOptions {
   shareId: string;
+  /** Required in hosted production; the service persists attempts across edge restarts. */
+  pinBudget?: PreviewPinBudget;
   pinHash: string;
   connectorTokenHash: string;
   sessionSecretHash: string;
@@ -191,7 +194,8 @@ export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex
 }
 
 export class PreviewEdge {
-  private readonly options: Required<PreviewEdgeOptions>;
+  private readonly options: Required<Omit<PreviewEdgeOptions, 'pinBudget'>> &
+    Pick<PreviewEdgeOptions, 'pinBudget'>;
   private readonly server: Server;
   private readonly websocketServer: WebSocketServer;
   private readonly clientSockets: WebSocketServer;
@@ -931,7 +935,32 @@ export class PreviewEdge {
         sendPreviewExpired(response);
         return;
       }
-      if (!(await verifyPreviewPin(form.get('pin') ?? '', this.options.pinHash))) {
+      let attemptId: string | undefined;
+      if (this.options.pinBudget) {
+        const begin = await this.options.pinBudget
+          .begin()
+          .catch(() => ({ state: 'unavailable' as const }));
+        if (begin.state !== 'allowed' || !('attemptId' in begin) || !begin.attemptId) {
+          this.rejectPinBudget(
+            response,
+            begin.state === 'allowed' ? { state: 'unavailable' } : begin,
+          );
+          return;
+        }
+        attemptId = begin.attemptId;
+      }
+      const valid = await verifyPreviewPin(form.get('pin') ?? '', this.options.pinHash);
+      if (this.options.pinBudget && attemptId) {
+        // A correct code cannot grant access until its reservation is durably finished.
+        const finish = await this.options.pinBudget
+          .finish(attemptId, valid)
+          .catch(() => ({ state: 'unavailable' as const }));
+        if (finish.state !== 'allowed') {
+          this.rejectPinBudget(response, finish);
+          return;
+        }
+      }
+      if (!valid) {
         response.writeHead(401, {
           'content-type': 'text/html; charset=utf-8',
           'cache-control': 'no-store',
@@ -954,6 +983,25 @@ export class PreviewEdge {
       response.end();
     } finally {
       this.loginVerifications -= 1;
+    }
+  }
+
+  private rejectPinBudget(response: ServerResponse, result: PinBudgetResult): void {
+    if (result.state === 'cooldown') {
+      sendPreviewError(
+        response,
+        429,
+        'Too many code attempts. Try again later.',
+        String(result.retryAfterSeconds),
+      );
+    } else if (result.state === 'locked') {
+      sendPreviewError(
+        response,
+        403,
+        'Code entry is locked. Ask the person who shared this preview for a new link.',
+      );
+    } else {
+      sendPreviewError(response, 503, 'Code verification is unavailable. Try again later.');
     }
   }
 

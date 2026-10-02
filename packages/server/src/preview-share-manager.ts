@@ -160,6 +160,7 @@ export interface CreatePreviewShareInput {
 }
 
 export interface PublicPreviewShare {
+  pinLocked?: boolean;
   id: string;
   projectId: string;
   devServerId: string | null;
@@ -1308,6 +1309,7 @@ function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
     state: record.state,
     publicOrigin: record.publicOrigin,
     pin: record.pin!,
+    pinLocked: record.pinLocked ?? false,
     expiresAt: record.expiresAt,
     revokedAt: record.revokedAt,
     failure: record.failure,
