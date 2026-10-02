@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.47.1",
-  "runtime": "1.47.0",
+  "version": "1.49.1",
+  "runtime": "1.49.0",
   "channel": "testflight",
-  "commit": "1447db8cd77819406a61592ea2f502f8064272e0",
-  "tag": "mobile-v1.47.1",
-  "branch": "staging-mobile-v1.47.1-1447db8cd77819406a61592ea2f502f8064272e0",
-  "baseline": "mobile-v1.47.0",
-  "group": "ed25e2e5-bff0-4233-b2ff-f218888842c9",
+  "commit": "9d1675f7f083385c3d29aef3bc8ac098a3191f46",
+  "tag": "mobile-v1.49.1",
+  "branch": "staging-mobile-v1.49.1-9d1675f7f083385c3d29aef3bc8ac098a3191f46",
+  "baseline": "mobile-v1.49.0",
+  "group": "8860b7dc-33ea-46ed-ae8c-dd1a2777130f",
   "notes": [
-    "shorten session and settings loading paths (#969)"
+    "reset keyboard spacing and attachment menu anchors (#1000)",
+    "keep sessions usable after source deletion (#998)"
   ]
 }
