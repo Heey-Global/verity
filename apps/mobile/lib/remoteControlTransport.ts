@@ -179,10 +179,6 @@ export function remoteControlFailureForUrl(url: string): string | null {
     : `${lastFailure.stage} (${lastFailure.detail})`;
 }
 
-// The native tunnel's own account of why it ended. Without it every drop reads
-// as the same "native transport error", which is how an idle timeout went
-// unnoticed for several releases. Clipped and flattened: it lands in an error
-// message shown on screen.
 async function isTunnelStopped(): Promise<boolean> {
   try {
     return !(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive());
@@ -191,6 +187,10 @@ async function isTunnelStopped(): Promise<boolean> {
   }
 }
 
+// The native tunnel's own account of why it ended. Without it every drop reads
+// as the same "native transport error", which is how an idle timeout went
+// unnoticed for several releases. Clipped and flattened: it lands in an error
+// message shown on screen.
 async function tunnelStopReason(): Promise<string | null> {
   try {
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
@@ -439,11 +439,15 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
   const selected = operation.then(async () => {
     const target = new URL(url).origin;
     const key = keyFor(target);
-    if (key === null || active?.key !== key || active.port !== port) return 0;
+    if (key === null || active?.key !== key) return 0;
+    // Every read in flight fails at the same moment when the watchdog ends an
+    // attachment; the first one here replaces it, the rest retry on the
+    // replacement instead of each reporting a failure.
+    if (active.port !== port) return active.port;
     const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
     if (pin === undefined) return 0;
-    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     try {
+      const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
       if (!(await native.isActive())) {
         const reason = await tunnelStopReason();
         console.warn(`Remote Control tunnel ended: ${reason ?? 'no reason reported'}`);
@@ -451,7 +455,7 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
         // Only a stall is replaced here, for this read. Any other end is left
         // to the next request's route selection, as before.
         if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
-        return open(target, key, { retryStall: false });
+        return await open(target, key, { retryStall: false });
       }
       await probeCoreThroughEitherProxy(target, pin, port);
       return active?.key === key && active.port === port ? port : 0;

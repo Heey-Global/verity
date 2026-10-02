@@ -574,6 +574,10 @@ describe('remote diagnostics', () => {
     expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_999);
     expect(mockAdmission).toHaveBeenCalledTimes(2);
     expect(mockStart).toHaveBeenCalledTimes(2);
+    // The other reads that failed at the same moment retry on the replacement
+    // rather than each attaching again or reporting a failure.
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/status`, 4_321)).toBe(4_999);
+    expect(mockStart).toHaveBeenCalledTimes(2);
   });
 
   it('does not replace an attachment that ended for another reason', async () => {

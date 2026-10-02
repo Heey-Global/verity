@@ -533,10 +533,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
   static let stallDeadlineSeconds: UInt64 = 10
 
   private func armStallWatch(_ stream: Stream, id: String) {
+    // The attachment is judged, not the stream: a slow Core on one stream
+    // while others keep receiving is not a dead socket.
+    let receivedWhenArmed = lock.withLock { receivedBytes }
     let task = Task { [weak self] in
       try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
       guard !Task.isCancelled, let self else { return }
-      let stalled = self.lock.withLock { !stream.closed && stream.receivedBytes == 0 }
+      let stalled = self.lock.withLock {
+        !stream.closed && stream.receivedBytes == 0 && self.receivedBytes == receivedWhenArmed
+      }
       guard stalled else { return }
       self.lock.withLock { self.logStream(id, stream, event: "stalled") }
       self.stop(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s")
