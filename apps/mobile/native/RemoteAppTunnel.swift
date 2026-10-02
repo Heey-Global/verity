@@ -188,11 +188,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.withLock {
       let traces = recentStreams.enumerated()
         .map { "s\($0.offset + 1)=\($0.element.traceToken)" }.joined(separator: ";")
+      // Clamped both ways: a clock step must not push the summary out of the
+      // shape the app accepts, which would lose every counter beside it.
       let now = Date()
-      let age = attachedAt.map { String(min(Int(now.timeIntervalSince($0) * 1000), 99_999_999)) } ?? "none"
-      let pongAge = lastPongAt.map { String(min(Int(now.timeIntervalSince($0) * 1000), 99_999_999)) } ?? "none"
+      let millis: (Date?) -> String = { date in
+        date.map { String(max(0, min(Int(now.timeIntervalSince($0) * 1000), 99_999_999))) } ?? "none"
+      }
+      let age = millis(attachedAt)
+      let pongAge = millis(lastPongAt)
       return "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent), sentBytes=\(sentBytes), receivedBytes=\(receivedBytes), deliveredBytes=\(deliveredBytes), localResets=\(localResets), remoteResets=\(remoteResets), lastReset=\(lastReset)"
-        + ", age=\(age), pings=\(pingsSent)/\(pongsReceived), pongAge=\(pongAge)"
+        + ", age=\(age), pings=\(min(pingsSent, 999_999))/\(min(pongsReceived, 999_999)), pongAge=\(pongAge)"
         + (traces.isEmpty ? "" : ", streams=\(traces)")
     }
   }
