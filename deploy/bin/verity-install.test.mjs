@@ -88,6 +88,10 @@ function makeHost({
 
   writeFileSync(join(binDir, 'verity-install'), readFileSync(join(here, 'verity-install')));
   chmodSync(join(binDir, 'verity-install'), 0o755);
+  writeFileSync(
+    join(binDir, 'verity-pairing-addresses'),
+    readFileSync(join(here, 'verity-pairing-addresses')),
+  );
   const pairingHandoff = join(root, 'pairing.env');
   // Pairing material has its own tests against the real OpenSSL implementation.
   // This installer suite runs in a deliberately minimal, network-isolated Node
@@ -157,6 +161,14 @@ function makeHost({
   writeFileSync(join(stubDir, 'hostname'), "#!/bin/sh\nprintf '%s\\n' '10.0.0.10 192.168.1.20'\n", {
     mode: 0o755,
   });
+
+  writeFileSync(
+    join(stubDir, 'ip'),
+    `#!/bin/sh
+printf '%s\\n' '2: eth0 inet 10.0.0.10/24 scope global eth0' '3: eth1 inet 192.168.1.20/24 scope global eth1'
+`,
+    { mode: 0o755 },
+  );
 
   // Records the handover instead of performing it, so a test can assert on exactly
   // the variables verity-compose would have been given.
@@ -529,6 +541,22 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         .map((line) => line.split('=', 2)),
     );
     assert.equal(pairingEnv.VERITY_PAIRING_HOST, 'verity.home.example');
+  });
+
+  test('omits Docker interfaces without rejecting private LAN or Tailscale addresses', () => {
+    const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
+    writeFileSync(
+      join(host.stubDir, 'ip'),
+      `#!/bin/sh
+printf '%s\\n' '2: docker0 inet 172.17.0.1/16 scope global docker0' '3: br-abcdef inet 172.18.0.1/16 scope global br-abcdef' '4: veth123@if5 inet 172.19.0.1/16 scope global veth123' '5: eth0 inet 172.17.10.20/24 scope global eth0' '6: tailscale0 inet 100.64.0.1/32 scope global tailscale0'
+`,
+      { mode: 0o755 },
+    );
+    const result = runInteractive(host, '\n');
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /1\) 172\.17\.10\.20 \(recommended\)/);
+    assert.match(result.output, /2\) 100\.64\.0\.1/);
+    assert.doesNotMatch(result.output, /\) 172\.(17\.0\.1|18\.0\.1|19\.0\.1)/);
   });
 
   test('fresh installs always seal the ACP Runner supervisor', () => {

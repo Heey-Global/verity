@@ -175,6 +175,16 @@ esac
         `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check`,
       );
 
+      // A terminal-bound sudo cache cannot authenticate after setsid detaches it.
+      const sudoPath = join(bin, 'sudo');
+      await writeFile(
+        sudoPath,
+        (await readFile(sudoPath, 'utf8')).replace(
+          '#!/bin/sh\n',
+          '#!/bin/sh\nif [ "${MOCK_REQUIRE_TTY:-}" = 1 ] && [ "$1 $2" = "docker pull" ]; then (: </dev/tty) 2>/dev/null || { printf "sudo: A terminal is required to authenticate\\n" >&2; exit 1; }; fi\n',
+        ),
+      );
+
       const terminal = await execFileAsync(
         'script',
         ['-qec', `bash ${installerPath} --check`, '/dev/null'],
@@ -183,6 +193,7 @@ esac
             ...process.env,
             PATH: `${bin}:${process.env.PATH ?? ''}`,
             TERM: 'xterm-256color',
+            MOCK_REQUIRE_TTY: '1',
             NO_COLOR: '',
             MOCK_MARKER: marker,
             MOCK_PRIVILEGED: privileged,
@@ -194,8 +205,39 @@ esac
           },
         },
       );
-      expect(terminal.stdout).toContain('1/2 layers');
-      expect(terminal.stdout).toContain('download complete');
+      expect(terminal.stdout).toContain('0342b017ba94 Pull complete');
+      expect(terminal.stdout).toContain('running the release installer');
+
+      const bootstrap = await readFile(installerPath, 'utf8');
+      const rootDownload = join(root, 'root-download.sh');
+      const downloadFunctions = ['progress', 'download_image'].map((name) => {
+        const definition = bootstrap.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, 'm'));
+        expect(definition).not.toBeNull();
+        return definition![0];
+      });
+      await writeFile(
+        rootDownload,
+        `set -euo pipefail\n${downloadFunctions.join('\n')}\ndownload_image test-image\n`,
+      );
+      await writeFile(join(bin, 'id'), '#!/bin/sh\nprintf "0\\n"\n');
+      const rootTerminal = await execFileAsync(
+        'script',
+        ['-qec', `bash ${rootDownload}`, '/dev/null'],
+        {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            TERM: 'xterm-256color',
+            NO_COLOR: '',
+            SUDO_MOCK: '1',
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_PULL_DELAY: '1',
+          },
+        },
+      );
+      expect(rootTerminal.stdout).toContain('1/2 layers');
+      expect(rootTerminal.stdout).toContain('download complete');
+      await writeFile(join(bin, 'id'), '#!/bin/sh\nprintf "1000\\n"\n');
 
       await expect(
         execFileAsync('script', ['-qec', `bash ${installerPath} --check`, '/dev/null'], {
@@ -203,6 +245,7 @@ esac
             ...process.env,
             PATH: `${bin}:${process.env.PATH ?? ''}`,
             TERM: 'xterm-256color',
+            MOCK_REQUIRE_TTY: '1',
             NO_COLOR: '',
             MOCK_DOCKER: join(bin, 'docker'),
             MOCK_DOCKER_LOG: dockerLog,

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname -- "${BASH_SOURCE[0]}")/verity-pairing-addresses"
+
 state_dir="${VERITY_STATE_DIR:-/etc/verity}"
 port="${VERITY_API_HOST_PORT:-8082}"
 identity_key="$state_dir/pairing-identity.pem"
@@ -96,7 +98,7 @@ fi
 chmod 0600 "$identity_key" "$tls_key" "$tls_ca_key"
 chmod 0644 "$tls_ca_cert"
 
-ips="${VERITY_PAIRING_IPS:-$(hostname -I 2>/dev/null || true)}"
+ips="${VERITY_PAIRING_IPS:-$(verity_pairing_ipv4_addresses)}"
 san='DNS:localhost,IP:127.0.0.1'
 suggested=''
 for ip in $ips; do

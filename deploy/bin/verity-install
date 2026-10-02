@@ -30,6 +30,7 @@ MANAGED_DEPLOYMENT_VOLUME='verity-managed-deployment'
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
+source "$script_dir/verity-pairing-addresses"
 
 opt_image=''
 opt_deployment_id=''
@@ -181,7 +182,7 @@ valid_project_name() {
 select_pairing_host() {
   local configured="${VERITY_PAIRING_HOST:-}" ips choice default_choice=1 index=1 custom_choice ip
   [ -z "$configured" ] || { printf '%s' "$configured"; return; }
-  ips="$(hostname -I 2>/dev/null || true)"
+  ips="$(verity_pairing_ipv4_addresses)"
   # curl | bash consumes stdin, so an interactive install must talk to the terminal
   # directly. Automation and hosts without a terminal retain automatic detection.
   ( : </dev/tty && : >/dev/tty ) 2>/dev/null || return 0

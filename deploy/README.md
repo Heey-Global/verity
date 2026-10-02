@@ -135,6 +135,12 @@ capability under `/etc/verity`. On first run, in the mobile app:
 4. **Add a project** by naming its repo. Verity clones it into the clone-root and
    runs a container from the standard base image; the agent is ready.
 
+Automatic address detection excludes interfaces named `docker0`, `docker1`, etc.,
+`br-*`, and `veth*` when the host has working `ip` tooling. Private LAN and
+Tailscale addresses remain eligible. Custom-named Docker bridges and the
+`hostname -I` fallback may still appear; choose an address your phone can reach,
+or explicitly set `VERITY_PAIRING_HOST` for automation.
+
 ### Pair another device
 
 After the first device is set up, open **Settings → Paired devices → Pair another
