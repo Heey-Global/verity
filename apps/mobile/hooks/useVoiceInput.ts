@@ -183,6 +183,10 @@ export function useVoiceInput(
       }
       return;
     }
+    // Native stop can repeat an already committed final result before `end`.
+    // A new interim result distinguishes an intentional repeated utterance.
+    if (event.isFinal && !interimActiveRef.current && transcript === lastFinalTranscriptRef.current)
+      return;
     if (transcript.trim()) {
       cancelCountdown();
       if (!event.isFinal || transcript !== lastFinalTranscriptRef.current) {

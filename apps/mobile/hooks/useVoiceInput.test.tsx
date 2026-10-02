@@ -166,3 +166,29 @@ it('preserves manual edits after dictation stops if an in-flight send fails', as
   expect(onChangeText).toHaveBeenCalledTimes(writesBeforeRejection);
   jest.useRealTimers();
 });
+
+it('keeps the draft once when stopping repeats the final recognition result', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('Existing draft', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  const final = { results: [{ transcript: 'Dictated words' }], isFinal: true };
+  act(() => handlers.result(final));
+  act(() => result.current.toggle());
+  act(() => handlers.result(final));
+  act(() => handlers.result(final));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenLastCalledWith('Existing draft Dictated words');
+  expect(onChangeText).toHaveBeenCalledTimes(1);
+});
+
+it('allows the same words in a new utterance after interim recognition', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: true }));
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: true }));
+  expect(onChangeText).toHaveBeenLastCalledWith('Again Again');
+});
