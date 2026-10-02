@@ -264,6 +264,7 @@ import {
   messageSeq,
   type ScrollAnchor,
 } from '../../lib/transcriptAnchor';
+import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
 
 const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(KeyboardAvoidingView);
@@ -286,6 +287,8 @@ const PRINT_MARGINS = { top: 50, bottom: 50, left: 50, right: 50 };
 // another measurement pass onto a list that is still moving.
 const HISTORY_APPEND_SETTLE_MS = 200;
 const HISTORY_APPEND_SETTLE_FALLBACK_MS = 2000;
+/** Upper bound on the jump cover; the passes themselves finish in about two seconds. */
+const JUMP_FAIL_SAFE_MS = 4000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1477,38 +1480,41 @@ export function SessionChat({
   );
   const [pendingUserJump, setPendingUserJump] = useState<'previous' | null>(null);
   const userJumpCursorRef = useRef<number | undefined>(undefined);
+  // Rows above the target are a padding's width from the screen edge, like the newest
+  // row is from the bottom; the same inset keeps the jumped-to prompt off the edge.
+  const jumpTopInset = theme.spacing.lg;
   useEffect(() => {
     if (jumpTarget === null) return;
     let cancelled = false;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let revealFrame: number | null = null;
-    const steps = [0, 60, 150, 300, 500];
-    const step = (pass: number) => {
+    // One awaited scrollToIndex pass at a time, re-checked against the measured layout
+    // before the cover lifts (see lib/transcriptJump.ts for why timers fail here).
+    void settleTranscriptJump({
+      list: () => listRef.current,
+      resolveIndex: () => findAnchorIndex(dataRef.current, jumpTarget, 'newest-first'),
+      topInset: jumpTopInset,
+      isCancelled: () => cancelled,
+      onPass: (pass, index) => {
+        scrollDebugLastProgrammaticAtRef.current = Date.now();
+        reportScrollDebug('jump-pass', { pass, index });
+      },
+    }).then((outcome) => {
       if (cancelled) return;
-      const index = findAnchorIndex(dataRef.current, jumpTarget, 'newest-first');
-      if (index < 0) {
-        setJumpTarget(null);
-        return;
-      }
-      // Variable-height rows make FlashList's first offset an estimate. Reposition
-      // while covered as layout measurements arrive, as the restore path does.
-      scrollDebugLastProgrammaticAtRef.current = Date.now();
-      void listRef.current
-        ?.scrollToIndex({ index, animated: false, viewPosition: 1 })
-        .catch(() => undefined);
-      if (pass + 1 < steps.length) {
-        timers.push(setTimeout(() => step(pass + 1), steps[pass + 1] - steps[pass]));
-      } else {
-        revealFrame = requestAnimationFrame(() => setJumpTarget(null));
-      }
-    };
-    step(0);
+      reportScrollDebug('jump-settled', { outcome });
+      setJumpTarget(null);
+    });
+    // Never strand the cover: a pass whose native promise never resolves (list torn
+    // down mid-scroll) would otherwise hide the transcript for good.
+    const failSafe = setTimeout(() => {
+      if (cancelled) return;
+      cancelled = true;
+      reportScrollDebug('jump-fail-safe');
+      setJumpTarget(null);
+    }, JUMP_FAIL_SAFE_MS);
     return () => {
       cancelled = true;
-      timers.forEach(clearTimeout);
-      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+      clearTimeout(failSafe);
     };
-  }, [jumpTarget]);
+  }, [jumpTarget, jumpTopInset, reportScrollDebug]);
   const jumpToPreviousUserRow = useCallback(() => {
     if (prevUserIndex >= 0) {
       scrollToUserRow(prevUserIndex);
