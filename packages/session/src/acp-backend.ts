@@ -18,7 +18,7 @@ import type {
   SpawnedProcess,
   SteerMessage,
 } from './backend-contract.js';
-import { isExplicitPreExecutionRejection } from './backend-contract.js';
+import { isExplicitPreExecutionRejection, isUsageLimitError } from './backend-contract.js';
 import {
   AcpEventAdapter,
   AcpTextStream,
@@ -1143,8 +1143,13 @@ export async function runAcpTurn(
     // {@link SessionWriter.finish} — but the invariant is the point, and it
     // should not rest on where the writer happens to drop events today.
     if (sessionId !== undefined && !aborted && !failedBeforeExecution) {
-      await writer.write({ t: 'error', kind: 'acp', message }).catch(() => undefined);
-      await writer.write({ t: 'status', state: 'crashed' }).catch(() => undefined);
+      const usageLimit = isUsageLimitError(message);
+      await writer
+        .write({ t: 'error', kind: usageLimit ? 'usage_limit' : 'acp', message })
+        .catch(() => undefined);
+      await writer
+        .write({ t: 'status', state: usageLimit ? 'completed' : 'crashed' })
+        .catch(() => undefined);
     }
     if (sessionId !== undefined || opts.storeSessionId !== undefined) {
       const diagnostic = {

@@ -24681,6 +24681,9 @@ var knowledgeToolRequestSchema = import_zod4.z.discriminatedUnion("operation", [
 var import_zod5 = __toESM(require_zod(), 1);
 
 // packages/session/dist/backend-contract.js
+function isUsageLimitError(message) {
+  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) hit your (?:session|usage|weekly) limit)\b/i.test(message);
+}
 function isExplicitPreExecutionRejection(message) {
   return /\b(?:login required|not logged in|authentication failed|unauthorized|invalid api key|token expired)\b/i.test(message) || /\b(?:rate limit|too many requests|quota exceeded)\b/i.test(message) || /\b(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)\b/i.test(message);
 }
@@ -29874,8 +29877,9 @@ async function runAcpTurn(opts, profile) {
 ${message}`;
     const failedBeforeExecution = !aborted && boundSessionId === void 0 && isExplicitPreExecutionRejection(stderr);
     if (sessionId !== void 0 && !aborted && !failedBeforeExecution) {
-      await writer.write({ t: "error", kind: "acp", message }).catch(() => void 0);
-      await writer.write({ t: "status", state: "crashed" }).catch(() => void 0);
+      const usageLimit = isUsageLimitError(message);
+      await writer.write({ t: "error", kind: usageLimit ? "usage_limit" : "acp", message }).catch(() => void 0);
+      await writer.write({ t: "status", state: usageLimit ? "completed" : "crashed" }).catch(() => void 0);
     }
     if (sessionId !== void 0 || opts.storeSessionId !== void 0) {
       const diagnostic = {

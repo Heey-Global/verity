@@ -280,6 +280,13 @@ export interface RunResult {
   staleResume?: true;
 }
 
+/** Recognize provider usage refusals independently of whether the prompt ran. */
+export function isUsageLimitError(message: string): boolean {
+  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) hit your (?:session|usage|weekly) limit)\b/i.test(
+    message,
+  );
+}
+
 /**
  * Conservative provider rejection classifier. These failures are authoritative
  * because authentication/quota gates reject the request before an agent turn can

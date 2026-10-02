@@ -25,7 +25,7 @@ export interface AgentEventDescriptor {
 
 const CLAUDE_OAUTH_FAILURE = /failed to authenticate:.*oauth.*(?:expired|refresh)/i;
 const LIMIT_REACHED =
-  /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded))\b/i;
+  /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) hit your (?:session|usage|weekly) limit)\b/i;
 
 /**
  * Project a canonical event into a render descriptor. Only the lifecycle events
