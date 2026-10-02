@@ -129,6 +129,9 @@ ARG DOCKER_COMPOSE_VERSION=2.40.3
 # Verified at author time; bump alongside DOCKER_COMPOSE_VERSION.
 ARG DOCKER_COMPOSE_SHA256=dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372
 ARG DOCKER_COMPOSE_SHA256_ARM64=d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137
+ARG COSIGN_VERSION=3.1.3
+ARG COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+ARG COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
 ARG TARGETARCH
 
 # `--retry-all-errors` rather than `--retry-connrefused`: plain `--retry` covers
@@ -142,8 +145,8 @@ ARG TARGETARCH
 # a retry that returns something else fails the build rather than shipping it.
 RUN set -eux; \
     case "${TARGETARCH}" in \
-      amd64) docker_arch=x86_64; buildx_arch=amd64; compose_arch=x86_64; docker_sha="${DOCKER_CLI_SHA256}"; buildx_sha="${DOCKER_BUILDX_SHA256}"; compose_sha="${DOCKER_COMPOSE_SHA256}" ;; \
-      arm64) docker_arch=aarch64; buildx_arch=arm64; compose_arch=aarch64; docker_sha="${DOCKER_CLI_SHA256_ARM64}"; buildx_sha="${DOCKER_BUILDX_SHA256_ARM64}"; compose_sha="${DOCKER_COMPOSE_SHA256_ARM64}" ;; \
+      amd64) docker_arch=x86_64; buildx_arch=amd64; compose_arch=x86_64; docker_sha="${DOCKER_CLI_SHA256}"; buildx_sha="${DOCKER_BUILDX_SHA256}"; compose_sha="${DOCKER_COMPOSE_SHA256}"; cosign_sha="${COSIGN_SHA256}" ;; \
+      arm64) docker_arch=aarch64; buildx_arch=arm64; compose_arch=aarch64; docker_sha="${DOCKER_CLI_SHA256_ARM64}"; buildx_sha="${DOCKER_BUILDX_SHA256_ARM64}"; compose_sha="${DOCKER_COMPOSE_SHA256_ARM64}"; cosign_sha="${COSIGN_SHA256_ARM64}" ;; \
       *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 64 ;; \
     esac; \
     apt-get update; \
@@ -166,6 +169,12 @@ RUN set -eux; \
       "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${compose_arch}"; \
     echo "${compose_sha}  /tmp/docker-compose" | sha256sum -c -; \
     install -m 0755 /tmp/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose; \
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+      -o /tmp/cosign \
+      "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-${TARGETARCH}"; \
+    echo "${cosign_sha}  /tmp/cosign" | sha256sum -c -; \
+    install -m 0755 /tmp/cosign /usr/local/bin/cosign; \
+    rm -f /tmp/cosign; \
     ln -s /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose; \
     rm -rf /tmp/docker.tgz /tmp/docker; \
     rm -f /tmp/docker-buildx /tmp/docker-compose; \
@@ -194,6 +203,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux; \
     rm -rf /var/lib/apt/lists/*
 
+COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/cosign
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/bin/docker-compose /usr/local/bin/docker-compose
 COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx

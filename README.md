@@ -79,6 +79,12 @@ forwarding can bypass ufw rules. Restrict access to trusted devices or networks
 and verify reachability from outside the host; see the
 [deployment hardening guide](deploy/README.md#hardening-an-internet-reachable-host).
 
+The bootstrap temporarily downloads a version-pinned cosign binary, checks its
+embedded SHA-256 checksum, and verifies the Server image's release signature
+before using its installation code. You do not need to install cosign yourself.
+Download or verification failures stop installation; network access to GitHub,
+the image registry, and Sigstore trust services is required.
+
 Install with:
 
 ```sh

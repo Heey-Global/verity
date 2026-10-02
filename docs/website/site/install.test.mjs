@@ -40,7 +40,7 @@ function host({ architecture = 'x86_64', installTools = false, uid = 0 } = {}) {
     join(root, 'docker'),
     `if [[ $* == *--format* ]]; then printf '%s\\n' 25.0.0; fi`,
   );
-  for (const tool of ['awk', 'grep', 'mktemp', 'sha512sum']) executable(join(root, tool), ':');
+  for (const tool of ['awk', 'grep', 'mktemp', 'sha512sum', 'sha256sum']) executable(join(root, tool), ':');
   if (!installTools) {
     for (const tool of SYSTEM_TOOLS) executable(join(root, tool), ':');
   } else {
@@ -112,4 +112,17 @@ test('install-missing preserves the aggregated report without root or sudo', () 
   assert.match(result.stderr, /preflight failed \(6 issues\)/);
   for (const tool of SYSTEM_TOOLS) assert.match(result.stderr, new RegExp(`${tool} is required`));
   assert.match(result.stderr, /root access is required/);
+});
+
+// Missing checksum tooling must fail preflight before the verifier is downloaded.
+test('preflight requires SHA-256 tooling for verifier integrity', () => {
+  const bin = host();
+  rmSync(join(bin, 'sha256sum'));
+
+  const result = run(bin, '--preflight');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /preflight failed \(1 issues\)/);
+  assert.match(result.stderr, /sha256sum is required/);
+  assert.doesNotMatch(result.stdout, /preflight passed/);
 });
