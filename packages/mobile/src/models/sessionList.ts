@@ -55,10 +55,11 @@ export type CancelPoll = () => void;
 
 export interface SessionListModelOptions {
   client: Pick<VerityClient, 'listSessions' | 'renameSession' | 'deleteSession'> & {
-    listProviderLimits?: () => Promise<ProviderLimitSummary[]>;
-    getOnboardingStatus?: () => Promise<
+    [K in keyof Pick<VerityClient, 'fetchOnboardingStatus'>]?: () => Promise<
       Pick<OnboardingStatus, 'claudeConfigured' | 'codexConfigured'>
     >;
+  } & {
+    listProviderLimits?: () => Promise<ProviderLimitSummary[]>;
     /** Optional like {@link listProviderLimits}: absent, the model falls back to
      * the plain list and simply reports no server-level attention. */
     listSessionOverview?: () => Promise<{
@@ -146,7 +147,7 @@ export class SessionListModel {
         this.opts.client.listProviderLimits?.().catch(() => this._providerLimits) ??
           Promise.resolve([]),
         this.opts.client
-          .getOnboardingStatus?.()
+          .fetchOnboardingStatus?.()
           .then((status) => [
             ...(status.claudeConfigured ? ['Claude'] : []),
             ...(status.codexConfigured ? ['Codex'] : []),

@@ -163,7 +163,7 @@ describe('SessionListModel.refresh', () => {
           listSessions: client.listSessions.bind(client),
           renameSession: client.renameSession.bind(client),
           deleteSession: client.deleteSession.bind(client),
-          getOnboardingStatus: async () => ({ claudeConfigured, codexConfigured }),
+          fetchOnboardingStatus: async () => ({ claudeConfigured, codexConfigured }),
         },
       });
       await model.refresh();
@@ -189,7 +189,7 @@ describe('SessionListModel.refresh', () => {
       { ...session('old', 'idle'), rateLimits: [{ ...reading, providerLabel: 'Claude' }] },
     ]);
     listProviderLimits.mockResolvedValue([{ ...reading, providerLabel: 'Codex' }]);
-    const getOnboardingStatus = vi
+    const fetchOnboardingStatus = vi
       .fn()
       .mockResolvedValue({ claudeConfigured: true, codexConfigured: true });
     const model = new SessionListModel({
@@ -199,7 +199,7 @@ describe('SessionListModel.refresh', () => {
         renameSession: client.renameSession.bind(client),
         deleteSession: client.deleteSession.bind(client),
         listProviderLimits: client.listProviderLimits.bind(client),
-        getOnboardingStatus,
+        fetchOnboardingStatus,
       },
     });
     await model.refresh();
@@ -207,7 +207,7 @@ describe('SessionListModel.refresh', () => {
       'Claude',
       'Codex',
     ]);
-    getOnboardingStatus.mockResolvedValue({ claudeConfigured: false, codexConfigured: true });
+    fetchOnboardingStatus.mockResolvedValue({ claudeConfigured: false, codexConfigured: true });
     await model.refresh();
     expect(model.state.providerLimitRows).toEqual([
       {
@@ -216,7 +216,7 @@ describe('SessionListModel.refresh', () => {
         weekly: { ...reading },
       },
     ]);
-    getOnboardingStatus.mockRejectedValue(new Error('offline'));
+    fetchOnboardingStatus.mockRejectedValue(new Error('offline'));
     await model.refresh();
     expect(model.state.providerLimitRows.map((row) => row.providerLabel)).toEqual(['Codex']);
   });
