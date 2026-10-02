@@ -61,7 +61,25 @@ Workflow and deployment:
 You need an x86-64 Linux host with Docker 25 or newer, the Docker Compose v2
 plugin, and root or `sudo` access. ARM64, macOS, and Windows hosts are not
 currently supported. The official installer provisions the Server, Runner, and
-PostgreSQL, then prints a QR code for pairing the mobile app:
+PostgreSQL, then prints a QR code for pairing the mobile app.
+
+For a host running one active project sandbox, plan for **16 GiB of RAM and
+4 CPU cores**. This is a sizing recommendation, not a tested minimum. Each
+sandbox defaults to a 6 GiB memory limit and a CPU quota of 4 cores; these are
+upper limits, not reserved resources. Leave room for the Server, PostgreSQL,
+and the host. Smaller hosts need lower [resource limits](deploy/README.md#resource-guardrails);
+multiple active sandboxes need additional capacity.
+
+The mobile app connects on **port 8082** over TLS and pins the server certificate.
+After pairing, authenticated API routes require a bearer token specific to the
+paired device; only explicitly defined pre-authentication routes are exempt.
+See [SECURITY.md](SECURITY.md) for the security model and known limitations.
+Docker publishes this port on all host interfaces by default, and Docker's port
+forwarding can bypass ufw rules. Restrict access to trusted devices or networks
+and verify reachability from outside the host; see the
+[deployment hardening guide](deploy/README.md#hardening-an-internet-reachable-host).
+
+Install with:
 
 ```sh
 curl -fsSL https://verity.build/install.sh | bash
