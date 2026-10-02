@@ -140,6 +140,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
+import { openPublicPreview } from '../../components/premiumFeature';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { usePermissionHaptic } from '../../components/usePermissionHaptic';
 import * as Clipboard from 'expo-clipboard';
@@ -3520,8 +3521,10 @@ export function SessionChat({
           {projectId ? (
             <Pressable
               onPress={() => {
-                refreshStaticPreview();
-                setStaticPreviewOpen(true);
+                void openPublicPreview(client, () => {
+                  refreshStaticPreview();
+                  setStaticPreviewOpen(true);
+                });
               }}
               hitSlop={8}
               accessibilityRole="button"
