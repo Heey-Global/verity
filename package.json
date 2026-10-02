@@ -64,7 +64,7 @@
     "react-native": "0.86.3",
     "semver": "7.8.5",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.70.1",
+    "typescript-eslint": "8.71.0",
     "uuid": "14.0.2",
     "vitest": "5.0.2",
     "xcode": "3.0.1",
