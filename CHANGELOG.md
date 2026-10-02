@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.5.0](https://github.com/Heey-Global/verity/compare/v4.4.2...v4.5.0) (2026-10-02)
+
+
+### Features
+
+* **mobile:** report heartbeat liveness in the tunnel summary ([#999](https://github.com/Heey-Global/verity/issues/999)) ([91a4e16](https://github.com/Heey-Global/verity/commit/91a4e162e13a9c488ab160dd4ea0f7c82fe745d1))
+* **preview:** use six-digit PINs for every share duration ([#1004](https://github.com/Heey-Global/verity/issues/1004)) ([49d1695](https://github.com/Heey-Global/verity/commit/49d1695b61882c3839ff73c5985285571f708d05))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v1.5.1 ([#987](https://github.com/Heey-Global/verity/issues/987)) ([894f335](https://github.com/Heey-Global/verity/commit/894f335c13ad56c9543fd07d2e7cb08b09fa8633))
+* **knowledge:** keep sessions usable after source deletion ([#998](https://github.com/Heey-Global/verity/issues/998)) ([33e3495](https://github.com/Heey-Global/verity/commit/33e34958815559bf2a9f408b1387f55df2d9edbe))
+* **mobile:** replace a tunnel attachment that goes dead without a close ([#1001](https://github.com/Heey-Global/verity/issues/1001)) ([03a83bb](https://github.com/Heey-Global/verity/commit/03a83bb95195f073f88c3785abf76a492238860b))
+* **server:** repair session worktree deletion and review sandbox ([#995](https://github.com/Heey-Global/verity/issues/995)) ([49ac280](https://github.com/Heey-Global/verity/commit/49ac280d55f85d892c8e41588366eba519a02012))
+* **session:** present usage limits without crash diagnostics ([#1005](https://github.com/Heey-Global/verity/issues/1005)) ([2830dab](https://github.com/Heey-Global/verity/commit/2830dabfb05425236e2c989d0897b210ffdcd079))
+
 ## [4.4.2](https://github.com/Heey-Global/verity/compare/v4.4.1...v4.4.2) (2026-10-02)
 
 
