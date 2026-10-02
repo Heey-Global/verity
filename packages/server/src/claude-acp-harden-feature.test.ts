@@ -311,6 +311,28 @@ describe('Claude ACP tool-title hardening', () => {
     });
   });
 
+  it('hardens the renderer entry point while preserving diff capability arguments', async () => {
+    // A renderer refactor can retain the export while adding a capability that
+    // a three-argument wrapper silently drops from every tool call.
+    const dir =
+      await packageDir(`export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd, supportsDiffPatch = false) {
+      if (toolUse.name === 'ReportFindings') return { title: toolUse.input.findings.map(String).join(',') };
+      return { title: JSON.stringify([supportsTerminalOutput, cwd, supportsDiffPatch]), locations: [] };
+    }`);
+    expect(await renderTitle(dir, WRONG_TYPED_FINDINGS)).toMatchObject({ ok: false });
+    expect((await harden(dir)).code).toBe(0);
+    expect(await renderTitle(dir, WRONG_TYPED_FINDINGS)).toEqual({
+      ok: true,
+      title: 'ReportFindings',
+    });
+    const result = await run(
+      [],
+      `const { toolInfoFromToolUse } = await import(${JSON.stringify(pathToFileURL(toolsFile(dir)).href)});
+      process.stdout.write(toolInfoFromToolUse({name: 'Write'}, true, '/work', true).title);`,
+    );
+    expect(result).toEqual({ code: 0, out: '[true,"/work",true]' });
+  });
+
   it('fails the build when the seam is gone even though nothing known crashes', async () => {
     const dir = await packageDir(RESTRUCTURED_AND_SAFE);
 
