@@ -43,7 +43,6 @@ import { projectLifecycleState, projectSetupStatus } from '../../lib/projectSetu
 import { projectIdParam, useProjectDetail } from '../../lib/useProjectDetail';
 import {
   generatePreviewPin,
-  LONG_PREVIEW_DURATION_SECONDS,
   PUBLIC_PREVIEW_DURATIONS,
   validPreviewPin,
 } from './publicPreviewShare';
@@ -1620,7 +1619,7 @@ function PublicPreviewShareControls({
   const canOpen = canCreateDevServer || canCreateStatic;
 
   const create = useCallback(() => {
-    if (busy || !canCreate || !validPreviewPin(pin, ttlSeconds)) return;
+    if (busy || !canCreate || !validPreviewPin(pin)) return;
     setBusy(true);
     setError(undefined);
     const request =
@@ -1690,7 +1689,7 @@ function PublicPreviewShareControls({
   const liveShares = shares.filter(
     ({ state }) => !['revoked', 'expired', 'failed'].includes(state),
   );
-  const pinValid = validPreviewPin(pin, ttlSeconds);
+  const pinValid = validPreviewPin(pin);
 
   return (
     <View style={styles.publicShareSection}>
@@ -1828,13 +1827,9 @@ function PublicPreviewShareControls({
               />
             ) : null}
             <SettingsInput
-              label={
-                ttlSeconds >= LONG_PREVIEW_DURATION_SECONDS
-                  ? 'PIN (12 digits)'
-                  : 'PIN (6–12 digits)'
-              }
+              label="PIN (6 digits)"
               value={pin}
-              onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 12))}
+              onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 6))}
               keyboardType="number-pad"
               autoCapitalize="none"
               accessibilityLabel="Public share PIN"
@@ -1857,11 +1852,7 @@ function PublicPreviewShareControls({
               ))}
             </View>
             {!pinValid && pin.length > 0 ? (
-              <Text style={styles.settingsError}>
-                {ttlSeconds >= LONG_PREVIEW_DURATION_SECONDS
-                  ? 'Enter 12 digits.'
-                  : 'Enter 6 to 12 digits.'}
-              </Text>
+              <Text style={styles.settingsError}>Enter 6 digits.</Text>
             ) : null}
             {error ? <Text style={styles.settingsError}>{error}</Text> : null}
             <View style={styles.lifecycleActions}>

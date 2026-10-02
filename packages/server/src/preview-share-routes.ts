@@ -11,7 +11,7 @@ import {
 
 const createBody = z
   .object({
-    pin: z.string().regex(/^\d{6,12}$/),
+    pin: z.string().regex(/^\d{6}$/),
     ttlSeconds: z.number().int(),
   })
   .strict();

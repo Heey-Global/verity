@@ -19,6 +19,15 @@ import { expiredPage, loginPage, unavailablePage } from './preview-page.js';
 const cleanups: Array<() => Promise<void> | void> = [];
 const sessionSecretHash = hashPreviewSecret('independent-edge-session-secret');
 
+it('asks visitors for exactly six digits', () => {
+  const page = loginPage('/');
+  const input = page.match(/<input id="pin"[^>]*>/)?.[0];
+  expect(input).toContain('pattern="[0-9]{6}"');
+  expect(input).toContain('minlength="6"');
+  expect(input).toContain('maxlength="6"');
+  expect(input).toContain('placeholder="6 digits"');
+});
+
 it('escapes the return path in the code form', () => {
   const page = loginPage('/?next="<script>');
   expect(page).toContain('value="/?next=&quot;&lt;script&gt;"');
@@ -122,7 +131,7 @@ describe('preview tunnel', () => {
     const timeout = vi.spyOn(global, 'setTimeout');
     const edge = new PreviewEdge({
       shareId: 'share-month',
-      pinHash: hashPreviewPin('123456789012'),
+      pinHash: hashPreviewPin('123456'),
       connectorTokenHash: hashPreviewSecret('connector'),
       sessionSecretHash,
       publicOrigin: 'https://share-month.preview.example.test',
