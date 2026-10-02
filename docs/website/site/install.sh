@@ -205,12 +205,16 @@ download_image() {
     return
   fi
 
-  output=$(mktemp)
-  if [ "$(id -u)" -eq 0 ]; then
-    setsid docker pull "$image" >"$output" 2>&1 &
-  else
-    setsid sudo docker pull "$image" >"$output" 2>&1 &
+  # sudo-rs authenticates per terminal; detaching sudo prevents password prompts
+  # and loses the terminal's cached authorization. Keep it in the foreground.
+  if [ "$(id -u)" -ne 0 ]; then
+    progress 3 "downloading $image"
+    run_docker pull "$image"
+    return
   fi
+
+  output=$(mktemp)
+  setsid docker pull "$image" >"$output" 2>&1 &
   pid=$!
   trap 'kill -TERM -- "-$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$output"; exit 129' HUP
   trap 'kill -TERM -- "-$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$output"; exit 130' INT
