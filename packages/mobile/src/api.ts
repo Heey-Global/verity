@@ -1299,7 +1299,7 @@ export const branchListSchema = z.object({
   // Present ONLY for a project without a GitHub repository, where there is no pull
   // request to merge: `base` names the branch this session's work can be merged into
   // locally. ABSENT = merging goes through the PR strip (or the server is older).
-  localMerge: z.object({ base: z.string().min(1) }).optional(),
+  localMerge: z.object({ base: z.string().min(1), hasChanges: z.boolean().optional() }).optional(),
 });
 export type BranchList = z.infer<typeof branchListSchema>;
 

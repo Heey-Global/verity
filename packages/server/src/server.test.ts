@@ -428,6 +428,7 @@ const conductor = {
 // Branch service (#91) stub — the git ops are unit-tested in branches.test.ts;
 // here we only verify the route's HTTP mapping.
 const branchSvc = {
+  hasProjectChanges: vi.fn<(wt: string, base: string) => Promise<boolean>>(),
   current: vi.fn<(wt: string) => Promise<string>>(),
   sessionBranches: vi.fn<(wt: string) => Promise<string[]>>(),
   switchable: vi.fn<(wt: string) => Promise<string[]>>(),
@@ -9783,9 +9784,17 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
     branchSvc.switchable.mockResolvedValue([]);
     const app = buildLocal();
 
+    branchSvc.hasProjectChanges.mockResolvedValue(false);
     const local = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
     expect(local.statusCode).toBe(200);
-    expect(local.json()).toMatchObject({ current: 'feat/notes', localMerge: { base: 'trunk' } });
+    expect(local.json()).toMatchObject({
+      current: 'feat/notes',
+      localMerge: { base: 'trunk', hasChanges: false },
+    });
+    expect(branchSvc.hasProjectChanges).toHaveBeenCalledWith(process.cwd(), 'trunk');
+    branchSvc.hasProjectChanges.mockResolvedValue(true);
+    const changed = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(changed.json().localMerge.hasChanges).toBe(true);
     await app.close();
 
     // Same session without a configured clone root: nothing to merge into locally.
