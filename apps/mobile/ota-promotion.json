@@ -1,15 +1,16 @@
 {
   "schema": 1,
-  "version": "1.49.1",
-  "runtime": "1.49.0",
+  "version": "1.50.1",
+  "runtime": "1.50.0",
   "channel": "testflight",
-  "commit": "9d1675f7f083385c3d29aef3bc8ac098a3191f46",
-  "tag": "mobile-v1.49.1",
-  "branch": "staging-mobile-v1.49.1-9d1675f7f083385c3d29aef3bc8ac098a3191f46",
-  "baseline": "mobile-v1.49.0",
-  "group": "8860b7dc-33ea-46ed-ae8c-dd1a2777130f",
+  "commit": "2830dabfb05425236e2c989d0897b210ffdcd079",
+  "tag": "mobile-v1.50.1",
+  "branch": "staging-mobile-v1.50.1-2830dabfb05425236e2c989d0897b210ffdcd079",
+  "baseline": "mobile-v1.50.0",
+  "group": "86d69b61-a610-4d23-970c-53b45cfdd6e2",
   "notes": [
-    "reset keyboard spacing and attachment menu anchors (#1000)",
-    "keep sessions usable after source deletion (#998)"
+    "present usage limits without crash diagnostics (#1005)",
+    "use six-digit PINs for every share duration (#1004)",
+    "show reusable premium notice for preview sharing (#1003)"
   ]
 }
