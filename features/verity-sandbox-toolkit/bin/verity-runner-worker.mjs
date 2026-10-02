@@ -27359,61 +27359,130 @@ function protocolErrorResponse(error) {
   };
 }
 
+// node_modules/@agentclientprotocol/sdk/dist/stream-limits.js
+var DEFAULT_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
+var MessageTooLargeError = class extends Error {
+  maxMessageBytes;
+  constructor(maxMessageBytes) {
+    super(`Incoming ACP data exceeds the configured ${maxMessageBytes} byte limit`);
+    this.maxMessageBytes = maxMessageBytes;
+    this.name = "MessageTooLargeError";
+  }
+};
+function resolveMaxMessageBytes(value) {
+  const maxMessageBytes = value ?? DEFAULT_MAX_MESSAGE_BYTES;
+  if (!Number.isSafeInteger(maxMessageBytes) || maxMessageBytes <= 0) {
+    throw new RangeError("maxMessageBytes must be a positive safe integer");
+  }
+  return maxMessageBytes;
+}
+var MessageBuffer = class {
+  #buffer = new Uint8Array(0);
+  #length = 0;
+  #maxMessageBytes;
+  constructor(maxMessageBytes) {
+    this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
+  }
+  get byteLength() {
+    return this.#length;
+  }
+  get lastByte() {
+    return this.#buffer[this.#length - 1];
+  }
+  #checkAppend(byteLength) {
+    if (byteLength > this.#maxMessageBytes - this.#length) {
+      this.clear();
+      throw new MessageTooLargeError(this.#maxMessageBytes);
+    }
+  }
+  append(bytes) {
+    this.#checkAppend(bytes.byteLength);
+    const length = this.#length + bytes.byteLength;
+    if (length > this.#buffer.byteLength) {
+      const capacity = Math.min(this.#maxMessageBytes, Math.max(length, this.#buffer.byteLength * 2, 1024));
+      const buffer = new Uint8Array(capacity);
+      buffer.set(this.#buffer.subarray(0, this.#length));
+      this.#buffer = buffer;
+    }
+    this.#buffer.set(bytes, this.#length);
+    this.#length = length;
+  }
+  take() {
+    const bytes = this.#buffer.subarray(0, this.#length);
+    this.clear();
+    return bytes;
+  }
+  clear() {
+    this.#buffer = new Uint8Array(0);
+    this.#length = 0;
+  }
+};
+
 // node_modules/@agentclientprotocol/sdk/dist/line-buffer.js
 var newline = 10;
 var LineBuffer = class {
   /** Bytes of the current (incomplete) line, carried across chunks. */
-  #pending = [];
+  #pending;
+  #maxMessageBytes;
+  constructor(maxMessageBytes) {
+    this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
+    this.#pending = new MessageBuffer(Math.min(Number.MAX_SAFE_INTEGER, this.#maxMessageBytes + 1));
+  }
   /**
-   * Consumes a chunk, returning each complete line without its trailing
-   * newline.
+   * Consumes a chunk, yielding each complete line without its trailing
+   * LF or CRLF.
    */
-  push(chunk) {
-    const lines = [];
+  *push(chunk) {
     let start = 0;
     let newlineIndex = chunk.indexOf(newline, start);
     while (newlineIndex !== -1) {
-      lines.push(this.#takeLine(chunk.subarray(start, newlineIndex)));
+      yield this.#takeLine(chunk.subarray(start, newlineIndex));
       start = newlineIndex + 1;
       newlineIndex = chunk.indexOf(newline, start);
     }
     if (start < chunk.byteLength) {
-      this.#pending.push(start === 0 ? chunk : new Uint8Array(chunk.subarray(start)));
+      const tail = chunk.subarray(start);
+      this.#checkLine(tail);
+      this.#pending.append(tail);
     }
-    return lines;
   }
   /**
    * Returns the trailing unterminated line and resets the buffer, or
    * undefined if no bytes are buffered.
    */
   flush() {
-    if (this.#pending.length === 0) {
+    if (this.#pending.byteLength === 0) {
       return void 0;
     }
-    return this.#takeLine(new Uint8Array(0));
+    return stripCarriageReturn(this.#pending.take());
+  }
+  clear() {
+    this.#pending.clear();
   }
   #takeLine(tail) {
-    if (this.#pending.length === 0) {
-      return tail;
+    this.#checkLine(tail);
+    if (this.#pending.byteLength === 0) {
+      return stripCarriageReturn(tail);
     }
-    let total = tail.byteLength;
-    for (const part of this.#pending) {
-      total += part.byteLength;
+    this.#pending.append(tail);
+    return stripCarriageReturn(this.#pending.take());
+  }
+  #checkLine(tail) {
+    const lastByte = tail.byteLength > 0 ? tail[tail.byteLength - 1] : this.#pending.lastByte;
+    const byteLength = this.#pending.byteLength + tail.byteLength - (lastByte === 13 ? 1 : 0);
+    if (byteLength > this.#maxMessageBytes) {
+      this.clear();
+      throw new MessageTooLargeError(this.#maxMessageBytes);
     }
-    const line = new Uint8Array(total);
-    let offset = 0;
-    for (const part of this.#pending) {
-      line.set(part, offset);
-      offset += part.byteLength;
-    }
-    line.set(tail, offset);
-    this.#pending = [];
-    return line;
   }
 };
+function stripCarriageReturn(line) {
+  return line[line.byteLength - 1] === 13 ? line.subarray(0, -1) : line;
+}
 
 // node_modules/@agentclientprotocol/sdk/dist/stream.js
-function ndJsonStream(output, input) {
+function ndJsonStream(output, input, options = {}) {
+  const maxMessageBytes = resolveMaxMessageBytes(options.maxMessageBytes);
   const textEncoder = new TextEncoder();
   const textDecoder = new TextDecoder();
   let cancelled = false;
@@ -27435,7 +27504,7 @@ function ndJsonStream(output, input) {
   };
   const readable = new ReadableStream({
     async start(controller) {
-      const lines = new LineBuffer();
+      const lines = new LineBuffer(maxMessageBytes);
       const enqueueLine = async (lineBytes) => {
         const trimmedLine = textDecoder.decode(lineBytes).trim();
         if (!trimmedLine) {
@@ -27487,8 +27556,11 @@ function ndJsonStream(output, input) {
           return;
         }
         controller.error(err);
+        void reader.cancel(err).catch(() => {
+        });
         return;
       } finally {
+        lines.clear();
         if (inputReader === reader) {
           inputReader = void 0;
         }
@@ -27532,8 +27604,8 @@ var zGuardCreateElicitationResponseCancel = z7.object({
 });
 
 // node_modules/@agentclientprotocol/sdk/dist/acp.js
-function ndJsonStream2(output, input) {
-  return ndJsonStream(output, input);
+function ndJsonStream2(output, input, options) {
+  return ndJsonStream(output, input, options);
 }
 function emptyObjectResponse(response) {
   return response ?? {};
