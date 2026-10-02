@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.49.0](https://github.com/Heey-Global/verity/compare/mobile-v1.48.0...mobile-v1.49.0) (2026-10-02)
+
+
+### Features
+
+* **remote-control:** show Core's side of each tunnel stream in the app ([#978](https://github.com/Heey-Global/verity/issues/978)) ([b83532a](https://github.com/Heey-Global/verity/commit/b83532a64bf5b56d01fa7aa6eea40c3918eb9dee))
+
+
+### Bug Fixes
+
+* **mobile:** avoid duplicate dictation results when stopping ([#983](https://github.com/Heey-Global/verity/issues/983)) ([10b6095](https://github.com/Heey-Global/verity/commit/10b609516c8955cad0c12b77c9a31e78d82a3fae))
+* **remote-control:** send stream data towards the app in 8 KiB frames ([#980](https://github.com/Heey-Global/verity/issues/980)) ([25db259](https://github.com/Heey-Global/verity/commit/25db259f9125a903ac7bd356847d82858ab20a41))
+
 ## [1.48.0](https://github.com/Heey-Global/verity/compare/mobile-v1.47.0...mobile-v1.48.0) (2026-10-01)
 
 
