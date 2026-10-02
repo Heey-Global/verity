@@ -1,3 +1,4 @@
+import { verifyServerImage } from './self-update/server-image-verify.js';
 import { execFile } from 'node:child_process';
 import { open, readFile, realpath, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -158,6 +159,7 @@ export async function runBridgeRecoveryCommand(args: readonly string[]): Promise
     successor: await envelope(options['--successor']!),
     verify: createReleaseChannelVerifier({ tufCachePath: '/var/cache/verity/bridge-recovery-tuf' }),
     inspectBridge: async (image) => {
+      await verifyServerImage(image);
       await docker(['pull', '--platform', `linux/${currentImage.Architecture}`, image]);
       const description = z
         .array(imageDescription)

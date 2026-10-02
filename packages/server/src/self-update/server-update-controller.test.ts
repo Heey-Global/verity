@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createServerUpdateController,
   notifyManagedMatrixConfigured,
@@ -23,6 +23,22 @@ async function mounted() {
 }
 
 describe('server update controller', () => {
+  it('verifies the image before contacting the privileged Updater', async () => {
+    const { socketPath } = await mounted();
+    const verify = vi.fn().mockRejectedValue(new Error('bad signature'));
+    const controller = await createServerUpdateController(socketPath, verify);
+    const targetDigest = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
+    await expect(
+      controller!.requestUpdate({ idempotencyKey: 'update-1', targetDigest }),
+    ).rejects.toThrow('bad signature');
+    expect(verify).toHaveBeenCalledWith(targetDigest);
+    // A successful check reaches the control token read; failed checks must not dispatch.
+    verify.mockResolvedValue(undefined);
+    await expect(
+      controller!.requestUpdate({ idempotencyKey: 'update-1', targetDigest }),
+    ).rejects.toThrow(/ENOENT/);
+  });
+
   it('notifies the Updater only when its authenticated control channel is available', async () => {
     const { managedRoot, socketPath } = await mounted();
     await expect(notifyManagedMatrixConfigured(socketPath)).rejects.toThrow(/ENOENT/);

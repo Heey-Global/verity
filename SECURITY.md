@@ -57,6 +57,17 @@ You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
 for both checks, plus [oras](https://oras.land/docs/installation) and `jq` for
 the channel document.
 
+The public bootstrap automatically checks the Server image signature before
+executing image code or extracting the deployment bundle, including recovery
+helpers. It downloads a pinned cosign binary temporarily and checks its embedded
+SHA-256 checksum first; cosign does not need to be installed on the host.
+The networked Server also verifies target image signatures before handing app
+updates to the network-isolated Updater. Direct and bridge recovery commands
+verify target images before executing their probes. These checks complement
+the signed release-channel verification; they do not authenticate the bootstrap
+script itself. Existing installations acquire the new verifier through a
+confirmed update using their previous release's verification logic.
+
 ### The Server image
 
 ```bash

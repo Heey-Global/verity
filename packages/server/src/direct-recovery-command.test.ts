@@ -7,6 +7,7 @@ import type { SignedReleaseChannel } from './self-update/release-channel.js';
 
 const mocks = vi.hoisted(() => ({
   exec: vi.fn(),
+  verifyImage: vi.fn(),
   output: vi.fn(() => true),
   admit: vi.fn(),
   request: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   local: vi.fn(),
   events: [] as string[],
 }));
+vi.mock('./self-update/server-image-verify.js', () => ({ verifyServerImage: mocks.verifyImage }));
 vi.mock('node:child_process', async () => {
   const { promisify } = await import('node:util');
   return { execFile: Object.assign(vi.fn(), { [promisify.custom]: mocks.exec }) };
@@ -124,6 +126,9 @@ beforeEach(async () => {
     mocks.events.push('request');
     return { phase: 'requested' };
   });
+  mocks.verifyImage.mockImplementation(async () => {
+    mocks.events.push('verify-image');
+  });
   mocks.exec.mockImplementation(async (_file: string, argv: string[]) => {
     expect(argv[0]).toBe('--host=unix:///var/run/docker.sock');
     const command = argv.slice(1);
@@ -212,6 +217,18 @@ afterEach(async () => {
 });
 
 describe('direct recovery host command', () => {
+  it('refuses target image execution and admission when its image signature fails', async () => {
+    mocks.verifyImage.mockRejectedValueOnce(
+      new Error('Server image signature verification failed'),
+    );
+    await expect(runDirectRecoveryCommand(apply())).rejects.toThrow(
+      'signature verification failed',
+    );
+    expect(mocks.events).not.toContain('pull');
+    expect(mocks.events).not.toContain('probe');
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
   it('checks without creating update intent', async () => {
     await runDirectRecoveryCommand(args);
     expect(mocks.admit).not.toHaveBeenCalled();
@@ -258,7 +275,14 @@ describe('direct recovery host command', () => {
   });
   it('submits after signed image and new updater verification', async () => {
     await runDirectRecoveryCommand(apply());
-    expect(mocks.events).toEqual(['verify:0.16.0', 'pull', 'probe', 'admit', 'request']);
+    expect(mocks.events).toEqual([
+      'verify:0.16.0',
+      'verify-image',
+      'pull',
+      'probe',
+      'admit',
+      'request',
+    ]);
   });
   it('rejects invalid signature before pulling or submitting', async () => {
     mocks.verify.mockResolvedValue(false);

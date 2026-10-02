@@ -61,13 +61,32 @@ For a fresh managed installation, the recommended path is:
 curl -fsSL https://verity.build/install.sh | bash
 ```
 
-The public bootstrap pulls the official release, resolves it to an immutable
-digest, copies the release-matched deployment bundle into a fresh root-owned
+The public bootstrap temporarily downloads cosign v3.1.3 for the host's
+architecture and validates it against an embedded SHA-256 checksum. It pulls
+the official release, resolves it to an immutable digest, verifies its signature
+against the official GitHub release workflow identity, and copies the release-matched deployment bundle into a fresh root-owned
 directory, and runs the guarded installer below. The temporary bundle is removed
 afterwards; durable deployment identity remains under `/etc/verity`. It requires
 Docker 25+, Compose v2, and root access through either the current account or
 `sudo`. The privileged installer deliberately uses the root Docker daemon;
 Rootless Docker is not accepted as a source for code that will execute as root.
+
+Cosign is removed on exit and is not installed on the host. A download,
+checksum, or signature verification failure stops the bootstrap before image
+code executes or deployment files are extracted. Recovery also verifies the
+existing Server image before using it as a helper. Unsigned historical images
+cannot be recovered through this bootstrap; there is no verification bypass.
+Network access to GitHub releases, the registry, and Sigstore trust services is
+required. The bootstrap script itself remains the initial trust anchor.
+
+App updates receive the verifier with a normal confirmed Server update. Once
+installed, the networked Server checks the target image signature before
+submitting an update to the network-isolated Updater. Direct and bridge recovery
+commands also check the target signature before executing target-image probes.
+When run on the host, recovery commands temporarily download and checksum
+cosign if the bundled binary is unavailable; no host package installation is needed.
+The existing signed release-channel checks remain in place; the update that
+first introduces this verifier still uses the preceding release's update logic.
 
 Every run starts with an aggregated host preflight and reports all missing
 requirements before pulling an image or changing installation state. To run only

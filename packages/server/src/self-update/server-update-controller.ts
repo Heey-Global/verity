@@ -1,3 +1,4 @@
+import { verifyServerImage } from './server-image-verify.js';
 import { lstat, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ServerUpdateController } from '../server.js';
@@ -66,6 +67,7 @@ async function openControlChannel(
 /** The Server's client for the device-facing update actions. */
 export async function createServerUpdateController(
   socketPath: string = UPDATER_CONTROL_SOCKET,
+  verifyImage: (image: string) => Promise<void> = verifyServerImage,
 ): Promise<ServerUpdateController | undefined> {
   const channel = await openControlChannel(socketPath);
   if (channel === undefined) return undefined;
@@ -74,6 +76,7 @@ export async function createServerUpdateController(
       return readUpdaterOperation(await channel());
     },
     async requestUpdate(input) {
+      await verifyImage(input.targetDigest);
       return requestUpdaterOperation({ ...(await channel()), ...input });
     },
   };

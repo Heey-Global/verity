@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { COSIGN_SHA256, COSIGN_VERSION } from '../packages/server/src/self-update/cosign-binary.js';
 
 const execFileAsync = promisify(execFile);
 const installerPath = 'docs/website/site/install.sh';
@@ -62,6 +64,26 @@ describe('public Verity installer', () => {
     expect(workflow).toContain('test -f /opt/verity-install/deploy/docker-compose.yml');
   });
 
+  it('keeps verifier pins consistent across bootstrap, recovery, and server image', async () => {
+    const bootstrap = await readFile(installerPath, 'utf8');
+    const dockerfile = await readFile('deploy/Dockerfile', 'utf8');
+    const bootstrapVersion = bootstrap.match(/^COSIGN_VERSION=v(\S+)$/m)![1]!;
+    expect(dockerfile.match(/^ARG COSIGN_VERSION=(\S+)$/m)![1]).toBe(bootstrapVersion);
+    expect(COSIGN_VERSION.replace(/^v/, '')).toBe(bootstrapVersion);
+    for (const [architecture, suffix, dockerSuffix] of [
+      ['x64', 'AMD64', ''],
+      ['arm64', 'ARM64', '_ARM64'],
+    ] as const) {
+      const checksum = bootstrap.match(
+        new RegExp(`^COSIGN_SHA256_${suffix}=([a-f0-9]{64})$`, 'm'),
+      )![1]!;
+      expect(
+        dockerfile.match(new RegExp(`^ARG COSIGN_SHA256${dockerSuffix}=([a-f0-9]{64})$`, 'm'))![1],
+      ).toBe(checksum);
+      expect(COSIGN_SHA256[architecture]).toBe(checksum);
+    }
+  });
+
   it('documents the exact public endpoint', async () => {
     const [rootReadme, deployReadme] = await Promise.all([
       readFile('README.md', 'utf8'),
@@ -83,6 +105,31 @@ describe('public Verity installer', () => {
     const marker = join(root, 'installed');
     const dockerLog = join(root, 'docker.log');
     const digest = 'a'.repeat(64);
+    const cosignLog = join(root, 'cosign.log');
+    const downloadLog = join(root, 'download.log');
+    const cosignFixture = join(root, 'cosign');
+    const testInstallerPath = join(root, 'install.sh');
+    const cosignScript = `#!/bin/sh
+printf 'verify %s\\n' "$*" >> '${cosignLog}'
+[ "$1" = verify ] || exit 2
+[ "$2" = --certificate-oidc-issuer ] || exit 2
+[ "$3" = https://token.actions.githubusercontent.com ] || exit 2
+[ "$4" = --certificate-identity ] || exit 2
+[ "$5" = https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main ] || exit 2
+[ "\${MOCK_SIGNATURE_FAIL:-0}" = 0 ] || exit 3
+printf 'signature %s\\n' "$6" >> "$MOCK_DOCKER_LOG"
+`;
+    await writeFile(cosignFixture, cosignScript);
+    const fixtureChecksum = createHash('sha256').update(cosignScript).digest('hex');
+    const bootstrap = await readFile(installerPath, 'utf8');
+    // Only the fixture binary pins change; the guarded bootstrap logic is executed.
+    await writeFile(
+      testInstallerPath,
+      bootstrap.replace(
+        /^(COSIGN_SHA256_(?:AMD64|ARM64))=[a-f0-9]{64}$/gm,
+        `$1=${fixtureChecksum}`,
+      ),
+    );
     await mkdir(bin);
     await mkdir(join(payload, 'deploy', 'bin'), { recursive: true });
     try {
@@ -94,6 +141,19 @@ describe('public Verity installer', () => {
       await writeFile(join(payload, 'deploy', 'bin', 'verity-compose'), '#!/bin/sh\nexit 0\n', {
         mode: 0o755,
       });
+      await writeFile(
+        join(bin, 'curl'),
+        `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then shift; output=$1; fi
+  shift
+done
+printf '%s\\n' "$output" >> '${downloadLog}'
+[ "\${MOCK_DOWNLOAD_FAIL:-0}" = 0 ] || exit 22
+if [ "\${MOCK_CHECKSUM_FAIL:-0}" = 1 ]; then printf 'corrupt' > "$output"; else cp '${cosignFixture}' "$output"; fi
+`,
+        { mode: 0o755 },
+      );
       await writeFile(join(bin, 'id'), '#!/bin/sh\nprintf "1000\\n"\n', { mode: 0o755 });
       await writeFile(
         join(bin, 'readlink'),
@@ -156,7 +216,18 @@ esac
         { mode: 0o755 },
       );
 
-      const result = await execFileAsync('bash', [installerPath, '--check'], {
+      await execFileAsync('bash', [testInstallerPath, '--preflight'], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          MOCK_DOCKER: join(bin, 'docker'),
+          MOCK_DOCKER_LOG: dockerLog,
+          MOCK_DOWNLOAD_FAIL: '1',
+        },
+      });
+      await expect(access(downloadLog)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const result = await execFileAsync('bash', [testInstallerPath, '--check'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -171,6 +242,11 @@ esac
       expect(result.stdout).toContain('[1/4] checking host prerequisites');
       expect(result.stdout).toContain('[3/4] downloading');
       expect(result.stdout).toContain('[4/4] running the release installer');
+      const initialLog = await readFile(dockerLog, 'utf8');
+      expect(
+        initialLog.indexOf(`signature ghcr.io/heey-global/verity/verity-server@sha256:${digest}`),
+      ).toBeGreaterThan(-1);
+      expect(initialLog.indexOf('signature ')).toBeLessThan(initialLog.indexOf('create '));
       expect(await readFile(marker, 'utf8')).toContain(
         `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check`,
       );
@@ -187,7 +263,7 @@ esac
 
       const terminal = await execFileAsync(
         'script',
-        ['-qec', `bash ${installerPath} --check`, '/dev/null'],
+        ['-qec', `bash ${testInstallerPath} --check`, '/dev/null'],
         {
           env: {
             ...process.env,
@@ -208,10 +284,12 @@ esac
       expect(terminal.stdout).toContain('0342b017ba94 Pull complete');
       expect(terminal.stdout).toContain('running the release installer');
 
-      const bootstrap = await readFile(installerPath, 'utf8');
+      const spinnerBootstrap = await readFile(installerPath, 'utf8');
       const rootDownload = join(root, 'root-download.sh');
       const downloadFunctions = ['progress', 'download_image'].map((name) => {
-        const definition = bootstrap.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, 'm'));
+        const definition = spinnerBootstrap.match(
+          new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, 'm'),
+        );
         expect(definition).not.toBeNull();
         return definition![0];
       });
@@ -240,7 +318,7 @@ esac
       await writeFile(join(bin, 'id'), '#!/bin/sh\nprintf "1000\\n"\n');
 
       await expect(
-        execFileAsync('script', ['-qec', `bash ${installerPath} --check`, '/dev/null'], {
+        execFileAsync('script', ['-qec', `bash ${testInstallerPath} --check`, '/dev/null'], {
           env: {
             ...process.env,
             PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -258,7 +336,7 @@ esac
 
       await writeFile(dockerLog, '');
       const managedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`;
-      await execFileAsync('bash', [installerPath, '--check'], {
+      await execFileAsync('bash', [testInstallerPath, '--check'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -274,7 +352,7 @@ esac
 
       await writeFile(dockerLog, '');
       const staleManagedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
-      await execFileAsync('bash', [installerPath, '--check'], {
+      await execFileAsync('bash', [testInstallerPath, '--check'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -298,7 +376,7 @@ esac
       const payloadInstaller = join(payload, 'deploy', 'bin', 'verity-install');
       await writeFile(payloadInstaller, '#!/bin/sh\nexit 99\n', { mode: 0o755 });
       await expect(
-        execFileAsync('script', ['-qec', `bash ${installerPath}`, '/dev/null'], {
+        execFileAsync('script', ['-qec', `bash ${testInstallerPath}`, '/dev/null'], {
           env: {
             ...process.env,
             PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -320,7 +398,7 @@ esac
       );
 
       await writeFile(dockerLog, '');
-      await execFileAsync('bash', [installerPath, '--check'], {
+      await execFileAsync('bash', [testInstallerPath, '--check'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -340,7 +418,7 @@ esac
       expect(await readFile(marker, 'utf8')).toContain('--advance-unpaired-from current');
 
       await writeFile(dockerLog, '');
-      await execFileAsync('bash', [installerPath, '--reinstall', '--yes'], {
+      await execFileAsync('bash', [testInstallerPath, '--reinstall', '--yes'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -363,7 +441,7 @@ esac
       await execFileAsync(
         'bash',
         [
-          installerPath,
+          testInstallerPath,
           '--image',
           `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
           '--check',
@@ -396,7 +474,7 @@ esac
       await execFileAsync(
         'bash',
         [
-          installerPath,
+          testInstallerPath,
           '--image',
           `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
           '--check',
@@ -421,7 +499,7 @@ esac
       await execFileAsync(
         'bash',
         [
-          installerPath,
+          testInstallerPath,
           `--image=ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
           '--check',
         ],
@@ -446,7 +524,11 @@ esac
       await expect(
         execFileAsync(
           'bash',
-          [installerPath, '--image', `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`],
+          [
+            testInstallerPath,
+            '--image',
+            `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
+          ],
           {
             env: {
               ...process.env,
@@ -464,7 +546,7 @@ esac
       });
 
       await expect(
-        execFileAsync('bash', [installerPath, '--image=', '--check'], {
+        execFileAsync('bash', [testInstallerPath, '--image=', '--check'], {
           env: {
             ...process.env,
             PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -479,7 +561,7 @@ esac
         'ghcr.io/heey-global/verity/verity-server@sha256:abcd',
       ]) {
         await expect(
-          execFileAsync('bash', [installerPath, '--image', invalid, '--check'], {
+          execFileAsync('bash', [testInstallerPath, '--image', invalid, '--check'], {
             env: {
               ...process.env,
               PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -489,7 +571,7 @@ esac
         ).rejects.toMatchObject({ stderr: expect.stringContaining('--image must be') });
       }
       await expect(
-        execFileAsync('bash', [installerPath, '--image', '--check'], {
+        execFileAsync('bash', [testInstallerPath, '--image', '--check'], {
           env: {
             ...process.env,
             PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -499,7 +581,7 @@ esac
       ).rejects.toMatchObject({ stderr: expect.stringContaining('option --image needs a value') });
 
       await writeFile(dockerLog, '');
-      await execFileAsync('bash', [installerPath, '--check'], {
+      await execFileAsync('bash', [testInstallerPath, '--check'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -516,9 +598,51 @@ esac
         'pull --quiet ghcr.io/heey-global/verity/verity-server:latest',
       );
 
+      for (const [failure, message] of [
+        ['MOCK_DOWNLOAD_FAIL', 'could not download cosign'],
+        ['MOCK_CHECKSUM_FAIL', 'cosign checksum mismatch'],
+        ['MOCK_SIGNATURE_FAIL', 'signature verification failed'],
+      ]) {
+        await writeFile(dockerLog, '');
+        await expect(
+          execFileAsync('bash', [testInstallerPath, '--check'], {
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH ?? ''}`,
+              MOCK_DOCKER: join(bin, 'docker'),
+              MOCK_DOCKER_LOG: dockerLog,
+              MOCK_PAYLOAD: payload,
+              MOCK_PRIVILEGED: privileged,
+              MOCK_MARKER: marker,
+              [failure!]: '1',
+            },
+          }),
+        ).rejects.toThrow(message);
+        const failedLog = await readFile(dockerLog, 'utf8');
+        expect(failedLog).not.toContain('create ');
+        expect(failedLog).not.toContain('cp ');
+      }
+
       await writeFile(dockerLog, '');
       await expect(
-        execFileAsync('bash', [installerPath, '--check'], {
+        execFileAsync('bash', [testInstallerPath, '--check'], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            MOCK_DOCKER: join(bin, 'docker'),
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_MANAGED_IMAGE: `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
+            MOCK_SIGNATURE_FAIL: '1',
+          },
+        }),
+      ).rejects.toThrow('signature verification failed');
+      const failedRecovery = await readFile(dockerLog, 'utf8');
+      expect(failedRecovery).not.toContain('exec ');
+      expect(failedRecovery).not.toContain('run ');
+
+      await writeFile(dockerLog, '');
+      await expect(
+        execFileAsync('bash', [testInstallerPath, '--check'], {
           env: {
             ...process.env,
             PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -532,6 +656,9 @@ esac
         }),
       ).rejects.toThrow('could not inspect existing managed Server containers');
       expect(await readFile(dockerLog, 'utf8')).not.toContain('pull ');
+      for (const downloaded of (await readFile(downloadLog, 'utf8')).trim().split('\n')) {
+        await expect(access(dirname(downloaded))).rejects.toMatchObject({ code: 'ENOENT' });
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

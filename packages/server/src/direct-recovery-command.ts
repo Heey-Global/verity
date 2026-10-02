@@ -1,3 +1,4 @@
+import { verifyServerImage } from './self-update/server-image-verify.js';
 import { execFile } from 'node:child_process';
 import { open, readFile, realpath, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -190,6 +191,7 @@ export async function runDirectRecoveryCommand(args: readonly string[]): Promise
     target: await envelope(options['--target']!),
     verify: createReleaseChannelVerifier({ tufCachePath: '/var/cache/verity/direct-recovery-tuf' }),
     inspectTarget: async (image) => {
+      await verifyServerImage(image);
       await docker(['pull', '--platform', `linux/${currentImage.Architecture}`, image]);
       const description = z
         .array(imageDescription)
