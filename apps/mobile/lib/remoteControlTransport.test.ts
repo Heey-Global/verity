@@ -579,6 +579,7 @@ describe('remote diagnostics', () => {
     expect(mockStart).toHaveBeenCalledTimes(2);
     // The other reads that failed at the same moment retry on the replacement
     // rather than each attaching again or reporting a failure.
+    mockIsActive.mockResolvedValue(true);
     expect(await transport.recoverRemoteControlRead(`${coreUrl}/status`, 4_321)).toBe(4_999);
     expect(mockStart).toHaveBeenCalledTimes(2);
     // A replacement that stalls on its reads as well is not replaced again
@@ -605,9 +606,9 @@ describe('remote diagnostics', () => {
     mockDiagnosticSummary.mockResolvedValue(null);
     const startedAt = Date.now();
     expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
-    // A rejected pin is answered at once; only a timeout can be a stall.
+    // A rejected pin is answered at once: one look at the tunnel, no waiting.
     expect(Date.now() - startedAt).toBeLessThan(1_000);
-    expect(mockIsActive).not.toHaveBeenCalled();
+    expect(mockIsActive).toHaveBeenCalledTimes(1);
   });
 
   it('gives the probe longer than the native stall watchdog', () => {
@@ -712,6 +713,33 @@ describe('remote diagnostics', () => {
     });
     expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
     expect(mockStart).toHaveBeenCalledTimes(3);
+  });
+
+  it('replaces an attachment whose stop cut the probe short with a transport error', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(false);
+    // The watchdog tore the loopback sockets down under the probe, so it
+    // failed as a transport error, not a timeout.
+    mockRequest.mockReset().mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 4_321)
+        throw new Error('Pinned TLS transport failed [NSURLErrorDomain:-1005:NO_AUTH_CHALLENGE]');
+      return { status: 200 };
+    });
+    mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+    mockDiagnosticSummary.mockResolvedValue(null);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: true,
+      detail: 'Core health check passed through Uplink',
+    });
+    expect(mockStart).toHaveBeenCalledTimes(2);
   });
 
   it('waits briefly for the native stop before classifying a probe timeout', async () => {

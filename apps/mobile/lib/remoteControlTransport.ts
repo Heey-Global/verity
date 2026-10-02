@@ -496,6 +496,10 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
           return 0;
         }
         lastStallReplacement = { key, at: Date.now() };
+        // Deliberately not route selection: the read is already on Uplink and
+        // the direct route was found wanting when it was sent; the window
+        // above bounds the re-admissions. `open` records the replacement as
+        // the active attachment, so the reads queued behind this one find it.
         return await open(target, key, { retryStall: false });
       }
       await probeCoreThroughEitherProxy(target, pin, port);
@@ -693,15 +697,18 @@ async function open(
     };
     console.warn(`Remote Control ${stage} failed: ${detail ?? 'unclassified failure'}`);
     admission?.cancel();
-    // A stall can only show as a probe timeout, since any reply bytes disarm
-    // the watchdog; other probe failures keep their latency. The reason
-    // belongs to this attachment only once it has actually stopped; a live
-    // one may still report the previous attachment's stall.
+    // The watchdog's stop tears the loopback sockets down, so the probe in
+    // flight ends with a transport error when the stop lands first and with a
+    // timeout when the probe gives up first; only the latter is worth waiting
+    // on, since any reply bytes disarm the watchdog. The reason belongs to
+    // this attachment only once it has actually stopped; a live one may still
+    // report the previous attachment's stall.
     const stalled =
       stage === 'probe' &&
-      error instanceof Error &&
-      error.message.startsWith('Remote Core probe timed out') &&
-      (await tunnelStoppedWithin(STALL_STOP_GRACE_MS)) &&
+      ((await isTunnelStopped()) ||
+        (error instanceof Error &&
+          error.message.startsWith('Remote Core probe timed out') &&
+          (await tunnelStoppedWithin(STALL_STOP_GRACE_MS)))) &&
       (await tunnelStopReason())?.startsWith('stall') === true;
     if (tunnelStarted) {
       try {
