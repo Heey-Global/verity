@@ -452,6 +452,41 @@ describe('createGitWorktreeProvisioner', () => {
     expect(existsSync(worktree)).toBe(false);
   });
 
+  it.each(['foreign-prefix', 'pruned'])(
+    '(integration, real git) removes a worktree with %s registration',
+    async (damage) => {
+      const repo = tempRoot();
+      const git = (...args: string[]) =>
+        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+      git('init', '-q', '-b', 'main');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      git('config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'README.md'), '# test\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'init', '--no-gpg-sign');
+      const provisioner = createGitWorktreeProvisioner({
+        repoDir: repo,
+        worktreeRoot: join(repo, '.verity-sessions'),
+        baseBranch: 'main',
+      });
+      try {
+        const worktree = await provisioner.add('agent/delete');
+        const admin = join(repo, '.git', 'worktrees', 'agent-delete');
+        // Git can succeed without removing files when its reverse link points
+        // into the other mount namespace; a later prune removes registration.
+        writeFileSync(join(admin, 'gitdir'), '/nonexistent-host-prefix/agent-delete/.git\n');
+        if (damage === 'pruned') git('worktree', 'prune', '--expire', 'now');
+        await provisioner.remove(worktree);
+        expect(existsSync(worktree)).toBe(false);
+        expect(existsSync(admin)).toBe(false);
+        expect(git('worktree', 'list', '--porcelain')).not.toContain('agent-delete');
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('(integration, real git) heals a container-prefixed admin gitdir back out of prunable', async () => {
     // The regression that swept 30 live session worktrees in one gc pass: the
     // admin `gitdir` held a container-side `/work/...` path. Absolute, so the old
@@ -1247,6 +1282,26 @@ describe('createGitWorktreeProvisioner', () => {
     ]);
   });
 
+  it('rejects a successful git removal that leaves files behind', async () => {
+    const root = tempRoot();
+    const worktree = join(root, 'leftover');
+    mkdirSync(worktree);
+    writeFileSync(join(worktree, 'work.txt'), 'remaining files');
+    const provisioner = createGitWorktreeProvisioner({
+      repoDir: '/missing-repo',
+      worktreeRoot: root,
+      git: async () => undefined,
+    });
+    try {
+      await expect(provisioner.remove(worktree)).rejects.toThrow(
+        'left the checkout directory behind',
+      );
+      expect(existsSync(join(worktree, 'work.txt'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('still removes when unlock is refused (worktree was not locked)', async () => {
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {
@@ -1281,6 +1336,7 @@ describe('createGitWorktreeProvisioner', () => {
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {
       calls.push([...args]);
+      if (args.includes('remove')) rmSync(worktreePath, { recursive: true, force: true });
     };
     const provisioner = createGitWorktreeProvisioner({
       repoDir: repo,
@@ -1310,6 +1366,7 @@ describe('createGitWorktreeProvisioner', () => {
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {
       calls.push([...args]);
+      if (args.includes('remove')) rmSync(worktreePath, { recursive: true, force: true });
     };
     const provisioner = createGitWorktreeProvisioner({
       repoDir: repo,
@@ -1339,6 +1396,7 @@ describe('createGitWorktreeProvisioner', () => {
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {
       calls.push([...args]);
+      if (args.includes('remove')) rmSync(worktreePath, { recursive: true, force: true });
     };
     const provisioner = createGitWorktreeProvisioner({
       repoDir: repo,
@@ -1367,6 +1425,7 @@ describe('createGitWorktreeProvisioner', () => {
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {
       calls.push([...args]);
+      if (args.includes('remove')) rmSync(worktreePath, { recursive: true, force: true });
       if (args.includes('branch')) throw new Error('error: branch not fully merged');
     };
     const provisioner = createGitWorktreeProvisioner({
