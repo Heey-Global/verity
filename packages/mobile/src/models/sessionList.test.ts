@@ -158,10 +158,9 @@ describe('SessionListModel.refresh', () => {
     expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a']); // crashed first
     expect(model.state.attentionCount).toBe(1);
     expect(model.state.error).toBeUndefined();
-    expect(model.state.providerLimitRows).toEqual([
-      { providerLabel: 'Claude', fiveHour: null, weekly: null },
-      { providerLabel: 'Codex', fiveHour: null, weekly: null },
-    ]);
+    // Neither the probes nor a session reported a limit, so no agent is shown
+    // as connected — a placeholder row here is a meter for an absent agent.
+    expect(model.state.providerLimitRows).toEqual([]);
     expect(states[0]?.loading).toBe(true); // emitted loading first
     expect(model.state.loading).toBe(false);
     expect(states.at(-1)?.loading).toBe(false);
@@ -379,11 +378,6 @@ describe('SessionListModel.refresh', () => {
 
       expect(model.state.providerLimitRows).toEqual([
         {
-          providerLabel: 'Claude',
-          fiveHour: null,
-          weekly: null,
-        },
-        {
           providerLabel: 'Codex',
           fiveHour: {
             status: 'allowed',
@@ -398,6 +392,36 @@ describe('SessionListModel.refresh', () => {
             usedPercent: 100,
           },
         },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a row for a provider that reports only a model-scoped limit', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_700_000_000_000));
+    try {
+      const { client, listSessions, listProviderLimits } = makeClient();
+      listSessions.mockResolvedValueOnce([]);
+      listProviderLimits.mockResolvedValueOnce([
+        {
+          status: 'allowed',
+          resetsAt: 1_700_000_200,
+          window: 'weekly',
+          usedPercent: 10,
+          providerLabel: 'Claude',
+          scope: 'opus',
+        },
+      ]);
+      const model = new SessionListModel({ client });
+
+      await model.refresh();
+
+      // The reading proves Claude is connected, but a model-scoped limit must not
+      // stand in for the provider-wide meter; Codex never reported, so no row.
+      expect(model.state.providerLimitRows).toEqual([
+        { providerLabel: 'Claude', fiveHour: null, weekly: null },
       ]);
     } finally {
       vi.useRealTimers();
@@ -446,7 +470,6 @@ describe('SessionListModel.refresh', () => {
             usedPercent: 100,
           },
         },
-        { providerLabel: 'Codex', fiveHour: null, weekly: null },
       ]);
     } finally {
       vi.useRealTimers();
