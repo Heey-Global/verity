@@ -82,6 +82,12 @@ once per minute; a further stall within that minute backs off as before. A
 probe that times out waits up to three more seconds for that native stop
 before it is classified, so a probe failure surfaces after about 15 s.
 
+`age=` is the attachment's age in milliseconds, `pings=` counts the app's
+heartbeat pings sent and pongs received, and `pongAge=` is the time since the
+last pong. A pong that still arrives while stream frames do not says the relay
+is not forwarding towards the app; a pong that stops too says the socket's
+inbound half is dead.
+
 `streams=` lists up to three recent streams as fixed tokens, for example
 `s1=k3F0A9C1E.up1806.dn6801.fo3.fi4.t210.d520.local.psocks.o22.i22-23-23.h2`: the
 first characters of the stream ID (the same ID Core reports under "Core

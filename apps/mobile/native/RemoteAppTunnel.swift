@@ -167,6 +167,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var stopReasonText: String?
   private var heartbeat: Task<Void, Never>?
   private var unansweredPingSince: Date?
+  // Liveness of the inbound half of the data socket, separately from data:
+  // a pong that still arrives while stream frames do not says the relay is
+  // not forwarding; a pong that stops too says the socket's inbound is dead.
+  private var attachedAt: Date?
+  private var pingsSent = 0
+  private var pongsReceived = 0
+  private var lastPongAt: Date?
   private var localConnections = 0
   private var openedStreams = 0
   private var receivedStreamFrames = 0
@@ -187,7 +194,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.withLock {
       let traces = recentStreams.enumerated()
         .map { "s\($0.offset + 1)=\($0.element.traceToken)" }.joined(separator: ";")
+      // Clamped both ways: a clock step must not push the summary out of the
+      // shape the app accepts, which would lose every counter beside it.
+      let now = Date()
+      let millis: (Date?) -> String = { date in
+        date.map { String(max(0, min(Int(now.timeIntervalSince($0) * 1000), 99_999_999))) } ?? "none"
+      }
+      let age = millis(attachedAt)
+      let pongAge = millis(lastPongAt)
       return "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent), sentBytes=\(sentBytes), receivedBytes=\(receivedBytes), deliveredBytes=\(deliveredBytes), localResets=\(localResets), remoteResets=\(remoteResets), lastReset=\(lastReset)"
+        + ", age=\(age), pings=\(min(pingsSent, 999_999))/\(min(pongsReceived, 999_999)), pongAge=\(pongAge)"
         + (traces.isEmpty ? "" : ", streams=\(traces)")
     }
   }
@@ -287,6 +303,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
         guard let self else { return }
         await self.readFrames()
       }
+      // One attachment per instance (the socket is created in init and resumed
+      // once); reset together anyway so the fields can never mix two lives.
+      lock.withLock {
+        attachedAt = Date()
+        pingsSent = 0
+        pongsReceived = 0
+        lastPongAt = nil
+      }
       startHeartbeat()
       return port
     } catch {
@@ -367,10 +391,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
           return
         }
         guard due else { continue }
+        self.lock.withLock { self.pingsSent += 1 }
         self.socket.sendPing { [weak self] error in
           guard let self else { return }
           if let error { self.stop(reason: "heartbeat failed: \(error)") }
-          else { self.lock.withLock { self.unansweredPingSince = nil } }
+          else {
+            self.lock.withLock {
+              self.unansweredPingSince = nil
+              self.pongsReceived += 1
+              self.lastPongAt = Date()
+            }
+          }
         }
       }
     }
