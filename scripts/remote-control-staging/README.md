@@ -74,6 +74,14 @@ receiving application processed them. `localResets` and `remoteResets` count
 terminations from each side. `lastReset` retains the latest direction and fixed
 code even after another stream opens.
 
+A stream that has sent its first local bytes and received nothing within
+10 seconds ends the attachment with the stop reason `stall: …` (Core's TLS
+reply to a ClientHello otherwise arrives within milliseconds). The app then
+attaches again at once and retries its reads on the fresh attachment, at most
+once per minute; a further stall within that minute backs off as before. A
+probe that times out waits up to three more seconds for that native stop
+before it is classified, so a probe failure surfaces after about 15 s.
+
 `age=` is the attachment's age in milliseconds, `pings=` counts the app's
 heartbeat pings sent and pongs received, and `pongAge=` is the time since the
 last pong. A pong that still arrives while stream frames do not says the relay

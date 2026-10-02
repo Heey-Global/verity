@@ -82,7 +82,7 @@ describe('pinned native file transport', () => {
     mockDirectVerdict.mockReset().mockReturnValue(null);
     mockDirectRefusal.mockReset().mockReturnValue(null);
     mockDirectKnownReachable.mockReset().mockReturnValue(false);
-    mockRecoverRemoteRead.mockReset().mockResolvedValue(false);
+    mockRecoverRemoteRead.mockReset().mockResolvedValue(0);
     mockReportDirectSuccess.mockReset();
   });
 
@@ -164,10 +164,34 @@ describe('pinned native file transport', () => {
     expect(mockReportDirectSuccess).toHaveBeenCalledWith('https://verity.example/sessions');
   });
 
+  it('retries a read on the fresh attachment that replaced a stalled one', async () => {
+    const pin = `sha256-${'a'.repeat(43)}`;
+    mockRemotePort.mockResolvedValue(4_321);
+    // The old attachment went dead; recovery attached again on another port.
+    mockRecoverRemoteRead.mockResolvedValue(4_999);
+    mockRequest
+      .mockRejectedValueOnce(new Error('Pinned TLS transport failed [NO_AUTH_CHALLENGE]'))
+      .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
+
+    await expect(
+      createPinnedFetch(pin, true)('https://verity.example/sessions'),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(mockRequest).toHaveBeenNthCalledWith(
+      2,
+      mockRequest.mock.calls[0]?.[0],
+      'https://verity.example/sessions',
+      'GET',
+      {},
+      null,
+      pin,
+      4_999,
+    );
+  });
+
   it('retries a TLS-stalled remote read through a recovered tunnel', async () => {
     const pin = `sha256-${'a'.repeat(43)}`;
     mockRemotePort.mockResolvedValue(4_321);
-    mockRecoverRemoteRead.mockResolvedValue(true);
+    mockRecoverRemoteRead.mockResolvedValue(4_321);
     mockRequest
       .mockRejectedValueOnce(new Error('Pinned TLS transport failed [NO_AUTH_CHALLENGE]'))
       .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
@@ -191,11 +215,11 @@ describe('pinned native file transport', () => {
 
   it('does not retry a remote read cancelled during proxy recovery', async () => {
     const controller = new AbortController();
-    let finishRecovery!: (recovered: boolean) => void;
+    let finishRecovery!: (port: number) => void;
     mockRemotePort.mockResolvedValue(4_321);
     mockRequest.mockRejectedValueOnce(new Error('Pinned TLS transport failed [NO_AUTH_CHALLENGE]'));
     mockRecoverRemoteRead.mockReturnValue(
-      new Promise<boolean>((resolve) => {
+      new Promise<number>((resolve) => {
         finishRecovery = resolve;
       }),
     );
@@ -206,7 +230,7 @@ describe('pinned native file transport', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(mockRecoverRemoteRead).toHaveBeenCalledTimes(1);
     controller.abort();
-    finishRecovery(true);
+    finishRecovery(4_321);
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(mockRequest).toHaveBeenCalledTimes(1);

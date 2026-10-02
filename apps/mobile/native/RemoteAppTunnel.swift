@@ -38,6 +38,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var incomingWrite: Task<Void, Never>?
     var closed = false
     var worker: Task<Void, Never>?
+    // Armed when the first local bytes have gone out; Core's TLS reply to a
+    // ClientHello arrives within milliseconds, so a stream still without any
+    // reply after the deadline is on an attachment that has gone dead without
+    // saying so. Ending the attachment lets the app open a fresh one instead
+    // of waiting out every request's own timeout.
+    var stallWatch: Task<Void, Never>?
     var sentBytes = 0
     var receivedBytes = 0
     var deliveredBytes = 0
@@ -315,6 +321,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   func stop(reason: String = "stopped by app") {
     lock.lock()
+    stopLocked(reason: reason)
+  }
+
+  /// Expects the lock held and releases it; the caller decides under that
+  /// same lock, so nothing can revive the attachment between verdict and stop.
+  private func stopLocked(reason: String) {
     guard !stopped else { lock.unlock(); return }
     stopped = true
     stopReasonText = reason
@@ -322,6 +334,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     for (id, stream) in streams {
       logStream(id, stream, event: "session_stopped")
       stream.closed = true
+      stream.stallWatch?.cancel()
       if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
     }
     streams.removeAll()
@@ -434,7 +447,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
       else { throw RemoteSmokeError.invalidFrame }
       lock.withLock {
         let first = stream.receivedBytes == 0 && !data.isEmpty
-        if first { stream.firstRemoteAt = Date() }
+        if first {
+          stream.firstRemoteAt = Date()
+          stream.stallWatch?.cancel()
+          stream.stallWatch = nil
+        }
         stream.noteRecord(data, incoming: true)
         stream.receivedBytes += data.count
         receivedBytes += data.count
@@ -544,9 +561,36 @@ final class RemoteAppTunnel: @unchecked Sendable {
     let exhausted = stream != nil && usedIds.count >= 4_096 && streams.isEmpty
     lock.unlock()
     stream?.worker?.cancel()
+    stream?.stallWatch?.cancel()
     stream?.connection.cancel()
     if exhausted { stop(reason: "stream IDs exhausted") }
     return stream != nil
+  }
+
+  static let stallDeadlineSeconds: UInt64 = 10
+
+  private func armStallWatch(_ stream: Stream, id: String) {
+    // The attachment is judged, not the stream: a slow Core on one stream
+    // while others keep receiving is not a dead socket.
+    let receivedWhenArmed = lock.withLock { receivedBytes }
+    let task = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
+      guard !Task.isCancelled, let self else { return }
+      // Verdict and stop under one lock acquisition: a first reply landing in
+      // between must not have a live attachment torn down.
+      self.lock.lock()
+      let stalled = !self.stopped && !stream.closed && stream.receivedBytes == 0
+        && self.receivedBytes == receivedWhenArmed
+      guard stalled else { self.lock.unlock(); return }
+      self.logStream(id, stream, event: "stalled")
+      self.stopLocked(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s")
+    }
+    let alreadyDone = lock.withLock { () -> Bool in
+      if stream.closed || stream.receivedBytes > 0 { return true }
+      stream.stallWatch = task
+      return false
+    }
+    if alreadyDone { task.cancel() }
   }
 
   private func reset(_ id: String, code: String) async {
@@ -720,13 +764,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
-      lock.withLock {
+      let first = lock.withLock { () -> Bool in
         let first = stream.sentBytes == 0
         stream.noteRecord(bytes, incoming: false)
         stream.sentBytes += bytes.count
         sentBytes += bytes.count
         if first { logStream(id, stream, event: "first_local_data_sent") }
+        return first
       }
+      if first { armStallWatch(stream, id: id) }
       stream.outgoingSequence += 1
     }
   }

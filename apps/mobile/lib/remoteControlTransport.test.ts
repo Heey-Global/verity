@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 const mockAppStateListeners: Array<(state: string) => void> = [];
 jest.mock('react-native', () => ({
   AppState: {
@@ -384,6 +387,7 @@ describe('remote diagnostics', () => {
     mockToken.mockReturnValue('device-bearer');
     mockRequest.mockRejectedValue(new Error('offline'));
     mockDiagnosticSummary.mockReset().mockResolvedValue(null);
+    mockLastStopReason.mockReset().mockResolvedValue(null);
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     jest.spyOn(console, 'info').mockImplementation(() => undefined);
   });
@@ -547,9 +551,234 @@ describe('remote diagnostics', () => {
       'local=3, opened=3, received=9, last=local_connected, sentBytes=5418, receivedBytes=20403, deliveredBytes=20403, localResets=0, remoteResets=0, lastReset=none, streams=s1=up1806.dn6801.t210.d520.local.psocks.o22.i22-23-23.h2',
     );
 
-    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(true);
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_321);
     expect(mockSetProxyMode.mock.calls).toEqual([['socks'], ['connect']]);
     expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces an attachment the native stall watchdog ended and retries on it', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    // The attachment carried one stream and then went dead without a close;
+    // the watchdog ended it. Waiting out the 15 s back-off here costs every
+    // read on the screen its own timeout first.
+    mockIsActive.mockResolvedValue(false);
+    mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_999);
+    expect(mockAdmission).toHaveBeenCalledTimes(2);
+    expect(mockStart).toHaveBeenCalledTimes(2);
+    // The other reads that failed at the same moment retry on the replacement
+    // rather than each attaching again or reporting a failure.
+    mockIsActive.mockResolvedValue(true);
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/status`, 4_321)).toBe(4_999);
+    expect(mockStart).toHaveBeenCalledTimes(2);
+    // A replacement that stalls on its reads as well is not replaced again
+    // within the window: that would re-admit every ten seconds.
+    mockIsActive.mockResolvedValue(false);
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/status`, 4_999)).toBe(0);
+    expect(mockStart).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not wait for a native stop after a probe failure that is not a timeout', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    mockRequest
+      .mockReset()
+      .mockRejectedValue(new Error('Pinned TLS verification failed [PIN_MISMATCH].'));
+    mockDiagnosticSummary.mockResolvedValue(null);
+    const startedAt = Date.now();
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    // A rejected pin is answered at once: one look at the tunnel, no waiting.
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(mockIsActive).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the probe longer than the native stall watchdog', () => {
+    // Both constants are read out of their sources: a restated value would
+    // keep passing after either side moved.
+    const swift = readFileSync(join(__dirname, '..', 'native', 'RemoteAppTunnel.swift'), 'utf8');
+    const deadline = Number(swift.match(/stallDeadlineSeconds: UInt64 = (\d+)/u)?.[1]);
+    const transportSource = readFileSync(join(__dirname, 'remoteControlTransport.ts'), 'utf8');
+    const probeTimeout = Number(
+      transportSource.match(/const PROBE_TIMEOUT_MS = ([\d_]+);/u)?.[1]?.replaceAll('_', ''),
+    );
+    expect(deadline).toBeGreaterThan(0);
+    expect(probeTimeout).toBeGreaterThan(0);
+    // Otherwise a dead attachment's probe reads as an ordinary timeout and
+    // backs off for 15 s instead of attaching again.
+    expect(probeTimeout).toBeGreaterThanOrEqual(deadline * 1000 + 1_000);
+  });
+
+  it('retries a read that failed on a superseded attachment on the current one', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    // Route selection replaced the attachment after it ended for another reason.
+    mockIsActive.mockResolvedValueOnce(false);
+    mockLastStopReason.mockResolvedValue('heartbeat timeout');
+    transport.reportDirectRouteFailure(coreUrl);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4_999);
+    // A read that was still failing on the old port retries on the live one without a probe.
+    mockRequest.mockClear();
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_999);
+    expect(mockRequest).not.toHaveBeenCalled();
+    // Not onto a replacement that has stopped as well: that would only wait
+    // out another request timeout.
+    mockIsActive.mockResolvedValueOnce(false);
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(0);
+  });
+
+  it('does not replace an attachment that ended for another reason', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockRequest.mockReset().mockResolvedValue({ status: 200 });
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValue(4_321);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+    mockIsActive.mockResolvedValue(false);
+    mockLastStopReason.mockResolvedValue('heartbeat timeout');
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(0);
+    expect(mockAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches once more when the first attachment stalls under its probe', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(true);
+    mockRequest.mockReset().mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 4_321)
+        throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+      return { status: 200 };
+    });
+    mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+    mockDiagnosticSummary.mockResolvedValue(null);
+    // A stale stall reason on an attachment that stays live through the grace
+    // period must not trigger a replacement.
+    jest.useFakeTimers();
+    try {
+      const first = transport.testRemoteControlForUrl(coreUrl);
+      await jest.advanceTimersByTimeAsync(3_500);
+      expect((await first).ready).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(mockStart).toHaveBeenCalledTimes(1);
+    mockIsActive.mockResolvedValue(false);
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: true,
+      detail: 'Core health check passed through Uplink',
+    });
+    expect(mockStart).toHaveBeenCalledTimes(2);
+    // When the replacement stalls as well it is not replaced again; that is
+    // the back-off's job.
+    mockStart.mockResolvedValue(4_321);
+    mockRequest.mockImplementation(async () => {
+      throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+    });
+    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+    expect(mockStart).toHaveBeenCalledTimes(3);
+  });
+
+  it('replaces an attachment whose stop cut the probe short with a transport error', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockReset().mockResolvedValue({
+      ticket: 'ticket',
+      sessionId: 'session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+    mockIsActive.mockReset().mockResolvedValue(false);
+    // The watchdog tore the loopback sockets down under the probe, so it
+    // failed as a transport error, not a timeout.
+    mockRequest.mockReset().mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 4_321)
+        throw new Error('Pinned TLS transport failed [NSURLErrorDomain:-1005:NO_AUTH_CHALLENGE]');
+      return { status: 200 };
+    });
+    mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+    mockDiagnosticSummary.mockResolvedValue(null);
+    expect(await transport.testRemoteControlForUrl(coreUrl)).toEqual({
+      ready: true,
+      detail: 'Core health check passed through Uplink',
+    });
+    expect(mockStart).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits briefly for the native stop before classifying a probe timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const transport =
+        require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+      mockAdmission.mockReset().mockResolvedValue({
+        ticket: 'ticket',
+        sessionId: 'session',
+        finish: jest.fn(),
+        cancel: jest.fn(),
+      });
+      mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
+      // The watchdog arms on the first sent bytes, the probe on the request:
+      // the stop may land a moment after the probe gave up.
+      mockIsActive.mockReset().mockResolvedValueOnce(true).mockResolvedValue(false);
+      mockRequest.mockReset().mockImplementation(async (...args: unknown[]) => {
+        if (args[6] === 4_321)
+          throw new Error('Remote Core probe timed out [TLS:NO_AUTH_CHALLENGE].');
+        return { status: 200 };
+      });
+      mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+      mockDiagnosticSummary.mockResolvedValue(null);
+      const result = transport.testRemoteControlForUrl(coreUrl);
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(await result).toEqual({
+        ready: true,
+        detail: 'Core health check passed through Uplink',
+      });
+      expect(mockStart).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it.each([
@@ -572,7 +801,8 @@ describe('remote diagnostics', () => {
       const transport =
         require('./remoteControlTransport') as typeof import('./remoteControlTransport');
       const result = transport.testRemoteControlForUrl(coreUrl);
-      await jest.advanceTimersByTimeAsync(12_500);
+      // The probe gives up at 12 s and then grants the native stop 3 s to land.
+      await jest.advanceTimersByTimeAsync(16_000);
       expect(await result).toEqual({
         ready: false,
         detail: `probe (Remote Core probe timed out${suffix}.)`,
@@ -607,7 +837,8 @@ describe('remote diagnostics', () => {
         const transport =
           require('./remoteControlTransport') as typeof import('./remoteControlTransport');
         const result = transport.testRemoteControlForUrl(coreUrl);
-        await jest.advanceTimersByTimeAsync(12_500);
+        // The probe gives up at 12 s and then grants the native stop 3 s to land.
+        await jest.advanceTimersByTimeAsync(16_000);
         expect(await result).toEqual({
           ready: false,
           detail:
