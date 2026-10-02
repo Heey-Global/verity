@@ -643,6 +643,10 @@ describe('remote diagnostics', () => {
     mockRequest.mockClear();
     expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_999);
     expect(mockRequest).not.toHaveBeenCalled();
+    // Not onto a replacement that has stopped as well: that would only wait
+    // out another request timeout.
+    mockIsActive.mockResolvedValueOnce(false);
+    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(0);
   });
 
   it('does not replace an attachment that ended for another reason', async () => {

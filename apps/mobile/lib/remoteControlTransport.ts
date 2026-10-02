@@ -204,7 +204,8 @@ async function isTunnelStopped(): Promise<boolean> {
   try {
     return !(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive());
   } catch {
-    return false;
+    // Nothing can be recovered through a module that throws; do not wait on it.
+    return true;
   }
 }
 
@@ -474,11 +475,11 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
     // attachment; the first one here replaces it, the rest retry on the
     // replacement instead of each reporting a failure. The same holds for any
     // superseded attachment: whatever is active now was probed when it opened.
-    if (active.port !== port) return active.port;
     const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
     if (pin === undefined) return 0;
     try {
       const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+      if (active.port !== port) return (await native.isActive()) ? active.port : 0;
       if (!(await native.isActive())) {
         const reason = await tunnelStopReason();
         console.warn(`Remote Control tunnel ended: ${reason ?? 'no reason reported'}`);
