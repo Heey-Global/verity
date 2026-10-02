@@ -1,16 +1,22 @@
 import { useCallback, useState } from 'react';
-import { AppState, InteractionManager, Keyboard, Platform } from 'react-native';
+import { AppState, InteractionManager, Keyboard, Platform, TextInput } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useAnimatedStyle } from 'react-native-reanimated';
+
+function hasFocusedKeyboard(): boolean {
+  // Visibility is cached from keyboard events. A detached/blurred field must
+  // not keep an old "shown" value alive after navigation dismissed its keyboard.
+  return Keyboard.isVisible() && TextInput.State.currentlyFocusedInput() != null;
+}
 
 export function useSessionKeyboardAvoidance() {
   // The controller can retain the previous screen's animated height while a
   // navigation transition dismisses its keyboard. Do not inherit that gap.
-  const [enabled, setEnabled] = useState(() => Keyboard.isVisible());
+  const [enabled, setEnabled] = useState(hasFocusedKeyboard);
 
   useFocusEffect(
     useCallback(() => {
-      const reconcile = () => setEnabled(Keyboard.isVisible());
+      const reconcile = () => setEnabled(hasFocusedKeyboard());
       const show = (
         Platform.OS === 'ios' ? ['keyboardWillShow', 'keyboardDidShow'] : ['keyboardDidShow']
       ).map((event) =>

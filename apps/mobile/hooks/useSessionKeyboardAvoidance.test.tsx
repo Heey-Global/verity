@@ -5,10 +5,13 @@ import {
   InteractionManager,
   Keyboard,
   Platform,
+  TextInput,
 } from 'react-native';
 import { useSessionKeyboardAvoidance } from './useSessionKeyboardAvoidance';
 
 let mockFocused = true;
+// The public RN declaration omits the null returned by TextInputState at runtime.
+const noFocusedInput = null as unknown as ReturnType<typeof TextInput.State.currentlyFocusedInput>;
 
 jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => (() => void) | void) => {
@@ -32,6 +35,9 @@ describe('session keyboard avoidance', () => {
     removals = [];
     cancelTransition = jest.fn();
     jest.spyOn(Keyboard, 'isVisible').mockImplementation(() => visible);
+    jest
+      .spyOn(TextInput.State, 'currentlyFocusedInput')
+      .mockReturnValue({} as NonNullable<ReturnType<typeof TextInput.State.currentlyFocusedInput>>);
     const addKeyboardListener = Keyboard.addListener.bind(Keyboard);
     jest.spyOn(Keyboard, 'addListener').mockImplementation((name, handler) => {
       events[name] = () =>
@@ -73,6 +79,22 @@ describe('session keyboard avoidance', () => {
     visible = true;
     const { result } = renderHook(useSessionKeyboardAvoidance);
     expect(result.current.enabled).toBe(true);
+  });
+
+  it('rejects a cached visible keyboard after its field lost focus', () => {
+    visible = true;
+    jest.mocked(TextInput.State.currentlyFocusedInput).mockReturnValue(noFocusedInput);
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    expect(result.current.enabled).toBe(false);
+    expect(result.current.resetStyle).toMatchObject({ paddingBottom: 0 });
+  });
+
+  it('clears cached visibility after navigation detaches the focused field', () => {
+    visible = true;
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    jest.mocked(TextInput.State.currentlyFocusedInput).mockReturnValue(noFocusedInput);
+    act(() => finishTransition());
+    expect(result.current.enabled).toBe(false);
   });
 
   it('follows opening and keeps avoidance until closing finishes', () => {
