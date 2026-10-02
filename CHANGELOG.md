@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.4.1](https://github.com/Heey-Global/verity/compare/v4.4.0...v4.4.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **remote-control:** send stream data towards the app in 8 KiB frames ([#980](https://github.com/Heey-Global/verity/issues/980)) ([25db259](https://github.com/Heey-Global/verity/commit/25db259f9125a903ac7bd356847d82858ab20a41))
+* **server:** handle missing preview containers and diagnose slow reads ([#992](https://github.com/Heey-Global/verity/issues/992)) ([6d0c313](https://github.com/Heey-Global/verity/commit/6d0c31376c4475a5fde1f17041830ad48a8bbbb8))
+
 ## [4.4.0](https://github.com/Heey-Global/verity/compare/v4.3.1...v4.4.0) (2026-10-01)
 
 
