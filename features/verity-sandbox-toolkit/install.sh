@@ -38,7 +38,7 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.284}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.81.2}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.84.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -50,7 +50,7 @@ CODEX_VERSION="${CODEXVERSION:-0.159.2}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.0.0}"
 # renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.18.32}"
+OPENCODE_VERSION="${OPENCODEVERSION:-1.18.33}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"

@@ -219,7 +219,7 @@ RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 RUN npm install -g @anthropic-ai/claude-code@2.1.284
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.81.2
+RUN npm install -g @agentclientprotocol/claude-agent-acp@0.84.0
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —
@@ -237,7 +237,7 @@ RUN npm install -g @openai/codex@0.159.2
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 RUN npm install -g @agentclientprotocol/codex-acp@2.0.0
 # renovate: datasource=npm depName=opencode-ai
-RUN npm install -g opencode-ai@1.18.32
+RUN npm install -g opencode-ai@1.18.33
 # OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
 # `opencode acp` subcommand, built by the script the sandbox toolkit uses for project
 # Sandboxes so the two cannot drift. Copied on its own, like the Claude hardening
