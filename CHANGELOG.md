@@ -1,11 +1,7 @@
 # Changelog
 
-## [5.0.0](https://github.com/Heey-Global/verity/compare/v4.5.0...v5.0.0) (2026-10-03)
+## [4.6.0](https://github.com/Heey-Global/verity/compare/v4.5.0...v4.6.0) (2026-10-03)
 
-
-### ⚠ BREAKING CHANGES
-
-* **preview:** Existing timeless preview cookies are rejected and visitors must enter the preview PIN again.
 
 ### Features
 
