@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { assertPromotionOrder } from './production-promotion.js';
 
 function fixture(change: Record<string, unknown> = {}) {
@@ -120,6 +121,15 @@ describe('production promotion', () => {
         calls.filter((call) => call.startsWith('oras cp') && call.includes(':channel-stable-')),
       ).toHaveLength(2);
       expect(calls.at(-1)).toContain('backend-replan=true');
+      const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+        jobs: Record<string, { env: Record<string, string> }>;
+      };
+      const sandbox = release.jobs['publish-sandbox']!.env;
+      for (const namespace of [sandbox.IMAGE_NAME, sandbox.IMAGE_NAME_NEW]) {
+        expect(calls).toContain(
+          `oras cp ghcr.io/heey-global/verity/verity-sandbox@sha256:${'b'.repeat(64)} ghcr.io/${namespace}:latest`,
+        );
+      }
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }

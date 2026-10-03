@@ -101,9 +101,25 @@ function setup(change: Record<string, string> = {}) {
         data = change.selected === 'none' ? null : { id: change.selected ?? 'build-id' };
       else if (path === 'appStoreVersions/version-id/relationships/build' && method === 'PATCH')
         return new Response(null, { status: 204 });
-      else if (path.includes('/reviewSubmissions?')) data = [];
+      else if (path.includes('/reviewSubmissions?'))
+        data = change.reviewItem ? [{ id: 'submission-id' }] : [];
       else if (path === 'reviewSubmissions' && method === 'POST') data = { id: 'submission-id' };
-      else if (path === 'reviewSubmissions/submission-id/items') data = [];
+      else if (path.startsWith('reviewSubmissions/submission-id/items'))
+        data = change.reviewItem
+          ? [
+              {
+                relationships: {
+                  appStoreVersion: path.includes('include=appStoreVersion')
+                    ? {
+                        data: {
+                          id: change.reviewItem === 'matching' ? 'version-id' : 'other-version',
+                        },
+                      }
+                    : { links: { related: '/version' } },
+                },
+              },
+            ]
+          : [];
       else if (path === 'reviewSubmissionItems' || path === 'reviewSubmissions/submission-id')
         data = { id: 'submission-id' };
       else throw new Error(`Unhandled Apple ${path}`);
@@ -160,6 +176,23 @@ describe('native production submission', () => {
   it('refuses to rewrite the release policy of a version already in review', async () => {
     const requests = setup({ releaseType: 'MANUAL', state: 'IN_REVIEW' });
     await expect(promoteNative()).rejects.toThrow('release policy differs');
+    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
+  });
+  it('resumes an existing review item without duplicating it after a submission failure', async () => {
+    const requests = setup({ reviewItem: 'matching' });
+    await promoteNative();
+    expect(
+      requests.some((request) => request.path.endsWith('/items?include=appStoreVersion')),
+    ).toBe(true);
+    expect(requests.some((request) => request.path === 'reviewSubmissionItems')).toBe(false);
+    expect(requests.at(-1)).toMatchObject({
+      path: 'reviewSubmissions/submission-id',
+      method: 'PATCH',
+    });
+  });
+  it('refuses an existing review item for another version', async () => {
+    const requests = setup({ reviewItem: 'conflicting' });
+    await expect(promoteNative()).rejects.toThrow('unrelated items');
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
   });
   it('submits the exact approved build and records production only after Apple accepts', async () => {

@@ -336,6 +336,8 @@ function promote() {
   // Legacy consumers also use latest and toolkit semver aliases. They move only here.
   for (const [name, reference] of Object.entries(candidate.images)) {
     run('oras', 'cp', reference, `ghcr.io/heey-global/verity/${name}:latest`);
+    if (name === 'verity-sandbox')
+      run('oras', 'cp', reference, 'ghcr.io/heey-global/verity-sandbox:latest');
     if (name === 'verity-sandbox-toolkit') {
       const [major, minor] = candidate.version.split('.');
       run('oras', 'cp', reference, `ghcr.io/heey-global/verity/${name}:${major}`);
@@ -530,10 +532,11 @@ export async function promoteNative() {
           },
         })
       ).data as { id: string });
-    const items = (await apple(`reviewSubmissions/${submission.id}/items`)).data as {
-      relationships: { appStoreVersion?: { data: { id: string } } };
+    const items = (await apple(`reviewSubmissions/${submission.id}/items?include=appStoreVersion`))
+      .data as {
+      relationships?: { appStoreVersion?: { data?: { id: string } | null } };
     }[];
-    if (items.some((item) => item.relationships.appStoreVersion?.data.id !== version.id))
+    if (items.some((item) => item.relationships?.appStoreVersion?.data?.id !== version.id))
       throw new Error('Apple review submission includes unrelated items');
     if (!items.length)
       await apple('reviewSubmissionItems', 'POST', {
