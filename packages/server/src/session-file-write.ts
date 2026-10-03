@@ -1,16 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import {
-  link,
-  lstat,
-  mkdir,
-  mkdtemp,
-  open,
-  realpath,
-  rename,
-  rmdir,
-  unlink,
-} from 'node:fs/promises';
+import { link, lstat, mkdtemp, open, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import { openFileHistory, recoverFileHistory } from './session-file-history.js';
 import { isProbablyText, type KnowledgeFileSlot } from './session-files.js';
 
@@ -183,7 +173,6 @@ export async function writeSessionText(
     if (captured && !preserve) {
       try {
         if ((await lstat(previous)).isDirectory()) {
-          await mkdir(destination);
           await rename(previous, destination);
           captured = false;
         } else {

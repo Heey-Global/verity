@@ -73,9 +73,9 @@ export async function recoverFileHistory(directory: string) {
         try {
           const originalPath = `${base}/original`;
           if ((await lstat(originalPath)).isDirectory()) {
-            // Reserve the destination exclusively; rename only replaces an empty
-            // directory and therefore never overwrites another writer's files.
-            await mkdir(`${directory}/${source}`);
+            // Atomic directory recovery also handles a crash after rollback
+            // reserved an empty destination. Nonempty directories and files
+            // cannot be replaced by this directory rename.
             await rename(originalPath, `${directory}/${source}`);
           } else {
             const original = await open(
@@ -91,7 +91,11 @@ export async function recoverFileHistory(directory: string) {
             }
           }
         } catch (error) {
-          if (!['ENOENT', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? ''))
+          if (
+            !['ENOENT', 'EEXIST', 'ENOTEMPTY', 'ENOTDIR'].includes(
+              (error as NodeJS.ErrnoException).code ?? '',
+            )
+          )
             throw error;
         }
         const parent = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY);

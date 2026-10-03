@@ -220,6 +220,7 @@ it('recovers directory substitution during capture and skips metadata interrupte
     await writeFile(join(transaction, 'original', 'child.txt'), 'keep');
     await mkdir(join(history, 'save-empty'));
     await rm(join(dir, 'a.txt'));
+    await mkdir(join(dir, 'a.txt'));
     await recoverFileHistory(slot.directoryPath);
     expect(await readFile(join(dir, 'a.txt', 'child.txt'), 'utf8')).toBe('keep');
     expect(await sessionFileHistory(slot.directoryPath, 'a.txt')).toEqual({ versions: [] });
