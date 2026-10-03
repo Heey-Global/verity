@@ -11,6 +11,7 @@ import {
   rmdir,
   unlink,
 } from 'node:fs/promises';
+import { openFileHistory, recoverFileHistory } from './session-file-history.js';
 import { isProbablyText, type KnowledgeFileSlot } from './session-files.js';
 
 export const MAX_EDIT_BYTES = 1_000_000;
@@ -36,7 +37,10 @@ export async function writeSessionText(
   const bytes = Buffer.from(content, 'utf8');
   if (bytes.length > MAX_EDIT_BYTES) throw new FileWriteError(413, 'file is too large to edit');
   if (!isProbablyText(bytes)) throw new FileWriteError(415, 'content must be UTF-8 text');
-  const staging = await mkdtemp(`${slot.directoryPath}/.verity-edit-`);
+  await recoverFileHistory(slot.directoryPath);
+  const history = await openFileHistory(slot.directoryPath);
+  const historyPath = `/proc/self/fd/${history.fd}`;
+  const staging = await mkdtemp(`${historyPath}/save-`);
   const handle = await open(
     staging,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -51,11 +55,24 @@ export async function writeSessionText(
       const stats = await file.stat();
       if (!stats.isFile()) throw new FileWriteError(409, 'file was replaced');
       if (stats.size > MAX_EDIT_BYTES) throw new FileWriteError(413, 'file is too large to edit');
-      return await file.readFile();
+      const bytes = Buffer.alloc(MAX_EDIT_BYTES + 1);
+      const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+      if (bytesRead > MAX_EDIT_BYTES) throw new FileWriteError(413, 'file is too large to edit');
+      return bytes.subarray(0, bytesRead);
     } finally {
       await file.close();
     }
   };
+  const record = await open(
+    `${pinned}/name`,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  await record.writeFile(slot.name);
+  await record.sync();
+  await record.close();
+  await handle.sync();
+  await history.sync();
   let captured = false;
   let preserve = false;
   try {
@@ -64,6 +81,13 @@ export async function writeSessionText(
       try {
         await rename(destination, previous);
         captured = true;
+        await handle.sync();
+        const parent = await open(slot.directoryPath, constants.O_RDONLY | constants.O_DIRECTORY);
+        try {
+          await parent.sync();
+        } finally {
+          await parent.close();
+        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT')
           throw new FileWriteError(409, 'file changed or was removed; reload before saving');
@@ -77,6 +101,18 @@ export async function writeSessionText(
       if (fileVersion(current) !== expected)
         throw new FileWriteError(409, 'file changed; reload, overwrite, or save a copy');
       mode = stats.mode & 0o777;
+      const snapshot = await open(
+        `${pinned}/snapshot`,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        await snapshot.writeFile(current);
+        await snapshot.sync();
+      } finally {
+        await snapshot.close();
+      }
+      await handle.sync();
     }
     const output = await open(
       temporary,
@@ -103,6 +139,21 @@ export async function writeSessionText(
       preserve = true;
       throw new FileWriteError(409, `Concurrent save preserved at ${await realpath(previous)}`);
     }
+    const parent = await open(slot.directoryPath, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    const done = await open(
+      `${pinned}/complete`,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    await done.sync();
+    await done.close();
+    await handle.sync();
+    preserve = captured;
     return {
       path: slot.rel,
       content,
@@ -133,6 +184,9 @@ export async function writeSessionText(
     await unlink(temporary).catch(() => undefined);
     if (captured && !preserve) await unlink(previous).catch(() => undefined);
     await handle.close();
+    await history.close();
+    // Retain the captured inode even after publication: an external process can
+    // still write through a descriptor it opened before the explorer saved.
     if (!preserve) await rmdir(staging).catch(() => undefined);
   }
 }

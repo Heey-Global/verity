@@ -1,3 +1,8 @@
+import {
+  excludeFileHistoryFromGit,
+  recoverFileHistory,
+  sessionFileHistory,
+} from './session-file-history.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
@@ -7863,6 +7868,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
 
       try {
+        const release = await acquireKnowledgeMutationLock(root.dir);
+        try {
+          await recoverFileHistory(`/proc/self/fd/${directoryHandle.fd}`);
+        } finally {
+          release();
+        }
         const descriptorPath = `/proc/self/fd/${String(directoryHandle.fd)}`;
         const dirents = await readdir(descriptorPath, { withFileTypes: true });
         const hidden = hiddenSessionFileNames(root.root, target.rel);
@@ -8023,6 +8034,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(400);
         return { error: 'invalid path' };
       }
+      if (!isManagedKnowledgePath(root.root, target.rel)) {
+        const release = await acquireKnowledgeMutationLock(root.dir);
+        let slot;
+        try {
+          slot = await openKnowledgeFileSlot(root, path);
+          await recoverFileHistory(slot.directoryPath);
+        } finally {
+          await slot?.close();
+          release();
+        }
+      }
       let fileHandle;
       try {
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
@@ -8093,6 +8115,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await fileHandle.close();
       }
     },
+    history: async (reply, root, path, version) => {
+      let slot;
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        slot = await openKnowledgeFileSlot(root, path);
+        await recoverFileHistory(slot.directoryPath);
+        return await sessionFileHistory(slot.directoryPath, slot.name, version);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          reply.code(404);
+          return { error: 'version not found' };
+        }
+        return knowledgeSlotFailure(reply, error);
+      } finally {
+        await slot?.close();
+        release();
+      }
+    },
     write: async (reply, root, body) => {
       let slot;
       try {
@@ -8110,6 +8150,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
+        if (root.root === 'worktree') await excludeFileHistoryFromGit(root.dir);
         const saved = await writeSessionText(slot, body.content, body.expectedVersion);
         if (root.root === 'knowledge' && slot.rel === 'overview.md')
           await markProjectOverviewAuthoritative(root.dir);

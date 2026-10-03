@@ -111,3 +111,28 @@ it('saves a conflict copy with create-only semantics and retains the draft', asy
   expect(save).toHaveBeenLastCalledWith('notes/a-copy.md', 'my edits', null);
   expect(saved).toHaveBeenCalledTimes(1);
 });
+
+it('loads a backup as a draft and restores with the current conditional version', async () => {
+  const save = jest.fn(async (): Promise<SessionFileContent> => file);
+  const history = jest.fn(async () => [
+    { id: 'save-abc/snapshot', createdAt: '2026-10-03T10:00:00Z', kind: 'snapshot' },
+  ]);
+  const version = jest.fn(async () => 'older text');
+  render(
+    <FileTextEditor
+      file={file}
+      onSave={save}
+      onRead={async () => file}
+      onSaved={() => {}}
+      onCancel={() => {}}
+      onHistory={history}
+      onVersion={version}
+    />,
+  );
+  await act(async () => fireEvent.press(screen.getByLabelText('Versions')));
+  await act(async () => fireEvent.press(screen.getByText(/Saved version/)));
+  expect(screen.getByLabelText('File contents').props.value).toBe('older text');
+  expect(save).not.toHaveBeenCalled();
+  await act(async () => fireEvent.press(screen.getByLabelText('Save')));
+  expect(save).toHaveBeenCalledWith(file.path, 'older text', file.version);
+});

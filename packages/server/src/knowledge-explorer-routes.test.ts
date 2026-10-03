@@ -491,4 +491,45 @@ describe('session explorer knowledge roots', () => {
     expect(write.statusCode).toBe(415);
     expect(readFileSync(join(dir, 'binary.pdf'))).toEqual(bytes);
   });
+  it('lists and reads versions while reserving private history paths', async () => {
+    writeFileSync(join(worktree, 'versioned.txt'), 'before');
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/sessions/s-knowledge/files/content',
+      payload: {
+        root: 'worktree',
+        path: 'versioned.txt',
+        content: 'after',
+        expectedVersion: fileVersion(Buffer.from('before')),
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    const url = '/sessions/s-knowledge/files/history?root=worktree&path=versioned.txt';
+    const history = await app.inject({ method: 'GET', url });
+    expect(history.statusCode).toBe(200);
+    const versions = history.json().versions as Array<{ id: string; kind: string }>;
+    const snapshot = versions.find((version) => version.kind === 'snapshot')!;
+    const old = await app.inject({
+      method: 'GET',
+      url: `${url}&version=${encodeURIComponent(snapshot.id)}`,
+    });
+    expect(old.json()).toEqual({ content: 'before' });
+    const wrongFile = await app.inject({
+      method: 'GET',
+      url: `/sessions/s-knowledge/files/history?root=worktree&path=other.txt&version=${encodeURIComponent(snapshot.id)}`,
+    });
+    expect(wrongFile.statusCode).toBe(404);
+    const listing = await app.inject({
+      method: 'GET',
+      url: '/sessions/s-knowledge/files?root=worktree',
+    });
+    expect(listing.json().entries.map((entry: { name: string }) => entry.name)).not.toContain(
+      '.verity-file-history',
+    );
+    const privateRead = await app.inject({
+      method: 'GET',
+      url: '/sessions/s-knowledge/files/content?root=worktree&path=.verity-file-history/name',
+    });
+    expect(privateRead.statusCode).toBe(400);
+  });
 });

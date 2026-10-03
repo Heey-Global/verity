@@ -3959,6 +3959,26 @@ export class VerityClient {
     return sessionFileContentSchema.parse(await res.json());
   }
 
+  async listSessionFileVersions(id: string, root: SessionFileRoot, path: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        versions: z.array(z.object({ id: z.string(), createdAt: z.string(), kind: z.string() })),
+      })
+      .parse(await res.json()).versions;
+  }
+
+  async readSessionFileVersion(id: string, root: SessionFileRoot, path: string, version: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}&version=${encodeURIComponent(version)}`,
+      { method: 'GET' },
+    );
+    return z.object({ content: z.string() }).parse(await res.json()).content;
+  }
+
   async saveSessionFileContent(
     id: string,
     root: SessionFileRoot,

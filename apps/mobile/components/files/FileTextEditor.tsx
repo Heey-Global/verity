@@ -15,12 +15,16 @@ export function FileTextEditor({
   onRead,
   onSaved,
   onCancel,
+  onHistory,
+  onVersion,
 }: {
   file: SessionFileContent;
   onSave: (path: string, content: string, version: string | null) => Promise<SessionFileContent>;
   onRead: (path: string) => Promise<SessionFileContent>;
   onSaved: (file: SessionFileContent) => void;
   onCancel: () => void;
+  onHistory?: () => Promise<Array<{ id: string; createdAt: string; kind: string }>>;
+  onVersion?: (id: string) => Promise<string>;
 }) {
   const insets = useSafeAreaInsets();
   const [base, setBase] = useState(file);
@@ -29,6 +33,35 @@ export function FileTextEditor({
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [copy, setCopy] = useState(false);
+  const [versions, setVersions] = useState<Array<{
+    id: string;
+    createdAt: string;
+    kind: string;
+  }> | null>(null);
+  const openVersions = async () => {
+    if (!onHistory) return;
+    setBusy(true);
+    try {
+      setVersions(await onHistory());
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const loadVersion = async (id: string) => {
+    if (!onVersion) return;
+    setBusy(true);
+    try {
+      setDraft(await onVersion(id));
+      setVersions(null);
+      setError(null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
   const dirty = draft !== base.content || base.version === undefined;
   const tooLarge = new TextEncoder().encode(draft).length > 1_000_000;
   const save = async (path = base.path, version: string | null = base.version ?? null) => {
@@ -90,6 +123,16 @@ export function FileTextEditor({
             {name}
             {dirty ? ' • edited' : ''}
           </Text>
+          {onHistory && base.version ? (
+            <FileToolbarButton
+              label="Versions"
+              icon="clock"
+              disabled={busy}
+              onPress={() => {
+                void openVersions();
+              }}
+            />
+          ) : null}
           <FileToolbarButton
             label="Save"
             tone="primary"
@@ -116,6 +159,36 @@ export function FileTextEditor({
           style={styles.input}
           textAlignVertical="top"
         />
+        {versions ? (
+          <FileActionMenu
+            title={
+              versions.length ? 'Load a version, then Save to restore' : 'No previous versions yet'
+            }
+            onDismiss={() => setVersions(null)}
+            actions={versions.map((version) => ({
+              key: version.id,
+              label: `${new Date(version.createdAt).toLocaleString()} · ${version.kind === 'snapshot' ? 'Saved version' : 'Original (includes late writes)'}`,
+              icon: 'clock',
+              onPress: () => {
+                if (dirty)
+                  Alert.alert(
+                    'Replace unsaved edits?',
+                    'Loading a version replaces the text in this editor.',
+                    [
+                      { text: 'Keep editing', style: 'cancel' },
+                      {
+                        text: 'Load version',
+                        onPress: () => {
+                          void loadVersion(version.id);
+                        },
+                      },
+                    ],
+                  );
+                else void loadVersion(version.id);
+              },
+            }))}
+          />
+        ) : null}
         {conflict ? (
           <FileActionMenu
             title="File changed since you opened it"

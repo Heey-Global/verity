@@ -1,5 +1,5 @@
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 
@@ -21,7 +21,6 @@ export function FileBreadcrumb({
   /** -1 for the root, otherwise the index of the segment tapped. */
   onNavigate: (index: number) => void;
 }) {
-  const { theme } = useUnistyles();
   const atRoot = segments.length === 0;
   return (
     <ScrollView
@@ -38,19 +37,13 @@ export function FileBreadcrumb({
         accessibilityLabel={atRoot ? rootLabel : `Back to ${rootLabel}`}
         style={({ pressed }) => [styles.root, pressed ? styles.pressed : null]}
       >
-        <Icon
-          name={rootIcon}
-          size={15}
-          color={
-            disabled ? theme.colors.textFaint : atRoot ? theme.colors.text : theme.colors.primary
-          }
-        />
+        <Icon name={rootIcon} size={15} color="#ffffff" />
       </Pressable>
       {segments.map((segment, index) => {
         const last = index === segments.length - 1;
         return (
           <View key={segment.key} style={styles.segment}>
-            <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
+            <Icon name="chevron-right" size={14} color="#ffffff" />
             <Pressable
               onPress={() => onNavigate(index)}
               disabled={disabled || last}

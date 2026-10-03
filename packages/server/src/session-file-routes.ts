@@ -78,6 +78,12 @@ export interface SessionFileRouteDeps {
     target: SessionFileTarget,
     query: SessionFileUploadQuery,
   ) => Promise<unknown>;
+  history: (
+    reply: FastifyReply,
+    target: SessionFileTarget,
+    path: string,
+    version?: string,
+  ) => Promise<unknown>;
   content: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   write: (
     reply: FastifyReply,
@@ -148,6 +154,21 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
     return deps.content(reply, value, path);
+  });
+
+  app.get('/sessions/:id/files/history', async (request, reply): Promise<unknown> => {
+    const { id } = sessionParams.parse(request.params);
+    const { root, path, version } = sessionFileQuery
+      .extend({
+        version: z
+          .string()
+          .regex(/^save-[A-Za-z0-9]+\/(snapshot|original)$/)
+          .optional(),
+      })
+      .parse(request.query);
+    const value = await target(id, root, reply);
+    if (value === undefined) return reply;
+    return deps.history(reply, value, path, version);
   });
 
   app.put(

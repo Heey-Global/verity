@@ -57,7 +57,7 @@ export function FileToolbarButton({
       {busy ? (
         <ActivityIndicator size="small" color={color} />
       ) : icon ? (
-        <Icon name={icon} size={15} color={color} />
+        <Icon name={icon} size={15} color="#ffffff" />
       ) : null}
       <Text style={[styles.label, { color }]} numberOfLines={1}>
         {label}

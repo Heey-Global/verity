@@ -1,4 +1,15 @@
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  open,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -17,6 +28,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 import { openKnowledgeFileSlot } from './session-files.js';
+import { FILE_HISTORY_DIR, recoverFileHistory } from './session-file-history.js';
 import { fileVersion, writeSessionText } from './session-file-write.js';
 let dir: string;
 afterEach(async () => {
@@ -29,14 +41,14 @@ async function setup() {
   return openKnowledgeFileSlot({ root: 'worktree', dir }, 'a.txt');
 }
 
-it('preserves mode and removes staging files after saving', async () => {
+it('preserves mode and retains version backups after saving', async () => {
   const slot = await setup();
   try {
     await chmod(join(dir, 'a.txt'), 0o600);
     await writeSessionText(slot, 'new text', fileVersion(Buffer.from('original')));
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('new text');
     expect((await stat(join(dir, 'a.txt'))).mode & 0o777).toBe(0o600);
-    expect(await readdir(dir)).toEqual(['a.txt']);
+    expect(await readdir(dir)).toEqual([FILE_HISTORY_DIR, 'a.txt']);
   } finally {
     await slot.close();
   }
@@ -50,8 +62,10 @@ it('does not replace an agent save arriving after source capture', async () => {
       writeSessionText(slot, 'my edits', fileVersion(Buffer.from('original'))),
     ).rejects.toMatchObject({ status: 409 });
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('agent save');
-    const staging = (await readdir(dir)).find((name) => name.startsWith('.verity-edit-'))!;
-    expect(await readFile(join(dir, staging, 'original'), 'utf8')).toBe('original');
+    const staging = (await readdir(join(dir, FILE_HISTORY_DIR)))[0]!;
+    expect(await readFile(join(dir, FILE_HISTORY_DIR, staging, 'original'), 'utf8')).toBe(
+      'original',
+    );
   } finally {
     await slot.close();
   }
@@ -79,7 +93,7 @@ it('refuses a stale version and restores the source without temporary leftovers'
       writeSessionText(slot, 'my edits', fileVersion(Buffer.from('stale'))),
     ).rejects.toMatchObject({ status: 409 });
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('original');
-    expect(await readdir(dir)).toEqual(['a.txt']);
+    expect(await readdir(dir)).toEqual([FILE_HISTORY_DIR, 'a.txt']);
   } finally {
     await slot.close();
   }
@@ -90,6 +104,44 @@ it('does not overwrite an existing file when creating', async () => {
   try {
     await expect(writeSessionText(slot, 'new file', null)).rejects.toMatchObject({ status: 409 });
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('original');
+  } finally {
+    await slot.close();
+  }
+});
+
+it('retains late descriptor writes and an immutable version independently', async () => {
+  const slot = await setup();
+  const descriptor = await open(join(dir, 'a.txt'), 'r+');
+  try {
+    await writeSessionText(slot, 'editor save', fileVersion(Buffer.from('original')));
+    await descriptor.writeFile('late agent save');
+    const transaction = (await readdir(join(dir, FILE_HISTORY_DIR)))[0]!;
+    const base = join(dir, FILE_HISTORY_DIR, transaction);
+    expect(await readFile(join(base, 'original'), 'utf8')).toBe('late agent save');
+    expect(await readFile(join(base, 'snapshot'), 'utf8')).toBe('original');
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('editor save');
+    await rm(join(dir, 'a.txt'));
+    await recoverFileHistory(slot.directoryPath);
+    await expect(readFile(join(dir, 'a.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await descriptor.close();
+    await slot.close();
+  }
+});
+
+it('restores an interrupted capture without replacing a newer pathname save', async () => {
+  const slot = await setup();
+  try {
+    const base = join(dir, FILE_HISTORY_DIR, 'save-interrupted');
+    await mkdir(base, { recursive: true });
+    await writeFile(join(base, 'name'), 'a.txt');
+    await writeFile(join(base, 'original'), 'recovery');
+    await rm(join(dir, 'a.txt'));
+    await recoverFileHistory(slot.directoryPath);
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('recovery');
+    await writeFile(join(dir, 'a.txt'), 'newer save');
+    await recoverFileHistory(slot.directoryPath);
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('newer save');
   } finally {
     await slot.close();
   }

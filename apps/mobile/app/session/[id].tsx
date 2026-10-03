@@ -4395,6 +4395,7 @@ function SessionFilesSheet({
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
+  const compactRootLabels = Platform.OS === 'ios' && !Platform.isPad;
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
@@ -5268,7 +5269,7 @@ function SessionFilesSheet({
               accessibilityLabel="Close files"
               style={styles.bookmarkRemove}
             >
-              <Icon name="x" size={20} color={theme.colors.textMuted} />
+              <Icon name="x" size={20} color="#ffffff" />
             </Pressable>
           </View>
         ) : null}
@@ -5276,11 +5277,11 @@ function SessionFilesSheet({
           <View style={styles.filesRootBar}>
             {(
               [
-                ['worktree', 'Files'],
-                ['knowledge', '📚 Project'],
-                ['shared', '📚 Shared'],
+                ['worktree', compactRootLabels ? 'Repo' : 'Repository', 'folder'],
+                ['knowledge', compactRootLabels ? 'Project' : 'Project Knowledge', 'book-open'],
+                ['shared', compactRootLabels ? 'Global' : 'Global Knowledge', 'globe'],
               ] as const
-            ).map(([candidate, label]) => (
+            ).map(([candidate, label, icon]) => (
               <Pressable
                 key={candidate}
                 disabled={mutating}
@@ -5306,6 +5307,7 @@ function SessionFilesSheet({
                   root === candidate ? styles.filesRootButtonActive : null,
                 ]}
               >
+                <Icon name={icon} size={14} color="#ffffff" />
                 <Text
                   style={root === candidate ? styles.filesRootLabelActive : styles.filesRootLabel}
                 >
@@ -5330,6 +5332,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Google Drive"
                 style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
               >
+                <Icon name="hard-drive" size={14} color="#ffffff" />
                 <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
                   Google Drive
                 </Text>
@@ -5350,7 +5353,13 @@ function SessionFilesSheet({
         ) : (
           <FileBreadcrumb
             rootIcon={root === 'worktree' ? 'folder' : 'book-open'}
-            rootLabel={root === 'worktree' ? 'Files' : root === 'knowledge' ? 'Project' : 'Shared'}
+            rootLabel={
+              root === 'worktree'
+                ? 'Repository'
+                : root === 'knowledge'
+                  ? 'Project Knowledge'
+                  : 'Global Knowledge'
+            }
             segments={breadcrumbSegments(path).map((segment) => ({
               key: segment.path,
               name: segment.name,
@@ -5404,11 +5413,7 @@ function SessionFilesSheet({
                       pressed ? styles.sheetRowPressed : null,
                     ]}
                   >
-                    <Icon
-                      name={folder ? 'folder' : 'file'}
-                      size={18}
-                      color={theme.colors.textMuted}
-                    />
+                    <Icon name={folder ? 'folder' : 'file'} size={18} color="#ffffff" />
                     <View style={styles.fileMain}>
                       <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
                         {file.name}
@@ -5417,7 +5422,7 @@ function SessionFilesSheet({
                     <Icon
                       name={folder ? 'chevron-right' : 'more-horizontal'}
                       size={17}
-                      color={theme.colors.textFaint}
+                      color="#ffffff"
                     />
                   </Pressable>
                 );
@@ -5434,7 +5439,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Back to file list"
                 style={styles.bookmarkRemove}
               >
-                <Icon name="chevron-left" size={20} color={theme.colors.textMuted} />
+                <Icon name="chevron-left" size={20} color="#ffffff" />
               </Pressable>
               <View style={styles.filesTitleWrap}>
                 <Text style={styles.filesPreviewTitle} numberOfLines={1}>
@@ -5469,7 +5474,7 @@ function SessionFilesSheet({
                 accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
                 style={styles.bookmarkRemove}
               >
-                <Icon name="more-horizontal" size={20} color={theme.colors.textMuted} />
+                <Icon name="more-horizontal" size={20} color="#ffffff" />
               </Pressable>
               <Pressable
                 onPress={onClose}
@@ -5478,7 +5483,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Close files"
                 style={styles.bookmarkRemove}
               >
-                <Icon name="x" size={20} color={theme.colors.textMuted} />
+                <Icon name="x" size={20} color="#ffffff" />
               </Pressable>
             </View>
             <FileContentPreview
@@ -5588,11 +5593,7 @@ function SessionFilesSheet({
                                 inert ? styles.sheetRowDisabled : null,
                               ]}
                             >
-                              <Icon
-                                name={fileIcon(entry)}
-                                size={18}
-                                color={theme.colors.textMuted}
-                              />
+                              <Icon name={fileIcon(entry)} size={18} color="#ffffff" />
                               <View style={styles.fileMain}>
                                 <Text
                                   style={[styles.sheetRowLabel, styles.fileName]}
@@ -5612,7 +5613,7 @@ function SessionFilesSheet({
                                   <Icon
                                     name={picked ? 'check-circle' : 'circle'}
                                     size={18}
-                                    color={picked ? theme.colors.primary : theme.colors.textFaint}
+                                    color="#ffffff"
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
@@ -5624,18 +5625,10 @@ function SessionFilesSheet({
                                   accessibilityLabel={`More actions for ${entry.name}`}
                                   style={styles.fileDownload}
                                 >
-                                  <Icon
-                                    name="more-horizontal"
-                                    size={18}
-                                    color={theme.colors.textMuted}
-                                  />
+                                  <Icon name="more-horizontal" size={18} color="#ffffff" />
                                 </Pressable>
                               ) : (
-                                <Icon
-                                  name="chevron-right"
-                                  size={17}
-                                  color={theme.colors.textFaint}
-                                />
+                                <Icon name="chevron-right" size={17} color="#ffffff" />
                               )}
                             </Pressable>
                           )}
@@ -5646,7 +5639,7 @@ function SessionFilesSheet({
                 </ScrollView>
                 {dropActive ? (
                   <View pointerEvents="none" style={styles.filesDropHint}>
-                    <Icon name="download" size={18} color={theme.colors.primary} />
+                    <Icon name="download" size={18} color="#ffffff" />
                     <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
                   </View>
                 ) : null}
@@ -5723,6 +5716,10 @@ function SessionFilesSheet({
             file={editing}
             onCancel={() => setEditing(null)}
             onRead={(filePath) => client.getSessionFileContent(sessionId, filePath, root)}
+            onHistory={() => client.listSessionFileVersions(sessionId, root, editing.path)}
+            onVersion={(version) =>
+              client.readSessionFileVersion(sessionId, root, editing.path, version)
+            }
             onSave={(filePath, content, version) =>
               client.saveSessionFileContent(sessionId, root, filePath, content, version)
             }
@@ -9512,6 +9509,9 @@ const styles = StyleSheet.create((theme) => ({
     marginBottom: theme.spacing.sm,
   },
   filesRootButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
     borderRadius: theme.radius.sm,
