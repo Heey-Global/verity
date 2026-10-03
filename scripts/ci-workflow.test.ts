@@ -1088,9 +1088,9 @@ describe('native iOS compile gate', () => {
     expect(commands.indexOf('labels[]=autorelease: tagged')).toBeLessThan(
       commands.indexOf('labels/autorelease%3A%20pending'),
     );
-    expect(commands.indexOf('labels/autorelease%3A%20pending')).toBeLessThan(
-      commands.indexOf('gh release edit'),
-    );
+    const stagingPublication = commands.indexOf('publish_staging_release || publish_status=$?');
+    expect(stagingPublication).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf('labels/autorelease%3A%20pending')).toBeLessThan(stagingPublication);
     expect(commands).toContain('labels/autorelease%3A%20tagged');
     expect(commands).toContain('labels[]=autorelease: pending');
     expect(commands.indexOf('altool --upload-app')).toBeLessThan(
