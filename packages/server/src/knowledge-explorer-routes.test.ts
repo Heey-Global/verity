@@ -16,6 +16,8 @@ import {
   sharedKnowledgeDir,
 } from './knowledge-folder.js';
 import { buildServer } from './server.js';
+import { knowledgeExtractionPath } from './knowledge-file-ingest.js';
+import { fileVersion } from './session-file-write.js';
 
 /**
  * The session explorer's knowledge roots (ADR 0022 D2). What is being guarded is
@@ -362,5 +364,131 @@ describe('session explorer knowledge roots', () => {
     expect(res.json()).toEqual({ error: 'this session has no knowledge folder' });
     const worktreeRoot = await app.inject({ method: 'GET', url: '/sessions/s-loose/files' });
     expect(worktreeRoot.statusCode).toBe(200);
+  });
+  it('creates and edits text in every root without overwriting create collisions', async () => {
+    for (const root of ['worktree', 'knowledge', 'shared'] as const) {
+      const url = '/sessions/s-knowledge/files/content';
+      const path = `created-${root}.md`;
+      if (root === 'worktree') rmSync(join(worktree, path), { force: true });
+      const created = await app.inject({
+        method: 'PUT',
+        url,
+        payload: { root, path, content: '# Original', expectedVersion: null },
+      });
+      expect(created.statusCode).toBe(200);
+      const version = created.json<{ version: string }>().version;
+      expect(version).toBe(fileVersion(Buffer.from('# Original')));
+      const collision = await app.inject({
+        method: 'PUT',
+        url,
+        payload: { root, path, content: 'collision', expectedVersion: null },
+      });
+      expect(collision.statusCode).toBe(409);
+      const saved = await app.inject({
+        method: 'PUT',
+        url,
+        payload: { root, path, content: '# Updated', expectedVersion: version },
+      });
+      expect(saved.statusCode).toBe(200);
+      const preview = await app.inject({ method: 'GET', url: `${url}?root=${root}&path=${path}` });
+      expect(preview.json()).toMatchObject({
+        content: '# Updated',
+        editable: true,
+        version: fileVersion(Buffer.from('# Updated')),
+      });
+      if (root !== 'worktree') {
+        const dir =
+          root === 'knowledge'
+            ? projectKnowledgeDir(dataRoot, 'p-1')
+            : sharedKnowledgeDir(dataRoot);
+        expect(readFileSync(knowledgeExtractionPath(dir, path), 'utf8')).toContain('Updated');
+      } else expect(existsSync(join(worktree, EXTRACTED_TEXT_DIR))).toBe(false);
+    }
+  });
+
+  it('refuses stale edits and serializes competing saves', async () => {
+    writeFileSync(join(worktree, 'ok.txt'), 'old');
+    const url = '/sessions/s-knowledge/files/content';
+    const original = await app.inject({ method: 'GET', url: `${url}?path=ok.txt` });
+    const expectedVersion = original.json<{ version: string }>().version;
+    writeFileSync(join(worktree, 'ok.txt'), 'agent change');
+    const stale = await app.inject({
+      method: 'PUT',
+      url,
+      payload: { path: 'ok.txt', content: 'my change', expectedVersion },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(readFileSync(join(worktree, 'ok.txt'), 'utf8')).toBe('agent change');
+    const currentVersion = fileVersion(Buffer.from('agent change'));
+    const results = await Promise.all(
+      ['one', 'two'].map((content) =>
+        app.inject({
+          method: 'PUT',
+          url,
+          payload: { path: 'ok.txt', content, expectedVersion: currentVersion },
+        }),
+      ),
+    );
+    expect(results.map((result) => result.statusCode).sort()).toEqual([200, 409]);
+  });
+
+  it('rejects managed paths, git paths and escaping writes', async () => {
+    for (const path of ['.text/private.md', '../outside.md', '.git/config']) {
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/sessions/s-knowledge/files/content',
+        payload: { root: 'knowledge', path, content: 'edit', expectedVersion: null },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('enforces UTF-8 byte and project overview limits', async () => {
+    const url = '/sessions/s-knowledge/files/content';
+    const large = await app.inject({
+      method: 'PUT',
+      url,
+      payload: { path: 'ok.txt', content: 'é'.repeat(500001), expectedVersion: null },
+    });
+    expect(large.statusCode).toBe(413);
+    const overview = await app.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        root: 'knowledge',
+        path: 'overview.md',
+        content: 'x'.repeat(100000),
+        expectedVersion: null,
+      },
+    });
+    expect(overview.statusCode).toBe(413);
+    expect(existsSync(join(worktree, 'ok.txt'))).toBe(false);
+  });
+  it('never exposes extracted binary text as editable source', async () => {
+    await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    const bytes = Buffer.from([0, 1, 2]);
+    writeFileSync(join(dir, 'binary.pdf'), bytes);
+    writeFileSync(knowledgeExtractionPath(dir, 'binary.pdf'), 'extracted text');
+    const url = '/sessions/s-knowledge/files/content';
+    const preview = await app.inject({
+      method: 'GET',
+      url: `${url}?root=knowledge&path=binary.pdf`,
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({ content: 'extracted text', editable: false });
+    expect(preview.json()).not.toHaveProperty('version');
+    const write = await app.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        root: 'knowledge',
+        path: 'binary.pdf',
+        content: 'replacement',
+        expectedVersion: fileVersion(bytes),
+      },
+    });
+    expect(write.statusCode).toBe(415);
+    expect(readFileSync(join(dir, 'binary.pdf'))).toEqual(bytes);
   });
 });

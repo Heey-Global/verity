@@ -45,6 +45,17 @@ const sessionFileMoveBody = z.object({
   toFileName: fileName.optional(),
 });
 
+const sessionFileWriteBody = z.object({
+  root: sessionFileRoot,
+  path: z.string().min(1),
+  content: z.string().max(1_000_000),
+  expectedVersion: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable(),
+});
+export type SessionFileWriteBody = z.infer<typeof sessionFileWriteBody>;
+
 type SessionFileUploadQuery = z.infer<typeof sessionFileUploadQuery>;
 type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
 
@@ -68,6 +79,11 @@ export interface SessionFileRouteDeps {
     query: SessionFileUploadQuery,
   ) => Promise<unknown>;
   content: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
+  write: (
+    reply: FastifyReply,
+    target: SessionFileTarget,
+    body: SessionFileWriteBody,
+  ) => Promise<unknown>;
   download: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   remove: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   move: (
@@ -133,6 +149,18 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     if (value === undefined) return reply;
     return deps.content(reply, value, path);
   });
+
+  app.put(
+    '/sessions/:id/files/content',
+    { bodyLimit: 6_100_000 },
+    async (request, reply): Promise<unknown> => {
+      const { id } = sessionParams.parse(request.params);
+      const body = sessionFileWriteBody.parse(request.body);
+      const value = await target(id, body.root, reply);
+      if (value === undefined) return reply;
+      return deps.write(reply, value, body);
+    },
+  );
 
   app.get('/sessions/:id/files/download', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);

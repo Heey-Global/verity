@@ -1347,6 +1347,8 @@ export const sessionDirectorySchema = z.object({
 export type SessionDirectory = z.infer<typeof sessionDirectorySchema>;
 
 export const sessionFileContentSchema = z.object({
+  version: z.string().optional(),
+  editable: z.boolean().optional(),
   path: z.string(),
   content: z.string(),
   size: z.number().int().nonnegative(),
@@ -3954,6 +3956,21 @@ export class VerityClient {
       `/sessions/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}${rootQuery}`,
       { method: 'GET' },
     );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async saveSessionFileContent(
+    id: string,
+    root: SessionFileRoot,
+    path: string,
+    content: string,
+    expectedVersion: string | null,
+  ): Promise<SessionFileContent> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/files/content`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ root, path, content, expectedVersion }),
+    });
     return sessionFileContentSchema.parse(await res.json());
   }
 

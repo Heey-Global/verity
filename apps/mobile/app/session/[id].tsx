@@ -1,3 +1,4 @@
+import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
 // operator input bar. Binds @verity/mobile's headless SessionModel via useSession
@@ -26,6 +27,7 @@ import {
   type PermissionDecision,
   type RateLimitNotice,
   type SessionFileEntry,
+  type SessionFileContent,
   type SessionFileRoot,
   type SessionGoogleWorkspaceFile,
   type ToolCallMessage,
@@ -210,6 +212,7 @@ import {
   dragItemsForRow,
   fileNameFromPath,
   isSelectableFile,
+  isTextPreviewCandidate,
   mimeTypeForFile,
   retainVisibleSelection,
   selectionForModifierClick,
@@ -4398,7 +4401,7 @@ function SessionFilesSheet({
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
+  const [preview, setPreview] = useState<SessionFileContent | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [mutating, setMutating] = useState(false);
@@ -4415,6 +4418,9 @@ function SessionFilesSheet({
   // over the sheet (see FileActionMenu), so they live here rather than in a row.
   const [menuFor, setMenuFor] = useState<{ path: string; inPreview: boolean } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [editing, setEditing] = useState<SessionFileContent | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [adding, setAdding] = useState(false);
   // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
   // matches is a superseded tap and is dropped. See openFile.
   const previewRequest = useRef(0);
@@ -4458,7 +4464,7 @@ function SessionFilesSheet({
     void client
       .getSessionFileContent(sessionId, initialFilePath, initialRoot)
       .then((file) => {
-        if (active()) setPreview({ path: file.path, content: file.content });
+        if (active()) setPreview(file);
       })
       .catch((err) => {
         if (!active()) return;
@@ -4903,7 +4909,7 @@ function SessionFilesSheet({
         .getSessionFileContent(sessionId, entry.path, root)
         .then((file) => {
           if (previewRequest.current !== request) return;
-          setPreview({ path: file.path, content: file.content });
+          setPreview(file);
         })
         .catch((err) => {
           if (previewRequest.current !== request) return;
@@ -5114,6 +5120,21 @@ function SessionFilesSheet({
     [driveActive, entries],
   );
 
+  const editFile = async (filePath: string) => {
+    if (mutating) return;
+    setMutating(true);
+    try {
+      const file = await client.getSessionFileContent(sessionId, filePath, root);
+      if (file.editable === false) throw new Error('This preview is read-only.');
+      if (!file.version || !file.editable)
+        throw new Error('Update the Verity server to edit text files.');
+      setEditing(file);
+    } catch (error) {
+      Alert.alert('Could not edit file', error instanceof Error ? error.message : String(error));
+    } finally {
+      setMutating(false);
+    }
+  };
   const menuActions: FileAction[] =
     menuFor === null
       ? []
@@ -5147,6 +5168,18 @@ function SessionFilesSheet({
             icon: 'share' as const,
             onPress: () => openWith(menuFor.path),
           },
+          ...(isTextPreviewCandidate(menuFor.path) && (!menuFor.inPreview || preview?.editable)
+            ? [
+                {
+                  key: 'edit',
+                  label: 'Edit text',
+                  icon: 'edit' as const,
+                  onPress: () => {
+                    void editFile(menuFor.path);
+                  },
+                },
+              ]
+            : []),
           {
             key: 'rename',
             label: 'Rename…',
@@ -5216,15 +5249,15 @@ function SessionFilesSheet({
                   />
                 ) : null}
                 <FileToolbarButton
-                  label="Upload"
-                  icon="upload"
+                  label={driveActive ? 'Upload' : 'New'}
+                  icon={driveActive ? 'upload' : 'plus'}
                   tone="tinted"
                   busy={uploading}
                   disabled={mutating || error !== null || (driveActive && driveUnconfigured)}
                   accessibilityLabel={
-                    driveActive ? 'Upload files to Google Drive' : `Upload files to /${path}`
+                    driveActive ? 'Upload files to Google Drive' : 'New or upload files'
                   }
-                  onPress={driveActive ? uploadDriveFiles : uploadFiles}
+                  onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
                 />
               </>
             ) : null}
@@ -5413,6 +5446,13 @@ function SessionFilesSheet({
                   </Text>
                 ) : null}
               </View>
+              {preview.editable && preview.version ? (
+                <FileToolbarButton
+                  label="Edit"
+                  disabled={mutating}
+                  onPress={() => setEditing(preview)}
+                />
+              ) : null}
               {/* Chunked rendering means native text selection stops at each block, so
                   drag-selecting the whole file no longer works — this copies the exact
                   content the server returned, which is what select-all was for anyway. */}
@@ -5636,6 +5676,62 @@ function SessionFilesSheet({
             title={fileNameFromPath(menuFor.path)}
             actions={menuActions}
             onDismiss={() => setMenuFor(null)}
+          />
+        ) : null}
+        {adding ? (
+          <FileActionMenu
+            title="Add files"
+            onDismiss={() => setAdding(false)}
+            actions={[
+              {
+                key: 'create',
+                label: 'New Markdown file…',
+                icon: 'file-plus',
+                onPress: () => setCreating(true),
+              },
+              { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
+            ]}
+          />
+        ) : null}
+        {creating ? (
+          <FileNameDialog
+            title="New Markdown file"
+            initialName="note.md"
+            allowUnchanged
+            confirmLabel="Create"
+            validate={(name) =>
+              renameProblem(
+                name,
+                '',
+                entries.map((entry) => entry.name),
+              ) ?? (!/\.md$/i.test(name) ? 'Use a .md extension.' : null)
+            }
+            onCancel={() => setCreating(false)}
+            onSubmit={async (name) => {
+              setCreating(false);
+              setEditing({
+                path: [path, name].filter(Boolean).join('/'),
+                content: '',
+                size: 0,
+                editable: true,
+              });
+            }}
+          />
+        ) : null}
+        {editing ? (
+          <FileTextEditor
+            file={editing}
+            onCancel={() => setEditing(null)}
+            onRead={(filePath) => client.getSessionFileContent(sessionId, filePath, root)}
+            onSave={(filePath, content, version) =>
+              client.saveSessionFileContent(sessionId, root, filePath, content, version)
+            }
+            onSaved={(file) => {
+              setEditing(null);
+              setPreview(file);
+              setPath(parentPath(file.path));
+              setReloadKey((key) => key + 1);
+            }}
           />
         ) : null}
         {renaming ? (

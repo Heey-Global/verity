@@ -1,3 +1,4 @@
+import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
@@ -8058,6 +8059,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(413);
@@ -8074,14 +8076,54 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(415);
           return { error: 'file is not a text file' };
         }
-        return { path: target.rel, content: bytes.toString('utf8'), size: stats.size };
+        return {
+          path: target.rel,
+          content: bytes.toString('utf8'),
+          size: stats.size,
+          version: fileVersion(bytes),
+          editable: !isManagedKnowledgePath(root.root, target.rel),
+        };
       } finally {
         await fileHandle.close();
+      }
+    },
+    write: async (reply, root, body) => {
+      let slot;
+      try {
+        slot = await openKnowledgeFileSlot(root, body.path);
+      } catch (error) {
+        return knowledgeSlotFailure(reply, error);
+      }
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        if (
+          root.root === 'knowledge' &&
+          slot.rel === 'overview.md' &&
+          body.content.length > PROJECT_MEMORY_MAX_CHARS
+        ) {
+          reply.code(413);
+          return { error: 'overview.md exceeds the project overview limit' };
+        }
+        const saved = await writeSessionText(slot, body.content, body.expectedVersion);
+        if (root.root === 'knowledge' && slot.rel === 'overview.md')
+          await markProjectOverviewAuthoritative(root.dir);
+        if (root.root !== 'worktree') await extractKnowledgeFile(root.dir, slot.rel);
+        return saved;
+      } catch (error) {
+        if (error instanceof FileWriteError) {
+          reply.code(error.status);
+          return { error: error.message };
+        }
+        throw error;
+      } finally {
+        release();
+        await slot.close();
       }
     },
     download: async (reply, root, path) => {
