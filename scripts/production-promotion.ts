@@ -62,8 +62,8 @@ const repo = () => {
 const manifest = 'releases/server-production.json';
 const branch = 'automation/promote-server-production';
 
-function propose() {
-  const raw = JSON.parse(readFileSync(process.argv[3] ?? '', 'utf8')) as { product?: string };
+export function propose(inputPath = process.argv[3] ?? '') {
+  const raw = JSON.parse(readFileSync(inputPath, 'utf8')) as { product?: string };
   const candidate =
     raw.product === 'mobile-native' ? validateNativePromotion(raw) : validateServerPromotion(raw);
   const manifest =
@@ -137,6 +137,17 @@ function propose() {
   const hasManifest = remote && run('git', 'ls-tree', '--name-only', `origin/${branch}`, manifest);
   const existing = hasManifest ? run('git', 'show', `origin/${branch}:${manifest}`) : '';
   if (!existing || JSON.stringify(JSON.parse(existing)) !== JSON.stringify(candidate)) {
+    if (remote) {
+      // New candidates must run CI on current main; retries keep their exact head.
+      run(
+        'git',
+        'push',
+        `--force-with-lease=refs/heads/${branch}:${head}`,
+        'origin',
+        `${main}:refs/heads/${branch}`,
+      );
+      head = main;
+    }
     const query =
       'mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) { createCommitOnBranch(input: { branch: { repositoryNameWithOwner: $repository, branchName: $branch }, expectedHeadOid: $expected, message: { headline: $message }, fileChanges: { additions: [{path: $path, contents: $contents}] } }) { commit { oid signature { isValid } } } }';
     const result = api<{

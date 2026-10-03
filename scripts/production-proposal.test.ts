@@ -1,0 +1,91 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+const fixture = vi.hoisted(() => ({
+  candidate: {
+    schema: 1,
+    product: 'mobile-native',
+    version: '2.0.0',
+    source: 'a'.repeat(40),
+    appId: '123',
+    buildId: 'approved-build',
+    buildNumber: '12',
+    releasePr: 42,
+  },
+  same: false,
+  calls: [] as { command: string; args: string[] }[],
+}));
+vi.mock('node:fs', async (original) => ({
+  ...(await original<typeof import('node:fs')>()),
+  readFileSync: vi.fn(() => JSON.stringify(fixture.candidate)),
+  writeFileSync: vi.fn(),
+}));
+vi.mock('node:child_process', () => ({
+  execFileSync: vi.fn((command: string, args: string[]) => {
+    fixture.calls.push({ command, args });
+    if (command === 'git') {
+      if (args[0] === 'ls-remote')
+        return 'b'.repeat(40) + '\trefs/heads/automation/promote-mobile-production';
+      if (args[0] === 'diff' || args[0] === 'ls-tree') return 'releases/mobile-production.json';
+      if (args[0] === 'show')
+        return JSON.stringify({
+          ...fixture.candidate,
+          buildId: fixture.same ? 'approved-build' : 'previous-build',
+        });
+      return '';
+    }
+    if (args[0] === 'release')
+      return args[1] === 'view'
+        ? JSON.stringify({ assets: [{ name: 'production-candidate.json' }] })
+        : JSON.stringify(fixture.candidate);
+    if (args[0] === 'pr')
+      return args[1] === 'list'
+        ? args.includes('author')
+          ? '[{"author":{"login":"github-actions[bot]"}}]'
+          : '[{"number":7}]'
+        : '';
+    if (args[0] === 'workflow') return '';
+    const endpoint = args.find((arg) => arg.startsWith('repos/'));
+    if (endpoint?.endsWith('/heads/main'))
+      return JSON.stringify({ object: { sha: 'c'.repeat(40) } });
+    if (endpoint?.includes('/git/ref/heads/'))
+      return JSON.stringify({ object: { sha: 'd'.repeat(40) } });
+    if (endpoint?.includes('/reviews?')) return '[[]]';
+    if (args.includes('graphql'))
+      return JSON.stringify({
+        data: { createCommitOnBranch: { commit: { signature: { isValid: true } } } },
+      });
+    throw new Error('Unhandled proposal call ' + args.join(' '));
+  }),
+}));
+import { propose } from './production-promotion.js';
+afterEach(() => {
+  fixture.calls = [];
+  fixture.same = false;
+  vi.unstubAllEnvs();
+});
+describe('rolling production proposals', () => {
+  it('bases a new signed candidate on current main with a lease on the old branch', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+    propose('candidate.json');
+    const reset = fixture.calls.findIndex(
+      (call) => call.command === 'git' && call.args[0] === 'push',
+    );
+    expect(fixture.calls[reset]?.args).toEqual([
+      'push',
+      '--force-with-lease=refs/heads/automation/promote-mobile-production:' + 'b'.repeat(40),
+      'origin',
+      'c'.repeat(40) + ':refs/heads/automation/promote-mobile-production',
+    ]);
+    const signed = fixture.calls.findIndex((call) => call.args.includes('graphql'));
+    expect(signed).toBeGreaterThan(reset);
+    expect(fixture.calls[signed]?.args).toContain('expected=' + 'c'.repeat(40));
+  });
+  it('preserves the exact head when retrying the same recorded candidate', () => {
+    fixture.same = true;
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+    propose('candidate.json');
+    expect(fixture.calls.some((call) => call.command === 'git' && call.args[0] === 'push')).toBe(
+      false,
+    );
+    expect(fixture.calls.some((call) => call.args.includes('graphql'))).toBe(false);
+  });
+});
