@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { constants, closeSync, openSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -51,6 +53,24 @@ async function publishedWorkspace(): Promise<{ workspace: string; origin: string
 }
 
 describe('static preview server', () => {
+  it('rejects FIFOs without waiting for a writer and continues serving files', async () => {
+    const { workspace, origin } = await publishedWorkspace();
+    const fifo = join(workspace, 'dist', 'pipe.txt');
+    execFileSync('mkfifo', [fifo]);
+    try {
+      // A blocking open would wait forever for a writer, tying up a filesystem worker.
+      const response = await fetch(`${origin}/pipe.txt`, { signal: AbortSignal.timeout(1000) });
+      expect(response.status).toBe(404);
+      await response.text();
+      expect((await fetch(origin)).status).toBe(200);
+    } finally {
+      // Also release a blocked open when checking the deliberately broken guard.
+      const fd = openSync(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      closeSync(fd);
+    }
+  });
+
   it('serves the selected directory and refuses symlink escapes', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'verity-static-preview-'));
     await mkdir(join(workspace, 'dist'));
