@@ -125,7 +125,7 @@ Before recreating, so that "process state only" is all you lose:
 Then recreate the project container through Verity:
 
 ```
-POST /concierge/projects/<projectId>/recreate-container
+POST /verity-control/projects/<projectId>/recreate-container
 ```
 
 Authenticated like every other Server API call — `Authorization: Bearer <token>`

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-describe('project concierge routes', () => {
+describe('project Verity Control routes', () => {
   // A runbook is read during the outage it describes, by an operator whose every
   // OpenCode turn is already failing, and this one offers exactly one remedy: the
   // recreate-container endpoint. A route that has since moved leaves that operator
@@ -47,7 +47,7 @@ describe('project concierge routes', () => {
     );
 
     const routes = await readFile(
-      new URL('./project-concierge-routes.ts', import.meta.url),
+      new URL('./project-verity-control-routes.ts', import.meta.url),
       'utf8',
     );
     expect(routes).toMatch(routed);

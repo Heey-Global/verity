@@ -4599,7 +4599,7 @@ export class Conductor {
         // carry it in their persisted backend context.
         // A pre-created session (project/Agent Loop) carries its project id before
         // the backend context starts; a truly fresh, project-less control-plane
-        // spawn (e.g. the concierge) has none. Capture it here so the runner
+        // spawn (e.g. Verity Control) has none. Capture it here so the runner
         // context reflects the real project (or `null`).
         const selected = opts.backend ?? this.modelBackend(runOpts.model);
         const backend = opts.backendWrapper?.(selected) ?? selected;

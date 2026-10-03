@@ -991,7 +991,7 @@ export function startRunnerSupervisorReconciler(
  *    supervisor launch guard fail-closed and the server-side tail the single writer),
  *    and {@link SupervisorRunnerRecovery} lets startup recovery REATTACH a still-live
  *    turn (D7) instead of settling it `interrupted`. Project-less Claude ACP and Codex
- *    control-plane sessions (e.g. the concierge) use the dedicated `verity-control`
+ *    control-plane sessions (e.g. Verity Control) use the dedicated `verity-control`
  *    supervisor so their approval-gated tools retain the same boundary.
  *  - `runnerTransport` (Stage 2.2-prep, opt-in): the proven in-process
  *    {@link FileTailRunnerClient} event-file/control-socket transport, unchanged.
@@ -2263,10 +2263,10 @@ export async function buildEmbeddedServer(
   const signingCapabilities = createSigningCapabilityRegistry(db);
   // Real git worktrees only when a project repo is configured; else the server's
   // scratch-dir default (spawned agents start on an empty dir, no repo).
-  // Concierge/default Verity sessions branch from `/work`, so their refresh fetch
+  // Verity Control/default Verity sessions branch from `/work`, so their refresh fetch
   // must authenticate through the DB-backed GitHub App too. DB-only onboarding
   // deployments intentionally do not carry a broad `.gh-token`; without this header
-  // `git fetch origin main` fails before the Concierge session can be created.
+  // `git fetch origin main` fails before the Verity Control session can be created.
   const worktrees = config.repoDir
     ? createGitWorktreeProvisioner({
         repoDir: config.repoDir,

@@ -13566,11 +13566,11 @@ describe('POST /projects/:id/setup-dev-servers', () => {
   });
 });
 
-describe('POST /concierge/projects/:id/refresh-token', () => {
+describe('POST /verity-control/projects/:id/refresh-token', () => {
   it('503s when project token refresh is not configured', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/concierge/projects/p1/refresh-token',
+      url: '/verity-control/projects/p1/refresh-token',
     });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ error: 'project token refresh is not configured' });
@@ -13582,7 +13582,7 @@ describe('POST /concierge/projects/:id/refresh-token', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/unknown/refresh-token',
+        url: '/verity-control/projects/unknown/refresh-token',
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'project unknown not found' });
@@ -13605,7 +13605,7 @@ describe('POST /concierge/projects/:id/refresh-token', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-token-refresh/refresh-token',
+        url: '/verity-control/projects/p-token-refresh/refresh-token',
       });
       expect(res.statusCode).toBe(200);
       expect(refreshProjectToken).toHaveBeenCalledWith(
@@ -13622,11 +13622,11 @@ describe('POST /concierge/projects/:id/refresh-token', () => {
   });
 });
 
-describe('POST /concierge/projects/:id/recreate-container', () => {
+describe('POST /verity-control/projects/:id/recreate-container', () => {
   it('503s when project container recreate is not configured', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/concierge/projects/p1/recreate-container',
+      url: '/verity-control/projects/p1/recreate-container',
     });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ error: 'project container recreate is not configured' });
@@ -13645,7 +13645,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/unknown/recreate-container',
+        url: '/verity-control/projects/unknown/recreate-container',
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'project unknown not found' });
@@ -13675,7 +13675,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-absent/recreate-container',
+        url: '/verity-control/projects/p-absent/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json()).toEqual({ error: 'project p-absent is absent; provision it instead' });
@@ -13706,7 +13706,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-recreate-hidden/recreate-container',
+        url: '/verity-control/projects/p-recreate-hidden/recreate-container',
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'project p-recreate-hidden not found' });
@@ -13736,7 +13736,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-starting/recreate-container',
+        url: '/verity-control/projects/p-starting/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json()).toEqual({ error: 'project p-starting is already provisioning' });
@@ -13782,7 +13782,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-verity/recreate-container',
+        url: '/verity-control/projects/p-verity/recreate-container',
       });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ project: { id: 'p-verity', state: 'active' } });
@@ -13832,7 +13832,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-recreate/recreate-container',
+        url: '/verity-control/projects/p-recreate/recreate-container',
       });
       expect(res.statusCode).toBe(200);
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-recreate', {
@@ -13867,7 +13867,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-rebuild/recreate-container',
+        url: '/verity-control/projects/p-rebuild/recreate-container',
         payload: { confirmWarnings: true, forceRebuild: true },
       });
       expect(res.statusCode).toBe(200);
@@ -13901,7 +13901,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-busy/recreate-container',
+        url: '/verity-control/projects/p-busy/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json().error).toMatch(/turn in flight/);
@@ -13933,7 +13933,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-recreate-failed/recreate-container',
+        url: '/verity-control/projects/p-recreate-failed/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json()).toEqual({
@@ -13945,9 +13945,9 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
   });
 });
 
-describe('POST /concierge/session', () => {
-  it('creates a reusable control-plane Concierge session', async () => {
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+describe('POST /verity-control/session', () => {
+  it('creates a reusable control-plane Verity Control session', async () => {
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(201);
     const { sessionId }: { sessionId: string } = res.json();
@@ -13960,7 +13960,7 @@ describe('POST /concierge/session', () => {
     expect(await ctx.store.consumePendingNotes(sessionId)).toEqual([]);
   });
 
-  it('reuses the existing Concierge session when its worktree still exists', async () => {
+  it('reuses the legacy Concierge session when its worktree still exists', async () => {
     const worktree = mkdtempSync(join(worktreeRoot, 'concierge-existing-'));
     await ctx.store.createSession({
       sessionId: 'concierge-existing',
@@ -13969,7 +13969,7 @@ describe('POST /concierge/session', () => {
       name: 'Concierge',
     });
 
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sessionId: 'concierge-existing' });
@@ -13988,7 +13988,7 @@ describe('POST /concierge/session', () => {
       name: 'Verity Control',
     });
 
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sessionId: 'verity-control-existing' });
@@ -14014,7 +14014,7 @@ describe('POST /concierge/session', () => {
       name: 'Concierge',
       projectId: 'p-concierge',
     });
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(201);
     const { sessionId }: { sessionId: string } = res.json();

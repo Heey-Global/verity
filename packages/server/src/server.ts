@@ -1,3 +1,9 @@
+import { turnCore } from './session-request-core.js';
+import { registerSessionCreateRoute } from './session-create-route.js';
+import { registerSessionListRoute } from './session-list-route.js';
+import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
+import { registerSessionMergeRoutes } from './session-merge-routes.js';
+import { registerDopplerRoutes } from './doppler-routes.js';
 import { measureLatencyPhase } from '@verity/store';
 import { registerRequestLatencyDiagnostics } from './request-latency.js';
 import { registerSessionMoveRoute } from './session-move-route.js';
@@ -48,7 +54,6 @@ import { Transform } from 'node:stream';
 import type { Server as HttpsServer, ServerOptions as HttpsServerOptions } from 'node:https';
 import { setImmediate as yieldToEventLoop, setTimeout as sleep } from 'node:timers/promises';
 import {
-  ALLOWED_PERMISSION_MODES,
   BackendTerminationUnconfirmedError,
   CODEX_DEFAULT_MODEL,
   PROCESS_TREE_KILL_GRACE_MS,
@@ -197,15 +202,11 @@ import {
   type WorktreeProvisioner,
 } from './worktree.js';
 import {
-  BaseCheckoutStrandedError,
-  BaseCheckoutUnavailableError,
   BranchExistsError,
   BranchInUseError,
   BranchNotFoundError,
   DirtyWorktreeError,
   InvalidBranchNameError,
-  MergeConflictError,
-  NothingToMergeError,
   type GitBranchService,
   type GitOutput,
 } from './branches.js';
@@ -254,8 +255,8 @@ import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
 import { registerProjectDevServerSetupRoute } from './project-dev-server-setup-route.js';
 import {
   parseRecreateContainerBody,
-  registerProjectConciergeRoutes,
-} from './project-concierge-routes.js';
+  registerProjectVerityControlRoutes,
+} from './project-verity-control-routes.js';
 import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerMeetingTranscriptRoutes } from './meeting-transcript-routes.js';
@@ -294,12 +295,7 @@ import {
   ControlPlaneSessionToolError,
   createControlPlaneSessionTools,
 } from './session-handoff-tool.js';
-import {
-  CONTROL_PLANE_PROJECT_ID,
-  CONTROL_PLANE_PROJECT_OWNER,
-  CONTROL_PLANE_PROJECT_REPO,
-  ensureControlPlaneProject,
-} from './control-plane-project.js';
+import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
 import {
   LOCAL_PROJECT_OWNER,
   isInstallationPlaceholder,
@@ -601,7 +597,7 @@ type PublicVeritySettingsRecord = Omit<
   uplinkSubscriptionKeyConfigured: boolean;
 };
 
-interface ProjectSettingsRecord {
+export interface ProjectSettingsRecord {
   projectId: string;
   dopplerTokenRef: string | null;
   dopplerToken: string | null;
@@ -643,7 +639,7 @@ type PublicProjectSettingsRecord = Omit<
 // `hiddenAt` is an internal soft-delete marker: hidden projects are filtered out
 // of `listProjects` before serialization, so the field would always be null on
 // the wire and adds nothing for clients — omit it from the public shape.
-interface PublicProjectRecord extends Omit<
+export interface PublicProjectRecord extends Omit<
   ProjectRecord,
   'hiddenAt' | 'kind' | 'state' | 'sleepCompatibilityFingerprint'
 > {
@@ -1571,7 +1567,7 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
   return { error: 'path not found' };
 }
 
-export const VERITY_CONTROL_SESSION_NAME = 'Verity Control';
+export { VERITY_CONTROL_SESSION_NAME } from './verity-control-session-route.js';
 export const VERITY_CONTROL_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
 
 /**
@@ -2493,18 +2489,6 @@ async function runMeetingTranscriptionCommand(
   }
 }
 
-// Fields shared by the turns route and the spawn route. The prompt-content rule
-// differs (a steering turn may be attachments-only; a spawn needs real text), so
-// `prompt`/`attachments` are added per-route rather than here.
-const turnCore = {
-  permissionMode: z.enum(ALLOWED_PERMISSION_MODES).optional(),
-  model: z.string().min(1).optional(),
-  timeoutMs: z.number().int().positive().optional(),
-  // Per-turn tool allow/deny lists (names or scoped patterns, e.g. `Bash(git *)`).
-  allowedTools: z.array(z.string().min(1)).optional(),
-  disallowedTools: z.array(z.string().min(1)).optional(),
-};
-
 // Body for POST /sessions/:id/turns. `permissionMode` is constrained to the §5b
 // non-skipping modes so a bad value is a 400 here, not a background spawn failure.
 // A turn may carry images and may be attachments-only (empty prompt) — the
@@ -2538,59 +2522,6 @@ const turnBody = z
     message: 'a turn needs a prompt or at least one attachment',
     path: ['prompt'],
   });
-
-// Body for POST /sessions: create a visible Verity session/worktree immediately.
-// No backend turn starts here; the first LLM call happens when the operator sends
-// the first message via POST /sessions/:id/turns. `prompt` is accepted only as
-// client-side draft/branch context for legacy callers.
-const spawnBody = z
-  .object({
-    prompt: z.string().optional(),
-    ...turnCore,
-    /**
-     * The session id to create, minted by the CLIENT so the app can open the chat
-     * before this request answers (creating a session costs a `git fetch` + a
-     * `worktree add`, which the operator should not have to watch). Constrained to a
-     * UUID — the same shape the server mints — so a client can never choose an id
-     * that collides with another namespace or reads as anything but opaque.
-     *
-     * The route is idempotent on it: an id whose session already exists returns that
-     * session untouched, and two concurrent requests for one id share a single
-     * provisioning run. That is what makes a client retry safe — without it, the
-     * natural retry on a slow spawn would strand a second worktree on disk.
-     */
-    sessionId: z.string().uuid().optional(),
-    name: z.string().min(1).max(80).optional(),
-    /** Spawn-from-issue (#137): the GitHub issue # this session is started from. Names
-     * the worktree branch `feat/<issue>-…` so the header shows `Issue #N`. Cosmetic +
-     * best-effort — an invalid value is rejected by the schema, never trusted into a
-     * shell (the branch name is sanitized in `makeBranch`). */
-    issue: z.number().int().positive().optional(),
-    /**
-     * Multi-repo fleet-registry target (concept §19.6, #174): the canonical
-     * `<owner>/<repo>` of the project this session is created in. The server looks
-     * up the `projects` row (the slice-2 `GET /projects` sync cached it), and:
-     *   - if `state === 'active'` → creates the session bound to the project;
-     *   - otherwise → fires the {@link ServerDeps.provisioner} async, returns
-     *     `202 awaiting_provisioning`; the operator polls `GET /projects/:id` and
-     *     re-sends `POST /sessions { project }` when the container is `active`.
-     * The input is canonicalised through {@link parseOwnerRepo} (§19.0 — rejects
-     * malformed/`..`/multi-segment forms with 400, never silently coerces).
-     */
-    project: z
-      .string()
-      .optional()
-      .refine((s) => s === undefined || parseOwnerRepo(s) !== undefined, 'invalid project'),
-    /** Stable fleet-registry identity. This also addresses local projects whose
-     * reserved internal owner is intentionally not a valid GitHub owner. */
-    projectId: z.string().min(1).optional(),
-    confirmProvisionWarnings: z.boolean().optional(),
-  })
-  .refine((body) => body.project === undefined || body.projectId === undefined, {
-    message: 'provide project or projectId, not both',
-  });
-
-type SpawnBody = z.infer<typeof spawnBody>;
 
 /** How long `DELETE /projects/:id` waits for a spawn that was admitted just
  *  before it, so the spawn's worktree creation does not overlap the purge. It
@@ -2627,7 +2558,7 @@ type ProjectDeleteOutcome = {
 /** What `POST /sessions` answers with: the created (or already existing) session,
  * a project that first has to finish provisioning, warnings the operator must
  * confirm, or an error. */
-type SpawnResult =
+export type SpawnResult =
   // `existing` marks the idempotent answer to a repeated client-minted id: this
   // call did not mint the session, so a caller that would follow a create with a
   // prepared first turn knows not to send it twice.
@@ -2635,46 +2566,6 @@ type SpawnResult =
   | { project: PublicProjectRecord; awaitingProvisioning: true }
   | { requiresConfirmation: true; warnings: string[] }
   | { error: string; status?: 'sealed' };
-
-function normalizeSpawnRequestBody(body: unknown): unknown {
-  if (body === undefined || body === null) return {};
-  if (typeof body !== 'string') return body;
-  const trimmed = body.trim();
-  if (trimmed.length === 0) return {};
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return body;
-  }
-}
-
-const mergePullRequestBody = z.object({
-  number: z.number().int().positive(),
-});
-
-function buildLocalMergeDisplayPrompt(): string {
-  // This durable transcript text may later be replayed as a model prompt. Keep
-  // Git-controlled ref names out of the operator-authored prompt channel.
-  return 'Saved to project';
-}
-
-function buildLocalMergedPrompt(branch: string, base: string, note: string): string {
-  return appendExternalPromptData(
-    'A local merge completed. Please continue from this post-merge state.',
-    'local Git metadata and merge result',
-    { branch, base, note },
-  );
-}
-
-function buildPullRequestMergeRejectedDisplayPrompt(number: number): string {
-  return `Fix merge for PR #${String(number)}`;
-}
-
-function buildPullRequestMergeRejectedPrompt(number: number): string {
-  return `${buildPullRequestMergeRejectedDisplayPrompt(number)}
-
-GitHub rejected the merge for pull request #${String(number)}. Please inspect why the PR cannot be merged, fix any failing CI/checks or merge conflicts, update the branch, run the relevant verification, and report the result.`;
-}
 
 function buildPullRequestCiFailureDisplayPrompt(number: number): string {
   return `Fix failing CI for PR #${String(number)}`;
@@ -2901,7 +2792,7 @@ export interface SessionSummary extends SessionRecord {
  * absent when the Server is healthy — see `attention.ts` for why it rides this
  * response instead of a channel of its own.
  */
-interface SessionListEnvelope {
+export interface SessionListEnvelope {
   sessions: SessionSummary[];
   attention?: AttentionSignal[];
 }
@@ -4801,43 +4692,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     };
   };
 
-  const existingConciergeSession = async (): Promise<string | undefined> => {
-    const sessions = await deps.eventStore.listSessions();
-    const newestFirst = [...sessions].reverse();
-    for (const session of newestFirst) {
-      if (
-        (session.name !== VERITY_CONTROL_SESSION_NAME && session.name !== 'Concierge') ||
-        session.projectId !== null
-      )
-        continue;
-      if (await worktreeExists(session.worktree)) {
-        if (session.name !== VERITY_CONTROL_SESSION_NAME) {
-          await deps.eventStore.renameSession(session.sessionId, VERITY_CONTROL_SESSION_NAME);
-        }
-        return session.sessionId;
-      }
-    }
-    return undefined;
-  };
-
-  const createConciergeSession = async (): Promise<string> => {
-    const worktree = await worktrees.add(makeBranch('concierge'));
-    const sessionId = randomUUID();
-    try {
-      await deps.eventStore.createSession({
-        sessionId,
-        worktree,
-        model: DEFAULT_MODEL,
-      });
-      await deps.eventStore.renameSession(sessionId, VERITY_CONTROL_SESSION_NAME);
-      return sessionId;
-    } catch (error) {
-      await deleteSessionEverywhere(sessionId).catch(() => false);
-      await worktrees.remove(worktree).catch(() => undefined);
-      throw error;
-    }
-  };
-
   // Project list / status badges + token totals — a read-time projection over
   // each session's event log, served through `summarizeSessions` so the whole
   // list costs a fixed number of queries over the narrow projection slice rather
@@ -4941,32 +4795,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return attentionSignals({ secretStatus, updater, codexUsage: usage, now: Date.now() });
   };
 
-  /**
-   * The session list, and — only when the client asks for the envelope — the
-   * server-level {@link AttentionSignal}s alongside it.
-   *
-   * WHY THE ENVELOPE IS OPT-IN. This route has always answered with a bare
-   * JSON array, and the app parses it with `z.array(sessionSummarySchema)`. An
-   * unconditional switch to an object would make every already-installed app
-   * build fail that parse and show "failed to load sessions" — the session list
-   * would break for exactly as long as it took each device to update, in order
-   * to deliver a health banner. `?envelope=1` lets a new app opt in while an old
-   * one keeps getting the array it understands, and costs one query parameter.
-   */
-  app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
-    const sessions = await measureLatencyPhase('session_list', () =>
-      deps.eventStore.listSessions(),
-    );
-    const liveWorktrees = new Set(sessions.map((s) => s.worktree));
-    prunePrSummaryCache(liveWorktrees);
-    pruneBranchCache(liveWorktrees);
-    const summaries = await measureLatencyPhase('session_summaries', () =>
-      summarizeSessions(sessions),
-    );
-    if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
-    const attention = await measureLatencyPhase('session_attention', collectAttention);
-    // Absent when healthy, so the envelope stays quiet in the steady state.
-    return { sessions: summaries, ...(attention.length > 0 ? { attention } : {}) };
+  registerSessionListRoute(app, {
+    store: deps.eventStore,
+    prunePrSummaryCache,
+    pruneBranchCache,
+    summarizeSessions,
+    collectAttention,
   });
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });
@@ -5066,94 +4900,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.githubAppValidate !== undefined ? { validate: deps.githubAppValidate } : {}),
   });
 
-  // `POST /doppler/validate` — a "does this Doppler Service Account token actually
-  // work" check the onboarding wizard's OPTIONAL Doppler step uses. Requires the
-  // cipher UNSEALED (the token must decrypt). It NEVER returns/logs the token: on
-  // success it optionally echoes a SAFE project count; on failure a fixed, redacted
-  // message. Always resolves — sealed/not-configured are `{ ok: false, error }`,
-  // not thrown errors. Mirrors `/github/app/validate`.
-  app.post('/doppler/validate', async (): Promise<DopplerValidateResult> => {
-    if (deps.dopplerValidate === undefined) return { ok: false, error: 'not configured' };
-    const resolved = await withDopplerAccountToken(deps.dopplerValidate);
-    return 'error' in resolved ? { ok: false, error: resolved.error } : resolved.value;
+  registerDopplerRoutes(app, {
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.dopplerCredentialReader !== undefined
+      ? { dopplerCredentialReader: deps.dopplerCredentialReader }
+      : {}),
+    ...(deps.dopplerValidate !== undefined ? { dopplerValidate: deps.dopplerValidate } : {}),
+    ...(deps.dopplerListProjects !== undefined
+      ? { dopplerListProjects: deps.dopplerListProjects }
+      : {}),
+    ...(deps.dopplerListConfigs !== undefined
+      ? { dopplerListConfigs: deps.dopplerListConfigs }
+      : {}),
   });
-
-  // Shared account-token resolver for the two Doppler LIST routes (#320, binding
-  // picker). Returns either the decrypted account token or a redacted failure
-  // envelope — NEVER throws for the sealed/not-configured cases (mirrors
-  // `/doppler/validate`). The token itself never leaves this helper except as the
-  // returned `{ token }`; callers pass it straight to the injected seam and
-  // return only NON-secret list data.
-  const withDopplerAccountToken = async <T>(
-    use: (token: string) => Promise<T>,
-  ): Promise<{ value: T } | { error: string }> => {
-    if (deps.secretCipher?.isSealed() === true) return { error: 'locked' };
-    if (deps.dopplerCredentialReader === undefined) return { error: 'not configured' };
-    let credential: Uint8Array | undefined;
-    try {
-      credential = await deps.dopplerCredentialReader();
-    } catch (err) {
-      if (err instanceof SealedError) return { error: 'locked' };
-      throw err;
-    }
-    if (credential === undefined) return { error: 'not configured' };
-    try {
-      let token: string;
-      try {
-        token = new TextDecoder('utf-8', { fatal: true }).decode(credential).trim();
-      } catch {
-        return { error: 'not configured' };
-      }
-      if (token.length === 0 || token.includes('\0')) return { error: 'not configured' };
-      return { value: await use(token) };
-    } finally {
-      credential.fill(0);
-    }
-  };
-
-  // `GET /doppler/projects` — list the account's Doppler projects for the binding
-  // picker (#320). The list is derived from the TRUSTED account token (decrypted
-  // here, unsealed-only), NOT from repo content — this is what closes the
-  // confused-deputy (a repo cannot enumerate another project's Doppler projects).
-  // Never returns/logs the token; only NON-secret `{ slug, name }` summaries.
-  // Sealed → `{ error: 'locked' }`; token missing / no seam → `{ error: 'not
-  // configured' }`; a redacted-throw from the seam → `{ error: <redacted> }`.
-  app.get(
-    '/doppler/projects',
-    async (): Promise<{ projects: DopplerProjectSummary[] } | { error: string }> => {
-      if (deps.dopplerListProjects === undefined) return { error: 'not configured' };
-      try {
-        const resolved = await withDopplerAccountToken(deps.dopplerListProjects);
-        return 'error' in resolved ? resolved : { projects: resolved.value };
-      } catch (err) {
-        // The seam's throw is contractually redacted (fixed status-keyed message,
-        // never the token/body). Surface that message; a non-Error degrades to a
-        // generic string so nothing unexpected leaks.
-        return { error: err instanceof Error ? err.message : 'could not list Doppler projects' };
-      }
-    },
-  );
-
-  // `GET /doppler/configs?project=<project>` — list a Doppler project's configs
-  // for the binding picker (#320). Same trust model + redaction contract as
-  // `/doppler/projects`. `project` is REQUIRED (the slug from `/doppler/projects`).
-  app.get(
-    '/doppler/configs',
-    async (request): Promise<{ configs: DopplerConfigSummary[] } | { error: string }> => {
-      const query = request.query as { project?: unknown };
-      const project = typeof query.project === 'string' ? query.project : '';
-      if (project.length === 0) return { error: 'project is required' };
-      if (deps.dopplerListConfigs === undefined) return { error: 'not configured' };
-      try {
-        const resolved = await withDopplerAccountToken((token) =>
-          deps.dopplerListConfigs!(token, project),
-        );
-        return 'error' in resolved ? resolved : { configs: resolved.value };
-      } catch (err) {
-        return { error: err instanceof Error ? err.message : 'could not list Doppler configs' };
-      }
-    },
-  );
 
   registerGitHubManifestRoutes(app, {
     eventStore: deps.eventStore,
@@ -7117,7 +6876,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  registerProjectConciergeRoutes(app, {
+  registerProjectVerityControlRoutes(app, {
     canRefreshToken: () => deps.refreshProjectToken !== undefined,
     refreshToken: async (_request, reply, id) => {
       const project = await deps.eventStore.getProject(id);
@@ -7351,35 +7110,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  app.post(
-    '/concierge/session',
-    async (_request, reply): Promise<{ sessionId: string } | { error: string }> => {
-      if (await advancedModeEnabled()) {
-        const project = await ensureVerityControlProject();
-        const worktree = await worktrees.add(makeBranch('verity-control'));
-        const sessionId = randomUUID();
-        try {
-          await deps.eventStore.createSession({
-            sessionId,
-            worktree,
-            model: DEFAULT_MODEL,
-            projectId: project.id,
-          });
-          reply.code(201);
-          return { sessionId };
-        } catch (error) {
-          await deleteSessionEverywhere(sessionId).catch(() => false);
-          await worktrees.remove(worktree).catch(() => undefined);
-          throw error;
-        }
-      }
-      const existing = await existingConciergeSession();
-      if (existing !== undefined) return { sessionId: existing };
-      const sessionId = await createConciergeSession();
-      reply.code(201);
-      return { sessionId };
-    },
-  );
+  registerVerityControlSessionRoute(app, {
+    defaultModel: DEFAULT_MODEL,
+    eventStore: deps.eventStore,
+    worktrees,
+    makeBranch,
+    deleteSessionEverywhere,
+    advancedModeEnabled,
+    ensureControlProject: ensureVerityControlProject,
+  });
 
   // The usable model set for the picker (ADR 0001 / #143): Claude and Codex are
   // subscription-backed and therefore appear only when their login exists in Verity
@@ -8764,313 +8503,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  // Create a NEW session (concept §7 "Parallel-Agent-Spawn", §8): provision a
-  // worktree and persist the Verity session row immediately so the client can
-  // open `/session/:id`. No agent process starts until the first turn is sent.
-  //
-  // Wrapped so that a spawn admitted against a project is released on EVERY exit
-  // path — a project delete that starts mid-spawn waits for this to settle
-  // before it purges the clone root out from under the worktree being created.
-  const spawnSession = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    body: SpawnBody,
-  ): Promise<SpawnResult> => {
-    const admitted: { release?: () => void } = {};
-    try {
-      return await spawnSessionAdmitted(request, reply, body, admitted);
-    } finally {
-      admitted.release?.();
-    }
-  };
-
-  const spawnSessionAdmitted = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    body: SpawnBody,
-    admitted: { release?: () => void },
-  ): Promise<SpawnResult> => {
-    // Multi-repo fleet-registry (concept §19.6, #174): if the caller
-    // specified a `project`, look up the cached row and either:
-    //   - state === 'active' → create the session bound to it;
-    //   - state !== 'active' → fire the provisioner async, return 202 +
-    //     `awaitingProvisioning: true` (the operator polls GET /projects/:id
-    //     for the transition to 'active', then re-issues this POST).
-    // A malformed `project` (parseOwnerRepo returns undefined) was already
-    // rejected by the Zod refine above → 400 before this branch.
-    let projectId: string | undefined;
-    let projectWorktree: string | undefined;
-    let projectSettings: ProjectSettingsRecord | undefined;
-    let projectWorktrees: WorktreeProvisioner | undefined;
-    let effectiveModel = body.model;
-    if (
-      body.project === undefined &&
-      body.projectId === undefined &&
-      body.model?.startsWith('verity/')
-    ) {
-      reply.code(400);
-      return { error: 'OpenCode sessions require a project sandbox' };
-    }
-    if (body.project !== undefined || body.projectId !== undefined) {
-      if (body.model !== undefined && !(await isConfiguredProjectSessionModel(body.model))) {
-        reply.code(400);
-        return { error: PROJECT_MODEL_ERROR };
-      }
-      const parsed = body.project === undefined ? undefined : parseOwnerRepo(body.project);
-      // The Zod `.refine` already guaranteed `parsed` is non-undefined here,
-      // but TS doesn't know that. Re-cover defensively.
-      if (body.project !== undefined && parsed === undefined) {
-        reply.code(400);
-        return { error: 'invalid project' };
-      }
-      if (
-        parsed !== undefined &&
-        parsed.owner.toLowerCase() === CONTROL_PLANE_PROJECT_OWNER &&
-        parsed.repo.toLowerCase() === CONTROL_PLANE_PROJECT_REPO
-      ) {
-        if (!(await advancedModeEnabled())) {
-          reply.code(404);
-          return { error: `project ${body.project} is not in the fleet registry` };
-        }
-        const project = await ensureVerityControlProject();
-        projectId = project.id;
-        projectWorktrees = worktrees;
-        projectWorktree = await projectWorktrees.add(makeBranch(body.name ?? 'verity-control'));
-        effectiveModel = body.model;
-      } else {
-        if (!deps.provisioner || !deps.projectCloneRoot || !deps.projectBackend) {
-          reply.code(503);
-          return { error: 'multi-repo provisioning is not configured' };
-        }
-        const project =
-          body.projectId !== undefined
-            ? await deps.eventStore.getProject(body.projectId)
-            : await deps.eventStore.getProjectByOwnerRepo(parsed!.owner, parsed!.repo);
-        // A soft-deleted project is gone as far as every caller is concerned:
-        // `getProject` still returns the row (the hide keeps it so the
-        // installation sync can't resurrect it), but spawning against it would
-        // both re-provision a project the operator deleted — `state='absent'`
-        // sends the branch below straight into the provisioner — and leave a
-        // session bound to a project no `GET /projects` lists. Same answer as an
-        // id that was never in the registry.
-        // `hiddenAt` only covers a delete that already got past its
-        // deprovision. Between the first quiesce pass and that hide, the row is
-        // still visible and still `active`, and a spawn admitted there would
-        // create its worktree inside a clone root the purge is removing. Answer
-        // it as the deleted project it is about to be.
-        if (
-          project === undefined ||
-          project.hiddenAt !== null ||
-          projectsBeingDeleted.has(project.id)
-        ) {
-          reply.code(404);
-          return {
-            error: `project ${body.projectId ?? body.project ?? ''} is not in the fleet registry`,
-          };
-        }
-        // Admitted. Registered synchronously with the check above — a delete
-        // that raises the flag from here on finds this spawn in the pending set
-        // and waits for it, instead of purging the clone root while the
-        // worktree below is being created.
-        admitted.release = beginProjectSpawn(project.id);
-        const projectStore = projectSettingsStore(deps.eventStore);
-        projectSettings = await projectStore.getProjectSettings(project.id);
-        effectiveModel = body.model ?? projectSettings?.defaultModel ?? undefined;
-        if (!(await isConfiguredProjectSessionModel(effectiveModel))) {
-          reply.code(400);
-          return { error: PROJECT_MODEL_ERROR };
-        }
-        // A Sandbox in a sleep lifecycle state is provisioned, not missing: its
-        // clone and worktrees sit on the host, and the first turn brings the
-        // container back through `ensureProjectSandboxReadyForTurn`. Only states
-        // that have no usable Sandbox belong in the provisioning branch below —
-        // sending a sleeping project there claims its row for CLONING and rebuilds
-        // exactly the container the sleep was retaining.
-        //
-        // `sleeping_starting` is included deliberately, mid-transition and all: the
-        // sleep routine revokes authority and stops the container, and touches
-        // neither the clone nor the session worktrees, so the host-side `worktree
-        // add` below is independent of it. The turn that follows re-reads the state
-        // and either waits out the wake or reports the transition — where a spawn
-        // routed to the provisioner would instead re-clone the project out from
-        // under a sleep that is still finalizing.
-        if (project.state !== 'active' && !isSleepLifecycleState(project.state)) {
-          if (deps.secretCipher?.isSealed() === true) {
-            reply.code(503);
-            return { error: 'secret store is sealed', status: 'sealed' as const };
-          }
-          if (
-            body.confirmProvisionWarnings !== true &&
-            deps.provisioner.provisionWarnings !== undefined
-          ) {
-            const warnings = await deps.provisioner.provisionWarnings(project.id);
-            if (warnings.length > 0) {
-              reply.code(409);
-              return { requiresConfirmation: true, warnings };
-            }
-          }
-          // Fire the provisioner asynchronously — do NOT await it (the worker
-          // does the long clone + docker build, and the operator polls for the
-          // state transition). We log a failed background attempt via the same
-          // `app.log` the conductor uses (the operator sees `provision_error`
-          // on the project row when the worker lands it).
-          settleBackgroundProvision(
-            project.id,
-            deps.provisioner.provision(project.id, {
-              confirmWarnings: body.confirmProvisionWarnings === true,
-            }),
-            (error) =>
-              request.log.error(
-                { err: error, projectId: project.id },
-                'verity: background provisioning failed',
-              ),
-          );
-          reply.code(202);
-          // Same wire shape every other project payload uses: the raw row carries
-          // internal fields and lifecycle states no client schema accepts, and a
-          // client that cannot parse this answer reports a schema dump instead of
-          // "provisioning, try again".
-          //
-          // Release and Sandbox-update fields are the placeholders the sleep and
-          // wake actions hand out for the same reason: the clone this answer
-          // announces has no Sandbox to inspect and no release resolved yet. A
-          // client that wants those reads them from the project once it exists.
-          return {
-            project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
-            awaitingProvisioning: true,
-          };
-        }
-        projectId = project.id;
-        const projectClone = projectClonePath(deps.projectCloneRoot, project);
-        // Every spawn refreshes its base from origin first so the new session
-        // starts on the latest integration tip (fleet-wide, all projects).
-        const worktreeOpts = {
-          refreshBase: true,
-          ...(projectSettings?.defaultBranch !== undefined && projectSettings.defaultBranch !== null
-            ? { baseBranch: projectSettings.defaultBranch }
-            : {}),
-        };
-        projectWorktrees =
-          deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-          createGitWorktreeProvisioner({
-            repoDir: projectClone,
-            worktreeRoot: join(projectClone, '.verity-sessions'),
-            ...worktreeOpts,
-          });
-        await deps.refreshProjectToken?.(project);
-        projectWorktree = await projectWorktrees.add(makeBranch(body.name, body.issue));
-      }
-    }
-
-    // Default spawns are isolated git worktrees. Project spawns run in the
-    // provisioned project clone path instead; allocating from the server repo
-    // here would silently edit Verity while the UI says another repo is selected.
-    let allocatedWorktree: WorktreeProvisioner | undefined;
-    const worktree =
-      projectWorktree ??
-      (await (async () => {
-        allocatedWorktree = worktrees;
-        return worktrees.add(makeBranch(body.name, body.issue));
-      })());
-    if (projectWorktree !== undefined && projectWorktrees !== undefined) {
-      allocatedWorktree = projectWorktrees;
-    }
-    if (effectiveModel === undefined) {
-      const available = await availableModels({ allowLegacyCodexFallback: true });
-      const remembered = await deps.eventStore.getLastCreatedSessionModel(projectId ?? null);
-      const lastUsed =
-        remembered !== undefined && available.models.includes(remembered) ? remembered : undefined;
-      const candidate = lastUsed ?? available.default;
-      if (
-        candidate !== undefined &&
-        (projectId === undefined || isProjectSessionModel(candidate))
-      ) {
-        effectiveModel = candidate;
-      }
-    }
-    // A client-minted id (see `spawnBody.sessionId`) is used verbatim — the app has
-    // already opened the chat on it. That it cannot clash with an existing session
-    // is enforced by the route below, before this ever runs.
-    const sessionId = body.sessionId ?? randomUUID();
-    const displayName = body.name?.trim();
-    try {
-      await deps.eventStore.createSession({
-        sessionId,
-        worktree,
-        model: effectiveModel ?? DEFAULT_MODEL,
-        ...(displayName ? { name: displayName } : {}),
-        ...(projectId !== undefined ? { projectId } : {}),
-      });
-    } catch (error) {
-      await deleteSessionEverywhere(sessionId).catch(() => false);
-      if (allocatedWorktree !== undefined) {
-        await allocatedWorktree.remove(worktree).catch(() => undefined);
-      }
-      // The project was deleted while this spawn was still provisioning, which
-      // the check at the top of the route could not have seen — it read the
-      // project a worktree ago. `createSession` is where the two orders are
-      // decided against each other, so the answer is the same 404 that check
-      // gives: the project is not in the fleet registry any more. The cleanup
-      // above already removed the worktree DELETE /projects/:id would otherwise
-      // have left behind.
-      if (error instanceof DeletedProjectError) {
-        reply.code(404);
-        return { error: `project ${error.projectId} is not in the fleet registry` };
-      }
-      throw error;
-    }
-    reply.code(201);
-    return { sessionId };
-  };
-
-  // Creations of a client-minted id that are still provisioning, so a retry of the
-  // same id waits for the original instead of adding a second worktree. Entries
-  // live only for the duration of one request.
-  const spawnsInFlight = new Map<string, Promise<SpawnResult>>();
-
-  app.post('/sessions', async (request, reply): Promise<SpawnResult> => {
-    const body = spawnBody.parse(normalizeSpawnRequestBody(request.body));
-    const requestedId = body.sessionId;
-    // A server-minted id cannot collide, so there is nothing to reconcile.
-    if (requestedId === undefined) return spawnSession(request, reply, body);
-
-    // Idempotent on the client's id. The app opens the chat before this request
-    // answers, which makes a repeat far likelier than it used to be: a reconnect, a
-    // re-mounted screen, or a client timeout on the ~1.5s of `git fetch` + `worktree
-    // add` all re-issue the same create. Wait out a run that is still in flight, then
-    // hand back whatever session exists — provisioning twice for one id would strand a
-    // worktree and leave the app watching the wrong session. A failed run leaves no
-    // row behind, so a retry after one provisions normally.
-    //
-    // The claim has to be taken in the same tick as the lookup that found the id
-    // unclaimed, which is why the "does it exist" check sits INSIDE the run rather
-    // than in front of it: `getSession` awaits, and two requests that both got past
-    // it before either had registered would each provision a worktree — then the
-    // loser's cleanup, keyed on the id they share, would delete the winner's session
-    // out from under a 201 the app already acted on.
-    for (;;) {
-      const claimed = spawnsInFlight.get(requestedId);
-      if (claimed === undefined) break;
-      await claimed.catch(() => undefined);
-    }
-
-    const run = (async (): Promise<SpawnResult> => {
-      const existing = await deps.eventStore.getSession(requestedId);
-      if (existing !== undefined) {
-        reply.code(200);
-        return { sessionId: existing.sessionId, existing: true };
-      }
-      return spawnSession(request, reply, body);
-    })();
-    // Released as the run settles, not in this request's `finally`: a waiter above
-    // resumes on this promise, and must never find the claim it just waited out
-    // still in the map.
-    const tracked = run.finally(() => spawnsInFlight.delete(requestedId));
-    // Waiters attach their own handler; without this a create nobody retried would
-    // surface as an unhandled rejection.
-    void tracked.catch(() => undefined);
-    spawnsInFlight.set(requestedId, tracked);
-    return await run;
+  registerSessionCreateRoute(app, {
+    eventStore: deps.eventStore,
+    ...(deps.provisioner === undefined ? {} : { provisioner: deps.provisioner }),
+    ...(deps.projectCloneRoot === undefined ? {} : { projectCloneRoot: deps.projectCloneRoot }),
+    ...(deps.projectBackend === undefined ? {} : { projectBackend: deps.projectBackend }),
+    ...(deps.secretCipher === undefined ? {} : { secretCipher: deps.secretCipher }),
+    ...(deps.projectWorktrees === undefined ? {} : { projectWorktrees: deps.projectWorktrees }),
+    ...(deps.refreshProjectToken === undefined
+      ? {}
+      : { refreshProjectToken: deps.refreshProjectToken }),
+    projectSettingsStore: () => projectSettingsStore(deps.eventStore),
+    worktrees,
+    isConfiguredProjectSessionModel,
+    advancedModeEnabled,
+    ensureVerityControlProject,
+    projectsBeingDeleted,
+    beginProjectSpawn,
+    settleBackgroundProvision,
+    makeBranch,
+    isProjectSessionModel,
+    availableModels,
+    deleteSessionEverywhere,
+    PROJECT_MODEL_ERROR,
+    isSleepLifecycleState,
+    publicProject: (project) => publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+    defaultModel: DEFAULT_MODEL,
   });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
@@ -9362,316 +8820,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  app.post(
-    '/sessions/:id/pull-request/merge',
-    async (request, reply): Promise<{ merged: true } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { number } = mergePullRequestBody.parse(request.body);
-      if (!deps.mergePr) {
-        reply.code(503);
-        return { error: 'pull request merging is not configured' };
-      }
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      const syncProjectCheckout = async (): Promise<boolean> => {
-        if (session.projectId === null || !deps.provisioner?.syncProjectCheckout) return true;
-        try {
-          // Refresh the managed default-branch checkout used by dev servers that
-          // are not previewing a session.
-          await deps.provisioner.syncProjectCheckout(session.projectId);
-          return true;
-        } catch (error) {
-          // A remote merge cannot be rolled back. Callers keep the merge response
-          // successful and surface the local follow-up failure where possible.
-          app.log.error(
-            { err: error, projectId: session.projectId, pullRequest: number },
-            'failed to synchronize project checkout after pull request merge',
-          );
-          return false;
-        }
-      };
-      // The branch this PR merges INTO, for the post-merge worktree reset below.
-      // Undefined when no resolver is injected — the reset then falls back to the
-      // project's base branch, as it always did.
-      let mergedBaseRef: string | undefined;
-      // The push payload is a routing hint, never authorization. Re-resolve the
-      // session's PR at action time so a forged/stale notification cannot merge an
-      // arbitrary PR from the repository. Older injected deployments without a PR
-      // status resolver retain the pre-existing merge behavior.
-      if (deps.branchPrStatus !== undefined || deps.branchPrStatusForBranches !== undefined) {
-        const current = await sessionPrStatus(session).catch(() => null);
-        if (current?.number === number && current.phase === 'merged') {
-          applyPrSummaryAction(session, compactPr(current));
-          // Preserve idempotency while still repairing a checkout left stale by
-          // an external merge or an earlier failed synchronization attempt.
-          if (!(await syncProjectCheckout())) {
-            const note = `Pull request #${String(number)} was already merged, but the project's managed default-branch checkout could not be refreshed automatically.`;
-            await deps.eventStore.appendPendingNote(id, note).catch(() => undefined);
-          }
-          return { merged: true };
-        }
-        if (
-          current?.number !== number ||
-          current.phase !== 'open' ||
-          current.pipeline !== 'success' ||
-          current.mergeable !== true
-        ) {
-          applyPrSummaryAction(session, compactPr(current));
-          reply.code(409);
-          return { error: `pull request #${String(number)} is no longer ready to merge` };
-        }
-        // Read from the re-resolved PR, so it describes the pull request this
-        // request is about to merge rather than whatever the push payload claimed.
-        mergedBaseRef = current.baseRef;
-      }
-      const merged = await deps.mergePr(number, session.worktree).catch(() => false);
-      if (!merged) {
-        invalidatePrSummaryAction(session);
-        await conductor
-          .dispatchTurn(id, buildPullRequestMergeRejectedPrompt(number), undefined, {
-            displayPrompt: buildPullRequestMergeRejectedDisplayPrompt(number),
-          })
-          .catch(() => undefined);
-        reply.code(409);
-        return { error: `pull request #${String(number)} could not be merged` };
-      }
-      applyPrSummaryAction(session, {
-        phase: 'merged',
-        pipeline: 'success',
-        mergeable: false,
-      });
-      const projectCheckoutSyncFailed = !(await syncProjectCheckout());
-      // Post-merge worktree housekeeping is deterministic and server-side: the reset
-      // force-checks-out the worktree, so it must never run under a live turn. The
-      // transcript marker and pending agent note are written only after the cleanup
-      // attempt, so the next real turn sees the final post-merge state.
-      await conductor
-        .runWhenIdle(id, async () => {
-          let note = `Pull request #${String(number)} was merged.`;
-          const branches = await branchesForSession(session);
-          if (branches) {
-            try {
-              // Against the branch the PR merged into, not the project's base: a
-              // stacked PR targets another session's branch, and resetting to the
-              // project base would force-check-out a commit without the merged work.
-              //
-              // Re-resolved now that the merge has landed, because a base retargeted
-              // between the pre-merge check and the merge itself would leave the
-              // earlier answer describing a branch this PR did not merge into. This
-              // reads GitHub rather than the pre-merge row because a successful merge
-              // drops the PR service's per-branch cache (`github.ts`); without that it
-              // would replay the very answer it is meant to re-check. The pre-merge
-              // value stands in when the PR no longer resolves — GitHub deletes the
-              // head branch this looks the PR up by.
-              const settled = await sessionPrStatus(session).catch(() => null);
-              const target =
-                settled?.number === number && settled.phase === 'merged'
-                  ? (settled.baseRef ?? mergedBaseRef)
-                  : mergedBaseRef;
-              const { base, deletedBranch } = await branches.resetToMergedBase(
-                session.worktree,
-                target === undefined ? {} : { base: target },
-              );
-              const deletedClause = deletedBranch
-                ? ` and the merged local branch "${deletedBranch}" was deleted`
-                : '';
-              // Purely informational — the reset already happened; the agent is not
-              // instructed to do anything (the detached HEAD is the server's doing).
-              note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
-            } catch {
-              // Housekeeping is non-atomic (fetch → detach → delete the merged branch):
-              // on failure the worktree MAY already be reset (only the branch delete
-              // failed) or not (the fetch/checkout failed). We can't tell which here, so
-              // word it neutrally — never falsely claim the reset did or didn't happen.
-              note = `Pull request #${String(number)} was merged, but the automatic worktree cleanup afterwards did not fully complete.`;
-            }
-          }
-          if (projectCheckoutSyncFailed) {
-            note +=
-              " The project's managed default-branch checkout could not be refreshed automatically.";
-          }
-          // The merge and cleanup need no model reasoning. Keep the detail available
-          // to the agent on its next genuine turn, while showing the user one concise
-          // transcript marker now. Both are best-effort because the PR already landed.
-          await deps.eventStore.appendPendingNote(id, note).catch(() => undefined);
-          await conductor.emitMerged(id, number).catch(() => undefined);
-        })
-        .catch(() => undefined);
-      return { merged: true };
-    },
-  );
-
-  // Merge a session branch into its project's base branch WITHOUT GitHub — the
-  // counterpart of the pull-request merge above for `local` projects, which have no
-  // remote to open a PR against. Restricted to those projects on purpose: anything
-  // with a GitHub repository keeps the PR (and its review + CI gate) as the single
-  // way work reaches the base branch. Error mapping: 409 busy / not a local project /
-  // dirty / conflicting / nothing to merge, 404 unknown session, 503 unconfigured.
-  const mergeLocalSession = async (
-    id: string,
-    setStatus: (status: number) => void,
-    approvedTip?: string,
-  ): Promise<{ merged: true; base: string; branch: string } | { error: string }> => {
-    const session = await deps.eventStore.getSession(id);
-    if (!session) {
-      setStatus(404);
-      return { error: `session ${id} not found` };
-    }
-    const branches = await branchesForSession(session);
-    if (!branches) {
-      setStatus(503);
-      return { error: 'merging is not configured' };
-    }
-    const target = await localMergeTarget(session);
-    if (target === undefined) {
-      setStatus(409);
-      return { error: 'this project merges through its pull request' };
-    }
-    const { basePath, project } = target;
-    // Every git command below runs in the project's own sandbox, not on the server:
-    // the clone's `.git/config` belongs to the session, and config keys such as
-    // `filter.<name>.clean` or `merge.<name>.driver` name a program git executes.
-    // Without that seam there is nowhere safe to run the merge, so refuse it.
-    const sandboxGit = deps.sandboxGit?.(project, basePath);
-    if (sandboxGit === undefined) {
-      setStatus(503);
-      return { error: 'merging is not configured' };
-    }
-    // Merging a branch a live turn is still writing to would land half-finished
-    // work — same admission rule as the branch switch below. The turn lock is held
-    // for the whole merge rather than only sampled first: a turn that started in
-    // between could commit after the branch tip is read, so the operator would be
-    // told work landed that did not.
-    let merged: { base: string; branch: string; mergedTip: string; baseTip: string };
-    try {
-      const attempt = await conductor.tryRunExclusive(id, async () => {
-        if (approvedTip !== undefined) {
-          const currentTip = (
-            await sandboxGit(['-C', session.worktree, 'rev-parse', 'HEAD'])
-          ).trim();
-          if (currentTip !== approvedTip) return null;
-        }
-        return branches.mergeIntoLocalBase(session.worktree, basePath, { git: sandboxGit });
-      });
-      if (!attempt.ran) {
-        setStatus(409);
-        return { error: `session ${id} is busy — finish the turn before merging` };
-      }
-      if (attempt.value === null) {
-        setStatus(409);
-        return { error: 'the session changed after the agent approved it — save again' };
-      }
-      merged = attempt.value;
-    } catch (error) {
-      if (error instanceof DirtyWorktreeError) {
-        setStatus(409);
-        return { error: 'the worktree has uncommitted changes — commit or stash them first' };
-      }
-      if (error instanceof BaseCheckoutUnavailableError) {
-        // Deliberately does not echo the error's host path.
-        setStatus(409);
-        return {
-          error:
-            "the project's base checkout is not ready to merge into — it is detached or has uncommitted changes",
-        };
-      }
-      if (error instanceof BaseCheckoutStrandedError) {
-        // The one failure here that does NOT leave the base as it was. Merging again
-        // could compound it, so say what is wrong instead of offering a retry.
-        setStatus(409);
-        return {
-          error: `merging "${error.branch}" failed and the project's base checkout could not be restored — it may be left mid-merge, so check the project before merging again`,
-        };
-      }
-      if (error instanceof MergeConflictError) {
-        setStatus(409);
-        return {
-          error: `"${error.branch}" conflicts with "${error.base}" — resolve the conflicts in this session, then merge again`,
-        };
-      }
-      if (error instanceof NothingToMergeError) {
-        setStatus(409);
-        return { error: `"${error.base}" already contains this branch` };
-      }
-      if (error instanceof BranchNotFoundError) {
-        setStatus(409);
-        return { error: 'this session is not on a local branch' };
-      }
-      if (error instanceof InvalidBranchNameError) {
-        setStatus(409);
-        return {
-          error:
-            'this session or the project base is on a ref whose name git would misread — rename the branch, then merge again',
-        };
-      }
-      if (error instanceof SandboxUnavailableError) {
-        // The merge runs in the project's container, so a stopped project is a
-        // precondition the operator can fix — not a repository problem. Deliberately
-        // does not echo the container name.
-        setStatus(409);
-        return { error: 'this project is not running — start it, then merge again' };
-      }
-      throw error; // unexpected → error boundary → sanitized 500
-    }
-    const { base, branch } = merged;
-    // The merge itself has landed; what follows is worktree housekeeping that
-    // detaches HEAD and drops the merged branch, so it must never run beside a live
-    // turn. Unlike the merge it does not have to happen now, so it waits for idle
-    // instead of rejecting: `runExclusive` parks it behind any turn that drained
-    // while the merge released the lock, then holds that lock for the whole reset.
-    await conductor
-      .runExclusive(id, async () => {
-        // The merge is stated unconditionally — it definitely succeeded. Only the
-        // housekeeping clause varies.
-        const merge = `Your branch "${branch}" was merged into "${base}" in this project's local repository (it has no GitHub remote)`;
-        let note: string;
-        try {
-          // The whole merge result: the branch commit it absorbed decides what may be
-          // deleted, the merge commit it created is where the worktree lands.
-          const { deletedBranch, retainedBranch, skipped } = await branches.resetToLocalBase(
-            session.worktree,
-            base,
-            merged,
-            { git: sandboxGit },
-          );
-          if (skipped === true) {
-            note = `${merge}, up to the commit it was on when you merged. Your worktree kept that branch because it has moved on since — commit or discard what is there and merge again to bring the rest across.`;
-          } else if (retainedBranch !== undefined) {
-            // Half-done on purpose: detached, branch kept. Say both, so the retained
-            // commits are not mistaken for merged ones.
-            note = `${merge}, up to the commit it was on when you merged. Your worktree is now detached at that merged commit, but the branch "${retainedBranch}" was kept because it has moved on since — merge again to bring the rest across.`;
-          } else {
-            const deletedClause = deletedBranch
-              ? ` and the merged local branch "${deletedBranch}" was deleted`
-              : '';
-            note = `${merge}. Your worktree is now detached at the merged commit${deletedClause}.`;
-          }
-        } catch {
-          // Non-atomic (detach → delete the branch): on failure the worktree MAY
-          // already be detached or not, and we cannot tell which here. Word it so we
-          // never falsely claim the cleanup did or didn't happen.
-          note = `${merge}, but the automatic worktree cleanup afterwards did not fully complete.`;
-        }
-        // Dispatched while the lock is still held, so it enqueues and drains the
-        // moment the reset releases it — never before the worktree is settled.
-        await conductor
-          .dispatchTurn(id, buildLocalMergedPrompt(branch, base, note), undefined, {
-            displayPrompt: buildLocalMergeDisplayPrompt(),
-          })
-          .catch(() => undefined);
-      })
-      .catch(() => undefined);
-    return { merged: true, base, branch };
-  };
-
-  app.post('/sessions/:id/merge', async (request, reply) => {
-    const { id } = sessionParams.parse(request.params);
-    return mergeLocalSession(id, (status) => {
-      reply.code(status);
-    });
+  const { mergeLocalSession } = registerSessionMergeRoutes(app, {
+    eventStore: deps.eventStore,
+    mergePr: deps.mergePr,
+    provisioner: deps.provisioner,
+    branchPrStatus: deps.branchPrStatus,
+    branchPrStatusForBranches: deps.branchPrStatusForBranches,
+    sandboxGit: deps.sandboxGit,
+    conductor,
+    branchesForSession,
+    localMergeTarget,
+    sessionPrStatus,
+    compactPr,
+    applyPrSummaryAction,
+    invalidatePrSummaryAction,
   });
 
   const localSavesInFlight = new Set<string>();
