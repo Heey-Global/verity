@@ -5737,6 +5737,7 @@ function SessionFilesSheet({
               client.saveSessionFileContent(sessionId, root, filePath, content, version)
             }
             onSaved={(file) => {
+              if (file.warning) Alert.alert('File saved', file.warning);
               setEditing(null);
               setPreview(file);
               setPath(parentPath(file.path));

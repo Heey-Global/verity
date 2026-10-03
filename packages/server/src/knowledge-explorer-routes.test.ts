@@ -14,7 +14,50 @@ import { Readable } from 'node:stream';
 import { InMemoryEventBus, type Conductor } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const observation = vi.hoisted(() => ({
+  extractionFailure: false,
+  path: '',
+  root: '',
+  depths: [] as number[],
+  held: new Map<string, number>(),
+}));
+vi.mock('./knowledge-mutation-lock.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./knowledge-mutation-lock.js')>();
+  return {
+    ...actual,
+    acquireKnowledgeMutationLock: async (root: string) => {
+      const release = await actual.acquireKnowledgeMutationLock(root);
+      observation.held.set(root, (observation.held.get(root) ?? 0) + 1);
+      return () => {
+        observation.held.set(root, (observation.held.get(root) ?? 1) - 1);
+        release();
+      };
+    },
+  };
+});
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      if (typeof args[0] === 'string' && args[0] === observation.path)
+        observation.depths.push(observation.held.get(observation.root) ?? 0);
+      return actual.open(...args);
+    },
+  };
+});
+vi.mock('./knowledge-file-ingest.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./knowledge-file-ingest.js')>();
+  return {
+    ...actual,
+    extractKnowledgeFile: async (...args: Parameters<typeof actual.extractKnowledgeFile>) => {
+      if (observation.extractionFailure) throw new Error('extraction unavailable');
+      return actual.extractKnowledgeFile(...args);
+    },
+  };
+});
 
 import {
   EXTRACTED_TEXT_DIR,
@@ -561,5 +604,53 @@ describe('session explorer knowledge roots', () => {
     expect(created.statusCode).toBe(200);
     // Check disk before another request can repair the new note's permissions.
     expect(statSync(join(dir, 'insights/new.md')).mode & 0o777).toBe(provisionedMode);
+  });
+  it('opens a preview descriptor before releasing the pathname mutation lock', async () => {
+    await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    const path = join(dir, 'locked-read.md');
+    writeFileSync(path, 'read me');
+    observation.root = dir;
+    observation.path = path;
+    observation.depths = [];
+    try {
+      const read = await app.inject({
+        method: 'GET',
+        url: '/sessions/s-knowledge/files/content?root=knowledge&path=locked-read.md',
+      });
+      expect(read.statusCode).toBe(200);
+      expect(read.json().content).toBe('read me');
+      expect(observation.depths.length).toBeGreaterThan(0);
+      expect(observation.depths.every((depth) => depth > 0)).toBe(true);
+    } finally {
+      observation.path = '';
+    }
+  });
+
+  it('reports a committed save with a warning when Knowledge extraction fails', async () => {
+    observation.extractionFailure = true;
+    try {
+      const saved = await app.inject({
+        method: 'PUT',
+        url: '/sessions/s-knowledge/files/content',
+        payload: {
+          root: 'knowledge',
+          path: 'committed.md',
+          content: 'saved content',
+          expectedVersion: null,
+        },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toMatchObject({
+        content: 'saved content',
+        warning: expect.any(String),
+        version: fileVersion(Buffer.from('saved content')),
+      });
+      expect(readFileSync(join(projectKnowledgeDir(dataRoot, 'p-1'), 'committed.md'), 'utf8')).toBe(
+        'saved content',
+      );
+    } finally {
+      observation.extractionFailure = false;
+    }
   });
 });

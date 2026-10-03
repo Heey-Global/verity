@@ -3581,4 +3581,19 @@ describe('text-file saving', () => {
     ]);
     expect(calls.every(({ init }) => init?.method === 'GET')).toBe(true);
   });
+  it('preserves the committed-save warning for the editor', async () => {
+    const payload = {
+      path: 'note.md',
+      content: 'saved',
+      size: 5,
+      version: 'saved-version',
+      editable: true,
+      warning: 'Knowledge refresh failed',
+    };
+    const { fetch } = fakeFetch(json(payload));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.saveSessionFileContent('s1', 'knowledge', 'note.md', 'saved', null),
+    ).toEqual(payload);
+  });
 });

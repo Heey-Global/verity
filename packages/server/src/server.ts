@@ -8038,21 +8038,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(400);
         return { error: 'invalid path' };
       }
-      if (!isManagedKnowledgePath(root.root, target.rel)) {
-        const release = await acquireKnowledgeMutationLock(root.dir);
-        let slot;
-        try {
-          slot = await openKnowledgeFileSlot(root, path);
-          await recoverFileHistory(slot.directoryPath);
-        } catch (error) {
-          return knowledgeSlotFailure(reply, error);
-        } finally {
-          await slot?.close();
-          release();
-        }
-      }
       let fileHandle;
+      const editablePath = !isManagedKnowledgePath(root.root, target.rel);
+      const release = editablePath ? await acquireKnowledgeMutationLock(root.dir) : () => {};
       try {
+        if (editablePath) {
+          let slot;
+          try {
+            slot = await openKnowledgeFileSlot(root, path);
+            await recoverFileHistory(slot.directoryPath);
+          } finally {
+            await slot?.close();
+          }
+        }
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
           root.dir,
@@ -8060,12 +8058,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       } catch (error) {
         await fileHandle?.close().catch(() => undefined);
-        if (error instanceof Error && error.message === 'invalid path') {
+        if (
+          (error instanceof Error && error.message === 'invalid path') ||
+          ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+        ) {
           reply.code(400);
           return { error: 'invalid path' };
         }
         reply.code(404);
         return { error: 'file not found' };
+      } finally {
+        release();
       }
       try {
         const stats = await fileHandle.stat();
@@ -8167,10 +8170,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           body.expectedVersion,
           creationMode,
         );
+        let warning: string | undefined;
+        const updates: Array<() => Promise<unknown>> = [];
         if (root.root === 'knowledge' && slot.rel === 'overview.md')
-          await markProjectOverviewAuthoritative(root.dir);
-        if (root.root !== 'worktree') await extractKnowledgeFile(root.dir, slot.rel);
-        return saved;
+          updates.push(() => markProjectOverviewAuthoritative(root.dir));
+        if (root.root !== 'worktree') updates.push(() => extractKnowledgeFile(root.dir, slot.rel));
+        for (const update of updates) {
+          try {
+            await update();
+          } catch (err) {
+            app.log.warn(
+              { err, path: slot.rel, root: root.root },
+              'saved file Knowledge refresh failed',
+            );
+            warning = 'The file was saved. Knowledge search and context may be out of date.';
+          }
+        }
+        return warning ? { ...saved, warning } : saved;
       } catch (error) {
         if (error instanceof FileWriteError) {
           reply.code(error.status);

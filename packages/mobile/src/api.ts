@@ -1347,6 +1347,7 @@ export const sessionDirectorySchema = z.object({
 export type SessionDirectory = z.infer<typeof sessionDirectorySchema>;
 
 export const sessionFileContentSchema = z.object({
+  warning: z.string().optional(),
   version: z.string().optional(),
   editable: z.boolean().optional(),
   path: z.string(),
