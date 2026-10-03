@@ -225,6 +225,61 @@ describe('devcontainer build filesystem boundary', () => {
       expect(trackedBuildInputs(root)?.files.has('lib/util.js')).toBe(true);
     });
 
+    it('reads a version 4 index whose paths are not ASCII', () => {
+      const root = repository();
+      writeFileSync(join(root, 'aé.txt'), '1\n');
+      writeFileSync(join(root, 'b.txt'), '1\n');
+      git(root, 'add', 'aé.txt', 'b.txt');
+      git(root, 'update-index', '--index-version', '4');
+      const files = trackedBuildInputs(root)?.files;
+      expect(files?.has('aé.txt') && files.has('b.txt') && files.has('lib/util.js')).toBe(true);
+    });
+
+    // The Sandbox can rewrite .git at any time. A FIFO in place of the index would block
+    // the server's event loop on a plain read; a link must not be followed either.
+    it('never blocks on, or follows, Git metadata the Sandbox swapped', () => {
+      const root = repository();
+      const index = join(root, '.git', 'index');
+      rmSync(index);
+      execFileSync('mkfifo', [index]);
+      const started = Date.now();
+      expect(trackedBuildInputs(root)).toBeNull();
+      expect(Date.now() - started).toBeLessThan(2_000);
+
+      const other = repository();
+      rmSync(index);
+      symlinkSync(join(other, '.git', 'index'), index);
+      expect(trackedBuildInputs(root)).toBeNull();
+
+      const config = join(other, '.git', 'config');
+      rmSync(config);
+      execFileSync('mkfifo', [config]);
+      expect(trackedBuildInputs(other)?.files.has('app.js')).toBe(true);
+    });
+
+    it("takes a submodule's tracked files, not what was left in its worktree", async () => {
+      const library = repository();
+      const root = repository();
+      git(
+        root,
+        '-c',
+        'protocol.file.allow=always',
+        'submodule',
+        'add',
+        '-q',
+        library,
+        'vendor/lib',
+      );
+      git(root, 'commit', '-q', '-m', 'submodule');
+      mkdirSync(join(root, 'vendor', 'lib', '.venv'));
+      symlinkSync('/usr/bin/python3', join(root, 'vendor', 'lib', '.venv', 'python'));
+      const result = await snapshot(root);
+      expect(existsSync(join(result.workspaceFolder, 'vendor', 'lib', 'lib', 'util.js'))).toBe(
+        true,
+      );
+      expect(existsSync(join(result.workspaceFolder, 'vendor', 'lib', '.venv'))).toBe(false);
+    });
+
     it('falls back to the whole clone, minus session worktrees, without a readable index', async () => {
       const root = fixture({ image: 'alpine' });
       mkdirSync(join(root, '.verity-sessions', 's1'), { recursive: true });
