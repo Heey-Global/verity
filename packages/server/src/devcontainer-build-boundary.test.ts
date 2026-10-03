@@ -8,9 +8,13 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDevcontainerBuildSnapshot } from './devcontainer-build-boundary.js';
+import {
+  createDevcontainerBuildSnapshot,
+  trackedBuildInputs,
+} from './devcontainer-build-boundary.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -136,5 +140,100 @@ describe('devcontainer build filesystem boundary', () => {
     writeFileSync(join(root, '.devcontainer.json'), '{"build":{"context":"/"}}');
     const copy = await snapshot(root);
     expect(JSON.parse(readFileSync(copy.configFile, 'utf8'))).toEqual({ image: 'alpine' });
+  });
+
+  // Server 4.6.0 snapshotted the whole host clone. Agents' session worktrees and tools
+  // put links there that are not part of the project, and one absolute link (a Python
+  // venv's interpreter) refused every rebuild: "symbolic link escapes the project".
+  describe('inputs limited to what the repository tracks', () => {
+    const git = (root: string, ...args: string[]) =>
+      execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+        stdio: 'pipe',
+      });
+    function repository(initArgs: string[] = []): string {
+      const root = fixture({ build: { dockerfile: 'Dockerfile', context: '..' } });
+      writeFileSync(join(root, 'app.js'), 'console.log(1)\n');
+      mkdirSync(join(root, 'lib'));
+      writeFileSync(join(root, 'lib', 'util.js'), 'export {}\n');
+      symlinkSync('lib/util.js', join(root, 'util-link.js'));
+      git(root, 'init', '-q', ...initArgs);
+      git(root, 'add', '-A');
+      git(root, 'commit', '-q', '-m', 'init');
+      return root;
+    }
+    function agentLeftovers(root: string): void {
+      mkdirSync(join(root, '.venv', 'bin'), { recursive: true });
+      symlinkSync('/usr/bin/python3', join(root, '.venv', 'bin', 'python'));
+      mkdirSync(join(root, '.verity-sessions', 's1', 'node_modules'), { recursive: true });
+      symlinkSync('/etc', join(root, '.verity-sessions', 's1', 'node_modules', 'etc'));
+      writeFileSync(join(root, 'scratch.log'), 'untracked\n');
+    }
+
+    it('builds from tracked files and ignores links agents left untracked', async () => {
+      const root = repository();
+      agentLeftovers(root);
+      const result = await snapshot(root);
+      const at = (path: string) => existsSync(join(result.workspaceFolder, path));
+      expect(at('app.js') && at('lib/util.js') && at('util-link.js')).toBe(true);
+      expect(at('.devcontainer/devcontainer.json')).toBe(true);
+      for (const absent of ['.venv', '.verity-sessions', 'scratch.log', '.git']) {
+        expect(at(absent)).toBe(false);
+      }
+    });
+
+    it('still refuses a committed link out of the project, and names it', async () => {
+      const root = repository();
+      symlinkSync('/etc/passwd', join(root, 'leak'));
+      git(root, 'add', 'leak');
+      await expect(snapshot(root)).rejects.toThrow(
+        'symbolic link escapes the project: leak -> /etc/passwd',
+      );
+    });
+
+    it('reads the configuration even when it was never committed', async () => {
+      const root = fixture({ image: 'alpine' });
+      writeFileSync(join(root, 'app.js'), '1\n');
+      git(root, 'init', '-q');
+      git(root, 'add', 'app.js');
+      const result = await snapshot(root);
+      expect(existsSync(join(result.workspaceFolder, '.devcontainer', 'devcontainer.json'))).toBe(
+        true,
+      );
+    });
+
+    it('reads a version 4 index', () => {
+      const root = repository();
+      git(root, 'update-index', '--index-version', '4');
+      expect(trackedBuildInputs(root)?.files).toEqual(
+        new Set([
+          '.devcontainer/Dockerfile',
+          '.devcontainer/devcontainer.json',
+          'app.js',
+          'lib/util.js',
+          'util-link.js',
+        ]),
+      );
+    });
+
+    it('reads a SHA-256 repository index', () => {
+      let root: string;
+      try {
+        root = repository(['--object-format=sha256']);
+      } catch {
+        return; // This git predates SHA-256 repositories.
+      }
+      expect(trackedBuildInputs(root)?.files.has('lib/util.js')).toBe(true);
+    });
+
+    it('falls back to the whole clone, minus session worktrees, without a readable index', async () => {
+      const root = fixture({ image: 'alpine' });
+      mkdirSync(join(root, '.verity-sessions', 's1'), { recursive: true });
+      symlinkSync('/etc', join(root, '.verity-sessions', 's1', 'etc'));
+      writeFileSync(join(root, 'app.js'), '1\n');
+      expect(trackedBuildInputs(root)).toBeNull();
+      const result = await snapshot(root);
+      expect(existsSync(join(result.workspaceFolder, 'app.js'))).toBe(true);
+      expect(existsSync(join(result.workspaceFolder, '.verity-sessions'))).toBe(false);
+    });
   });
 });

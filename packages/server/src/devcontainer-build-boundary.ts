@@ -133,6 +133,117 @@ function validate(root: string, configFile: string): void {
   }
 }
 
+/** Which clone entries a build may read. `null` admits everything but the paths below. */
+interface BuildInputs {
+  files: ReadonlySet<string>;
+  dirs: ReadonlySet<string>;
+  subtrees: readonly string[];
+}
+
+/** Never build inputs: Git's own store, and the worktrees of Verity's sessions. Those
+ * hold whatever agents produced — `node_modules`, Python venvs whose interpreter link
+ * is absolute, caches — and a single such link made every project rebuild fail. */
+const EXCLUDED_ROOT_ENTRIES = new Set(['.git', '.verity-sessions']);
+const MAX_INDEX_BYTES = 256 * 1024 ** 2;
+
+function readVarint(buffer: Buffer, offset: number): [number, number] {
+  let byte = buffer[offset++]!;
+  let value = byte & 0x7f;
+  while (byte & 0x80) {
+    byte = buffer[offset++]!;
+    value = ((value + 1) * 128) | (byte & 0x7f);
+  }
+  return [value, offset];
+}
+
+/**
+ * The project's tracked paths, read from the clone's Git index as data. Git itself is
+ * never run here: the clone is mounted read-write into the Sandbox, so its config can
+ * name programs (fsmonitor, filters) that `git ls-files` would execute on the host.
+ * The index only narrows what is copied; the copy below still enforces every boundary
+ * check on what it reads, so a forged index can drop inputs but never admit a link out.
+ * Anything this reader does not fully understand returns `null`, and the caller falls
+ * back to the whole clone minus {@link EXCLUDED_ROOT_ENTRIES}.
+ */
+export function trackedBuildInputs(workspaceFolder: string): BuildInputs | null {
+  try {
+    const gitDir = join(workspaceFolder, '.git');
+    if (!lstatSync(gitDir).isDirectory()) return null;
+    const indexPath = join(gitDir, 'index');
+    const stat = lstatSync(indexPath);
+    if (!stat.isFile() || stat.size < 12 || stat.size > MAX_INDEX_BYTES) return null;
+    const index = readFileSync(indexPath);
+    if (index.toString('latin1', 0, 4) !== 'DIRC') return null;
+    const version = index.readUInt32BE(4);
+    if (version < 2 || version > 4) return null;
+    const count = index.readUInt32BE(8);
+    let config = '';
+    try {
+      config = readFileSync(join(gitDir, 'config'), 'utf8');
+    } catch {
+      // No config: the default object format.
+    }
+    const hashBytes = /objectformat\s*=\s*sha256/iu.test(config) ? 32 : 20;
+    const files = new Set<string>();
+    const dirs = new Set<string>();
+    const subtrees: string[] = [];
+    let offset = 12;
+    let previous = '';
+    for (let i = 0; i < count; i++) {
+      const start = offset;
+      const mode = index.readUInt32BE(start + 24);
+      offset = start + 40 + hashBytes;
+      const flags = index.readUInt16BE(offset);
+      offset += 2;
+      if (flags & 0x4000) {
+        if (version < 3) return null;
+        offset += 2;
+      }
+      let path: string;
+      if (version === 4) {
+        let strip: number;
+        [strip, offset] = readVarint(index, offset);
+        if (strip > previous.length) return null;
+        const end = index.indexOf(0, offset);
+        if (end < 0) return null;
+        path = previous.slice(0, previous.length - strip) + index.toString('utf8', offset, end);
+        offset = end + 1;
+      } else {
+        const end = index.indexOf(0, offset);
+        if (end < 0) return null;
+        path = index.toString('utf8', offset, end);
+        // Entries are NUL-padded to a multiple of eight bytes.
+        offset = start + Math.ceil((end - start + 1) / 8) * 8;
+      }
+      previous = path;
+      if (offset > index.length) return null;
+      const type = mode >>> 12;
+      if (type === 0o16 || type === 0o04)
+        subtrees.push(path); // gitlink, sparse directory
+      else if (type === 0o10 || type === 0o12)
+        files.add(path); // file, symlink
+      else return null;
+      for (let slash = path.indexOf('/'); slash >= 0; slash = path.indexOf('/', slash + 1)) {
+        dirs.add(path.slice(0, slash));
+      }
+    }
+    // A split index keeps entries in a shared file this reader does not follow.
+    if (index.toString('latin1', offset, offset + 4) === 'link') return null;
+    return { files, dirs, subtrees };
+  } catch {
+    return null;
+  }
+}
+
+function admitted(inputs: BuildInputs | null, path: string, directory: boolean): boolean {
+  if (EXCLUDED_ROOT_ENTRIES.has(path.split('/', 1)[0]!)) return false;
+  if (!inputs) return true;
+  // The configuration is read even when it was never committed.
+  if (path === '.devcontainer' || path.startsWith('.devcontainer/')) return true;
+  if (inputs.subtrees.some((root) => path === root || path.startsWith(`${root}/`))) return true;
+  return directory ? inputs.dirs.has(path) : inputs.files.has(path);
+}
+
 export interface DevcontainerBuildSnapshot {
   workspaceFolder: string;
   configFile: string;
@@ -151,18 +262,25 @@ export async function createDevcontainerBuildSnapshot(
   let entries = 0;
   let bytes = 0;
   let bytesSinceYield = 0;
-  const copyDirectory = async (sourceFd: number, destination: string): Promise<void> => {
+  const inputs = trackedBuildInputs(workspaceFolder);
+  const copyDirectory = async (
+    sourceFd: number,
+    destination: string,
+    prefix: string,
+  ): Promise<void> => {
     const pinned = `/proc/self/fd/${sourceFd}`;
     for (const name of readdirSync(pinned)) {
+      const relativePath = prefix + name;
+      const source = join(pinned, name);
+      const stat = lstatSync(source);
+      if (!admitted(inputs, relativePath, stat.isDirectory())) continue;
       if (++entries > 200_000) refuse('project exceeds the 200,000 build input limit');
       if (entries % 64 === 0) await setImmediate();
-      const source = join(pinned, name);
       const target = join(destination, name);
-      const stat = lstatSync(source);
       if (stat.isSymbolicLink()) {
         const link = readlinkSync(source);
         if (isAbsolute(link) || !within(snapshot, resolve(dirname(target), link))) {
-          refuse('symbolic link escapes the project');
+          refuse(`symbolic link escapes the project: ${relativePath} -> ${link}`);
         }
         symlinkSync(link, target);
         links.push(target);
@@ -174,7 +292,7 @@ export async function createDevcontainerBuildSnapshot(
         try {
           if (!verifyOpenedInput(fd, stat).isDirectory()) refuse('non-directory build input');
           mkdirSync(target);
-          await copyDirectory(fd, target);
+          await copyDirectory(fd, target, `${relativePath}/`);
         } finally {
           closeSync(fd);
         }
@@ -222,12 +340,14 @@ export async function createDevcontainerBuildSnapshot(
     );
     try {
       if (!verifyOpenedInput(rootFd, root).isDirectory()) refuse('project root changed');
-      await copyDirectory(rootFd, snapshot);
+      await copyDirectory(rootFd, snapshot, '');
     } finally {
       closeSync(rootFd);
     }
     for (const link of links) {
-      if (!within(snapshot, realpathSync(link))) refuse('symbolic link escapes the project');
+      if (!within(snapshot, realpathSync(link))) {
+        refuse(`symbolic link escapes the project: ${relative(snapshot, link)}`);
+      }
     }
     const configFile = join(snapshot, '.devcontainer', 'devcontainer.json');
     validate(snapshot, configFile);
