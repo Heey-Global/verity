@@ -1514,17 +1514,39 @@ function commandFailureMessage(error: unknown): string {
     .map((value) => value.trim())
     .join('\n');
   const raw = output.length > 0 ? output : error instanceof Error ? error.message : String(error);
-  // Surface the TAIL lines — where the real failure is — not an arbitrary
-  // char-slice that leads with earlier success noise (e.g. a long install log).
-  const tail = raw
+  const tail = commandOutputTail(raw);
+  const hint = devcontainerFailureHint(raw);
+  return hint !== undefined ? `${hint}\n\n${tail}` : tail;
+}
+
+const COMMAND_OUTPUT_LINE_MAX_CHARS = 240;
+const JS_STACK_FRAME = /^\s+at\s.*(?:\(.*:\d+:\d+\)|:\d+:\d+)$/;
+
+/** The TAIL lines of a command's output — where the real failure is — not an
+ *  arbitrary char-slice that leads with earlier success noise (e.g. a long
+ *  install log).
+ *
+ *  A failed `devcontainer build` ends its stderr with its own `Command failed:
+ *  docker buildx build …` echo (one line of well over 1,000 characters) and a
+ *  Node stack trace. Taken raw, those alone fill the whole budget and the
+ *  BuildKit `ERROR: …` lines just above them never reach the operator, who then
+ *  sees only build arguments and `devContainersSpecCLI.js` frames. So stack
+ *  frames are dropped and every line is capped to its head and end (BuildKit puts
+ *  the step at the start and `exit code: N` at the end) before the tail is
+ *  taken. */
+export function commandOutputTail(raw: string): string {
+  return raw
     .split('\n')
     .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
+    .filter((line) => line.trim().length > 0 && !JS_STACK_FRAME.test(line))
+    .map((line) =>
+      line.length > COMMAND_OUTPUT_LINE_MAX_CHARS
+        ? `${line.slice(0, COMMAND_OUTPUT_LINE_MAX_CHARS / 2)}…${line.slice(-COMMAND_OUTPUT_LINE_MAX_CHARS / 2)}`
+        : line,
+    )
     .slice(-COMMAND_OUTPUT_TAIL_LINES)
     .join('\n')
     .slice(-COMMAND_OUTPUT_MAX_CHARS);
-  const hint = devcontainerFailureHint(raw);
-  return hint !== undefined ? `${hint}\n\n${tail}` : tail;
 }
 
 /** Failure message for a devcontainer build (ADR 0003 R3.1). Prefers the
