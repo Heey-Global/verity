@@ -301,6 +301,11 @@ export class PreviewEdge {
         socket.destroy();
         return;
       }
+      if (!previewBrowserOriginAllowed(request, this.options.publicOrigin)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       const connector = this.connector;
       if (!connector || connector.readyState !== WebSocket.OPEN) {
         socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
@@ -679,6 +684,17 @@ export class PreviewEdge {
       }
       if (this.expired()) {
         sendPreviewExpired(response);
+        return;
+      }
+      if (
+        !['GET', 'HEAD', 'OPTIONS'].includes(request.method ?? 'GET') &&
+        !previewBrowserOriginAllowed(request, this.options.publicOrigin)
+      ) {
+        response.writeHead(403, {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        response.end('Forbidden preview origin.');
         return;
       }
       if (url.pathname === LOGIN_PATH) {
@@ -1771,6 +1787,16 @@ function websocketDialHeaders(headers: Record<string, string>): {
 
 function isLoopbackHostname(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+/** SameSite cookies do not isolate sibling previews. Check the public origin,
+ * never the proxy's Host header. Native tools may omit browser headers; opaque
+ * origins and browser requests from another site or sibling must fail closed. */
+function previewBrowserOriginAllowed(request: IncomingMessage, publicOrigin: string): boolean {
+  const origin = request.headers.origin;
+  if (origin !== undefined) return origin === publicOrigin;
+  const site = request.headers['sec-fetch-site'];
+  return site === undefined || site === 'same-origin' || site === 'none';
 }
 
 function filteredHeaders(headers: IncomingMessage['headers']): Record<string, string> {

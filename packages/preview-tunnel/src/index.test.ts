@@ -61,6 +61,163 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.();
 });
 
+describe('preview browser origin protection', () => {
+  const shareId = 'share-origin-guard';
+  const origin = `https://${shareId}.preview.example.test`;
+  const rejectedHeaders = [
+    { origin: 'https://hostile.preview.example.test' },
+    { origin: 'https://unrelated.example.org' },
+    { origin: 'null' },
+    { origin: `${origin}/` },
+    { origin: 'malformed' },
+    { 'sec-fetch-site': 'same-site' },
+    { 'sec-fetch-site': 'cross-site' },
+  ];
+
+  it('blocks unsafe HTTP from sibling origins before forwarding or setting a login cookie', async () => {
+    const forwarded = vi.fn();
+    const target = createServer((request, response) => {
+      forwarded(request.method);
+      response.end('target');
+    });
+    const port = await listen(target);
+    cleanups.push(() => closeServer(target));
+    const { edgePort, cookie } = await bridge(shareId, port);
+    // SameSite cookies still accompany requests between sibling preview hosts.
+    for (const headers of rejectedHeaders) {
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        const response = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+          method,
+          headers: { cookie, ...headers },
+          redirect: 'manual',
+          body: 'hostile',
+        });
+        expect(response.status).toBe(403);
+        await response.text();
+      }
+      const loginResponse = await fetch(`http://127.0.0.1:${edgePort}/__verity/login`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+        redirect: 'manual',
+        body: 'pin=123456&next=%2F',
+      });
+      expect(loginResponse.status).toBe(403);
+      expect(loginResponse.headers.get('set-cookie')).toBeNull();
+      await loginResponse.text();
+    }
+    expect(forwarded).not.toHaveBeenCalled();
+  });
+
+  it('preserves same-origin writes, headerless tools, reads and code-link login', async () => {
+    const target = createServer((request, response) => response.end(request.method));
+    const port = await listen(target);
+    cleanups.push(() => closeServer(target));
+    const { edgePort, cookie } = await bridge(shareId, port);
+    for (const headers of [{ origin }, {}, { 'sec-fetch-site': 'same-origin' }]) {
+      const write = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+        method: 'POST',
+        headers: { cookie, ...headers },
+        body: 'valid',
+      });
+      expect(write.status).toBe(200);
+      expect(await write.text()).toBe('POST');
+      const loginResponse = await fetch(`http://127.0.0.1:${edgePort}/__verity/login`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'pin=123456&next=%2F',
+      });
+      expect(loginResponse.status).toBe(303);
+      expect(loginResponse.headers.get('set-cookie')).toContain('__Host-verity-preview=');
+      await loginResponse.text();
+    }
+    const read = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+      headers: { cookie, origin: 'https://hostile.preview.example.test' },
+    });
+    expect(await read.text()).toBe('GET');
+    const link = await fetch(`http://127.0.0.1:${edgePort}/?pin=123456`, {
+      headers: { 'sec-fetch-site': 'cross-site' },
+      redirect: 'manual',
+    });
+    expect(link.status).toBe(303);
+    expect(link.headers.get('set-cookie')).toContain('__Host-verity-preview=');
+    await link.text();
+  });
+
+  it('refuses sibling-origin WebSockets before opening a private target stream', async () => {
+    const reached = vi.fn();
+    const port = await wsTarget(reached);
+    const { edgePort, cookie } = await bridge(shareId, port);
+    for (const headers of rejectedHeaders) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/private`, {
+        headers: { cookie, ...headers },
+      });
+      cleanups.push(() => client.terminate());
+      const status = await new Promise<number>((resolve, reject) => {
+        client.once('unexpected-response', (_request, response) => {
+          response.resume();
+          resolve(response.statusCode!);
+          client.terminate();
+        });
+        client.on('error', () => {});
+        client.once('open', () => reject(new Error('cross-origin WebSocket opened')));
+      });
+      expect(status).toBe(403);
+    }
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('keeps connector upgrades governed by bearer authentication', async () => {
+    const token = generatePreviewSecret();
+    const edge = new PreviewEdge({
+      shareId,
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret(token),
+      sessionSecretHash,
+      publicOrigin: origin,
+    });
+    const port = await edge.listen();
+    cleanups.push(() => edge.close());
+    const client = new WebSocket(`ws://127.0.0.1:${port}/__verity/connector`, {
+      headers: { authorization: `Bearer ${token}`, origin: 'https://hostile.preview.example.test' },
+    });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    const unauthorized = new WebSocket(`ws://127.0.0.1:${port}/__verity/connector`, {
+      headers: { origin },
+    });
+    cleanups.push(() => unauthorized.terminate());
+    unauthorized.on('error', () => {});
+    const status = await new Promise<number>((resolve, reject) => {
+      unauthorized.once('unexpected-response', (_request, response) => {
+        response.resume();
+        resolve(response.statusCode!);
+        unauthorized.terminate();
+      });
+      unauthorized.once('open', () => reject(new Error('anonymous connector opened')));
+    });
+    expect(status).toBe(401);
+  });
+
+  it('preserves same-origin and headerless application WebSockets', async () => {
+    const port = await wsTarget((socket) => socket.on('message', (data) => socket.send(data)));
+    const { edgePort, cookie } = await bridge(shareId, port);
+    for (const headers of [{ origin }, {}, { 'sec-fetch-site': 'same-origin' }]) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/private`, {
+        headers: { cookie, ...headers },
+      });
+      cleanups.push(() => client.terminate());
+      await opened(client);
+      const reply = new Promise<string>((resolve) =>
+        client.once('message', (data) => resolve((data as Buffer).toString())),
+      );
+      client.send('private data');
+      expect(await reply).toBe('private data');
+      client.close();
+    }
+  });
+});
+
 describe('connector reconnect policy', () => {
   it('resets failure backoff after a successful connection and retries disconnects', async () => {
     let calls = 0;
