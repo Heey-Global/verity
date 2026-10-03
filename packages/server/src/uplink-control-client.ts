@@ -570,6 +570,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
       }
     }
     if (frame.type === 'welcome') {
+      const welcomeSocket = this.socket;
+      const welcomeGeneration = this.generation;
+      const currentWelcome = () =>
+        !this.stopped && this.socket === welcomeSocket && this.generation === welcomeGeneration;
       const installationId = stringField(frame, 'installationId');
       const installationHandle = validInstallationHandle(frame.handle) ? frame.handle : undefined;
       const negotiation = remoteNegotiation(frame);
@@ -579,6 +583,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.controlReady = true;
       try {
         const settings = await this.options.store.getVeritySettings();
+        if (!currentWelcome()) return;
         // A first-ever admission, a re-admission under the same id, and an
         // admission that silently replaced the stored id look identical in the
         // logs otherwise, and they mean very different things when the service is
@@ -606,6 +611,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         );
         if (previousInstallationId !== installationId) {
           await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
+          if (!currentWelcome()) return;
         }
         // Persist the identity before local reconciliation. The Uplink has
         // already admitted this installation, so losing its assigned id when a
@@ -613,6 +619,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         // installation. With a one-installation entitlement that strands the
         // client behind the slot it just consumed until the lease expires.
         await this.awaitRequiredCleanup();
+        if (!currentWelcome()) return;
         this.applyLease(frame);
         this.remoteNegotiated =
           this.options.offerRemoteControl === true &&
@@ -625,10 +632,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
         if (!this.features.has('sharing')) {
           await this.disableFeaturesOnce('Uplink did not grant public preview entitlement');
         }
-        for (const shareId of await this.options.store.listPendingUplinkShareRemovals()) {
+        const pendingRemovals = await this.options.store.listPendingUplinkShareRemovals();
+        if (!currentWelcome()) return;
+        for (const shareId of pendingRemovals) {
           this.orphanShareIds.add(shareId);
         }
       } catch (error: unknown) {
+        if (!currentWelcome()) return;
         // The frame was valid and the Uplink admitted us. A store or cleanup
         // failure is local, so calling it an invalid control message sends the
         // service-side investigation down the wrong protocol path.

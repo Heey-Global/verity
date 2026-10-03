@@ -221,6 +221,50 @@ describe('UplinkControlClient', () => {
     },
   );
 
+  it('does not restore authority from a stalled welcome after overload and reconnect', async () => {
+    vi.useFakeTimers();
+    const fixture = setup();
+    fixture.client.start();
+    await flush();
+    let resume!: () => void;
+    fixture.store.updateVeritySettings.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resume = () => resolve({ ...fixture.settings, uplinkInstallationId: 'installation-1' });
+        }),
+    );
+    fixture.socket.open();
+    const welcome = {
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    };
+    fixture.socket.message(welcome);
+    await flush();
+    const replacement = new FakeSocket();
+    fixture.socketFactory.mockReturnValue(replacement as unknown as WebSocket);
+    try {
+      for (let i = 0; i < MAX_CONTROL_PENDING_MESSAGES; i += 1) {
+        fixture.socket.message({ type: 'share.expired', shareId: 'queued' });
+      }
+      expect(fixture.socket.close).toHaveBeenCalledWith(1013, 'control backlog exceeded');
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS);
+      replacement.open();
+      resume();
+      for (let i = 0; i < MAX_CONTROL_PENDING_MESSAGES; i += 1) await flush();
+      expect(fixture.client.isAvailable()).toBe(false);
+      replacement.message(welcome);
+      await flush();
+      expect(fixture.client.isAvailable()).toBe(true);
+      expect(replacement.close).not.toHaveBeenCalled();
+    } finally {
+      resume();
+      await fixture.client.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('returns backlog capacity after completed handlers', async () => {
     const fixture = await welcomed(setup());
     try {
