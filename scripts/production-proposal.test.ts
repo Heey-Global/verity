@@ -12,6 +12,7 @@ const fixture = vi.hoisted(() => ({
   },
   same: false,
   merged: false,
+  deleted: false,
   calls: [] as { command: string; args: string[] }[],
 }));
 vi.mock('node:fs', async (original) => ({
@@ -23,6 +24,7 @@ vi.mock('node:child_process', () => ({
   execFileSync: vi.fn((command: string, args: string[]) => {
     fixture.calls.push({ command, args });
     if (command === 'git') {
+      if (args[0] === 'ls-remote' && fixture.deleted) return '';
       if (args[0] === 'ls-remote')
         return 'b'.repeat(40) + '\trefs/heads/automation/promote-mobile-production';
       if (args[0] === 'diff' || args[0] === 'ls-tree') return 'releases/mobile-production.json';
@@ -38,7 +40,16 @@ vi.mock('node:child_process', () => ({
         ? JSON.stringify({ assets: [{ name: 'production-candidate.json' }] })
         : JSON.stringify(fixture.candidate);
     if (args[0] === 'pr' && args[1] === 'list' && args.includes('merged'))
-      return fixture.merged ? JSON.stringify([{ number: 7, headRefOid: 'b'.repeat(40) }]) : '[]';
+      return fixture.merged
+        ? JSON.stringify([
+            {
+              number: 7,
+              headRefOid: 'b'.repeat(40),
+              author: { login: 'github-actions[bot]' },
+              baseRefName: 'main',
+            },
+          ])
+        : '[]';
     if (args[0] === 'pr')
       return args[1] === 'list'
         ? args.includes('author')
@@ -47,6 +58,10 @@ vi.mock('node:child_process', () => ({
         : '';
     if (args[0] === 'workflow') return '';
     const endpoint = args.find((arg) => arg.startsWith('repos/'));
+    if (endpoint?.includes('/contents/'))
+      return JSON.stringify({
+        content: Buffer.from(JSON.stringify(fixture.candidate)).toString('base64'),
+      });
     if (endpoint?.endsWith('/heads/main'))
       return JSON.stringify({ object: { sha: 'c'.repeat(40) } });
     if (endpoint?.includes('/git/ref/heads/'))
@@ -64,6 +79,7 @@ afterEach(() => {
   fixture.calls = [];
   fixture.same = false;
   fixture.merged = false;
+  fixture.deleted = false;
   vi.unstubAllEnvs();
 });
 describe('rolling production proposals', () => {
@@ -83,7 +99,8 @@ describe('rolling production proposals', () => {
     expect(signed).toBeGreaterThan(reset);
     expect(fixture.calls[signed]?.args).toContain('expected=' + 'c'.repeat(40));
   });
-  it('finishes recovery when the identical candidate approval has already merged', () => {
+  it.each([false, true])('recovers a merged approval when branch deletion is %s', (deleted) => {
+    fixture.deleted = deleted;
     fixture.same = true;
     fixture.merged = true;
     vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
@@ -94,6 +111,11 @@ describe('rolling production proposals', () => {
       ),
     ).toBe(false);
     expect(fixture.calls.some((call) => call.args.includes('graphql'))).toBe(false);
+    expect(
+      fixture.calls.some((call) =>
+        call.args.includes('ref=refs/heads/automation/promote-mobile-production'),
+      ),
+    ).toBe(false);
     expect(fixture.calls.some((call) => call.args[0] === 'workflow')).toBe(false);
   });
   it('preserves the exact head when retrying the same recorded candidate', () => {

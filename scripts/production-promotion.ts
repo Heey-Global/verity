@@ -97,6 +97,33 @@ export function propose(inputPath = process.argv[3] ?? '') {
   } else gh('release', 'upload', tag, recordPath);
 
   const repository = repo();
+  const approvals = JSON.parse(
+    gh(
+      'pr',
+      'list',
+      '--head',
+      branch,
+      '--state',
+      'merged',
+      '--json',
+      'number,headRefOid,author,baseRefName',
+    ),
+  ) as { number: number; headRefOid: string; author: { login: string }; baseRefName: string }[];
+  for (const approval of approvals) {
+    if (
+      approval.baseRefName !== 'main' ||
+      !['app/github-actions', 'github-actions[bot]'].includes(approval.author.login)
+    )
+      continue;
+    const record = api<{ content: string }>(
+      `repos/${repository}/contents/${manifest}?ref=${approval.headRefOid}`,
+    );
+    if (
+      JSON.stringify(JSON.parse(Buffer.from(record.content, 'base64').toString('utf8'))) ===
+      JSON.stringify(candidate)
+    )
+      return;
+  }
   const main = api<{ object: { sha: string } }>(`repos/${repository}/git/ref/heads/main`).object
     .sha;
   const remote = run('git', 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
@@ -138,12 +165,6 @@ export function propose(inputPath = process.argv[3] ?? '') {
   const existing = hasManifest ? run('git', 'show', `origin/${branch}:${manifest}`) : '';
   const sameCandidate =
     existing && JSON.stringify(JSON.parse(existing)) === JSON.stringify(candidate);
-  if (sameCandidate) {
-    const merged = JSON.parse(
-      gh('pr', 'list', '--head', branch, '--state', 'merged', '--json', 'number,headRefOid'),
-    ) as { number: number; headRefOid: string }[];
-    if (merged.some((pr) => pr.headRefOid === head)) return;
-  }
   if (!sameCandidate) {
     if (remote) {
       // New candidates must run CI on current main; retries keep their exact head.
