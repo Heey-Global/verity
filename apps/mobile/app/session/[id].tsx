@@ -70,6 +70,8 @@ import {
   listSessionsSummary,
   listSessionsTitle,
   permissionInputText,
+  knowledgePublishSummary,
+  KNOWLEDGE_PUBLISH_EXPLANATION,
   printableFileHtml,
   sessionHandoffCaveats,
   sessionHandoffSummary,
@@ -7495,6 +7497,8 @@ function PermissionPrompt({
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
+  const isKnowledge = pending.tool === 'verity_knowledge';
+  const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
@@ -7537,7 +7541,8 @@ function PermissionPrompt({
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
     (isGmail && gmailSummary === null) ||
-    (isCalendar && calendarSummary === null)
+    (isCalendar && calendarSummary === null) ||
+    (isKnowledge && knowledgeSummary === null)
       ? permissionInputText(pending.input)
       : null;
   // The fallback path only — `brokeredRequestDetails` is non-null exactly when no summariser
@@ -7552,17 +7557,24 @@ function PermissionPrompt({
   const brokeredRequestCaveats =
     brokeredRequestDetails === null
       ? null
-      : isSessionHandoff
-        ? sessionHandoffCaveats(null)
-        : isListSessions
-          ? listSessionsSentence(null)
-          : null;
+      : isKnowledge
+        ? KNOWLEDGE_PUBLISH_EXPLANATION
+        : isSessionHandoff
+          ? sessionHandoffCaveats(null)
+          : isListSessions
+            ? listSessionsSentence(null)
+            : null;
   // One row per brokered card rather than a ternary chain in the header: each summariser
   // owns its own headline, first match wins in the order they are parsed above, and the next
   // tool adds a line here instead of another level of nesting. The fallback names the tool,
   // which is all that is known when no summariser recognised the input.
   const cardTitle =
     [
+      !isKnowledge
+        ? null
+        : knowledgeSummary?.replacesExisting
+          ? 'Save changes to Global Knowledge?'
+          : 'Publish insight to Global Knowledge?',
       httpSummary === null ? null : brokeredHttpTitle(httpSummary),
       cliSecretLabel === null ? null : `Run trusted command with ${cliSecretLabel}?`,
       handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
@@ -7596,7 +7608,11 @@ function PermissionPrompt({
       // Announce the whole prompt as one a11y unit so the intent ("approve this
       // tool") is read before the operator reaches the Allow/Deny buttons.
       accessibilityRole="alert"
-      accessibilityLabel={`The agent wants to run ${pending.tool}. Allow or deny.`}
+      accessibilityLabel={
+        isKnowledge
+          ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
+          : `The agent wants to run ${pending.tool}. Allow or deny.`
+      }
     >
       <View style={styles.permissionHeader}>
         <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
@@ -7615,7 +7631,23 @@ function PermissionPrompt({
               : pending.riskClass}
         </Text>
       </View>
-      {httpSummary !== null ? (
+      {knowledgeSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            Source: {spellOutBidiControls(knowledgeSummary.source)}
+          </Text>
+          <Text style={styles.permissionSubtitle} selectable>
+            Destination: {spellOutBidiControls(knowledgeSummary.destination)}
+          </Text>
+          <Text style={styles.permissionHttpMeta}>{KNOWLEDGE_PUBLISH_EXPLANATION}</Text>
+          {knowledgeSummary.replacesExisting ? (
+            <Text style={styles.permissionHttpMeta}>
+              Saves the project version as the updated global file. Agents in every project can use
+              the updated content.
+            </Text>
+          ) : null}
+        </View>
+      ) : httpSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable numberOfLines={2}>
             {httpSummary.method} {httpSummary.host}
@@ -7853,7 +7885,13 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`}
+          accessibilityLabel={
+            isKnowledge
+              ? knowledgeSummary?.replacesExisting
+                ? 'Save changes to Global Knowledge'
+                : 'Publish to Global Knowledge'
+              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`
+          }
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionAllow,
@@ -7865,7 +7903,15 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {approvedForDelivery ? 'Retry delivery' : isScopedSecretTool ? 'Allow once' : 'Allow'}
+              {isKnowledge
+                ? knowledgeSummary?.replacesExisting
+                  ? 'Save changes'
+                  : 'Publish to Global'
+                : approvedForDelivery
+                  ? 'Retry delivery'
+                  : isScopedSecretTool
+                    ? 'Allow once'
+                    : 'Allow'}
             </Text>
           )}
         </Pressable>
