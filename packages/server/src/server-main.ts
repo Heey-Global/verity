@@ -1,3 +1,7 @@
+import {
+  configureManagedUpdateChannel,
+  MANAGED_DEPLOYMENT_ROOT,
+} from './self-update/managed-deployment.js';
 // Deployment entrypoint (concept §, issue #25). Thin composition root: read the
 // environment, build the embedded control-plane server, listen, and shut down
 // cleanly on a signal. The testable wiring lives in ./embedded.ts; this file is
@@ -54,6 +58,7 @@ import { runManagedBootstrap } from './self-update/managed-bootstrap.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import {
   createReleaseChannelResolver,
+  releaseChannelFromEnv,
   type ReleaseArchitecture,
   type ReleaseChannelResolver,
 } from './self-update/release-channel.js';
@@ -194,11 +199,13 @@ function buildReleaseChannelResolver(
     const reason = `no release channel is published for ${process.arch}`;
     return { resolve: () => Promise.resolve({ state: 'unsupported', reason, operation: null }) };
   }
+  const channel = releaseChannelFromEnv(process.env);
   return createReleaseChannelResolver({
+    channel,
     managed: Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim()),
     current: SERVER_COMPAT,
     architecture,
-    load: createReleaseChannelArtifactLoader({ architecture }),
+    load: createReleaseChannelArtifactLoader({ architecture, channel }),
     verify: createReleaseChannelVerifier({
       // Persisted on the data volume so the Sigstore trusted root survives a
       // restart and the first update check after a cutover is not a cold TUF
@@ -452,6 +459,11 @@ async function main(): Promise<void> {
       image,
       process.env.VERITY_SERVER_VERSION ?? '0.0.0-dev',
     );
+    return;
+  }
+  if (process.argv[2] === 'configure-update-channel') {
+    releaseChannelFromEnv(process.env);
+    await configureManagedUpdateChannel(MANAGED_DEPLOYMENT_ROOT);
     return;
   }
   if (process.argv[2] === 'managed-bootstrap') {

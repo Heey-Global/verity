@@ -117,7 +117,7 @@ jobs:
           set -euo pipefail
           native_tag="$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+              --jq '.[] | select(.draft == false) | .tag_name' \
               | grep -E '^mobile-v[0-9]+\.[0-9]+\.0$' \
               | sort -V \
               | tail -n 1
@@ -162,4 +162,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          STAGING_GOOGLE_AUTH_ID: ${{ vars.STAGING_GOOGLE_AUTH_ID }}
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         run: node scripts/mobile-ota-release.ts stage "${{ steps.version.outputs.runtime }}"

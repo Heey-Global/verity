@@ -389,3 +389,27 @@ export async function initializeManagedDeployment(
     await root.close();
   }
 }
+
+/** Explicit host maintenance, with the updater stopped to avoid competing spec writes. */
+export async function configureManagedUpdateChannel(rootPath: string): Promise<void> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    const pinnedRoot = `/proc/self/fd/${root.fd}`;
+    const existing = await readManagedDeploymentFiles(pinnedRoot);
+    if (!existing.managed) throw new Error(existing.reason);
+    const environment = existing.spec.environment.filter(
+      (entry) => entry.name !== 'VERITY_UPDATE_CHANNEL',
+    );
+    environment.push({
+      name: 'VERITY_UPDATE_CHANNEL',
+      source: { kind: 'env', name: 'VERITY_UPDATE_CHANNEL' },
+    });
+    const body: ServerDeploymentSpecBody & { checksum?: string } = { ...existing.spec };
+    delete body.checksum;
+    const validated = parseServerDeploymentSpec(sealDeploymentSpec({ ...body, environment }));
+    if (validated === null) throw new Error('update channel configuration is not allowlisted');
+    await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);
+  } finally {
+    await root.close();
+  }
+}

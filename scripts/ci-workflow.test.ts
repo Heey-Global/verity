@@ -1046,10 +1046,15 @@ describe('native iOS compile gate', () => {
     // GitHub authorizes against the pull-request scope for a PR: with read
     // access the move 403s after the signed archive is already uploaded.
     expect(job?.permissions?.['pull-requests']).toBe('write');
-    const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
+    const commands = [
+      ...(job?.steps ?? []),
+      ...(release.jobs['finalize-mobile-staging']?.steps ?? []),
+    ]
+      .map((step) => step.run ?? '')
+      .join('\n');
     expect(commands).toContain('eas-cli@20.3.0 build');
     expect(commands).toContain('--platform ios');
-    expect(commands).toContain('--profile testflight');
+    expect(commands).toContain('--profile "$NATIVE_PROFILE"');
     expect(commands).toContain('--local');
     expect(commands).toContain('--non-interactive');
     expect(commands).toContain('--output "$ipa"');
@@ -1083,9 +1088,9 @@ describe('native iOS compile gate', () => {
     expect(commands.indexOf('labels[]=autorelease: tagged')).toBeLessThan(
       commands.indexOf('labels/autorelease%3A%20pending'),
     );
-    expect(commands.indexOf('labels/autorelease%3A%20pending')).toBeLessThan(
-      commands.indexOf('gh release edit'),
-    );
+    const stagingPublication = commands.indexOf('publish_staging_release || publish_status=$?');
+    expect(stagingPublication).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf('labels/autorelease%3A%20pending')).toBeLessThan(stagingPublication);
     expect(commands).toContain('labels/autorelease%3A%20tagged');
     expect(commands).toContain('labels[]=autorelease: pending');
     expect(commands.indexOf('altool --upload-app')).toBeLessThan(
@@ -1740,7 +1745,8 @@ describe('self-update release gate', () => {
       (step) => step.name === 'Validate maintenance backend release',
     );
     expect(validation?.env?.GH_REPO).toBe('${{ github.repository }}');
-    expect(validation?.run).toContain('--json isDraft,targetCommitish');
+    expect(validation?.run).toContain('--json isDraft,isPrerelease,targetCommitish');
+    expect(validation?.run).toContain('A Staging prerelease requires its production promotion PR.');
     expect(validation?.run).toContain('commits/${target}');
     const authorization = validation?.run?.slice(validation.run.indexOf('sha='));
     expect(authorization).toContain('if [[ "$is_draft" == \'true\' ]]');

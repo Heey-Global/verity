@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { ServerDeploymentSpecBody } from './deployment-spec.js';
 import {
   advanceManagedDeploymentImage,
+  configureManagedUpdateChannel,
   initializeManagedDeployment,
   MANAGED_DEPLOYMENT_MARKER_FILE,
   MANAGED_DEPLOYMENT_SPEC_FILE,
@@ -499,4 +500,24 @@ describe('managed deployment image advance', () => {
     ).rejects.toThrow(/not allowlisted/);
     expect(await readManagedDeployment(directory)).toEqual(state);
   });
+});
+
+it('preserves update channel authority across image advances', async () => {
+  const directory = await root();
+  const spec = adoptionSpec();
+  await initializeManagedDeployment({ root: directory, spec, deploymentId: 'channel-test' });
+  await configureManagedUpdateChannel(directory);
+  await configureManagedUpdateChannel(directory);
+  await advanceManagedDeploymentImage({
+    root: directory,
+    deploymentId: 'channel-test',
+    fromImage: spec.image,
+    toImage: spec.image.replace('a'.repeat(64), 'b'.repeat(64)),
+  });
+  const state = await readManagedDeployment(directory);
+  expect(state.managed).toBe(true);
+  if (!state.managed) throw new Error(state.reason);
+  expect(state.spec.environment.filter((entry) => entry.name === 'VERITY_UPDATE_CHANNEL')).toEqual([
+    { name: 'VERITY_UPDATE_CHANNEL', source: { kind: 'env', name: 'VERITY_UPDATE_CHANNEL' } },
+  ]);
 });

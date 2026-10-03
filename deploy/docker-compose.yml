@@ -57,6 +57,7 @@ services:
     # changed default, fails the release instead of every installed host
     # (`deploy/bin/verity-self-update-live-smoke`).
     environment: &verity-server-environment
+      VERITY_UPDATE_CHANNEL: ${VERITY_UPDATE_CHANNEL:-stable}
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
       # Which Server is THE control plane (ADR 0008 D7). The value names a
       # control-plane SLOT, not a container instance: it stays identical across

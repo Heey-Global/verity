@@ -144,7 +144,7 @@ describe('OTA release state', () => {
   it('verifies the actual channel mapping, not a matching branch somewhere in the response', () => {
     const channel = {
       currentPage: {
-        name: 'testflight',
+        name: 'production',
         branchMapping: JSON.stringify({
           version: 0,
           data: [{ branchId: 'branch-id', branchMappingLogic: 'true' }],
@@ -178,6 +178,7 @@ import { join, resolve } from 'node:path';
 
 interface ServiceState {
   calls: string[];
+  stagingOAuth?: string;
   tags: Record<string, { commit: string; message: string }>;
   group?: string;
   loseUpload?: boolean;
@@ -266,7 +267,7 @@ if(tool === 'gh') {
     if(endpoint?.includes('/releases?')) {
       s.releaseReads++;
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
-      const releases=[{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[])];
+      const releases=[{tag_name:'mobile-v1.33.0',draft:false,prerelease:false},{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[])];
       if (s.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'mobile-v1.32.'+index,draft:false,prerelease:false,body:'x'.repeat(20000)})));
       if(args.includes('--jq')) out(releases.map(({tag_name,draft,prerelease})=>JSON.stringify({tag_name,draft,prerelease})).join('\\n')+'\\n');
       out([releases]);
@@ -294,11 +295,11 @@ if(tool === 'gh') {
 if(tool === 'npx') {
   const command=args[2];
   if(command==='branch:create') out('');
-  if(command==='update:list') out({currentPage:s.group?[{group:s.group}]:[]});
-  if(command==='update:view') out([{group:s.group,branch:candidate.branch,runtimeVersion:candidate.runtime,gitCommitHash:sha,platform:'ios'}]);
-  if(command==='update') {s.group=candidate.group;if(s.loseUpload){s.loseUpload=false;fail();}out([]);}
-  if(command==='channel:edit') out('');
-  if(command==='channel:view') out({currentPage:{name:'testflight',branchMapping:JSON.stringify({version:0,data:[{branchId:'branch',branchMappingLogic:'true'}]}),updateBranches:[{id:'branch',name:candidate.branch}]}});
+  if(command==='update:list') {s.lastReadBranch=args[args.indexOf('--branch')+1]; const group=s.lastReadBranch.startsWith('staging-staging-')?s.stagingGroup:s.group;out({currentPage:group?[{group}]:[]});}
+  if(command==='update:view') {const staging=s.lastReadBranch?.startsWith('staging-staging-');out([{group:staging?s.stagingGroup:s.group,branch:s.lastReadBranch??candidate.branch,runtimeVersion:staging?'staging-'+candidate.runtime:candidate.runtime,gitCommitHash:sha,platform:'ios'}]);}
+  if(command==='update') {const branch=args[args.indexOf('--branch')+1];if(branch.startsWith('staging-staging-')) {s.stagingGroup=candidate.group;s.stagingOAuth=process.env.GOOGLE_AUTH_ID;}else s.group=candidate.group;if(s.loseUpload){s.loseUpload=false;fail();}out([]);}
+  if(command==='channel:edit') {s.channelBranch=args[args.indexOf('--branch')+1];out('');}
+  if(command==='channel:view') out({currentPage:{name:args[3],branchMapping:JSON.stringify({version:0,data:[{branchId:'branch',branchMappingLogic:'true'}]}),updateBranches:[{id:'branch',name:s.channelBranch??candidate.branch}]}});
 }
 save();console.error('Unhandled fake command',tool,args);process.exit(2);
 `;
@@ -307,7 +308,7 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
     chmodSync(join(bin, name), 0o755);
   }
   return {
-    run: (command: 'stage' | 'promote') =>
+    run: (command: 'stage' | 'promote', overrides: Record<string, string> = {}) =>
       spawnSync(process.execPath, [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0'], {
         cwd,
         encoding: 'utf8',
@@ -320,6 +321,8 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
           GITHUB_REPOSITORY: 'example/repo',
           RUNNER_TEMP: cwd,
           GITHUB_STEP_SUMMARY: join(cwd, 'summary'),
+          STAGING_GOOGLE_AUTH_ID: '123-staging.apps.googleusercontent.com',
+          ...overrides,
         },
       }),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
@@ -327,6 +330,19 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
 }
 
 describe('OTA CLI interrupted external operations', () => {
+  it('exports Staging OTA with the native Staging OAuth identity', () => {
+    const service = serviceFixture();
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.state().stagingOAuth).toBe('123-staging.apps.googleusercontent.com');
+  });
+  it('refuses missing Staging OAuth configuration before publishing any candidate', () => {
+    const service = serviceFixture();
+    const result = service.run('stage', { STAGING_GOOGLE_AUTH_ID: '' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('STAGING_GOOGLE_AUTH_ID');
+    expect(service.state().calls).toEqual([]);
+  });
   it('stages candidates with large release metadata without buffering changelogs', () => {
     const service = serviceFixture({ largeReleasePayload: true });
     const result = service.run('stage');
@@ -345,7 +361,13 @@ describe('OTA CLI interrupted external operations', () => {
     expect(retry.stderr).toBe('');
     expect(retry.status).toBe(0);
     expect(
-      service.state().calls.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
+      service
+        .state()
+        .calls.filter(
+          (call) =>
+            call.startsWith('npx --yes eas-cli@21.0.1 update ') &&
+            !call.includes('--branch staging-staging-'),
+        ),
     ).toHaveLength(1);
     expect(service.state().calls.some((call) => call.startsWith('gh pr create'))).toBe(true);
   });
@@ -377,13 +399,21 @@ describe('OTA CLI interrupted external operations', () => {
       },
     });
     expect(service.run('promote').status).not.toBe(0);
-    expect(service.state().calls.some((call) => call.includes('channel:edit'))).toBe(true);
+    expect(service.state().calls.some((call) => call.includes('channel:edit production'))).toBe(
+      true,
+    );
     const retry = service.run('promote');
     expect(retry.stderr).toBe('');
     expect(retry.status).toBe(0);
     expect(service.state().released).toBe(candidate.tag);
     expect(
-      service.state().calls.some((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
+      service
+        .state()
+        .calls.some(
+          (call) =>
+            call.startsWith('npx --yes eas-cli@21.0.1 update ') &&
+            !call.includes('--branch staging-staging-'),
+        ),
     ).toBe(false);
   });
 
@@ -401,7 +431,9 @@ describe('OTA CLI interrupted external operations', () => {
     });
     const result = service.run('promote');
     expect(result.stderr).toContain('Candidate is stale');
-    expect(service.state().calls.some((call) => call.includes('channel:edit'))).toBe(false);
+    expect(service.state().calls.some((call) => call.includes('channel:edit production'))).toBe(
+      false,
+    );
   });
   it('dismisses stale approvals before CI while preserving exact-head approval', () => {
     const service = serviceFixture({
@@ -444,7 +476,9 @@ describe('OTA CLI interrupted external operations', () => {
     });
     const result = service.run('promote');
     expect(result.stderr).toContain('prior candidate approval');
-    expect(service.state().calls.some((call) => call.includes('channel:edit'))).toBe(false);
+    expect(service.state().calls.some((call) => call.includes('channel:edit production'))).toBe(
+      false,
+    );
   });
   it('recovers an interrupted rolling reset whose source has no promotion manifest', () => {
     const service = serviceFixture({
@@ -460,7 +494,13 @@ describe('OTA CLI interrupted external operations', () => {
     expect(retry.stderr).toBe('');
     expect(retry.status).toBe(0);
     expect(
-      service.state().calls.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
+      service
+        .state()
+        .calls.filter(
+          (call) =>
+            call.startsWith('npx --yes eas-cli@21.0.1 update ') &&
+            !call.includes('--branch staging-staging-'),
+        ),
     ).toHaveLength(1);
     expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(true);
   });
@@ -481,7 +521,13 @@ describe('OTA CLI interrupted external operations', () => {
       expect(retry.status).toBe(0);
       expect(service.state().noPullHistory).toBe(false);
       expect(
-        service.state().calls.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
+        service
+          .state()
+          .calls.filter(
+            (call) =>
+              call.startsWith('npx --yes eas-cli@21.0.1 update ') &&
+              !call.includes('--branch staging-staging-'),
+          ),
       ).toHaveLength(1);
     },
   );

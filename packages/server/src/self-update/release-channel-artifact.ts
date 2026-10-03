@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { registryFetch } from '../oci-ref.js';
-import type { ReleaseArchitecture } from './release-channel.js';
+import type { ReleaseArchitecture, ReleaseChannelName } from './release-channel.js';
 
 /**
  * The signed channel document is published as an OCI artifact on the Server's
@@ -14,8 +14,10 @@ export const RELEASE_CHANNEL_ARTIFACT_TYPE = 'application/vnd.verity.release-cha
 const RELEASE_CHANNEL_REGISTRY = 'ghcr.io';
 const RELEASE_CHANNEL_REPOSITORY = 'heey-global/verity/verity-server';
 
-export const releaseChannelTag = (architecture: ReleaseArchitecture): string =>
-  `channel-stable-${architecture}`;
+export const releaseChannelTag = (
+  architecture: ReleaseArchitecture,
+  channel: ReleaseChannelName = 'stable',
+): string => `channel-${channel}-${architecture}`;
 
 const MANIFEST_MEDIA_TYPE = 'application/vnd.oci.image.manifest.v1+json';
 /** Generous next to the envelope's own 16 KiB / 128 KiB member caps, but low
@@ -72,6 +74,7 @@ export type RegistryFetch = (
 
 export interface ReleaseChannelArtifactOptions {
   readonly architecture: ReleaseArchitecture;
+  readonly channel?: ReleaseChannelName;
   readonly fetchRegistry?: RegistryFetch;
   readonly registry?: string;
   readonly repository?: string;
@@ -121,7 +124,7 @@ export function createReleaseChannelArtifactLoader(
   const fetchRegistry = options.fetchRegistry ?? registryFetch;
   const registry = options.registry ?? RELEASE_CHANNEL_REGISTRY;
   const repository = options.repository ?? RELEASE_CHANNEL_REPOSITORY;
-  const tag = releaseChannelTag(options.architecture);
+  const tag = releaseChannelTag(options.architecture, options.channel);
 
   return async (signal) => {
     const manifestResponse = await fetchRegistry(

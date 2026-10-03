@@ -161,7 +161,10 @@ if (main !== eventSha) {
     output('plan');
   } else {
     const boundary = releases.find(
-      (release) => release.tag_name === tag && !release.draft && !release.prerelease,
+      (release) =>
+        release.tag_name === tag &&
+        !release.draft &&
+        (!release.prerelease || train === 'mobile' || train === 'backend'),
     );
     if (!boundary)
       throw new Error(`Missing published release boundary ${tag}; refusing to infer history`);
