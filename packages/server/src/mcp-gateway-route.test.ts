@@ -222,6 +222,7 @@ function build(
           authRegistry: {
             isEnabled: () => true,
             verify: () => false,
+            onRevoke: () => () => undefined,
           } as unknown as Parameters<typeof buildServer>[0]['authRegistry'],
         }
       : {}),

@@ -1,3 +1,4 @@
+import { createDevcontainerBuildSnapshot } from './devcontainer-build-boundary.js';
 import {
   STANDARD_MOUNTS,
   DEFAULT_AGENT_SEED_SOURCE,
@@ -404,6 +405,8 @@ export function devcontainerBuildArgs(args: {
     'build',
     '--workspace-folder',
     args.workspaceFolder,
+    '--config',
+    join(args.workspaceFolder, '.devcontainer', 'devcontainer.json'),
     '--image-name',
     args.imageName,
   ];
@@ -436,30 +439,35 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
   registryToken,
   noCache,
 }) => {
-  const env: NodeJS.ProcessEnv = { ...process.env, DOCKER_HOST: dockerHost };
+  // Image/feature metadata can also perform localEnv substitution. Validating
+  // the repository config alone must not expose the server's environment.
+  const dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: dockerConfigDir,
+    DOCKER_HOST: dockerHost,
+    DOCKER_CONFIG: dockerConfigDir,
+  };
   // When we have a token, point the devcontainer CLI at a throwaway docker config
   // that authenticates to ghcr.io as the GitHub App (`x-access-token:<token>`).
   // Scoped via DOCKER_CONFIG so it never touches the server's own config and is
   // wiped in `finally`. Mode 0700/0600 — it holds a short-lived bearer.
-  let dockerConfigDir: string | undefined;
-  if (registryToken !== undefined && registryToken.length > 0) {
-    dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
-    const auth = Buffer.from(`x-access-token:${registryToken}`, 'utf8').toString('base64');
-    writeFileSync(
-      join(dockerConfigDir, 'config.json'),
-      JSON.stringify({ auths: { 'ghcr.io': { auth } } }),
-      { mode: 0o600 },
-    );
-    env.DOCKER_CONFIG = dockerConfigDir;
-  }
   try {
+    if (registryToken !== undefined && registryToken.length > 0) {
+      const auth = Buffer.from(`x-access-token:${registryToken}`, 'utf8').toString('base64');
+      writeFileSync(
+        join(dockerConfigDir, 'config.json'),
+        JSON.stringify({ auths: { 'ghcr.io': { auth } } }),
+        { mode: 0o600 },
+      );
+    }
     return await execFileAsync(
       'devcontainer',
       devcontainerBuildArgs({ workspaceFolder, imageName, additionalFeatures, noCache }),
       { env, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
     );
   } finally {
-    if (dockerConfigDir !== undefined) rmSync(dockerConfigDir, { recursive: true, force: true });
+    rmSync(dockerConfigDir, { recursive: true, force: true });
   }
 };
 
@@ -813,8 +821,8 @@ function readFileNoFollow(path: string): string {
  *  path and its bytes. Same devcontainer + same base + same feature identity ⇒
  *  cache hit; editing any file OR a base-image rollout OR a Feature content
  *  change ⇒ different hash ⇒ rebuild. The `featureIdentity` is optional and
- *  mixed in ONLY when provided — when absent the hash is byte-identical to the
- *  pre-Feature form (back-compat / dormant). Exported for direct
+ *  mixed in only when provided. The build-policy version invalidates images
+ *  produced before project filesystem confinement. Exported for direct
  *  behaviour-driven testing. */
 export function devcontainerContentHash(
   devcontainerDir: string,
@@ -828,6 +836,8 @@ export function devcontainerContentHash(
     hash.update(buf);
     hash.update('\n');
   };
+  // Images built before filesystem confinement must not survive as cache hits.
+  mix('policy', 'project-build-boundary-v1');
   mix('base', baseImageRef);
   if (featureIdentity !== undefined) {
     mix('feature', featureIdentity);
@@ -1165,6 +1175,17 @@ function devcontainerMountBind(mount: string): string | undefined {
   const readonly = fields.get('readonly');
   if (readonly !== undefined && readonly !== 'true' && readonly !== 'false') return undefined;
   return readonly === 'true' ? `${source}:${containerTarget}:ro` : `${source}:${containerTarget}`;
+}
+
+export function projectDevcontainerVolumeBind(projectId: string, bind: string): string {
+  const separator = bind.indexOf(':');
+  const source = bind.slice(0, separator);
+  // Repository volume names are logical names, never authority to mount a
+  // daemon resource belonging to the server or a different project.
+  const digest = createHash('sha256')
+    .update(JSON.stringify([projectId, source]))
+    .digest('hex');
+  return `verity-devc-volume-${digest}${bind.slice(separator)}`;
 }
 
 /** Read and decode one JSON string token inside JSONC. Comments are handled by
@@ -5314,7 +5335,9 @@ export class ProvisionerImpl implements Provisioner {
           codexHome,
           this.opts.claudeConnectorPort,
         ),
-        ...(devcontainerRuntime.binds ?? []),
+        ...(devcontainerRuntime.binds ?? []).map((bind) =>
+          projectDevcontainerVolumeBind(project.id, bind),
+        ),
         ...gvisorResolvBinds,
       ],
       this.opts.dataVolume,
@@ -5847,67 +5870,73 @@ export class ProvisionerImpl implements Provisioner {
         'verity-sandbox-toolkit devcontainer Feature ref is required for project devcontainer builds',
       );
     }
-    const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(devcontainerDir);
-    if (unsupportedKeys.length > 0) {
-      throw new Error(
-        `unsupported devcontainer runtime settings: ${unsupportedKeys.join(', ')}. ` +
-          'Verity currently builds devcontainer images but starts them through its own Docker create path.',
-      );
-    }
-    const hash = devcontainerContentHash(
-      devcontainerDir,
-      baseImageRef,
-      `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}`,
-    );
-    const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
-    // Cache check: the derived tag on the daemon means an identical
-    // (devcontainer + base) was already built — reuse it, skip the build.
-    // A forced rebuild is precisely the request to not trust that conclusion,
-    // and so is a devcontainer whose build reads bytes the hash cannot see
-    // (`devcontainerBuildInputsConfined`): for those the tag proves only that
-    // SOME build produced it, never that this checkout did. Fall through to the
-    // build and let the daemon's own content-addressed layer cache decide what
-    // to re-run — it checksums the copied context files, so an unchanged tree
-    // is a cheap all-hit no-op and a changed one rebuilds and re-tags in place.
-    if (
-      !forceRebuild &&
-      devcontainerBuildInputsConfined(devcontainerDir) &&
-      this.opts.docker.imageExists !== undefined
-    ) {
-      const exists = await this.opts.docker.imageExists(derivedTag);
-      if (exists)
-        return {
-          imageRef: derivedTag,
-          usesDevcontainerImage: true,
-          usesConfiguredOverride: !usesDefaultImage,
-        };
-    }
-    // Mint a ghcr token (GitHub App installation, packages:read) so the build can
-    // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
-    // the App. Best-effort: a mint failure/undefined degrades to no-auth (public).
-    let registryToken: string | undefined;
-    if (this.opts.registryTokenMint !== undefined) {
-      try {
-        registryToken = await this.opts.registryTokenMint();
-      } catch {
-        registryToken = undefined;
+    const snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath);
+    try {
+      const snapshotDevcontainerDir = join(snapshot.workspaceFolder, '.devcontainer');
+      const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(snapshotDevcontainerDir);
+      if (unsupportedKeys.length > 0) {
+        throw new Error(
+          `unsupported devcontainer runtime settings: ${unsupportedKeys.join(', ')}. ` +
+            'Verity currently builds devcontainer images but starts them through its own Docker create path.',
+        );
       }
+      const hash = devcontainerContentHash(
+        snapshotDevcontainerDir,
+        baseImageRef,
+        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}`,
+      );
+      const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
+      // Cache check: the derived tag on the daemon means an identical
+      // (devcontainer + base) was already built — reuse it, skip the build.
+      // A forced rebuild is precisely the request to not trust that conclusion,
+      // and so is a devcontainer whose build reads bytes the hash cannot see
+      // (`devcontainerBuildInputsConfined`): for those the tag proves only that
+      // SOME build produced it, never that this checkout did. Fall through to the
+      // build and let the daemon's own content-addressed layer cache decide what
+      // to re-run — it checksums the copied context files, so an unchanged tree
+      // is a cheap all-hit no-op and a changed one rebuilds and re-tags in place.
+      if (
+        !forceRebuild &&
+        devcontainerBuildInputsConfined(snapshotDevcontainerDir) &&
+        this.opts.docker.imageExists !== undefined
+      ) {
+        const exists = await this.opts.docker.imageExists(derivedTag);
+        if (exists)
+          return {
+            imageRef: derivedTag,
+            usesDevcontainerImage: true,
+            usesConfiguredOverride: !usesDefaultImage,
+          };
+      }
+      // Mint a ghcr token (GitHub App installation, packages:read) so the build can
+      // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
+      // the App. Best-effort: a mint failure/undefined degrades to no-auth (public).
+      let registryToken: string | undefined;
+      if (this.opts.registryTokenMint !== undefined) {
+        try {
+          registryToken = await this.opts.registryTokenMint();
+        } catch {
+          registryToken = undefined;
+        }
+      }
+      // Build the derived image onto the target daemon. A non-zero exit rejects
+      // with the build stderr, which the caller truncates into provision_error.
+      await build({
+        workspaceFolder: snapshot.workspaceFolder,
+        imageName: derivedTag,
+        dockerHost,
+        additionalFeatures: feature.ref,
+        ...(registryToken !== undefined ? { registryToken } : {}),
+        ...(forceRebuild ? { noCache: true } : {}),
+      });
+      return {
+        imageRef: derivedTag,
+        usesDevcontainerImage: true,
+        usesConfiguredOverride: !usesDefaultImage,
+      };
+    } finally {
+      await snapshot.dispose();
     }
-    // Build the derived image onto the target daemon. A non-zero exit rejects
-    // with the build stderr, which the caller truncates into provision_error.
-    await build({
-      workspaceFolder: dirs.clonePath,
-      imageName: derivedTag,
-      dockerHost,
-      additionalFeatures: feature.ref,
-      ...(registryToken !== undefined ? { registryToken } : {}),
-      ...(forceRebuild ? { noCache: true } : {}),
-    });
-    return {
-      imageRef: derivedTag,
-      usesDevcontainerImage: true,
-      usesConfiguredOverride: !usesDefaultImage,
-    };
   }
 
   /** Create the container, pulling the image on demand when it's missing (ADR

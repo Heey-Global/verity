@@ -53,7 +53,7 @@ import {
   SealedError,
   type ProjectRecord,
 } from '@verity/store';
-import { createAuthTokenRegistry } from './auth.js';
+import { hashAuthToken, createAuthTokenRegistry } from './auth.js';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from './sandbox-updates.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import {
@@ -10093,6 +10093,68 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
       await badApp.close();
     }
   });
+
+  it.each(['revoke', 'forget', 'clear'] as const)(
+    'invalidates pending and open streams on %s',
+    async (operation) => {
+      const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+      const device = await registry.mint('revoked-device');
+      const other = await registry.mint('other-device');
+      const gated = buildServer({
+        eventStore: ctx.store,
+        bus: new InMemoryEventBus(),
+        conductor,
+        secretCipher: createSealableSecretCipher(),
+        authRegistry: registry,
+      });
+      await gated.listen({ port: 0, host: '127.0.0.1' });
+      const gatedPort = (gated.server.address() as AddressInfo).port;
+      const connections: Array<{ ws: { close(): void } }> = [];
+      try {
+        const mint = async (token: string): Promise<string> => {
+          const response = await gated.inject({
+            method: 'POST',
+            url: '/sessions/s1/stream-ticket',
+            headers: { authorization: `Bearer ${token}` },
+          });
+          expect(response.statusCode).toBe(200);
+          return response.json<{ ticket: string }>().ticket;
+        };
+        const pending = await mint(device.token);
+        const active = await connect(
+          gatedPort,
+          '/sessions/s1/stream',
+          `verity-stream-ticket.${await mint(device.token)}`,
+        );
+        connections.push(active);
+        expect(await active.next()).toMatchObject({ k: 'caught_up' });
+        const unaffected = await connect(
+          gatedPort,
+          '/sessions/s1/stream',
+          `verity-stream-ticket.${await mint(other.token)}`,
+        );
+        connections.push(unaffected);
+        expect(await unaffected.next()).toMatchObject({ k: 'caught_up' });
+        if (operation === 'revoke') await registry.revoke(device.id);
+        else if (operation === 'clear') registry.clear();
+        else registry.forget(hashAuthToken(device.token));
+        // Existing subscriptions and unused tickets otherwise outlive device authority.
+        expect((await active.closed).code).toBe(1008);
+        const rejected = await connect(
+          gatedPort,
+          '/sessions/s1/stream',
+          `verity-stream-ticket.${pending}`,
+        );
+        connections.push(rejected);
+        expect((await rejected.closed).code).toBe(1008);
+        if (operation === 'clear') expect((await unaffected.closed).code).toBe(1008);
+        else expect(unaffected.ws.readyState).toBe(1);
+      } finally {
+        for (const connection of connections) connection.ws.close();
+        await gated.close();
+      }
+    },
+  );
 
   it('requires a session-bound, single-use stream ticket once the gate is armed', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });

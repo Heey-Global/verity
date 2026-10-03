@@ -3034,10 +3034,17 @@ const BINARY_UPLOAD_ROUTES = new Set([
 ]);
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
-  const streamTickets = new Map<string, { sessionId: string; expiresAt: number }>();
+  const streamTickets = new Map<
+    string,
+    { sessionId: string; expiresAt: number; deviceId: string | undefined }
+  >();
   const streamTicketTtlMs = 30_000;
   const streamTicketProtocolPrefix = 'verity-stream-ticket.';
-  const mintStreamTicket = (sessionId: string): { ticket: string; expiresAt: string } => {
+  const deviceStreams = new Map<string, Set<WebSocket>>();
+  const mintStreamTicket = (
+    sessionId: string,
+    deviceId: string | undefined,
+  ): { ticket: string; expiresAt: string } => {
     const now = Date.now();
     for (const [ticket, record] of streamTickets) {
       if (record.expiresAt <= now) streamTickets.delete(ticket);
@@ -3045,20 +3052,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     while (streamTickets.size >= 1024) streamTickets.delete(streamTickets.keys().next().value!);
     const ticket = randomBytes(32).toString('base64url');
     const expiresAt = now + streamTicketTtlMs;
-    streamTickets.set(ticket, { sessionId, expiresAt });
+    streamTickets.set(ticket, { sessionId, expiresAt, deviceId });
     return { ticket, expiresAt: new Date(expiresAt).toISOString() };
   };
-  const consumeStreamTicket = (sessionId: string, protocolHeader: string | undefined): boolean => {
+  const consumeStreamTicket = (
+    sessionId: string,
+    protocolHeader: string | undefined,
+  ): { deviceId: string } | undefined => {
     const offered = (protocolHeader ?? '')
       .split(',')
       .map((value) => value.trim())
       .find((value) => value.startsWith(streamTicketProtocolPrefix));
-    if (offered === undefined) return false;
+    if (offered === undefined) return undefined;
     const ticket = offered.slice(streamTicketProtocolPrefix.length);
     const record = streamTickets.get(ticket);
-    if (record === undefined) return false;
+    if (record === undefined) return undefined;
     streamTickets.delete(ticket);
-    return record.expiresAt > Date.now() && record.sessionId === sessionId;
+    if (
+      record.expiresAt <= Date.now() ||
+      record.sessionId !== sessionId ||
+      record.deviceId === undefined ||
+      !deps.authRegistry?.isKnownId?.(record.deviceId)
+    )
+      return undefined;
+    return { deviceId: record.deviceId };
   };
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
@@ -3455,6 +3472,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         });
   pushSender?.start();
   serverUpdateNotifier?.start();
+  const detachStreamRevocation = deps.authRegistry?.onRevoke((deviceId) => {
+    for (const [ticket, record] of streamTickets) {
+      if (record.deviceId === deviceId) streamTickets.delete(ticket);
+    }
+    for (const socket of deviceStreams.get(deviceId) ?? []) socket.close(1008, 'unauthorized');
+    deviceStreams.delete(deviceId);
+  });
+  app.addHook('onClose', (_instance, done) => {
+    detachStreamRevocation?.();
+    done();
+  });
+
   app.addHook('onClose', async () => {
     unsubscribePushFirePoints?.();
     // Awaited, and before the sender it pushes through: a check still in flight
@@ -10188,7 +10217,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     instance.post('/sessions/:id/stream-ticket', async (request, reply) => {
       const parsed = sessionParams.safeParse(request.params);
       if (!parsed.success) return reply.code(400).send({ error: 'invalid session id' });
-      return mintStreamTicket(parsed.data.id);
+      const registry = deps.authRegistry;
+      const deviceId = registry?.resolveId(bearerToken(request.headers.authorization));
+      if (registry?.isEnabled() && deviceId === undefined)
+        return reply.code(401).send({ error: 'unauthorized' });
+      return mintStreamTicket(parsed.data.id, deviceId);
     });
 
     instance.get('/sessions/:id/stream', { websocket: true }, (socket: WebSocket, request) => {
@@ -10206,13 +10239,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const sessionId = parsedId.data.id;
       const registry = deps.authRegistry;
-      if (
-        registry !== undefined &&
-        registry.isEnabled() &&
-        !consumeStreamTicket(sessionId, request.headers['sec-websocket-protocol'])
-      ) {
+      const identity = registry?.isEnabled()
+        ? consumeStreamTicket(sessionId, request.headers['sec-websocket-protocol'])
+        : undefined;
+      if (registry?.isEnabled() && identity === undefined) {
         socket.close(1008, 'unauthorized');
         return;
+      }
+      if (identity !== undefined) {
+        const sockets = deviceStreams.get(identity.deviceId) ?? new Set<WebSocket>();
+        sockets.add(socket);
+        deviceStreams.set(identity.deviceId, sockets);
+        socket.once('close', () => {
+          sockets.delete(socket);
+          if (sockets.size === 0 && deviceStreams.get(identity.deviceId) === sockets) {
+            deviceStreams.delete(identity.deviceId);
+          }
+        });
       }
       const detachPresence = pushPresence?.attach(sessionId);
       const parsedQuery = streamQuery.safeParse(request.query);

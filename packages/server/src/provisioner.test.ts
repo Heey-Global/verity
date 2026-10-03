@@ -40,11 +40,13 @@ import {
   devcontainerImageTag,
   DEVCONTAINER_IMAGE_PREFIX,
   projectNetworkName,
+  projectDevcontainerVolumeBind,
   projectNodeModulesVolumeName,
   NODE_MODULES_TARGET,
   RUNNER_AGENT_GID,
   RUNNER_AGENT_UID,
   devcontainerBuildArgs,
+  defaultDevcontainerBuildSpawner,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
   unsupportedDevcontainerRuntimeKeys,
@@ -3019,7 +3021,11 @@ describe('ProvisionerImpl (#174)', () => {
           ],
         }),
       );
-      expect(spec.binds).toContain('project-dependencies:/work/node_modules');
+      expect(spec.binds).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^verity-devc-volume-[a-f0-9]{64}:\/work\/node_modules$/),
+        ]),
+      );
       expect(
         spec.volumeMounts?.filter((mount) => mount.target === NODE_MODULES_TARGET) ?? [],
       ).toEqual([]);
@@ -6460,12 +6466,72 @@ describe('devcontainerBuildInputsConfined', () => {
   });
 });
 
+describe('projectDevcontainerVolumeBind', () => {
+  it('keeps a logical volume stable within one project and separates projects and names', () => {
+    const bind = 'verity-data:/work/cache:ro';
+    const first = projectDevcontainerVolumeBind('project-a', bind);
+    expect(projectDevcontainerVolumeBind('project-a', bind)).toBe(first);
+    expect(projectDevcontainerVolumeBind('project-b', bind)).not.toBe(first);
+    expect(projectDevcontainerVolumeBind('project-a', 'another:/work/cache:ro')).not.toBe(first);
+    expect(first.endsWith(':/work/cache:ro')).toBe(true);
+    expect(first.startsWith('verity-data:')).toBe(false);
+    // A guessed generated name is still an alias, not a way to select its resource.
+    expect(projectDevcontainerVolumeBind('project-b', first)).not.toBe(first);
+  });
+});
+
 describe('devcontainerBuildArgs (R3.1/#299)', () => {
+  it('gives the builder an isolated home and no ambient service secrets', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'verity-builder-env-'));
+    const previousPath = process.env.PATH;
+    const previousSecret = process.env.VERITY_BUILD_TEST_SECRET;
+    try {
+      writeFileSync(
+        join(directory, 'devcontainer'),
+        `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECRET ?? null, home: process.env.HOME, dockerConfig: process.env.DOCKER_CONFIG, dockerHost: process.env.DOCKER_HOST, args: process.argv.slice(2) }));
+`,
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${directory}:${previousPath ?? ''}`;
+      process.env.VERITY_BUILD_TEST_SECRET = 'must-not-reach-image-metadata';
+      const result = await defaultDevcontainerBuildSpawner({
+        workspaceFolder: '/project',
+        imageName: 'test:1',
+        dockerHost: 'unix:///test/docker.sock',
+      });
+      const output = JSON.parse(result.stdout) as {
+        secret: string | null;
+        home: string;
+        dockerConfig: string;
+        dockerHost: string;
+        args: string[];
+      };
+      // Image metadata has its own substitution pass, outside config validation.
+      expect(output.secret).toBeNull();
+      expect(output.home).not.toBe(process.env.HOME);
+      expect(output.dockerConfig).toBe(output.home);
+      expect(output.dockerHost).toBe('unix:///test/docker.sock');
+      expect(existsSync(output.home)).toBe(false);
+      const configIndex = output.args.indexOf('--config');
+      expect(configIndex).toBeGreaterThan(-1);
+      expect(output.args[configIndex + 1]).toBe('/project/.devcontainer/devcontainer.json');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousSecret === undefined) delete process.env.VERITY_BUILD_TEST_SECRET;
+      else process.env.VERITY_BUILD_TEST_SECRET = previousSecret;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('omits --additional-features entirely when no feature ref is present', () => {
     expect(devcontainerBuildArgs({ workspaceFolder: '/work', imageName: 'tag:1' })).toEqual([
       'build',
       '--workspace-folder',
       '/work',
+      '--config',
+      '/work/.devcontainer/devcontainer.json',
       '--image-name',
       'tag:1',
     ]);
@@ -6488,7 +6554,16 @@ describe('devcontainerBuildArgs (R3.1/#299)', () => {
     ).not.toContain('--no-cache');
     expect(
       devcontainerBuildArgs({ workspaceFolder: '/work', imageName: 'tag:1', noCache: true }),
-    ).toEqual(['build', '--workspace-folder', '/work', '--image-name', 'tag:1', '--no-cache']);
+    ).toEqual([
+      'build',
+      '--workspace-folder',
+      '/work',
+      '--config',
+      '/work/.devcontainer/devcontainer.json',
+      '--image-name',
+      'tag:1',
+      '--no-cache',
+    ]);
   });
 
   it('appends the node Feature plus the Verity toolkit when a toolkit ref is present', () => {
@@ -6636,7 +6711,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
       expect(build).toHaveBeenCalledWith({
-        workspaceFolder: clonePath,
+        workspaceFolder: expect.stringMatching(/verity-build-/),
         imageName: expectedTag,
         dockerHost: 'unix:///var/run/docker.sock',
         additionalFeatures: toolkitFeature.ref,
@@ -7084,12 +7159,14 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
-  it('tolerates devcontainer UI/workspace fields and translates safe workspace volume mounts', async () => {
-    const { root, clonePath } = makeCloneRoot(true);
-    try {
-      writeFileSync(
-        join(clonePath, '.devcontainer', 'devcontainer.json'),
-        `{
+  it.each(['example-app-node-modules', 'verity-data', 'other-project-volume'])(
+    'isolates repository volume %s while preserving workspace settings',
+    async (volume) => {
+      const { root, clonePath } = makeCloneRoot(true);
+      try {
+        writeFileSync(
+          join(clonePath, '.devcontainer', 'devcontainer.json'),
+          `{
           "image": "node:24-bookworm",
           "remoteUser": "node",
           "workspaceFolder": "/workspaces/example-app",
@@ -7099,52 +7176,91 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
             "3000": { "label": "Next.js dev server", "onAutoForward": "notify" }
           },
           "mounts": [
-            "source=example-app-node-modules,target=\${containerWorkspaceFolder}/node_modules,type=volume"
+            "source=${volume},target=\${containerWorkspaceFolder}/node_modules,type=volume"
           ],
           "postCreateCommand": "sudo chown node:node node_modules && npm ci"
         }`,
-      );
+        );
+        const id = await seedProject();
+        const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+        const imageExists = vi.fn(async () => false);
+        const command = vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' }));
+        const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          projectTokenMint: async () => 'tok',
+          defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+          hostCloneRoot: root,
+          devcontainerBuild: build,
+          dockerHostForBuild: 'unix:///var/run/docker.sock',
+          devcontainerFeature: toolkitFeature,
+          containerCommand: command,
+        });
+
+        const result = await provisioner.provision(id);
+
+        expect(result.state).toBe('active');
+        expect(result.provisionError).toBeNull();
+        expect(build).toHaveBeenCalledTimes(1);
+        const created = dockerCalls.find((c) => c.method === 'createContainer');
+        const spec = created?.payload as ContainerSpec;
+        expect(spec.user).toBe('node');
+        // A repository name must never select an existing control-plane or foreign volume.
+        expect(spec.binds).not.toContain(`${volume}:/work/node_modules`);
+        expect(spec.binds).toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/^verity-devc-volume-[a-f0-9]{64}:\/work\/node_modules$/),
+          ]),
+        );
+        expect(spec.binds).toContain(`${clonePath}:/work`);
+        expect(command).toHaveBeenCalledWith(
+          expect.objectContaining({
+            command: 'sudo chown node:node node_modules && npm ci',
+            user: 'node',
+            workdir: '/work',
+          }),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    { build: { context: '/srv/verity' } },
+    { build: { context: '../..' } },
+    { build: { options: ['--secret=id=server,src=/srv/verity/secret'] } },
+    { build: { args: { LEAK: '${localEnv:VERITY_BUILD_TEST_SECRET}' } } },
+  ])('rejects unsafe build inputs before cache lookup or execution: %j', async (config) => {
+    const { root, clonePath } = makeCloneRoot(true);
+    try {
+      writeFileSync(join(clonePath, '.devcontainer', 'devcontainer.json'), JSON.stringify(config));
       const id = await seedProject();
       const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
-      const imageExists = vi.fn(async () => false);
-      const command = vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' }));
-      const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+      const imageExists = vi.fn(async () => true);
+      const { client: docker, calls } = fakeDocker({ imageExists });
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
         docker,
-        projectTokenMint: async () => 'tok',
-        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        defaultImageRef: 'base:latest',
         hostCloneRoot: root,
         devcontainerBuild: build,
         dockerHostForBuild: 'unix:///var/run/docker.sock',
         devcontainerFeature: toolkitFeature,
-        containerCommand: command,
       });
-
-      const result = await provisioner.provision(id);
-
-      expect(result.state).toBe('active');
-      expect(result.provisionError).toBeNull();
-      expect(build).toHaveBeenCalledTimes(1);
-      const created = dockerCalls.find((c) => c.method === 'createContainer');
-      const spec = created?.payload as ContainerSpec;
-      expect(spec.user).toBe('node');
-      expect(spec.binds).toContain('example-app-node-modules:/work/node_modules');
-      expect(spec.binds).toContain(`${clonePath}:/work`);
-      expect(command).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'sudo chown node:node node_modules && npm ci',
-          user: 'node',
-          workdir: '/work',
-        }),
-      );
+      await expect(provisioner.provision(id)).rejects.toThrow(/unsafe devcontainer build/);
+      expect(imageExists).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('tolerates devcontainer compose build metadata while Verity owns runtime start', async () => {
+  it('rejects unconfined compose builds before invoking the builder', async () => {
     const { root, clonePath } = makeCloneRoot(true);
     try {
       writeFileSync(
@@ -7176,28 +7292,13 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         containerCommand: command,
       });
 
-      const result = await provisioner.provision(id);
-
-      expect(result.state).toBe('active');
-      expect(build).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceFolder: clonePath,
-        }),
+      await expect(provisioner.provision(id)).rejects.toThrow(
+        /Docker Compose builds are unsupported/,
       );
-      const spec = dockerCalls.find((c) => c.method === 'createContainer')
-        ?.payload as ContainerSpec;
-      expect(spec.user).toBe('node');
-      expect(command).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'npm install',
-          workdir: '/work',
-        }),
-      );
-      expect(command).not.toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'echo ready',
-        }),
-      );
+      expect(build).not.toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalled();
+      expect(dockerCalls.find((call) => call.method === 'createContainer')).toBeUndefined();
+      expect(command).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -7608,7 +7709,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
       expect(build).toHaveBeenCalledWith({
-        workspaceFolder: clonePath,
+        workspaceFolder: expect.stringMatching(/verity-build-/),
         imageName: expectedTag,
         dockerHost: 'unix:///var/run/docker.sock',
         additionalFeatures: feature.ref,
