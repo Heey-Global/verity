@@ -121,6 +121,8 @@ export interface AuthTokenRegistry {
    *  write per {@link TOUCH_INTERVAL_MS} per device: an activity timestamp is
    *  never worth delaying or failing the request it belongs to. */
   touch(token: string | undefined | null): void;
+  /** Observe invalidation of a device, including password resets and logout. */
+  onRevoke(listener: (id: string) => void): () => void;
   revoke(id: string): Promise<boolean>;
   /** Drop a single hash from the in-memory set (after the row is deleted). */
   forget(tokenHash: string): void;
@@ -143,6 +145,10 @@ export async function createAuthTokenRegistry(
   // the write for the rest of the interval. In memory only: after a restart the
   // first request from each device pays one update, which is the point.
   const touchedAt = new Map<string, number>();
+  const revokeListeners = new Set<(id: string) => void>();
+  const notifyRevoked = (id: string): void => {
+    for (const listener of revokeListeners) listener(id);
+  };
   let enabled = opts.enabled;
   return {
     isEnabled: (): boolean => enabled,
@@ -212,24 +218,36 @@ export async function createAuthTokenRegistry(
         touchedAt.delete(id);
       });
     },
+    onRevoke(listener): () => void {
+      revokeListeners.add(listener);
+      return () => {
+        revokeListeners.delete(listener);
+      };
+    },
     async revoke(id): Promise<boolean> {
       const record = (await store.listAuthTokens()).find((candidate) => candidate.id === id);
       if (record === undefined || !(await store.deleteAuthToken(id))) return false;
       tokenIdsByHash.delete(record.tokenHash);
       tokenUsersByHash.delete(record.tokenHash);
       touchedAt.delete(id);
+      notifyRevoked(id);
       return true;
     },
     forget(tokenHash): void {
       const id = tokenIdsByHash.get(tokenHash);
       tokenIdsByHash.delete(tokenHash);
       tokenUsersByHash.delete(tokenHash);
-      if (id !== undefined) touchedAt.delete(id);
+      if (id !== undefined) {
+        touchedAt.delete(id);
+        notifyRevoked(id);
+      }
     },
     clear(): void {
+      const ids = new Set(tokenIdsByHash.values());
       tokenIdsByHash.clear();
       tokenUsersByHash.clear();
       touchedAt.clear();
+      for (const id of ids) notifyRevoked(id);
     },
   };
 }
