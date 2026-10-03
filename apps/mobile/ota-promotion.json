@@ -1,18 +1,12 @@
 {
   "schema": 1,
-  "version": "1.50.2",
+  "version": "1.50.3",
   "runtime": "1.50.0",
   "channel": "testflight",
-  "commit": "b77f133616fa290511edcecb9881180151592de3",
-  "tag": "mobile-v1.50.2",
-  "branch": "staging-mobile-v1.50.2-b77f133616fa290511edcecb9881180151592de3",
-  "baseline": "mobile-v1.50.1",
-  "group": "91ecef76-42bc-4296-94c6-fdc6d0b02ef1",
-  "notes": [
-    "show local save only for project file changes (#1017)",
-    "settle chat navigation jumps against measured layout (#1012)",
-    "recover quick-action lists without closing tags (#1011)",
-    "show quota meters only for connected agents (#1009)",
-    "enforce durable PIN lockout and show locked links (#1006)"
-  ]
+  "commit": "f76b578035c618031708a9075b4d1fb3a621f36a",
+  "tag": "mobile-v1.50.3",
+  "branch": "staging-mobile-v1.50.3-f76b578035c618031708a9075b4d1fb3a621f36a",
+  "baseline": "mobile-v1.50.2",
+  "group": "c33d23ee-f3b2-43a1-839d-a8d4e5a5180d",
+  "notes": []
 }
