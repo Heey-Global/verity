@@ -1,5 +1,26 @@
 # Changelog
 
+## [4.6.0](https://github.com/Heey-Global/verity/compare/v4.5.0...v4.6.0) (2026-10-03)
+
+
+### Features
+
+* **preview:** enforce durable PIN lockout and show locked links ([#1006](https://github.com/Heey-Global/verity/issues/1006)) ([6281a4a](https://github.com/Heey-Global/verity/commit/6281a4a8ca8e729b5eb1ec55818c3910adaf9621))
+
+
+### Bug Fixes
+
+* **deps:** update dependency fast-xml-parser to v5.11.2 ([#1025](https://github.com/Heey-Global/verity/issues/1025)) ([f76b578](https://github.com/Heey-Global/verity/commit/f76b578035c618031708a9075b4d1fb3a621f36a))
+* **installer:** preserve sudo terminal and filter Docker pairing addresses ([#1013](https://github.com/Heey-Global/verity/issues/1013)) ([6c7b118](https://github.com/Heey-Global/verity/commit/6c7b1184f0814a7d60cca549a4f3628917c76f8f))
+* **preview:** enforce server-side session cookie expiry ([#1033](https://github.com/Heey-Global/verity/issues/1033)) ([2254409](https://github.com/Heey-Global/verity/commit/2254409b1d1262eb252544a5b8e1b30c0f41dc59))
+* **preview:** reject cross-origin browser writes and websocket upgrades ([#1032](https://github.com/Heey-Global/verity/issues/1032)) ([a66073e](https://github.com/Heey-Global/verity/commit/a66073ef7705849019c48856156f568e8d348755))
+* **security:** confine project builds and revoke device streams ([d28cb13](https://github.com/Heey-Global/verity/commit/d28cb13b0ed370e4090f7e4a17b77940e5174178))
+* **security:** sign supporting release artifacts ([#1026](https://github.com/Heey-Global/verity/issues/1026)) ([33b3757](https://github.com/Heey-Global/verity/commit/33b3757a30e3abcbd5447ee01d6b11d6025303a0))
+* **security:** verify server images before installation and updates ([#1018](https://github.com/Heey-Global/verity/issues/1018)) ([fdf09e0](https://github.com/Heey-Global/verity/commit/fdf09e0d32889d87417d8d46ea9dea5ce47c565a))
+* **server:** serialize full session projection fallback reads ([#1016](https://github.com/Heey-Global/verity/issues/1016)) ([304bc21](https://github.com/Heey-Global/verity/commit/304bc21a8623ecb6d698192a59cdcd2ec56835a6))
+* **session:** recover quick-action lists without closing tags ([#1011](https://github.com/Heey-Global/verity/issues/1011)) ([c3e5f9a](https://github.com/Heey-Global/verity/commit/c3e5f9a4d171b5571955b8c1c5369d4598bda5db))
+* show local save only for project file changes ([#1017](https://github.com/Heey-Global/verity/issues/1017)) ([b77f133](https://github.com/Heey-Global/verity/commit/b77f133616fa290511edcecb9881180151592de3))
+
 ## [4.5.0](https://github.com/Heey-Global/verity/compare/v4.4.2...v4.5.0) (2026-10-02)
 
 
