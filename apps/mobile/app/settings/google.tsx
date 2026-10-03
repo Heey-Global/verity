@@ -163,6 +163,7 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
         <SettingsGroup title="Disconnect">
           <SettingsNavRow
             title="Disconnect account"
+            disabled={busy}
             icon="link"
             onPress={() =>
               Alert.alert(

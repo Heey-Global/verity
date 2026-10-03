@@ -1,5 +1,5 @@
 import { VerityApiError } from '@verity/mobile';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
@@ -77,4 +77,24 @@ it('keeps consent available when an older server lacks account metadata', async 
   await screen.findByText('Update your server to see project usage.');
   fireEvent.press(screen.getByText('Gmail'));
   await waitFor(() => expect(runGmailAuth).toHaveBeenCalledWith('google-client'));
+});
+
+it('blocks disconnection until pending consent finishes', async () => {
+  const client = setup([]);
+  let finish!: (value: { kind: 'cancelled' }) => void;
+  jest.mocked(runGmailAuth).mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const alert = jest.spyOn(Alert, 'alert');
+  render(<GoogleSettings />);
+  await screen.findByText('me@example.test');
+  fireEvent.press(screen.getByText('Gmail'));
+  expect(screen.getByRole('button', { name: 'Disconnect account' })).toBeDisabled();
+  fireEvent.press(screen.getByText('Disconnect account'));
+  expect(alert).not.toHaveBeenCalled();
+  expect(client.disconnectGoogleDrive).not.toHaveBeenCalled();
+  await act(async () => finish({ kind: 'cancelled' }));
+  expect(screen.getByRole('button', { name: 'Disconnect account' })).toBeEnabled();
 });
