@@ -193,9 +193,12 @@ describe('release verification instructions', () => {
     const signing = Object.values(release.jobs ?? {}).filter((job) =>
       (job.steps ?? []).some((step) => /cosign sign\s/u.test(step.run ?? '')),
     );
-    expect(signing.length, 'no job signs an image, so this guards nothing').toBe(1);
-    const env = signing[0]?.env ?? {};
-    expect(`${env.REGISTRY}/${env.IMAGE_NAME}`).toBe(OFFICIAL_SERVER_IMAGE);
+    // Supporting artifacts may also be signed; losing Server signing must still fail.
+    const serverSigning = signing.filter((job) => {
+      const env = job.env ?? {};
+      return `${env.REGISTRY}/${env.IMAGE_NAME}` === OFFICIAL_SERVER_IMAGE;
+    });
+    expect(serverSigning, 'the documented Server image has no signing job').toHaveLength(1);
   });
 
   it('tells the reader how to reach the signed channel document', () => {
