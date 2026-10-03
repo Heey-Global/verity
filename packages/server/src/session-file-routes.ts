@@ -101,9 +101,11 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     return { root, dir };
   };
 
-  /** Moving is a knowledge-folder scope change. */
-  const knowledgeOnly = (root: SessionFileRootName, reply: FastifyReply): boolean => {
-    if (isKnowledgeRoot(root)) return true;
+  /** Between the knowledge folders a move is a scope change; inside the worktree
+   *  it can only be a rename or a reshuffle. Crossing between the worktree and a
+   *  knowledge folder is neither — that is an import, with its own route. */
+  const sameKind = (from: SessionFileRootName, to: SessionFileRootName, reply: FastifyReply) => {
+    if (isKnowledgeRoot(from) === isKnowledgeRoot(to)) return true;
     reply.code(400).send({ error: 'only knowledge files can be changed this way' });
     return false;
   };
@@ -151,7 +153,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
   app.post('/sessions/:id/files/move', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const body = sessionFileMoveBody.parse(request.body);
-    if (!knowledgeOnly(body.root, reply) || !knowledgeOnly(body.toRoot, reply)) return reply;
+    if (!sameKind(body.root, body.toRoot, reply)) return reply;
     const from = await target(id, body.root, reply);
     if (from === undefined) return reply;
     const to = await target(id, body.toRoot, reply);

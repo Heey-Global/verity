@@ -1,3 +1,4 @@
+import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
@@ -8208,20 +8209,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // existing destination, and a move between the project folder and the
         // shared one is a scope change (ADR 0022 D1) — the one place where
         // overwriting somebody else's file must fail loudly. Both roots live
-        // under the same data root, so the hard link always resolves.
-        await link(sourcePath, destinationPath);
-        await unlink(sourcePath);
+        // under the same data root, so the hard link always resolves. A rename
+        // inside the worktree stays on one filesystem too, and must not replace
+        // a file the agent wrote under the new name either.
+        if (fromRoot.root === 'worktree') {
+          await renameWorktreeFile(sourcePath, destinationPath);
+        } else {
+          await link(sourcePath, destinationPath);
+          await unlink(sourcePath);
+        }
         if (fromRoot.root === 'knowledge' && source.rel === 'overview.md')
           await markProjectOverviewAuthoritative(fromRoot.dir);
         if (toRoot.root === 'knowledge' && destination.rel === 'overview.md')
           await markProjectOverviewAuthoritative(toRoot.dir);
-        const movedExtraction = await moveKnowledgeExtraction(
-          fromRoot.dir,
-          source.rel,
-          toRoot.dir,
-          destination.rel,
-        );
-        if (!movedExtraction) await extractKnowledgeFile(toRoot.dir, destination.rel);
+        // The worktree keeps no extracted-text mirror; only knowledge files carry one.
+        if (toRoot.root !== 'worktree') {
+          const movedExtraction = await moveKnowledgeExtraction(
+            fromRoot.dir,
+            source.rel,
+            toRoot.dir,
+            destination.rel,
+          );
+          if (!movedExtraction) await extractKnowledgeFile(toRoot.dir, destination.rel);
+        }
         return { path: destination.rel, root: toRoot.root };
       } catch (error) {
         if (

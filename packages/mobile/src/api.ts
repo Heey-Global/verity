@@ -4027,6 +4027,25 @@ export class VerityClient {
     return (await res.json()) as { path: string; root: SessionFileRoot };
   }
 
+  /** Give a file a new name in the same folder of the same root. The server
+   * refuses with 409 rather than replace a file that already has that name; an
+   * older server answers a worktree rename with 400. */
+  async renameSessionFile(id: string, root: SessionFileRoot, path: string, newName: string) {
+    const slash = path.lastIndexOf('/');
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/files/move`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        root,
+        path,
+        toRoot: root,
+        toPath: slash === -1 ? '' : path.slice(0, slash),
+        toFileName: newName,
+      }),
+    });
+    return (await res.json()) as { path: string; root: SessionFileRoot };
+  }
+
   /** Switch the session worktree's branch, keeping the chat (#91). Returns the
    * branch now checked out. Non-2xx (busy/dirty/in-use/name-exists → 409, no
    * such branch → 404, invalid name → 400, unconfigured → 503) throws a
