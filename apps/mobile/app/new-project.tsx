@@ -6,7 +6,7 @@ import {
   type ProjectRecord,
 } from '@verity/mobile';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -52,10 +52,13 @@ function NewProject({ client }: { client: VerityClient }) {
   const insets = useSafeAreaInsets();
   const [repositories, setRepositories] = useState<ProjectRecord[]>([]);
   const [mode, setMode] = useState<'github' | 'local'>('github');
+  const modeChosen = useRef(false);
   const [localName, setLocalName] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadingRepositories, setLoadingRepositories] = useState(true);
+  const [createdProject, setCreatedProject] = useState<ProjectRecord | null>(null);
+  const [connections, setConnections] = useState<{ label: string; section: string }[]>([]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const sortedRepositories = useMemo(
@@ -76,11 +79,16 @@ function NewProject({ client }: { client: VerityClient }) {
       .listAvailableRepositories()
       .then((next) => {
         setRepositories(next);
+        if (!modeChosen.current && next.length === 0) setMode('local');
         setSelectedId((current) => current ?? next[0]?.id ?? null);
       })
-      .catch((caught) =>
-        setError(caught instanceof VerityApiError ? caught.message : 'Could not load repositories'),
-      )
+      .catch((caught) => {
+        if (!modeChosen.current) {
+          setMode('local');
+          return;
+        }
+        setError(caught instanceof VerityApiError ? caught.message : 'Could not load repositories');
+      })
       .finally(() => setLoadingRepositories(false));
   }, [client]);
   useEffect(() => {
@@ -98,7 +106,36 @@ function NewProject({ client }: { client: VerityClient }) {
       .createProject(body)
       .then((project) => {
         // Setup progress is lifecycle state; optional integrations do not gate access.
-        router.replace(`/project/${project.id}`);
+        setCreatedProject(project);
+        void Promise.allSettled([
+          Promise.resolve().then(() => client.getGoogleDriveConnection()),
+          Promise.resolve().then(() => client.getProjectGoogleConnection(project.id, 'gmail')),
+          Promise.resolve().then(() => client.getProjectGoogleConnection(project.id, 'calendar')),
+          Promise.resolve().then(() => client.getProjectGoogleConnection(project.id, 'contacts')),
+          Promise.resolve().then(() => client.listIntegrations()),
+          Promise.resolve().then(() => client.listHttpMcpConnections()),
+          Promise.resolve().then(() => client.getVeritySettings()),
+        ]).then(([drive, gmail, calendar, contacts, integrations, mcp, settings]) => {
+          const choices: { label: string; section: string }[] = [];
+          if (drive.status === 'fulfilled' && drive.value.connected)
+            choices.push({ label: 'Google Drive folder', section: 'drive' });
+          if (
+            [gmail, calendar, contacts].some(
+              (item) => item.status === 'fulfilled' && item.value.connected,
+            )
+          )
+            choices.push({ label: 'Google services', section: 'google' });
+          if (
+            integrations.status === 'fulfilled' &&
+            integrations.value.accounts.some((account) => account.provider === 'matrix')
+          )
+            choices.push({ label: 'Matrix rooms', section: 'matrix' });
+          if (mcp.status === 'fulfilled' && mcp.value.length > 0)
+            choices.push({ label: 'MCP tools', section: 'mcp' });
+          if (settings.status === 'fulfilled' && settings.value?.dopplerServiceTokenConfigured)
+            choices.push({ label: 'Doppler environment', section: 'doppler' });
+          setConnections(choices);
+        });
         void client.setProjectSetupStatus(project.id, 'complete').catch(() => {
           // The project page retries migration of pending setup status.
         });
@@ -139,6 +176,51 @@ function NewProject({ client }: { client: VerityClient }) {
         setCreating(false);
       });
   }, [canCreate, client, localName, mode, selected]);
+  if (createdProject)
+    return (
+      <ScrollView contentContainerStyle={styles.content}>
+        <Stack.Screen options={{ title: 'Project connections' }} />
+        <Text style={styles.title}>What does this project need?</Text>
+        <Text style={styles.subtitle}>
+          Optional. Choose a folder, rooms, or tools to share with this project. Nothing is enabled
+          automatically.
+        </Text>
+        {connections.map((connection) => (
+          <Pressable
+            key={connection.section}
+            style={styles.select}
+            accessibilityRole="button"
+            accessibilityLabel={connection.label}
+            onPress={() =>
+              router.push({
+                pathname: '/project/[id]/settings/services',
+                params: { id: createdProject.id, section: connection.section },
+              })
+            }
+          >
+            <Text style={styles.selectText}>{connection.label}</Text>
+            <Text style={styles.hint}>Choose access for this project</Text>
+          </Pressable>
+        ))}
+        <Pressable
+          style={styles.reload}
+          accessibilityRole="button"
+          onPress={() => router.push('/settings/services')}
+        >
+          <Text style={styles.reloadLabel}>Discover more connections</Text>
+        </Pressable>
+        <Pressable
+          style={styles.create}
+          accessibilityRole="button"
+          onPress={() => router.replace(`/project/${createdProject.id}`)}
+        >
+          <Text style={styles.createLabel}>Open project</Text>
+        </Pressable>
+        <Text style={styles.hint}>
+          You can skip connections and add them later in project settings.
+        </Text>
+      </ScrollView>
+    );
   return (
     <KeyboardAvoidingView style={styles.flex} behavior="padding">
       <Stack.Screen options={{ title: 'New project' }} />
@@ -156,6 +238,7 @@ function NewProject({ client }: { client: VerityClient }) {
               style={[styles.mode, mode === key ? styles.modeActive : null]}
               disabled={creating}
               onPress={() => {
+                modeChosen.current = true;
                 setMode(key);
                 setPickerOpen(false);
                 setError(undefined);

@@ -1,4 +1,4 @@
-# Google session connections
+# Google connections
 
 Google services use the existing OAuth client configured with `GOOGLE_AUTH_ID`.
 Enable the [Google Calendar API](https://developers.google.com/workspace/calendar/api/quickstart/nodejs#enable_the_api)
@@ -25,28 +25,42 @@ Scope names in this table have the prefix `https://www.googleapis.com/auth/`.
 Connecting Gmail, Calendar, or Contacts does not request Drive or native editor
 scopes. Drive availability is derived from the actual returned scopes, rather
 than from the presence of a shared refresh token. Existing stored connections
-retain their known permissions when upgrading; new sessions gain no Contacts
+retain their known permissions when upgrading; projects gain no Contacts
 access until explicitly enabled.
 
 Docs, Sheets, and Slides share one consent step when first opening a native file
 for editing. Existing partial editor permissions are expanded to this bundle;
 the bundle is not requested when merely connecting Drive.
 
-## Session access and removal
+## Project access and removal
 
-In the attachment menu, **Connect email**, **Google Calendar**, and **Google
-Contacts** enable each service separately. They can be used together. Active
-connections appear above the composer with their account email and a disconnect
-button. Google Contacts is read-only, and ambiguity between names or email
-addresses must be resolved with you before sending mail or inviting attendees.
+Connect one Google account under **Settings → Connections → Google**. Grant only
+those services you need through incremental consent. In **Project settings →
+Connections → Google**, enable Gmail, Calendar, and Contacts separately. Each
+project grant applies to all its sessions, including future sessions. The
+attachment menu provides shortcuts to these project settings.
 
-Disconnecting removes that session's access. Later tool calls, including a change
-awaiting approval, must recheck the session grant. An HTTP request already sent to
-Google cannot be recalled. Contacts lookup checks access again between Google's
-cache warmup and the actual search. Other sessions and shared Google sign-in
-remain connected. Disconnecting Google in service settings clears all three
-services' session grants. Changing accounts or losing a service's scopes also
-clears the affected grants, requiring explicit enablement for the new account.
+Drive remains limited to the folder selected for that project. Native Docs,
+Sheets, and Slides remain limited to the file assigned to an individual session:
+open the session's folder icon, choose **Google Drive**, tap a native file, and
+choose **Use in this chat**.
+
+Existing session-only Gmail, Calendar, and Contacts grants stay session-only
+when upgrading. They are not automatically promoted to project grants. To extend
+access, explicitly enable the service in project settings. Disabling a service
+for a project removes its project grant and legacy session grants in that project.
+Other projects remain unaffected. A session disconnect button only removes a
+legacy session grant; access granted by its project is managed in project settings.
+
+Later tool calls, including a change awaiting approval, recheck effective access.
+An HTTP request already sent to Google cannot be recalled. Contacts lookup checks
+access again between Google's cache warmup and the actual search. Google Contacts
+is read-only; ambiguous names or email addresses must be resolved with you before
+sending mail or inviting attendees.
+
+Disconnecting the Google account removes project and session grants. Changing
+accounts or losing a service's scopes clears affected grants, requiring explicit
+enablement for the new account.
 
 ## Calendar changes and Google Meet
 

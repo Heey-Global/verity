@@ -75,6 +75,7 @@ describe('GET /onboarding/status', () => {
         dopplerConfigured: false,
         claudeConfigured: false,
         codexConfigured: false,
+        opencodeConfigured: false,
         complete: false,
         nextStep: 'master-password',
       });
@@ -155,16 +156,15 @@ describe('GET /onboarding/status', () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);
     try {
-      // 1. Set the master password (init) → unlocked; nextStep advances to github.
+      // 1. Set the master password (init) → unlocked; nextStep advances to AI providers.
       const token = await initialize(app);
       let status = await getStatus(app, token);
       expect(status.sealed).toBe(false); // init unlocks the cipher
       expect(status.masterPasswordSet).toBe(true);
-      expect(status.nextStep).toBe('github');
+      expect(status.nextStep).toBe('first-project');
       expect(status.complete).toBe(false);
 
-      // 2. Connect GitHub. The combined GitHub step remains active until the
-      // signing key is also ready.
+      // Optional GitHub setup does not replace a usable AI provider.
       await app.inject({
         method: 'PATCH',
         url: '/settings',
@@ -176,9 +176,9 @@ describe('GET /onboarding/status', () => {
       });
       status = await getStatus(app, token);
       expect(status.githubAppConfigured).toBe(true);
-      expect(status.nextStep).toBe('github');
+      expect(status.nextStep).toBe('first-project');
 
-      // 3. Configure a signing key (inline SSH key) → setup is complete.
+      // A signing key alone must not open an unusable app without an AI provider.
       await app.inject({
         method: 'PATCH',
         url: '/settings',
@@ -186,6 +186,11 @@ describe('GET /onboarding/status', () => {
       });
       status = await getStatus(app, token);
       expect(status.signingKeyConfigured).toBe(true);
+      expect(status.complete).toBe(false);
+      await new EventStore(ctx.db, cipher).updateVeritySettings({
+        codexAuthJson: '{"token":"test"}',
+      });
+      status = await getStatus(app, token);
       expect(status.hasProject).toBe(false);
       expect(status.nextStep).toBeNull();
       expect(status.complete).toBe(true);
@@ -204,6 +209,34 @@ describe('GET /onboarding/status', () => {
     }
   });
 
+  it.each(['codex', 'opencode'] as const)(
+    'allows %s-only setup without GitHub or signing',
+    async (provider) => {
+      const cipher = createSealableSecretCipher();
+      const app = buildWithCipher(cipher);
+      try {
+        const token = await initialize(app);
+        const store = new EventStore(ctx.db, cipher);
+        await store.updateVeritySettings(
+          provider === 'codex'
+            ? { codexAuthJson: '{"token":"test"}' }
+            : {
+                opencodeBaseUrl: 'https://models.example.test',
+                opencodeApiKey: 'test-key',
+                opencodeModels: '["test-model"]',
+              },
+        );
+        const status = await getStatus(app, token);
+        expect(status.githubAppConfigured).toBe(false);
+        expect(status.signingKeyConfigured).toBe(false);
+        expect(status.complete).toBe(true);
+        expect(status.nextStep).toBeNull();
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it('partial GitHub App config does not count as configured (all three fields required)', async () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);
@@ -217,7 +250,7 @@ describe('GET /onboarding/status', () => {
       });
       const status = await getStatus(app, token);
       expect(status.githubAppConfigured).toBe(false);
-      expect(status.nextStep).toBe('github');
+      expect(status.nextStep).toBe('first-project');
     } finally {
       await app.close();
     }
@@ -248,7 +281,7 @@ describe('GET /onboarding/status', () => {
       // Before any token: informational flag is false.
       let status = await getStatus(app, token);
       expect(status.dopplerConfigured).toBe(false);
-      // nextStep is still driven by the required steps (github first, unconfigured).
+      // Optional Doppler must not change the required AI-provider gate.
       const nextStepBefore = status.nextStep;
       const completeBefore = status.complete;
 
@@ -285,7 +318,7 @@ describe('GET /onboarding/status', () => {
       const status = await getStatus(app2, token);
       expect(status.sealed).toBe(true);
       expect(status.masterPasswordSet).toBe(true);
-      expect(status.nextStep).toBe('github');
+      expect(status.nextStep).toBe('first-project');
     } finally {
       await app2.close();
     }

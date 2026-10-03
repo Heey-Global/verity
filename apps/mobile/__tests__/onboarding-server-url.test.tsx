@@ -154,6 +154,7 @@ describe('onboarding connection entry', () => {
         signingKeyConfigured: true,
         hasProject: true,
         complete: true,
+        claudeConfigured: true,
         nextStep: null,
       }),
     );

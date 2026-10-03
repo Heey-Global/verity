@@ -27,6 +27,8 @@ import {
   SettingsToggleRow,
 } from '../../../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
+import { ProjectGoogleServices } from '../../../../components/settings/ProjectGoogleServices';
+import { ProjectMatrixRooms } from '../../../../components/settings/ProjectMatrixRooms';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 
@@ -38,7 +40,11 @@ export default function ProjectServicesScreen() {
   const projectId = projectIdParam(id);
   const requestedSection = Array.isArray(section) ? section[0] : section;
   const selectedSection =
-    requestedSection === 'doppler' || requestedSection === 'drive' || requestedSection === 'mcp'
+    requestedSection === 'doppler' ||
+    requestedSection === 'drive' ||
+    requestedSection === 'mcp' ||
+    requestedSection === 'matrix' ||
+    requestedSection === 'google'
       ? requestedSection
       : undefined;
   const client = useMemo(() => createVerityClient(), []);
@@ -47,7 +53,7 @@ export default function ProjectServicesScreen() {
       <SettingsMessage
         title="Project unavailable"
         subtitle="This project could not be opened. Go back and pick it again."
-        screenTitle="Connected services"
+        screenTitle="Connections"
       />
     );
   }
@@ -61,7 +67,7 @@ function ProjectServicesView({
 }: {
   client: VerityClient;
   projectId: string;
-  section?: 'doppler' | 'drive' | 'mcp';
+  section?: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google';
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load, onSettingsSaved } = useProjectDetail(client, projectId);
@@ -72,7 +78,9 @@ function ProjectServicesView({
         ? 'Google Drive'
         : section === 'mcp'
           ? 'MCP'
-          : 'Connected services';
+          : section === 'matrix'
+            ? 'Matrix'
+            : 'Connections';
 
   if (loading && detail === undefined) {
     return (
@@ -123,6 +131,12 @@ function ProjectServicesView({
         >
           <ProjectMcpBindingsSection client={client} projectId={projectId} />
         </SettingsGroup>
+      ) : null}
+      {section === undefined || section === 'google' ? (
+        <ProjectGoogleServices client={client} projectId={projectId} />
+      ) : null}
+      {section === undefined || section === 'matrix' ? (
+        <ProjectMatrixRooms client={client} projectId={projectId} />
       ) : null}
     </SettingsScaffold>
   );

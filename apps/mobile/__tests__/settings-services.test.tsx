@@ -19,7 +19,12 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
-import ServicesSettingsScreen from '../app/settings/services/index';
+import ConnectionsScreen from '../app/settings/services/index';
+import SecretScreen from '../app/settings/secret-store';
+import DopplerScreen from '../app/settings/services/doppler';
+import AiScreen from '../app/settings/services/ai';
+import TranscriptionScreen from '../app/settings/transcription';
+let ServicesSettingsScreen = ConnectionsScreen;
 import { ATTENTION_ACTION_ROUTES } from '../components/ServerAttentionBanner';
 import {
   expectPatchClearsNothing,
@@ -38,6 +43,9 @@ afterEach(() => {
 });
 
 describe('settings/services — secret store onboarding', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = SecretScreen;
+  });
   it('renders the "set master password" UI when the store is uninitialized', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('uninitialized'));
     render(<ServicesSettingsScreen />);
@@ -127,15 +135,14 @@ describe('settings/services — secret store onboarding', () => {
   it('shows the Unlocked indicator and enables the paste boxes when unlocked', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
-
     expect(await screen.findByText('Unlocked')).toBeOnTheScreen();
     expect(screen.queryByText('Master password')).toBeNull();
-    expect(screen.getByPlaceholderText('Paste the Doppler token…')).toBeOnTheScreen();
+    expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
     expect(screen.queryByText('Unlock the secret store to change this.')).toBeNull();
   });
 
   it('keeps the credential boxes read-only while the store is sealed', async () => {
+    ServicesSettingsScreen = DopplerScreen;
     mockCreateVerityClient.mockReturnValue(makeClient('sealed'));
     render(<ServicesSettingsScreen />);
     fireEvent.press(await screen.findByLabelText('Doppler'));
@@ -154,15 +161,17 @@ describe('settings/services — secret store onboarding', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unmanaged'));
     render(<ServicesSettingsScreen />);
 
-    // The MCP row is not gated on a secret store, so it is what proves the
-    // screen rendered at all rather than merely failing to find the rest.
-    await screen.findByLabelText('MCP connections');
-    expect(screen.queryByText('Secret store')).toBeNull();
+    // The scaffold still renders when this host has no managed secret store.
+    await screen.findByText('All changes saved');
+    expect(screen.queryByText('Set a master password to protect secrets at rest.')).toBeNull();
     expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
   });
 });
 
 describe('settings/services — write-only credentials', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = DopplerScreen;
+  });
   // The sharpest form of the split's landmine: a paste box saving the whole
   // draft would clear the GitHub App identifiers in the same request.
   it('sends only the credential that was pasted', async () => {
@@ -199,7 +208,7 @@ describe('settings/services — write-only credentials', () => {
 
     // A blank box means "leave it alone". Sent as `null`, it would clear a
     // credential the operator never touched.
-    await waitFor(() => expect(screen.getByText('Unlocked')).toBeOnTheScreen());
+    await waitFor(() => expect(screen.getByText('All changes saved')).toBeOnTheScreen());
     expect(updateVeritySettings).not.toHaveBeenCalled();
   });
 
@@ -226,6 +235,9 @@ describe('settings/services — write-only credentials', () => {
 });
 
 describe('settings/services — AI backends', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = AiScreen;
+  });
   const claudeSession = {
     sessionId: '22222222-2222-4222-8222-222222222222',
     provider: 'claude',
@@ -341,7 +353,7 @@ describe('settings/services — AI backends', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { startAgentLogin }));
     render(<ServicesSettingsScreen />);
 
-    await screen.findByText('Unlocked');
+    await screen.findByText('AI providers');
     expect(startAgentLogin).not.toHaveBeenCalled();
   });
 
@@ -354,6 +366,9 @@ describe('settings/services — AI backends', () => {
 });
 
 describe('settings/services — meeting transcription', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = TranscriptionScreen;
+  });
   it('persists an explicit backend choice', async () => {
     const initial = makeSettings({ transcribeBackendMode: null });
     const updateVeritySettings = jest
@@ -455,11 +470,14 @@ describe('settings/services — meeting transcription', () => {
 });
 
 describe('settings/services — tools', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = ConnectionsScreen;
+  });
   it('leads to MCP connections rather than holding the form itself', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ServicesSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText('MCP connections'));
+    fireEvent.press(await screen.findByLabelText('MCP servers'));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/mcp');
     // The add form lives on its own route; an inline one here is what made the
     // old single screen unreadable.
@@ -468,6 +486,9 @@ describe('settings/services — tools', () => {
 });
 
 describe('settings/services — knowledge sources', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = ConnectionsScreen;
+  });
   it('leads to Matrix and shows its account state', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
@@ -504,14 +525,51 @@ describe('settings/services — knowledge sources', () => {
     render(<ServicesSettingsScreen />);
 
     expect(await screen.findByLabelText('Matrix')).toBeOnTheScreen();
-    expect(screen.getByLabelText('MCP connections')).toBeOnTheScreen();
+    expect(screen.getByLabelText('MCP servers')).toBeOnTheScreen();
   });
 });
 
 describe('settings/services — not connected', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = ConnectionsScreen;
+  });
   it('renders a not-connected message when no server URL is configured', () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<ServicesSettingsScreen />);
     expect(screen.getByText('Not connected')).toBeOnTheScreen();
+  });
+});
+
+describe('connections catalog', () => {
+  it('shows project usage and Google account status without requiring Drive consent', async () => {
+    const client = makeClient('unlocked');
+    Object.assign(client, {
+      getGoogleConnection: jest.fn().mockResolvedValue({
+        connected: true,
+        accountEmail: 'me@example.test',
+        scopes: ['gmail.readonly'],
+        projects: [],
+      }),
+      getConnectionUsage: jest.fn().mockResolvedValue({
+        github: 0,
+        claude: 0,
+        codex: 0,
+        opencode: 0,
+        google: 2,
+        matrix: 0,
+        doppler: 0,
+        mcp: 0,
+      }),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ConnectionsScreen />);
+    expect(await screen.findByText('me@example.test')).toBeOnTheScreen();
+    expect(
+      screen.getByText(/Drive, Docs, Sheets, Slides, mail and calendar · Used in 2 projects/),
+    ).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Google'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/google');
+    expect(screen.queryByText('Secret store')).toBeNull();
+    expect(screen.queryByText('Transcription')).toBeNull();
   });
 });

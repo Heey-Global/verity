@@ -216,6 +216,8 @@ import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
+import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
@@ -4874,6 +4876,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerConnectionUsageRoutes(
+    app,
+    deps.eventStore,
+    async () => (await availableModels()).default,
+  );
+  registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),

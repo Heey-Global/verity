@@ -162,6 +162,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../../components/Icon';
+import { ConnectionDiscoveryHint } from '../../components/ConnectionDiscoveryHint';
 import { AgentLoopCockpit } from '../../components/AgentLoopCockpit';
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
@@ -200,12 +201,7 @@ import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
-import {
-  runCalendarAuth,
-  runContactsAuth,
-  runGmailAuth,
-  ensureGoogleWorkspaceAccess,
-} from '../../lib/googleDrive';
+import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
   type ClickModifiers,
   type DragFileItem,
@@ -2898,48 +2894,25 @@ export function SessionChat({
   }, [sessionId, voice]);
   const onConnectGmail = useCallback(() => {
     setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionGmailConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Gmail not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
-            );
-            return;
-          }
-          const auth = await runGmailAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectGmail({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
-        );
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionGmail(sessionId);
-        setGmailConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Gmail',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
+    if (projectId)
+      router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
+    else router.push('/settings/google');
+  }, [projectId]);
   const disableGmail = useCallback(() => {
-    void client
-      .disableSessionGmail(sessionId)
-      .then(() =>
-        setGmailConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
+    void (async () => {
+      if (projectId && (await client.getProjectGoogleConnection(projectId, 'gmail')).enabled) {
+        router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
+        return false;
+      }
+      await client.disableSessionGmail(sessionId);
+      return true;
+    })()
+      .then(
+        (disabled) =>
+          disabled &&
+          setGmailConnection((connection) =>
+            connection === null ? null : { ...connection, enabled: false },
+          ),
       )
       .catch((error: unknown) =>
         Alert.alert(
@@ -2947,49 +2920,28 @@ export function SessionChat({
           error instanceof Error ? error.message : String(error),
         ),
       );
-  }, [client, sessionId]);
+  }, [client, projectId, sessionId]);
   const onConnectCalendar = useCallback(() => {
     setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionCalendarConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Calendar not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
-            );
-            return;
-          }
-          const auth = await runCalendarAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectCalendar({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionCalendar(sessionId);
-        setCalendarConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Calendar',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
+    if (projectId)
+      router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
+    else router.push('/settings/google');
+  }, [projectId]);
   const disableCalendar = useCallback(() => {
-    void client
-      .disableSessionCalendar(sessionId)
-      .then(() =>
-        setCalendarConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
+    void (async () => {
+      if (projectId && (await client.getProjectGoogleConnection(projectId, 'calendar')).enabled) {
+        router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
+        return false;
+      }
+      await client.disableSessionCalendar(sessionId);
+      return true;
+    })()
+      .then(
+        (disabled) =>
+          disabled &&
+          setCalendarConnection((connection) =>
+            connection === null ? null : { ...connection, enabled: false },
+          ),
       )
       .catch((error: unknown) =>
         Alert.alert(
@@ -2997,49 +2949,28 @@ export function SessionChat({
           error instanceof Error ? error.message : String(error),
         ),
       );
-  }, [client, sessionId]);
+  }, [client, projectId, sessionId]);
   const onConnectContacts = useCallback(() => {
     setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionContactsConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Contacts not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
-            );
-            return;
-          }
-          const auth = await runContactsAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectContacts({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionContacts(sessionId);
-        setContactsConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Contacts',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
+    if (projectId)
+      router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
+    else router.push('/settings/google');
+  }, [projectId]);
   const disableContacts = useCallback(() => {
-    void client
-      .disableSessionContacts(sessionId)
-      .then(() =>
-        setContactsConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
+    void (async () => {
+      if (projectId && (await client.getProjectGoogleConnection(projectId, 'contacts')).enabled) {
+        router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
+        return false;
+      }
+      await client.disableSessionContacts(sessionId);
+      return true;
+    })()
+      .then(
+        (disabled) =>
+          disabled &&
+          setContactsConnection((connection) =>
+            connection === null ? null : { ...connection, enabled: false },
+          ),
       )
       .catch((error: unknown) =>
         Alert.alert(
@@ -3047,7 +2978,7 @@ export function SessionChat({
           error instanceof Error ? error.message : String(error),
         ),
       );
-  }, [client, sessionId]);
+  }, [client, projectId, sessionId]);
   const clearWorkspaceFile = useCallback(() => {
     if (workspaceFile === null) return;
     Alert.alert(
@@ -5334,6 +5265,16 @@ function SessionFilesSheet({
             {driveUnconfigured && projectId ? (
               <View style={styles.driveSetupNotice}>
                 <Text style={styles.sheetEmpty}>No Google Drive folder connected.</Text>
+                <ConnectionDiscoveryHint
+                  id={`drive.${projectId}`}
+                  onConnect={() => {
+                    onClose();
+                    router.push({
+                      pathname: '/project/[id]/settings/services',
+                      params: { id: projectId, section: 'drive' },
+                    });
+                  }}
+                />
                 <Pressable
                   onPress={() => {
                     onClose();

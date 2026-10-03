@@ -3,9 +3,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 import { Alert } from 'react-native';
 
 const mockReplace = jest.fn();
+const mockPush = jest.fn();
 let mockParams: { projectId?: string } = {};
 jest.mock('expo-router', () => ({
-  router: { replace: (...args: unknown[]) => mockReplace(...args) },
+  router: {
+    replace: (...args: unknown[]) => mockReplace(...args),
+    push: (...args: unknown[]) => mockPush(...args),
+  },
   useLocalSearchParams: () => mockParams,
   Stack: Object.assign(() => null, { Screen: () => null }),
 }));
@@ -48,10 +52,44 @@ describe('new project', () => {
     await waitFor(() =>
       expect(fake.setProjectSetupStatus).toHaveBeenCalledWith('project-1', 'complete'),
     );
+    expect(await screen.findByText('What does this project need?')).toBeOnTheScreen();
+    fireEvent.press(screen.getByText('Open project'));
     expect(mockReplace).toHaveBeenCalledWith('/project/project-1');
     await waitFor(() =>
       expect(fake.repairProject).toHaveBeenCalledWith('project-1', { confirmWarnings: false }),
     );
+  });
+
+  it('offers only connected services and opens scope selection without granting access', async () => {
+    const fake = client({
+      getGoogleDriveConnection: jest.fn().mockResolvedValue({ connected: true }),
+      getProjectGoogleConnection: jest.fn().mockResolvedValue({ connected: false }),
+      listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
+      listHttpMcpConnections: jest.fn().mockResolvedValue([]),
+      getVeritySettings: jest.fn().mockResolvedValue(null),
+    });
+    mockCreateClient.mockReturnValue(fake);
+    render(<NewProjectScreen />);
+    fireEvent.press(await screen.findByLabelText('Create project'));
+    fireEvent.press(await screen.findByText('Google Drive folder'));
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/project/[id]/settings/services',
+      params: { id: 'project-1', section: 'drive' },
+    });
+    expect(screen.queryByText('Matrix rooms')).toBeNull();
+  });
+
+  it('starts with an empty project when GitHub is unavailable', async () => {
+    mockCreateClient.mockReturnValue(
+      client({
+        listAvailableRepositories: jest
+          .fn()
+          .mockRejectedValue(new VerityApiError(400, 'GitHub not connected')),
+      }),
+    );
+    render(<NewProjectScreen />);
+    expect(await screen.findByLabelText('Project name')).toBeOnTheScreen();
+    expect(screen.queryByText('GitHub not connected')).toBeNull();
   });
 
   it('opens an older pending project directly on its project page', () => {
@@ -82,7 +120,7 @@ describe('new project', () => {
     );
     render(<NewProjectScreen />);
     fireEvent.press(await screen.findByLabelText('Create project'));
-    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/project/project-1'));
+    await screen.findByText('What does this project need?');
     await waitFor(() =>
       expect(alert).toHaveBeenCalledWith('Could not prepare project', 'Build failed'),
     );
