@@ -68,17 +68,21 @@ process.stderr.write('Unexpected tool '+tool+' '+args.join(' '));process.exit(2)
   return {
     root,
     run: () =>
-      spawnSync(process.execPath, [process.env.PROMOTION_SCRIPT ?? resolve('scripts/production-promotion.ts'), 'promote'], {
-        cwd: root,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${join(root, 'bin')}:${process.env.PATH}`,
-          PROMOTION_STATE: join(root, 'state.json'),
-          RUNNER_TEMP: root,
-          GITHUB_REPOSITORY: 'example/repo',
+      spawnSync(
+        process.execPath,
+        [process.env.PROMOTION_SCRIPT ?? resolve('scripts/production-promotion.ts'), 'promote'],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${join(root, 'bin')}:${process.env.PATH}`,
+            PROMOTION_STATE: join(root, 'state.json'),
+            RUNNER_TEMP: root,
+            GITHUB_REPOSITORY: 'example/repo',
+          },
         },
-      }),
+      ),
     calls: () =>
       (JSON.parse(readFileSync(join(root, 'state.json'), 'utf8')) as { calls: string[] }).calls,
   };

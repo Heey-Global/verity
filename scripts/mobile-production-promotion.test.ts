@@ -68,7 +68,11 @@ function setup(change: Record<string, string> = {}) {
     vi.fn(async (url: string, init: RequestInit) => {
       const path = url.replace('https://api.appstoreconnect.apple.com/v1/', '');
       const method = init.method ?? 'GET';
-      requests.push({ path, method, body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined });
+      requests.push({
+        path,
+        method,
+        body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined,
+      });
       let data: unknown;
       if (path === 'apps/123')
         data = { attributes: { bundleId: change.bundle ?? 'build.verity.app' } };

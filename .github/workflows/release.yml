@@ -637,10 +637,14 @@ jobs:
             exit 1
           fi
           tag="v${VERSION}"
-          release_json="$(gh release view "$tag" --json isDraft,targetCommitish)"
+          release_json="$(gh release view "$tag" --json isDraft,isPrerelease,targetCommitish)"
           is_draft="$(jq -r '.isDraft' <<<"$release_json")"
           target="$(jq -r '.targetCommitish' <<<"$release_json")"
           if [[ "$REPUBLISH" == 'true' ]]; then
+            if [[ "$(jq -r '.isPrerelease' <<< "$release_json")" == true ]]; then
+              echo '::error::A Staging prerelease requires its production promotion PR.' >&2
+              exit 1
+            fi
             if [[ "$is_draft" == 'true' ]]; then
               echo "::error::$tag is still a draft; republish is only for an existing release." >&2
               exit 1
@@ -2365,6 +2369,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.release-please.outputs.backend-version }}
+          REPUBLISH: ${{ inputs.backend-republish }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2376,10 +2381,17 @@ jobs:
               "ghcr.io/heey-global/verity/verity-server:candidate-stable-v${VERSION}-${architecture}" \
               --artifact-type application/vnd.verity.release-channel.v1+json \
               channel.json:application/json)
+            if [ "$REPUBLISH" = true ]; then
+              (cd "$directory" && oras push \
+                "ghcr.io/heey-global/verity/verity-server:channel-stable-${architecture}" \
+                --artifact-type application/vnd.verity.release-channel.v1+json \
+                channel.json:application/json)
+            else
             (cd "$directory" && cp staging-channel.json channel.json && oras push \
               "ghcr.io/heey-global/verity/verity-server:channel-staging-${architecture}" \
               --artifact-type application/vnd.verity.release-channel.v1+json \
               channel.json:application/json)
+            fi
           done
 
   publish-server-release-evidence:
@@ -3231,8 +3243,24 @@ jobs:
             --arg amd64 "ghcr.io/heey-global/verity/verity-server@$amd64" \
             --arg arm64 "ghcr.io/heey-global/verity/verity-server@$arm64" \
             '{schema:1, product:"server", version:$version, source:$source, releasePr:$releasePr, images:$images, envelopes:{amd64:$amd64,arm64:$arm64}}' > "$RUNNER_TEMP/server-production.json"
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq production-candidate.json; then
+            gh release download "$TAG" --pattern production-candidate.json --output "$RUNNER_TEMP/server-production.json" --clobber
+          fi
           node scripts/production-promotion.ts propose "$RUNNER_TEMP/server-production.json"
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels" -f 'labels[]=autorelease: tagged'
-          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels/autorelease%3A%20pending"
+          labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels" --jq '.[].name')"
+          pending=false
+          tagged=false
+          grep -Fxq 'autorelease: pending' <<< "$labels" && pending=true
+          grep -Fxq 'autorelease: tagged' <<< "$labels" && tagged=true
+          if [ "$pending" = false ] && [ "$tagged" = false ]; then
+            echo '::error::Release PR has neither pending nor tagged label.' >&2
+            exit 1
+          fi
+          if [ "$tagged" = false ]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels" -f 'labels[]=autorelease: tagged'
+          fi
+          if [ "$pending" = true ]; then
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels/autorelease%3A%20pending"
+          fi
           gh release edit "$TAG" --draft=false --prerelease=true --latest=false
           gh workflow run release-dispatch.yml --ref main -f backend-replan=true

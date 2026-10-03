@@ -109,7 +109,6 @@ For the Staging channel, use a separate output directory and the same verificati
 oras pull ghcr.io/heey-global/verity/verity-server:channel-staging-amd64 -o staging-channel
 ```
 
-
 The payload is carried as opaque base64 because the signature covers exact
 bytes: re-serializing the JSON anywhere along the way invalidates it.
 

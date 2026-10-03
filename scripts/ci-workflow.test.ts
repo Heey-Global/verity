@@ -1745,7 +1745,8 @@ describe('self-update release gate', () => {
       (step) => step.name === 'Validate maintenance backend release',
     );
     expect(validation?.env?.GH_REPO).toBe('${{ github.repository }}');
-    expect(validation?.run).toContain('--json isDraft,targetCommitish');
+    expect(validation?.run).toContain('--json isDraft,isPrerelease,targetCommitish');
+    expect(validation?.run).toContain('A Staging prerelease requires its production promotion PR.');
     expect(validation?.run).toContain('commits/${target}');
     const authorization = validation?.run?.slice(validation.run.indexOf('sha='));
     expect(authorization).toContain('if [[ "$is_draft" == \'true\' ]]');

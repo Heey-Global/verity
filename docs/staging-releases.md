@@ -31,7 +31,8 @@ credentials are reused; the Apple API key must have access to both apps. EAS mus
 also have signing credentials for the additional bundle ID.
 
 The apps use different URL schemes and can be installed side by side. Pair each
-app with the intended Server. The app variant does not replace pairing with a
+app with the intended Server. Set `GOOGLE_AUTH_ID` on the Staging Server to the
+Staging app’s OAuth client ID when using Google Drive. The app variant does not replace pairing with a
 hard-coded Server URL.
 
 ## Change an existing managed Server to Staging

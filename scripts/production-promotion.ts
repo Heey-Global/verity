@@ -134,29 +134,33 @@ function propose() {
       `sha=${head}`,
     );
   }
-  const query =
-    'mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) { createCommitOnBranch(input: { branch: { repositoryNameWithOwner: $repository, branchName: $branch }, expectedHeadOid: $expected, message: { headline: $message }, fileChanges: { additions: [{path: $path, contents: $contents}] } }) { commit { oid signature { isValid } } } }';
-  const result = api<{
-    data: { createCommitOnBranch: { commit: { signature: { isValid: boolean } } } };
-  }>(
-    'graphql',
-    '-f',
-    `query=${query}`,
-    '-f',
-    `repository=${repository}`,
-    '-f',
-    `branch=${branch}`,
-    '-f',
-    `expected=${head}`,
-    '-f',
-    `message=chore(release): promote ${product} ${candidate.version}`,
-    '-f',
-    `path=${manifest}`,
-    '-f',
-    `contents=${Buffer.from(JSON.stringify(candidate, null, 2) + '\n').toString('base64')}`,
-  );
-  if (!result.data.createCommitOnBranch.commit.signature.isValid)
-    throw new Error('Unsigned promotion commit');
+  const hasManifest = remote && run('git', 'ls-tree', '--name-only', `origin/${branch}`, manifest);
+  const existing = hasManifest ? run('git', 'show', `origin/${branch}:${manifest}`) : '';
+  if (!existing || JSON.stringify(JSON.parse(existing)) !== JSON.stringify(candidate)) {
+    const query =
+      'mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) { createCommitOnBranch(input: { branch: { repositoryNameWithOwner: $repository, branchName: $branch }, expectedHeadOid: $expected, message: { headline: $message }, fileChanges: { additions: [{path: $path, contents: $contents}] } }) { commit { oid signature { isValid } } } }';
+    const result = api<{
+      data: { createCommitOnBranch: { commit: { signature: { isValid: boolean } } } };
+    }>(
+      'graphql',
+      '-f',
+      `query=${query}`,
+      '-f',
+      `repository=${repository}`,
+      '-f',
+      `branch=${branch}`,
+      '-f',
+      `expected=${head}`,
+      '-f',
+      `message=chore(release): promote ${product} ${candidate.version}`,
+      '-f',
+      `path=${manifest}`,
+      '-f',
+      `contents=${Buffer.from(JSON.stringify(candidate, null, 2) + '\n').toString('base64')}`,
+    );
+    if (!result.data.createCommitOnBranch.commit.signature.isValid)
+      throw new Error('Unsigned promotion commit');
+  }
   const pulls = JSON.parse(
     gh('pr', 'list', '--head', branch, '--state', 'open', '--json', 'number'),
   ) as { number: number }[];

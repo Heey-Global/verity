@@ -882,7 +882,6 @@ describe('signed GitHub release evidence', () => {
       expected: 'autorelease: tagged\n',
     },
   ])('keeps backend recovery retryable from $name', (scenario) => {
-    const finalize = workflow.jobs['finalize-backend-release'];
     const publish = { run: readFileSync('scripts/finalize-server-production.sh', 'utf8') };
     const root = mkdtempSync(join(tmpdir(), 'verity-backend-release-label-'));
     try {
