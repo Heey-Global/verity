@@ -11,7 +11,7 @@ jest.mock('expo-router', () => ({
 afterEach(() => mockRedirect.mockClear());
 it('opens Connections for a legacy Doppler setup link', () => {
   render(<OnboardingDoppler />);
-  expect(mockRedirect).toHaveBeenCalledWith('/settings/services');
+  expect(mockRedirect).toHaveBeenCalledWith('/settings/services/doppler');
 });
 it('opens GitHub settings for a legacy GitHub setup link', () => {
   render(<OnboardingGithub />);

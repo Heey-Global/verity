@@ -2607,7 +2607,7 @@ export function SessionChat({
               .updateMeetingTranscriptionBackendMode(mode)
               .then(() => {
                 if (mode === 'external' && !readiness.externalConfigured) {
-                  router.push('/settings/services');
+                  router.push('/settings/transcription');
                 } else {
                   uploadMeetingAudioRef.current();
                 }
@@ -2638,7 +2638,7 @@ export function SessionChat({
             'This saved backend is no longer available. Configure the OpenAI-compatible API in Settings.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2649,7 +2649,7 @@ export function SessionChat({
             'Add the API URL and model before uploading meeting audio. Add a token if your service requires one.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2808,7 +2808,7 @@ export function SessionChat({
                 'configure-external'
               ) {
                 defer();
-                router.push('/settings/services');
+                router.push('/settings/transcription');
                 return;
               }
               await resumePending();
@@ -2843,7 +2843,7 @@ export function SessionChat({
             : 'Add the external API URL and model before the pending recording can be uploaded.',
           [
             { text: 'Not now', style: 'cancel' },
-            { text: 'Open settings', onPress: () => router.push('/settings/services') },
+            { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
           ],
         );
       }

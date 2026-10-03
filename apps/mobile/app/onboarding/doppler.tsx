@@ -2,5 +2,5 @@
 import { Redirect } from 'expo-router';
 
 export default function LegacyOnboardingStep() {
-  return <Redirect href="/settings/services" />;
+  return <Redirect href="/settings/services/doppler" />;
 }
