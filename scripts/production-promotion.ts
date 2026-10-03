@@ -425,7 +425,7 @@ export async function promoteNative() {
     )
   ).data as {
     id: string;
-    attributes: { appStoreState: string };
+    attributes: { appStoreState: string; releaseType: string };
     relationships: { build: { data: { id: string } | null } };
   }[];
   if (versions.length > 1) throw new Error('Multiple App Store versions');
@@ -457,6 +457,21 @@ export async function promoteNative() {
     });
   } else if (selected.id !== candidate.buildId)
     throw new Error('App Store version selects a different build; resolve it explicitly');
+  if (version.attributes.releaseType !== 'AFTER_APPROVAL') {
+    if (
+      !['PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED'].includes(
+        version.attributes.appStoreState,
+      )
+    )
+      throw new Error('Existing Apple release policy differs and cannot be changed safely');
+    await apple(`appStoreVersions/${version.id}`, 'PATCH', {
+      data: {
+        type: 'appStoreVersions',
+        id: version.id,
+        attributes: { releaseType: 'AFTER_APPROVAL' },
+      },
+    });
+  }
   const accepted = [
     'WAITING_FOR_REVIEW',
     'IN_REVIEW',

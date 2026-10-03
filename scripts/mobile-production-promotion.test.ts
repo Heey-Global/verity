@@ -86,7 +86,17 @@ function setup(change: Record<string, string> = {}) {
         data = { attributes: { version: change.version ?? '2.0.0', platform: 'IOS' } };
       else if (path === 'builds/build-id/app') data = { id: change.app ?? '123' };
       else if (path.includes('/appStoreVersions?'))
-        data = [{ id: 'version-id', attributes: { appStoreState: 'PREPARE_FOR_SUBMISSION' } }];
+        data = [
+          {
+            id: 'version-id',
+            attributes: {
+              appStoreState: change.state ?? 'PREPARE_FOR_SUBMISSION',
+              releaseType: change.releaseType ?? 'AFTER_APPROVAL',
+            },
+          },
+        ];
+      else if (path === 'appStoreVersions/version-id' && method === 'PATCH')
+        data = { id: 'version-id' };
       else if (path === 'appStoreVersions/version-id/build')
         data = change.selected === 'none' ? null : { id: change.selected ?? 'build-id' };
       else if (path === 'appStoreVersions/version-id/relationships/build' && method === 'PATCH')
@@ -124,6 +134,33 @@ describe('native production submission', () => {
       body: { data: { type: 'builds', id: 'build-id' } },
     });
     expect(requests.at(-1)?.path).toBe('reviewSubmissions/submission-id');
+  });
+  it('sets prepared versions to publish after approval before submitting review', async () => {
+    const requests = setup({ releaseType: 'MANUAL' });
+    await promoteNative();
+    expect(requests).toContainEqual({
+      path: 'appStoreVersions/version-id',
+      method: 'PATCH',
+      body: {
+        data: {
+          type: 'appStoreVersions',
+          id: 'version-id',
+          attributes: { releaseType: 'AFTER_APPROVAL' },
+        },
+      },
+    });
+    expect(
+      requests.findIndex((request) => request.path === 'appStoreVersions/version-id'),
+    ).toBeLessThan(
+      requests.findIndex(
+        (request) => request.path === 'reviewSubmissions' && request.method === 'POST',
+      ),
+    );
+  });
+  it('refuses to rewrite the release policy of a version already in review', async () => {
+    const requests = setup({ releaseType: 'MANUAL', state: 'IN_REVIEW' });
+    await expect(promoteNative()).rejects.toThrow('release policy differs');
+    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
   });
   it('submits the exact approved build and records production only after Apple accepts', async () => {
     const requests = setup();
