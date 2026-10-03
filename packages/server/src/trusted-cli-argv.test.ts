@@ -129,6 +129,42 @@ describe('trusted CLI argv integrity', () => {
     expect(matchesTrustedCliArgvPolicy(policy, ['other', 'example-2'])).toBe(false);
   });
 
+  it('accepts large diagnostic policies without widening argument matching', async () => {
+    const policy = {
+      version: 1,
+      routes: [
+        ...Array.from({ length: 64 }, (_, index) => [`diagnostic-${index}`]),
+        ['namespace', { kind: 'identifier' }],
+        ['workload-logs', { kind: 'identifier' }, 'deployment', { kind: 'identifier' }],
+      ],
+    };
+    const loaded = await loadTrustedCliArgvPolicy('/usr/local/bin/heey-cluster-inspect', {
+      lstat: async () => ({ isFile: () => true, size: JSON.stringify(policy).length }),
+      validateImmutablePath: async () => {},
+      readFile: async () => JSON.stringify(policy),
+    });
+    expect(matchesTrustedCliArgvPolicy(loaded, ['namespace', 'deep-ocr-api-prod'])).toBe(true);
+    expect(
+      matchesTrustedCliArgvPolicy(loaded, [
+        'workload-logs',
+        'deep-ocr-api-prod',
+        'deployment',
+        'deep-ocr-api',
+      ]),
+    ).toBe(true);
+    expect(matchesTrustedCliArgvPolicy(loaded, ['namespace', '../payload'])).toBe(false);
+    expect(matchesTrustedCliArgvPolicy(loaded, ['namespace', 'prod', 'extra'])).toBe(false);
+    expect(matchesTrustedCliArgvPolicy(loaded, ['unlisted-mode'])).toBe(false);
+  });
+
+  it('bounds diagnostic policy route counts', () => {
+    const routes = Array.from({ length: 256 }, (_, index) => [`diagnostic-${index}`]);
+    expect(matchesTrustedCliArgvPolicy({ version: 1, routes }, ['diagnostic-255'])).toBe(true);
+    expect(() =>
+      matchesTrustedCliArgvPolicy({ version: 1, routes: [...routes, ['overflow']] }, ['overflow']),
+    ).toThrow(/trusted CLI argv policy is invalid/u);
+  });
+
   it('rejects malformed generic executable policies', () => {
     for (const policy of [
       { version: 2, routes: [['item']] },
