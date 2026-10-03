@@ -3565,4 +3565,20 @@ describe('text-file saving', () => {
     });
     expect(JSON.parse(calls[1]?.init?.body as string)).toMatchObject({ expectedVersion: null });
   });
+  it('lists and reads file versions with encoded paths and version identifiers', async () => {
+    const versions = [
+      { id: 'save-abc/snapshot', createdAt: '2026-10-03T10:00:00Z', kind: 'snapshot' },
+    ];
+    const { fetch, calls } = fakeFetchSequence(json({ versions }), json({ content: 'older text' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listSessionFileVersions('s1', 'shared', 'notes/a b.md')).toEqual(versions);
+    expect(
+      await client.readSessionFileVersion('s1', 'shared', 'notes/a b.md', versions[0]!.id),
+    ).toBe('older text');
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md',
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md&version=save-abc%2Fsnapshot',
+    ]);
+    expect(calls.every(({ init }) => init?.method === 'GET')).toBe(true);
+  });
 });

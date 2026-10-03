@@ -1,3 +1,4 @@
+import { FileIcon } from '../../components/files/FileIcon';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -5269,7 +5270,7 @@ function SessionFilesSheet({
               accessibilityLabel="Close files"
               style={styles.bookmarkRemove}
             >
-              <Icon name="x" size={20} color="#ffffff" />
+              <FileIcon name="x" size={20} color="#ffffff" />
             </Pressable>
           </View>
         ) : null}
@@ -5307,7 +5308,7 @@ function SessionFilesSheet({
                   root === candidate ? styles.filesRootButtonActive : null,
                 ]}
               >
-                <Icon name={icon} size={14} color="#ffffff" />
+                <FileIcon name={icon} size={14} color="#ffffff" />
                 <Text
                   style={root === candidate ? styles.filesRootLabelActive : styles.filesRootLabel}
                 >
@@ -5332,7 +5333,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Google Drive"
                 style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
               >
-                <Icon name="hard-drive" size={14} color="#ffffff" />
+                <FileIcon name="hard-drive" size={14} color="#ffffff" />
                 <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
                   Google Drive
                 </Text>
@@ -5413,13 +5414,13 @@ function SessionFilesSheet({
                       pressed ? styles.sheetRowPressed : null,
                     ]}
                   >
-                    <Icon name={folder ? 'folder' : 'file'} size={18} color="#ffffff" />
+                    <FileIcon name={folder ? 'folder' : 'file'} size={18} color="#ffffff" />
                     <View style={styles.fileMain}>
                       <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
                         {file.name}
                       </Text>
                     </View>
-                    <Icon
+                    <FileIcon
                       name={folder ? 'chevron-right' : 'more-horizontal'}
                       size={17}
                       color="#ffffff"
@@ -5439,7 +5440,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Back to file list"
                 style={styles.bookmarkRemove}
               >
-                <Icon name="chevron-left" size={20} color="#ffffff" />
+                <FileIcon name="chevron-left" size={20} color="#ffffff" />
               </Pressable>
               <View style={styles.filesTitleWrap}>
                 <Text style={styles.filesPreviewTitle} numberOfLines={1}>
@@ -5474,7 +5475,7 @@ function SessionFilesSheet({
                 accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
                 style={styles.bookmarkRemove}
               >
-                <Icon name="more-horizontal" size={20} color="#ffffff" />
+                <FileIcon name="more-horizontal" size={20} color="#ffffff" />
               </Pressable>
               <Pressable
                 onPress={onClose}
@@ -5483,7 +5484,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Close files"
                 style={styles.bookmarkRemove}
               >
-                <Icon name="x" size={20} color="#ffffff" />
+                <FileIcon name="x" size={20} color="#ffffff" />
               </Pressable>
             </View>
             <FileContentPreview
@@ -5593,7 +5594,7 @@ function SessionFilesSheet({
                                 inert ? styles.sheetRowDisabled : null,
                               ]}
                             >
-                              <Icon name={fileIcon(entry)} size={18} color="#ffffff" />
+                              <FileIcon name={fileIcon(entry)} size={18} color="#ffffff" />
                               <View style={styles.fileMain}>
                                 <Text
                                   style={[styles.sheetRowLabel, styles.fileName]}
@@ -5610,7 +5611,7 @@ function SessionFilesSheet({
                               </View>
                               {selecting ? (
                                 <View style={styles.fileDownload}>
-                                  <Icon
+                                  <FileIcon
                                     name={picked ? 'check-circle' : 'circle'}
                                     size={18}
                                     color="#ffffff"
@@ -5625,10 +5626,10 @@ function SessionFilesSheet({
                                   accessibilityLabel={`More actions for ${entry.name}`}
                                   style={styles.fileDownload}
                                 >
-                                  <Icon name="more-horizontal" size={18} color="#ffffff" />
+                                  <FileIcon name="more-horizontal" size={18} color="#ffffff" />
                                 </Pressable>
                               ) : (
-                                <Icon name="chevron-right" size={17} color="#ffffff" />
+                                <FileIcon name="chevron-right" size={17} color="#ffffff" />
                               )}
                             </Pressable>
                           )}
@@ -5639,7 +5640,7 @@ function SessionFilesSheet({
                 </ScrollView>
                 {dropActive ? (
                   <View pointerEvents="none" style={styles.filesDropHint}>
-                    <Icon name="download" size={18} color="#ffffff" />
+                    <FileIcon name="download" size={18} color="#ffffff" />
                     <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
                   </View>
                 ) : null}

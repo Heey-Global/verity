@@ -523,9 +523,9 @@ describe('session explorer knowledge roots', () => {
       method: 'GET',
       url: '/sessions/s-knowledge/files?root=worktree',
     });
-    expect(listing.json().entries.map((entry: { name: string }) => entry.name)).not.toContain(
-      '.verity-file-history',
-    );
+    expect(
+      listing.json<{ entries: Array<{ name: string }> }>().entries.map((entry) => entry.name),
+    ).not.toContain('.verity-file-history');
     const privateRead = await app.inject({
       method: 'GET',
       url: '/sessions/s-knowledge/files/content?root=worktree&path=.verity-file-history/name',

@@ -63,19 +63,28 @@ export async function writeSessionText(
       await file.close();
     }
   };
-  const record = await open(
-    `${pinned}/name`,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    0o600,
-  );
-  await record.writeFile(slot.name);
-  await record.sync();
-  await record.close();
-  await handle.sync();
-  await history.sync();
   let captured = false;
   let preserve = false;
   try {
+    const record = await open(
+      `${pinned}/name`,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    await record.writeFile(slot.name);
+    await record.sync();
+    await record.close();
+    await handle.sync();
+    await history.sync();
+    const durableParent = await open(
+      slot.directoryPath,
+      constants.O_RDONLY | constants.O_DIRECTORY,
+    );
+    try {
+      await durableParent.sync();
+    } finally {
+      await durableParent.close();
+    }
     let mode = 0o644;
     if (expected !== null) {
       try {
@@ -133,12 +142,8 @@ export async function writeSessionText(
         throw new FileWriteError(409, 'file already exists or changed while saving');
       throw error;
     }
-    // A descriptor writer may still be modifying the captured inode. Preserve
-    // that version for recovery rather than silently discarding a detected save.
-    if (captured && fileVersion(await readCaptured()) !== expected) {
-      preserve = true;
-      throw new FileWriteError(409, `Concurrent save preserved at ${await realpath(previous)}`);
-    }
+    // Publication succeeded. Late descriptor writes remain recoverable through
+    // the retained original inode; report success so extraction follows it.
     const parent = await open(slot.directoryPath, constants.O_RDONLY | constants.O_DIRECTORY);
     try {
       await parent.sync();
@@ -183,10 +188,14 @@ export async function writeSessionText(
   } finally {
     await unlink(temporary).catch(() => undefined);
     if (captured && !preserve) await unlink(previous).catch(() => undefined);
+    if (!preserve) {
+      for (const name of ['name', 'snapshot', 'complete'])
+        await unlink(`${pinned}/${name}`).catch(() => undefined);
+      await rmdir(staging).catch(() => undefined);
+    }
     await handle.close();
     await history.close();
     // Retain the captured inode even after publication: an external process can
     // still write through a descriptor it opened before the explorer saved.
-    if (!preserve) await rmdir(staging).catch(() => undefined);
   }
 }

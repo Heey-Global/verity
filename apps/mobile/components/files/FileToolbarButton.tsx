@@ -1,7 +1,7 @@
 import { ActivityIndicator, Pressable, Text } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Icon, type IconName } from '../Icon';
+import { FileIcon as Icon, type IconName } from './FileIcon';
 
 export type FileToolbarButtonTone = 'plain' | 'tinted' | 'primary' | 'danger';
 

@@ -1,7 +1,7 @@
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { Icon, type IconName } from '../Icon';
+import { FileIcon as Icon, type IconName } from './FileIcon';
 
 /** Where the list is inside the active tab. It sits below the tabs because it
  * is a path within the chosen root: the root shows as that tab's icon, not its

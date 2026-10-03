@@ -8040,6 +8040,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         try {
           slot = await openKnowledgeFileSlot(root, path);
           await recoverFileHistory(slot.directoryPath);
+        } catch (error) {
+          return knowledgeSlotFailure(reply, error);
         } finally {
           await slot?.close();
           release();

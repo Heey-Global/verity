@@ -13,13 +13,21 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-const race = vi.hoisted(() => ({ save: false }));
+const race = vi.hoisted(() => ({ save: false, late: false, captured: '' }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
+    link: async (source: string, destination: string) => {
+      await actual.link(source, destination);
+      if (race.late) {
+        race.late = false;
+        await actual.writeFile(race.captured, 'late agent save');
+      }
+    },
     rename: async (source: string, destination: string) => {
       await actual.rename(source, destination);
+      race.captured = destination;
       if (race.save) {
         race.save = false;
         await actual.writeFile(source, 'agent save');
@@ -33,6 +41,7 @@ import { fileVersion, writeSessionText } from './session-file-write.js';
 let dir: string;
 afterEach(async () => {
   race.save = false;
+  race.late = false;
   if (dir) await rm(dir, { recursive: true, force: true });
 });
 async function setup() {
@@ -142,6 +151,40 @@ it('restores an interrupted capture without replacing a newer pathname save', as
     await writeFile(join(dir, 'a.txt'), 'newer save');
     await recoverFileHistory(slot.directoryPath);
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('newer save');
+  } finally {
+    await slot.close();
+  }
+});
+
+it('reports published content as saved even when an old descriptor writes during publication', async () => {
+  const slot = await setup();
+  try {
+    race.late = true;
+    const result = await writeSessionText(slot, 'published', fileVersion(Buffer.from('original')));
+    expect(result.content).toBe('published');
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('published');
+    const transaction = (await readdir(join(dir, FILE_HISTORY_DIR)))[0]!;
+    expect(await readFile(join(dir, FILE_HISTORY_DIR, transaction, 'original'), 'utf8')).toBe(
+      'late agent save',
+    );
+    await rm(join(dir, 'a.txt'));
+    await recoverFileHistory(slot.directoryPath);
+    await expect(readFile(join(dir, 'a.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await slot.close();
+  }
+});
+
+it('removes disposable history transactions after creates and rejected edits', async () => {
+  const slot = await setup();
+  try {
+    await expect(
+      writeSessionText(slot, 'rejected', fileVersion(Buffer.from('stale'))),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await readdir(join(dir, FILE_HISTORY_DIR))).toEqual([]);
+    await rm(join(dir, 'a.txt'));
+    await writeSessionText(slot, 'created', null);
+    expect(await readdir(join(dir, FILE_HISTORY_DIR))).toEqual([]);
   } finally {
     await slot.close();
   }
