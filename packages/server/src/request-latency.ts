@@ -5,6 +5,7 @@ import {
   withRequestLatencyTrace,
   type RequestLatencyTrace,
 } from '@verity/store';
+import { createLatencyCpuProfiler } from './latency-cpu-profile.js';
 
 const PROBE_INTERVAL_MS = 100;
 const SLOW_REQUEST_MS = 3_000;
@@ -17,6 +18,9 @@ const TRACKED_ROUTES = new Set([
   '/sessions/:id/branches',
   '/sessions/:id/dev-servers',
   '/projects/:id/public-shares',
+  '/projects/:id/dev-servers',
+  '/server/updates',
+  '/provider-limits',
 ]);
 
 interface Probe {
@@ -29,9 +33,13 @@ interface Probe {
   timer: ReturnType<typeof setInterval>;
 }
 
-/** Slow reads log bounded numeric measurements, never IDs, URLs, SQL or parameters. */
+/** Slow reads log bounded measurements and route patterns, never raw URLs or SQL. */
 export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
   const probes = new Map<FastifyRequest, Probe>();
+  const cpuProfiler = createLatencyCpuProfiler({
+    directory: process.env.VERITY_LATENCY_CPU_PROFILE_DIR,
+    log: (event) => app.log.warn(event, 'backend latency CPU profile'),
+  });
   function finish(request: FastifyRequest): Probe | undefined {
     const probe = probes.get(request);
     if (!probe) return;
@@ -42,18 +50,20 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
       probe.eventLoopDelayMaxMs,
       performance.now() - probe.nextTick,
     );
+    cpuProfiler.trigger(probe.eventLoopDelayMaxMs);
     return probe;
   }
 
   app.addHook('onRequest', (request, reply, done) => {
+    const trace = createRequestLatencyTrace();
+    trace.owner = `${request.method} ${request.routeOptions.url ?? 'unmatched'} (${request.id})`;
     if (
       request.method !== 'GET' ||
       !TRACKED_ROUTES.has((request.routeOptions.url ?? '').replace(/:[^/]+/g, ':id'))
     ) {
-      return done();
+      return withRequestLatencyTrace(trace, done);
     }
     const started = performance.now();
-    const trace = createRequestLatencyTrace();
     const probe: Probe = {
       trace,
       started,
@@ -63,6 +73,7 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
       timer: setInterval(() => {
         const now = performance.now();
         probe.eventLoopDelayMaxMs = Math.max(probe.eventLoopDelayMaxMs, now - probe.nextTick);
+        cpuProfiler.trigger(now - probe.nextTick);
         probe.nextTick = now + PROBE_INTERVAL_MS;
       }, PROBE_INTERVAL_MS),
     };
@@ -107,8 +118,8 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
     finish(request);
     done();
   });
-  app.addHook('onClose', (_instance, done) => {
+  app.addHook('onClose', async () => {
     for (const request of probes.keys()) finish(request);
-    done();
+    await cpuProfiler.close();
   });
 }

@@ -4045,12 +4045,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const userId = registry.resolveUserId(token);
       if (userId === undefined) return reply.code(401).send({ error: 'unauthorized' });
       request.localUserId = userId;
-      const access = await authorizePairedRoute(
-        deps.eventStore,
-        userId,
-        request.method,
-        request.routeOptions.url ?? pathname,
-        (request.params ?? {}) as Record<string, unknown>,
+      const access = await measureLatencyPhase('request_authorization', () =>
+        authorizePairedRoute(
+          deps.eventStore,
+          userId,
+          request.method,
+          request.routeOptions.url ?? pathname,
+          (request.params ?? {}) as Record<string, unknown>,
+        ),
       );
       if (access === 'not_found') return reply.code(404).send({ error: 'not found' });
       if (access === 'forbidden') return reply.code(403).send({ error: 'forbidden' });
@@ -6043,23 +6045,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // storm, and a release deleted on GitHub is cleared rather than pinned.
     let fresh: ReleaseSummary | null | undefined;
     if (opts?.awaitRefresh === true && deps.refreshLatestRelease !== undefined) {
-      fresh = await deps.refreshLatestRelease(project.owner, project.repo);
+      fresh = await measureLatencyPhase('project_release_refresh', () =>
+        deps.refreshLatestRelease!(project.owner, project.repo),
+      );
     } else {
       fresh = deps.latestRelease?.(project.owner, project.repo);
       // If the nonblocking cache is unknown, await one refresh. This is what
       // lets DB-backed GitHub-App deployments (no PAT/gh-token) populate release
       // badges from the project overview instead of staying permanently blank.
       if (fresh === undefined && deps.refreshLatestRelease !== undefined) {
-        fresh = await deps.refreshLatestRelease(project.owner, project.repo);
+        fresh = await measureLatencyPhase('project_release_refresh', () =>
+          deps.refreshLatestRelease!(project.owner, project.repo),
+        );
       }
     }
     if (fresh !== undefined && releaseDiffers(project, fresh)) {
-      await deps.eventStore.updateProjectReleaseStatus(project.id, {
-        tag: fresh?.tag ?? null,
-        name: fresh?.name ?? null,
-        url: fresh?.url ?? null,
-        publishedAt: fresh?.publishedAt ?? null,
-      });
+      await measureLatencyPhase('project_release_persist', () =>
+        deps.eventStore.updateProjectReleaseStatus(project.id, {
+          tag: fresh?.tag ?? null,
+          name: fresh?.name ?? null,
+          url: fresh?.url ?? null,
+          publishedAt: fresh?.publishedAt ?? null,
+        }),
+      );
     }
     // A cold/unknown lookup (undefined) falls back to the persisted value so
     // the badge never blanks out right after a restart.
@@ -6223,8 +6231,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const projectsForOverview = async (projects: ProjectRecord[]): Promise<ProjectRecord[]> => {
     const withoutControl = projects.filter((project) => !isControlPlaneProject(project));
-    if (!(await advancedModeEnabled())) return withoutControl;
-    return [await ensureVerityControlProject(), ...withoutControl];
+    if (!(await measureLatencyPhase('project_settings', advancedModeEnabled)))
+      return withoutControl;
+    return [
+      await measureLatencyPhase('project_control', ensureVerityControlProject),
+      ...withoutControl,
+    ];
   };
 
   const appearsInProjectOverview = (project: ProjectRecord): boolean =>
