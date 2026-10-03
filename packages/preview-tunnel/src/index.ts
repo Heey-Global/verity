@@ -44,6 +44,7 @@ const LOGO_FILE = new URL('../assets/verity-mark.png', import.meta.url);
 let logoBytes: Buffer | undefined;
 const CONNECTOR_PATH = '/__verity/connector';
 const COOKIE_NAME = '__Host-verity-preview';
+const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
 const MAX_LOGIN_IDENTITIES = 1024;
 const CONNECTOR_HEARTBEAT_MS = 15_000;
 
@@ -993,7 +994,7 @@ export class PreviewEdge {
       this.loginFailures.delete(client);
       response.writeHead(303, {
         location: returnPath,
-        'set-cookie': `${COOKIE_NAME}=${this.sessionValue()}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=28800`,
+        'set-cookie': `${COOKIE_NAME}=${this.sessionValue(Date.now() + SESSION_LIFETIME_SECONDS * 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_LIFETIME_SECONDS}`,
         'cache-control': 'no-store',
       });
       response.end();
@@ -1050,13 +1051,23 @@ export class PreviewEdge {
 
   private sessionAuthorized(request: IncomingMessage): boolean {
     const value = parseCookies(request.headers.cookie)[COOKIE_NAME];
-    return value !== undefined && safeHashEquals(value, this.sessionValue());
+    if (value === undefined) return false;
+    // Legacy cookies carry no verifiable expiry and require a fresh PIN login.
+    const match = /^v1\.([1-9]\d{0,15})\.([A-Za-z0-9_-]{43})$/.exec(value);
+    if (match === null) return false;
+    const expiresAt = Number(match[1]);
+    return (
+      Number.isSafeInteger(expiresAt) &&
+      Date.now() < expiresAt &&
+      safeHashEquals(value, this.sessionValue(expiresAt))
+    );
   }
 
-  private sessionValue(): string {
-    return createHmac('sha256', this.options.sessionSecretHash)
-      .update(`preview-session:${this.options.shareId}`)
+  private sessionValue(expiresAt: number): string {
+    const signature = createHmac('sha256', this.options.sessionSecretHash)
+      .update(`preview-session:v1:${this.options.shareId}:${expiresAt}`)
       .digest('base64url');
+    return `v1.${expiresAt}.${signature}`;
   }
 }
 

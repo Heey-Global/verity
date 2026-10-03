@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -215,6 +215,95 @@ describe('preview browser origin protection', () => {
       expect(await reply).toBe('private data');
       client.close();
     }
+  });
+});
+
+describe('preview session cookie expiry', () => {
+  const lifetime = 8 * 60 * 60 * 1000;
+
+  function clock() {
+    const issuedAt = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(issuedAt);
+    cleanups.push(() => now.mockRestore());
+    return { issuedAt, now };
+  }
+
+  async function target() {
+    const server = createServer((_request, response) => response.end('private preview'));
+    const port = await listen(server);
+    cleanups.push(() => closeServer(server));
+    return port;
+  }
+
+  async function read(edgePort: number, cookie: string) {
+    const response = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+      headers: { cookie },
+      redirect: 'manual',
+    });
+    await response.text();
+    return response;
+  }
+
+  it('rejects replay at eight hours and permits a fresh PIN login', async () => {
+    const { issuedAt, now } = clock();
+    const { edgePort, cookie } = await bridge('cookie-expiry', await target());
+    expect(cookie.split('.')[1]).toBe(String(issuedAt + lifetime));
+    expect((await read(edgePort, cookie)).status).toBe(200);
+    now.mockReturnValue(issuedAt + lifetime - 1);
+    expect((await read(edgePort, cookie)).status).toBe(200);
+    now.mockReturnValue(issuedAt + lifetime);
+    expect((await read(edgePort, cookie)).status).toBe(303);
+    now.mockReturnValue(issuedAt + lifetime + 1);
+    expect((await read(edgePort, cookie)).status).toBe(303);
+    const renewed = await login(edgePort, '123456');
+    expect(renewed).not.toBe(cookie);
+    expect((await read(edgePort, renewed)).status).toBe(200);
+    expect((await read(edgePort, cookie)).status).toBe(303);
+  });
+
+  it('rejects modified expiry, signatures, malformed values and legacy cookies', async () => {
+    const { edgePort, cookie } = await bridge('cookie-integrity', await target());
+    const [prefix, expiresAt, signature] = cookie.split('.') as [string, string, string];
+    const legacy = createHmac('sha256', sessionSecretHash)
+      .update('preview-session:cookie-integrity')
+      .digest('base64url');
+    for (const invalid of [
+      `${prefix}.${Number(expiresAt) + lifetime}.${signature}`,
+      `${prefix}.${expiresAt}.${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`,
+      `${prefix}.NaN.${signature}`,
+      `${prefix}.9007199254740992.${signature}`,
+      `${prefix}.${expiresAt}.${signature}.extra`,
+      `__Host-verity-preview=v2.${expiresAt}.${signature}`,
+      `__Host-verity-preview=${legacy}`,
+    ]) {
+      expect((await read(edgePort, invalid)).status).toBe(303);
+    }
+    expect((await read(edgePort, cookie)).status).toBe(200);
+  });
+
+  it('binds the signed cookie to its share even when signing secrets match', async () => {
+    const port = await target();
+    const first = await bridge('cookie-first', port);
+    const second = await bridge('cookie-second', port);
+    expect((await read(second.edgePort, first.cookie)).status).toBe(303);
+    expect((await read(second.edgePort, second.cookie)).status).toBe(200);
+  });
+
+  it('rejects expired cookies on new WebSocket handshakes before reaching the target', async () => {
+    const { issuedAt, now } = clock();
+    let connections = 0;
+    const port = await wsTarget(() => {
+      connections += 1;
+    });
+    const { edgePort, cookie } = await bridge('cookie-websocket', port);
+    const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    expect(connections).toBe(1);
+    now.mockReturnValue(issuedAt + lifetime);
+    const response = await rawUpgrade(edgePort, cookie, handshakeKey());
+    expect(response).toContain('401 Unauthorized');
+    expect(connections).toBe(1);
   });
 });
 
