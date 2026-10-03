@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -40,6 +41,7 @@ import {
   FILE_HISTORY_DIR,
   recoverFileHistory,
   sessionFileHistory,
+  excludeFileHistoryFromGit,
 } from './session-file-history.js';
 import { fileVersion, writeSessionText } from './session-file-write.js';
 let dir: string;
@@ -227,6 +229,49 @@ it('recovers directory substitution during capture and skips metadata interrupte
     await rm(join(dir, 'a.txt'), { recursive: true });
     await recoverFileHistory(slot.directoryPath);
     await expect(readFile(join(dir, 'a.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await slot.close();
+  }
+});
+
+it('preserves captured ownership and keeps the replacement writable by its owner', async () => {
+  const slot = await setup();
+  const descriptor = await open(join(dir, 'a.txt'), 'r+');
+  const original = await descriptor.stat();
+  const ownership = vi.spyOn(Object.getPrototypeOf(descriptor) as typeof descriptor, 'chown');
+  try {
+    await writeSessionText(slot, 'replacement', fileVersion(Buffer.from('original')));
+    expect(ownership).toHaveBeenCalledWith(original.uid, original.gid);
+    const saved = await stat(join(dir, 'a.txt'));
+    expect([saved.uid, saved.gid]).toEqual([original.uid, original.gid]);
+    const ownerWriter = await open(join(dir, 'a.txt'), 'r+');
+    try {
+      await ownerWriter.truncate(0);
+      await ownerWriter.writeFile('owner save');
+    } finally {
+      await ownerWriter.close();
+    }
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('owner save');
+  } finally {
+    ownership.mockRestore();
+    await descriptor.close();
+    await slot.close();
+  }
+});
+
+it('requires successful Git exclusion for repositories and accepts non-Git directories', async () => {
+  const slot = await setup();
+  try {
+    await excludeFileHistoryFromGit(dir);
+    execFileSync('git', ['init', '--quiet', dir]);
+    await excludeFileHistoryFromGit(dir);
+    await mkdir(join(dir, 'nested', FILE_HISTORY_DIR), { recursive: true });
+    const backup = join(dir, 'nested', FILE_HISTORY_DIR, 'private');
+    await writeFile(backup, 'backup');
+    expect(() => execFileSync('git', ['-C', dir, 'check-ignore', '--quiet', backup])).not.toThrow();
+    await rm(join(dir, '.git'), { recursive: true });
+    await writeFile(join(dir, '.git'), 'gitdir: /missing/verity-git-metadata');
+    await expect(excludeFileHistoryFromGit(dir)).rejects.toThrow();
   } finally {
     await slot.close();
   }

@@ -126,6 +126,8 @@ export async function excludeFileHistoryFromGit(root: string) {
   let excludePath: string;
   try {
     const result = await promisify(execFile)('git', [
+      '-c',
+      `safe.directory=${root}`,
       '-C',
       root,
       'rev-parse',
@@ -134,9 +136,16 @@ export async function excludeFileHistoryFromGit(root: string) {
       'info/exclude',
     ]);
     excludePath = result.stdout.trim();
-  } catch {
-    // Non-Git worktrees have no index to protect.
-    return;
+  } catch (error) {
+    const hasGitMetadata = await lstat(`${root}/.git`)
+      .then(() => true)
+      .catch((statError: NodeJS.ErrnoException) => {
+        if (statError.code === 'ENOENT') return false;
+        throw statError;
+      });
+    const stderr = (error as { stderr?: string }).stderr ?? '';
+    if (!hasGitMetadata && stderr.includes('not a git repository')) return;
+    throw error;
   }
   const file = await open(
     excludePath,

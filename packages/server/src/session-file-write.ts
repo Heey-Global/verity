@@ -102,6 +102,7 @@ export async function writeSessionText(
       await durableParent.close();
     }
     let mode = 0o644;
+    let ownership: { uid: number; gid: number } | undefined;
     if (expected !== null) {
       try {
         await rename(destination, previous);
@@ -126,6 +127,7 @@ export async function writeSessionText(
       if (fileVersion(current) !== expected)
         throw new FileWriteError(409, 'file changed; reload, overwrite, or save a copy');
       mode = stats.mode & 0o777;
+      ownership = { uid: stats.uid, gid: stats.gid };
       const snapshot = await open(
         `${pinned}/snapshot`,
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
@@ -146,6 +148,7 @@ export async function writeSessionText(
     );
     try {
       await output.writeFile(bytes);
+      if (ownership) await output.chown(ownership.uid, ownership.gid);
       await output.chmod(mode);
       await output.sync();
     } finally {
@@ -178,6 +181,7 @@ export async function writeSessionText(
         } else {
           await link(previous, destination);
         }
+        await complete();
       } catch (restoreError) {
         preserve = true;
         if ((restoreError as NodeJS.ErrnoException).code === 'EEXIST') await complete();

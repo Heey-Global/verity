@@ -1566,7 +1566,10 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
     reply.code(400);
     return { error: error.message };
   }
-  if (error instanceof Error && error.message === 'invalid path') {
+  if (
+    (error instanceof Error && error.message === 'invalid path') ||
+    ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+  ) {
     reply.code(400);
     return { error: 'invalid path' };
   }

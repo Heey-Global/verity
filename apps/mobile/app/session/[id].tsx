@@ -4959,7 +4959,7 @@ function SessionFilesSheet({
           root === 'worktree'
             ? 'This permanently removes them from the workspace.'
             : root === 'shared'
-              ? 'This removes them from Shared, for every project, with their extracted text.'
+              ? 'This removes them from Global Knowledge, for every project, with their extracted text.'
               : 'This removes them from the project with their extracted text.'
         }`,
         [
@@ -5217,7 +5217,19 @@ function SessionFilesSheet({
                   ? selected.length > 0
                     ? selectionSummary(selected.length)
                     : 'Select files'
-                  : 'Files'}
+                  : driveActive
+                    ? 'Google Drive'
+                    : root === 'worktree'
+                      ? compactRootLabels
+                        ? 'Repo'
+                        : 'Repository'
+                      : root === 'knowledge'
+                        ? compactRootLabels
+                          ? 'Project'
+                          : 'Project Knowledge'
+                        : compactRootLabels
+                          ? 'Global'
+                          : 'Global Knowledge'}
               </Text>
             </View>
             {selecting ? (
