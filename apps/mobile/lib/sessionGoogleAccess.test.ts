@@ -118,3 +118,42 @@ it('honors cancellation and authorizes before enabling legacy access', async () 
   });
   expect(enable).toHaveBeenCalledWith('s1');
 });
+
+it('refreshes sibling permissions after an OAuth account change', async () => {
+  const { client, get, connect } = fixture();
+  get.mockResolvedValue({ connected: false, enabled: false, clientId: 'google-client' });
+  const gmail = jest
+    .fn()
+    .mockResolvedValue({ connected: true, enabled: true, accountEmail: 'new@example.test' });
+  const calendar = jest
+    .fn()
+    .mockResolvedValue({ connected: true, enabled: false, accountEmail: 'new@example.test' });
+  const contacts = jest
+    .fn()
+    .mockResolvedValue({ connected: false, enabled: false, accountEmail: null });
+  Object.assign(client, {
+    getSessionCalendarConnection: calendar,
+    getSessionContactsConnection: contacts,
+  });
+  connect.mockImplementationOnce(() => {
+    Object.assign(client, { getSessionGmailConnection: gmail });
+    return Promise.resolve();
+  });
+  mockAuth.mockResolvedValueOnce({
+    kind: 'success',
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'app:/oauth',
+  });
+  const result = await connectSessionGoogleService(client, 's1', undefined, 'gmail');
+  expect(result).toMatchObject({
+    kind: 'session',
+    connections: {
+      gmail: { enabled: true, accountEmail: 'new@example.test' },
+      calendar: { enabled: false },
+      contacts: { enabled: false },
+    },
+  });
+  expect(calendar).toHaveBeenCalledWith('s1');
+  expect(contacts).toHaveBeenCalledWith('s1');
+});

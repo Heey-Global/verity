@@ -53,7 +53,11 @@ export async function connectSessionGoogleService(
 ): Promise<
   | { kind: 'project' }
   | { kind: 'cancelled' }
-  | { kind: 'session'; connection: GmailSessionConnection }
+  | {
+      kind: 'session';
+      connection: GmailSessionConnection;
+      connections: Record<GoogleService, GmailSessionConnection | null>;
+    }
 > {
   if (await projectGrant(client, projectId, service)) return { kind: 'project' };
   const methods = sessionMethods(client, service);
@@ -68,7 +72,25 @@ export async function connectSessionGoogleService(
       redirectUri: auth.redirectUri,
     });
   }
-  return { kind: 'session', connection: await methods.enable(sessionId) };
+  const enabled = await methods.enable(sessionId);
+  // Consent can switch accounts or remove scopes, revoking sibling grants.
+  const services = ['gmail', 'calendar', 'contacts'] as const;
+  const snapshots = await Promise.all(
+    services.map(async (current) => {
+      try {
+        return await sessionMethods(client, current).get(sessionId);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return {
+    kind: 'session',
+    connection: enabled,
+    connections: Object.fromEntries(
+      services.map((current, index) => [current, snapshots[index]]),
+    ) as Record<GoogleService, GmailSessionConnection | null>,
+  };
 }
 
 export async function disconnectSessionGoogleService(

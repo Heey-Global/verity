@@ -1,4 +1,4 @@
-import type { VerityClient } from '@verity/mobile';
+import { VerityApiError, type VerityClient } from '@verity/mobile';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Text } from 'react-native';
 import {
@@ -33,16 +33,30 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
     ReturnType<typeof client.getGoogleDriveConnection>
   > | null>(null);
   const [busy, setBusy] = useState(false);
+  const [usageAvailable, setUsageAvailable] = useState(true);
   const [account, setAccount] = useState<Awaited<
     ReturnType<typeof client.getGoogleConnection>
   > | null>(null);
   const reload = useCallback(async () => {
-    const [drive, google] = await Promise.all([
+    const [drive, google] = await Promise.allSettled([
       client.getGoogleDriveConnection(),
       client.getGoogleConnection(),
     ]);
-    setConnection(drive);
-    setAccount(google);
+    if (drive.status === 'rejected') throw drive.reason;
+    setConnection(drive.value);
+    if (google.status === 'fulfilled') {
+      setAccount(google.value);
+      setUsageAvailable(true);
+    } else if (google.reason instanceof VerityApiError && google.reason.status === 404) {
+      // Account metadata is new; older servers still support the consent flows.
+      setUsageAvailable(false);
+      setAccount({
+        connected: drive.value.connected || drive.value.scopes.length > 0,
+        accountEmail: drive.value.accountEmail,
+        scopes: drive.value.scopes,
+        projects: [],
+      });
+    } else throw google.reason;
   }, [client]);
   useEffect(() => {
     void reload().catch((error: unknown) => Alert.alert('Could not load Google', String(error)));
@@ -108,7 +122,10 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
   return (
     <SettingsScaffold title="Google" detail>
       <SettingsGroup title="Account">
-        <Text style={styles.pathLabel}>{account?.accountEmail ?? 'No account connected'}</Text>
+        <Text style={styles.pathLabel}>
+          {account?.accountEmail ??
+            (account?.connected ? 'Google account connected' : 'No account connected')}
+        </Text>
         <Text style={styles.pathLabel}>
           Connect the services you need, then grant access in each project. Native files are
           selected in the session file browser.
@@ -116,9 +133,11 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
       </SettingsGroup>
       <SettingsGroup title="Used in projects">
         <Text style={styles.pathLabel}>
-          {account?.projects.length
-            ? account.projects.map(({ name }) => name).join(', ')
-            : 'Not used in any project yet'}
+          {!usageAvailable
+            ? 'Update your server to see project usage.'
+            : account?.projects.length
+              ? account.projects.map(({ name }) => name).join(', ')
+              : 'Not used in any project yet'}
         </Text>
       </SettingsGroup>
       <SettingsGroup title="Services">

@@ -1,3 +1,4 @@
+import { VerityApiError } from '@verity/mobile';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -66,4 +67,14 @@ it('requires confirmation before disconnecting the account', async () => {
   const buttons = alert.mock.calls.at(-1)?.[2];
   buttons?.find((button) => button.text === 'Disconnect')?.onPress?.();
   await waitFor(() => expect(client.disconnectGoogleDrive).toHaveBeenCalled());
+});
+
+it('keeps consent available when an older server lacks account metadata', async () => {
+  const client = setup([]);
+  client.getGoogleConnection.mockRejectedValue(new VerityApiError(404, 'Not found'));
+  jest.mocked(runGmailAuth).mockResolvedValue({ kind: 'cancelled' });
+  render(<GoogleSettings />);
+  await screen.findByText('Update your server to see project usage.');
+  fireEvent.press(screen.getByText('Gmail'));
+  await waitFor(() => expect(runGmailAuth).toHaveBeenCalledWith('google-client'));
 });

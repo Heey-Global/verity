@@ -2908,9 +2908,9 @@ export function SessionChat({
               params: { id: projectId, section: 'google' },
             });
           } else if (result.kind === 'session') {
-            if (service === 'gmail') setGmailConnection(result.connection);
-            else if (service === 'calendar') setCalendarConnection(result.connection);
-            else setContactsConnection(result.connection);
+            setGmailConnection(result.connections.gmail);
+            setCalendarConnection(result.connections.calendar);
+            setContactsConnection(result.connections.contacts);
           }
         })
         .catch((error: unknown) =>
