@@ -1,3 +1,4 @@
+import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
 // operator input bar. Binds @verity/mobile's headless SessionModel via useSession
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
@@ -32,7 +33,6 @@ import {
   agentEventDescriptor,
   agentLoopConfigFingerprint,
   briefingExtent,
-  chunkFilePreview,
   engineLabel,
   groupModelsByEngine,
   formatChoiceAnswer,
@@ -5114,14 +5114,6 @@ function SessionFilesSheet({
     [driveActive, entries],
   );
 
-  // React Native lays a `<Text>` out as one native text node, so the whole body in a
-  // single node silently renders blank well below the server's 1 MB preview limit (a
-  // ~143 KB transcript did). Chunked + virtualized, only the visible blocks lay out.
-  const previewChunks = useMemo(
-    () => (preview ? chunkFilePreview(preview.content) : []),
-    [preview],
-  );
-
   const menuActions: FileAction[] =
     menuFor === null
       ? []
@@ -5449,20 +5441,32 @@ function SessionFilesSheet({
                 <Icon name="x" size={20} color={theme.colors.textMuted} />
               </Pressable>
             </View>
-            <FlatList
-              style={styles.filesPreview}
-              contentContainerStyle={styles.filesPreviewBody}
-              data={previewChunks}
-              keyExtractor={(_, index) => String(index)}
-              initialNumToRender={8}
-              maxToRenderPerBatch={8}
-              windowSize={7}
-              renderItem={({ item }) => (
-                <Text selectable style={styles.filesPreviewText}>
-                  {item}
-                </Text>
-              )}
-              ListEmptyComponent={<Text style={styles.sheetEmpty}>Empty file</Text>}
+            <FileContentPreview
+              key={preview.path}
+              path={preview.path}
+              content={preview.content}
+              listStyle={styles.filesPreview}
+              bodyStyle={styles.filesPreviewBody}
+              textStyle={styles.filesPreviewText}
+              renderMarkdown={(item) =>
+                item.type === 'table' ? (
+                  <MarkdownTable header={item.header} rows={item.rows} />
+                ) : item.type === 'code' ? (
+                  <View style={styles.codeBlock}>
+                    {item.lang ? <Text style={styles.codeLang}>{item.lang}</Text> : null}
+                    <Text selectable style={styles.codeText}>
+                      {item.content}
+                    </Text>
+                  </View>
+                ) : (
+                  <MarkdownLine
+                    line={item.content}
+                    onOpenLocalFile={null}
+                    sessionFileImageSource={null}
+                    onOpenImage={() => {}}
+                  />
+                )
+              }
             />
           </View>
         ) : previewLoading ? (

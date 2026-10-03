@@ -14,6 +14,7 @@ export function FileToolbarButton({
   icon,
   tone = 'plain',
   busy = false,
+  selected,
   disabled = false,
   accessibilityLabel,
   onPress,
@@ -22,6 +23,7 @@ export function FileToolbarButton({
   icon?: IconName;
   tone?: FileToolbarButtonTone;
   busy?: boolean;
+  selected?: boolean;
   disabled?: boolean;
   accessibilityLabel?: string;
   onPress: () => void;
@@ -42,7 +44,7 @@ export function FileToolbarButton({
       hitSlop={6}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? label}
-      accessibilityState={{ disabled: disabled || busy, busy }}
+      accessibilityState={{ disabled: disabled || busy, busy, selected }}
       style={({ pressed }) => [
         styles.button,
         tone === 'primary' ? styles.primary : null,
