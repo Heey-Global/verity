@@ -440,7 +440,11 @@ export async function promoteNative() {
   const selected = (await apple(`appStoreVersions/${version.id}/build`)).data as {
     id: string;
   } | null;
-  if (selected?.id !== candidate.buildId)
+  if (!selected) {
+    await apple(`appStoreVersions/${version.id}/relationships/build`, 'PATCH', {
+      data: { type: 'builds', id: candidate.buildId },
+    });
+  } else if (selected.id !== candidate.buildId)
     throw new Error('App Store version selects a different build; resolve it explicitly');
   const accepted = [
     'WAITING_FOR_REVIEW',

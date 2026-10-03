@@ -84,7 +84,9 @@ function setup(change: Record<string, string> = {}) {
       else if (path.includes('/appStoreVersions?'))
         data = [{ id: 'version-id', attributes: { appStoreState: 'PREPARE_FOR_SUBMISSION' } }];
       else if (path === 'appStoreVersions/version-id/build')
-        data = { id: change.selected ?? 'build-id' };
+        data = change.selected === 'none' ? null : { id: change.selected ?? 'build-id' };
+      else if (path === 'appStoreVersions/version-id/relationships/build' && method === 'PATCH')
+        data = { id: 'build-id' };
       else if (path.includes('/reviewSubmissions?')) data = [];
       else if (path === 'reviewSubmissions' && method === 'POST') data = { id: 'submission-id' };
       else if (path === 'reviewSubmissions/submission-id/items') data = [];
@@ -108,6 +110,16 @@ describe('native production submission', () => {
     await expect(promoteNative()).rejects.toThrow();
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
     expect(fixture.calls.some((call) => call.includes('release edit'))).toBe(false);
+  });
+  it('attaches the approved build to a prepared version without a selected build', async () => {
+    const requests = setup({ selected: 'none' });
+    await promoteNative();
+    expect(requests).toContainEqual({
+      path: 'appStoreVersions/version-id/relationships/build',
+      method: 'PATCH',
+      body: { data: { type: 'builds', id: 'build-id' } },
+    });
+    expect(requests.at(-1)?.path).toBe('reviewSubmissions/submission-id');
   });
   it('submits the exact approved build and records production only after Apple accepts', async () => {
     const requests = setup();

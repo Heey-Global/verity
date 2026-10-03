@@ -8,7 +8,10 @@ import { parse } from 'yaml';
 const workflow = parse(
   readFileSync(process.env.STAGING_WORKFLOW ?? '.github/workflows/release.yml', 'utf8'),
 ) as {
-  jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+  jobs: Record<
+    string,
+    { steps: { name?: string; run?: string; uses?: string; with?: Record<string, unknown> }[] }
+  >;
 };
 const run = workflow.jobs['finalize-backend-release']!.steps.find(
   (step) => step.name === 'Open production approval for staged Server',
@@ -55,6 +58,27 @@ else exit 23; fi
   };
 }
 describe('Staging finalization retries', () => {
+  it('records native evidence and approval before clearing the draft-only retry boundary', () => {
+    const steps = workflow.jobs['finalize-mobile-staging']!.steps;
+    const approval = steps.findIndex((step) => step.name === 'Open native production approval');
+    const publication = steps.findIndex(
+      (step) => step.name === 'Publish verified native GitHub release',
+    );
+    expect(approval).toBeGreaterThanOrEqual(0);
+    expect(publication).toBeGreaterThan(approval);
+    expect(steps[approval]?.run).toContain('gh release upload');
+    expect(steps[approval]?.run).toContain('production-promotion.ts propose');
+    expect(publication).toBe(steps.length - 1);
+  });
+  it.each(['finalize-mobile-staging', 'finalize-backend-release'])(
+    'fetches promotion branch merge bases in %s',
+    (job) => {
+      const checkout = workflow.jobs[job]!.steps.find((step) =>
+        step.uses?.startsWith('actions/checkout@'),
+      );
+      expect(checkout?.with?.['fetch-depth']).toBe(0);
+    },
+  );
   it.each([
     'autorelease: pending\n',
     'autorelease: pending\nautorelease: tagged\n',

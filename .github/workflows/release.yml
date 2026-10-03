@@ -1157,6 +1157,8 @@ jobs:
       MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
@@ -1165,6 +1167,18 @@ jobs:
           pattern: native-*-${{ env.MOBILE_TAG }}
           merge-multiple: true
           path: native-candidates
+      - name: Open native production approval
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${MOBILE_TAG#mobile-v}"
+          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and .title == "chore(main): release mobile '"$version"'") | .number')"
+          [[ "$pr" =~ ^[0-9]+$ ]]
+          jq --argjson releasePr "$pr" '. + {releasePr:$releasePr}' native-candidates/native-production.json > "$RUNNER_TEMP/mobile-production.json"
+          gh release upload "$MOBILE_TAG" native-candidates/native-staging.json native-candidates/native-production.json --clobber
+          node scripts/production-promotion.ts propose "$RUNNER_TEMP/mobile-production.json"
+
       - name: Publish verified native GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1225,18 +1239,6 @@ jobs:
           else
             gh release edit "$MOBILE_TAG" --draft=false --prerelease=true --latest=false
           fi
-
-      - name: Open native production approval
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          version="${MOBILE_TAG#mobile-v}"
-          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and .title == "chore(main): release mobile '"$version"'") | .number')"
-          [[ "$pr" =~ ^[0-9]+$ ]]
-          jq --argjson releasePr "$pr" '. + {releasePr:$releasePr}' native-candidates/native-production.json > "$RUNNER_TEMP/mobile-production.json"
-          gh release upload "$MOBILE_TAG" native-candidates/native-staging.json native-candidates/native-production.json --clobber
-          node scripts/production-promotion.ts propose "$RUNNER_TEMP/mobile-production.json"
 
   publish-website:
     # The Verity product website rides its own release train, so this job is
@@ -3209,11 +3211,13 @@ jobs:
       pull-requests: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # This job has no checkout, so gh cannot infer the repository from .git.
+      # Pin the repository independently of the promotion branch checkout.
       GH_REPO: ${{ github.repository }}
       TAG: v${{ needs.release-please.outputs.backend-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
