@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/Heey-Global/verity/compare/website-v2.0.2...website-v2.1.0) (2026-10-03)
+
+
+### Features
+
+* **release:** add staging channels and production promotion ([#1035](https://github.com/Heey-Global/verity/issues/1035)) ([55a7aea](https://github.com/Heey-Global/verity/commit/55a7aea98f8e2bb3aedbf8d6b84a19c0692ce2de))
+
 ## [2.0.2](https://github.com/Heey-Global/verity/compare/website-v2.0.1...website-v2.0.2) (2026-10-03)
 
 
