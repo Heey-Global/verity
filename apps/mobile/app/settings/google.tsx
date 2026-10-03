@@ -1,5 +1,5 @@
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Text } from 'react-native';
 import {
   SettingsScaffold,
@@ -33,6 +33,7 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
     ReturnType<typeof client.getGoogleDriveConnection>
   > | null>(null);
   const [busy, setBusy] = useState(false);
+  const operationPending = useRef(false);
   const [usageAvailable, setUsageAvailable] = useState(true);
   const [account, setAccount] = useState<Awaited<
     ReturnType<typeof client.getGoogleConnection>
@@ -62,7 +63,8 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
     void reload().catch((error: unknown) => Alert.alert('Could not load Google', String(error)));
   }, [reload]);
   const connect = async (service: Service) => {
-    if (busy) return;
+    if (operationPending.current) return;
+    operationPending.current = true;
     setBusy(true);
     try {
       if (!connection?.clientId)
@@ -108,6 +110,21 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
         error instanceof Error ? error.message : String(error),
       );
     } finally {
+      operationPending.current = false;
+      setBusy(false);
+    }
+  };
+  const disconnect = async () => {
+    if (operationPending.current) return;
+    operationPending.current = true;
+    setBusy(true);
+    try {
+      await client.disconnectGoogleDrive();
+      await reload();
+    } catch (error) {
+      Alert.alert('Could not disconnect', String(error));
+    } finally {
+      operationPending.current = false;
       setBusy(false);
     }
   };
@@ -145,6 +162,7 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
           {services.map(([service, required]) => (
             <SettingsNavRow
               key={service}
+              disabled={busy}
               title={service}
               icon="link"
               subtitle={
@@ -174,14 +192,7 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
                   {
                     text: 'Disconnect',
                     style: 'destructive',
-                    onPress: () => {
-                      void client
-                        .disconnectGoogleDrive()
-                        .then(reload)
-                        .catch((error: unknown) =>
-                          Alert.alert('Could not disconnect', String(error)),
-                        );
-                    },
+                    onPress: () => void disconnect(),
                   },
                 ],
               )

@@ -18,6 +18,7 @@ import {
   resetSettingsHarness,
 } from './support/settingsHarness';
 afterEach(() => {
+  jest.mocked(runGmailAuth).mockReset();
   resetSettingsHarness();
   jest.restoreAllMocks();
 });
@@ -65,7 +66,9 @@ it('requires confirmation before disconnecting the account', async () => {
   fireEvent.press(screen.getByText('Disconnect account'));
   expect(client.disconnectGoogleDrive).not.toHaveBeenCalled();
   const buttons = alert.mock.calls.at(-1)?.[2];
-  buttons?.find((button) => button.text === 'Disconnect')?.onPress?.();
+  await act(async () => {
+    buttons?.find((button) => button.text === 'Disconnect')?.onPress?.();
+  });
   await waitFor(() => expect(client.disconnectGoogleDrive).toHaveBeenCalled());
 });
 
@@ -97,4 +100,31 @@ it('blocks disconnection until pending consent finishes', async () => {
   expect(client.disconnectGoogleDrive).not.toHaveBeenCalled();
   await act(async () => finish({ kind: 'cancelled' }));
   expect(screen.getByRole('button', { name: 'Disconnect account' })).toBeEnabled();
+});
+
+it('blocks consent and duplicate removal until disconnect finishes', async () => {
+  const client = setup([]);
+  let finish!: () => void;
+  client.disconnectGoogleDrive.mockReturnValue(
+    new Promise<void>((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const alert = jest.spyOn(Alert, 'alert');
+  render(<GoogleSettings />);
+  await screen.findByText('me@example.test');
+  fireEvent.press(screen.getByText('Disconnect account'));
+  const confirm = alert.mock.calls
+    .at(-1)?.[2]
+    ?.find((button) => button.text === 'Disconnect')?.onPress;
+  act(() => {
+    confirm?.();
+    confirm?.();
+  });
+  expect(client.disconnectGoogleDrive).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'Gmail' })).toBeDisabled();
+  fireEvent.press(screen.getByText('Gmail'));
+  expect(runGmailAuth).not.toHaveBeenCalled();
+  await act(async () => finish());
+  expect(screen.getByRole('button', { name: 'Gmail' })).toBeEnabled();
 });
