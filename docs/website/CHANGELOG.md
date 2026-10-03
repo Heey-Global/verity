@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/Heey-Global/verity/compare/website-v2.0.1...website-v2.0.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **security:** verify server images before installation and updates ([#1018](https://github.com/Heey-Global/verity/issues/1018)) ([fdf09e0](https://github.com/Heey-Global/verity/commit/fdf09e0d32889d87417d8d46ea9dea5ce47c565a))
+
 ## [2.0.1](https://github.com/Heey-Global/verity/compare/website-v2.0.0...website-v2.0.1) (2026-10-02)
 
 
