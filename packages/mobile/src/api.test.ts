@@ -1438,6 +1438,25 @@ describe('VerityClient.fetchOnboardingStatus (#320)', () => {
     expect((await client.fetchOnboardingStatus()).opencodeConfigured).toBe(true);
   });
 
+  it.each([
+    { catalog: 'one,two', disabled: 'one\ntwo', ready: false },
+    { catalog: 'one,two', disabled: 'one', ready: true },
+    { catalog: ' , \n ', disabled: null, ready: false },
+  ])(
+    'checks enabled OpenCode models on an older server ($ready)',
+    async ({ catalog, disabled, ready }) => {
+      const { fetch } = fakeFetch(json({ ...complete, complete: false, nextStep: 'github' }));
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      vi.spyOn(client, 'getVeritySettings').mockResolvedValue({
+        opencodeApiKeyConfigured: true,
+        opencodeBaseUrl: 'https://models.example.test',
+        opencodeModels: catalog,
+        opencodeDisabledModels: disabled,
+      } as NonNullable<Awaited<ReturnType<VerityClient['getVeritySettings']>>>);
+      expect((await client.fetchOnboardingStatus()).opencodeConfigured).toBe(ready);
+    },
+  );
+
   it('parses an incomplete status with a nextStep', async () => {
     const incomplete = {
       ...complete,

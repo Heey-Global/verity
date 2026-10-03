@@ -237,6 +237,30 @@ describe('GET /onboarding/status', () => {
     },
   );
 
+  it.each([
+    { catalog: 'provider/one,provider/two', disabled: 'provider/one\nprovider/two', ready: false },
+    { catalog: 'provider/one,provider/two', disabled: 'provider/one', ready: true },
+    { catalog: ' , \n ', disabled: null, ready: false },
+  ])('requires an enabled OpenCode model ($ready)', async ({ catalog, disabled, ready }) => {
+    const cipher = createSealableSecretCipher();
+    const app = buildWithCipher(cipher);
+    try {
+      const token = await initialize(app);
+      await new EventStore(ctx.db, cipher).updateVeritySettings({
+        opencodeBaseUrl: 'https://models.example.test',
+        opencodeApiKey: 'test-key',
+        opencodeModels: catalog,
+        opencodeDisabledModels: disabled,
+      });
+      const status = await getStatus(app, token);
+      expect(status.opencodeConfigured).toBe(ready);
+      expect(status.complete).toBe(ready);
+      expect(status.nextStep).toBe(ready ? null : 'first-project');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('partial GitHub App config does not count as configured (all three fields required)', async () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);

@@ -12,6 +12,7 @@
 // None of these touch `getVeritySettings()` (which decrypts) or any secret value.
 import type { EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 
 /**
@@ -93,7 +94,7 @@ async function computeOnboardingStatus(
   const opencodeConfigured =
     present(settings?.opencodeBaseUrl) &&
     present(settings?.opencodeApiKey) &&
-    present(settings?.opencodeModels);
+    selectedOpenCodeModels(settings).length > 0;
   const complete = masterPasswordSet && (claudeConfigured || codexConfigured || opencodeConfigured);
 
   // Optional integrations must never prevent starting a local project.

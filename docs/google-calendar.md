@@ -49,7 +49,9 @@ Existing session-only Gmail, Calendar, and Contacts grants stay session-only
 when upgrading. They are not automatically promoted to project grants. To extend
 access, explicitly enable the service in project settings. Disabling a service
 for a project removes its project grant and legacy session grants in that project.
-Other projects remain unaffected. A session disconnect button only removes a
+Project settings show how many existing chats retain separate access and offer
+an explicit action to revoke all access for that service in the project. Other
+projects remain unaffected. A session disconnect button only removes a
 legacy session grant; access granted by its project is managed in project settings.
 
 Later tool calls, including a change awaiting approval, recheck effective access.

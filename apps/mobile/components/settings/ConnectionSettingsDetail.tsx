@@ -2,6 +2,7 @@
 // project containers. Writes are gated on the secret store; connection diagnostics
 // remain reachable when Core cannot load settings.
 import {
+  selectedOpenCodeModels,
   secretStoreManaged,
   secretWritable,
   transcriptionBackendStatus,
@@ -83,7 +84,7 @@ export function ConnectionSettingsDetail({
   const opencodeReady =
     (settings?.opencodeApiKeyConfigured ?? false) &&
     (settings?.opencodeBaseUrl ?? '').trim() !== '' &&
-    (settings?.opencodeModels ?? '').trim() !== '';
+    selectedOpenCodeModels(settings).length > 0;
 
   return (
     <SettingsScaffold

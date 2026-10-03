@@ -7,7 +7,12 @@ import { settingsStyles as styles } from './settingsStyles';
 
 const services = ['gmail', 'calendar', 'contacts'] as const;
 type Service = (typeof services)[number];
-type Connection = { enabled: boolean; connected: boolean; accountEmail?: string | null };
+type Connection = {
+  enabled: boolean;
+  connected: boolean;
+  accountEmail?: string | null;
+  legacySessionCount?: number;
+};
 const labels = { gmail: 'Gmail', calendar: 'Calendar', contacts: 'Contacts' };
 
 export function ProjectGoogleServices({
@@ -75,6 +80,19 @@ export function ProjectGoogleServices({
               disabled={busy}
               onValueChange={(enabled) => void toggle(service, enabled)}
             />
+            {(connection.legacySessionCount ?? 0) > 0 ? (
+              <>
+                <Text style={styles.reproSubtitle}>
+                  {connection.legacySessionCount} existing chats have separate access.
+                </Text>
+                <SettingsNavRow
+                  icon="x"
+                  title={`Revoke all ${labels[service]} access`}
+                  subtitle="Remove access from this project and its existing chats"
+                  onPress={() => void toggle(service, false)}
+                />
+              </>
+            ) : null}
           </SettingsPanel>
         ) : (
           <SettingsNavRow

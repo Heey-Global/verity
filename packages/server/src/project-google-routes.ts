@@ -63,10 +63,12 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
       return reply.code(404).send({ error: 'Project not found' });
     const settings = await eventStore.getVeritySettings();
     const grant = await eventStore.getProjectGoogleConnection(id, service);
+    const legacySessionCount = await eventStore.countLegacyProjectGoogleSessions(id, service);
     const connected =
       Boolean(settings?.googleDriveRefreshToken?.trim()) &&
       checks[service](settings?.googleGrantedScopes);
     return {
+      legacySessionCount,
       enabled:
         grant !== undefined &&
         grant.accountEmail.toLowerCase() === settings?.googleDriveAccountEmail?.toLowerCase(),

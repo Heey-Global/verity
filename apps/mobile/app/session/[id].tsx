@@ -203,6 +203,11 @@ import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
+  connectSessionGoogleService,
+  disconnectSessionGoogleService,
+  type GoogleService,
+} from '../../lib/sessionGoogleAccess';
+import {
   type ClickModifiers,
   type DragFileItem,
   dragItemsForRow,
@@ -2892,93 +2897,85 @@ export function SessionChat({
     voice.abort();
     router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
   }, [sessionId, voice]);
-  const onConnectGmail = useCallback(() => {
-    setAttachMenuOpen(false);
-    if (projectId)
-      router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
-    else router.push('/settings/google');
-  }, [projectId]);
-  const disableGmail = useCallback(() => {
-    void (async () => {
-      if (projectId && (await client.getProjectGoogleConnection(projectId, 'gmail')).enabled) {
-        router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
-        return false;
-      }
-      await client.disableSessionGmail(sessionId);
-      return true;
-    })()
-      .then(
-        (disabled) =>
-          disabled &&
-          setGmailConnection((connection) =>
-            connection === null ? null : { ...connection, enabled: false },
+  const onConnectGoogleService = useCallback(
+    (service: GoogleService) => {
+      setAttachMenuOpen(false);
+      void connectSessionGoogleService(client, sessionId, projectId, service)
+        .then((result) => {
+          if (result.kind === 'project' && projectId) {
+            router.push({
+              pathname: '/project/[id]/settings/services',
+              params: { id: projectId, section: 'google' },
+            });
+          } else if (result.kind === 'session') {
+            if (service === 'gmail') setGmailConnection(result.connection);
+            else if (service === 'calendar') setCalendarConnection(result.connection);
+            else setContactsConnection(result.connection);
+          }
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not connect Google service',
+            error instanceof Error ? error.message : String(error),
           ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Gmail',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, projectId, sessionId]);
-  const onConnectCalendar = useCallback(() => {
-    setAttachMenuOpen(false);
-    if (projectId)
-      router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
-    else router.push('/settings/google');
-  }, [projectId]);
-  const disableCalendar = useCallback(() => {
-    void (async () => {
-      if (projectId && (await client.getProjectGoogleConnection(projectId, 'calendar')).enabled) {
-        router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
-        return false;
-      }
-      await client.disableSessionCalendar(sessionId);
-      return true;
-    })()
-      .then(
-        (disabled) =>
-          disabled &&
-          setCalendarConnection((connection) =>
-            connection === null ? null : { ...connection, enabled: false },
+        );
+    },
+    [client, projectId, sessionId],
+  );
+  const onConnectGmail = useCallback(
+    () => onConnectGoogleService('gmail'),
+    [onConnectGoogleService],
+  );
+  const onConnectCalendar = useCallback(
+    () => onConnectGoogleService('calendar'),
+    [onConnectGoogleService],
+  );
+  const onConnectContacts = useCallback(
+    () => onConnectGoogleService('contacts'),
+    [onConnectGoogleService],
+  );
+  const disableGoogleService = useCallback(
+    (service: GoogleService) => {
+      void disconnectSessionGoogleService(client, sessionId, projectId, service)
+        .then((result) => {
+          if (result === 'project' && projectId) {
+            router.push({
+              pathname: '/project/[id]/settings/services',
+              params: { id: projectId, section: 'google' },
+            });
+            return;
+          }
+          if (service === 'gmail')
+            setGmailConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
+            );
+          else if (service === 'calendar')
+            setCalendarConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
+            );
+          else
+            setContactsConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
+            );
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not disconnect Google service',
+            error instanceof Error ? error.message : String(error),
           ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Calendar',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, projectId, sessionId]);
-  const onConnectContacts = useCallback(() => {
-    setAttachMenuOpen(false);
-    if (projectId)
-      router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
-    else router.push('/settings/google');
-  }, [projectId]);
-  const disableContacts = useCallback(() => {
-    void (async () => {
-      if (projectId && (await client.getProjectGoogleConnection(projectId, 'contacts')).enabled) {
-        router.push({ pathname: '/project/[id]/settings/services', params: { id: projectId } });
-        return false;
-      }
-      await client.disableSessionContacts(sessionId);
-      return true;
-    })()
-      .then(
-        (disabled) =>
-          disabled &&
-          setContactsConnection((connection) =>
-            connection === null ? null : { ...connection, enabled: false },
-          ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Contacts',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, projectId, sessionId]);
+        );
+    },
+    [client, projectId, sessionId],
+  );
+  const disableGmail = useCallback(() => disableGoogleService('gmail'), [disableGoogleService]);
+  const disableCalendar = useCallback(
+    () => disableGoogleService('calendar'),
+    [disableGoogleService],
+  );
+  const disableContacts = useCallback(
+    () => disableGoogleService('contacts'),
+    [disableGoogleService],
+  );
   const clearWorkspaceFile = useCallback(() => {
     if (workspaceFile === null) return;
     Alert.alert(

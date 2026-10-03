@@ -1,3 +1,4 @@
+import { selectedOpenCodeModels } from '@verity/events';
 import {
   agentEventSchema,
   attachmentSchema,
@@ -2653,11 +2654,13 @@ export class VerityClient {
   async getProjectGoogleConnection(
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
-  ): Promise<GmailSessionConnection> {
+  ): Promise<GmailSessionConnection & { legacySessionCount: number }> {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
       method: 'GET',
     });
-    return gmailSessionConnectionSchema.parse(await res.json());
+    return gmailSessionConnectionSchema
+      .extend({ legacySessionCount: z.number().int().nonnegative() })
+      .parse(await res.json());
   }
 
   async enableProjectGoogleConnection(
@@ -2952,7 +2955,7 @@ export class VerityClient {
         status.opencodeConfigured = Boolean(
           settings?.opencodeApiKeyConfigured &&
           settings.opencodeBaseUrl?.trim() &&
-          settings.opencodeModels?.trim(),
+          selectedOpenCodeModels(settings).length > 0,
         );
       } catch {
         // A redacted or unauthorized status must continue through device unlock.

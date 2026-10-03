@@ -1,4 +1,8 @@
-import { githubRepositoryAccessReady, type VerityClient } from '@verity/mobile';
+import {
+  githubRepositoryAccessReady,
+  selectedOpenCodeModels,
+  type VerityClient,
+} from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams, type Href } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Text } from 'react-native';
@@ -131,7 +135,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       connected:
         settings?.opencodeApiKeyConfigured === true &&
         Boolean(settings.opencodeBaseUrl?.trim()) &&
-        Boolean(settings.opencodeModels?.trim()),
+        selectedOpenCodeModels(settings).length > 0,
     },
     {
       title: 'Google',

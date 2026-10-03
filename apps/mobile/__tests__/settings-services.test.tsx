@@ -573,3 +573,38 @@ describe('connections catalog', () => {
     expect(screen.queryByText('Transcription')).toBeNull();
   });
 });
+
+it('keeps OpenCode available when all discovered models are disabled', async () => {
+  mockCreateVerityClient.mockReturnValue(
+    makeClient('unlocked', {
+      settings: makeSettings({
+        opencodeApiKeyConfigured: true,
+        opencodeBaseUrl: 'https://provider.example.test',
+        opencodeModels: 'first,second',
+        opencodeDisabledModels: 'first,second',
+      }),
+    }),
+  );
+  render(<ConnectionsScreen />);
+  await act(async () => undefined);
+  const openCode = await screen.findByLabelText('OpenCode');
+  expect(within(openCode).getByLabelText('Connect')).toBeOnTheScreen();
+  expect(within(openCode).queryByLabelText('Connected')).toBeNull();
+});
+
+it('does not mark OpenCode configured on the AI detail when all models are disabled', async () => {
+  mockCreateVerityClient.mockReturnValue(
+    makeClient('unlocked', {
+      settings: makeSettings({
+        opencodeApiKeyConfigured: true,
+        opencodeBaseUrl: 'https://provider.example.test',
+        opencodeModels: 'first',
+        opencodeDisabledModels: 'first',
+      }),
+    }),
+  );
+  render(<AiScreen />);
+  expect(
+    within(await screen.findByLabelText('OpenCode')).getByText('Not configured'),
+  ).toBeOnTheScreen();
+});

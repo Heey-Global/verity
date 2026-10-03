@@ -51,3 +51,25 @@ it('requires service consent before allowing explicit project access', async () 
     (await app.inject({ method: 'PUT', url: '/projects/missing/google/gmail' })).statusCode,
   ).toBe(404);
 });
+
+it('reports legacy session access without promoting it and revokes it explicitly', async () => {
+  await ctx.store.createSession({
+    sessionId: 'google-route-legacy',
+    projectId: 'google-route-p',
+    worktree: '/wt/legacy',
+    model: 'default',
+  });
+  await ctx.store.enableSessionGmail('google-route-legacy', 'me@example.test');
+  const url = '/projects/google-route-p/google/gmail';
+  expect((await app.inject({ method: 'GET', url })).json()).toMatchObject({
+    enabled: false,
+    legacySessionCount: 1,
+  });
+  expect(await ctx.store.getSessionGmailConnection('google-route-legacy')).toBeDefined();
+  await app.inject({ method: 'DELETE', url });
+  expect((await app.inject({ method: 'GET', url })).json()).toMatchObject({
+    enabled: false,
+    legacySessionCount: 0,
+  });
+  expect(await ctx.store.getSessionGmailConnection('google-route-legacy')).toBeUndefined();
+});

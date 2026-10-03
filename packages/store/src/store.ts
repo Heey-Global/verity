@@ -1911,6 +1911,25 @@ export class EventStore implements EventSink {
       .execute();
   }
 
+  async countLegacyProjectGoogleSessions(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<number> {
+    const table =
+      service === 'gmail'
+        ? 'session_gmail_connections'
+        : service === 'calendar'
+          ? 'session_calendar_connections'
+          : 'session_contacts_connections';
+    const result = await this.db
+      .selectFrom(table)
+      .innerJoin('sessions', 'sessions.session_id', `${table}.session_id`)
+      .select((eb) => eb.fn.countAll().as('count'))
+      .where('sessions.project_id', '=', projectId)
+      .executeTakeFirstOrThrow();
+    return Number(result.count);
+  }
+
   async getProjectGoogleConnection(projectId: string, service: 'gmail' | 'calendar' | 'contacts') {
     const row = await this.db
       .selectFrom('project_google_connections')

@@ -831,6 +831,33 @@ describe('onboarding agent logins step', () => {
     expect(screen.getByLabelText('Back')).toBeOnTheScreen();
   });
 
+  it.each([
+    { disabled: 'provider/model-a,provider/model-b', ready: false },
+    { disabled: 'provider/model-a', ready: true },
+  ])(
+    'requires an enabled OpenCode model before opening Verity ($ready)',
+    async ({ disabled, ready }) => {
+      mockCreateVerityClient.mockReturnValue(
+        fakeClient({
+          fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+          getVeritySettings: jest.fn().mockResolvedValue({
+            opencodeBaseUrl: 'https://api.example.com/v1',
+            opencodeApiKeyConfigured: true,
+            opencodeModels: 'provider/model-a\nprovider/model-b',
+            opencodeDisabledModels: disabled,
+          }),
+        }),
+      );
+      render(<OnboardingAiBackends />);
+      await screen.findByLabelText(ready ? 'Edit OpenCode' : 'Configure OpenCode');
+      await waitFor(() =>
+        expect(screen.getByLabelText('Open Verity')).toHaveProp('accessibilityState', {
+          disabled: !ready,
+        }),
+      );
+    },
+  );
+
   it('requires a fresh API key when an existing OpenCode endpoint changes', async () => {
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
