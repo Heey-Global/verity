@@ -40,7 +40,7 @@ export interface RequestLatencyTrace {
   queries: Timing & { errors: number };
 }
 
-export interface PoolHolder {
+interface PoolHolder {
   owner: string;
   heldMs: number;
   phase?: LatencyPhase;
