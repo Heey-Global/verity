@@ -82,6 +82,7 @@ describe('request latency attribution', () => {
 
   it('measures pool checkout separately from query execution through Kysely', async () => {
     const { pool, client } = fixture();
+    const released = client.release;
     const gate = deferred<typeof client>();
     vi.mocked(pool.connect).mockReturnValue(gate.promise);
     const trace = createRequestLatencyTrace();
@@ -111,7 +112,7 @@ describe('request latency attribution', () => {
       });
       expect(trace.queries.calls).toBe(1);
       expect(trace.queries.totalMs).toBeLessThan(trace.poolAcquire.totalMs);
-      expect(client.release).toHaveBeenCalledOnce();
+      expect(released).toHaveBeenCalledOnce();
       expect(JSON.stringify(trace)).not.toContain('private-payload');
     } finally {
       clock.mockRestore();
@@ -133,11 +134,171 @@ describe('request latency attribution', () => {
     expect(trace.queries.calls).toBe(0);
   });
 
+  it('identifies application code for a background Kysely checkout without SQL', async () => {
+    vi.useFakeTimers();
+    const { pool, client } = fixture();
+    const queryGate = deferred<PostgresQueryResult<unknown>>();
+    vi.spyOn(client, 'query').mockImplementation(() => queryGate.promise as never);
+    const checkoutGate = deferred<QueryClient>();
+    pool.connect.mockResolvedValueOnce(client).mockReturnValueOnce(checkoutGate.promise);
+    const wrapped = instrumentPostgresPool(pool, () => ({ waiting: 1, total: 1 }));
+    const db = new Kysely<Record<string, never>>({
+      dialect: new PostgresDialect({ pool: wrapped }),
+    });
+    try {
+      const background = (async () =>
+        await db.executeQuery(CompiledQuery.raw('select $1', ['private-background-secret'])))();
+      // Driver initialization happens asynchronously before it requests a client.
+      for (let turn = 0; turn < 20 && pool.connect.mock.calls.length === 0; turn++)
+        await Promise.resolve();
+      expect(pool.connect).toHaveBeenCalledOnce();
+      const trace = createRequestLatencyTrace();
+      const pending = withRequestLatencyTrace(trace, () => wrapped.connect());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(trace.poolAcquire.holders?.[0]?.owner).toContain('request-latency.test.ts:');
+      expect(JSON.stringify(trace)).not.toContain('private-background-secret');
+      queryGate.resolve({ rows: [], command: 'SELECT', rowCount: 0 });
+      await background;
+      checkoutGate.resolve(new QueryClient());
+      (await pending).release();
+    } finally {
+      vi.useRealTimers();
+      await db.destroy();
+    }
+  });
+
+  it('captures live background and request holders, then removes them on release and reuse', async () => {
+    vi.useFakeTimers();
+    const { pool, client } = fixture();
+    const other = new QueryClient();
+    const gate = deferred<QueryClient>();
+    pool.connect
+      .mockResolvedValueOnce(client)
+      .mockResolvedValueOnce(other)
+      .mockReturnValueOnce(gate.promise);
+    const wrapped = instrumentPostgresPool(pool, () => ({ waiting: 1, total: 2 }));
+    try {
+      const background = await wrapped.connect();
+      const owner = createRequestLatencyTrace();
+      owner.owner = 'POST /sessions (req-1)';
+      const held = await withRequestLatencyTrace(owner, () => wrapped.connect());
+      const waiting = createRequestLatencyTrace();
+      const pending = withRequestLatencyTrace(waiting, () => wrapped.connect());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(waiting.poolAcquire.holders).toEqual([
+        {
+          owner: expect.stringMatching(/^background:request-latency.test.ts:\d+:\d+/),
+          heldMs: expect.any(Number),
+        },
+        { owner: owner.owner, heldMs: expect.any(Number) },
+      ]);
+      const released = vi.fn();
+      background.release();
+      // Real pg refreshes release when lending the same client again.
+      client.release = released;
+      gate.resolve(client);
+      const reused = await pending;
+      held.release();
+      const nextGate = deferred<QueryClient>();
+      pool.connect.mockReturnValueOnce(nextGate.promise);
+      const next = createRequestLatencyTrace();
+      const nextPending = withRequestLatencyTrace(next, () => wrapped.connect());
+      reused.release();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(next.poolAcquire.holders).toEqual([]);
+      expect(released).toHaveBeenCalledOnce();
+      client.release = vi.fn();
+      nextGate.resolve(client);
+      (await nextPending).release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('records the acquisition phase and PostgreSQL PID for a held connection', async () => {
+    vi.useFakeTimers();
+    const { pool, client } = fixture();
+    Object.assign(client, { processID: 4321 });
+    const gate = deferred<QueryClient>();
+    pool.connect.mockResolvedValueOnce(client).mockReturnValueOnce(gate.promise);
+    const wrapped = instrumentPostgresPool(pool, () => ({ waiting: 1, total: 1 }));
+    try {
+      const holder = createRequestLatencyTrace();
+      holder.owner = 'GET /projects (req-1)';
+      const connection = await withRequestLatencyTrace(holder, () =>
+        measureLatencyPhase('project_overview', () =>
+          measureLatencyPhase('project_release_persist', () => wrapped.connect()),
+        ),
+      );
+      const waiter = createRequestLatencyTrace();
+      const pending = withRequestLatencyTrace(waiter, () => wrapped.connect());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(waiter.poolAcquire.holders).toEqual([
+        expect.objectContaining({
+          owner: holder.owner,
+          phase: 'project_release_persist',
+          backendPid: 4321,
+        }),
+      ]);
+      expect(waiter.poolAcquire.holderSampleWaitMs).toBeGreaterThanOrEqual(0);
+      connection.release();
+      gate.resolve(new QueryClient());
+      (await pending).release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a snapshot even when the underlying pool has many clients', async () => {
+    vi.useFakeTimers();
+    const { pool } = fixture();
+    pool.connect.mockImplementation(async () => new QueryClient());
+    const wrapped = instrumentPostgresPool(pool, () => ({ waiting: 1, total: 12 }));
+    try {
+      const connections = [];
+      for (let index = 0; index < 12; index++) connections.push(await wrapped.connect());
+      const gate = deferred<QueryClient>();
+      pool.connect.mockReturnValueOnce(gate.promise);
+      const trace = createRequestLatencyTrace();
+      const pending = withRequestLatencyTrace(trace, () => wrapped.connect());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(trace.poolAcquire.holders).toHaveLength(10);
+      for (const connection of connections) connection.release();
+      gate.resolve(new QueryClient());
+      (await pending).release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans up the sampler when checkout throws synchronously', async () => {
+    vi.useFakeTimers();
+    const { pool } = fixture();
+    const error = new Error('private-error');
+    pool.connect.mockImplementation(() => {
+      throw error;
+    });
+    const wrapped = instrumentPostgresPool(pool, () => ({ waiting: 0, total: 0 }));
+    const trace = createRequestLatencyTrace();
+    try {
+      await expect(withRequestLatencyTrace(trace, () => wrapped.connect())).rejects.toBe(error);
+      expect(trace.poolAcquire.errors).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(JSON.stringify(trace)).not.toContain('private-error');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves background checkout and release without a request trace', async () => {
     const { pool, client } = fixture();
     const counts = vi.fn(() => ({ waiting: 0, total: 0 }));
     const wrapped = instrumentPostgresPool(pool, counts);
+    const originalRelease = client.release;
     expect(await wrapped.connect()).toBe(client);
+    client.release();
+    expect(originalRelease).toHaveBeenCalledOnce();
+    expect(client.release).toBe(originalRelease);
     expect(counts).not.toHaveBeenCalled();
     expect(wrapped.options).toBe(pool.options);
     await wrapped.end();
