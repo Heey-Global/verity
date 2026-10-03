@@ -153,7 +153,10 @@ function assertPublicPath(value: string): void {
 }
 
 async function openPinnedInside(root: string, candidate: string) {
-  const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await open(
+    candidate,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
   try {
     const [actual, info] = await Promise.all([
       realpath(`/proc/self/fd/${String(handle.fd)}`),

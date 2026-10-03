@@ -623,6 +623,9 @@ export class PreviewEdge {
       connector,
       encodedPayloadLimit(this.options.maxBodyBytes),
     );
+    // Receiver errors (including payload limits) must not escape as process errors.
+    // Termination drives the close handler, which releases and resets the stream.
+    client.on('error', () => client.terminate());
     client.on('message', (data: WebSocket.RawData, binary: boolean) => {
       const payload = rawDataBuffer(data);
       const seq = this.streams.nextOutboundSeq(streamId);
