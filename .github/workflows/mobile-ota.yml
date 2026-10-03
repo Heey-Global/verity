@@ -117,7 +117,7 @@ jobs:
           set -euo pipefail
           native_tag="$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+              --jq '.[] | select(.draft == false) | .tag_name' \
               | grep -E '^mobile-v[0-9]+\.[0-9]+\.0$' \
               | sort -V \
               | tail -n 1

@@ -121,7 +121,10 @@ describe('artifact-only maintenance release', () => {
           expect(result.status, `${publisher.name}: ${result.stderr}`).toBe(0);
           expect(result.stdout).toContain('IMMUTABLE_INDEX');
           if (artifactOnly) expect(result.stdout).not.toContain('PROMOTION');
-          else expect(result.stdout).toContain(':latest');
+          else {
+            expect(result.stdout).toContain(':sha-');
+            expect(result.stdout).not.toContain(':latest');
+          }
         }
       }
     } finally {
@@ -142,8 +145,11 @@ describe('artifact-only maintenance release', () => {
       "inputs['backend-artifact-only'] && needs.publish-server-channels.result == 'skipped'",
     );
     expect(finalize).toContain("needs.publish-server-release-evidence.result == 'success'");
-    const publish = step('finalize-backend-release', 'Publish verified backend release').run;
-    expect(publish).toContain('[ "${{ inputs.backend-artifact-only }}" != true ]');
+    const publish = step(
+      'finalize-backend-release',
+      'Open production approval for staged Server',
+    ).run;
+    expect(publish).toContain('[ "${{ inputs.backend-artifact-only }}" = true ]');
     expect(publish).toContain('gh release edit "$TAG" --draft=false --latest=false');
     const evidence = step(
       'publish-server-release-evidence',

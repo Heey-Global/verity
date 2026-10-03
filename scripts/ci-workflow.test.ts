@@ -1046,10 +1046,15 @@ describe('native iOS compile gate', () => {
     // GitHub authorizes against the pull-request scope for a PR: with read
     // access the move 403s after the signed archive is already uploaded.
     expect(job?.permissions?.['pull-requests']).toBe('write');
-    const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
+    const commands = [
+      ...(job?.steps ?? []),
+      ...(release.jobs['finalize-mobile-staging']?.steps ?? []),
+    ]
+      .map((step) => step.run ?? '')
+      .join('\n');
     expect(commands).toContain('eas-cli@20.3.0 build');
     expect(commands).toContain('--platform ios');
-    expect(commands).toContain('--profile testflight');
+    expect(commands).toContain('--profile "$NATIVE_PROFILE"');
     expect(commands).toContain('--local');
     expect(commands).toContain('--non-interactive');
     expect(commands).toContain('--output "$ipa"');

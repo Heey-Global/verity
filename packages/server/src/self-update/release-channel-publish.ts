@@ -1,6 +1,8 @@
 import { SERVER_COMPAT, type ServerCompat } from './compat.js';
 import {
   isRfc3339Timestamp,
+  releaseChannelFromEnv,
+  type ReleaseChannelName,
   OFFICIAL_SERVER_IMAGE,
   parseReleaseChannelMetadata,
   RELEASE_CHANNEL_SCHEMA_VERSION,
@@ -9,6 +11,7 @@ import {
 } from './release-channel.js';
 
 interface ReleaseChannelPublishInput {
+  readonly channel: ReleaseChannelName;
   /** Digest-pinned reference to the image this release publishes. */
   readonly serverImage: string;
   /** Full commit SHA the release was built from. */
@@ -36,7 +39,7 @@ interface ReleaseChannelPublishInput {
 function renderReleaseChannelMetadata(input: ReleaseChannelPublishInput): string {
   const metadata: ReleaseChannelMetadata = {
     schemaVersion: RELEASE_CHANNEL_SCHEMA_VERSION,
-    channel: 'stable',
+    channel: input.channel,
     version: input.compatibility.serverVersion,
     revision: input.revision,
     architecture: input.architecture,
@@ -46,7 +49,7 @@ function renderReleaseChannelMetadata(input: ReleaseChannelPublishInput): string
     agentSeedImage: null,
     compatibility: input.compatibility,
     publishedAt: input.publishedAt,
-    generation: `stable-${input.compatibility.serverVersion}`,
+    generation: `${input.channel}-${input.compatibility.serverVersion}`,
   };
   const document = JSON.stringify(metadata);
   // Publish only what this build would itself accept. Without this, a release
@@ -92,6 +95,7 @@ export function releaseChannelMetadataFromEnv(
     throw new Error('this Server image was not stamped with a release version');
   }
   return renderReleaseChannelMetadata({
+    channel: releaseChannelFromEnv(env),
     serverImage,
     revision,
     architecture: architecture as ReleaseArchitecture,

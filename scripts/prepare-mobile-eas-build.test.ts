@@ -98,7 +98,7 @@ describe('EAS archive preparation', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prepared);
   });
 
-  it.each(['development', 'preview', 'production', 'simulator'])(
+  it.each(['development', 'preview', 'simulator'])(
     'preserves the manifest for the %s profile',
     (profile) => {
       const f = fixture();

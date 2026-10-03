@@ -1,5 +1,8 @@
 # Releases
 
+See [Staging and production releases](staging-releases.md) for the candidate
+channels, production promotion PRs, separate mobile app, and channel switching.
+
 Verity has three products and four delivery paths: Server, website, native
 mobile, and mobile OTA. Changes accumulate in an open approval pull request;
 merging that pull request approves a specific release candidate. Ordinary source
@@ -7,10 +10,10 @@ merges do not approve a release.
 
 | Product | Approval | Delivered artifact |
 | --- | --- | --- |
-| Server | Release Please PR | Verified Server and supporting images, signed update channels |
+| Server | Release Please PR, then production promotion PR | Verified images, signed staging and stable update channels |
 | Website | Release Please PR | Versioned, smoke-tested website image |
-| Mobile native | Release Please PR | A new `X.Y.0` runtime and TestFlight binary |
-| Mobile OTA | Rolling promotion PR per runtime | A specific EAS update group for the installed runtime |
+| Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build submitted to Apple |
+| Mobile OTA | Rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
 
 ## Release ownership
 
@@ -181,9 +184,9 @@ The Server release includes the toolkit, sandbox, relay, Server, and required
 preview images. Existing installation, self-update/rollback, architecture,
 provenance, signing, and digest checks remain part of release acceptance.
 
-Generate and upload signed channel evidence before updating the mutable stable
-channel. Promote only after the required images and evidence are complete, then
-finalize the public GitHub release. A partial promotion remains recoverable and
+Generate and upload signed channel evidence before updating the mutable staging
+channel. Open a production promotion PR only after the required images and evidence
+are complete. Merging that PR advances stable and finalizes the public GitHub release. A partial promotion remains recoverable and
 must not be reported as a completed publication.
 
 Keep signing jobs in `.github/workflows/release.yml`: installed Servers trust
@@ -243,8 +246,8 @@ stops if dismissal fails. Promotion independently rejects any remaining stale
 approval. Configure required checks on the protected branch as well.
 
 Merging freezes the manifest used by promotion. Promotion validates that source,
-runtime, candidate reference, and EAS group agree, changes the TestFlight
-channel, reads it back, and records the same cumulative notes on the GitHub
+runtime, candidate reference, and EAS group agree, changes the candidate
+channel (`production` for new candidates), reads it back, and records the same cumulative notes on the GitHub
 release. A later merge to `main` cannot change the already-approved candidate.
 
 ## Scheduling, permissions, and migration

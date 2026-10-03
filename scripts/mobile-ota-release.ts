@@ -97,7 +97,7 @@ export function planCandidate(
     schema: 1,
     version,
     runtime: nativeVersion,
-    channel: 'testflight',
+    channel: 'production',
     commit,
     tag: `mobile-v${version}`,
     branch: `staging-mobile-v${version}-${commit}`,
@@ -115,6 +115,7 @@ export function validateCandidate(input: unknown): Artifact {
     candidate.commit,
     [previousPatch],
   );
+  if (candidate.channel === 'testflight') planned.channel = 'testflight';
   for (const key of Object.keys(planned) as (keyof Candidate)[]) {
     if (candidate[key] !== planned[key]) throw new Error(`Invalid candidate ${key}`);
   }
@@ -154,11 +155,11 @@ export function singleGroup(list: UpdateList): string | undefined {
   return group;
 }
 
-export function verifyChannel(channel: Channel, branch: string) {
+export function verifyChannel(channel: Channel, branch: string, expectedChannel = 'production') {
   const value = channel.currentPage;
   const mapping = JSON.parse(value?.branchMapping ?? '{}') as Mapping;
   if (
-    value?.name !== 'testflight' ||
+    value?.name !== expectedChannel ||
     value.isPaused ||
     mapping.version !== 0 ||
     mapping.data?.length !== 1 ||
@@ -167,7 +168,7 @@ export function verifyChannel(channel: Channel, branch: string) {
       (item) => item.name === branch && item.id === mapping.data[0].branchId,
     )
   )
-    throw new Error('TestFlight channel does not exclusively target the approved branch');
+    throw new Error('Update channel does not exclusively target the approved branch');
 }
 
 export function releaseNotes(subjects: string) {
@@ -236,7 +237,7 @@ function staleApprovals(number: number, head: string): Review[] {
 
 function published(runtime: string) {
   const versions = releaseRows()
-    .filter((release) => !release.draft && !release.prerelease)
+    .filter((release) => !release.draft)
     .map((release) => release.tag_name)
     .filter((tag) => /^mobile-v\d+\.\d+\.\d+$/.test(tag))
     .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
@@ -392,6 +393,51 @@ function stage(runtime: string) {
       );
     },
   });
+  // The separate app has a distinct runtime; its OTA cannot reach production.
+  const stagingCandidate = {
+    ...candidate,
+    branch: `staging-${candidate.branch}`,
+    runtime: `staging-${runtime}`,
+  };
+  try {
+    eas('branch:create', stagingCandidate.branch, '--non-interactive');
+  } catch {
+    /* Read verifies existence. */
+  }
+  let stagingGroup = readGroup(stagingCandidate);
+  if (!stagingGroup) {
+    if (!reserve(`ota-staging-upload/${candidate.tag}/${commit}`, stagingCandidate))
+      throw new Error(
+        'Staging upload was attempted without recorded evidence; reconcile before retrying',
+      );
+    run(
+      'npx',
+      [
+        '--yes',
+        'eas-cli@21.0.1',
+        'update',
+        '--branch',
+        stagingCandidate.branch,
+        '--platform',
+        'ios',
+        '--message',
+        `Staging ${candidate.version}`,
+        '--non-interactive',
+      ],
+      {
+        cwd: 'apps/mobile',
+        env: { ...process.env, VERITY_APP_VARIANT: 'staging', EXPO_UPDATE_CHANNEL: 'staging' },
+      },
+    );
+    stagingGroup = readGroup(stagingCandidate);
+    if (!stagingGroup) throw new Error('Staging OTA evidence is missing');
+  }
+  eas('channel:edit', 'staging', '--branch', stagingCandidate.branch, '--non-interactive');
+  verifyChannel(
+    easJson('channel:view', 'staging', '--non-interactive'),
+    stagingCandidate.branch,
+    'staging',
+  );
   candidate.group = group;
   candidate.notes = releaseNotes(
     git('log', '--format=%s', `${candidate.baseline}..${commit}`, '--', ...sourcePaths),
@@ -661,6 +707,11 @@ function promote() {
     .sort((a, b) => b.id - a.id)[0];
   if (verdict?.conclusion !== 'success')
     throw new Error('The exact candidate PR head has no successful CI verdict');
+  const native = releaseRows().find(
+    (release) => release.tag_name === `mobile-v${candidate.runtime}` && !release.draft,
+  );
+  if (!native || native.prerelease)
+    throw new Error('Approve the native production runtime before promoting its OTA');
   const latest = published(candidate.runtime);
   if (latest !== candidate.baseline && latest !== candidate.tag)
     throw new Error('Candidate is stale; stage against the delivered release');
@@ -676,7 +727,11 @@ function promote() {
     git('push', 'origin', `refs/tags/${candidate.tag}`);
   }
   eas('channel:edit', candidate.channel, '--branch', candidate.branch, '--non-interactive');
-  verifyChannel(easJson('channel:view', candidate.channel, '--non-interactive'), candidate.branch);
+  verifyChannel(
+    easJson('channel:view', candidate.channel, '--non-interactive'),
+    candidate.branch,
+    candidate.channel,
+  );
   if (latest !== candidate.tag) finishRelease(candidate);
   restage(candidate);
 }
