@@ -20,10 +20,11 @@ supported.
 
 ![Verity app](docs/website/site/assets/hero-product-verity-v5.png)
 
-> [!WARNING]
-> Verity is under active development and is not yet recommended for
-> third-party production use. Backup and restore automation and some release
-> security controls are still being completed. Review the
+> [!NOTE]
+> **Join the Verity beta.** Try the self-hosted setup and help us improve it
+> with your feedback. For a TestFlight invitation to the app, email
+> [hello@verity.build](mailto:hello@verity.build).
+> Verity is still under active development; review the
 > [known limitations](SECURITY.md#known-limitations) and the
 > [open-source readiness tracker](docs/open-source-readiness.md) before deploying.
 
