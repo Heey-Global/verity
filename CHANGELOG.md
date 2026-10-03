@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.7.0](https://github.com/Heey-Global/verity/compare/v4.6.0...v4.7.0) (2026-10-03)
+
+
+### Features
+
+* **release:** add staging channels and production promotion ([#1035](https://github.com/Heey-Global/verity/issues/1035)) ([55a7aea](https://github.com/Heey-Global/verity/commit/55a7aea98f8e2bb3aedbf8d6b84a19c0692ce2de))
+
+
+### Bug Fixes
+
+* **server:** build project images from tracked files, not the whole clone ([#1039](https://github.com/Heey-Global/verity/issues/1039)) ([3b413b7](https://github.com/Heey-Global/verity/commit/3b413b749230a62a93870171b974f4dff43a715f))
+
 ## [4.6.0](https://github.com/Heey-Global/verity/compare/v4.5.0...v4.6.0) (2026-10-03)
 
 
