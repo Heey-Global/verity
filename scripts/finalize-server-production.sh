@@ -71,6 +71,11 @@ if [ "${ARTIFACT_ONLY:-false}" != true ]; then
     [ "$publish_status" -ne 0 ] || publish_status=1
     exit "${publish_status:-1}"
   fi
+  is_prerelease="$(gh release view "$TAG" --json isPrerelease --jq '.isPrerelease')"
+  if [ "$is_prerelease" != false ]; then
+    echo '::error::Production release is still a prerelease; retry finalization.' >&2
+    exit 1
+  fi
   require_release_labels false true
 else
   gh release edit "$TAG" --draft=false --prerelease=false --latest=false

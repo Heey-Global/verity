@@ -875,6 +875,13 @@ describe('signed GitHub release evidence', () => {
       expected: 'autorelease: pending\n',
     },
     {
+      name: 'published staging release whose production edit failed',
+      labels: 'autorelease: tagged\n',
+      failPrerelease: true,
+      expectedStatus: 1,
+      expected: 'autorelease: tagged\n',
+    },
+    {
       name: 'post-publication lookup failure',
       labels: 'autorelease: pending\n',
       failLookup: true,
@@ -892,7 +899,7 @@ describe('signed GitHub release evidence', () => {
       const gh = join(bin, 'gh');
       mkdirSync(bin);
       writeFileSync(labels, scenario.labels);
-      writeFileSync(draft, 'true\n');
+      writeFileSync(draft, scenario.failPrerelease ? 'false\n' : 'true\n');
       writeFileSync(views, '0\n');
       writeFileSync(
         gh,
@@ -903,7 +910,9 @@ if [[ "$1 $2" == "release view" ]]; then
   count=$((count + 1))
   printf '%s\\n' "$count" > "$TEST_VIEWS"
   if [[ "\${FAIL_LOOKUP:-false}" == true && "$count" -gt 1 ]]; then exit 1; fi
-  cat "$TEST_DRAFT"
+  if [[ " $* " == *" --json isPrerelease "* ]]; then
+    printf '%s\\n' "\${FAIL_PRERELEASE:-false}"
+  else cat "$TEST_DRAFT"; fi
 elif [[ "$1 $2" == "release edit" ]]; then
   if [[ "\${FAIL_PUBLISH:-false}" == true ]]; then exit 1; fi
   printf 'false\\n' > "$TEST_DRAFT"
@@ -948,6 +957,7 @@ fi
           TEST_VIEWS: views,
           FAIL_PUBLISH: scenario.failPublish ? 'true' : 'false',
           FAIL_LOOKUP: scenario.failLookup ? 'true' : 'false',
+          FAIL_PRERELEASE: scenario.failPrerelease ? 'true' : 'false',
           RECONCILE: scenario.reconcile ? 'true' : 'false',
           ARTIFACT_ONLY: scenario.artifactOnly ? 'true' : 'false',
         },
