@@ -6,7 +6,7 @@ import { turnCore } from './session-request-core.js';
 // No backend turn starts here; the first LLM call happens when the operator sends
 // the first message via POST /sessions/:id/turns. `prompt` is accepted only as
 // client-side draft/branch context for legacy callers.
-export const spawnBody = z
+const spawnBody = z
   .object({
     prompt: z.string().optional(),
     ...turnCore,

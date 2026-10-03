@@ -1,4 +1,3 @@
-export type { SpawnBody } from './session-create-schema.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
