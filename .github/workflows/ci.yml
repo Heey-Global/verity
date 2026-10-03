@@ -533,10 +533,11 @@ jobs:
                 docs/runbooks/*)
                   test=true
                   ;;
-                # Prose. Nothing builds it, `.prettierignore` excludes it from the
-                # formatter, and no test reads what the arm above leaves — asserted
-                # in scripts/ci-workflow.test.ts rather than trusted, since this arm
-                # is the only thing between this directory and the full suite.
+                # Mobile auth callback authorization is covered by a root test.
+                docs/website/site/apple-app-site-association.json)
+                  test=true
+                  ;;
+                # Prose stays inert only when no suite reads it, checked by ci-workflow.test.ts.
                 docs/*)
                   ;;
                 # Everything this table does not name. Matching nothing used to

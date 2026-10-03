@@ -162,4 +162,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          STAGING_GOOGLE_AUTH_ID: ${{ vars.STAGING_GOOGLE_AUTH_ID }}
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         run: node scripts/mobile-ota-release.ts stage "${{ steps.version.outputs.runtime }}"

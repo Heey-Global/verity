@@ -178,6 +178,7 @@ import { join, resolve } from 'node:path';
 
 interface ServiceState {
   calls: string[];
+  stagingOAuth?: string;
   tags: Record<string, { commit: string; message: string }>;
   group?: string;
   loseUpload?: boolean;
@@ -296,7 +297,7 @@ if(tool === 'npx') {
   if(command==='branch:create') out('');
   if(command==='update:list') {s.lastReadBranch=args[args.indexOf('--branch')+1]; const group=s.lastReadBranch.startsWith('staging-staging-')?s.stagingGroup:s.group;out({currentPage:group?[{group}]:[]});}
   if(command==='update:view') {const staging=s.lastReadBranch?.startsWith('staging-staging-');out([{group:staging?s.stagingGroup:s.group,branch:s.lastReadBranch??candidate.branch,runtimeVersion:staging?'staging-'+candidate.runtime:candidate.runtime,gitCommitHash:sha,platform:'ios'}]);}
-  if(command==='update') {const branch=args[args.indexOf('--branch')+1];if(branch.startsWith('staging-staging-')) s.stagingGroup=candidate.group;else s.group=candidate.group;if(s.loseUpload){s.loseUpload=false;fail();}out([]);}
+  if(command==='update') {const branch=args[args.indexOf('--branch')+1];if(branch.startsWith('staging-staging-')) {s.stagingGroup=candidate.group;s.stagingOAuth=process.env.GOOGLE_AUTH_ID;}else s.group=candidate.group;if(s.loseUpload){s.loseUpload=false;fail();}out([]);}
   if(command==='channel:edit') {s.channelBranch=args[args.indexOf('--branch')+1];out('');}
   if(command==='channel:view') out({currentPage:{name:args[3],branchMapping:JSON.stringify({version:0,data:[{branchId:'branch',branchMappingLogic:'true'}]}),updateBranches:[{id:'branch',name:s.channelBranch??candidate.branch}]}});
 }
@@ -307,7 +308,7 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
     chmodSync(join(bin, name), 0o755);
   }
   return {
-    run: (command: 'stage' | 'promote') =>
+    run: (command: 'stage' | 'promote', overrides: Record<string, string> = {}) =>
       spawnSync(process.execPath, [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0'], {
         cwd,
         encoding: 'utf8',
@@ -320,6 +321,8 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
           GITHUB_REPOSITORY: 'example/repo',
           RUNNER_TEMP: cwd,
           GITHUB_STEP_SUMMARY: join(cwd, 'summary'),
+          STAGING_GOOGLE_AUTH_ID: '123-staging.apps.googleusercontent.com',
+          ...overrides,
         },
       }),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
@@ -327,6 +330,19 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
 }
 
 describe('OTA CLI interrupted external operations', () => {
+  it('exports Staging OTA with the native Staging OAuth identity', () => {
+    const service = serviceFixture();
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.state().stagingOAuth).toBe('123-staging.apps.googleusercontent.com');
+  });
+  it('refuses missing Staging OAuth configuration before publishing any candidate', () => {
+    const service = serviceFixture();
+    const result = service.run('stage', { STAGING_GOOGLE_AUTH_ID: '' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('STAGING_GOOGLE_AUTH_ID');
+    expect(service.state().calls).toEqual([]);
+  });
   it('stages candidates with large release metadata without buffering changelogs', () => {
     const service = serviceFixture({ largeReleasePayload: true });
     const result = service.run('stage');

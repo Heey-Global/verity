@@ -341,6 +341,10 @@ function assertBaseline(candidate: Candidate) {
 }
 
 function stage(runtime: string) {
+  const stagingOAuth = process.env.STAGING_GOOGLE_AUTH_ID?.trim();
+  if (!stagingOAuth || !/^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/.test(stagingOAuth))
+    throw new Error('STAGING_GOOGLE_AUTH_ID must identify the Staging app OAuth client');
+
   const commit = process.env.GITHUB_SHA ?? '';
   if (git('rev-parse', 'HEAD') !== commit)
     throw new Error('Checkout differs from candidate source');
@@ -426,7 +430,12 @@ function stage(runtime: string) {
       ],
       {
         cwd: 'apps/mobile',
-        env: { ...process.env, VERITY_APP_VARIANT: 'staging', EXPO_UPDATE_CHANNEL: 'staging' },
+        env: {
+          ...process.env,
+          VERITY_APP_VARIANT: 'staging',
+          EXPO_UPDATE_CHANNEL: 'staging',
+          GOOGLE_AUTH_ID: stagingOAuth,
+        },
       },
     );
     stagingGroup = readGroup(stagingCandidate);

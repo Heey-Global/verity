@@ -10,7 +10,16 @@ const workflow = parse(
 ) as {
   jobs: Record<
     string,
-    { steps: { name?: string; run?: string; uses?: string; with?: Record<string, unknown> }[] }
+    {
+      env?: Record<string, string>;
+      steps: {
+        name?: string;
+        run?: string;
+        uses?: string;
+        with?: Record<string, unknown>;
+        env?: Record<string, string>;
+      }[];
+    }
   >;
 };
 const run = workflow.jobs['finalize-backend-release']!.steps.find(
@@ -58,6 +67,17 @@ else exit 23; fi
   };
 }
 describe('Staging finalization retries', () => {
+  it('pins Server approval to the revision actually attested by the release workflow', () => {
+    const prepare = workflow.jobs['prepare-server-channels']!;
+    const approval = workflow.jobs['finalize-backend-release']!.steps.find(
+      (step) => step.name === 'Open production approval for staged Server',
+    )!;
+    expect(approval.env?.SOURCE).toBe(prepare.env?.REVISION);
+    expect(
+      prepare.steps.find((step) => step.name === 'Prepare signed architecture release channel')
+        ?.run,
+    ).toContain('VERITY_RELEASE_REVISION="$REVISION"');
+  });
   it('records native evidence and approval before clearing the draft-only retry boundary', () => {
     const steps = workflow.jobs['finalize-mobile-staging']!.steps;
     const approval = steps.findIndex((step) => step.name === 'Open native production approval');
