@@ -1214,18 +1214,18 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ confirmWarnings: true }));
   });
 
-  it('refreshes a project token through concierge without exposing the token value', async () => {
+  it('refreshes a project token through Verity Control without exposing the token value', async () => {
     const refreshed = { projectId: 'p/1', refreshedAt: '2026-06-30T12:00:00.000Z' };
     const { fetch, calls } = fakeFetch(json(refreshed));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
     expect(await client.refreshProjectToken('p/1')).toEqual(refreshed);
-    expect(calls[0]?.url).toBe('http://host/concierge/projects/p%2F1/refresh-token');
+    expect(calls[0]?.url).toBe('http://host/verity-control/projects/p%2F1/refresh-token');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(JSON.stringify(refreshed)).not.toContain('ghs_');
   });
 
-  it('recreates a project container through concierge', async () => {
+  it('recreates a project container through Verity Control', async () => {
     const { fetch, calls } = fakeFetch(
       json({ project: { ...project, state: 'container_starting' } }),
     );
@@ -1235,7 +1235,7 @@ describe('VerityClient.listProjects (#174)', () => {
       id: 'p1',
       state: 'container_starting',
     });
-    expect(calls[0]?.url).toBe('http://host/concierge/projects/p%2F1/recreate-container');
+    expect(calls[0]?.url).toBe('http://host/verity-control/projects/p%2F1/recreate-container');
     expect(calls[0]?.init?.method).toBe('POST');
   });
 
@@ -1876,13 +1876,15 @@ describe('VerityClient.createSession', () => {
   });
 });
 
-describe('VerityClient.openConciergeSession', () => {
-  it('POSTs to the Concierge session route and returns the session id', async () => {
-    const { fetch, calls } = fakeFetch(json({ sessionId: 'concierge-1' }, 201));
+describe('VerityClient.openVerityControlSession', () => {
+  it('POSTs to the Verity Control session route and returns the session id', async () => {
+    const { fetch, calls } = fakeFetch(json({ sessionId: 'verity-control-1' }, 201));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    await expect(client.openConciergeSession()).resolves.toEqual({ sessionId: 'concierge-1' });
-    expect(calls[0]?.url).toBe('http://host/concierge/session');
+    await expect(client.openVerityControlSession()).resolves.toEqual({
+      sessionId: 'verity-control-1',
+    });
+    expect(calls[0]?.url).toBe('http://host/verity-control/session');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(calls[0]?.init?.body).toBeUndefined();
   });

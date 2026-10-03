@@ -1110,11 +1110,11 @@ const devServerPreviewResponseSchema = z.object({
   runtime: projectRuntimeStartedSchema.optional(),
 });
 export type DevServerPreviewResult = z.infer<typeof devServerPreviewResponseSchema>;
-const conciergeTokenRefreshResponseSchema = z.object({
+const verityControlTokenRefreshResponseSchema = z.object({
   projectId: z.string().min(1),
   refreshedAt: z.string(),
 });
-export type ConciergeTokenRefresh = z.infer<typeof conciergeTokenRefreshResponseSchema>;
+export type VerityControlTokenRefresh = z.infer<typeof verityControlTokenRefreshResponseSchema>;
 
 /** One persisted event tagged with its monotonic seq (matches the WS frame), plus
  * its real persist time `ts` (the store row's `created_at`, epoch milliseconds —
@@ -3576,11 +3576,14 @@ export class VerityClient {
     return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
   }
 
-  async refreshProjectToken(id: string): Promise<ConciergeTokenRefresh> {
-    const res = await this.request(`/concierge/projects/${encodeURIComponent(id)}/refresh-token`, {
-      method: 'POST',
-    });
-    return conciergeTokenRefreshResponseSchema.parse(await res.json());
+  async refreshProjectToken(id: string): Promise<VerityControlTokenRefresh> {
+    const res = await this.request(
+      `/verity-control/projects/${encodeURIComponent(id)}/refresh-token`,
+      {
+        method: 'POST',
+      },
+    );
+    return verityControlTokenRefreshResponseSchema.parse(await res.json());
   }
 
   async recreateProjectContainer(
@@ -3598,7 +3601,7 @@ export class VerityClient {
     if (opts.confirmWarnings === true) body.confirmWarnings = true;
     if (opts.forceRebuild === true) body.forceRebuild = true;
     const res = await this.request(
-      `/concierge/projects/${encodeURIComponent(id)}/recreate-container`,
+      `/verity-control/projects/${encodeURIComponent(id)}/recreate-container`,
       {
         method: 'POST',
         ...(Object.keys(body).length > 0
@@ -3612,8 +3615,8 @@ export class VerityClient {
     return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
   }
 
-  async openConciergeSession(): Promise<SessionCreated> {
-    const res = await this.request('/concierge/session', { method: 'POST' });
+  async openVerityControlSession(): Promise<SessionCreated> {
+    const res = await this.request('/verity-control/session', { method: 'POST' });
     return sessionCreatedSchema.parse(await res.json());
   }
 

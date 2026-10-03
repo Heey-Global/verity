@@ -13,7 +13,7 @@ export function parseRecreateContainerBody(body: unknown): z.infer<typeof recrea
   return recreateContainerBody.parse(body);
 }
 
-export interface ProjectConciergeRouteDeps {
+export interface ProjectVerityControlRouteDeps {
   canRefreshToken: () => boolean;
   refreshToken: (
     request: FastifyRequest,
@@ -29,21 +29,24 @@ export interface ProjectConciergeRouteDeps {
 }
 
 /** Registers administrative project-token and container maintenance routes. */
-export function registerProjectConciergeRoutes(
+export function registerProjectVerityControlRoutes(
   app: FastifyInstance,
-  deps: ProjectConciergeRouteDeps,
+  deps: ProjectVerityControlRouteDeps,
 ): void {
-  app.post('/concierge/projects/:id/refresh-token', async (request, reply): Promise<unknown> => {
-    if (!deps.canRefreshToken()) {
-      reply.code(503);
-      return { error: 'project token refresh is not configured' };
-    }
-    const { id } = projectParams.parse(request.params);
-    return deps.refreshToken(request, reply, id);
-  });
+  app.post(
+    '/verity-control/projects/:id/refresh-token',
+    async (request, reply): Promise<unknown> => {
+      if (!deps.canRefreshToken()) {
+        reply.code(503);
+        return { error: 'project token refresh is not configured' };
+      }
+      const { id } = projectParams.parse(request.params);
+      return deps.refreshToken(request, reply, id);
+    },
+  );
 
   app.post(
-    '/concierge/projects/:id/recreate-container',
+    '/verity-control/projects/:id/recreate-container',
     async (request, reply): Promise<unknown> => {
       if (!deps.canRecreateContainer()) {
         reply.code(503);
