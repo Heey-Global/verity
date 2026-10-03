@@ -11,6 +11,7 @@ const fixture = vi.hoisted(() => ({
     releasePr: 42,
   },
   same: false,
+  merged: false,
   calls: [] as { command: string; args: string[] }[],
 }));
 vi.mock('node:fs', async (original) => ({
@@ -36,6 +37,8 @@ vi.mock('node:child_process', () => ({
       return args[1] === 'view'
         ? JSON.stringify({ assets: [{ name: 'production-candidate.json' }] })
         : JSON.stringify(fixture.candidate);
+    if (args[0] === 'pr' && args[1] === 'list' && args.includes('merged'))
+      return fixture.merged ? JSON.stringify([{ number: 7, headRefOid: 'b'.repeat(40) }]) : '[]';
     if (args[0] === 'pr')
       return args[1] === 'list'
         ? args.includes('author')
@@ -60,6 +63,7 @@ import { propose } from './production-promotion.js';
 afterEach(() => {
   fixture.calls = [];
   fixture.same = false;
+  fixture.merged = false;
   vi.unstubAllEnvs();
 });
 describe('rolling production proposals', () => {
@@ -78,6 +82,19 @@ describe('rolling production proposals', () => {
     const signed = fixture.calls.findIndex((call) => call.args.includes('graphql'));
     expect(signed).toBeGreaterThan(reset);
     expect(fixture.calls[signed]?.args).toContain('expected=' + 'c'.repeat(40));
+  });
+  it('finishes recovery when the identical candidate approval has already merged', () => {
+    fixture.same = true;
+    fixture.merged = true;
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+    propose('candidate.json');
+    expect(
+      fixture.calls.some(
+        (call) => call.args[0] === 'pr' && ['create', 'edit'].includes(call.args[1]!),
+      ),
+    ).toBe(false);
+    expect(fixture.calls.some((call) => call.args.includes('graphql'))).toBe(false);
+    expect(fixture.calls.some((call) => call.args[0] === 'workflow')).toBe(false);
   });
   it('preserves the exact head when retrying the same recorded candidate', () => {
     fixture.same = true;

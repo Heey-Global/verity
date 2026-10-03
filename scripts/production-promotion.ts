@@ -136,7 +136,15 @@ export function propose(inputPath = process.argv[3] ?? '') {
   }
   const hasManifest = remote && run('git', 'ls-tree', '--name-only', `origin/${branch}`, manifest);
   const existing = hasManifest ? run('git', 'show', `origin/${branch}:${manifest}`) : '';
-  if (!existing || JSON.stringify(JSON.parse(existing)) !== JSON.stringify(candidate)) {
+  const sameCandidate =
+    existing && JSON.stringify(JSON.parse(existing)) === JSON.stringify(candidate);
+  if (sameCandidate) {
+    const merged = JSON.parse(
+      gh('pr', 'list', '--head', branch, '--state', 'merged', '--json', 'number,headRefOid'),
+    ) as { number: number; headRefOid: string }[];
+    if (merged.some((pr) => pr.headRefOid === head)) return;
+  }
+  if (!sameCandidate) {
     if (remote) {
       // New candidates must run CI on current main; retries keep their exact head.
       run(
@@ -389,7 +397,10 @@ async function apple(
     throw new Error(
       `App Store Connect ${method} ${path}: ${response.status} ${await response.text()}`,
     );
-  return (await response.json()) as { data: Record<string, unknown> | Record<string, unknown>[] };
+  const content = await response.text();
+  return (content.trim() ? JSON.parse(content) : { data: {} }) as {
+    data: Record<string, unknown> | Record<string, unknown>[];
+  };
 }
 export async function promoteNative() {
   const path = 'releases/mobile-production.json';

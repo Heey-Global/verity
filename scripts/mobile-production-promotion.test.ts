@@ -100,7 +100,7 @@ function setup(change: Record<string, string> = {}) {
       else if (path === 'appStoreVersions/version-id/build')
         data = change.selected === 'none' ? null : { id: change.selected ?? 'build-id' };
       else if (path === 'appStoreVersions/version-id/relationships/build' && method === 'PATCH')
-        data = { id: 'build-id' };
+        return new Response(null, { status: 204 });
       else if (path.includes('/reviewSubmissions?')) data = [];
       else if (path === 'reviewSubmissions' && method === 'POST') data = { id: 'submission-id' };
       else if (path === 'reviewSubmissions/submission-id/items') data = [];
