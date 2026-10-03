@@ -2180,7 +2180,7 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # renovate: datasource=github-actions depName=oras-project/setup-oras
-      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
 
       - name: Prepare signed architecture release channel
         shell: bash
@@ -2272,7 +2272,7 @@ jobs:
           pattern: server-release-evidence-v${{ needs.release-please.outputs.backend-version }}-*
           path: evidence
       # renovate: datasource=github-actions depName=oras-project/setup-oras
-      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Promote verified architecture channels
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
