@@ -2330,6 +2330,37 @@ describe('VerityClient session files', () => {
     expect(calls[3]?.init).toMatchObject({ method: 'POST' });
   });
 
+  it('renames a file in place, keeping its folder and root', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ path: 'notes/b.md', root: 'worktree' }),
+      json({ path: 'renamed.md', root: 'shared' }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await client.renameSessionFile('s1', 'worktree', 'notes/a.md', 'b.md');
+    await client.renameSessionFile('s1', 'shared', 'top.md', 'renamed.md');
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/s1/files/move',
+      'http://host/sessions/s1/files/move',
+    ]);
+    // A rename that dropped the folder would move the file to the root instead.
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      root: 'worktree',
+      path: 'notes/a.md',
+      toRoot: 'worktree',
+      toPath: 'notes',
+      toFileName: 'b.md',
+    });
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      root: 'shared',
+      path: 'top.md',
+      toRoot: 'shared',
+      toPath: '',
+      toFileName: 'renamed.md',
+    });
+  });
+
   it('rejects an older server that returns the worktree for a knowledge root', async () => {
     const { fetch } = fakeFetch(json({ path: '', entries: [], truncated: false }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });

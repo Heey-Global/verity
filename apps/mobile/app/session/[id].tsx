@@ -142,6 +142,10 @@ import { WebView } from 'react-native-webview';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
 import { openPublicPreview } from '../../components/premiumFeature';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
+import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
+import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
+import { FileNameDialog } from '../../components/files/FileNameDialog';
+import { FileToolbarButton } from '../../components/files/FileToolbarButton';
 import { usePermissionHaptic } from '../../components/usePermissionHaptic';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
@@ -213,6 +217,7 @@ import {
   toggleFileSelection,
 } from '../../lib/fileSelection';
 import {
+  breadcrumbSegments,
   cacheDirectoryName,
   fileEntryMeta,
   fileIcon,
@@ -220,6 +225,7 @@ import {
   loadSharingModule,
   parentPath,
   pdfFileName,
+  renameProblem,
 } from '../../lib/sessionFileUi';
 import {
   claimPendingMeetingUpload,
@@ -4405,6 +4411,10 @@ function SessionFilesSheet({
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
   const [driveUnconfigured, setDriveUnconfigured] = useState(false);
+  // The file whose action menu is open, and the one being renamed. Both are drawn
+  // over the sheet (see FileActionMenu), so they live here rather than in a row.
+  const [menuFor, setMenuFor] = useState<{ path: string; inPreview: boolean } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
   // matches is a superseded tap and is dropped. See openFile.
   const previewRequest = useRef(0);
@@ -4923,72 +4933,109 @@ function SessionFilesSheet({
     modifierClick.current = { anchor: null, range: [] };
   }, []);
 
-  const deleteSelectedFiles = useCallback(() => {
-    if (mutating || selected.length === 0) return;
-    setMutating(true);
-    Alert.alert(
-      selected.length === 1 ? 'Delete file?' : `Delete ${selected.length} files?`,
-      root === 'worktree'
-        ? 'This permanently removes the selected files from the workspace.'
-        : 'This removes the files and their extracted text.',
-      [
-        { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              const deleted: string[] = [];
-              try {
-                for (const filePath of selected) {
-                  await client.deleteSessionFile(sessionId, root, filePath);
-                  deleted.push(filePath);
+  // One confirmation for every delete, from a row's menu, the open file or the
+  // selection. It names the files and the root they leave: Shared is read by
+  // every project, so "this file" is not enough to know what is at stake.
+  const confirmDelete = useCallback(
+    (
+      paths: readonly string[],
+      onDeleted: (deleted: readonly string[], complete: boolean) => void,
+    ) => {
+      if (mutating || paths.length === 0) return;
+      setMutating(true);
+      const names = paths.slice(0, 5).map((filePath) => `• ${fileNameFromPath(filePath)}`);
+      if (paths.length > names.length) names.push(`… and ${paths.length - names.length} more`);
+      Alert.alert(
+        paths.length === 1 ? 'Delete file?' : `Delete ${paths.length} files?`,
+        `${names.join('\n')}\n\n${
+          root === 'worktree'
+            ? 'This permanently removes them from the workspace.'
+            : root === 'shared'
+              ? 'This removes them from Shared, for every project, with their extracted text.'
+              : 'This removes them from the project with their extracted text.'
+        }`,
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => {
+              void (async () => {
+                const deleted: string[] = [];
+                try {
+                  for (const filePath of paths) {
+                    await client.deleteSessionFile(sessionId, root, filePath);
+                    deleted.push(filePath);
+                  }
+                  onDeleted(deleted, true);
+                } catch (err) {
+                  onDeleted(deleted, false);
+                  Alert.alert(
+                    'Could not delete file',
+                    err instanceof Error ? err.message : String(err),
+                  );
+                } finally {
+                  if (deleted.length > 0) setReloadKey((key) => key + 1);
+                  setMutating(false);
                 }
-                endSelection();
-              } catch (err) {
-                setSelected((current) => current.filter((path) => !deleted.includes(path)));
-                Alert.alert(
-                  'Could not delete file',
-                  err instanceof Error ? err.message : String(err),
-                );
-              } finally {
-                if (deleted.length > 0) setReloadKey((key) => key + 1);
-                setMutating(false);
-              }
-            })();
+              })();
+            },
           },
-        },
-      ],
-      { cancelable: false },
-    );
-  }, [client, endSelection, mutating, root, selected, sessionId]);
+        ],
+        { cancelable: false },
+      );
+    },
+    [client, mutating, root, sessionId],
+  );
 
-  const moveSelectedKnowledge = useCallback(() => {
-    if (mutating || root === 'worktree' || selected.length === 0) return;
-    setMutating(true);
-    const destination = root === 'knowledge' ? 'shared' : 'knowledge';
-    void (async () => {
-      const moved: string[] = [];
+  const deleteSelectedFiles = useCallback(() => {
+    confirmDelete(selected, (deleted, complete) => {
+      if (complete) endSelection();
+      else setSelected((current) => current.filter((path) => !deleted.includes(path)));
+    });
+  }, [confirmDelete, endSelection, selected]);
+
+  const closePreview = useCallback(() => {
+    // Also drops a fetch still in flight, so leaving the preview can't be undone
+    // a second later by a slow response.
+    previewRequest.current += 1;
+    setPreview(null);
+    setPreviewLoading(false);
+  }, []);
+
+  const renameFile = useCallback(
+    async (filePath: string, name: string) => {
+      setMutating(true);
       try {
-        for (const filePath of selected) {
-          await client.moveSessionFile(sessionId, {
-            root,
-            path: filePath,
-            toRoot: destination,
-            toPath: filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '',
-          });
-          moved.push(filePath);
-        }
-        endSelection();
+        const renamed = await client.renameSessionFile(sessionId, root, filePath, name);
+        setPreview((current) =>
+          current?.path === filePath ? { ...current, path: renamed.path } : current,
+        );
+        setRenaming(null);
+        setReloadKey((key) => key + 1);
       } catch (err) {
-        setSelected((current) => current.filter((path) => !moved.includes(path)));
-        Alert.alert('Could not move file', err instanceof Error ? err.message : String(err));
+        // A server from before worktree renames answers with the knowledge-only
+        // refusal, which reads as nonsense on the Files tab.
+        if (
+          err instanceof VerityApiError &&
+          err.status === 400 &&
+          root === 'worktree' &&
+          /only knowledge files/.test(err.message)
+        ) {
+          throw new Error('Update the Verity server to rename files here.');
+        }
+        throw err;
       } finally {
-        if (moved.length > 0) setReloadKey((key) => key + 1);
         setMutating(false);
       }
-    })();
-  }, [client, endSelection, mutating, root, selected, sessionId]);
+    },
+    [client, root, sessionId],
+  );
+
+  const selectableEntries = useMemo(() => entries.filter(isSelectableFile), [entries]);
+  const allSelected =
+    selectableEntries.length > 0 &&
+    selectableEntries.every((entry) => selected.includes(entry.path));
 
   const rememberModifiers = useCallback((held: ClickModifiers) => {
     modifiers.current = held;
@@ -5075,6 +5122,59 @@ function SessionFilesSheet({
     [preview],
   );
 
+  const menuActions: FileAction[] =
+    menuFor === null
+      ? []
+      : [
+          ...(!menuFor.inPreview
+            ? [
+                {
+                  key: 'open',
+                  label: 'Open',
+                  icon: 'file' as const,
+                  onPress: () => {
+                    const entry = entries.find((entry) => entry.path === menuFor.path);
+                    if (entry) void openFile(entry);
+                  },
+                },
+              ]
+            : []),
+          ...(menuFor.inPreview && preview && Platform.OS !== 'web'
+            ? [
+                {
+                  key: 'export',
+                  label: 'Print or share as PDF',
+                  icon: 'printer' as const,
+                  onPress: () => chooseExport(preview),
+                },
+              ]
+            : []),
+          {
+            key: 'open-with',
+            label: 'Open with another app',
+            icon: 'share' as const,
+            onPress: () => openWith(menuFor.path),
+          },
+          {
+            key: 'rename',
+            label: 'Rename…',
+            icon: 'edit-3' as const,
+            onPress: () => setRenaming(menuFor.path),
+          },
+          {
+            key: 'delete',
+            label: 'Delete…',
+            icon: 'trash-2' as const,
+            destructive: true,
+            onPress: () =>
+              confirmDelete([menuFor.path], (deleted) => {
+                if (deleted.length === 0) return;
+                setSelected((current) => current.filter((path) => !deleted.includes(path)));
+                if (menuFor.inPreview) closePreview();
+              }),
+          },
+        ];
+
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityRole="button">
@@ -5082,98 +5182,71 @@ function SessionFilesSheet({
       </Pressable>
       <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
         <SheetResizeHandle panHandlers={sheet.panHandlers} />
-        <View style={styles.filesHeader}>
-          <View style={styles.filesTitleWrap}>
-            <Text style={styles.sheetTitle}>
-              {selecting
-                ? selected.length > 0
-                  ? selectionSummary(selected.length)
-                  : 'Select files'
-                : 'Files'}
-            </Text>
-            <Text style={styles.filesPath} numberOfLines={1}>
-              {driveActive
-                ? `Google Drive${drivePath.map(({ name }) => ` / ${name}`).join('')}`
-                : root === 'worktree'
-                  ? 'Worktree'
-                  : root === 'knowledge'
-                    ? '📚 Project'
-                    : '📚 Shared'}
-              {!driveActive && path ? ` / ${path}` : ''}
-            </Text>
-          </View>
-          {canSelect ? (
+        {!preview ? (
+          <View style={styles.filesHeader}>
+            <View style={styles.filesTitleWrap}>
+              <Text style={styles.sheetTitle} numberOfLines={1}>
+                {selecting
+                  ? selected.length > 0
+                    ? selectionSummary(selected.length)
+                    : 'Select files'
+                  : 'Files'}
+              </Text>
+            </View>
+            {selecting ? (
+              <>
+                <FileToolbarButton
+                  label={allSelected ? 'Select none' : 'Select all'}
+                  disabled={mutating}
+                  onPress={() => {
+                    modifierClick.current = { anchor: null, range: [] };
+                    setSelected(allSelected ? [] : selectableEntries.map((entry) => entry.path));
+                  }}
+                />
+                {/* Text, not a glyph: the old toggle turned into an X beside the X
+                  that closes the sheet, and nobody could tell which ended what. */}
+                <FileToolbarButton
+                  label="Done"
+                  tone="primary"
+                  disabled={mutating}
+                  accessibilityLabel="Done selecting files"
+                  onPress={endSelection}
+                />
+              </>
+            ) : !preview ? (
+              <>
+                {canSelect ? (
+                  <FileToolbarButton
+                    label="Select"
+                    disabled={mutating}
+                    accessibilityLabel="Select files"
+                    onPress={() => setSelecting(true)}
+                  />
+                ) : null}
+                <FileToolbarButton
+                  label="Upload"
+                  icon="upload"
+                  tone="tinted"
+                  busy={uploading}
+                  disabled={mutating || error !== null || (driveActive && driveUnconfigured)}
+                  accessibilityLabel={
+                    driveActive ? 'Upload files to Google Drive' : `Upload files to /${path}`
+                  }
+                  onPress={driveActive ? uploadDriveFiles : uploadFiles}
+                />
+              </>
+            ) : null}
             <Pressable
-              onPress={() => (selecting ? endSelection() : setSelecting(true))}
-              disabled={mutating}
+              onPress={onClose}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityState={{ selected: selecting }}
-              accessibilityLabel={selecting ? 'Stop selecting files' : 'Select files'}
+              accessibilityLabel="Close files"
               style={styles.bookmarkRemove}
             >
-              <Icon
-                name={selecting ? 'x-square' : 'check-square'}
-                size={19}
-                color={selecting ? theme.colors.primary : theme.colors.textMuted}
-              />
+              <Icon name="x" size={20} color={theme.colors.textMuted} />
             </Pressable>
-          ) : null}
-          {selecting && selected.length > 0 ? (
-            <>
-              {root !== 'worktree' ? (
-                <Pressable
-                  onPress={moveSelectedKnowledge}
-                  disabled={mutating}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Project'}
-                  style={styles.bookmarkRemove}
-                >
-                  <Icon name="repeat" size={18} color={theme.colors.textMuted} />
-                </Pressable>
-              ) : null}
-              <Pressable
-                onPress={deleteSelectedFiles}
-                disabled={mutating}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Delete selected files"
-                style={styles.bookmarkRemove}
-              >
-                <Icon name="trash-2" size={18} color={theme.colors.tone.danger} />
-              </Pressable>
-            </>
-          ) : null}
-          <Pressable
-            onPress={driveActive ? uploadDriveFiles : uploadFiles}
-            disabled={uploading || mutating || error !== null || (driveActive && driveUnconfigured)}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={
-              driveActive ? 'Upload files to Google Drive' : `Upload files to /${path}`
-            }
-            style={styles.bookmarkRemove}
-          >
-            {uploading ? (
-              <ActivityIndicator size="small" color={theme.colors.textMuted} />
-            ) : (
-              // `file-plus`, not `upload`: Feather's upload glyph is a tray with an
-              // arrow out of it, near-identical at this size to the per-row `share`
-              // glyph right below it — two different actions reading as one icon.
-              <Icon name="file-plus" size={19} color={theme.colors.textMuted} />
-            )}
-          </Pressable>
-          <Pressable
-            onPress={onClose}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Close files"
-            style={styles.bookmarkRemove}
-          >
-            <Icon name="x" size={20} color={theme.colors.textMuted} />
-          </Pressable>
-        </View>
+          </View>
+        ) : null}
         {!preview ? (
           <View style={styles.filesRootBar}>
             {(
@@ -5239,19 +5312,30 @@ function SessionFilesSheet({
             ) : null}
           </View>
         ) : null}
+        {preview ? null : driveActive ? (
+          drivePath.length > 0 ? (
+            <FileBreadcrumb
+              rootIcon="hard-drive"
+              rootLabel={drivePath[0]?.name ?? 'Google Drive'}
+              segments={drivePath.slice(1).map(({ id, name }) => ({ key: id, name }))}
+              disabled={mutating}
+              onNavigate={(index) => setDrivePath((current) => current.slice(0, index + 2))}
+            />
+          ) : null
+        ) : (
+          <FileBreadcrumb
+            rootIcon={root === 'worktree' ? 'folder' : 'book-open'}
+            rootLabel={root === 'worktree' ? 'Files' : root === 'knowledge' ? 'Project' : 'Shared'}
+            segments={breadcrumbSegments(path).map((segment) => ({
+              key: segment.path,
+              name: segment.name,
+            }))}
+            disabled={mutating || selecting}
+            onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
+          />
+        )}
         {driveActive ? (
           <ScrollView style={styles.filesList}>
-            {drivePath.length > 1 ? (
-              <Pressable
-                onPress={() => setDrivePath((current) => current.slice(0, -1))}
-                accessibilityRole="button"
-                accessibilityLabel="Back to parent folder"
-                style={({ pressed }) => [styles.fileRow, pressed ? styles.sheetRowPressed : null]}
-              >
-                <Icon name="corner-up-left" size={18} color={theme.colors.textMuted} />
-                <Text style={styles.sheetRowLabel}>..</Text>
-              </Pressable>
-            ) : null}
             {error ? <Text style={styles.sheetError}>{error}</Text> : null}
             {driveUnconfigured && projectId ? (
               <View style={styles.driveSetupNotice}>
@@ -5319,13 +5403,7 @@ function SessionFilesSheet({
           <View style={styles.filesPreviewWrap}>
             <View style={styles.filesPreviewHeader}>
               <Pressable
-                onPress={() => {
-                  // Also drops a fetch still in flight, so leaving the preview can't
-                  // be undone a second later by a slow response.
-                  previewRequest.current += 1;
-                  setPreview(null);
-                  setPreviewLoading(false);
-                }}
+                onPress={closePreview}
                 hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel="Back to file list"
@@ -5333,32 +5411,42 @@ function SessionFilesSheet({
               >
                 <Icon name="chevron-left" size={20} color={theme.colors.textMuted} />
               </Pressable>
-              <Text style={styles.filesPreviewTitle} numberOfLines={1}>
-                {preview.path}
-              </Text>
+              <View style={styles.filesTitleWrap}>
+                <Text style={styles.filesPreviewTitle} numberOfLines={1}>
+                  {fileNameFromPath(preview.path)}
+                </Text>
+                {parentPath(preview.path) ? (
+                  <Text style={styles.filesPath} numberOfLines={1}>
+                    {parentPath(preview.path)}
+                  </Text>
+                ) : null}
+              </View>
               {/* Chunked rendering means native text selection stops at each block, so
                   drag-selecting the whole file no longer works — this copies the exact
                   content the server returned, which is what select-all was for anyway. */}
-              <CopyButton value={preview.content} accessibilityLabel="Copy file contents" />
-              {Platform.OS !== 'web' ? (
-                <Pressable
-                  onPress={() => chooseExport(preview)}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="Print or share as PDF"
-                  style={styles.bookmarkRemove}
-                >
-                  <Icon name="printer" size={18} color={theme.colors.textMuted} />
-                </Pressable>
-              ) : null}
+              <CopyButton
+                value={preview.content}
+                label="Copy"
+                accessibilityLabel="Copy file contents"
+              />
               <Pressable
-                onPress={() => openWith(preview.path)}
+                onPress={() => setMenuFor({ path: preview.path, inPreview: true })}
+                disabled={mutating}
                 hitSlop={8}
                 accessibilityRole="button"
-                accessibilityLabel="Open file with another app"
+                accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
                 style={styles.bookmarkRemove}
               >
-                <Icon name="share" size={18} color={theme.colors.textMuted} />
+                <Icon name="more-horizontal" size={20} color={theme.colors.textMuted} />
+              </Pressable>
+              <Pressable
+                onPress={onClose}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Close files"
+                style={styles.bookmarkRemove}
+              >
+                <Icon name="x" size={20} color={theme.colors.textMuted} />
               </Pressable>
             </View>
             <FlatList
@@ -5403,14 +5491,6 @@ function SessionFilesSheet({
                 {/* A touch that turned into a scroll never reaches a press, so
                     the modifiers it reported have to be withdrawn here too. */}
                 <ScrollView style={styles.filesList} onScrollBeginDrag={forgetModifiers}>
-                  {path ? (
-                    <SessionFolderRow
-                      name=".."
-                      parent
-                      onPress={() => setPath(parentPath(path))}
-                      accessibilityLabel="Back to parent folder"
-                    />
-                  ) : null}
                   {entries.length === 0 ? (
                     <Text style={styles.sheetEmpty}>No files</Text>
                   ) : (
@@ -5486,20 +5566,25 @@ function SessionFilesSheet({
                               {selecting ? (
                                 <View style={styles.fileDownload}>
                                   <Icon
-                                    name={picked ? 'check-square' : 'square'}
+                                    name={picked ? 'check-circle' : 'circle'}
                                     size={18}
                                     color={picked ? theme.colors.primary : theme.colors.textFaint}
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
                                 <Pressable
-                                  onPress={() => openWith(entry.path)}
+                                  onPress={() => setMenuFor({ path: entry.path, inPreview: false })}
+                                  disabled={mutating}
                                   hitSlop={8}
                                   accessibilityRole="button"
-                                  accessibilityLabel={`Open ${entry.name} with another app`}
+                                  accessibilityLabel={`More actions for ${entry.name}`}
                                   style={styles.fileDownload}
                                 >
-                                  <Icon name="share" size={17} color={theme.colors.textMuted} />
+                                  <Icon
+                                    name="more-horizontal"
+                                    size={18}
+                                    color={theme.colors.textMuted}
+                                  />
                                 </Pressable>
                               ) : (
                                 <Icon
@@ -5523,8 +5608,49 @@ function SessionFilesSheet({
                 ) : null}
               </DropZone>
             )}
+            {selecting ? (
+              <View style={styles.filesSelectionBar}>
+                {selected.length === 0 ? (
+                  <Text style={styles.filesPath}>Tap files to select them</Text>
+                ) : (
+                  <View />
+                )}
+                <FileToolbarButton
+                  label="Delete…"
+                  icon="trash-2"
+                  tone="danger"
+                  disabled={mutating || selected.length === 0}
+                  accessibilityLabel="Delete selected files"
+                  onPress={deleteSelectedFiles}
+                />
+              </View>
+            ) : null}
           </>
         )}
+        {menuFor ? (
+          <FileActionMenu
+            title={fileNameFromPath(menuFor.path)}
+            actions={menuActions}
+            onDismiss={() => setMenuFor(null)}
+          />
+        ) : null}
+        {renaming ? (
+          <FileNameDialog
+            title="Rename file"
+            subtitle={parentPath(renaming) ? `in /${parentPath(renaming)}` : undefined}
+            initialName={fileNameFromPath(renaming)}
+            confirmLabel="Rename"
+            validate={(name) =>
+              renameProblem(
+                name,
+                fileNameFromPath(renaming),
+                entries.filter((entry) => entry.path !== renaming).map((entry) => entry.name),
+              )
+            }
+            onSubmit={(name) => renameFile(renaming, name)}
+            onCancel={() => setRenaming(null)}
+          />
+        ) : null}
       </Animated.View>
     </Modal>
   );
@@ -9267,6 +9393,18 @@ const styles = StyleSheet.create((theme) => ({
   filesPath: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
+  },
+  // Pinned under the list while selecting: the one action that applies to the
+  // whole selection, labelled and away from the header's Done.
+  filesSelectionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
   },
   filesRootBar: {
     flexDirection: 'row',

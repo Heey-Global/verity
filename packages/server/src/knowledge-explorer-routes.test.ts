@@ -287,6 +287,56 @@ describe('session explorer knowledge roots', () => {
     expect(existsSync(join(worktree, 'ok.txt'))).toBe(true);
   });
 
+  it('renames a worktree file without leaving an extracted-text mirror behind', async () => {
+    writeFileSync(join(worktree, 'ok.txt'), 'draft\n');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-knowledge/files/move',
+      payload: { root: 'worktree', path: 'ok.txt', toRoot: 'worktree', toFileName: 'README.md' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ path: 'README.md', root: 'worktree' });
+    expect(existsSync(join(worktree, 'ok.txt'))).toBe(false);
+    expect(readFileSync(join(worktree, 'README.md'), 'utf8')).toBe('draft\n');
+    // Knowledge moves re-extract at the destination; doing that in a repository
+    // would litter it with a `.text/` folder the agent then commits.
+    expect(existsSync(join(worktree, EXTRACTED_TEXT_DIR))).toBe(false);
+  });
+
+  it('never overwrites on a worktree rename', async () => {
+    // The agent may have written the target name since the list was loaded.
+    writeFileSync(join(worktree, 'ok.txt'), 'mine\n');
+    writeFileSync(join(worktree, 'README.md'), 'theirs\n');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-knowledge/files/move',
+      payload: { root: 'worktree', path: 'ok.txt', toRoot: 'worktree', toFileName: 'README.md' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(readFileSync(join(worktree, 'README.md'), 'utf8')).toBe('theirs\n');
+    expect(readFileSync(join(worktree, 'ok.txt'), 'utf8')).toBe('mine\n');
+  });
+
+  it('refuses to move a knowledge file into the worktree', async () => {
+    // Opening the worktree to renames must not open it as a move destination.
+    await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    writeFileSync(join(dir, 'ok.txt'), 'ok');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-knowledge/files/move',
+      payload: { root: 'knowledge', path: 'ok.txt', toRoot: 'worktree' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(existsSync(join(dir, 'ok.txt'))).toBe(true);
+    expect(existsSync(join(worktree, 'ok.txt'))).toBe(false);
+  });
+
   it('blocks path escapes out of a knowledge root', async () => {
     for (const path of ['../', '../../secrets']) {
       const res = await app.inject({
