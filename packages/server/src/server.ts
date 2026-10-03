@@ -128,6 +128,7 @@ import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
   KNOWLEDGE_MEETINGS_DIR,
+  KNOWLEDGE_INSIGHTS_DIR,
   KNOWLEDGE_MOUNT_TARGET,
 } from './knowledge-folder.js';
 import {
@@ -8156,7 +8157,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return { error: 'overview.md exceeds the project overview limit' };
         }
         if (root.root === 'worktree') await excludeFileHistoryFromGit(root.dir);
-        const saved = await writeSessionText(slot, body.content, body.expectedVersion);
+        const creationMode =
+          root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
+            ? 0o666
+            : 0o644;
+        const saved = await writeSessionText(
+          slot,
+          body.content,
+          body.expectedVersion,
+          creationMode,
+        );
         if (root.root === 'knowledge' && slot.rel === 'overview.md')
           await markProjectOverviewAuthoritative(root.dir);
         if (root.root !== 'worktree') await extractKnowledgeFile(root.dir, slot.rel);

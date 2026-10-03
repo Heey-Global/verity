@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -531,5 +539,27 @@ describe('session explorer knowledge roots', () => {
       url: '/sessions/s-knowledge/files/content?root=worktree&path=.verity-file-history/name',
     });
     expect(privateRead.statusCode).toBe(400);
+  });
+  it('creates insights with the same sandbox write permissions as provisioned insights', async () => {
+    await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    const seed = join(dir, 'insights/provisioned.md');
+    writeFileSync(seed, 'existing insight');
+    await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
+    const provisionedMode = statSync(seed).mode & 0o777;
+    expect(provisionedMode & 0o002).toBe(0o002);
+    const created = await app.inject({
+      method: 'PUT',
+      url: '/sessions/s-knowledge/files/content',
+      payload: {
+        root: 'knowledge',
+        path: 'insights/new.md',
+        content: 'new insight',
+        expectedVersion: null,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    // Check disk before another request can repair the new note's permissions.
+    expect(statSync(join(dir, 'insights/new.md')).mode & 0o777).toBe(provisionedMode);
   });
 });

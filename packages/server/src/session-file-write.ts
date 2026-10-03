@@ -23,6 +23,7 @@ export async function writeSessionText(
   slot: KnowledgeFileSlot,
   content: string,
   expected: string | null,
+  creationMode = 0o644,
 ) {
   const bytes = Buffer.from(content, 'utf8');
   if (bytes.length > MAX_EDIT_BYTES) throw new FileWriteError(413, 'file is too large to edit');
@@ -101,7 +102,7 @@ export async function writeSessionText(
     } finally {
       await durableParent.close();
     }
-    let mode = 0o644;
+    let mode = creationMode;
     let ownership: { uid: number; gid: number } | undefined;
     if (expected !== null) {
       try {
@@ -184,7 +185,12 @@ export async function writeSessionText(
         await complete();
       } catch (restoreError) {
         preserve = true;
-        if ((restoreError as NodeJS.ErrnoException).code === 'EEXIST') await complete();
+        if (
+          ['EEXIST', 'ENOTEMPTY', 'ENOTDIR'].includes(
+            (restoreError as NodeJS.ErrnoException).code ?? '',
+          )
+        )
+          await complete();
         throw new FileWriteError(
           409,
           `File changed while saving; original preserved at ${await realpath(previous)}`,
