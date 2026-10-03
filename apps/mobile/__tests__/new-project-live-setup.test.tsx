@@ -1,14 +1,22 @@
 import { VerityApiError, type VerityClient, type ProjectRecord } from '@verity/mobile';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
 const mockReplace = jest.fn();
 const mockPush = jest.fn();
 let mockParams: { projectId?: string } = {};
+const mockFocusCallbacks = new Set<() => void>();
 jest.mock('expo-router', () => ({
   router: {
     replace: (...args: unknown[]) => mockReplace(...args),
     push: (...args: unknown[]) => mockPush(...args),
+  },
+  useFocusEffect: (callback: () => void) => {
+    require('react').useEffect(() => {
+      mockFocusCallbacks.add(callback);
+      callback();
+      return () => mockFocusCallbacks.delete(callback);
+    }, [callback]);
   },
   useLocalSearchParams: () => mockParams,
   Stack: Object.assign(() => null, { Screen: () => null }),
@@ -39,6 +47,8 @@ function client(overrides: Partial<VerityClient> = {}): VerityClient {
 beforeEach(() => {
   mockParams = {};
   mockReplace.mockReset();
+  mockPush.mockReset();
+  mockFocusCallbacks.clear();
   mockCreateClient.mockReset();
   jest.restoreAllMocks();
 });
@@ -109,6 +119,7 @@ describe('new project', () => {
     await waitFor(() =>
       expect(fake.createProject).toHaveBeenCalledWith({ kind: 'local', name: 'notes' }),
     );
+    await act(async () => {});
   });
 
   it('shows a provisioning failure after opening the project', async () => {
@@ -153,4 +164,19 @@ describe('new project', () => {
       expect(repairProject).toHaveBeenCalledWith('project-1', { confirmWarnings: true }),
     );
   });
+});
+
+it('refreshes available choices after connecting a service and returning', async () => {
+  const drive = jest.fn().mockResolvedValue({ connected: false });
+  mockCreateClient.mockReturnValue(client({ getGoogleDriveConnection: drive }));
+  render(<NewProjectScreen />);
+  fireEvent.press(await screen.findByLabelText('Create project'));
+  await waitFor(() => expect(drive).toHaveBeenCalledTimes(1));
+  expect(screen.queryByText('Google Drive folder')).toBeNull();
+  fireEvent.press(screen.getByText('Discover more connections'));
+  drive.mockResolvedValue({ connected: true });
+  await act(async () => {
+    for (const callback of mockFocusCallbacks) callback();
+  });
+  expect(await screen.findByText('Google Drive folder')).toBeOnTheScreen();
 });

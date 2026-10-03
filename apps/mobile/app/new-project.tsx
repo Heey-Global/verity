@@ -5,7 +5,7 @@ import {
   type CreateProjectRequest,
   type ProjectRecord,
 } from '@verity/mobile';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -94,6 +94,48 @@ function NewProject({ client }: { client: VerityClient }) {
   useEffect(() => {
     loadRepositories();
   }, [loadRepositories]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!createdProject) return;
+      let active = true;
+      void Promise.allSettled([
+        Promise.resolve().then(() => client.getGoogleDriveConnection()),
+        Promise.resolve().then(() => client.getProjectGoogleConnection(createdProject.id, 'gmail')),
+        Promise.resolve().then(() =>
+          client.getProjectGoogleConnection(createdProject.id, 'calendar'),
+        ),
+        Promise.resolve().then(() =>
+          client.getProjectGoogleConnection(createdProject.id, 'contacts'),
+        ),
+        Promise.resolve().then(() => client.listIntegrations()),
+        Promise.resolve().then(() => client.listHttpMcpConnections()),
+        Promise.resolve().then(() => client.getVeritySettings()),
+      ]).then(([drive, gmail, calendar, contacts, integrations, mcp, settings]) => {
+        const choices: { label: string; section: string }[] = [];
+        if (drive.status === 'fulfilled' && drive.value.connected)
+          choices.push({ label: 'Google Drive folder', section: 'drive' });
+        if (
+          [gmail, calendar, contacts].some(
+            (item) => item.status === 'fulfilled' && item.value.connected,
+          )
+        )
+          choices.push({ label: 'Google services', section: 'google' });
+        if (
+          integrations.status === 'fulfilled' &&
+          integrations.value.accounts.some((account) => account.provider === 'matrix')
+        )
+          choices.push({ label: 'Matrix rooms', section: 'matrix' });
+        if (mcp.status === 'fulfilled' && mcp.value.length > 0)
+          choices.push({ label: 'MCP tools', section: 'mcp' });
+        if (settings.status === 'fulfilled' && settings.value?.dopplerServiceTokenConfigured)
+          choices.push({ label: 'Doppler environment', section: 'doppler' });
+        if (active) setConnections(choices);
+      });
+      return () => {
+        active = false;
+      };
+    }, [client, createdProject]),
+  );
   const onCreate = useCallback(() => {
     if (!canCreate) return;
     const body: CreateProjectRequest =
@@ -107,35 +149,6 @@ function NewProject({ client }: { client: VerityClient }) {
       .then((project) => {
         // Setup progress is lifecycle state; optional integrations do not gate access.
         setCreatedProject(project);
-        void Promise.allSettled([
-          Promise.resolve().then(() => client.getGoogleDriveConnection()),
-          Promise.resolve().then(() => client.getProjectGoogleConnection(project.id, 'gmail')),
-          Promise.resolve().then(() => client.getProjectGoogleConnection(project.id, 'calendar')),
-          Promise.resolve().then(() => client.getProjectGoogleConnection(project.id, 'contacts')),
-          Promise.resolve().then(() => client.listIntegrations()),
-          Promise.resolve().then(() => client.listHttpMcpConnections()),
-          Promise.resolve().then(() => client.getVeritySettings()),
-        ]).then(([drive, gmail, calendar, contacts, integrations, mcp, settings]) => {
-          const choices: { label: string; section: string }[] = [];
-          if (drive.status === 'fulfilled' && drive.value.connected)
-            choices.push({ label: 'Google Drive folder', section: 'drive' });
-          if (
-            [gmail, calendar, contacts].some(
-              (item) => item.status === 'fulfilled' && item.value.connected,
-            )
-          )
-            choices.push({ label: 'Google services', section: 'google' });
-          if (
-            integrations.status === 'fulfilled' &&
-            integrations.value.accounts.some((account) => account.provider === 'matrix')
-          )
-            choices.push({ label: 'Matrix rooms', section: 'matrix' });
-          if (mcp.status === 'fulfilled' && mcp.value.length > 0)
-            choices.push({ label: 'MCP tools', section: 'mcp' });
-          if (settings.status === 'fulfilled' && settings.value?.dopplerServiceTokenConfigured)
-            choices.push({ label: 'Doppler environment', section: 'doppler' });
-          setConnections(choices);
-        });
         void client.setProjectSetupStatus(project.id, 'complete').catch(() => {
           // The project page retries migration of pending setup status.
         });
