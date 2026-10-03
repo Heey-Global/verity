@@ -22,7 +22,11 @@ vi.mock('node:child_process', () => ({
     fixture.calls.push(`${command} ${args.join(' ')}`);
     if (command === 'git') return 'a'.repeat(40);
     if (args[0] === 'release')
-      return args[1] === 'download' ? JSON.stringify(fixture.candidate) : '';
+      return args[1] === 'download'
+        ? JSON.stringify(fixture.candidate)
+        : args[1] === 'view'
+          ? 'false'
+          : '';
     const endpoint = args.find((v) => v.startsWith('repos/')) ?? '';
     if (endpoint.endsWith('/pulls'))
       return JSON.stringify([

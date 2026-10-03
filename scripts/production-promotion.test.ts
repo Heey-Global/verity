@@ -42,6 +42,7 @@ const out=value=>{process.stdout.write(JSON.stringify(value));process.exit(0);};
 if(tool==='git') {if(args[0]==='log') process.stdout.write('a'.repeat(40));process.exit(0);}
 if(tool==='gh') {
  if(args[0]==='workflow') process.exit(0);
+ if(args[0]==='release' && args[1]==='view') {process.stdout.write(s.draft?'true':'false');process.exit(0);}
  if(args[0]==='release' && args[1]==='download') out(s.candidate);
  const endpoint=args.find(v=>v.startsWith('repos/'));
  if(endpoint.endsWith('/pulls')) out([{number:9,merged_at:'2026-01-01',head:{ref:'automation/promote-server-production',sha:'d'.repeat(40)},base:{ref:'main'}}]);
@@ -89,19 +90,22 @@ process.stderr.write('Unexpected tool '+tool+' '+args.join(' '));process.exit(2)
 }
 
 describe('production promotion', () => {
-  it.each([{ stale: true }, { badSignature: true }, { wrongChannel: true }, { newer: true }])(
-    'rejects invalid approval or evidence before moving either stable channel (%j)',
-    (change) => {
-      const f = fixture(change);
-      try {
-        const result = f.run();
-        expect(result.status).not.toBe(0);
-        expect(f.calls().filter((call) => call.startsWith('oras cp'))).toEqual([]);
-      } finally {
-        rmSync(f.root, { recursive: true, force: true });
-      }
-    },
-  );
+  it.each([
+    { stale: true },
+    { badSignature: true },
+    { wrongChannel: true },
+    { newer: true },
+    { draft: true },
+  ])('rejects invalid approval or evidence before moving either stable channel (%j)', (change) => {
+    const f = fixture(change);
+    try {
+      const result = f.run();
+      expect(result.status).not.toBe(0);
+      expect(f.calls().filter((call) => call.startsWith('oras cp'))).toEqual([]);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
   it('verifies both signed architectures before publication and replans only after finalization', () => {
     const f = fixture();
     try {

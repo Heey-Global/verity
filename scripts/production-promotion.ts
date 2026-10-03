@@ -554,6 +554,10 @@ export function assertPromotionOrder(
 }
 
 function assertRecorded(tag: string, candidate: unknown): void {
+  // A quickly merged approval must not race the finalizer's draft publication.
+  if (gh('release', 'view', tag, '--json', 'isDraft', '--jq', '.isDraft').trim() !== 'false')
+    throw new Error('Staging finalization is not complete; retry promotion after publication');
+
   const record = gh(
     'release',
     'download',
