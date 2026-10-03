@@ -25,6 +25,9 @@ export const RECONNECT_CAPACITY_MS = 5 * 60_000;
 const ABANDONED_REQUEST_TTL_MS = 9 * 60 * 60_000;
 const MAX_ABANDONED_CREATES = 1_024;
 const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
+/** Includes queued and running handlers across reconnects. */
+export const MAX_CONTROL_PENDING_MESSAGES = 128;
+export const MAX_CONTROL_PENDING_BYTES = 1024 * 1024;
 const MAX_REMOTE_SESSION_FRAME_BYTES = 16 * 1024;
 const REMOTE_CAPABILITY = 'remote-control-v1';
 const REMOTE_CHANNEL = 'remote';
@@ -156,6 +159,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private welcomed = false;
   private controlReady = false;
   private messageTail: Promise<void> = Promise.resolve();
+  private pendingMessageCount = 0;
+  private pendingMessageBytes = 0;
   private cleanupTail: Promise<void> = Promise.resolve();
   private cleanupRequired = false;
   private processingMessage = false;
@@ -425,7 +430,23 @@ export class UplinkControlClient implements PreviewEdgeControl {
       );
     });
     socket.on('message', (data) => {
+      if (this.stopped || this.socket !== socket || generation !== this.generation) return;
       const raw = rawDataText(data);
+      const bytes = Buffer.byteLength(raw, 'utf8');
+      if (
+        this.pendingMessageCount >= MAX_CONTROL_PENDING_MESSAGES ||
+        this.pendingMessageBytes + bytes > MAX_CONTROL_PENDING_BYTES
+      ) {
+        this.clearAuthority('Uplink control message backlog exceeded');
+        this.closeAndReconnect(1013, 'control backlog exceeded');
+        return;
+      }
+      this.pendingMessageCount += 1;
+      this.pendingMessageBytes += bytes;
+      const releaseMessage = () => {
+        this.pendingMessageCount -= 1;
+        this.pendingMessageBytes -= bytes;
+      };
       const requestId = (() => {
         try {
           const parsed = JSON.parse(raw) as { requestId?: unknown };
@@ -435,21 +456,27 @@ export class UplinkControlClient implements PreviewEdgeControl {
         }
       })();
       if (requestId !== undefined && this.pending.get(requestId)?.inlineResponse === true) {
-        void this.onMessage(raw, key).catch((error: unknown) => {
-          this.options.log?.warn({ error }, 'invalid Uplink control response');
-          this.clearAuthority('invalid Uplink control message', !this.stopped);
-          socket.close(1002, 'invalid control message');
-        });
+        void this.onMessage(raw, key)
+          .catch((error: unknown) => {
+            this.options.log?.warn({ error }, 'invalid Uplink control response');
+            this.clearAuthority('invalid Uplink control message', !this.stopped);
+            socket.close(1002, 'invalid control message');
+          })
+          .finally(releaseMessage);
         return;
       }
       this.messageTail = this.messageTail
         .then(async () => {
-          if (this.socket !== socket || generation !== this.generation) return;
-          this.processingMessage = true;
           try {
-            await this.onMessage(raw, key);
+            if (this.socket !== socket || generation !== this.generation) return;
+            this.processingMessage = true;
+            try {
+              await this.onMessage(raw, key);
+            } finally {
+              this.processingMessage = false;
+            }
           } finally {
-            this.processingMessage = false;
+            releaseMessage();
           }
         })
         .catch((error: unknown) => {
