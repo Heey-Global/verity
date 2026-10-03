@@ -45,6 +45,9 @@ elif [[ "$1 $2 $3" == 'api --method DELETE' ]]; then
  grep -Fxq 'autorelease: pending' "$STAGE_TEST_ROOT/labels" || exit 22
  sed '/autorelease: pending/d' "$STAGE_TEST_ROOT/labels" > "$STAGE_TEST_ROOT/next"
  mv "$STAGE_TEST_ROOT/next" "$STAGE_TEST_ROOT/labels"
+elif [[ "$1 $2" == 'release view' ]]; then
+ if [[ "\${STAGE_PRODUCTION_DONE:-0}" == 1 ]]; then printf '{"isDraft":false,"isPrerelease":false}\\n';
+ else printf '{"isDraft":false,"isPrerelease":true}\\n'; fi
 elif [[ "$1 $2" == 'release edit' ]]; then [[ "\${STAGE_FAIL_PUBLISH:-0}" != 1 ]];
 else exit 23; fi
 `,
@@ -52,14 +55,16 @@ else exit 23; fi
   chmodSync(gh, 0o755);
   return {
     root,
-    run: (fail = false) =>
-      spawnSync('bash', ['-c', `set -euo pipefail\npr=42\n${script}`], {
+    run: (fail = false, production = false, override = script) =>
+      spawnSync('bash', ['-c', `set -euo pipefail\npr=42\n${override}`], {
         encoding: 'utf8',
         env: {
           ...process.env,
           PATH: `${join(root, 'bin')}:${process.env.PATH}`,
           STAGE_TEST_ROOT: root,
           STAGE_FAIL_PUBLISH: fail ? '1' : '0',
+          STAGE_PRODUCTION_DONE: production ? '1' : '0',
+          MOBILE_TAG: 'mobile-v2.0.0',
           GITHUB_REPOSITORY: 'example/repo',
           TAG: 'v2.0.0',
         },
@@ -67,6 +72,38 @@ else exit 23; fi
   };
 }
 describe('Staging finalization retries', () => {
+  it('preserves an already promoted Server release on staging recovery', () => {
+    const f = fixture('autorelease: tagged\n');
+    try {
+      const result = f.run(false, true);
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(join(f.root, 'calls'), 'utf8')).not.toContain('release edit');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+  it.each([false, true])(
+    'preserves mobile production status on recovery (production=%s)',
+    (production) => {
+      const publish = workflow.jobs['finalize-mobile-staging']!.steps.find(
+        (step) => step.name === 'Publish verified native GitHub release',
+      )!.run!;
+      const helper = publish.slice(
+        publish.indexOf('publish_staging_release() {'),
+        publish.indexOf('# Artifact-only'),
+      );
+      const f = fixture('autorelease: tagged\n');
+      try {
+        const result = f.run(false, production, helper + '\npublish_staging_release');
+        expect(result.status, result.stderr).toBe(0);
+        expect(readFileSync(join(f.root, 'calls'), 'utf8').includes('release edit')).toBe(
+          !production,
+        );
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    },
+  );
   it('pins Server approval to the revision actually attested by the release workflow', () => {
     const prepare = workflow.jobs['prepare-server-channels']!;
     const approval = workflow.jobs['finalize-backend-release']!.steps.find(

@@ -1192,6 +1192,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          publish_staging_release() {
+            state="$(gh release view "$MOBILE_TAG" --json isDraft,isPrerelease)" || return $?
+            jq -e '(.isDraft | type) == "boolean" and (.isPrerelease | type) == "boolean"' <<< "$state" >/dev/null || return 1
+            # A retry must preserve a production release approved in the meantime.
+            if jq -e '.isDraft or .isPrerelease' <<< "$state" >/dev/null; then
+              gh release edit "$MOBILE_TAG" --draft=false --prerelease=true --latest=false
+            fi
+          }
           # Artifact-only bridges have no release-please PR; publish their pinned
           # draft without reconciling labels or marking them as the latest release.
           # release-please normally replaces this label while creating the
@@ -1230,7 +1238,7 @@ jobs:
             require_release_labels false true
 
             publish_status=0
-            gh release edit "$MOBILE_TAG" --draft=false --prerelease=true --latest=false || publish_status=$?
+            publish_staging_release || publish_status=$?
             is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
             if [ "$is_draft" = "true" ]; then
               gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
@@ -1243,7 +1251,7 @@ jobs:
             fi
             require_release_labels false true
           else
-            gh release edit "$MOBILE_TAG" --draft=false --prerelease=true --latest=false
+            publish_staging_release
           fi
 
   publish-website:
@@ -3272,5 +3280,10 @@ jobs:
           if [ "$pending" = true ]; then
             gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels/autorelease%3A%20pending"
           fi
-          gh release edit "$TAG" --draft=false --prerelease=true --latest=false
+          state="$(gh release view "$TAG" --json isDraft,isPrerelease)"
+          jq -e '(.isDraft | type) == "boolean" and (.isPrerelease | type) == "boolean"' <<< "$state" >/dev/null
+          # A retry must preserve a production release approved in the meantime.
+          if jq -e '.isDraft or .isPrerelease' <<< "$state" >/dev/null; then
+            gh release edit "$TAG" --draft=false --prerelease=true --latest=false
+          fi
           gh workflow run release-dispatch.yml --ref main -f backend-replan=true
