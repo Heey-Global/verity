@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { constants } from 'node:fs';
-import { link, mkdir, open, readdir } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readdir, rename } from 'node:fs/promises';
 
 export const FILE_HISTORY_DIR = '.verity-file-history';
 
@@ -71,16 +71,24 @@ export async function recoverFileHistory(directory: string) {
         )
           throw new Error('invalid file recovery name');
         try {
-          const original = await open(
-            `${base}/original`,
-            constants.O_RDONLY | constants.O_NOFOLLOW,
-          );
-          try {
-            if (!(await original.stat()).isFile())
-              throw new Error('invalid file recovery original');
-            await link(`${base}/original`, `${directory}/${source}`);
-          } finally {
-            await original.close();
+          const originalPath = `${base}/original`;
+          if ((await lstat(originalPath)).isDirectory()) {
+            // Reserve the destination exclusively; rename only replaces an empty
+            // directory and therefore never overwrites another writer's files.
+            await mkdir(`${directory}/${source}`);
+            await rename(originalPath, `${directory}/${source}`);
+          } else {
+            const original = await open(
+              `${base}/original`,
+              constants.O_RDONLY | constants.O_NOFOLLOW,
+            );
+            try {
+              if (!(await original.stat()).isFile())
+                throw new Error('invalid file recovery original');
+              await link(`${base}/original`, `${directory}/${source}`);
+            } finally {
+              await original.close();
+            }
           }
         } catch (error) {
           if (!['ENOENT', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? ''))
@@ -179,7 +187,14 @@ export async function sessionFileHistory(directory: string, source: string, vers
       );
       try {
         const base = `/proc/self/fd/${transaction.fd}`;
-        if ((await readSmallText(`${base}/name`, 1024)) !== source) continue;
+        let recordedName;
+        try {
+          recordedName = await readSmallText(`${base}/name`, 1024);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !selected) continue;
+          throw error;
+        }
+        if (recordedName !== source) continue;
         if (selected) return { content: await readSmallText(`${base}/${selected[2]!}`) };
         for (const kind of ['snapshot', 'original']) {
           try {

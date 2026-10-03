@@ -36,7 +36,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 import { openKnowledgeFileSlot } from './session-files.js';
-import { FILE_HISTORY_DIR, recoverFileHistory } from './session-file-history.js';
+import {
+  FILE_HISTORY_DIR,
+  recoverFileHistory,
+  sessionFileHistory,
+} from './session-file-history.js';
 import { fileVersion, writeSessionText } from './session-file-write.js';
 let dir: string;
 afterEach(async () => {
@@ -185,6 +189,43 @@ it('removes disposable history transactions after creates and rejected edits', a
     await rm(join(dir, 'a.txt'));
     await writeSessionText(slot, 'created', null);
     expect(await readdir(join(dir, FILE_HISTORY_DIR))).toEqual([]);
+  } finally {
+    await slot.close();
+  }
+});
+
+it('rejects directory targets without moving their contents', async () => {
+  const slot = await setup();
+  try {
+    await rm(join(dir, 'a.txt'));
+    await mkdir(join(dir, 'a.txt'));
+    await writeFile(join(dir, 'a.txt', 'child.txt'), 'keep');
+    await expect(
+      writeSessionText(slot, 'edits', fileVersion(Buffer.from('original'))),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await readFile(join(dir, 'a.txt', 'child.txt'), 'utf8')).toBe('keep');
+    expect(await readdir(dir)).toEqual(['a.txt']);
+  } finally {
+    await slot.close();
+  }
+});
+
+it('recovers directory substitution during capture and skips metadata interrupted before creation', async () => {
+  const slot = await setup();
+  try {
+    const history = join(dir, FILE_HISTORY_DIR);
+    const transaction = join(history, 'save-directory');
+    await mkdir(join(transaction, 'original'), { recursive: true });
+    await writeFile(join(transaction, 'name'), 'a.txt');
+    await writeFile(join(transaction, 'original', 'child.txt'), 'keep');
+    await mkdir(join(history, 'save-empty'));
+    await rm(join(dir, 'a.txt'));
+    await recoverFileHistory(slot.directoryPath);
+    expect(await readFile(join(dir, 'a.txt', 'child.txt'), 'utf8')).toBe('keep');
+    expect(await sessionFileHistory(slot.directoryPath, 'a.txt')).toEqual({ versions: [] });
+    await rm(join(dir, 'a.txt'), { recursive: true });
+    await recoverFileHistory(slot.directoryPath);
+    await expect(readFile(join(dir, 'a.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
   } finally {
     await slot.close();
   }

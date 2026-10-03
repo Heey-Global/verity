@@ -38,6 +38,16 @@ export async function writeSessionText(
   if (bytes.length > MAX_EDIT_BYTES) throw new FileWriteError(413, 'file is too large to edit');
   if (!isProbablyText(bytes)) throw new FileWriteError(415, 'content must be UTF-8 text');
   await recoverFileHistory(slot.directoryPath);
+  if (expected !== null) {
+    try {
+      if (!(await lstat(`${slot.directoryPath}/${slot.name}`)).isFile())
+        throw new FileWriteError(409, 'file was replaced; reload before saving');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+        throw new FileWriteError(409, 'file changed or was removed; reload before saving');
+      throw error;
+    }
+  }
   const history = await openFileHistory(slot.directoryPath);
   const historyPath = `/proc/self/fd/${history.fd}`;
   const staging = await mkdtemp(`${historyPath}/save-`);
@@ -49,6 +59,22 @@ export async function writeSessionText(
   const previous = `${pinned}/original`;
   const temporary = `${pinned}/new`;
   const destination = `${slot.directoryPath}/${slot.name}`;
+  const complete = async () => {
+    const parent = await open(slot.directoryPath, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    const done = await open(
+      `${pinned}/complete`,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    await done.sync();
+    await done.close();
+    await handle.sync();
+  };
   const readCaptured = async () => {
     const file = await open(previous, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
@@ -144,20 +170,7 @@ export async function writeSessionText(
     }
     // Publication succeeded. Late descriptor writes remain recoverable through
     // the retained original inode; report success so extraction follows it.
-    const parent = await open(slot.directoryPath, constants.O_RDONLY | constants.O_DIRECTORY);
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
-    }
-    const done = await open(
-      `${pinned}/complete`,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600,
-    );
-    await done.sync();
-    await done.close();
-    await handle.sync();
+    await complete();
     preserve = captured;
     return {
       path: slot.rel,
@@ -176,8 +189,9 @@ export async function writeSessionText(
         } else {
           await link(previous, destination);
         }
-      } catch {
+      } catch (restoreError) {
         preserve = true;
+        if ((restoreError as NodeJS.ErrnoException).code === 'EEXIST') await complete();
         throw new FileWriteError(
           409,
           `File changed while saving; original preserved at ${await realpath(previous)}`,

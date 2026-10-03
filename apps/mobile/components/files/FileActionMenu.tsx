@@ -1,4 +1,4 @@
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { FileIcon as Icon, type IconName } from './FileIcon';
@@ -56,9 +56,11 @@ export function FileActionMenu({
         <Text style={styles.title} numberOfLines={2}>
           {title}
         </Text>
-        {safe.map(row)}
-        {destructive.length > 0 ? <View style={styles.divider} /> : null}
-        {destructive.map(row)}
+        <ScrollView style={{ flexShrink: 1 }}>
+          {safe.map(row)}
+          {destructive.length > 0 ? <View style={styles.divider} /> : null}
+          {destructive.map(row)}
+        </ScrollView>
         <View style={styles.divider} />
         <Pressable
           onPress={onDismiss}
@@ -88,6 +90,7 @@ const styles = StyleSheet.create((theme) => ({
   card: {
     width: '100%',
     maxWidth: 380,
+    maxHeight: '80%',
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
