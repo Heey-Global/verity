@@ -18,7 +18,10 @@ it('adds legacy ingress on all interfaces by default and configures listeners', 
   expect(
     localPreviewIngressMigration({
       ...gateway,
-      env: ['VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119'],
+      env: [
+        'VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119',
+        'VERITY_LOCAL_PREVIEW_BIND_ADDRESS=0.0.0.0',
+      ],
       portBindings: { ...gateway.portBindings, ...migration.portBindings },
     }),
   ).toBeUndefined();
@@ -28,7 +31,10 @@ it('uses the running Server range and replaces old loopback preview bindings', (
   const migration = localPreviewIngressMigration(
     {
       ...gateway,
-      env: ['VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119'],
+      env: [
+        'VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119',
+        'VERITY_LOCAL_PREVIEW_BIND_ADDRESS=0.0.0.0',
+      ],
       portBindings: {
         ...gateway.portBindings,
         '9200/tcp': [{ HostIp: '127.0.0.1', HostPort: '19200' }],
@@ -57,7 +63,7 @@ it.each(['', '0.0.0.0', '::', '203.0.113.2', '100.85.209.118'])(
   },
 );
 
-it.each(['100.85.209.118', '::1'])(
+it.each(['100.85.209.118', '::1', '[::1]'])(
   'supports an explicitly configured preview interface %s',
   (address) => {
     expect(
@@ -68,7 +74,7 @@ it.each(['100.85.209.118', '::1'])(
         },
         '9200-9200',
       )!.portBindings['9200/tcp'],
-    ).toEqual([{ HostIp: address, HostPort: '9200' }]);
+    ).toEqual([{ HostIp: address.replace(/^\[|\]$/g, ''), HostPort: '9200' }]);
   },
 );
 
@@ -104,4 +110,21 @@ it('persists an override for post-replacement reconciliation', () => {
       portBindings: { ...gateway.portBindings, ...migration.portBindings },
     }),
   ).toBeUndefined();
+});
+
+it('persists an override even when bindings already match it', () => {
+  expect(
+    localPreviewIngressMigration(
+      {
+        ...gateway,
+        env: [
+          'VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9200',
+          'VERITY_LOCAL_PREVIEW_BIND_ADDRESS=127.0.0.1',
+        ],
+        portBindings: { '9200/tcp': [{ HostIp: '100.85.209.118', HostPort: '9200' }] },
+      },
+      '9200-9200',
+      '100.85.209.118',
+    )?.env.VERITY_LOCAL_PREVIEW_BIND_ADDRESS,
+  ).toBe('100.85.209.118');
 });

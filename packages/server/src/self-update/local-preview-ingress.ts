@@ -13,12 +13,12 @@ export function localPreviewIngressMigration(
     ?.slice('VERITY_LOCAL_PREVIEW_PORT_RANGE='.length);
   const range = serverRange ?? configuredRange ?? '8100-8119';
   const ports = localPreviewPorts(range);
+  const configuredAddress = gateway.env
+    ?.find((entry) => entry.startsWith('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='))
+    ?.slice('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='.length);
+  const configured = bindAddress ?? configuredAddress ?? '0.0.0.0';
   const address =
-    bindAddress ??
-    gateway.env
-      ?.find((entry) => entry.startsWith('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='))
-      ?.slice('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='.length) ??
-    '0.0.0.0';
+    configured.startsWith('[') && configured.endsWith(']') ? configured.slice(1, -1) : configured;
   if (!isIP(address)) throw new Error('local preview binding must be an IP address');
   const portBindings: ContainerReplacementConfig['portBindings'] = {};
   for (const port of ports) {
@@ -27,9 +27,14 @@ export function localPreviewIngressMigration(
       continue;
     portBindings[`${port}/tcp`] = [{ HostIp: address, HostPort: String(port) }];
   }
-  if (configuredRange === range && Object.keys(portBindings).length === 0) return undefined;
+  if (
+    configuredRange === range &&
+    configuredAddress === configured &&
+    Object.keys(portBindings).length === 0
+  )
+    return undefined;
   return {
-    env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: range, VERITY_LOCAL_PREVIEW_BIND_ADDRESS: address },
+    env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: range, VERITY_LOCAL_PREVIEW_BIND_ADDRESS: configured },
     portBindings,
   };
 }

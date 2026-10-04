@@ -24,6 +24,7 @@ import {
   publishAgentSeedAtomically,
   runManagedCompanionHandoff,
 } from './managed-companion-reconcile.js';
+import * as gatewayControl from './managed-gateway-control.js';
 import type { UpdateJournal } from './update-journal.js';
 
 const oldImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
@@ -74,7 +75,10 @@ function fake(images: { gateway: string; updater: string }) {
         id: gateway.id,
         running: true,
         image: images.gateway,
-        env: ['VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119'],
+        env: [
+          'VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119',
+          'VERITY_LOCAL_PREVIEW_BIND_ADDRESS=0.0.0.0',
+        ],
         portBindings: Object.fromEntries(
           Array.from({ length: 20 }, (_, i) => [
             `${8100 + i}/tcp`,
@@ -239,6 +243,9 @@ describe('managed companion reconciliation', () => {
       ...state.inspect.get(id)!,
       portBindings: { '8082/tcp': [{ HostIp: '127.0.0.1', HostPort: '8082' }] },
     });
+    const status = vi
+      .spyOn(gatewayControl, 'waitForManagedGatewayStatus')
+      .mockResolvedValue(undefined as never);
     await reconcileManagedCompanions({
       managedRoot: '/managed',
       docker: state.docker,
@@ -246,6 +253,7 @@ describe('managed companion reconciliation', () => {
       reconcileRunner: async () => undefined,
       environment: { VERITY_LOCAL_PREVIEW_BIND_ADDRESS: '100.85.209.118' },
     });
+    status.mockRestore();
     expect(state.inspect.get(id)?.env).toContain('VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9201');
     expect(state.inspect.get(id)?.portBindings?.['9201/tcp']).toEqual([
       { HostIp: '100.85.209.118', HostPort: '9201' },

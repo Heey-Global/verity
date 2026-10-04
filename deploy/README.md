@@ -960,7 +960,7 @@ publish missing host ports even when the Gateway image already matches the targe
 The migration uses the running managed Server's range and reconciles existing
 preview bindings, including legacy loopback bindings. Preview ports default to all
 host interfaces for LAN and VPN access. Set `VERITY_LOCAL_PREVIEW_BIND_ADDRESS`
-to an explicit host IP to restrict access; Compose and managed updates use the same
+to an explicit host IP to restrict access (bracket IPv6 addresses, for example `[::1]`); Compose and managed updates use the same
 setting. Local previews are unauthenticated: public interfaces require appropriate
 host firewall restrictions. API port bindings remain unchanged.
 A failed replacement restarts the previous Gateway.
