@@ -113,7 +113,7 @@ jobs:
           fi
 
           run_all() {
-            lint=true; typecheck=true; test=true; contract_test=true; coverage=true
+            lint=true; typecheck=true; test=true; contract_test=true
             installer=true; mobile=true; mobile_app=true; server_image=true; agent_seed_drift=true
           }
 

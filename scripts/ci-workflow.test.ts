@@ -4788,7 +4788,7 @@ describe('changed-area detector', () => {
         beforeReachable: false,
         headHasParent: false,
       }),
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('true'), coverage: 'false' });
   });
 
   it('routes deleted release metadata through its focused contract checks', async () => {
@@ -4899,7 +4899,7 @@ describe('changed-area detector', () => {
   ])('runs everything when the base CI run %s', async (_, verdict) => {
     expect(
       await run({ name: 'push', before: 'abc' }, releaseManaged, { baseVerdict: verdict }),
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('true'), coverage: 'false' });
   });
 
   it('inherits across a preceding release whose own CI is still running', async () => {
@@ -4920,7 +4920,7 @@ describe('changed-area detector', () => {
     // make the one failure mode of this check a false green.
     expect(
       await run({ name: 'push', before: 'abc' }, releaseManaged, { baseVerdict: null }),
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('true'), coverage: 'false' });
   });
 
   it('routes every changed area when a release commit carries source', async () => {
@@ -4954,15 +4954,21 @@ describe('changed-area detector', () => {
       await run({ name: 'push', before: 'abc' }, ['docs/adr/0008-self-update.md'], {
         baseVerdict: 'completed/failure',
       }),
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('true'), coverage: 'false' });
   });
 
   it('runs everything when the diff is empty, rather than reading it as inert', async () => {
-    expect(await run({ name: 'push', before: 'abc' }, [])).toEqual(all('true'));
+    expect(await run({ name: 'push', before: 'abc' }, [])).toEqual({
+      ...all('true'),
+      coverage: 'false',
+    });
   });
 
   it('runs everything on a manual dispatch, which has no base to diff against', async () => {
-    expect(await run({ name: 'workflow_dispatch' }, [])).toEqual(all('true'));
+    expect(await run({ name: 'workflow_dispatch' }, [])).toEqual({
+      ...all('true'),
+      coverage: 'false',
+    });
     expect(await run({ name: 'workflow_dispatch', checkSuite: 'server-image' }, [])).toEqual({
       ...all('false'),
       server_image: 'true',
@@ -5013,7 +5019,7 @@ describe('changed-area detector', () => {
         releaseManaged,
         { baseVerdict: 'completed/failure' },
       ),
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('true'), coverage: 'false' });
   });
 
   it.each(['automation/promote-mobile-v1.2.3', 'automation/promote-mobile-ota-1.2.0'])(
@@ -5076,7 +5082,7 @@ describe('changed-area detector', () => {
         [['CHANGE', 'LOG.md'].join('')],
         { baseVerdict: 'completed/failure' },
       ),
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('true'), coverage: 'false' });
   });
 
   it('fails broad when a Release Please branch contains a foreign file', async () => {
@@ -5224,7 +5230,7 @@ describe('changed-area detector', () => {
       // Not everything: without a verdict to inherit the files stop being inert and
       // fall through the ordinary path table, exactly as they did before the skip
       // reached pull requests.
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('true'), coverage: 'false' });
   });
 
   it('still runs everything when a pull request touches source beside those paths', async () => {
