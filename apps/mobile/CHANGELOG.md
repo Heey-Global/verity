@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.52.0](https://github.com/Heey-Global/verity/compare/mobile-v1.51.0...mobile-v1.52.0) (2026-10-04)
+
+
+### Features
+
+* **connections:** unify account setup and project access ([#1063](https://github.com/Heey-Global/verity/issues/1063)) ([fe35252](https://github.com/Heey-Global/verity/commit/fe352520795139caf9ed0b88ec6a21b7f2127fe4))
+* **drive:** add approved project file management actions ([#1078](https://github.com/Heey-Global/verity/issues/1078)) ([7f51dee](https://github.com/Heey-Global/verity/commit/7f51deeb81920ede3a82c0e4aac4ce66f02555c9))
+* **explorer:** clarify file actions and support renaming ([#1049](https://github.com/Heey-Global/verity/issues/1049)) ([6bd57ed](https://github.com/Heey-Global/verity/commit/6bd57eda6681c21b856ad86b8f945042a98f2d3e))
+* **explorer:** edit text files with recoverable version history ([#1061](https://github.com/Heey-Global/verity/issues/1061)) ([6e93566](https://github.com/Heey-Global/verity/commit/6e9356675b72f22d43c8c811ad8e401bce294792))
+* **explorer:** render Markdown previews with source toggle ([#1053](https://github.com/Heey-Global/verity/issues/1053)) ([c67d9bc](https://github.com/Heey-Global/verity/commit/c67d9bcdc5015c4a02a2e07b74b87f6716cfd90f))
+* **mobile:** add an interactive local demo mode ([#1080](https://github.com/Heey-Global/verity/issues/1080)) ([7aff510](https://github.com/Heey-Global/verity/commit/7aff51066738e923b7fd3b246e5a485d9ac44dac))
+* **mobile:** larger session header actions and labeled message menu ([#1077](https://github.com/Heey-Global/verity/issues/1077)) ([b5de410](https://github.com/Heey-Global/verity/commit/b5de410798a1374bc2389a9591539b1d3f8acfe1))
+* **preview:** add local sharing and automatic listener discovery ([#1076](https://github.com/Heey-Global/verity/issues/1076)) ([4026bb2](https://github.com/Heey-Global/verity/commit/4026bb2af25ef0aa059011a007363df9d8708dda))
+* **settings:** select server prereleases and Google app identities ([#1075](https://github.com/Heey-Global/verity/issues/1075)) ([7074d4f](https://github.com/Heey-Global/verity/commit/7074d4ff4798c05a97b4b692c89007841856743a))
+
+
+### Bug Fixes
+
+* **explorer:** retain ten snapshots per file ([#1074](https://github.com/Heey-Global/verity/issues/1074)) ([0616520](https://github.com/Heey-Global/verity/commit/0616520e12ceafabccca937c86b8a7c35c85bc73))
+* **mobile:** explain Global Knowledge approvals ([#1057](https://github.com/Heey-Global/verity/issues/1057)) ([c688a80](https://github.com/Heey-Global/verity/commit/c688a806f087c3c652b8e63d8d97b8d781740f40))
+* **mobile:** stop dictation without re-appending the last utterance ([#1083](https://github.com/Heey-Global/verity/issues/1083)) ([598eac0](https://github.com/Heey-Global/verity/commit/598eac0771a8a1934a7125a5207bc97aa94c079f))
+* **pr:** repair failures in background and share adaptive status polling ([#1084](https://github.com/Heey-Global/verity/issues/1084)) ([4334331](https://github.com/Heey-Global/verity/commit/4334331da2e33dcf6ecfb4ac58e700ab4a5ae619))
+
 ## [1.51.0](https://github.com/Heey-Global/verity/compare/mobile-v1.50.0...mobile-v1.51.0) (2026-10-03)
 
 
