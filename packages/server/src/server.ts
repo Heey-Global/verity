@@ -2,6 +2,7 @@ import {
   excludeFileHistoryFromGit,
   recoverFileHistory,
   sessionFileHistory,
+  pruneFileHistory,
 } from './session-file-history.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import { renameWorktreeFile } from './rename-worktree-file.js';
@@ -8137,6 +8138,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         slot = await openKnowledgeFileSlot(root, path);
         await recoverFileHistory(slot.directoryPath);
+        if (!version) {
+          await pruneFileHistory(slot.directoryPath, slot.name).catch((error: unknown) => {
+            app.log.warn(
+              { err: error },
+              'File history cleanup failed; retained versions remain available',
+            );
+          });
+        }
         return await sessionFileHistory(slot.directoryPath, slot.name, version);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {

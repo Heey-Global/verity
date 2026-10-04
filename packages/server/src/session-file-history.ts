@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { constants } from 'node:fs';
-import { link, lstat, mkdir, open, readdir, rename } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
 
 export const FILE_HISTORY_DIR = '.verity-file-history';
 
@@ -233,6 +233,67 @@ export async function sessionFileHistory(directory: string, source: string, vers
     }
     if (version) throw Object.assign(new Error('version not found'), { code: 'ENOENT' });
     return { versions: versions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
+  } finally {
+    await history.close();
+  }
+}
+
+/** Call under the root mutation lock. Originals can still receive descriptor
+ * writes, so only immutable snapshots of completed transactions are pruned. */
+export async function pruneFileHistory(directory: string, source: string) {
+  const history = await openFileHistory(directory);
+  try {
+    const pinned = `/proc/self/fd/${history.fd}`;
+    const snapshots: Array<{ name: string; time: number }> = [];
+    for (const name of await readdir(pinned)) {
+      if (!/^save-[A-Za-z0-9]+$/.test(name)) continue;
+      const transaction = await open(
+        `${pinned}/${name}`,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      try {
+        const base = `/proc/self/fd/${transaction.fd}`;
+        try {
+          const complete = await open(
+            `${base}/complete`,
+            constants.O_RDONLY | constants.O_NOFOLLOW,
+          );
+          try {
+            if (!(await complete.stat()).isFile()) continue;
+          } finally {
+            await complete.close();
+          }
+          if ((await readSmallText(`${base}/name`, 1024)) !== source) continue;
+          const snapshot = await open(
+            `${base}/snapshot`,
+            constants.O_RDONLY | constants.O_NOFOLLOW,
+          );
+          try {
+            const stats = await snapshot.stat();
+            if (stats.isFile()) snapshots.push({ name, time: stats.mtimeMs });
+          } finally {
+            await snapshot.close();
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      } finally {
+        await transaction.close();
+      }
+    }
+    snapshots.sort((a, b) => b.time - a.time || b.name.localeCompare(a.name));
+    for (const { name } of snapshots.slice(10)) {
+      const transaction = await open(
+        `${pinned}/${name}`,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      try {
+        await unlink(`/proc/self/fd/${transaction.fd}/snapshot`);
+        await transaction.sync();
+      } finally {
+        await transaction.close();
+      }
+    }
   } finally {
     await history.close();
   }
