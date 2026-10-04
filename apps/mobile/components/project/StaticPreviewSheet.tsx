@@ -196,6 +196,9 @@ export function StaticPreviewSheet({
   const requestGeneration = useRef(0);
 
   const [shares, setShares] = useState<PublicPreviewShare[]>([]);
+  // Native dialog callbacks can outlive the render that opened them.
+  const currentShares = useRef(shares);
+  currentShares.current = shares;
   const [duration, setDuration] = useState(3600);
   const [busy, setBusy] = useState<'local' | 'public' | 'stop-local' | 'stop-public'>();
   const [error, setError] = useState<string>();
@@ -336,7 +339,7 @@ export function StaticPreviewSheet({
   const localShareFor = (selection: PreviewTarget) =>
     localShares.find((share) => localShareMatches(share, selection));
   const publicShareFor = (selection: PreviewTarget) =>
-    shares.find((share) => publicShareMatches(share, selection));
+    currentShares.current.find((share) => publicShareMatches(share, selection));
 
   const ensureLocalShare = async (selection: PreviewTarget): Promise<LocalPreviewShare> => {
     const existing = localShareFor(selection);

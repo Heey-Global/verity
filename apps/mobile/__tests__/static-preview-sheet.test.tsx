@@ -655,3 +655,40 @@ it('does not share a locked PIN from the unreachable-local fallback', async () =
     ),
   ).toBeTruthy();
 });
+
+it('checks the updated PIN lock when a delayed network-dialog action is selected', async () => {
+  jest.useFakeTimers();
+  try {
+    const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+    const listPublicPreviewShares = jest
+      .fn()
+      .mockResolvedValueOnce([portShare()])
+      .mockResolvedValue([portShare({ pinLocked: true })]);
+    renderSheet(
+      makeClient({
+        listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+        listPublicPreviewShares,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+    await screen.findByText('https://vite.example');
+    fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+    await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+    const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
+    await act(async () => {
+      jest.advanceTimersByTime(4000);
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Share link and PIN' })).toBeNull(),
+    );
+    await act(async () => fallback());
+    expect(share).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'This PIN is locked. Stop sharing and create a new link before sharing it again.',
+      ),
+    ).toBeTruthy();
+  } finally {
+    jest.useRealTimers();
+  }
+});
