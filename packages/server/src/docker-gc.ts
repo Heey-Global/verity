@@ -37,7 +37,7 @@
  *     Net effect: one leaked relay per project per restart, running indefinitely
  *     with a project-network attachment — exactly what
  *     `deploy/bin/verity-project-relay-cutover-check.mjs` reports as
- *     "relay … has 0 matching sandboxes". Each is small (64 MiB, 0.25 CPU) but the
+ *     "relay … has 0 matching sandboxes". Each is small (192 MiB, 0.25 CPU) but the
  *     leak is unbounded, and no other pass reclaims them.
  *  5. **Published Verity releases.** Digest-pinned Server, Sandbox, and project
  *     relay images remain after an update. The collector keeps the current and
