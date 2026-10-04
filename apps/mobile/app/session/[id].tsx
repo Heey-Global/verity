@@ -9558,8 +9558,8 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 2.5,
     backgroundColor: theme.colors.background,
   },
-  // Name over branch, left-aligned next to the back chevron; shrinks (and the
-  // name truncates) before the action buttons do.
+  // Keep the name and branch centred in the space between navigation and actions.
+  // Long names shrink before the action buttons do.
   headerTitleBlock: {
     flex: 1,
     minWidth: 0,
@@ -9570,15 +9570,18 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     fontSize: theme.text.md,
     fontWeight: '600',
+    textAlign: 'center',
   },
   headerSubtitle: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: theme.spacing.sm,
   },
   headerHintText: {
     color: theme.colors.primary,
     fontWeight: '600',
+    textAlign: 'center',
   },
   // Fits the 28px back chevron + its padding.
   headerSide: {
