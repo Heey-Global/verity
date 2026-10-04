@@ -85,124 +85,33 @@ function setup(change: Record<string, string> = {}) {
       else if (path.endsWith('/preReleaseVersion'))
         data = { attributes: { version: change.version ?? '2.0.0', platform: 'IOS' } };
       else if (path === 'builds/build-id/app') data = { id: change.app ?? '123' };
-      else if (path.includes('/appStoreVersions?'))
-        data = [
-          {
-            id: 'version-id',
-            attributes: {
-              appStoreState: change.state ?? 'PREPARE_FOR_SUBMISSION',
-              releaseType: change.releaseType ?? 'AFTER_APPROVAL',
-            },
-          },
-        ];
-      else if (path === 'appStoreVersions/version-id' && method === 'PATCH')
-        data = { id: 'version-id' };
-      else if (path === 'appStoreVersions/version-id/build')
-        data = change.selected === 'none' ? null : { id: change.selected ?? 'build-id' };
-      else if (path === 'appStoreVersions/version-id/relationships/build' && method === 'PATCH')
-        return new Response(null, { status: 204 });
-      else if (path.includes('/reviewSubmissions?'))
-        data = change.reviewItem ? [{ id: 'submission-id' }] : [];
-      else if (path === 'reviewSubmissions' && method === 'POST') data = { id: 'submission-id' };
-      else if (path.startsWith('reviewSubmissions/submission-id/items'))
-        data = change.reviewItem
-          ? [
-              {
-                relationships: {
-                  appStoreVersion: path.includes('include=appStoreVersion')
-                    ? {
-                        data: {
-                          id: change.reviewItem === 'matching' ? 'version-id' : 'other-version',
-                        },
-                      }
-                    : { links: { related: '/version' } },
-                },
-              },
-            ]
-          : [];
-      else if (path === 'reviewSubmissionItems' || path === 'reviewSubmissions/submission-id')
-        data = { id: 'submission-id' };
+      else if (path === 'builds/build-id/buildBetaDetail')
+        data = { attributes: { internalBuildState: change.state ?? 'IN_BETA_TESTING' } };
       else throw new Error(`Unhandled Apple ${path}`);
       return Response.json({ data });
     }),
   );
   return requests;
 }
-describe('native production submission', () => {
+describe('native TestFlight promotion', () => {
   it.each([
     { bundle: 'build.verity.app.staging' },
     { app: '456' },
     { version: '3.0.0' },
-    { selected: 'another-build' },
     { processing: 'INVALID' },
-  ])('refuses conflicting Apple identities before submission (%j)', async (change) => {
+    { state: 'READY_FOR_BETA_TESTING' },
+    { state: 'EXPIRED' },
+  ])('refuses unavailable or conflicting builds (%j)', async (change) => {
     const requests = setup(change);
     await expect(promoteNative()).rejects.toThrow();
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
     expect(fixture.calls.some((call) => call.includes('release edit'))).toBe(false);
   });
-  it('attaches the approved build to a prepared version without a selected build', async () => {
-    const requests = setup({ selected: 'none' });
-    await promoteNative();
-    expect(requests).toContainEqual({
-      path: 'appStoreVersions/version-id/relationships/build',
-      method: 'PATCH',
-      body: { data: { type: 'builds', id: 'build-id' } },
-    });
-    expect(requests.at(-1)?.path).toBe('reviewSubmissions/submission-id');
-  });
-  it('sets prepared versions to publish after approval before submitting review', async () => {
-    const requests = setup({ releaseType: 'MANUAL' });
-    await promoteNative();
-    expect(requests).toContainEqual({
-      path: 'appStoreVersions/version-id',
-      method: 'PATCH',
-      body: {
-        data: {
-          type: 'appStoreVersions',
-          id: 'version-id',
-          attributes: { releaseType: 'AFTER_APPROVAL' },
-        },
-      },
-    });
-    expect(
-      requests.findIndex((request) => request.path === 'appStoreVersions/version-id'),
-    ).toBeLessThan(
-      requests.findIndex(
-        (request) => request.path === 'reviewSubmissions' && request.method === 'POST',
-      ),
-    );
-  });
-  it('refuses to rewrite the release policy of a version already in review', async () => {
-    const requests = setup({ releaseType: 'MANUAL', state: 'IN_REVIEW' });
-    await expect(promoteNative()).rejects.toThrow('release policy differs');
-    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
-  });
-  it('resumes an existing review item without duplicating it after a submission failure', async () => {
-    const requests = setup({ reviewItem: 'matching' });
-    await promoteNative();
-    expect(
-      requests.some((request) => request.path.endsWith('/items?include=appStoreVersion')),
-    ).toBe(true);
-    expect(requests.some((request) => request.path === 'reviewSubmissionItems')).toBe(false);
-    expect(requests.at(-1)).toMatchObject({
-      path: 'reviewSubmissions/submission-id',
-      method: 'PATCH',
-    });
-  });
-  it('refuses an existing review item for another version', async () => {
-    const requests = setup({ reviewItem: 'conflicting' });
-    await expect(promoteNative()).rejects.toThrow('unrelated items');
-    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
-  });
-  it('submits the exact approved build and records production only after Apple accepts', async () => {
+  it('promotes the approved TestFlight build without submitting to the App Store', async () => {
     const requests = setup();
     await promoteNative();
-    expect(requests.at(-1)).toMatchObject({
-      path: 'reviewSubmissions/submission-id',
-      method: 'PATCH',
-      body: { data: { attributes: { submitted: true } } },
-    });
+    expect(requests.at(-1)?.path).toBe('builds/build-id/buildBetaDetail');
+    expect(requests.every((request) => request.method === 'GET')).toBe(true);
     expect(fixture.calls.at(-1)).toContain('release edit mobile-v2.0.0 --prerelease=false');
   });
 });

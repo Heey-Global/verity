@@ -8,11 +8,10 @@ as prereleases. They do not advance the production Server channel or image alias
 The automation opens normal production promotion PRs with exact image digests,
 signed envelopes, Apple build identifiers, or EAS update groups. Merging the PR
 approves that candidate. Server promotion verifies both architecture envelopes
-before moving `stable` and the legacy image aliases. Native promotion selects the
-recorded production build for Apple review, with release after approval. Apple
-metadata, screenshots, agreements, privacy declarations, and review requirements
-must already be completed in App Store Connect; a missing requirement stops the
-submission. A successful submission is not evidence that Apple has published it.
+before moving `stable` and the legacy image aliases. Native promotion verifies that the
+recorded production build is available for internal TestFlight testing, then marks
+the GitHub release as production. Existing TestFlight tester groups control access.
+Promotion does not create an App Store version or submit the app for review.
 
 OTA staging publishes separate updates for the two native identities. The Staging
 app uses channel `staging` and runtime `staging-X.Y.0`. The production app, including

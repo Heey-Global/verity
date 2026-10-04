@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { assertPromotionOrder } from './production-promotion.js';
+import { assertPromotionOrder, assertTestFlightReady } from './production-promotion.js';
 
 function fixture(change: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verity-production-'));
@@ -142,4 +142,18 @@ describe('production promotion', () => {
       assertPromotionOrder({ version: '2.0.0', revision: 'a' }, { version: '2.0.0', source: 'b' }),
     ).toThrow();
   });
+});
+
+// A production approval must never silently turn TestFlight delivery into an App Store submission.
+it('keeps native promotion in TestFlight and requires tester availability', () => {
+  const source = readFileSync(new URL('./production-promotion.ts', import.meta.url), 'utf8');
+  const native = source.slice(
+    source.indexOf('export async function promoteNative'),
+    source.indexOf('function assertReviewed'),
+  );
+  expect(native).toContain('/buildBetaDetail');
+  expect(native).not.toMatch(/appStoreVersions|reviewSubmissions|reviewSubmissionItems/);
+  expect(() => assertTestFlightReady('IN_BETA_TESTING')).not.toThrow();
+  for (const state of ['PROCESSING', 'READY_FOR_BETA_TESTING', 'EXPIRED', 'FAILED', ''])
+    expect(() => assertTestFlightReady(state)).toThrow('not available');
 });

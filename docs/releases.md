@@ -12,7 +12,7 @@ merges do not approve a release.
 | --- | --- | --- |
 | Server | Release Please PR, then production promotion PR | Verified images, signed staging and stable update channels |
 | Website | Release Please PR | Versioned, smoke-tested website image |
-| Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build submitted to Apple |
+| Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build verified for internal TestFlight testing |
 | Mobile OTA | Rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
 
 ## Release ownership
