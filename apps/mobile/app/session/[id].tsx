@@ -164,7 +164,7 @@ import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '../../components/Icon';
+import { Icon, type IconName } from '../../components/Icon';
 import { ConnectionDiscoveryHint } from '../../components/ConnectionDiscoveryHint';
 import { AgentLoopCockpit } from '../../components/AgentLoopCockpit';
 import { DragSource } from '../../components/DragSource';
@@ -531,6 +531,16 @@ const SessionActionsContext = createContext<SessionActions | null>(null);
 // nothing rather than crashing (never happens in practice; the FlashList is always
 // wrapped).
 const BookmarksContext = createContext<Bookmarks | null>(null);
+// Knowledge — Project and Global alike — has one symbol across the app, so the
+// message "…" sheet, the Explorer tabs and its breadcrumb all read as the same
+// thing; the labels tell the two scopes apart.
+const KNOWLEDGE_ICON: IconName = 'book-open';
+const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
+  worktree: 'folder',
+  knowledge: KNOWLEDGE_ICON,
+  shared: KNOWLEDGE_ICON,
+};
+
 const KnowledgeSaveContext = createContext<{
   save(messageId: string, text: string): Promise<void>;
 } | null>(null);
@@ -726,6 +736,21 @@ export function SessionChat({
   const [agentLoop, setAgentLoop] = useState<AgentLoop | null>(null);
   const agentLoopGeneration = useRef(0);
   const [loopCockpitOpen, setLoopCockpitOpen] = useState(false);
+  // Name of a header action shown under the title after a long-press — the icon-only
+  // buttons explain themselves on demand without permanent labels.
+  const [headerHint, setHeaderHint] = useState<string | null>(null);
+  const headerHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHeaderHint = useCallback((label: string) => {
+    if (headerHintTimer.current) clearTimeout(headerHintTimer.current);
+    setHeaderHint(label);
+    headerHintTimer.current = setTimeout(() => setHeaderHint(null), 1500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (headerHintTimer.current) clearTimeout(headerHintTimer.current);
+    },
+    [],
+  );
   useEffect(() => {
     if (kind !== 'agent_loop' || !projectId) {
       setAgentLoop(null);
@@ -3350,10 +3375,9 @@ export function SessionChat({
   // (incl. the back button) in a Liquid-Glass capsule, which made the branch label
   // read as a tappable Back-style button. Rendering our own header lets the branch be
   // plain inline text (no box) while keeping it tappable to open the switcher. Back
-  // chevron + centered title replace the native equivalents.
-  // Three-column row: equal-flex left/right slots keep the title truly centered
-  // regardless of branch-name length; the right slot is bounded so a long branch name
-  // truncates instead of shoving the title off-center.
+  // chevron + title replace the native equivalents.
+  // One row: back, a left-aligned title block (name over branch) that truncates, and
+  // the round action buttons pinned right.
   // When `embedded`, this renders inline in a two-pane layout (the embedding screen
   // owns the route header): no back button (no pane-local back nav) and `theme.spacing.sm`
   // top padding instead of the safe-area inset (the pane sits below the app header).
@@ -3376,9 +3400,7 @@ export function SessionChat({
           compactLandscape && styles.headerRowCompact,
         ]}
       >
-        {embedded ? (
-          <View style={styles.headerSide} />
-        ) : (
+        {embedded ? null : (
           <View style={styles.headerSide}>
             <Pressable
               onPress={() => router.back()}
@@ -3391,54 +3413,41 @@ export function SessionChat({
             </Pressable>
           </View>
         )}
-        <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
-          {sessionFallback}
-        </Text>
-        {/* Right spacer keeps the title centered now that the actions live on the
-            context row below — the title row gets the full width, so the session name
-            no longer truncates on a phone. */}
-        <View style={styles.headerSide} />
-      </View>
-      {/* Context row under the title: the branch switcher (#91) and the bookmarks
-          jump-list (#bookmarks), plus the Issue chip when present. Moved down off the
-          title row so the title reads full-width; the engine switcher lives on the
-          input bar's action row. */}
-      <View style={[styles.headerMetaRow, compactLandscape && styles.headerMetaRowCompact]}>
-        {/* Left slot: the Issue chip when present, left-aligned so it never nudges the
-            centered branch switcher. */}
-        <View style={[styles.headerMetaSide, compactLandscape && styles.headerMetaSideCompact]}>
-          {issueNumber !== null ? (
-            <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
-          ) : null}
-        </View>
-        {/* Center: the branch switcher (#91), anchored to the row's true center by the
-            two equal-flex side slots — so its position stays put whether or not there
-            are bookmarks. */}
-        <Pressable
-          onPress={() => setSwitcherOpen(true)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
-          style={styles.headerBranchBtn}
-        >
-          <Icon name="git-branch" size={12} color={theme.colors.textMuted} />
-          <Text style={styles.headerBranch} numberOfLines={1}>
-            {currentLabel}
+        {/* Title block: the session name with the branch underneath as quiet context.
+            The branch stays tappable (opens the switcher, #91) but no longer competes
+            with the actions — it is information first. A long-press on a header action
+            briefly swaps this line for the action's name. */}
+        <View style={styles.headerTitleBlock}>
+          <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
+            {sessionFallback}
           </Text>
-          {/* A quiet caret signals the branch is tappable (opens the switcher, #91)
-              without making it read as a Back-style button. */}
-          <Icon name="chevron-down" size={18} color={theme.colors.textFaint} />
-        </Pressable>
-        {/* Right slot: the bookmarks jump-list (#bookmarks), pinned to the right edge
-            when any exist — it appears without shifting the centered branch. */}
-        <View
-          style={[
-            styles.headerMetaSide,
-            styles.headerMetaSideRight,
-            compactLandscape && styles.headerMetaSideCompact,
-            compactLandscape && styles.headerMetaSideRightCompact,
-          ]}
-        >
+          {headerHint !== null ? (
+            <Text style={[styles.headerBranch, styles.headerHintText]} numberOfLines={1}>
+              {headerHint}
+            </Text>
+          ) : (
+            <View style={styles.headerSubtitle}>
+              <Pressable
+                onPress={() => setSwitcherOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
+                style={styles.headerBranchBtn}
+              >
+                <Icon name="git-branch" size={11} color={theme.colors.textFaint} />
+                <Text style={styles.headerBranch} numberOfLines={1}>
+                  {currentLabel}
+                </Text>
+              </Pressable>
+              {issueNumber !== null ? (
+                <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
+              ) : null}
+            </View>
+          )}
+        </View>
+        {/* Actions sit on the title row as large round buttons, so the header needs a
+            single row and the targets are big enough to hit and recognise. */}
+        <View style={styles.headerActions}>
           {kind === 'agent_loop' ? (
             <Pressable
               onPress={() => setLoopCockpitOpen(true)}
@@ -3452,65 +3461,45 @@ export function SessionChat({
               <Text style={styles.headerLoopButtonText}>Loop</Text>
             </Pressable>
           ) : null}
-          {bookmarks.ids.size > 0 ? (
-            <Pressable
-              onPress={() => setBookmarksOpen(true)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={`${String(bookmarks.ids.size)} bookmarks. Tap to view.`}
-              style={styles.headerBookmarkBtn}
-            >
-              <Icon name="bookmark" size={15} color={theme.colors.textMuted} />
-              <Text style={styles.headerBookmarkCount}>{bookmarks.ids.size}</Text>
-            </Pressable>
-          ) : null}
           {projectId ? (
-            <Pressable
+            <HeaderActionButton
+              icon="monitor"
+              label="Preview"
+              accessibilityLabel={
+                hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
+              }
+              active={hasActiveStaticPreview}
+              dot={hasRunningDevServer}
+              dotTestID="preview-server-dot"
+              onHint={showHeaderHint}
               onPress={() => {
                 void openPublicPreview(client, () => {
                   refreshStaticPreview();
                   setStaticPreviewOpen(true);
                 });
               }}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={
-                hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
-              }
-              style={styles.headerBookmarkBtn}
-            >
-              <View>
-                <Icon
-                  name="monitor"
-                  size={15}
-                  color={hasActiveStaticPreview ? theme.colors.primary : theme.colors.textMuted}
-                />
-                {hasRunningDevServer ? (
-                  <View testID="preview-server-dot" style={styles.headerPreviewServerDot} />
-                ) : null}
-              </View>
-              <Text
-                style={[
-                  styles.headerBookmarkCount,
-                  hasActiveStaticPreview ? styles.headerPreviewActiveText : null,
-                ]}
-              >
-                Preview
-              </Text>
-            </Pressable>
+            />
           ) : null}
-          <Pressable
+          <HeaderActionButton
+            icon="folder"
+            label="Files"
+            accessibilityLabel="Browse session files"
+            onHint={showHeaderHint}
             onPress={() => {
               setFilesInitialPath(null);
               setFilesOpen(true);
             }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Browse session files"
-            style={styles.headerBookmarkBtn}
-          >
-            <Icon name="folder" size={15} color={theme.colors.textMuted} />
-          </Pressable>
+          />
+          {bookmarks.ids.size > 0 ? (
+            <HeaderActionButton
+              icon="bookmark"
+              label="Bookmarks"
+              accessibilityLabel={`${String(bookmarks.ids.size)} bookmarks. Tap to view.`}
+              badge={bookmarks.ids.size}
+              onHint={showHeaderHint}
+              onPress={() => setBookmarksOpen(true)}
+            />
+          ) : null}
         </View>
       </View>
       {linkedSessions.length > 0 ? (
@@ -4137,6 +4126,51 @@ export function SessionChat({
         onDismiss={runPendingPick}
       />
     </AnimatedKeyboardAvoidingView>
+  );
+}
+
+// A round header action (Preview / Files / Bookmarks): an icon large enough to hit
+// and recognise, with an optional status dot (e.g. a running dev server) or count
+// badge. Long-press reports its name through `onHint`.
+function HeaderActionButton({
+  icon,
+  label,
+  accessibilityLabel,
+  onPress,
+  onHint,
+  active = false,
+  dot = false,
+  dotTestID,
+  badge,
+}: {
+  icon: IconName;
+  label: string;
+  accessibilityLabel: string;
+  onPress: () => void;
+  onHint: (label: string) => void;
+  active?: boolean;
+  dot?: boolean;
+  dotTestID?: string;
+  badge?: number;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={() => onHint(label)}
+      hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => [styles.headerActionBtn, pressed ? styles.copyBtnPressed : null]}
+    >
+      <Icon name={icon} size={20} color={active ? theme.colors.primary : theme.colors.textMuted} />
+      {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
+      {badge !== undefined ? (
+        <View style={styles.headerActionBadge}>
+          <Text style={styles.headerActionBadgeText}>{badge > 99 ? '99+' : String(badge)}</Text>
+        </View>
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -5220,11 +5254,11 @@ function SessionFilesSheet({
           <View style={styles.filesRootBar}>
             {(
               [
-                ['worktree', compactRootLabels ? 'Repo' : 'Repository', 'folder'],
-                ['knowledge', compactRootLabels ? 'Project' : 'Project Knowledge', 'book-open'],
-                ['shared', compactRootLabels ? 'Global' : 'Global Knowledge', 'globe'],
+                ['worktree', compactRootLabels ? 'Repo' : 'Repository'],
+                ['knowledge', compactRootLabels ? 'Project' : 'Project Knowledge'],
+                ['shared', compactRootLabels ? 'Global' : 'Global Knowledge'],
               ] as const
-            ).map(([candidate, label, icon]) => (
+            ).map(([candidate, label]) => (
               <Pressable
                 key={candidate}
                 disabled={mutating}
@@ -5250,7 +5284,7 @@ function SessionFilesSheet({
                   root === candidate ? styles.filesRootButtonActive : null,
                 ]}
               >
-                <FileIcon name={icon} size={14} color="#ffffff" />
+                <FileIcon name={FILE_ROOT_ICON[candidate]} size={14} color="#ffffff" />
                 <Text
                   style={root === candidate ? styles.filesRootLabelActive : styles.filesRootLabel}
                 >
@@ -5295,7 +5329,7 @@ function SessionFilesSheet({
           ) : null
         ) : (
           <FileBreadcrumb
-            rootIcon={root === 'worktree' ? 'folder' : 'book-open'}
+            rootIcon={FILE_ROOT_ICON[root]}
             rootLabel={
               root === 'worktree'
                 ? 'Repository'
@@ -5928,11 +5962,13 @@ function CopyButton({
   label,
   style,
   accessibilityLabel,
+  iconSize = 15,
 }: {
   value: string;
   label?: string;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel: string;
+  iconSize?: number;
 }) {
   const { theme } = useUnistyles();
   const [copied, setCopied] = useState(false);
@@ -5952,7 +5988,7 @@ function CopyButton({
       accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => [styles.copyBtn, style, pressed ? styles.copyBtnPressed : null]}
     >
-      <Icon name={copied ? 'check' : 'copy'} size={15} color={tint} />
+      <Icon name={copied ? 'check' : 'copy'} size={iconSize} color={tint} />
       {label ? (
         <Text style={[styles.copyLabel, { color: tint }]}>{copied ? 'Copied' : label}</Text>
       ) : null}
@@ -5968,8 +6004,9 @@ function CopyButton({
 // gestures don't fight. (Text long-press selection is the per-block fallback until
 // contiguous-prose selection lands.)
 // `messageId` is present only for a bookmarkable top-level message (see renderRow /
-// AgentBlock); when set, the tap-reveal row gains a bookmark toggle beside Copy and a
-// persistent dog-ear marks the message while scrolling.
+// AgentBlock); when set, the tap-reveal row gains a "…" button beside Copy that opens
+// the bookmark / Project Knowledge actions, and a persistent dog-ear marks a
+// bookmarked message while scrolling.
 function AgentMarkdown({
   text,
   messageId,
@@ -6019,151 +6056,262 @@ function AgentMarkdown({
   const [knowledgeSavedFor, setKnowledgeSavedFor] = useState<string>();
   const knowledgeSaved = messageId != null && knowledgeSavedFor === messageId;
   const bookmarked = messageId != null && bookmarks?.isBookmarked(messageId) === true;
+  const hasMoreActions = messageId != null && (bookmarks !== null || knowledge !== null);
+  // Keyed by message (like knowledgeSavedFor) so a recycled list cell never opens
+  // the sheet for a different message.
+  const [actionsOpenFor, setActionsOpenFor] = useState<string>();
+  const actionsOpen = messageId != null && actionsOpenFor === messageId;
+  const closeActions = useCallback(() => setActionsOpenFor(undefined), []);
+  const openActions = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    setShowCopy(false);
+    setActionsOpenFor(messageId);
+  }, [messageId]);
   return (
-    <Pressable
-      onPress={toggleCopy}
-      // Not an a11y element itself: keep the prose readable as individual nodes
-      // rather than collapsing the whole message into one button. Copy is exposed
-      // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
-      // convenience). VoiceOver users get per-block selection + the code badges.
-      accessible={false}
-    >
-      <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
-        {blocks.map((block, i) =>
-          block.type === 'code' ? (
-            <View key={i} style={styles.codeBlock}>
-              {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-              {searchHighlightQuery ? (
-                <Text style={styles.codeText} selectable>
-                  <HighlightedSearchText text={block.content} />
-                </Text>
-              ) : (
-                <UITextView style={styles.codeText} selectable uiTextView>
-                  {block.content}
-                </UITextView>
-              )}
-              <CopyButton
-                value={block.content}
-                accessibilityLabel="Copy code block"
-                style={styles.codeCopyBtn}
+    <>
+      <Pressable
+        onPress={toggleCopy}
+        // Not an a11y element itself: keep the prose readable as individual nodes
+        // rather than collapsing the whole message into one button. Copy is exposed
+        // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
+        // convenience). VoiceOver users get per-block selection + the code badges.
+        accessible={false}
+      >
+        <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
+          {blocks.map((block, i) =>
+            block.type === 'code' ? (
+              <View key={i} style={styles.codeBlock}>
+                {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
+                {searchHighlightQuery ? (
+                  <Text style={styles.codeText} selectable>
+                    <HighlightedSearchText text={block.content} />
+                  </Text>
+                ) : (
+                  <UITextView style={styles.codeText} selectable uiTextView>
+                    {block.content}
+                  </UITextView>
+                )}
+                <CopyButton
+                  value={block.content}
+                  accessibilityLabel="Copy code block"
+                  style={styles.codeCopyBtn}
+                />
+              </View>
+            ) : (
+              <MarkdownText
+                key={i}
+                content={block.content}
+                onOpenLocalFile={openLocalFile}
+                sessionFileImageSource={sessionFileImageSource}
+                onOpenImage={(source, label) => setViewer({ source, label })}
               />
-            </View>
-          ) : (
-            <MarkdownText
-              key={i}
-              content={block.content}
-              onOpenLocalFile={openLocalFile}
-              sessionFileImageSource={sessionFileImageSource}
-              onOpenImage={(source, label) => setViewer({ source, label })}
+            ),
+          )}
+          {viewer !== null ? (
+            <ImageSourceViewer
+              source={viewer.source}
+              label={viewer.label}
+              onClose={() => setViewer(null)}
             />
-          ),
-        )}
-        {viewer !== null ? (
-          <ImageSourceViewer
-            source={viewer.source}
-            label={viewer.label}
-            onClose={() => setViewer(null)}
-          />
-        ) : null}
-        {imagePathViewer !== null && sessionFileImageSource !== null ? (
-          <SessionFileImageViewer
-            path={imagePathViewer}
-            sessionFileImageSource={sessionFileImageSource}
-            onClose={() => setImagePathViewer(null)}
-            onUnavailable={() => {
-              setImagePathViewer(null);
-              openSessionFile?.(imagePathViewer);
-            }}
-          />
-        ) : null}
-        {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
+          ) : null}
+          {imagePathViewer !== null && sessionFileImageSource !== null ? (
+            <SessionFileImageViewer
+              path={imagePathViewer}
+              sessionFileImageSource={sessionFileImageSource}
+              onClose={() => setImagePathViewer(null)}
+              onUnavailable={() => {
+                setImagePathViewer(null);
+                openSessionFile?.(imagePathViewer);
+              }}
+            />
+          ) : null}
+          {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
             reveal needed), so it's spottable while scrolling — the Kindle affordance.
             Non-interactive so it never fights the tap-to-reveal / long-press-select
-            gestures; toggling off happens via the reveal row or the header sheet. */}
-        {bookmarked && !showCopy ? (
-          <View style={styles.msgBookmarkFlag} pointerEvents="none">
-            <Icon name="bookmark" size={13} color={theme.colors.primary} />
-          </View>
-        ) : null}
-        {showCopy ? (
-          <View style={styles.msgActions}>
-            {messageId != null && bookmarks ? (
-              <BookmarkButton
-                bookmarked={bookmarked}
-                // Persist a short preview + timestamp so the jump-list can show this
-                // bookmark even when its message is scrolled out of the loaded window.
-                onToggle={() =>
-                  bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt })
-                }
+            gestures; toggling off happens via the "…" sheet or the header sheet. */}
+          {bookmarked && !showCopy ? (
+            <View style={styles.msgBookmarkFlag} pointerEvents="none">
+              <Icon name="bookmark" size={13} color={theme.colors.primary} />
+            </View>
+          ) : null}
+          {showCopy ? (
+            <View style={styles.msgActions}>
+              {/* Copy stays one tap away; everything else lives behind "…" in a sheet
+                that names each action, since bare icons (an open book for Project
+                Knowledge) didn't explain themselves. */}
+              {hasMoreActions ? (
+                <Pressable
+                  onPress={openActions}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="More message actions"
+                  style={({ pressed }) => [
+                    styles.copyBtn,
+                    styles.msgActionBtn,
+                    pressed ? styles.copyBtnPressed : null,
+                  ]}
+                >
+                  <Icon name="more-horizontal" size={18} color={theme.colors.text} />
+                </Pressable>
+              ) : null}
+              <CopyButton
+                value={text}
+                accessibilityLabel="Copy message"
+                iconSize={18}
+                style={styles.msgActionBtn}
               />
-            ) : null}
-            {messageId != null && knowledge ? (
-              <Pressable
-                onPress={() => {
-                  void knowledge
-                    .save(messageId, text)
-                    .then(() => setKnowledgeSavedFor(messageId))
-                    .catch((error: unknown) =>
-                      Alert.alert(
-                        'Could not add to Project Knowledge',
-                        error instanceof Error ? error.message : String(error),
-                      ),
-                    );
-                }}
-                disabled={knowledgeSaved}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  knowledgeSaved ? 'Added to Project Knowledge' : 'Add to Project Knowledge'
+            </View>
+          ) : null}
+        </View>
+      </Pressable>
+      {/* Outside the message Pressable: the Modal's content stays in this React tree,
+        so taps on the sheet would otherwise bubble into the message's tap-to-reveal. */}
+      {actionsOpen && messageId != null ? (
+        <MessageActionsSheet
+          onClose={closeActions}
+          onCopy={() => {
+            void Clipboard.setStringAsync(text);
+            closeActions();
+          }}
+          knowledge={
+            knowledge
+              ? {
+                  saved: knowledgeSaved,
+                  save: () =>
+                    knowledge.save(messageId, text).then(() => setKnowledgeSavedFor(messageId)),
                 }
-                style={({ pressed }) => [
-                  styles.copyBtn,
-                  styles.msgActionBtn,
-                  pressed ? styles.copyBtnPressed : null,
-                ]}
-              >
-                <Icon
-                  name={knowledgeSaved ? 'check' : 'book-open'}
-                  size={15}
-                  color={knowledgeSaved ? theme.colors.primary : theme.colors.textMuted}
-                />
-              </Pressable>
-            ) : null}
-            <CopyButton
-              value={text}
-              accessibilityLabel="Copy message"
-              style={styles.msgActionBtn}
-            />
-          </View>
-        ) : null}
-      </View>
-    </Pressable>
+              : null
+          }
+          bookmark={
+            bookmarks
+              ? {
+                  bookmarked,
+                  toggle: () => {
+                    // Persist a short preview + timestamp so the jump-list can show
+                    // this bookmark even when its message is scrolled out of the
+                    // loaded window.
+                    bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt });
+                    closeActions();
+                  },
+                }
+              : null
+          }
+        />
+      ) : null}
+    </>
   );
 }
 
-// The bookmark toggle in a message's tap-revealed action row — the same corner-chip
-// language as the Copy button next to it. Filled + tinted once bookmarked, so its
-// state reads at a glance; tapping toggles it (and updates the header count + the
-// dog-ear). Icon-only to match the Copy chip.
-function BookmarkButton({ bookmarked, onToggle }: { bookmarked: boolean; onToggle: () => void }) {
+// The "…" sheet on an agent message: each action as an icon tile plus a name and a
+// one-line explanation. Saving to Project Knowledge keeps the sheet open to show its
+// progress and result; the other actions close it.
+function MessageActionsSheet({
+  onClose,
+  onCopy,
+  knowledge,
+  bookmark,
+}: {
+  onClose: () => void;
+  onCopy: () => void;
+  knowledge: { saved: boolean; save: () => Promise<void> } | null;
+  bookmark: { bookmarked: boolean; toggle: () => void } | null;
+}) {
+  const { theme } = useUnistyles();
+  const insets = useSafeAreaInsets();
+  const [saving, setSaving] = useState(false);
+  const saveKnowledge = (): void => {
+    if (!knowledge || knowledge.saved || saving) return;
+    setSaving(true);
+    knowledge
+      .save()
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not add to Project Knowledge',
+          error instanceof Error ? error.message : String(error),
+        ),
+      )
+      .finally(() => setSaving(false));
+  };
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable
+        style={styles.sheetBackdrop}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Close message actions"
+      />
+      <View style={[styles.sheet, { paddingBottom: insets.bottom + theme.spacing.md }]}>
+        <View style={styles.sheetHandle} />
+        <MessageActionRow
+          icon="copy"
+          title="Copy text"
+          subtitle="Copy the whole message to the clipboard"
+          onPress={onCopy}
+        />
+        {knowledge ? (
+          <MessageActionRow
+            icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
+            title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
+            subtitle="Keep it as a project insight for future sessions"
+            tint={theme.colors.primary}
+            busy={saving}
+            disabled={knowledge.saved}
+            onPress={saveKnowledge}
+          />
+        ) : null}
+        {bookmark ? (
+          <MessageActionRow
+            icon="bookmark"
+            title={bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark'}
+            subtitle="Jump back to it from the bookmark button in the header"
+            tint={bookmark.bookmarked ? theme.colors.primary : undefined}
+            onPress={bookmark.toggle}
+          />
+        ) : null}
+      </View>
+    </Modal>
+  );
+}
+
+function MessageActionRow({
+  icon,
+  title,
+  subtitle,
+  onPress,
+  tint,
+  busy = false,
+  disabled = false,
+}: {
+  icon: IconName;
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+  tint?: string;
+  busy?: boolean;
+  disabled?: boolean;
+}) {
   const { theme } = useUnistyles();
   return (
     <Pressable
-      onPress={onToggle}
-      hitSlop={8}
+      onPress={onPress}
+      disabled={disabled || busy}
       accessibilityRole="button"
-      accessibilityLabel={bookmarked ? 'Remove bookmark' : 'Bookmark this message'}
-      style={({ pressed }) => [
-        styles.copyBtn,
-        styles.msgActionBtn,
-        pressed ? styles.copyBtnPressed : null,
-      ]}
+      accessibilityLabel={title}
+      accessibilityHint={subtitle}
+      accessibilityState={{ disabled: disabled || busy }}
+      style={({ pressed }) => [styles.msgActionRow, pressed ? styles.sheetRowPressed : null]}
     >
-      <Icon
-        name="bookmark"
-        size={15}
-        color={bookmarked ? theme.colors.primary : theme.colors.textMuted}
-      />
+      <View style={styles.msgActionTile}>
+        {busy ? (
+          <ActivityIndicator color={theme.colors.accent} />
+        ) : (
+          <Icon name={icon} size={22} color={tint ?? theme.colors.textMuted} />
+        )}
+      </View>
+      <View style={styles.msgActionText}>
+        <Text style={styles.msgActionTitle}>{title}</Text>
+        <Text style={styles.msgActionSubtitle}>{subtitle}</Text>
+      </View>
     </Pressable>
   );
 }
@@ -6530,7 +6678,7 @@ function ThinkingBlock({ text }: { text: string }) {
 // Images a tool returned (e.g. a Read of a PNG, #115) render inline — they ARE
 // the payload the operator wants to see, not hidden behind a tap. Shared by the
 // single-tool ToolCard and the collapsed ToolGroup so a Read that happens to sit
-// next to another tool call never buries its image behind the group's "·N" line.
+// next to another tool call never buries its image behind the group's "+N more" line.
 // The inline slot is only a preview though (a fixed-height, letterboxed strip), so
 // a tap opens the image in the zoomable full-screen lightbox — a floor plan or a
 // screenshot is unreadable at strip size. The Pressable also swallows the tap so it
@@ -6627,9 +6775,17 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   );
 }
 
+// The collapsed line already shows one call (the latest), so the count names the
+// hidden rest: "+9 more" for a run of ten.
+function ToolGroupCount({ count }: { count: number }) {
+  // A todo run can hold a single update — nothing is hidden then.
+  if (count < 2) return null;
+  return <Text style={styles.toolGroupCountText}>{`+${String(count - 1)} more`}</Text>;
+}
+
 // A run of consecutive tool calls. One tool → the plain line. Several → a single
 // collapsed line showing the LATEST tool (the "currently running" command as it
-// streams in) plus a quiet "·N" count; tap to expand the whole run as individual
+// streams in) plus a quiet "+N more" count; tap to expand the whole run as individual
 // lines.
 function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   const { theme } = useUnistyles();
@@ -6657,7 +6813,7 @@ function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
           <Text style={styles.toolHeadline} numberOfLines={1}>
             {view.headline}
           </Text>
-          <Text style={styles.toolGroupCountText}>{`·${String(tools.length)}`}</Text>
+          <ToolGroupCount count={tools.length} />
           <Icon
             name={expanded ? 'chevron-down' : 'chevron-right'}
             size={16}
@@ -6757,7 +6913,7 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
           <Text style={styles.toolHeadline} numberOfLines={1}>
             {view.headline}
           </Text>
-          <Text style={styles.toolGroupCountText}>{`·${String(tools.length)}`}</Text>
+          <ToolGroupCount count={tools.length} />
           <Icon
             name={expanded ? 'chevron-down' : 'chevron-right'}
             size={16}
@@ -9191,17 +9347,19 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
   },
   headerRow: {
-    height: 44,
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: theme.spacing.sm,
     gap: theme.spacing.xs,
   },
   // In the two-pane (embedded) layout the right-pane header sits beside the left
-  // pane's compact usage meters; a shorter title row + reduced top padding line
-  // the two bars up on the same baseline. The phone header keeps the full 44px.
+  // pane's compact usage meters; a shorter title row + reduced top padding keep the
+  // two bars close, while still fitting the 40pt action buttons. The phone header
+  // uses the full 56px.
   headerRowEmbedded: {
-    height: 38,
+    height: 48,
+    paddingLeft: theme.spacing.md,
   },
   headerRowCompact: {
     flex: 1,
@@ -9255,67 +9413,92 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 2.5,
     backgroundColor: theme.colors.background,
   },
-  headerTitle: {
-    // flex: 1 so the title spans the full width BETWEEN the two fixed-width side slots
-    // (not just an equal third): now that the branch selector moved to the context row,
-    // the right slot is an empty spacer, and a narrow fixed width on both sides frees
-    // the middle for the session name — it truncates far later than the old 1/3 column.
+  // Name over branch, left-aligned next to the back chevron; shrinks (and the
+  // name truncates) before the action buttons do.
+  headerTitleBlock: {
     flex: 1,
-    textAlign: 'center',
-    marginHorizontal: theme.spacing.xs,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 1,
+  },
+  headerTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
-  // Fixed, equal-width side slots so the title stays screen-centered while spanning the
-  // middle: the back chevron sits in the left slot; an empty right slot of the same
-  // width balances it (the actions now live on the context row below). Width fits the
-  // 28px chevron + its padding.
+  headerSubtitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  headerHintText: {
+    color: theme.colors.primary,
+    fontWeight: '600',
+  },
+  // Fits the 28px back chevron + its padding.
   headerSide: {
-    width: 40,
+    width: 32,
     flexDirection: 'row',
     alignItems: 'center',
   },
-  // The branch affordance on the context row: a quiet git-branch icon + the branch
-  // name, both muted + caption-sized — no box/border/background, deliberately not the
-  // title/tint color — so it reads as a passive status hint, not a tappable Back-style
-  // button. Bounded narrow so a long name truncates instead of stretching the row.
+  // The branch under the title: muted and caption-sized so it reads as status, while
+  // staying tappable for the switcher.
   headerBranchBtn: {
+    flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    maxWidth: 120,
   },
   headerBranch: {
     flexShrink: 1,
-    color: theme.colors.textMuted,
-    fontSize: 11 * theme.fontScale,
+    color: theme.colors.textFaint,
+    fontSize: 12 * theme.fontScale,
     fontWeight: '400',
   },
-  // The bookmarks jump-list opener: a quiet dog-ear + count on the context row. Same
-  // muted, box-less caption language so it reads as a passive affordance. Row spacing
-  // is handled by the context row's `gap`.
-  headerBookmarkBtn: {
+  headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
+    gap: theme.spacing.sm,
+    paddingRight: theme.spacing.xs,
   },
-  headerBookmarkCount: {
-    color: theme.colors.textMuted,
-    fontSize: 11 * theme.fontScale,
-    fontWeight: '600',
-  },
-  headerPreviewActiveText: { color: theme.colors.primary },
-  headerPreviewServerDot: {
-    position: 'absolute',
-    top: -2,
-    right: -3,
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: theme.colors.tone.done,
+  // A 40pt round target with a 20pt icon — big enough to recognise at a glance.
+  headerActionBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: theme.colors.surface,
+    borderColor: theme.colors.border,
+  },
+  headerActionDot: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    width: 9,
+    height: 9,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.tone.done,
+    borderWidth: 1.5,
+    borderColor: theme.colors.surfaceAlt,
+  },
+  headerActionBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.accent,
+  },
+  headerActionBadgeText: {
+    color: '#ffffff',
+    fontSize: 11 * theme.fontScale,
+    fontWeight: '700',
   },
   headerLoopButton: {
     paddingHorizontal: theme.spacing.sm,
@@ -9329,47 +9512,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     fontSize: 11 * theme.fontScale,
     fontWeight: '700',
-  },
-  // The context row under the title: a three-slot layout that pins the branch switcher
-  // to the row's true center (stable position) with the Issue chip in the left slot and
-  // the bookmarks opener in the right slot. Keeps the title row itself free of controls
-  // so the session name reads full-width.
-  headerMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: theme.spacing.sm,
-    paddingBottom: theme.spacing.xs,
-  },
-  headerMetaRowCompact: {
-    flexShrink: 0,
-    height: 44,
-    paddingLeft: 0,
-    paddingBottom: 0,
-  },
-  // Equal-flex side slots flanking the centered branch switcher: the left holds the
-  // Issue chip (left-aligned), the right holds the bookmarks opener (right-aligned, see
-  // headerMetaSideRight). Equal flex keeps the branch centered regardless of what — if
-  // anything — sits in either slot.
-  headerMetaSide: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerMetaSideCompact: {
-    flex: 0,
-  },
-  headerMetaSideRight: {
-    justifyContent: 'flex-end',
-    gap: theme.spacing.md,
-    // A little extra inset so the bookmark count doesn't hug the screen edge. Padding
-    // on the slot (not a margin on the button) keeps both side slots equal-flex, so the
-    // centered branch switcher stays put.
-    paddingRight: theme.spacing.sm,
-  },
-  headerMetaSideRightCompact: {
-    paddingRight: 0,
-    paddingLeft: theme.spacing.sm,
-    gap: theme.spacing.sm,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
   // in a row, so the whole affordance reads as one button on the meta row.
@@ -10067,9 +10209,41 @@ const styles = StyleSheet.create((theme) => ({
   },
   // Each action chip: solid surface + border so it reads over the prose it overlaps.
   msgActionBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 9,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
+  },
+  msgActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+  },
+  msgActionTile: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  msgActionText: {
+    flex: 1,
+    gap: 2,
+  },
+  msgActionTitle: {
+    color: theme.colors.text,
+    fontSize: theme.text.md,
+    fontWeight: '600',
+  },
+  msgActionSubtitle: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
   },
   // The persistent dog-ear on a bookmarked message: pinned top-right, quiet, and
   // non-interactive — a scanning cue while scrolling, not a control.
@@ -10271,11 +10445,11 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
   },
-  // Collapsed multi-tool group count — a quiet "·N" suffix, not a filled badge.
+  // Collapsed multi-tool group count: quiet caption text, spelled out ("+9 more")
+  // so it explains itself instead of reading as a stray "·N".
   toolGroupCountText: {
-    color: theme.colors.textFaint,
+    color: theme.colors.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '600',
   },
   // The expanded run: individual tool lines, indented under the group line.
   toolGroupList: {
