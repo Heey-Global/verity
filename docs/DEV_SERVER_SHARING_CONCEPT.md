@@ -192,7 +192,7 @@ each owns its own state and primary action. Each card names who can see the prev
 "online" and "internet" always mean public through the Uplink with a PIN.
 
 **Unreachable dialog.** When opening on the network cannot reach it, the way out leads: "Share
-publicly" first, then "Copy local link", then cancel. Without entitlement the first option
+online" first, then "Copy local link", then cancel. Without entitlement the first option
 becomes "Open settings" and the text names Verity Premium.
 
 ## 3. Security considerations

@@ -683,9 +683,7 @@ it('keeps a newly created link when the share list arrives late without it', asy
       createSessionPortPreviewShare: jest.fn(async () => portShare()),
     }),
   );
-  fireEvent.press(
-    await screen.findByRole('button', { name: 'Vite on port 5173' }, { timeout: 3000 }),
-  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
   await act(async () => {

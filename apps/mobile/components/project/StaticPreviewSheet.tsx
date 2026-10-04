@@ -578,11 +578,13 @@ export function StaticPreviewSheet({
   // user's finger.
   const initialStateKnown =
     settleTimedOut ||
+    (!devServersLoading && hasServerTargets) ||
     (!devServersLoading &&
       localSharesLoaded &&
       (publicSharesLoaded || (capabilitiesLoaded && publicSharing !== 'available')));
   useEffect(() => {
-    if (tab === undefined && initialStateKnown) setTab(defaultTab);
+    // A tab the user picked meanwhile wins over the default.
+    if (tab === undefined && initialStateKnown) setTab((current) => current ?? defaultTab);
   }, [defaultTab, initialStateKnown, tab]);
 
   const onRequestClose = () => {

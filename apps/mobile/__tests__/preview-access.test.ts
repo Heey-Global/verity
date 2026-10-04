@@ -31,11 +31,11 @@ it('requires a deliberate choice before publishing an unreachable local preview'
   expect(publish).not.toHaveBeenCalled();
   const choices = alert.mock.calls[0]?.[2];
   expect(choices?.map((choice) => choice.text)).toEqual([
-    'Share publicly',
+    'Share online',
     'Copy local link',
     'Cancel',
   ]);
-  choices?.find((choice) => choice.text === 'Share publicly')?.onPress?.();
+  choices?.find((choice) => choice.text === 'Share online')?.onPress?.();
   expect(publish).toHaveBeenCalledTimes(1);
 });
 
@@ -48,9 +48,7 @@ it.each(['premium-required', 'unavailable'] as const)(
     expect(alert.mock.calls[0]?.[1]).toContain(
       status === 'premium-required' ? 'Premium' : 'temporarily unavailable',
     );
-    expect(alert.mock.calls[0]?.[2]?.some((choice) => choice.text === 'Share publicly')).toBe(
-      false,
-    );
+    expect(alert.mock.calls[0]?.[2]?.some((choice) => choice.text === 'Share online')).toBe(false);
   },
 );
 
