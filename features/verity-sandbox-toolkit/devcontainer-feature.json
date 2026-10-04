@@ -23,7 +23,7 @@
     },
     "claudeCodeVersion": {
       "type": "string",
-      "default": "2.1.285",
+      "default": "2.1.286",
       "description": "Exact @anthropic-ai/claude-code npm version to pin."
     },
     "claudeAcpVersion": {
@@ -38,12 +38,12 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.159.2",
+      "default": "0.159.3",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {
       "type": "string",
-      "default": "2.0.1",
+      "default": "2.1.0",
       "description": "Exact @agentclientprotocol/codex-acp npm version to pin."
     },
     "installOpencode": {
@@ -53,7 +53,7 @@
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "1.18.33",
+      "default": "1.18.34",
       "description": "Exact opencode-ai npm version to pin."
     },
     "installRunnerSupervisor": {

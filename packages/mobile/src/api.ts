@@ -1349,6 +1349,9 @@ export const sessionDirectorySchema = z.object({
 export type SessionDirectory = z.infer<typeof sessionDirectorySchema>;
 
 export const sessionFileContentSchema = z.object({
+  warning: z.string().optional(),
+  version: z.string().optional(),
+  editable: z.boolean().optional(),
   path: z.string(),
   content: z.string(),
   size: z.number().int().nonnegative(),
@@ -4041,6 +4044,41 @@ export class VerityClient {
       `/sessions/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}${rootQuery}`,
       { method: 'GET' },
     );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async listSessionFileVersions(id: string, root: SessionFileRoot, path: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        versions: z.array(z.object({ id: z.string(), createdAt: z.string(), kind: z.string() })),
+      })
+      .parse(await res.json()).versions;
+  }
+
+  async readSessionFileVersion(id: string, root: SessionFileRoot, path: string, version: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}&version=${encodeURIComponent(version)}`,
+      { method: 'GET' },
+    );
+    return z.object({ content: z.string() }).parse(await res.json()).content;
+  }
+
+  async saveSessionFileContent(
+    id: string,
+    root: SessionFileRoot,
+    path: string,
+    content: string,
+    expectedVersion: string | null,
+  ): Promise<SessionFileContent> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/files/content`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ root, path, content, expectedVersion }),
+    });
     return sessionFileContentSchema.parse(await res.json());
   }
 
