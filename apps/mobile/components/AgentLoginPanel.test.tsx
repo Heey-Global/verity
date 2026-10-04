@@ -28,7 +28,7 @@ describe('AgentLoginPanel polling', () => {
     });
   });
 
-  it('keeps configured provider actions collapsed in compact settings', () => {
+  it('shows configured provider actions directly in compact settings', () => {
     render(
       <AgentLoginPanel
         client={{} as VerityClient}
@@ -37,12 +37,8 @@ describe('AgentLoginPanel polling', () => {
         allowDisconnect
       />,
     );
-    expect(screen.queryByLabelText('Logout Claude')).toBeNull();
-    fireEvent.press(screen.getByLabelText('Claude'));
     expect(screen.getByLabelText('Logout Claude')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Logout Codex')).toBeNull();
-    fireEvent.press(screen.getByLabelText('Claude'));
-    expect(screen.queryByLabelText('Logout Claude')).toBeNull();
+    expect(screen.getByLabelText('Logout Codex')).toBeOnTheScreen();
   });
 
   it.each(['claude', 'codex'] as const)('shows only the selected %s provider', (provider) => {
@@ -57,9 +53,8 @@ describe('AgentLoginPanel polling', () => {
     );
     const title = provider === 'claude' ? 'Claude' : 'Codex';
     const otherTitle = provider === 'claude' ? 'Codex' : 'Claude';
-    fireEvent.press(screen.getByLabelText(title));
     expect(screen.getByLabelText('Logout ' + title)).toBeOnTheScreen();
-    expect(screen.queryByLabelText(otherTitle)).toBeNull();
+    expect(screen.queryByText(otherTitle)).toBeNull();
     expect(screen.queryByLabelText('Logout ' + otherTitle)).toBeNull();
   });
 

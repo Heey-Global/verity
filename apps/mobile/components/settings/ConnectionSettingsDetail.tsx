@@ -13,6 +13,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../components/AgentLoginPanel';
 import { SecretStoreSection } from '../../components/settings/SecretStoreSection';
+import { ProviderUsagePanel } from '../../components/settings/ProviderUsagePanel';
 import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
 import {
   SecretPasteField,
@@ -119,10 +120,7 @@ export function ConnectionSettingsDetail({
       ) : null}
 
       {managed && (section === 'claude' || section === 'codex') ? (
-        <SettingsGroup
-          title={section === 'claude' ? 'Claude' : 'Codex'}
-          description="Subscription connection."
-        >
+        <SettingsGroup title="Subscription">
           {writable ? (
             <View style={styles.panelStack}>
               <AgentLoginPanel
@@ -163,6 +161,13 @@ export function ConnectionSettingsDetail({
               </Text>
             </SettingsPanel>
           )}
+        </SettingsGroup>
+      ) : null}
+      {managed &&
+      ((section === 'claude' && settings?.claudeCodeOauthCredentialsConfigured) ||
+        (section === 'codex' && settings?.codexAuthJsonConfigured)) ? (
+        <SettingsGroup title="Usage">
+          <ProviderUsagePanel client={client} provider={section} />
         </SettingsGroup>
       ) : null}
 

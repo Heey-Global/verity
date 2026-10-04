@@ -433,7 +433,8 @@ function addProviderLimit(
   });
 }
 
-function overviewProviderLimitRows(
+/** Provider quota rows from server probes plus any per-session readings. */
+export function overviewProviderLimitRows(
   sessions: readonly SessionSummary[],
   providerLimits: readonly RateLimit[],
   nowMs: number,

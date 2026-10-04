@@ -10,7 +10,6 @@ import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 're
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AgentProviderIcon } from './AgentProviderIcon';
-import { SettingsDisclosure } from './settings/SettingsDisclosure';
 
 type LoginState = {
   login: AgentLogin | null;
@@ -78,7 +77,7 @@ export function AgentLoginPanel({
   allowDisconnect?: boolean;
   /** Starts a fresh provider login once when reached from an auth failure. */
   autoStartProvider?: AgentLoginProvider;
-  /** Settings collapse provider details; onboarding keeps the guided flow visible. */
+  /** Settings frame each provider as a standalone card; onboarding shows the guided flow. */
   compact?: boolean;
   selectedProvider?: AgentLoginProvider;
 }) {
@@ -640,15 +639,35 @@ function ProviderCard({
     </View>
   );
   if (!compact) return content;
+  // Each provider has its own settings page, so its status and actions are the
+  // page: they stay visible instead of waiting behind a disclosure tap.
+  const bodyVisible =
+    (ready && allowDisconnect) ||
+    primaryButtonVisible ||
+    loginBoxVisible ||
+    Boolean(state.error ?? login?.message);
   return (
-    <SettingsDisclosure
-      title={title}
-      leadingIcon={<AgentProviderIcon provider={provider} color={theme.colors.primary} />}
-      summary={statusText}
-      attention={state.busy || state.error !== null || (login !== null && !ready)}
-    >
-      {content}
-    </SettingsDisclosure>
+    <View style={styles.settingsCard}>
+      <View style={styles.settingsCardHeader}>
+        <View style={styles.settingsCardIcon}>
+          <AgentProviderIcon provider={provider} size={22} color={theme.colors.primary} />
+        </View>
+        <View style={styles.providerTitleGroup}>
+          <Text style={styles.label} accessibilityRole="header">
+            {title}
+          </Text>
+          <Text style={styles.providerCopy}>
+            {ready
+              ? 'Subscription connected to this Verity server.'
+              : 'Connect your ' + title + ' subscription to use it in sessions.'}
+          </Text>
+        </View>
+        <View style={[styles.pill, ready ? styles.pillReady : null]}>
+          <Text style={[styles.pillText, ready ? styles.pillTextReady : null]}>{statusText}</Text>
+        </View>
+      </View>
+      {bodyVisible ? <View style={styles.settingsCardBody}>{content}</View> : null}
+    </View>
   );
 }
 
@@ -693,6 +712,32 @@ function LoginStep({
 
 const styles = StyleSheet.create((theme) => ({
   compactCard: { gap: theme.spacing.sm },
+  settingsCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  settingsCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+  },
+  settingsCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.setup.surfaceAlt,
+  },
+  settingsCardBody: {
+    padding: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.border,
+  },
   guidance: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.lg,

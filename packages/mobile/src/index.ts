@@ -225,6 +225,7 @@ export {
   type SeenOverrides,
 } from './unread.js';
 export {
+  overviewProviderLimitRows,
   SessionListModel,
   type CancelPoll,
   type ProviderLimitRow,
