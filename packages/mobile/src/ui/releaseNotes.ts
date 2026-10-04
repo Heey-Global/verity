@@ -127,7 +127,9 @@ export function serverReleaseNotes(
 
   const included = parsed.data
     .flatMap((release) => {
-      if (release.draft === true || release.prerelease === true) return [];
+      // Staging releases use the same version tags as production. The signed
+      // update target bounds this range, including changes not yet promoted.
+      if (release.draft === true) return [];
       if (!release.tag_name.startsWith('v')) return [];
       const version = parseVersion(release.tag_name);
       return version === null ? [] : [{ release, version }];

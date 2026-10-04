@@ -61,10 +61,9 @@ describe('serverReleaseNotes', () => {
     }
   });
 
-  it('ignores drafts, prereleases and other release trains', () => {
+  it('ignores drafts and other release trains', () => {
     const extra = [
       { tag_name: 'v4.1.5', draft: true, body: '### Features\n\n* draft only' },
-      { tag_name: 'v4.1.6', prerelease: true, body: '### Features\n\n* pre only' },
       { tag_name: 'mobile-v4.1.7', body: '### Features\n\n* mobile only' },
     ];
     const items =
@@ -73,6 +72,26 @@ describe('serverReleaseNotes', () => {
       ) ?? [];
 
     expect(items.filter((item) => /only$/.test(item))).toEqual([]);
+  });
+
+  // Staging tags use ordinary versions; GitHub's prerelease flag must not
+  // hide the target or changes skipped on the way to it.
+  it('includes the staging target and skipped prereleases', () => {
+    const staging = [
+      { tag_name: 'v4.10.0', prerelease: true, body: '### Features\n\n* earlier change' },
+      { tag_name: 'v4.11.0', prerelease: true, body: '### Bug Fixes\n\n* target fix' },
+      { tag_name: 'v4.12.0', prerelease: true, body: '### Features\n\n* future change' },
+    ];
+    expect(serverReleaseNotes(staging, '4.9.0', '4.11.0')?.sections).toEqual([
+      { title: 'New', items: ['Earlier change'] },
+      { title: 'Fixes', items: ['Target fix'] },
+    ]);
+    expect(serverReleaseNotes(staging, undefined, '4.11.0')?.sections).toEqual([
+      { title: 'Fixes', items: ['Target fix'] },
+    ]);
+    expect(serverReleaseNotes(staging, '4.10.0', '4.11.0')?.url).toBe(
+      'https://github.com/Heey-Global/verity/releases/tag/v4.11.0',
+    );
   });
 
   // The link is opened without asking, so it must not be whatever GitHub — or
