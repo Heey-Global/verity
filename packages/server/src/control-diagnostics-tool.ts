@@ -28,7 +28,7 @@ export const diagnosticsRequestSchema = z
 export const DIAGNOSTICS_TOOL_DESCRIPTION =
   'Read a bounded Control-only diagnostic snapshot of server version, runtime readiness and Uplink state. Select projectId for safe Matrix import failure codes, event IDs and retry state, with optional matrixEvent {accountId,sourceId,eventId} for a content-free persisted event receipt; optionally select one project session by sessionId for structured technical failures. Returns no secrets, configuration values or messages. Unknown data is explicit; status codes alone do not prove a cause. Use on demand, never poll. Changes belong in a project-session handoff; verify the affected state after remediation.';
 
-const diagnosticSchema = z.object({
+export const controlDiagnosticRecordSchema = z.object({
   seq: z.number().int(),
   ts: z.number().finite(),
   source: z.enum(['agent', 'tool', 'mcp']),
@@ -42,7 +42,7 @@ const progressSchema = z.object({
   lifecycle: z.enum(['running', 'waiting', 'queued', 'failed', 'completed']),
   lastActivityAt: z.number().finite().nullable(),
   projectionTruncated: z.boolean(),
-  diagnostics: z.array(diagnosticSchema).max(20),
+  diagnostics: z.array(controlDiagnosticRecordSchema).max(20),
 });
 const uplinkSchema = z.object({
   control: z.enum(['connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),

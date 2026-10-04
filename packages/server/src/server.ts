@@ -5216,6 +5216,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // for the reason `ControlPlaneSessionFacts` gives.
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
+      allowKnowledgeControlOperations: true,
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
