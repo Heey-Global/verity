@@ -150,36 +150,46 @@ stream the app already holds.
   `verity-dev-server announce --port 5173 --name storybook`, through which the agent states
   name, port, and intent. The scanner confirms that the port is actually listening. Announce and
   scan together are more robust than either alone.
-- When a new listener appears in a session, the app shows an inline card: framework and port,
-  with "Open" and "Share". "Open" creates the local share with one tap and opens the URL.
+- When a new listener appears in a session, the app shows a compact inline row: name and port,
+  with "Open on network" and "Share online". "Open on network" creates the local share with one
+  tap and opens the URL; "Share online" leads straight into step two of the sheet.
 
-### 2.10 App flow: target first, then access
+### 2.10 App flow: what first, then how
 
-The sheet asks its two questions one after the other and never mixes them.
+The sheet asks two questions one after the other and never mixes them.
 
-**Step one, the target.** One list, no tabs. Listeners running in the session come first, then
-project listeners, then folders of the worktree: the root, its top-level folders, and any
-folder that currently has a share. "Browse folders" opens the explorer for deeper paths. Each
-row carries badges for its active accesses, "Local open" and "Public until HH:MM", so the list
-already answers what is live without opening the target.
+**Step one, what.** Two tabs, because the two kinds of target behave differently.
 
-**Step two, the access.** Two cards of equal weight, stacked, because both can be active at
-once and each owns its own state and primary action.
+- **Dev server.** Listeners running in the session, then other listeners of the project, then
+  ports that still have an access although no server listens. Without any, the tab says so and
+  suggests asking the agent to start one. A dot on the tab marks a running session server.
+- **Static files.** The tab is the worktree explorer itself, starting at the root; there is no
+  separate list of top-level folders. Folders that currently have an access are listed on top
+  under "Shared now", so a deep share is found without walking the tree. The footer button
+  picks the folder the explorer stands in. `index.html` is highlighted as the entry page.
 
-- **Open on your network.** One primary "Open" button that creates the local share on first
-  use and hands reachability to the probe in 2.7, plus "Copy link". While a local share exists
-  the card shows its URL and "Stop". No duration, no PIN: nothing of the public form leaks in.
-- **Share publicly.** Without entitlement the card stays visible with a "Premium" badge, one
-  sentence, and a link to settings; no dead button. While the Uplink is offline it says
-  "Temporarily unavailable" instead. With entitlement and no link it shows the expiry picker,
-  the PIN note, and "Create public link". With a live link it shows the link, the PIN, "Share",
-  "Copy link", the remaining time, and "Stop". Stopping asks first.
+The sheet opens on the server tab while a server or a port access exists, otherwise on the
+static files. Once the user picks a tab or walks into a folder, the tab no longer changes by
+itself. A Core without port detection shows the static files without tabs. Rows carry badges
+for their active accesses, "On network" and "Online until HH:MM".
 
-**Vocabulary.** "Preview" is the thing. "Open" always means the server's own network;
-"Share" always means public through the Uplink. The inline card that appears under an agent
-message when a listener starts uses the same two words and leads straight into step two.
+**Step two, how.** Two cards of equal weight, stacked, because both can be active at once and
+each owns its own state and primary action. Each card names who can see the preview.
 
-**Unreachable dialog.** When "Open" cannot reach the network, the way out leads: "Share
+- **On your network.** Straight from the Verity server, at home or over VPN, no PIN. "Open in
+  browser" creates the local share on first use and hands reachability to the probe in 2.7,
+  plus "Copy link". While a local share exists the card shows its URL and "Turn off".
+- **Over the internet.** A link through the Uplink, protected by a PIN, expiring automatically.
+  Without entitlement the card stays visible with a "Premium" badge, one sentence, and a link to
+  settings; no dead button. While the Uplink is offline it says "Temporarily unavailable"
+  instead. With entitlement and no link it shows the expiry picker and "Create link with PIN".
+  With a live link it shows the link, the PIN, "Send link and PIN", "Copy link", the remaining
+  time, and "Stop sharing". Stopping asks first.
+
+**Vocabulary.** "Preview" is the thing. "Network" always means the server's own network;
+"online" and "internet" always mean public through the Uplink with a PIN.
+
+**Unreachable dialog.** When opening on the network cannot reach it, the way out leads: "Share
 publicly" first, then "Copy local link", then cancel. Without entitlement the first option
 becomes "Open settings" and the text names Verity Premium.
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,11 +25,14 @@ import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
 
-// The sheet asks two questions, one per step. Step one: which target, a server
-// running in the session or a folder of the worktree. Step two: which access,
-// opening it on the server's own network or sharing it publicly through the
-// Uplink. Both accesses sit side by side as cards because both can be active
-// at once, and each card owns its own state and primary action.
+// The sheet asks two questions, one per step. Step one: what to preview, picked
+// on one of two tabs because the two kinds behave differently — a dev server
+// running in the session (live, with hot reload) or static files from a folder
+// of the worktree (the folder tab is the explorer itself). Step two: how to
+// open it — on the server's own network without a PIN, or over the internet
+// through the Uplink with a PIN and an expiry. Both accesses sit side by side as
+// cards because both can be active at once, and each card owns its own state
+// and primary action.
 
 /** "until 20:14", or with the day when the link outlives today. */
 function expiryLabel(expiresAt: string | Date, now = new Date()): string {
@@ -65,9 +68,13 @@ function normalizeFolder(path: string | null | undefined): string {
   return !path || path === '.' ? '.' : path;
 }
 
+function parentFolder(path: string): string {
+  return path.split('/').slice(0, -1).join('/');
+}
+
 function folderTitle(path: string): string {
   const normalized = normalizeFolder(path);
-  return normalized === '.' ? 'Worktree' : (normalized.split('/').pop() ?? normalized);
+  return normalized === '.' ? 'Whole worktree' : (normalized.split('/').pop() ?? normalized);
 }
 
 /** A share of a port detected in the session, as opposed to a configured dev server. */
@@ -139,6 +146,8 @@ function previewError(caught: unknown): string {
 
 type PublicSharing = 'available' | 'premium-required' | 'unavailable';
 
+type PreviewTab = 'server' | 'folder';
+
 export function StaticPreviewSheet({
   client,
   projectId,
@@ -183,16 +192,14 @@ export function StaticPreviewSheet({
     };
   }, [client, sessionId]);
 
-  // Folder browsing. The target list shows the worktree root and its top-level
-  // folders; "Browse folders" walks deeper with the same explorer.
-  const [browsing, setBrowsing] = useState(false);
+  // The folder tab is the explorer; `path` is where it stands.
+  const [tab, setTab] = useState<PreviewTab | undefined>(initialServer ? 'server' : undefined);
   const [path, setPath] = useState('');
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
   const [files, setFiles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [folderError, setFolderError] = useState<string>();
-  const [rootDirectories, setRootDirectories] = useState<string[]>([]);
   const requestGeneration = useRef(0);
 
   const [shares, setShares] = useState<PublicPreviewShare[]>([]);
@@ -219,6 +226,9 @@ export function StaticPreviewSheet({
   const stoppedShareIds = useRef(new Set<string>());
 
   const navigate = (nextPath: string) => {
+    // Walking the folders pins the tab: a server starting meanwhile must not
+    // pull the explorer away from under the user's finger.
+    setTab('folder');
     requestGeneration.current += 1;
     setDirectories([]);
     setFiles([]);
@@ -243,7 +253,6 @@ export function StaticPreviewSheet({
         setFiles(entries.files);
         setLoadedPath(path);
         setFolderError(undefined);
-        if (path === '') setRootDirectories(entries.directories);
       }
     } catch (caught) {
       if (generation === requestGeneration.current) {
@@ -496,7 +505,7 @@ export function StaticPreviewSheet({
     setError(undefined);
     setCopied(undefined);
     setJustStopped(false);
-    setBrowsing(false);
+    setTab(next.kind === 'port' ? 'server' : 'folder');
     setTarget(next);
   };
 
@@ -505,9 +514,9 @@ export function StaticPreviewSheet({
     setTarget(undefined);
   };
 
-  const leaveBrowser = () => {
-    setBrowsing(false);
-    if (path !== '') navigate('');
+  const chooseTab = (next: PreviewTab) => {
+    setError(undefined);
+    setTab(next);
   };
 
   // Re-render while a link is shown so "N min left" counts down and an
@@ -519,13 +528,6 @@ export function StaticPreviewSheet({
     const timer = setInterval(() => setTick((tick) => tick + 1), 30_000);
     return () => clearInterval(timer);
   }, [ticking]);
-
-  const onRequestClose = () => {
-    if (busy) return;
-    if (target) leaveTarget();
-    else if (browsing) leaveBrowser();
-    else onClose();
-  };
 
   const folderReady = loadedPath === path && !loading && !folderError;
   const sessionServers = devServers.filter((server) => server.scope !== 'project');
@@ -541,21 +543,31 @@ export function StaticPreviewSheet({
         .map((share) => share.targetPort!),
     ]),
   ).filter((port) => !devServers.some((server) => server.port === port));
-  const liveFolderPaths = new Set<string>([
-    ...shares
-      .filter((share) => share.targetKind === 'static-folder' && isLive(share))
-      .map((share) => normalizeFolder(share.staticPath)),
-    ...localShares
-      .filter((share) => share.targetPort === null && localIsLive(share))
-      .map((share) => normalizeFolder(share.staticPath)),
-  ]);
-  const folderRows = Array.from(
+  const liveFolderPaths = Array.from(
     new Set<string>([
-      '.',
-      ...rootDirectories,
-      ...Array.from(liveFolderPaths).filter((folder) => folder !== '.'),
+      ...shares
+        .filter((share) => share.targetKind === 'static-folder' && isLive(share))
+        .map((share) => normalizeFolder(share.staticPath)),
+      ...localShares
+        .filter((share) => share.targetPort === null && localIsLive(share))
+        .map((share) => normalizeFolder(share.staticPath)),
     ]),
   );
+  // Until the user picks a tab, the sheet opens where something is: on the
+  // servers when one runs or still has an access, otherwise on the folders.
+  // A Core without port detection has no server tab at all.
+  const hasServerTargets =
+    sessionServers.length > 0 || projectServers.length > 0 || orphanPorts.length > 0;
+  const activeTab: PreviewTab = !devServersSupported
+    ? 'folder'
+    : (tab ?? (hasServerTargets ? 'server' : 'folder'));
+
+  const onRequestClose = () => {
+    if (busy) return;
+    if (target) leaveTarget();
+    else if (activeTab === 'folder' && path !== '') navigate(parentFolder(path));
+    else onClose();
+  };
 
   const renderBadge = (selection: PreviewTarget) => {
     const local = localShareFor(selection);
@@ -565,176 +577,216 @@ export function StaticPreviewSheet({
       <View style={styles.badges}>
         {local ? (
           <View style={[styles.badge, styles.badgeLocal]}>
-            <View style={[styles.badgeDot, styles.badgeDotLocal]} />
-            <Text style={styles.badgeText}>Local open</Text>
+            <Icon name="wifi" size={11} color={theme.colors.tone.done} />
+            <Text style={styles.badgeText}>On network</Text>
           </View>
         ) : null}
         {pub ? (
           <View style={[styles.badge, styles.badgePublic]}>
-            <View style={[styles.badgeDot, styles.badgeDotPublic]} />
-            <Text style={styles.badgeText}>{`Public ${expiryLabel(pub.expiresAt)}`}</Text>
+            <Icon name="globe" size={11} color={theme.colors.primary} />
+            <Text style={styles.badgeText}>{`Online ${expiryLabel(pub.expiresAt)}`}</Text>
           </View>
         ) : null}
       </View>
     );
   };
 
-  const renderServerRow = (server: SessionDevServer) => {
-    const selection: PreviewTarget = { kind: 'port', server };
-    const port = String(server.port);
-    return (
-      <Pressable
-        key={`${server.scope ?? 'session'}:${port}`}
-        style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
-        onPress={() => pick(selection)}
-        accessibilityRole="button"
-        accessibilityLabel={`${server.name} on port ${port}`}
-      >
-        <View style={styles.rowMain}>
-          <View style={[styles.serverDot, server.reachable ? null : styles.serverDotLoopback]} />
-          <View style={styles.rowText}>
-            <Text style={styles.rowTitle} numberOfLines={1}>
-              {server.name}
-              <Text style={styles.rowPort}>{` :${port}`}</Text>
-            </Text>
-            <Text style={styles.rowDetail} numberOfLines={1}>
-              {serverDetail(server)}
-            </Text>
-          </View>
-          <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
-        </View>
-        {renderBadge(selection)}
-      </Pressable>
-    );
-  };
-
-  const renderFolderRow = (folder: string) => {
-    const selection: PreviewTarget = { kind: 'folder', path: folder === '.' ? '' : folder };
-    return (
-      <Pressable
-        key={`folder:${folder}`}
-        style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
-        onPress={() => pick(selection)}
-        accessibilityRole="button"
-        accessibilityLabel={folder === '.' ? 'Worktree root folder' : `Folder ${folder}`}
-      >
-        <View style={styles.rowMain}>
-          <Icon name="folder" size={18} color={theme.colors.textMuted} />
-          <View style={styles.rowText}>
-            <Text style={styles.rowTitle} numberOfLines={1}>
-              {folder === '.' ? 'Worktree' : folder}
-            </Text>
-          </View>
-          <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
-        </View>
-        {renderBadge(selection)}
-      </Pressable>
-    );
-  };
-
-  const renderTargetList = () => (
-    <View style={styles.content}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.list}
-        accessibilityLabel="Preview targets"
-      >
-        {devServersSupported ? (
-          <>
-            <Text style={styles.label}>RUNNING IN THIS SESSION</Text>
-            {devServersLoading && devServers.length === 0 ? (
-              <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
-            ) : null}
-            {!devServersLoading &&
-            sessionServers.length === 0 &&
-            orphanPorts.length === 0 &&
-            !devServerError ? (
-              <View style={styles.emptyRow}>
-                <Icon name="monitor" size={18} color={theme.colors.textFaint} />
-                <Text style={styles.caption}>
-                  No dev server running. When one starts in this session, it shows up here.
-                </Text>
-              </View>
-            ) : null}
-            {devServerError ? <Text style={styles.error}>{devServerError}</Text> : null}
-            {sessionServers.map(renderServerRow)}
-            {orphanPorts.map((targetPort) => {
-              const port = String(targetPort);
-              const server: SessionDevServer = {
-                port: targetPort,
-                reachable: true,
-                pid: 0,
-                name: 'Port',
-                command: 'Shared link',
-                workdir: '.',
-              };
-              return (
-                <Pressable
-                  key={`orphan:${port}`}
-                  style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
-                  onPress={() => pick({ kind: 'port', server })}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Show link for port ${port}`}
-                >
-                  <View style={styles.rowMain}>
-                    <View style={styles.rowText}>
-                      <Text style={styles.rowTitle}>{`Port ${port}`}</Text>
-                      <Text style={styles.rowDetail}>Active access without a detected server</Text>
-                    </View>
-                    <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
-                  </View>
-                  {renderBadge({ kind: 'port', server })}
-                </Pressable>
-              );
-            })}
-            {projectServers.length > 0 ? (
-              <>
-                <Text style={styles.label}>RUNNING IN THIS PROJECT</Text>
-                {projectServers.map(renderServerRow)}
-              </>
-            ) : null}
-          </>
+  const renderTargetRow = ({
+    key,
+    selection,
+    icon,
+    title,
+    port,
+    detail,
+    accessibilityLabel,
+    loopback = false,
+  }: {
+    key: string;
+    selection: PreviewTarget;
+    icon: 'server' | 'folder';
+    title: string;
+    port?: string;
+    detail?: string;
+    accessibilityLabel: string;
+    loopback?: boolean;
+  }) => (
+    <Pressable
+      key={key}
+      style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
+      onPress={() => pick(selection)}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+    >
+      <View style={styles.rowIcon}>
+        <Icon name={icon} size={18} color={theme.colors.textMuted} />
+        {icon === 'server' ? (
+          <View style={[styles.serverDot, loopback ? styles.serverDotLoopback : null]} />
         ) : null}
-        <Text style={styles.label}>FOLDERS</Text>
-        {folderRows.map(renderFolderRow)}
-        <Pressable
-          onPress={() => setBrowsing(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Browse folders"
-          style={styles.inlineAction}
-        >
-          <Icon name="search" size={16} color={theme.colors.primary} />
-          <Text style={styles.inlineActionText}>Browse folders…</Text>
-        </Pressable>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </ScrollView>
-      <Text style={[styles.caption, styles.centered]}>
-        Open = on your server’s network · Share = public through Uplink
-      </Text>
+      </View>
+      <View style={styles.rowText}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {title}
+          {port ? <Text style={styles.rowPort}>{` :${port}`}</Text> : null}
+        </Text>
+        {detail ? (
+          <Text style={styles.rowDetail} numberOfLines={1}>
+            {detail}
+          </Text>
+        ) : null}
+        {renderBadge(selection)}
+      </View>
+      <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
+    </Pressable>
+  );
+
+  const renderServerRow = (server: SessionDevServer) =>
+    renderTargetRow({
+      key: `${server.scope ?? 'session'}:${String(server.port)}`,
+      selection: { kind: 'port', server },
+      icon: 'server',
+      title: server.name,
+      port: String(server.port),
+      detail: serverDetail(server),
+      accessibilityLabel: `${server.name} on port ${String(server.port)}`,
+      loopback: !server.reachable,
+    });
+
+  const renderTabs = () => (
+    <View style={styles.tabs} accessibilityRole="tablist">
+      {(
+        [
+          ['server', 'Dev server', 'server'],
+          ['folder', 'Static files', 'folder'],
+        ] as const
+      ).map(([value, label, icon]) => {
+        const selected = activeTab === value;
+        return (
+          <Pressable
+            key={value}
+            onPress={() => chooseTab(value)}
+            accessibilityRole="tab"
+            accessibilityLabel={label}
+            accessibilityState={{ selected }}
+            style={[styles.tab, selected ? styles.tabActive : null]}
+          >
+            <Icon
+              name={icon}
+              size={16}
+              color={selected ? theme.colors.text : theme.colors.textMuted}
+            />
+            <Text style={selected ? styles.tabTextActive : styles.tabText}>{label}</Text>
+            {value === 'server' && sessionServers.length > 0 ? (
+              <View style={styles.tabDot} testID="preview-tab-server-dot" />
+            ) : null}
+          </Pressable>
+        );
+      })}
     </View>
   );
 
-  const renderBrowser = () => (
-    <View style={styles.content}>
+  const renderServerTab = () => (
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.list}
+      accessibilityLabel="Dev servers"
+    >
+      <Text style={styles.caption}>
+        Web apps, APIs or Storybook started in this session. Visitors see your changes live.
+      </Text>
+      {devServersLoading && devServers.length === 0 ? (
+        <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
+      ) : null}
+      {!devServersLoading &&
+      sessionServers.length === 0 &&
+      orphanPorts.length === 0 &&
+      !devServerError ? (
+        <View style={styles.emptyCard}>
+          <Icon name="server" size={22} color={theme.colors.textFaint} />
+          <Text style={styles.emptyTitle}>No dev server running</Text>
+          <Text style={[styles.caption, styles.centered]}>
+            Ask the agent to start one. It shows up here as soon as it listens.
+          </Text>
+        </View>
+      ) : null}
+      {devServerError ? <Text style={styles.error}>{devServerError}</Text> : null}
+      {sessionServers.map(renderServerRow)}
+      {orphanPorts.map((targetPort) => {
+        const port = String(targetPort);
+        const server: SessionDevServer = {
+          port: targetPort,
+          reachable: true,
+          pid: 0,
+          name: 'Port',
+          command: 'Shared link',
+          workdir: '.',
+        };
+        return renderTargetRow({
+          key: `orphan:${port}`,
+          selection: { kind: 'port', server },
+          icon: 'server',
+          title: `Port ${port}`,
+          detail: 'Still shared, but no server is listening right now',
+          accessibilityLabel: `Show link for port ${port}`,
+          loopback: true,
+        });
+      })}
+      {projectServers.length > 0 ? (
+        <>
+          <Text style={[styles.label, styles.sectionLabel]}>OTHER SERVERS IN THIS PROJECT</Text>
+          {projectServers.map(renderServerRow)}
+        </>
+      ) : null}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </ScrollView>
+  );
+
+  const renderFolderTab = () => (
+    <>
       <View style={styles.browserHeader}>
-        <Pressable
-          onPress={() => (path ? navigate(path.split('/').slice(0, -1).join('/')) : leaveBrowser())}
-          hitSlop={10}
-          accessibilityRole="button"
-          accessibilityLabel={path ? 'Back to parent folder' : 'Back to preview targets'}
-        >
-          <Icon name="chevron-left" size={20} color={theme.colors.primary} />
-        </Pressable>
+        {path ? (
+          <Pressable
+            onPress={() => navigate(parentFolder(path))}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Back to parent folder"
+            style={styles.browserBack}
+          >
+            <Icon name="chevron-left" size={20} color={theme.colors.primary} />
+          </Pressable>
+        ) : (
+          <Icon name="folder" size={18} color={theme.colors.textMuted} />
+        )}
         <View style={styles.rowText}>
           <Text style={styles.browserTitle} numberOfLines={1}>
-            {folderTitle(path)}
+            {path ? folderTitle(path) : 'Worktree'}
           </Text>
           <Text style={styles.rowDetail} numberOfLines={1}>
-            {path ? `Worktree / ${path}` : 'Worktree root'}
+            {path ? `Worktree / ${path}` : 'HTML, slides or a built site, served as files'}
           </Text>
         </View>
       </View>
-      <ScrollView style={styles.scroll} accessibilityLabel="Preview folder explorer">
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.browserList}
+        accessibilityLabel="Preview folder explorer"
+      >
+        {path === '' && liveFolderPaths.length > 0 ? (
+          <View style={styles.list}>
+            <Text style={styles.label}>SHARED NOW</Text>
+            {liveFolderPaths.map((folder) =>
+              renderTargetRow({
+                key: `live:${folder}`,
+                selection: { kind: 'folder', path: folder === '.' ? '' : folder },
+                icon: 'folder',
+                title: folder === '.' ? 'Whole worktree' : folderTitle(folder),
+                detail: folder === '.' ? 'Worktree root' : `Worktree / ${folder}`,
+                accessibilityLabel:
+                  folder === '.' ? 'Shared worktree root' : `Shared folder ${folder}`,
+              }),
+            )}
+            <Text style={[styles.label, styles.sectionLabel]}>ALL FOLDERS</Text>
+          </View>
+        ) : null}
         {loading ? (
           <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
         ) : null}
@@ -755,8 +807,15 @@ export function StaticPreviewSheet({
           !folderError &&
           files.map((name) => (
             <View key={`file:${name}`} style={styles.fileRow} accessibilityLabel={`File ${name}`}>
-              <Icon name="file" size={18} color={theme.colors.textFaint} />
-              <Text style={styles.fileName} numberOfLines={2}>
+              <Icon
+                name={name === 'index.html' ? 'globe' : 'file'}
+                size={18}
+                color={name === 'index.html' ? theme.colors.primary : theme.colors.textFaint}
+              />
+              <Text
+                style={[styles.fileName, name === 'index.html' ? styles.fileNameEntry : null]}
+                numberOfLines={2}
+              >
                 {name}
               </Text>
             </View>
@@ -767,18 +826,44 @@ export function StaticPreviewSheet({
       </ScrollView>
       <View style={styles.footer}>
         {folderError ? <Text style={styles.error}>{folderError}</Text> : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
         <Pressable
           onPress={() => pick({ kind: 'folder', path })}
           disabled={!folderReady}
           accessibilityRole="button"
-          accessibilityLabel={path ? `Use folder ${path}` : 'Use the worktree root'}
+          accessibilityLabel={path ? `Preview folder ${path}` : 'Preview the whole worktree'}
           accessibilityState={{ disabled: !folderReady }}
           style={[styles.primaryButton, !folderReady ? styles.primaryButtonDisabled : null]}
         >
           <Text style={styles.primaryText} numberOfLines={1}>
-            {path ? `Use “${folderTitle(path)}”` : 'Use the worktree root'}
+            {path ? `Preview “${folderTitle(path)}”` : 'Preview the whole worktree'}
           </Text>
         </Pressable>
+      </View>
+    </>
+  );
+
+  const renderCardHeading = ({
+    icon,
+    title,
+    description,
+    status,
+  }: {
+    icon: 'wifi' | 'globe';
+    title: string;
+    description: string;
+    status?: ReactNode;
+  }) => (
+    <View style={styles.cardHeading}>
+      <View style={styles.cardIcon}>
+        <Icon name={icon} size={18} color={theme.colors.text} />
+      </View>
+      <View style={styles.rowText}>
+        <View style={styles.cardTitleRow}>
+          <Text style={styles.cardTitle}>{title}</Text>
+          {status}
+        </View>
+        <Text style={styles.caption}>{description}</Text>
       </View>
     </View>
   );
@@ -789,31 +874,34 @@ export function StaticPreviewSheet({
     return (
       <View
         style={[styles.card, share ? styles.cardLocalActive : null]}
-        accessibilityLabel="Open on your network"
+        accessibilityLabel="On your network"
       >
-        <View style={styles.cardHeader}>
-          <Text style={styles.label}>OPEN ON YOUR NETWORK</Text>
-          {share ? (
+        {renderCardHeading({
+          icon: 'wifi',
+          title: 'On your network',
+          description: 'Straight from your Verity server, at home or over VPN. No PIN needed.',
+          status: share ? (
             <View style={[styles.badge, styles.badgeLocal]}>
               <View style={[styles.badgeDot, styles.badgeDotLocal]} />
-              <Text style={styles.badgeText}>Active</Text>
+              <Text style={styles.badgeText}>On</Text>
             </View>
-          ) : null}
-        </View>
-        <Text style={styles.caption}>
-          For you and devices on your server’s network. No access protection, no TLS.
-        </Text>
+          ) : null,
+        })}
         <View style={styles.actions}>
           <Pressable
             onPress={() => void openLocal(selection)}
             disabled={busy !== undefined}
             accessibilityRole="button"
-            accessibilityLabel="Open"
+            accessibilityLabel="Open in browser"
             accessibilityState={{ disabled: busy !== undefined, busy: working }}
             style={[styles.primaryButton, styles.actionGrow]}
           >
-            {working ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-            <Text style={styles.primaryText}>{working ? 'Opening…' : 'Open'}</Text>
+            {working ? (
+              <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+            ) : (
+              <Icon name="external-link" size={16} color={theme.colors.onPrimary} />
+            )}
+            <Text style={styles.primaryText}>{working ? 'Opening…' : 'Open in browser'}</Text>
           </Pressable>
           <Pressable
             onPress={() => void copyLocal(selection)}
@@ -834,7 +922,7 @@ export function StaticPreviewSheet({
         </View>
         {share ? (
           <View style={styles.cardFooter}>
-            <Text style={styles.link} numberOfLines={1}>
+            <Text style={styles.linkMuted} numberOfLines={1}>
               {share.url}
             </Text>
             <Pressable
@@ -844,13 +932,18 @@ export function StaticPreviewSheet({
               accessibilityLabel="Stop local access"
               hitSlop={8}
             >
-              <Text style={styles.dangerText}>{busy === 'stop-local' ? 'Stopping…' : 'Stop'}</Text>
+              <Text style={styles.dangerText}>
+                {busy === 'stop-local' ? 'Turning off…' : 'Turn off'}
+              </Text>
             </Pressable>
           </View>
         ) : null}
       </View>
     );
   };
+
+  const publicDescription =
+    'A link through Uplink for anyone you send it to. Protected by a PIN, expires automatically.';
 
   const renderPublicCard = (selection: PreviewTarget) => {
     const share = publicShareFor(selection);
@@ -861,23 +954,32 @@ export function StaticPreviewSheet({
       return (
         <View
           style={[styles.card, styles.cardPublicActive, stopping ? styles.cardDimmed : null]}
-          accessibilityLabel="Share publicly"
+          accessibilityLabel="Over the internet"
         >
-          <View style={styles.cardHeader}>
-            <Text style={styles.label}>SHARE PUBLICLY</Text>
-            <View style={[styles.badge, styles.badgePublic]}>
-              <View
-                style={[styles.badgeDot, pending ? styles.badgeDotPending : styles.badgeDotPublic]}
-              />
-              <Text style={styles.badgeText}>
-                {stopping || share.state === 'revoking'
-                  ? 'Stopping'
-                  : share.state === 'creating'
-                    ? 'Starting'
-                    : `Active ${expiryLabel(share.expiresAt)}`}
-              </Text>
-            </View>
-          </View>
+          {renderCardHeading({
+            icon: 'globe',
+            title: 'Over the internet',
+            description: share.pinLocked
+              ? 'Visitors need the link and the PIN.'
+              : 'Send link and PIN to whoever should see it.',
+            status: (
+              <View style={[styles.badge, styles.badgePublic]}>
+                <View
+                  style={[
+                    styles.badgeDot,
+                    pending ? styles.badgeDotPending : styles.badgeDotPublic,
+                  ]}
+                />
+                <Text style={styles.badgeText}>
+                  {stopping || share.state === 'revoking'
+                    ? 'Stopping'
+                    : share.state === 'creating'
+                      ? 'Starting'
+                      : `Live ${expiryLabel(share.expiresAt)}`}
+                </Text>
+              </View>
+            ),
+          })}
           {share.publicOrigin ? (
             <View style={styles.linkBox}>
               <Text style={styles.linkLabel}>LINK</Text>
@@ -939,7 +1041,7 @@ export function StaticPreviewSheet({
                   accessibilityLabel="Share link and PIN"
                 >
                   <Icon name="share" size={16} color={theme.colors.onPrimary} />
-                  <Text style={styles.primaryText}>Share</Text>
+                  <Text style={styles.primaryText}>Send link and PIN</Text>
                 </Pressable>
               ) : null}
               <Pressable
@@ -965,9 +1067,7 @@ export function StaticPreviewSheet({
             </View>
           ) : null}
           <View style={styles.cardFooter}>
-            <Text style={styles.caption}>
-              {`Visitors need link and PIN · ${remainingLabel(share.expiresAt)}`}
-            </Text>
+            <Text style={styles.caption}>{remainingLabel(share.expiresAt)}</Text>
             <Pressable
               onPress={() => stopPublic(share)}
               disabled={busy !== undefined}
@@ -976,7 +1076,7 @@ export function StaticPreviewSheet({
               accessibilityState={{ disabled: busy !== undefined, busy: stopping }}
               hitSlop={8}
             >
-              <Text style={styles.dangerText}>{stopping ? 'Stopping…' : 'Stop'}</Text>
+              <Text style={styles.dangerText}>{stopping ? 'Stopping…' : 'Stop sharing'}</Text>
             </Pressable>
           </View>
         </View>
@@ -985,21 +1085,22 @@ export function StaticPreviewSheet({
     if (publicSharing !== 'available') {
       const premium = publicSharing === 'premium-required';
       return (
-        <View style={styles.card} accessibilityLabel="Share publicly">
-          <View style={styles.cardHeader}>
-            <Text style={styles.label}>SHARE PUBLICLY</Text>
-            <View style={[styles.badge, premium ? styles.badgePremium : styles.badgeMuted]}>
-              <View
-                style={[styles.badgeDot, premium ? styles.badgeDotPremium : styles.badgeDotMuted]}
-              />
-              <Text style={styles.badgeText}>
-                {premium ? 'Premium' : 'Temporarily unavailable'}
-              </Text>
-            </View>
-          </View>
-          <Text style={styles.caption}>
-            A link through Uplink, with a PIN and an expiry, for anyone you send it to.
-          </Text>
+        <View style={styles.card} accessibilityLabel="Over the internet">
+          {renderCardHeading({
+            icon: 'globe',
+            title: 'Over the internet',
+            description: publicDescription,
+            status: (
+              <View style={[styles.badge, premium ? styles.badgePremium : styles.badgeMuted]}>
+                <View
+                  style={[styles.badgeDot, premium ? styles.badgeDotPremium : styles.badgeDotMuted]}
+                />
+                <Text style={styles.badgeText}>
+                  {premium ? 'Premium' : 'Temporarily unavailable'}
+                </Text>
+              </View>
+            ),
+          })}
           <Text style={styles.body}>
             {premium
               ? 'Public sharing is part of Verity Premium.'
@@ -1021,12 +1122,13 @@ export function StaticPreviewSheet({
     const otherFolder = conflictingFolderShare(selection);
     if (otherFolder) {
       return (
-        <View style={styles.card} accessibilityLabel="Share publicly">
-          <Text style={styles.label}>SHARE PUBLICLY</Text>
-          <Text style={styles.body}>
-            Only one folder can be shared publicly per session. Stop the existing link before
-            sharing another folder.
-          </Text>
+        <View style={styles.card} accessibilityLabel="Over the internet">
+          {renderCardHeading({
+            icon: 'globe',
+            title: 'Over the internet',
+            description:
+              'Only one folder per session can be online. Stop the existing link before sharing another folder.',
+          })}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Manage existing folder link"
@@ -1041,58 +1143,59 @@ export function StaticPreviewSheet({
       );
     }
     return (
-      <View style={styles.card} accessibilityLabel="Share publicly">
-        <View style={styles.cardHeader}>
-          <Text style={styles.label}>SHARE PUBLICLY</Text>
-          {justStopped ? (
+      <View style={styles.card} accessibilityLabel="Over the internet">
+        {renderCardHeading({
+          icon: 'globe',
+          title: 'Over the internet',
+          description: publicDescription,
+          status: justStopped ? (
             <Text style={styles.caption} accessibilityLiveRegion="polite">
               Link stopped
             </Text>
-          ) : null}
-        </View>
-        <Text style={styles.caption}>
-          A link through Uplink, with a PIN and an expiry, for anyone you send it to.
-        </Text>
-        <Text style={styles.label}>EXPIRES AFTER</Text>
-        <View style={styles.durations}>
-          {PUBLIC_PREVIEW_DURATIONS.map((option) => (
-            <Pressable
-              key={option.seconds}
-              onPress={() => setDuration(option.seconds)}
-              disabled={creating}
-              accessibilityRole="radio"
-              accessibilityLabel={option.a11y}
-              accessibilityState={{ selected: duration === option.seconds }}
-              style={[styles.duration, duration === option.seconds ? styles.durationActive : null]}
-            >
-              <Text
-                style={
-                  duration === option.seconds ? styles.durationTextActive : styles.durationText
-                }
+          ) : null,
+        })}
+        <View style={styles.durationGroup}>
+          <Text style={styles.label}>LINK EXPIRES AFTER</Text>
+          <View style={styles.durations}>
+            {PUBLIC_PREVIEW_DURATIONS.map((option) => (
+              <Pressable
+                key={option.seconds}
+                onPress={() => setDuration(option.seconds)}
+                disabled={creating}
+                accessibilityRole="radio"
+                accessibilityLabel={option.a11y}
+                accessibilityState={{ selected: duration === option.seconds }}
+                style={[
+                  styles.duration,
+                  duration === option.seconds ? styles.durationActive : null,
+                ]}
               >
-                {option.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <View style={styles.accessNote}>
-          <Icon name="lock" size={18} color={theme.colors.textMuted} />
-          <View style={styles.rowText}>
-            <Text style={styles.accessTitle}>Protected by a PIN</Text>
-            <Text style={styles.caption}>You get it together with the link.</Text>
+                <Text
+                  style={
+                    duration === option.seconds ? styles.durationTextActive : styles.durationText
+                  }
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            ))}
           </View>
         </View>
         <Pressable
           onPress={() => void createPublic(selection)}
           disabled={busy !== undefined}
           accessibilityRole="button"
-          accessibilityLabel={creating ? 'Creating link' : 'Create public link'}
+          accessibilityLabel={creating ? 'Creating link' : 'Create link with PIN'}
           accessibilityState={{ disabled: busy !== undefined, busy: creating }}
-          style={styles.primaryButton}
+          style={styles.secondaryButton}
         >
-          {creating ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-          <Text style={styles.primaryText}>
-            {creating ? 'Creating link…' : 'Create public link'}
+          {creating ? (
+            <ActivityIndicator size="small" color={theme.colors.text} />
+          ) : (
+            <Icon name="lock" size={16} color={theme.colors.text} />
+          )}
+          <Text style={styles.secondaryText}>
+            {creating ? 'Creating link…' : 'Create link with PIN'}
           </Text>
         </Pressable>
         {creating ? (
@@ -1105,17 +1208,16 @@ export function StaticPreviewSheet({
   };
 
   const renderAccess = (selection: PreviewTarget) => (
-    <View style={styles.content}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.list}
-        accessibilityLabel="Preview access"
-      >
-        {renderLocalCard(selection)}
-        {renderPublicCard(selection)}
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </ScrollView>
-    </View>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.list}
+      accessibilityLabel="Preview access"
+    >
+      <Text style={styles.caption}>How do you want to open it?</Text>
+      {renderLocalCard(selection)}
+      {renderPublicCard(selection)}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </ScrollView>
   );
 
   return (
@@ -1156,7 +1258,16 @@ export function StaticPreviewSheet({
               <Icon name="x" size={20} color={theme.colors.textMuted} />
             </Pressable>
           </View>
-          {target ? renderAccess(target) : browsing ? renderBrowser() : renderTargetList()}
+          <View style={styles.content}>
+            {target ? (
+              renderAccess(target)
+            ) : (
+              <>
+                {devServersSupported ? renderTabs() : null}
+                {activeTab === 'server' ? renderServerTab() : renderFolderTab()}
+              </>
+            )}
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -1211,29 +1322,69 @@ const styles = StyleSheet.create((theme) => ({
   error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
   loading: { padding: theme.spacing.md },
   empty: { color: theme.colors.textMuted, padding: theme.spacing.sm, fontSize: theme.text.sm },
-  emptyRow: {
+  sectionLabel: { marginTop: theme.spacing.md },
+  emptyCard: {
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    paddingVertical: theme.spacing.xl,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: theme.colors.border,
+  },
+  emptyTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  tabs: {
+    flexDirection: 'row',
+    gap: 4,
+    padding: 4,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  tab: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.sm,
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    minHeight: 40,
+    borderRadius: theme.radius.sm,
   },
+  tabActive: { backgroundColor: theme.colors.surface },
+  tabText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
+  tabTextActive: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.tone.done },
   row: {
-    gap: theme.spacing.sm,
-    padding: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    minHeight: 56,
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
   rowPressed: { borderColor: theme.colors.primary },
-  rowMain: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  rowIcon: { width: 22, alignItems: 'center' },
   rowText: { flex: 1, minWidth: 0, gap: 2 },
   rowTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
   rowPort: { color: theme.colors.textMuted, fontWeight: '500' },
   rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
-  serverDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.done },
+  serverDot: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.tone.done,
+  },
   serverDotLoopback: { backgroundColor: theme.colors.tone.attention },
-  badges: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.xs },
+  badges: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.xs, marginTop: 4 },
   badge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1259,7 +1410,15 @@ const styles = StyleSheet.create((theme) => ({
   badgeText: { color: theme.colors.text, fontSize: theme.text.xs, fontWeight: '600' },
   inlineAction: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   inlineActionText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
-  browserHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  browserHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    minHeight: 40,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  browserBack: { width: 22, alignItems: 'center' },
+  browserList: { paddingBottom: theme.spacing.md },
   browserTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
   fileRow: {
     flexDirection: 'row',
@@ -1269,6 +1428,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.xs,
   },
   fileName: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.md },
+  fileNameEntry: { color: theme.colors.text },
   card: {
     gap: theme.spacing.md,
     padding: theme.spacing.md,
@@ -1277,6 +1437,25 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
+  cardHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
+  cardIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  cardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  cardTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
   cardLocalActive: { borderColor: theme.colors.tone.done },
   cardPublicActive: { borderColor: theme.colors.primary },
   cardDimmed: { opacity: 0.7 },
@@ -1321,6 +1500,7 @@ const styles = StyleSheet.create((theme) => ({
   secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
   dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
   link: { flex: 1, minWidth: 0, color: theme.colors.text, fontSize: theme.text.sm },
+  linkMuted: { flex: 1, minWidth: 0, color: theme.colors.textMuted, fontSize: theme.text.sm },
   linkBox: {
     gap: theme.spacing.xs,
     padding: theme.spacing.md,
@@ -1339,6 +1519,7 @@ const styles = StyleSheet.create((theme) => ({
     letterSpacing: 2,
     fontVariant: ['tabular-nums'],
   },
+  durationGroup: { gap: theme.spacing.xs },
   durations: {
     flexDirection: 'row',
     gap: 4,
@@ -1357,6 +1538,4 @@ const styles = StyleSheet.create((theme) => ({
   durationActive: { backgroundColor: theme.colors.primary },
   durationText: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
   durationTextActive: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '700' },
-  accessNote: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
-  accessTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
 }));

@@ -3616,6 +3616,9 @@ export function SessionChat({
       keyboardVerticalOffset={0}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
+      {/* A running server gets one compact row with the two ways to reach it,
+          named by who can see it: you on your own network, or anyone over the
+          internet with a PIN. */}
       {session.devServers
         ?.filter((server) => server.scope !== 'project')
         .map((server) => (
@@ -3625,9 +3628,10 @@ export function SessionChat({
             accessibilityLabel={`${server.name} is running on port ${String(server.port)}`}
           >
             <View style={styles.detectedPreviewTitle}>
-              <Icon name="monitor" size={18} color={theme.colors.primary} />
-              <Text style={styles.detectedPreviewName}>
-                {`${server.name} :${String(server.port)} is running`}
+              <View style={styles.detectedPreviewDot} />
+              <Text style={styles.detectedPreviewName} numberOfLines={1}>
+                {server.name}
+                <Text style={styles.detectedPreviewPort}>{` :${String(server.port)} running`}</Text>
               </Text>
             </View>
             <View style={styles.detectedPreviewActions}>
@@ -3636,13 +3640,15 @@ export function SessionChat({
                 disabled={previewOpening !== null}
                 onPress={() => void openDetectedLocally(server)}
                 accessibilityRole="button"
-                accessibilityLabel={`Open ${server.name} locally`}
+                accessibilityLabel={`Open ${server.name} on your network`}
               >
                 {previewOpening === server.port ? (
                   <ActivityIndicator size="small" color={theme.colors.primary} />
-                ) : null}
+                ) : (
+                  <Icon name="wifi" size={14} color={theme.colors.primary} />
+                )}
                 <Text style={styles.headerPreviewActiveText}>
-                  {previewOpening === server.port ? 'Opening…' : 'Open'}
+                  {previewOpening === server.port ? 'Opening…' : 'Open on network'}
                 </Text>
               </Pressable>
               <Pressable
@@ -3652,9 +3658,10 @@ export function SessionChat({
                   setStaticPreviewOpen(true);
                 }}
                 accessibilityRole="button"
-                accessibilityLabel={`Share ${server.name} publicly`}
+                accessibilityLabel={`Share ${server.name} over the internet`}
               >
-                <Text style={styles.headerPreviewActiveText}>Share</Text>
+                <Icon name="globe" size={14} color={theme.colors.primary} />
+                <Text style={styles.headerPreviewActiveText}>Share online</Text>
               </Pressable>
             </View>
           </View>
@@ -9681,31 +9688,58 @@ const styles = StyleSheet.create((theme) => ({
   detectedPreviewCard: {
     marginHorizontal: theme.spacing.md,
     marginVertical: theme.spacing.xs,
-    padding: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    paddingLeft: theme.spacing.md,
+    paddingRight: theme.spacing.xs,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    gap: theme.spacing.sm,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    columnGap: theme.spacing.md,
+    rowGap: theme.spacing.xs,
   },
-  detectedPreviewTitle: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  detectedPreviewTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    flexShrink: 1,
+    minWidth: 120,
+    minHeight: 40,
+  },
+  detectedPreviewDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.tone.done,
+  },
   detectedPreviewName: {
     flexShrink: 1,
-    color: theme.colors.textMuted,
+    color: theme.colors.text,
     fontSize: 13 * theme.fontScale,
+    fontWeight: '600',
   },
-  detectedPreviewActions: { flexDirection: 'row', gap: theme.spacing.sm, flexWrap: 'wrap' },
+  detectedPreviewPort: { color: theme.colors.textMuted, fontWeight: '400' },
+  detectedPreviewActions: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+    flexGrow: 1,
+    justifyContent: 'flex-end',
+  },
   detectedPreviewButton: {
     flexDirection: 'row',
-    gap: theme.spacing.sm,
-    minHeight: 44,
-    flexGrow: 1,
+    gap: 6,
+    minHeight: 40,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   headerPreviewActiveText: {
     color: theme.colors.primary,
