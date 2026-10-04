@@ -1,3 +1,5 @@
+import { captureJson } from './capture-json.mjs';
+import { promotionChangelog, type PromotionRelease } from './promotion-changelog.mjs';
 import { createPrivateKey, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -206,10 +208,19 @@ export function propose(inputPath = process.argv[3] ?? '') {
   ) as { number: number }[];
   if (pulls.length > 1) throw new Error('Multiple production PRs');
   const title = `chore(release): promote ${product} ${candidate.version}`;
+  const releases = (
+    captureJson('gh', [
+      'api',
+      '--paginate',
+      '--slurp',
+      `repos/${repository}/releases?per_page=100`,
+    ]) as PromotionRelease[][]
+  ).flat();
+  const changelog = promotionChangelog(releases, candidate.product, candidate.version);
   const bodyFile = `${process.env.RUNNER_TEMP ?? '/tmp'}/server-production-pr.md`;
   writeFileSync(
     bodyFile,
-    `Promotes the verified Staging candidate ${candidate.version} to production.\n\nSource: ${candidate.source}\n\nMerging approves the exact recorded artifacts in ${manifest}. Test Staging before merging. The release remains a prerelease until production publication finishes.\n`,
+    `Promotes the verified Staging candidate ${candidate.version} to production.\n\nSource: ${candidate.source}\n\n${changelog}\n\nMerging approves the exact recorded artifacts in ${manifest}. Test Staging before merging. The release remains a prerelease until production publication finishes.\n`,
   );
   if (pulls.length)
     gh('pr', 'edit', String(pulls[0]!.number), '--title', title, '--body-file', bodyFile);

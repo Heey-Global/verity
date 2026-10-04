@@ -1,3 +1,4 @@
+import { writeSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({
   candidate: {
@@ -15,13 +16,20 @@ const fixture = vi.hoisted(() => ({
   deleted: false,
   calls: [] as { command: string; args: string[] }[],
 }));
-vi.mock('node:fs', async (original) => ({
-  ...(await original<typeof import('node:fs')>()),
-  readFileSync: vi.fn(() => JSON.stringify(fixture.candidate)),
-  writeFileSync: vi.fn(),
-}));
+vi.mock('node:fs', async (original) => {
+  const fs = await original<typeof import('node:fs')>();
+  return {
+    ...fs,
+    readFileSync: vi.fn((path: string) =>
+      path.endsWith('output.json')
+        ? fs.readFileSync(path, 'utf8')
+        : JSON.stringify(fixture.candidate),
+    ),
+    writeFileSync: vi.fn(),
+  };
+});
 vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn((command: string, args: string[]) => {
+  execFileSync: vi.fn((command: string, args: string[], options?: { stdio?: unknown[] }) => {
     fixture.calls.push({ command, args });
     if (command === 'git') {
       if (args[0] === 'ls-remote' && fixture.deleted) return '';
@@ -58,6 +66,22 @@ vi.mock('node:child_process', () => ({
         : '';
     if (args[0] === 'workflow') return '';
     const endpoint = args.find((arg) => arg.startsWith('repos/'));
+    if (endpoint?.endsWith('/releases?per_page=100')) {
+      writeSync(
+        options!.stdio![1] as number,
+        JSON.stringify([
+          [
+            {
+              tag_name: 'mobile-v2.0.0',
+              body: 'New native features',
+              draft: true,
+              prerelease: false,
+            },
+          ],
+        ]),
+      );
+      return '';
+    }
     if (endpoint?.includes('/contents/'))
       return JSON.stringify({
         content: Buffer.from(JSON.stringify(fixture.candidate)).toString('base64'),
@@ -74,6 +98,7 @@ vi.mock('node:child_process', () => ({
     throw new Error('Unhandled proposal call ' + args.join(' '));
   }),
 }));
+import { writeFileSync } from 'node:fs';
 import { propose } from './production-promotion.js';
 afterEach(() => {
   fixture.calls = [];
@@ -95,6 +120,10 @@ describe('rolling production proposals', () => {
       'origin',
       'c'.repeat(40) + ':refs/heads/automation/promote-mobile-production',
     ]);
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('server-production-pr.md'),
+      expect.stringContaining('New native features'),
+    );
     const signed = fixture.calls.findIndex((call) => call.args.includes('graphql'));
     expect(signed).toBeGreaterThan(reset);
     expect(fixture.calls[signed]?.args).toContain('expected=' + 'c'.repeat(40));
