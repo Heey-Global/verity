@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.3](https://github.com/Heey-Global/verity/compare/mobile-v1.52.2...mobile-v1.52.3) (2026-10-04)
+
+
+### Bug Fixes
+
+* **mobile:** split preview into dev server and static file tabs ([#1128](https://github.com/Heey-Global/verity/issues/1128)) ([2a813a3](https://github.com/Heey-Global/verity/commit/2a813a31aad3734206fe8f645f2d8c5402730e04))
+
 ## [1.52.2](https://github.com/Heey-Global/verity/compare/mobile-v1.52.1...mobile-v1.52.2) (2026-10-04)
 
 
