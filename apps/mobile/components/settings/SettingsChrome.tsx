@@ -157,6 +157,7 @@ export function SettingsNavRow({
   status,
   onPress,
   accessibilityLabel,
+  disabled = false,
 }: {
   icon: IconName;
   title: string;
@@ -165,12 +166,19 @@ export function SettingsNavRow({
   status?: { intent: 'ready' | 'needsSetup' | 'optional' | 'transient'; label: string };
   onPress: () => void;
   accessibilityLabel?: string;
+  disabled?: boolean;
 }) {
   const { theme } = useUnistyles();
   return (
     <Pressable
-      style={({ pressed }) => [styles.navRow, pressed ? styles.pressed : null]}
+      style={({ pressed }) => [
+        styles.navRow,
+        disabled ? styles.buttonDisabled : null,
+        pressed ? styles.pressed : null,
+      ]}
       onPress={onPress}
+      disabled={disabled}
+      accessibilityState={{ disabled }}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
     >

@@ -47,106 +47,14 @@ it('shows the room overview and opens the Matrix account from its row', async ()
   setSearchParams({});
   render(<MatrixRoomsScreen />);
 
-  expect(await screen.findByText('Project chat')).toBeOnTheScreen();
-  expect(screen.getByText('Invitations')).toBeOnTheScreen();
-  expect(screen.getByText('Connected rooms')).toBeOnTheScreen();
+  expect(screen.queryByText('Project chat')).toBeNull();
+  expect(await screen.findByText('Connected rooms')).toBeOnTheScreen();
   expect(screen.getByText('Team room')).toBeOnTheScreen();
   expect(await screen.findByText('team/first · active')).toBeOnTheScreen();
   expect(screen.queryByText('project-one')).toBeNull();
   expect(screen.queryByLabelText('Matrix password')).toBeNull();
   fireEvent.press(screen.getByLabelText('Matrix account'));
   expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix/account');
-});
-
-it('assigns an invited room to a chosen project from the Matrix overview', async () => {
-  let finishBinding!: (result: unknown) => void;
-  const bindIntegrationSource = jest.fn().mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        finishBinding = resolve;
-      }),
-  );
-  mockCreateVerityClient.mockReturnValue({
-    listIntegrations: jest
-      .fn()
-      .mockResolvedValueOnce({ accounts: [], sources: [source] })
-      .mockResolvedValue({
-        accounts: [],
-        sources: [{ ...source, projectId: 'project-two', status: 'active' }],
-      }),
-    listProjects: jest.fn().mockResolvedValue([
-      { id: 'project-one', owner: 'team', repo: 'first' },
-      { id: 'project-two', owner: 'team', repo: 'second' },
-      { id: 'project-old', owner: 'team', repo: 'archived', archived: true },
-    ]),
-    bindIntegrationSource,
-  } as unknown as VerityClient);
-  setSearchParams({});
-  render(<MatrixRoomsScreen />);
-
-  fireEvent.press(await screen.findByText('Project chat'));
-  expect(await screen.findByText('team/second')).toBeOnTheScreen();
-  expect(screen.queryByText('team/archived')).toBeNull();
-  expect(bindIntegrationSource).not.toHaveBeenCalled();
-  fireEvent.press(screen.getByText('team/second'));
-  expect(screen.getByText('Connecting to team/second…')).toBeOnTheScreen();
-  expect(screen.queryByText('team/first')).toBeNull();
-  finishBinding({ ...source, projectId: 'project-two' });
-  await waitFor(() =>
-    expect(bindIntegrationSource).toHaveBeenCalledWith(
-      source.accountId,
-      source.sourceId,
-      'project-two',
-    ),
-  );
-  expect(await screen.findByText('team/second · active')).toBeOnTheScreen();
-});
-
-it('disconnects a connected room from its overview row after confirmation', async () => {
-  const disconnectIntegrationSource = jest.fn().mockResolvedValue(undefined);
-  const alert = jest.spyOn(Alert, 'alert').mockImplementation(jest.fn());
-  mockCreateVerityClient.mockReturnValue({
-    listIntegrations: jest.fn().mockResolvedValue({
-      accounts: [],
-      sources: [{ ...source, projectId: 'project-one', status: 'active' }],
-    }),
-    listProjects: jest
-      .fn()
-      .mockResolvedValue([{ id: 'project-one', owner: 'team', repo: 'first' }]),
-    disconnectIntegrationSource,
-  } as unknown as VerityClient);
-  render(<MatrixRoomsScreen />);
-
-  fireEvent.press(await screen.findByLabelText('Disconnect Project chat'));
-  expect(disconnectIntegrationSource).not.toHaveBeenCalled();
-  const actions = alert.mock.calls[0]?.[2];
-  await act(async () => {
-    actions?.find((action) => action.text === 'Disconnect')?.onPress?.();
-  });
-  await waitFor(() =>
-    expect(disconnectIntegrationSource).toHaveBeenCalledWith(source.accountId, source.sourceId),
-  );
-  alert.mockRestore();
-});
-
-it('keeps pause and resume available on the connected room row', async () => {
-  const pauseIntegrationSource = jest.fn().mockResolvedValue(undefined);
-  mockCreateVerityClient.mockReturnValue({
-    listIntegrations: jest.fn().mockResolvedValue({
-      accounts: [],
-      sources: [{ ...source, projectId: 'project-one', status: 'paused' }],
-    }),
-    listProjects: jest
-      .fn()
-      .mockResolvedValue([{ id: 'project-one', owner: 'team', repo: 'first' }]),
-    pauseIntegrationSource,
-  } as unknown as VerityClient);
-  render(<MatrixRoomsScreen />);
-
-  fireEvent.press(await screen.findByLabelText('Resume Project chat'));
-  await waitFor(() =>
-    expect(pauseIntegrationSource).toHaveBeenCalledWith(source.accountId, source.sourceId, false),
-  );
 });
 
 it('configures the Matrix account on its detail screen', async () => {

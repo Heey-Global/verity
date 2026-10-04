@@ -104,6 +104,13 @@ interface SessionSlideDecksTable {
 }
 
 /** Explicit Gmail access grant for one session. */
+interface ProjectGoogleConnectionsTable {
+  project_id: string;
+  service: 'gmail' | 'calendar' | 'contacts';
+  account_email: string;
+  enabled_at: ColumnType<Date, string | undefined, never>;
+}
+
 interface SessionGmailConnectionsTable {
   session_id: string;
   account_email: string;
@@ -1286,6 +1293,7 @@ export interface Database {
   control_plane_generation: ControlPlaneGenerationTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
+  project_google_connections: ProjectGoogleConnectionsTable;
   session_gmail_connections: SessionGmailConnectionsTable;
   session_calendar_connections: SessionCalendarConnectionsTable;
   session_contacts_connections: SessionContactsConnectionsTable;

@@ -47,7 +47,7 @@ jest.mock('../components/settings/SettingsChrome', () => {
   };
 });
 
-import ServicesSettingsScreen from '../app/settings/services';
+import ServicesSettingsScreen from '../app/settings/remote-access';
 
 it('keeps connection diagnostics reachable when Core settings cannot load', () => {
   render(<ServicesSettingsScreen />);

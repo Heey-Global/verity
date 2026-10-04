@@ -62,8 +62,10 @@ describe('settings index — destinations', () => {
   // Each row is the entry point to one of the sub-screens the settings surface
   // was split into. They are the only way to reach four of the five routes.
   it.each([
-    ['GitHub', '/settings/github'],
-    ['Connected services', '/settings/services'],
+    ['Secret store', '/settings/secret-store'],
+    ['Remote access', '/settings/remote-access'],
+    ['Meeting transcription', '/settings/transcription'],
+    ['Connections', '/settings/services'],
     ['Server update', '/settings/server-update'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage paired devices', '/devices'],
@@ -90,7 +92,7 @@ describe('settings index — destinations', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('GitHub');
+    await screen.findByLabelText('Connections');
     expect(screen.queryByLabelText('Commit name')).toBeNull();
     expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
     expect(screen.queryByLabelText('Apply saved settings to running containers')).toBeNull();
@@ -105,8 +107,8 @@ describe('settings index — destinations', () => {
     );
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('GitHub');
-    expect(screen.getByText('Needs setup')).toBeOnTheScreen();
+    await screen.findByLabelText('Connections');
+    expect(screen.queryByText('Needs setup')).toBeNull();
     // Technical App/installation identifiers never appear in a summary row.
     expect(screen.queryByText('78901234')).toBeNull();
   });
@@ -115,7 +117,7 @@ describe('settings index — destinations', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('sealed'));
     render(<SettingsIndexScreen />);
 
-    expect(await screen.findByText('Locked')).toBeOnTheScreen();
+    expect(await screen.findByLabelText('Secret store')).toBeOnTheScreen();
   });
 
   // Settings is the way back to an update once the overview banner has been
@@ -169,7 +171,7 @@ describe('settings index — setup checklist', () => {
 
   it('sends every outstanding step to a screen that can fix it', async () => {
     renderWithOutstandingSteps();
-    await screen.findByLabelText('GitHub');
+    await screen.findByLabelText('Connections');
 
     const items = CHECKLIST.kind === 'ready' ? CHECKLIST.items : [];
     expect(items.length).toBeGreaterThan(0);
@@ -191,14 +193,14 @@ describe('settings index — setup checklist', () => {
     expect(secretStore).toBeDefined();
 
     fireEvent.press(await screen.findByLabelText(`${secretStore!.title}. ${secretStore!.detail}`));
-    expect(mockPush).toHaveBeenCalledWith('/settings/services');
+    expect(mockPush).toHaveBeenCalledWith('/settings/secret-store');
   });
 
   it('drops the checklist entirely once nothing is outstanding', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('GitHub');
+    await screen.findByLabelText('Connections');
     // "All set" is a headline with nothing to act on; the screen shows the rows
     // instead of a panel of ticks.
     expect(screen.queryByText('All set')).toBeNull();
@@ -306,7 +308,7 @@ describe('settings index — legacy deep links', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('GitHub');
+    await screen.findByLabelText('Connections');
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -316,7 +318,7 @@ describe('settings index — legacy deep links', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('GitHub');
+    await screen.findByLabelText('Connections');
     expect(mockReplace).not.toHaveBeenCalled();
   });
 });

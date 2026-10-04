@@ -7,11 +7,6 @@
 import {
   settingsChecklist,
   settingsChecklistHeadline,
-  commitAuthorReady,
-  githubRepositoryAccessReady,
-  secretStoreManaged,
-  secretStoreReady,
-  verifiedCommitsReady,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
@@ -52,7 +47,7 @@ const APP_VERSION_LABEL = runningReleaseVersion(Application.nativeApplicationVer
 // without a destination — a row that explains a problem but goes nowhere is
 // worse than no row.
 const CHECKLIST_ROUTES: Readonly<Record<SettingsChecklistItemId, Href>> = {
-  secretStore: '/settings/services' as Href,
+  secretStore: '/settings/secret-store' as Href,
   githubAccess: '/settings/github' as Href,
   commitAuthor: '/settings/github' as Href,
   verifiedCommits: '/settings/github' as Href,
@@ -105,11 +100,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   }, [checkingForUpdate]);
 
   const checklist = settingsChecklist({ settings, secretStatus, failed });
-  const githubReady =
-    githubRepositoryAccessReady(settings) &&
-    commitAuthorReady(settings) &&
-    verifiedCommitsReady(settings);
-  const servicesNeedsUnlock = secretStoreManaged(secretStatus) && !secretStoreReady(secretStatus);
 
   return (
     <SettingsScaffold
@@ -153,39 +143,51 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Setup">
+      <SettingsGroup title="Connections">
         <SettingsListPanel>
           <SettingsNavRow
-            icon="github"
-            title="GitHub"
-            subtitle="Repository access, commit author, signing key"
-            status={
-              loading
-                ? undefined
-                : {
-                    intent: githubReady ? 'ready' : 'needsSetup',
-                    label: githubReady ? 'Ready' : 'Needs setup',
-                  }
-            }
-            onPress={() => router.push('/settings/github')}
-          />
-          <SettingsNavRow
-            icon="key"
-            title="Connected services"
-            subtitle="Secret store, AI logins, transcription, MCP, Matrix"
-            status={
-              !loading && servicesNeedsUnlock
-                ? { intent: 'needsSetup', label: 'Locked' }
-                : undefined
-            }
+            icon="link"
+            title="Connections"
+            subtitle="AI, code, documents and other services"
             onPress={() => router.push('/settings/services')}
           />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Server">
+        <SettingsListPanel>
           <SettingsNavRow
             icon="download"
             title="Server update"
             subtitle={updateVersion !== null ? `Version ${updateVersion} available` : undefined}
             status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
             onPress={() => router.push('/settings/server-update')}
+          />
+          <SettingsNavRow
+            icon="globe"
+            title="Remote access"
+            subtitle="Verity Uplink"
+            onPress={() => router.push('/settings/remote-access')}
+          />
+          <SettingsNavRow
+            icon="mic"
+            title="Meeting transcription"
+            onPress={() => router.push('/settings/transcription')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Security">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="key"
+            title="Secret store"
+            subtitle="Master password and encrypted credentials"
+            onPress={() => router.push('/settings/secret-store')}
+          />
+          <SettingsNavRow
+            icon="smartphone"
+            title="Paired devices"
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage paired devices"
           />
         </SettingsListPanel>
       </SettingsGroup>
@@ -197,29 +199,15 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         <SettingsListPanel>
           <SettingsNavRow
             icon="server"
-            title="Server"
+            title="Server address"
             value={getVerityBaseUrl() ?? 'Not set'}
             onPress={() => router.push('/onboarding/server-url?reconfigure=1')}
             accessibilityLabel="Change server address"
-          />
-          <SettingsNavRow
-            icon="smartphone"
-            title="Paired devices"
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage paired devices"
           />
         </SettingsListPanel>
       </SettingsGroup>
 
       <SettingsGroup title="Advanced">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="mic"
-            title="Live STT test"
-            onPress={() => router.push('/settings/live-meeting-stt')}
-            accessibilityLabel="Test live meeting transcription engines"
-          />
-        </SettingsListPanel>
         <SettingsPanel>
           <Text style={styles.disclosureTitle}>Verity Control</Text>
           <Text style={styles.reproSubtitle}>

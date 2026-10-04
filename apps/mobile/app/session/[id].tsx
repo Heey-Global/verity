@@ -165,6 +165,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../../components/Icon';
+import { ConnectionDiscoveryHint } from '../../components/ConnectionDiscoveryHint';
 import { AgentLoopCockpit } from '../../components/AgentLoopCockpit';
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
@@ -203,12 +204,12 @@ import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
+import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
-  runCalendarAuth,
-  runContactsAuth,
-  runGmailAuth,
-  ensureGoogleWorkspaceAccess,
-} from '../../lib/googleDrive';
+  connectSessionGoogleService,
+  disconnectSessionGoogleService,
+  type GoogleService,
+} from '../../lib/sessionGoogleAccess';
 import {
   type ClickModifiers,
   type DragFileItem,
@@ -2615,7 +2616,7 @@ export function SessionChat({
               .updateMeetingTranscriptionBackendMode(mode)
               .then(() => {
                 if (mode === 'external' && !readiness.externalConfigured) {
-                  router.push('/settings/services');
+                  router.push('/settings/transcription');
                 } else {
                   uploadMeetingAudioRef.current();
                 }
@@ -2646,7 +2647,7 @@ export function SessionChat({
             'This saved backend is no longer available. Configure the OpenAI-compatible API in Settings.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2657,7 +2658,7 @@ export function SessionChat({
             'Add the API URL and model before uploading meeting audio. Add a token if your service requires one.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2816,7 +2817,7 @@ export function SessionChat({
                 'configure-external'
               ) {
                 defer();
-                router.push('/settings/services');
+                router.push('/settings/transcription');
                 return;
               }
               await resumePending();
@@ -2851,7 +2852,7 @@ export function SessionChat({
             : 'Add the external API URL and model before the pending recording can be uploaded.',
           [
             { text: 'Not now', style: 'cancel' },
-            { text: 'Open settings', onPress: () => router.push('/settings/services') },
+            { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
           ],
         );
       }
@@ -2900,158 +2901,85 @@ export function SessionChat({
     voice.abort();
     router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
   }, [sessionId, voice]);
-  const onConnectGmail = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionGmailConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Gmail not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
-            );
+  const onConnectGoogleService = useCallback(
+    (service: GoogleService) => {
+      setAttachMenuOpen(false);
+      void connectSessionGoogleService(client, sessionId, projectId, service)
+        .then((result) => {
+          if (result.kind === 'project' && projectId) {
+            router.push({
+              pathname: '/project/[id]/settings/services',
+              params: { id: projectId, section: 'google' },
+            });
+          } else if (result.kind === 'session') {
+            setGmailConnection(result.connections.gmail);
+            setCalendarConnection(result.connections.calendar);
+            setContactsConnection(result.connections.contacts);
+          }
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not connect Google service',
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
+    },
+    [client, projectId, sessionId],
+  );
+  const onConnectGmail = useCallback(
+    () => onConnectGoogleService('gmail'),
+    [onConnectGoogleService],
+  );
+  const onConnectCalendar = useCallback(
+    () => onConnectGoogleService('calendar'),
+    [onConnectGoogleService],
+  );
+  const onConnectContacts = useCallback(
+    () => onConnectGoogleService('contacts'),
+    [onConnectGoogleService],
+  );
+  const disableGoogleService = useCallback(
+    (service: GoogleService) => {
+      void disconnectSessionGoogleService(client, sessionId, projectId, service)
+        .then((result) => {
+          if (result === 'project' && projectId) {
+            router.push({
+              pathname: '/project/[id]/settings/services',
+              params: { id: projectId, section: 'google' },
+            });
             return;
           }
-          const auth = await runGmailAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectGmail({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
-        );
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionGmail(sessionId);
-        setGmailConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Gmail',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableGmail = useCallback(() => {
-    void client
-      .disableSessionGmail(sessionId)
-      .then(() =>
-        setGmailConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Gmail',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
-  const onConnectCalendar = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionCalendarConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Calendar not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+          if (service === 'gmail')
+            setGmailConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
             );
-            return;
-          }
-          const auth = await runCalendarAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectCalendar({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionCalendar(sessionId);
-        setCalendarConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Calendar',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableCalendar = useCallback(() => {
-    void client
-      .disableSessionCalendar(sessionId)
-      .then(() =>
-        setCalendarConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Calendar',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
-  const onConnectContacts = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionContactsConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Contacts not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+          else if (service === 'calendar')
+            setCalendarConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
             );
-            return;
-          }
-          const auth = await runContactsAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectContacts({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
+          else
+            setContactsConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
+            );
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not disconnect Google service',
+            error instanceof Error ? error.message : String(error),
+          ),
         );
-        connection = await client.enableSessionContacts(sessionId);
-        setContactsConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Contacts',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableContacts = useCallback(() => {
-    void client
-      .disableSessionContacts(sessionId)
-      .then(() =>
-        setContactsConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Contacts',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
+    },
+    [client, projectId, sessionId],
+  );
+  const disableGmail = useCallback(() => disableGoogleService('gmail'), [disableGoogleService]);
+  const disableCalendar = useCallback(
+    () => disableGoogleService('calendar'),
+    [disableGoogleService],
+  );
+  const disableContacts = useCallback(
+    () => disableGoogleService('contacts'),
+    [disableGoogleService],
+  );
   const clearWorkspaceFile = useCallback(() => {
     if (workspaceFile === null) return;
     Alert.alert(
@@ -5389,6 +5317,16 @@ function SessionFilesSheet({
             {driveUnconfigured && projectId ? (
               <View style={styles.driveSetupNotice}>
                 <Text style={styles.sheetEmpty}>No Google Drive folder connected.</Text>
+                <ConnectionDiscoveryHint
+                  id={`drive.${projectId}`}
+                  onConnect={() => {
+                    onClose();
+                    router.push({
+                      pathname: '/project/[id]/settings/services',
+                      params: { id: projectId, section: 'drive' },
+                    });
+                  }}
+                />
                 <Pressable
                   onPress={() => {
                     onClose();

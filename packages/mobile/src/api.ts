@@ -1,3 +1,4 @@
+import { selectedOpenCodeModels } from '@verity/events';
 import {
   agentEventSchema,
   attachmentSchema,
@@ -957,7 +958,8 @@ export const onboardingStatusSchema = z.object({
   claudeConfigured: z.boolean(),
   codexConfigured: z.boolean(),
   complete: z.boolean(),
-  nextStep: z.enum(['master-password', 'github', 'first-project']).nullable(),
+  opencodeConfigured: z.boolean().optional(),
+  nextStep: z.enum(['master-password', 'github', 'first-project', 'ai-backends']).nullable(),
 });
 export type OnboardingStatus = z.infer<typeof onboardingStatusSchema>;
 
@@ -2619,6 +2621,70 @@ export class VerityClient {
     await this.request('/google-drive/disconnect', { method: 'POST' });
   }
 
+  async getConnectionUsage(): Promise<
+    Record<
+      'github' | 'claude' | 'codex' | 'opencode' | 'google' | 'matrix' | 'doppler' | 'mcp',
+      number
+    >
+  > {
+    const response = await this.request('/connections/usage', { method: 'GET' });
+    return z
+      .object({
+        github: z.number().int().nonnegative(),
+        claude: z.number().int().nonnegative(),
+        codex: z.number().int().nonnegative(),
+        opencode: z.number().int().nonnegative(),
+        google: z.number().int().nonnegative(),
+        matrix: z.number().int().nonnegative(),
+        doppler: z.number().int().nonnegative(),
+        mcp: z.number().int().nonnegative(),
+      })
+      .parse(await response.json());
+  }
+
+  async getGoogleConnection() {
+    const res = await this.request('/google/connection', { method: 'GET' });
+    return z
+      .object({
+        connected: z.boolean(),
+        accountEmail: z.string().nullable(),
+        scopes: z.array(z.string()),
+        projects: z.array(z.object({ id: z.string(), name: z.string() })),
+      })
+      .parse(await res.json());
+  }
+
+  async getProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<GmailSessionConnection & { legacySessionCount: number }> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema
+      .extend({ legacySessionCount: z.number().int().nonnegative() })
+      .parse(await res.json());
+  }
+
+  async enableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<GmailSessionConnection> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getSessionGmailConnection(sessionId: string): Promise<GmailSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
       method: 'GET',
@@ -2877,7 +2943,28 @@ export class VerityClient {
    *  launch before the operator has unlocked/created the master password. */
   async fetchOnboardingStatus(): Promise<OnboardingStatus> {
     const res = await this.request('/onboarding/status', { method: 'GET' });
-    return onboardingStatusSchema.parse(await res.json());
+    const status = onboardingStatusSchema.parse(await res.json());
+    // Older servers omit OpenCode from onboarding status. Preserve an already
+    // usable OpenCode-only installation when opening it with a newer app.
+    if (
+      status.opencodeConfigured === undefined &&
+      status.masterPasswordSet &&
+      !status.sealed &&
+      !status.claudeConfigured &&
+      !status.codexConfigured
+    ) {
+      try {
+        const settings = await this.getVeritySettings();
+        status.opencodeConfigured = Boolean(
+          settings?.opencodeApiKeyConfigured &&
+          settings.opencodeBaseUrl?.trim() &&
+          selectedOpenCodeModels(settings).length > 0,
+        );
+      } catch {
+        // A redacted or unauthorized status must continue through device unlock.
+      }
+    }
+    return status;
   }
 
   /** Challenge the stable server identity through the already pinned transport. */

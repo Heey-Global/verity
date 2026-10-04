@@ -4,7 +4,7 @@
 // paste boxes are write-only, so a subscription key typed under the keyboard is
 // not shown back anywhere. A plain ScrollView keeps its full height when the
 // keyboard opens — the keyboard just covers the bottom of it, and the last
-// group on a screen (Public Preview, on connected services) becomes unreachable
+// credential field on a screen (the Uplink key, in Remote access) becomes unreachable
 // with nothing to scroll into. Both tests here guard that: the scaffold scrolls
 // a focused field clear of the keyboard, and no settings screen scrolls through
 // anything else.
