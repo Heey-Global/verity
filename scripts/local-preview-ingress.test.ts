@@ -11,6 +11,8 @@ it('publishes the configured local preview range for both deployment owners', ()
     const service = compose.services[owner]!;
     const range = service.environment.VERITY_LOCAL_PREVIEW_PORT_RANGE!;
     expect(range).toBeDefined();
-    expect(service.ports).toContain(`${range}:${range}`);
+    expect(service.ports).toContain(
+      `${service.environment.VERITY_LOCAL_PREVIEW_BIND_ADDRESS}:${range}:${range}`,
+    );
   }
 });

@@ -13,19 +13,33 @@ export function localPreviewIngressMigration(
     ?.slice('VERITY_LOCAL_PREVIEW_PORT_RANGE='.length);
   const range = serverRange ?? configuredRange ?? '8100-8119';
   const ports = localPreviewPorts(range);
-  const missing = ports.filter((port) => !gateway.portBindings?.[`${port}/tcp`]?.length);
-  if (configuredRange === range && missing.length === 0) return undefined;
-  // TLS API ingress does not authorize exposing unauthenticated preview ports.
+  const configuredAddress = gateway.env
+    ?.find((entry) => entry.startsWith('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='))
+    ?.slice('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='.length);
+  const configured = bindAddress ?? configuredAddress ?? '0.0.0.0';
   const address =
-    bindAddress ??
-    gateway.env
-      ?.find((entry) => entry.startsWith('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='))
-      ?.slice('VERITY_LOCAL_PREVIEW_BIND_ADDRESS='.length) ??
-    '127.0.0.1';
+    configured.startsWith('[') && configured.endsWith(']') ? configured.slice(1, -1) : configured;
   if (!isIP(address)) throw new Error('local preview binding must be an IP address');
   const portBindings: ContainerReplacementConfig['portBindings'] = {};
-  for (const port of missing) {
+  for (const port of ports) {
+    const existing = gateway.portBindings?.[`${port}/tcp`];
+    if (
+      existing?.length &&
+      existing.every(
+        (binding) => (binding.HostIp || '0.0.0.0') === address && binding.HostPort === String(port),
+      )
+    )
+      continue;
     portBindings[`${port}/tcp`] = [{ HostIp: address, HostPort: String(port) }];
   }
-  return { env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: range }, portBindings };
+  if (
+    configuredRange === range &&
+    configuredAddress === configured &&
+    Object.keys(portBindings).length === 0
+  )
+    return undefined;
+  return {
+    env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: range, VERITY_LOCAL_PREVIEW_BIND_ADDRESS: configured },
+    portBindings,
+  };
 }
