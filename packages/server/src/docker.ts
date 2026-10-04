@@ -40,9 +40,14 @@ import * as http from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { HttpFetch, HttpResponse } from './github.js';
 
+/** Additive companion configuration applied only to the replacement container. */
+export interface ContainerReplacementConfig {
+  env: Record<string, string>;
+  portBindings: Record<string, Array<{ HostIp: string; HostPort: string }>>;
+}
+
 /** The subset of the Docker Engine REST API Verity calls. §17 socket-proxy
- *  scope: only those endpoints the proxy explicitly allows; unscoped endpoints
- *  return 403 and we don't reach them here. */
+ * scope: only those endpoints the proxy explicitly allows. */
 export interface DockerClient {
   /** Create a container without starting it (Engine `/containers/create`). The
    *  `{ Id }` of the new container is returned, NOT the running state. Rejects
@@ -94,11 +99,13 @@ export interface DockerClient {
   removeContainer(id: string): Promise<void>;
   /** Replace one host-infrastructure container with the same Docker config and
    * mounts but a different immutable image. The real client rolls the original
-   * config back if creation or startup of the successor fails. */
+   * config back if creation or startup of the successor fails. Optional config
+   * additions migrate companion ingress without changing the rollback source. */
   replaceContainerImage?(
     id: string,
     image: string,
     labels?: Record<string, string>,
+    config?: ContainerReplacementConfig,
   ): Promise<string>;
   /** Inspect a container — `{ State: { Running } }` is all the provisioner reads.
    *  404 → `ContainerNotFound`. Used to detect an already-running sibling
@@ -434,6 +441,7 @@ export interface ContainerInspect {
    *  its neighbours. 0 and 1024 are NOT the same answer here; see
    *  {@link ContainerSpec.cpuShares}. */
   cpuShares?: number | undefined;
+  portBindings?: ContainerReplacementConfig['portBindings'] | undefined;
   env?: string[] | undefined;
   /** Runtime mounts reported by inspect; secret jobs require this to be empty. */
   mountCount?: number | undefined;
@@ -1482,7 +1490,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       );
       if (!res.ok) throw await toDockerError(res, id);
     },
-    replaceContainerImage: async (id, image, labels) => {
+    replaceContainerImage: async (id, image, labels, replacementConfig) => {
       const replacementForLabel = 'verity.replacement-for';
       const replacementNameLabel = 'verity.replacement-name';
       const findReplacement = async (): Promise<{ id: string; name: string } | undefined> => {
@@ -1597,7 +1605,39 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         const replacementId = await createRawReplacement(
           `${name}-replacement-${id.slice(0, 12)}`,
           image,
-          original,
+          replacementConfig === undefined
+            ? original
+            : {
+                ...original,
+                Config: {
+                  ...original.Config,
+                  Env: [
+                    ...(isStringArray(original.Config?.Env) ? original.Config.Env : []).filter(
+                      (entry) => !Object.hasOwn(replacementConfig.env, entry.split('=')[0]!),
+                    ),
+                    ...Object.entries(replacementConfig.env).map(
+                      ([key, value]) => `${key}=${value}`,
+                    ),
+                  ],
+                  ExposedPorts: {
+                    ...(objectRecord(original.Config?.ExposedPorts)
+                      ? original.Config.ExposedPorts
+                      : {}),
+                    ...Object.fromEntries(
+                      Object.keys(replacementConfig.portBindings).map((port) => [port, {}]),
+                    ),
+                  },
+                },
+                HostConfig: {
+                  ...original.HostConfig,
+                  PortBindings: {
+                    ...(objectRecord(original.HostConfig?.PortBindings)
+                      ? original.HostConfig.PortBindings
+                      : {}),
+                    ...replacementConfig.portBindings,
+                  },
+                },
+              },
           name,
           targetEnvironment,
           {
@@ -1730,6 +1770,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         };
         NetworkSettings?: { Networks?: unknown };
         HostConfig?: {
+          PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
           ReadonlyRootfs?: unknown;
@@ -1824,6 +1865,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(typeof json.HostConfig?.CpuShares === 'number'
           ? { cpuShares: json.HostConfig.CpuShares }
           : {}),
+        ...(json.HostConfig?.PortBindings ? { portBindings: json.HostConfig.PortBindings } : {}),
         ...(isStringArray(json.Config?.Env) ? { env: json.Config.Env } : {}),
         ...(Array.isArray(json.Mounts)
           ? {

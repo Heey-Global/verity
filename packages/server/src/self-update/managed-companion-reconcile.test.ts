@@ -13,7 +13,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import type { ContainerInspect, ContainerSpec, DockerClient } from '../docker.js';
+import type {
+  ContainerInspect,
+  ContainerSpec,
+  DockerClient,
+  ContainerReplacementConfig,
+} from '../docker.js';
 import {
   reconcileManagedCompanions,
   publishAgentSeedAtomically,
@@ -69,6 +74,13 @@ function fake(images: { gateway: string; updater: string }) {
         id: gateway.id,
         running: true,
         image: images.gateway,
+        env: ['VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119'],
+        portBindings: Object.fromEntries(
+          Array.from({ length: 20 }, (_, i) => [
+            `${8100 + i}/tcp`,
+            [{ HostIp: '127.0.0.1', HostPort: String(8100 + i) }],
+          ]),
+        ),
       },
     ],
     [
@@ -100,11 +112,35 @@ function fake(images: { gateway: string; updater: string }) {
   const docker = {
     listContainers: vi.fn(async () => summaries),
     inspectContainer: vi.fn(async (id: string) => inspect.get(id)!),
-    replaceContainerImage: vi.fn(async (id: string, image: string) => {
-      replacements.push([id, image]);
-      inspect.set(id, { id, running: true, image });
-      return id;
-    }),
+    replaceContainerImage: vi.fn(
+      async (
+        id: string,
+        image: string,
+        _labels?: Record<string, string>,
+        config?: ContainerReplacementConfig,
+      ) => {
+        replacements.push([id, image]);
+        const previous = inspect.get(id);
+        inspect.set(id, {
+          ...previous,
+          id,
+          running: true,
+          image,
+          ...(config
+            ? {
+                env: [
+                  ...(previous?.env ?? []).filter(
+                    (entry) => !Object.hasOwn(config.env, entry.split('=')[0]!),
+                  ),
+                  ...Object.entries(config.env).map(([key, value]) => `${key}=${value}`),
+                ],
+                portBindings: { ...previous?.portBindings, ...config.portBindings },
+              }
+            : {}),
+        });
+        return id;
+      },
+    ),
     createContainer: vi.fn(async (spec: ContainerSpec) => {
       specs.push(spec);
       return { id: 'c'.repeat(64), warnings: [] };
@@ -148,6 +184,70 @@ function withoutCapability<T extends object, K extends keyof T>(value: T, key: K
 }
 
 describe('managed companion reconciliation', () => {
+  it('repairs legacy Gateway ingress even when its image already matches the target', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const id = 'a'.repeat(64);
+    state.inspect.set(id, {
+      id,
+      running: true,
+      image: targetImage,
+      portBindings: { '8082/tcp': [{ HostIp: '100.85.209.118', HostPort: '8082' }] },
+    });
+    await reconcileManagedCompanions({
+      managedRoot: '/managed',
+      docker: state.docker,
+      journal,
+      reconcileRunner: async () => undefined,
+    });
+    expect(state.docker.replaceContainerImage).toHaveBeenCalledWith(
+      id,
+      targetImage,
+      undefined,
+      expect.objectContaining({
+        env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119' },
+        portBindings: expect.objectContaining({
+          '8100/tcp': [{ HostIp: '100.85.209.118', HostPort: '8100' }],
+        }),
+      }),
+    );
+    await reconcileManagedCompanions({
+      managedRoot: '/managed',
+      docker: state.docker,
+      journal,
+      reconcileRunner: async () => undefined,
+    });
+    expect(state.docker.replaceContainerImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('migrates the Gateway to the running managed Server custom range', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const server = service('e'.repeat(64), 'managed-server', '');
+    server.labels['verity.managed-role'] = 'server';
+    server.labels['verity.managed-deployment-id'] = journal.deploymentId;
+    state.summaries.push(server);
+    state.inspect.set(server.id, {
+      id: server.id,
+      running: true,
+      image: targetImage,
+      env: ['VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9201'],
+    });
+    const id = 'a'.repeat(64);
+    state.inspect.set(id, {
+      ...state.inspect.get(id)!,
+      portBindings: { '8082/tcp': [{ HostIp: '127.0.0.1', HostPort: '8082' }] },
+    });
+    await reconcileManagedCompanions({
+      managedRoot: '/managed',
+      docker: state.docker,
+      journal,
+      reconcileRunner: async () => undefined,
+    });
+    expect(state.inspect.get(id)?.env).toContain('VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9201');
+    expect(state.inspect.get(id)?.portBindings?.['9201/tcp']).toEqual([
+      { HostIp: '127.0.0.1', HostPort: '9201' },
+    ]);
+  });
+
   it('publishes a complete seed from missing and interrupted directory states', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-agent-seed-'));
     const source = await seedSource(root);

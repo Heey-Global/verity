@@ -215,6 +215,82 @@ describe('createDockerClient (#174)', () => {
       { match: /\/containers\/new\/rename\?name=/, method: 'POST', resp: res({}) },
       { match: /\/containers\/old\?force=true&v=false/, method: 'DELETE', resp: res({}) },
     ];
+    it('applies ingress config to the successor while leaving the predecessor intact', async () => {
+      const migrationRoutes = routes(true);
+      migrationRoutes[0] = {
+        match: /\/containers\/old\/json/,
+        method: 'GET',
+        resp: res({
+          Id: 'old',
+          Name: '/verity-postgres-1',
+          Config: {
+            Image: 'postgres:18-alpine@sha256:old',
+            Env: ['KEEP=value'],
+            ExposedPorts: { '8082/tcp': {} },
+          },
+          HostConfig: {
+            PortBindings: { '8082/tcp': [{ HostIp: '100.85.209.118', HostPort: '8082' }] },
+            ReadonlyRootfs: true,
+          },
+        }),
+      };
+      const fetch = fakeFetch(migrationRoutes);
+      const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+      expect((await docker.inspectContainer('old')).portBindings?.['8082/tcp']).toEqual([
+        { HostIp: '100.85.209.118', HostPort: '8082' },
+      ]);
+      await docker.replaceContainerImage?.(
+        'old',
+        `postgres:18-alpine@sha256:${'b'.repeat(64)}`,
+        undefined,
+        {
+          env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119' },
+          portBindings: { '8100/tcp': [{ HostIp: '100.85.209.118', HostPort: '8100' }] },
+        },
+      );
+      const create = fetch.calls.find((call) => /\/containers\/create\?/.test(call.url));
+      const body = JSON.parse(create?.init?.body ?? '{}') as {
+        Env: string[];
+        ExposedPorts: Record<string, unknown>;
+        HostConfig: { PortBindings: Record<string, unknown> };
+      };
+      expect(body.Env).toContain('KEEP=value');
+      expect(body.ExposedPorts).toHaveProperty('8082/tcp');
+      expect(body.HostConfig.PortBindings['8082/tcp']).toEqual([
+        { HostIp: '100.85.209.118', HostPort: '8082' },
+      ]);
+      expect(body.Env).toContain('VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119');
+      expect(body.ExposedPorts).toHaveProperty('8100/tcp');
+      expect(body.HostConfig.PortBindings['8100/tcp']).toEqual([
+        { HostIp: '100.85.209.118', HostPort: '8100' },
+      ]);
+    });
+
+    it('restarts the original Gateway if a migrated ingress port cannot bind', async () => {
+      const migrationRoutes = routes(true);
+      const start = migrationRoutes.find((route) => route.match.test('/containers/new/start'))!;
+      start.resp = res({ message: 'port is already allocated' }, { ok: false, status: 500 });
+      migrationRoutes.push(
+        { match: /\/containers\/old\/start/, method: 'POST', resp: res({}) },
+        { match: /\/containers\/new\?force=true&v=false/, method: 'DELETE', resp: res({}) },
+      );
+      const fetch = fakeFetch(migrationRoutes);
+      const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+      await expect(
+        docker.replaceContainerImage?.(
+          'old',
+          `postgres:18-alpine@sha256:${'b'.repeat(64)}`,
+          undefined,
+          {
+            env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119' },
+            portBindings: { '8100/tcp': [{ HostIp: '100.85.209.118', HostPort: '8100' }] },
+          },
+        ),
+      ).rejects.toThrow('port is already allocated');
+      expect(fetch.calls.some((call) => /\/containers\/old\/start$/.test(call.url))).toBe(true);
+      expect(fetch.calls.some((call) => /\/containers\/old\?force=/.test(call.url))).toBe(false);
+    });
+
     const pulls = (fetch: { calls: Array<{ url: string }> }): number =>
       fetch.calls.filter((call) => /\/images\/create/.test(call.url)).length;
 

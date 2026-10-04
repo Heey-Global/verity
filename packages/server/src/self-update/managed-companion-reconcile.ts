@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import type { ContainerSpec, DockerClient } from '../docker.js';
 import type { UpdateJournal } from './update-journal.js';
+import { localPreviewIngressMigration } from './local-preview-ingress.js';
 import { readAgentSeedStamp } from './agent-seed-stamp.js';
 import { reconcileManagedControlPlaneRunner } from './managed-control-plane-runner.js';
 import { reconcileManagedMatrixConnector } from './managed-matrix-connector.js';
@@ -294,12 +295,39 @@ export async function reconcileManagedCompanions(
     await ensureRunning(options.docker, replacement, 'replacement Agent Gateway', options.sleep);
   } else await ensureRunning(options.docker, agentGateway.item.id, 'Agent Gateway', options.sleep);
 
-  if (gatewayInspect.image !== options.journal.targetDigest) {
+  const serverRanges = new Set<string>();
+  for (const item of summaries) {
+    if (
+      item.labels?.[MANAGED_ROLE_LABEL] !== 'server' ||
+      item.labels?.[MANAGED_DEPLOYMENT_LABEL] !== options.journal.deploymentId
+    )
+      continue;
+    const server = await options.docker.inspectContainer(item.id);
+    if (!server.running) continue;
+    const range = server.env?.find((entry) => entry.startsWith('VERITY_LOCAL_PREVIEW_PORT_RANGE='));
+    serverRanges.add(range?.slice('VERITY_LOCAL_PREVIEW_PORT_RANGE='.length) ?? '8100-8119');
+  }
+  if (serverRanges.size > 1)
+    throw new Error('managed Servers disagree on local preview port range');
+  const previewMigration = localPreviewIngressMigration(
+    gatewayInspect,
+    [...serverRanges][0] ?? options.environment?.VERITY_LOCAL_PREVIEW_PORT_RANGE,
+  );
+  if (gatewayInspect.image !== options.journal.targetDigest || previewMigration !== undefined) {
     const replacement = await options.docker.replaceContainerImage(
       gateway.item.id,
       options.journal.targetDigest,
+      undefined,
+      previewMigration,
     );
     await ensureRunning(options.docker, replacement, 'replacement managed Gateway', options.sleep);
+    if (
+      localPreviewIngressMigration(
+        await options.docker.inspectContainer(replacement),
+        previewMigration?.env.VERITY_LOCAL_PREVIEW_PORT_RANGE,
+      ) !== undefined
+    )
+      throw new Error('replacement managed Gateway has incomplete local preview ingress');
   } else await ensureRunning(options.docker, gateway.item.id, 'managed Gateway', options.sleep);
   if (options.environment !== undefined)
     // Three stable running samples are not proof that a container without a
