@@ -122,6 +122,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_google_slides: 'Google Slides',
   verity_http_request: 'HTTP request',
   verity_secret_run: 'Secret command',
+  verity_secret_job: 'Secret job',
   verity_knowledge: 'Knowledge',
   verity_session_handoff: 'Handoff',
   verity_send_session_message: 'Session message',
@@ -146,7 +147,9 @@ export function canonicalToolName(name: string): string {
 
 /** The human-facing name of a tool: a Verity tool's label, else the reported name. */
 export function toolDisplayName(name: string): string {
-  return VERITY_TOOL_LABELS[canonicalToolName(name)] ?? name;
+  const canonical = canonicalToolName(name);
+  // Own-property check: a tool named `constructor` must not resolve to Object's.
+  return Object.hasOwn(VERITY_TOOL_LABELS, canonical) ? VERITY_TOOL_LABELS[canonical]! : name;
 }
 
 const MAX_LEN = 80;

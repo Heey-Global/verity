@@ -118,6 +118,9 @@ describe('toolCallView', () => {
     expect(
       toolCallView(tool({ name: 'mcp__other__verity_gmail', state: 'running', input: {} })).title,
     ).toBe('mcp__other__verity_gmail');
+    expect(toolCallView(tool({ name: 'constructor', state: 'running', input: {} })).title).toBe(
+      'constructor',
+    );
   });
 
   it('spells out bidi controls on the line, where they reorder what the reader compares', () => {
