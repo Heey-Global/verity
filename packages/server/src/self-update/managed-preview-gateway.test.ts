@@ -11,7 +11,11 @@ afterEach(async () => {
 
 async function target(host: string, port = 0) {
   const sockets = new Set<import('node:net').Socket>();
-  const server = createServer((req, res) => res.end(`${host}:${req.headers.host}:${req.url}`));
+  const server = createServer((req, res) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.end(`${host}:${req.headers.host}:${req.url}`);
+  });
   server.on('connection', (socket) => {
     sockets.add(socket);
     socket.on('error', () => undefined);
@@ -42,6 +46,14 @@ function request(port: number) {
         headers: { host: `laptop.local:${port}` },
       },
       (response) => {
+        try {
+          expect(response.headers['content-type']).toBe('text/plain; charset=utf-8');
+          expect(response.headers['x-content-type-options']).toBe('nosniff');
+        } catch (error) {
+          response.resume();
+          reject(new Error('Preview response headers were not preserved', { cause: error }));
+          return;
+        }
         let body = '';
         response.setEncoding('utf8');
         response.on('data', (chunk) => {
