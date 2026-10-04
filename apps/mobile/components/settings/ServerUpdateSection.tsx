@@ -31,7 +31,13 @@ const UNANSWERED_POLL_MS = 2_000;
 // the operation; a status read before that lands still shows the old one.
 const UNANSWERED_GRACE_MS = 20_000;
 
-export function ServerUpdateSection({ client }: { client: VerityClient }) {
+export function ServerUpdateSection({
+  client,
+  mode = 'install',
+}: {
+  client: VerityClient;
+  mode?: 'install' | 'channel';
+}) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
@@ -216,6 +222,25 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const publishedAt =
     'release' in status ? formatReleaseDate(status.release.publishedAt) : undefined;
 
+  if (mode === 'channel') {
+    return (
+      <>
+        <ServerUpdateChannel
+          client={client}
+          disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
+          onChanged={channelChanged}
+          onSavingChange={channelSavingChanged}
+          onChanging={invalidateChannel}
+        />
+        {channelNeedsRefresh ? (
+          <Text style={styles.updateDetail}>
+            Checking the selected channel… Retrying if the server is unavailable.
+          </Text>
+        ) : null}
+      </>
+    );
+  }
+
   return (
     <>
       <SettingsGroup title="Version">
@@ -277,13 +302,6 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           )}
         </SettingsPanel>
       </SettingsGroup>
-      <ServerUpdateChannel
-        client={client}
-        disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
-        onChanged={channelChanged}
-        onSavingChange={channelSavingChanged}
-        onChanging={invalidateChannel}
-      />
     </>
   );
 }

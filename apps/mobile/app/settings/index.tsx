@@ -164,6 +164,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
+            icon="settings"
+            title="Update channel"
+            subtitle="Stable releases or prereleases"
+            onPress={() => router.push('/settings/server-update-channel' as Href)}
+          />
+          <SettingsNavRow
             icon="globe"
             title="Remote access"
             subtitle="Verity Uplink"

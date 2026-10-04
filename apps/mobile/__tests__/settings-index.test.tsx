@@ -67,6 +67,7 @@ describe('settings index — destinations', () => {
     ['Meeting transcription', '/settings/transcription'],
     ['Connections', '/settings/services'],
     ['Server update', '/settings/server-update'],
+    ['Update channel', '/settings/server-update-channel'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage paired devices', '/devices'],
   ])('routes %s to %s', async (label, href) => {

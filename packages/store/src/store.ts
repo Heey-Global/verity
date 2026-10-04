@@ -3777,6 +3777,26 @@ export class EventStore implements EventSink {
     return row !== undefined;
   }
 
+  /** Restore listener discovery's baseline without reading the session's transcript. */
+  async getLatestDevServersEvent(
+    sessionId: string,
+  ): Promise<Extract<AgentEvent, { t: 'dev_servers_changed' }> | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('payload')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'dev_servers_changed')
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success || parsed.data.t !== 'dev_servers_changed') {
+      throw new Error(`corrupt listener snapshot in session ${sessionId}`);
+    }
+    return parsed.data;
+  }
+
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
     const sequenced = await this.getEventsAfter(sessionId, 0);
