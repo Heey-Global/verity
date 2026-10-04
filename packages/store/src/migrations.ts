@@ -3585,7 +3585,8 @@ const migrations: Record<string, Migration> = {
       // and the setup sessions' proposal events go with them: the event schema no
       // longer accepts that type, and the store refuses to read a log holding one.
       await sql`delete from events where type = 'agent_loop_proposal'`.execute(db);
-      await sql`alter table sessions drop column kind`.execute(db);
+      // Replaying forward after a migration rollback must not resurrect the removed column.
+      await sql`alter table sessions drop column if exists kind`.execute(db);
       await sql`drop table if exists agent_loop_runs`.execute(db);
       await sql`drop table if exists agent_loops`.execute(db);
       await sql`create table session_automations (
