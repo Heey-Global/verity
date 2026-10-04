@@ -107,19 +107,65 @@ const PRIMARY_FIELD: Record<string, string> = {
  */
 const ONLY_PRIMARY_FIELD = new Set(['verity_session_handoff', 'verity_list_sessions']);
 
+/**
+ * Display labels for Verity's own gateway tools. Each backend reports them under its own
+ * qualified name — Claude as `mcp__verity__verity_gmail`, OpenCode as `verity_verity_gmail` —
+ * so without this the row reads as that raw, doubled identifier instead of what it does.
+ */
+const VERITY_TOOL_LABELS: Record<string, string> = {
+  verity_gmail: 'Gmail',
+  verity_google_calendar: 'Google Calendar',
+  verity_google_contacts: 'Google Contacts',
+  verity_google_docs: 'Google Docs',
+  verity_google_drive: 'Google Drive',
+  verity_google_sheets: 'Google Sheets',
+  verity_google_slides: 'Google Slides',
+  verity_http_request: 'HTTP request',
+  verity_secret_run: 'Secret command',
+  verity_secret_job: 'Secret job',
+  verity_knowledge: 'Knowledge',
+  verity_session_handoff: 'Handoff',
+  verity_send_session_message: 'Session message',
+  verity_list_sessions: 'Sessions',
+  verity_list_linked_sessions: 'Linked sessions',
+  verity_recent_session_messages: 'Session messages',
+  verity_session_progress: 'Session progress',
+  verity_publish_session_progress: 'Published progress',
+  verity_diagnostics: 'Diagnostics',
+};
+
+/** Strip a backend's MCP qualification (`mcp__verity__`, OpenCode's `verity_`) off a known
+ * Verity tool, so per-tool tables match whichever backend ran the call. Other names pass
+ * through untouched. */
+function canonicalToolName(name: string): string {
+  if (Object.hasOwn(VERITY_TOOL_LABELS, name)) return name;
+  for (const bare of Object.keys(VERITY_TOOL_LABELS)) {
+    if (name === `mcp__verity__${bare}` || name === `verity_${bare}`) return bare;
+  }
+  return name;
+}
+
+/** The human-facing name of a tool: a Verity tool's label, else the reported name. */
+function toolDisplayName(name: string): string {
+  const canonical = canonicalToolName(name);
+  // Own-property check: a tool named `constructor` must not resolve to Object's.
+  return Object.hasOwn(VERITY_TOOL_LABELS, canonical) ? VERITY_TOOL_LABELS[canonical]! : name;
+}
+
 const MAX_LEN = 80;
 const MAX_PREVIEW = 120;
 
 export function toolCallView(tool: ToolCall): ToolCallView {
   const tone: ToolCallTone =
     tool.state === 'error' ? 'error' : tool.state === 'completed' ? 'done' : 'running';
+  const name = canonicalToolName(tool.name);
   return {
-    title: tool.name,
-    headline: buildHeadline(tool.name, tool.input),
-    subtitle: summarizeInput(tool.name, tool.input),
+    title: toolDisplayName(name),
+    headline: buildHeadline(name, tool.input),
+    subtitle: summarizeInput(name, tool.input),
     tone,
     // No result preview/images until the call settles — a running call has none yet.
-    preview: tool.state === 'running' ? null : previewResult(tool.name, tool.result),
+    preview: tool.state === 'running' ? null : previewResult(name, tool.result),
     images: tool.state === 'running' ? [] : extractToolImages(tool.result),
   };
 }
@@ -145,7 +191,7 @@ function buildHeadline(name: string, input: unknown): string {
   // A skill/slash-command reads as its own name, title-cased — "code-review" →
   // "Code Review", "review-loop" → "Review Loop" — not "Skill code-review".
   if (name === 'Skill') return skillLabel(input) ?? name;
-  const verb = ACTION[name] ?? name;
+  const verb = ACTION[name] ?? toolDisplayName(name);
   const object = headlineObject(name, input);
   return object ? `${verb} ${object}` : verb;
 }
