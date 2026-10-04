@@ -22,6 +22,9 @@ export default defineConfig({
     // test job does not build). Keeps tests fast and build-order-independent.
     // More specific subpaths (…/testing) must come before the bare package.
     alias: {
+      '@verity/preview-tunnel': fileURLToPath(
+        new URL('./packages/preview-tunnel/src/index.ts', import.meta.url),
+      ),
       '@verity/events': fileURLToPath(new URL('./packages/events/src/index.ts', import.meta.url)),
       '@verity/secret-contracts': fileURLToPath(
         new URL('./packages/secret-contracts/src/index.ts', import.meta.url),

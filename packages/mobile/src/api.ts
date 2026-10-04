@@ -544,19 +544,7 @@ const publicPreviewSharesResponseSchema = z.object({
   shares: z.array(publicPreviewShareSchema),
 });
 
-export interface DetectedDevServerSetupRequest {
-  fingerprint: string;
-  confirmWarnings?: boolean;
-  devServers: Array<{
-    sourceKey: string;
-    name: string;
-    command: string;
-    workdir: string | null;
-    containerPort: string | null;
-  }>;
-}
-
-export const devServerSuggestionSchema = z.object({
+const devServerSuggestionSchema = z.object({
   key: z.string(),
   name: z.string(),
   command: z.string(),
@@ -586,7 +574,7 @@ export interface DevServerDetection {
   reviewedAt: string | null;
   suggestions: DevServerSuggestion[];
 }
-export const devServerDetectionStateSchema = z.object({
+const devServerDetectionStateSchema = z.object({
   fingerprint: z.string(),
   detectedAt: z.string(),
   reviewedFingerprint: z.string().nullable(),
@@ -1109,11 +1097,6 @@ export const projectRuntimeHealthSchema = z.object({
 });
 export type ProjectRuntimeHealth = z.infer<typeof projectRuntimeHealthSchema>;
 
-export const devServerPreviewResponseSchema = z.object({
-  devServer: devServerSchema,
-  runtime: projectRuntimeStartedSchema.optional(),
-});
-export type DevServerPreviewResult = z.infer<typeof devServerPreviewResponseSchema>;
 const verityControlTokenRefreshResponseSchema = z.object({
   projectId: z.string().min(1),
   refreshedAt: z.string(),

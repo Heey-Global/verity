@@ -44,3 +44,9 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   scanner means: fail closed where the repo declares scanning, stay silent in a
   container that was never provisioned for it. Bypass in a real emergency with
   `git commit --no-verify` / `git push --no-verify`.
+
+- `bin/verity-dev-server announce --port <port> --name <name>` labels a running
+  HTTP or WebSocket listener. The scanner verifies the actual listener; an
+  announcement neither opens access nor authorizes a share. `scan` requests an
+  immediate refresh and can be used by post-tool hooks. Bind development servers
+  to `0.0.0.0` when possible; Verity also supports loopback listeners.

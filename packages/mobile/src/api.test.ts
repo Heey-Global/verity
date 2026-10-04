@@ -3515,3 +3515,45 @@ it('links new Drive folders read-only and preserves explicit read/write choice',
   expect(jsonBody(calls[0])).toEqual({ fileId: 'root', accessMode: 'read-only' });
   expect(jsonBody(calls[1])).toEqual({ fileId: 'root', accessMode: 'read-write' });
 });
+
+describe('local preview shares', () => {
+  it('uses the direct server hostname for local links while API calls use Uplink', async () => {
+    const share = {
+      id: 'share/one',
+      url: 'http://localhost:8100/',
+      projectId: 'project-one',
+      sessionId: 'session/one',
+      targetPort: 5173,
+      staticPath: null,
+      expiresAt: '2026-10-04T12:00:00Z',
+    };
+    const transport = fakeFetchSequence(
+      Response.json({ publicSharing: 'premium-required' }),
+      Response.json({ share }),
+      Response.json({ shares: [share, { ...share, url: 'http://192.168.1.20:8101/' }] }),
+      new Response(null, { status: 204 }),
+    );
+    const client = new VerityClient({
+      baseUrl: 'https://remote.example',
+      localPreviewBaseUrl: 'http://192.168.1.10:8082',
+      fetch: transport.fetch,
+    });
+    expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'premium-required' });
+    const created = await client.createSessionLocalPreviewShare('session/one', {
+      targetPort: 5173,
+    });
+    expect(created.url).toBe('http://192.168.1.10:8100/');
+    expect(created.expiresAt).toEqual(new Date(share.expiresAt));
+    expect(
+      (await client.listSessionLocalPreviewShares('session/one')).map((item) => item.url),
+    ).toEqual([created.url, 'http://192.168.1.20:8101/']);
+    await client.stopLocalPreviewShare(share.id);
+    expect(transport.calls.map(({ url, init }) => [url, init?.method])).toEqual([
+      ['https://remote.example/preview-capabilities', 'GET'],
+      ['https://remote.example/sessions/session%2Fone/local-shares', 'POST'],
+      ['https://remote.example/sessions/session%2Fone/local-shares', 'GET'],
+      ['https://remote.example/local-shares/share%2Fone', 'DELETE'],
+    ]);
+    expect(JSON.parse(String(transport.calls[1]?.init?.body))).toEqual({ targetPort: 5173 });
+  });
+});
