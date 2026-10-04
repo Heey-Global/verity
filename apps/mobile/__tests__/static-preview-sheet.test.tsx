@@ -582,6 +582,28 @@ it('keeps the folder explorer open when a server starts during browsing', async 
   expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
 });
 
+// Without the live snapshot the servers arrive by polling. The sheet waits for
+// them instead of showing the folders first and then jumping to the servers.
+it('shows no tab content until the polled servers decide the default', async () => {
+  let resolve: (servers: SessionDevServer[]) => void = () => undefined;
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(
+        () =>
+          new Promise<SessionDevServer[]>((done) => {
+            resolve = done;
+          }),
+      ),
+    }),
+  );
+  await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+  expect(screen.queryByRole('button', { name: 'Open folder dist' })).toBeNull();
+  await act(async () => {
+    resolve([vite]);
+  });
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
+});
+
 // A Core without port detection reports null; the sheet then lists folders
 // only instead of an empty server section.
 it('lists folders only when Core has no port detection', async () => {
@@ -661,7 +683,9 @@ it('keeps a newly created link when the share list arrives late without it', asy
       createSessionPortPreviewShare: jest.fn(async () => portShare()),
     }),
   );
-  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  fireEvent.press(
+    await screen.findByRole('button', { name: 'Vite on port 5173' }, { timeout: 3000 }),
+  );
   fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
   await act(async () => {

@@ -172,6 +172,13 @@ export function StaticPreviewSheet({
   const [localShares, setLocalShares] = useState<LocalPreviewShare[]>([]);
   const [localSharesLoaded, setLocalSharesLoaded] = useState(false);
   const [publicSharesLoaded, setPublicSharesLoaded] = useState(false);
+  // A list that hangs must not keep the sheet loading: after a second the
+  // default tab is decided with what has arrived.
+  const [settleTimedOut, setSettleTimedOut] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettleTimedOut(true), 1_000);
+    return () => clearTimeout(timer);
+  }, []);
   useEffect(() => {
     let active = true;
     void client
@@ -570,9 +577,10 @@ export function StaticPreviewSheet({
   // or link arriving later only marks its tab instead of switching under the
   // user's finger.
   const initialStateKnown =
-    !devServersLoading &&
-    localSharesLoaded &&
-    (publicSharesLoaded || (capabilitiesLoaded && publicSharing !== 'available'));
+    settleTimedOut ||
+    (!devServersLoading &&
+      localSharesLoaded &&
+      (publicSharesLoaded || (capabilitiesLoaded && publicSharing !== 'available')));
   useEffect(() => {
     if (tab === undefined && initialStateKnown) setTab(defaultTab);
   }, [defaultTab, initialStateKnown, tab]);
@@ -1280,7 +1288,13 @@ export function StaticPreviewSheet({
             ) : (
               <>
                 {devServersSupported ? renderTabs() : null}
-                {activeTab === 'server' ? renderServerTab() : renderFolderTab()}
+                {devServersSupported && tab === undefined && !initialStateKnown ? (
+                  <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
+                ) : activeTab === 'server' ? (
+                  renderServerTab()
+                ) : (
+                  renderFolderTab()
+                )}
               </>
             )}
           </View>
@@ -1475,12 +1489,6 @@ const styles = StyleSheet.create((theme) => ({
   cardLocalActive: { borderColor: theme.colors.tone.done },
   cardPublicActive: { borderColor: theme.colors.primary },
   cardDimmed: { opacity: 0.7 },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
   cardFooter: {
     flexDirection: 'row',
     alignItems: 'center',
