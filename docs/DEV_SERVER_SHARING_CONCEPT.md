@@ -169,14 +169,15 @@ The sheet asks two questions one after the other and never mixes them.
   picks the folder the explorer stands in. `index.html` is highlighted as the entry page.
 
 The sheet opens on the server tab while a server or a port access exists, otherwise on the
-static files. Once the user picks a tab or walks into a folder, the tab no longer changes by
-itself. A Core without port detection shows the static files without tabs. Rows carry badges
+static files. The default is decided once, when servers and accesses have loaded; a server that
+starts later only marks its tab and never switches the view. A Core without port detection shows the static files without tabs. Rows carry badges
 for their active accesses, "On network" and "Online until HH:MM".
 
 **Step two, how.** Two cards of equal weight, stacked, because both can be active at once and
 each owns its own state and primary action. Each card names who can see the preview.
 
-- **On your network.** Straight from the Verity server, at home or over VPN, no PIN. "Open in
+- **On your network.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
+  the card says that anyone on that network can open it. "Open in
   browser" creates the local share on first use and hands reachability to the probe in 2.7,
   plus "Copy link". While a local share exists the card shows its URL and "Turn off".
 - **Over the internet.** A link through the Uplink, protected by a PIN, expiring automatically.

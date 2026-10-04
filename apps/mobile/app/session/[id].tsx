@@ -9732,7 +9732,7 @@ const styles = StyleSheet.create((theme) => ({
   detectedPreviewButton: {
     flexDirection: 'row',
     gap: 6,
-    minHeight: 40,
+    minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.md,

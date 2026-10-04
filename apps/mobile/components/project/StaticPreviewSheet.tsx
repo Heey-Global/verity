@@ -170,6 +170,8 @@ export function StaticPreviewSheet({
   const [publicSharing, setPublicSharing] = useState<PublicSharing>('unavailable');
   const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
   const [localShares, setLocalShares] = useState<LocalPreviewShare[]>([]);
+  const [localSharesLoaded, setLocalSharesLoaded] = useState(false);
+  const [publicSharesLoaded, setPublicSharesLoaded] = useState(false);
   useEffect(() => {
     let active = true;
     void client
@@ -186,7 +188,10 @@ export function StaticPreviewSheet({
       .then((value) => {
         if (active) setLocalShares(value);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setLocalSharesLoaded(true);
+      });
     return () => {
       active = false;
     };
@@ -308,6 +313,7 @@ export function StaticPreviewSheet({
         })
         .finally(() => {
           inFlight = false;
+          if (active) setPublicSharesLoaded(true);
         });
     };
     loadShares();
@@ -558,9 +564,18 @@ export function StaticPreviewSheet({
   // A Core without port detection has no server tab at all.
   const hasServerTargets =
     sessionServers.length > 0 || projectServers.length > 0 || orphanPorts.length > 0;
-  const activeTab: PreviewTab = !devServersSupported
-    ? 'folder'
-    : (tab ?? (hasServerTargets ? 'server' : 'folder'));
+  const defaultTab: PreviewTab = hasServerTargets ? 'server' : 'folder';
+  const activeTab: PreviewTab = !devServersSupported ? 'folder' : (tab ?? defaultTab);
+  // The default is decided once, when servers and accesses are known; a server
+  // or link arriving later only marks its tab instead of switching under the
+  // user's finger.
+  const initialStateKnown =
+    !devServersLoading &&
+    localSharesLoaded &&
+    (publicSharesLoaded || (capabilitiesLoaded && publicSharing === 'premium-required'));
+  useEffect(() => {
+    if (tab === undefined && initialStateKnown) setTab(defaultTab);
+  }, [defaultTab, initialStateKnown, tab]);
 
   const onRequestClose = () => {
     if (busy) return;
@@ -879,7 +894,8 @@ export function StaticPreviewSheet({
         {renderCardHeading({
           icon: 'wifi',
           title: 'On your network',
-          description: 'Straight from your Verity server, at home or over VPN. No PIN needed.',
+          description:
+            'Straight from your Verity server, at home or over VPN. No PIN and not encrypted: anyone on that network can open it.',
           status: share ? (
             <View style={[styles.badge, styles.badgeLocal]}>
               <View style={[styles.badgeDot, styles.badgeDotLocal]} />
@@ -929,7 +945,7 @@ export function StaticPreviewSheet({
               onPress={() => stopLocal(share)}
               disabled={busy !== undefined}
               accessibilityRole="button"
-              accessibilityLabel="Stop local access"
+              accessibilityLabel="Turn off local access"
               hitSlop={8}
             >
               <Text style={styles.dangerText}>

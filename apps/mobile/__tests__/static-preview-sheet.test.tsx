@@ -260,7 +260,7 @@ it('marks a target with an existing local share and lets it be stopped from its 
   expect(await screen.findByText('On network')).toBeTruthy();
   fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
   expect(await screen.findByText('http://server:8100/')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Stop local access' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Turn off local access' }));
   await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith('local-one'));
   await waitFor(() => expect(screen.queryByText('http://server:8100/')).toBeNull());
   expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy();
@@ -514,6 +514,25 @@ it('updates detected servers from the live snapshot without polling', async () =
   expect(listSessionDevServers).not.toHaveBeenCalled();
 });
 
+// The default tab is decided once the first state is known; a server that
+// starts later must not pull the folder root away from the user.
+it('keeps the folder root when a server starts after the sheet opened', async () => {
+  const view = renderSheet(makeClient(), { detectedServers: [] });
+  await screen.findByRole('button', { name: 'Open folder docs' });
+  view.rerender(
+    <StaticPreviewSheet
+      client={makeClient()}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Preview the whole worktree' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
 // A server that starts while the user walks the folders marks the server tab
 // but must not switch away from the explorer.
 it('keeps the folder explorer open when a server starts during browsing', async () => {
@@ -632,7 +651,7 @@ it('keeps a local port access stoppable after its listener disappears', async ()
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Stop local access' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Turn off local access' }));
   await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith(localShare.id));
 });
 
