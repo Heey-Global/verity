@@ -251,6 +251,7 @@ describe('agent spawn broker', () => {
         env: {
           VERITY_SESSION_BACKEND: 'claude',
           VERITY_SESSION_MODEL: 'opus',
+          VERITY_SESSION_ID: 'session-1',
           ANTHROPIC_API_KEY: 'caller-secret',
         },
       });
@@ -259,6 +260,7 @@ describe('agent spawn broker', () => {
       // because the backend can change between turns of one Sandbox.
       expect(environments[0]?.VERITY_SESSION_BACKEND).toBe('claude');
       expect(environments[0]?.VERITY_SESSION_MODEL).toBe('opus');
+      expect(environments[0]?.VERITY_SESSION_ID).toBe('session-1');
       expect(environments[0]?.ANTHROPIC_API_KEY).toBeUndefined();
     } finally {
       await broker.close();
@@ -331,7 +333,7 @@ describe('agent spawn broker', () => {
     }
   });
 
-  it('keeps the runtime-context allowlist identical in all three places that name it', async () => {
+  it('keeps the runtime-context allowlist identical across each process boundary', async () => {
     // The list is repeated because the three checks sit in different runtimes —
     // a TypeScript client, the worker's request-file validation, and the broker's
     // own plain-JS re-check. Adding a key to only one of them half-lands. The
@@ -345,6 +347,8 @@ describe('agent spawn broker', () => {
     // an out-of-date bundle instead of as drift.
     const sources = [
       './runner-worker-entry.ts',
+      './runner-supervisor-client.ts',
+      '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
       '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs',
     ];
     for (const source of sources) {
@@ -355,6 +359,20 @@ describe('agent spawn broker', () => {
       // them in is not load-bearing — but a VERITY_SESSION_* key mentioned in
       // one of these files and absent from the allowlist is meant to fail, since
       // these are exactly the files that decide what crosses the boundary.
+      // Each independent boundary must accept the ID; another mention elsewhere
+      // must not hide a stale validator that silently rejects supervised turns.
+      const allowlists = [
+        ...text.matchAll(
+          /(?:SESSION_RUNTIME_ENV_KEYS\s*=\s*|!)\[([^\]]*VERITY_SESSION_BACKEND[^\]]*)\]/gu,
+        ),
+      ];
+      expect(allowlists.length, source).toBeGreaterThan(0);
+      for (const match of allowlists) {
+        expect(
+          [...match[1]!.matchAll(/VERITY_SESSION_[A-Z_]+/gu)].map((key) => key[0]).sort(),
+          source,
+        ).toEqual([...SESSION_RUNTIME_ENV_KEYS].sort());
+      }
       const mentioned = [...text.matchAll(/VERITY_SESSION_[A-Z_]+/gu)].map((match) => match[0]);
       expect([...new Set(mentioned)].sort(), source).toEqual([...SESSION_RUNTIME_ENV_KEYS].sort());
     }

@@ -1033,10 +1033,14 @@ export class SupervisorRunnerClient implements RunnerClient {
     // survive: in-Sandbox helpers such as `verity-code-review` read it to start a
     // reviewer on this turn's backend/model. Forward that allowlist only — never the
     // Server's ambient environment.
-    const SESSION_RUNTIME_ENV_KEYS = ['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL'];
-    const sessionEnv: Record<string, string> = {};
+    const SESSION_RUNTIME_ENV_KEYS = [
+      'VERITY_SESSION_BACKEND',
+      'VERITY_SESSION_MODEL',
+      'VERITY_SESSION_ID',
+    ];
+    const sessionEnv: Record<string, string> = { VERITY_SESSION_ID: opts.storeSessionId };
     for (const key of SESSION_RUNTIME_ENV_KEYS) {
-      const value = opts.env?.[key];
+      const value = key === 'VERITY_SESSION_ID' ? opts.storeSessionId : opts.env?.[key];
       if (typeof value === 'string' && value.length > 0) sessionEnv[key] = value;
     }
     // `transcript` left the fail-closed set above because on this path verbatim

@@ -502,3 +502,7 @@ export {
 } from './api.js';
 
 export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';
+
+export type { LocalPreviewShare } from './api.js';
+
+export { localPreviewReachable } from './localPreview.js';

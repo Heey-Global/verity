@@ -14,7 +14,13 @@ import * as Clipboard from 'expo-clipboard';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type { PublicPreviewShare, SessionDevServer, VerityClient } from '@verity/mobile';
+import {
+  type LocalPreviewShare,
+  type PublicPreviewShare,
+  type SessionDevServer,
+  type VerityClient,
+} from '@verity/mobile';
+import { openLocalPreview } from './previewAccess';
 import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
@@ -103,14 +109,42 @@ export function StaticPreviewSheet({
   projectId,
   sessionId,
   onClose,
+  detectedServers,
+  initialServer,
+  onOpenSettings,
 }: {
   client: VerityClient;
   projectId: string;
   sessionId: string;
   onClose: () => void;
+  detectedServers?: SessionDevServer[] | undefined;
+  initialServer?: SessionDevServer | undefined;
+  onOpenSettings?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
+  const [publicSharing, setPublicSharing] = useState<
+    'available' | 'premium-required' | 'unavailable'
+  >('unavailable');
+  const [localShares, setLocalShares] = useState<LocalPreviewShare[]>([]);
+  useEffect(() => {
+    let active = true;
+    void client
+      .getPreviewCapabilities()
+      .then((value) => {
+        if (active) setPublicSharing(value.publicSharing);
+      })
+      .catch(() => undefined);
+    void client
+      .listSessionLocalPreviewShares(sessionId)
+      .then((value) => {
+        if (active) setLocalShares(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [client, sessionId]);
   const [path, setPath] = useState('');
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
@@ -135,14 +169,16 @@ export function StaticPreviewSheet({
   // The sheet always opens on Folder and never switches tabs by itself; a
   // running server only marks the Dev server tab, so nothing waits on detection
   // and nothing moves under the user's finger.
-  const [tab, setTab] = useState<PreviewTab>('folder');
+  const [tab, setTab] = useState<PreviewTab>(initialServer ? 'server' : 'folder');
   const [devServers, setDevServers] = useState<SessionDevServer[]>([]);
   const [devServersLoading, setDevServersLoading] = useState(devServersSupported);
   const [devServerError, setDevServerError] = useState<string>();
   const [openPort, setOpenPort] = useState<number>();
   // Picking a server or a folder only chooses it; expiry and the link follow on
   // their own step, and the PIN first appears once the link exists.
-  const [target, setTarget] = useState<PreviewTarget>();
+  const [target, setTarget] = useState<PreviewTarget | undefined>(
+    initialServer ? { kind: 'port', server: initialServer } : undefined,
+  );
   const requestGeneration = useRef(0);
   const createdShareIds = useRef(new Set<string>());
   const stoppedShareIds = useRef(new Set<string>());
@@ -186,6 +222,10 @@ export function StaticPreviewSheet({
   }, [client, path, sessionId]);
 
   useEffect(() => {
+    if (publicSharing !== 'available') {
+      setSharesLoading(false);
+      return;
+    }
     let active = true;
     let inFlight = false;
     const loadShares = () => {
@@ -229,7 +269,7 @@ export function StaticPreviewSheet({
       active = false;
       clearInterval(timer);
     };
-  }, [client, projectId, sessionId]);
+  }, [client, projectId, publicSharing, sessionId]);
 
   useEffect(() => {
     void refresh();
@@ -238,46 +278,61 @@ export function StaticPreviewSheet({
     };
   }, [refresh]);
 
-  // Servers come and go as the agent starts them; poll while the sheet is open so
-  // a freshly started one appears, and marks its tab, without reopening.
   useEffect(() => {
+    if (detectedServers !== undefined) {
+      setDevServers(detectedServers);
+      setDevServersLoading(false);
+      return;
+    }
     if (!devServersSupported) return;
     let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // The next look is scheduled only after an answer, so a Core without the
-    // route is asked once, and a slow answer never overlaps the next request.
-    const load = () =>
-      client
-        .listSessionDevServers(sessionId)
-        .then((servers) => {
-          if (!active) return false;
-          if (servers === null) {
-            setDevServersSupported(false);
-            setTab('folder');
-            return false;
-          }
-          setDevServers(servers);
-          setDevServerError(undefined);
-          return true;
-        })
-        .catch((caught: unknown) => {
-          if (!active) return false;
-          setDevServerError(
-            caught instanceof Error ? caught.message : 'Could not look for dev servers',
-          );
-          return true;
-        })
-        .then((again) => {
-          if (!active) return;
+    void client
+      .listSessionDevServers(sessionId)
+      .then((servers) => {
+        if (!active) return;
+        if (servers === null) setDevServersSupported(false);
+        else setDevServers(servers);
+        setDevServersLoading(false);
+      })
+      .catch((caught) => {
+        if (active) {
+          setDevServerError(previewError(caught));
           setDevServersLoading(false);
-          if (again) timer = setTimeout(() => void load(), 4_000);
-        });
-    void load();
+        }
+      });
     return () => {
       active = false;
-      clearTimeout(timer);
     };
-  }, [client, devServersSupported, sessionId]);
+  }, [client, detectedServers, devServersSupported, sessionId]);
+
+  const openLocal = async (selection: PreviewTarget) => {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const existing = localShares.find(
+        (share) =>
+          new Date(share.expiresAt).getTime() > Date.now() &&
+          (selection.kind === 'port'
+            ? share.targetPort === selection.server.port
+            : share.staticPath === (selection.path || '.')),
+      );
+      const share =
+        existing ??
+        (await client.createSessionLocalPreviewShare(
+          sessionId,
+          selection.kind === 'port'
+            ? { targetPort: selection.server.port }
+            : { staticPath: selection.path || '.' },
+        ));
+      if (!existing) setLocalShares((current) => [...current, share]);
+      await openLocalPreview(share, publicSharing, () => pick(selection), onOpenSettings);
+    } catch (caught) {
+      setError(previewError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const selectTab = (next: PreviewTab) => {
     setError(undefined);
@@ -297,7 +352,7 @@ export function StaticPreviewSheet({
   };
 
   const create = async () => {
-    if (!target || busy) return;
+    if (!target || busy || publicSharing !== 'available') return;
     setBusy(true);
     setError(undefined);
     const pin = generatePreviewPin();
@@ -514,7 +569,20 @@ export function StaticPreviewSheet({
                     </Text>
                   </View>
                 </View>
-                <Text style={styles.label}>LINK EXPIRES AFTER</Text>
+                <Pressable
+                  onPress={() => void openLocal(target)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open locally"
+                  style={styles.actionButton}
+                >
+                  <Text style={styles.actionText}>Open locally</Text>
+                </Pressable>
+                <Text style={styles.caption}>
+                  Local previews use HTTP without access protection and are available to everyone
+                  who can reach your server.
+                </Text>
+                <Text style={styles.label}>PUBLIC LINK EXPIRES AFTER</Text>
                 <View style={styles.durations}>
                   {PUBLIC_PREVIEW_DURATIONS.map((option) => (
                     <Pressable
@@ -554,15 +622,32 @@ export function StaticPreviewSheet({
               <View style={styles.footer}>
                 <Pressable
                   onPress={() => void create()}
-                  disabled={busy}
+                  disabled={busy || publicSharing !== 'available'}
                   accessibilityRole="button"
                   accessibilityLabel={busy ? 'Creating link' : 'Create link'}
                   accessibilityState={{ disabled: busy, busy }}
                   style={styles.createButton}
                 >
                   {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-                  <Text style={styles.createText}>{busy ? 'Creating link…' : 'Create link'}</Text>
+                  <Text style={styles.createText}>
+                    {busy
+                      ? 'Creating link…'
+                      : publicSharing === 'available'
+                        ? 'Create public link'
+                        : publicSharing === 'premium-required'
+                          ? 'Public sharing requires Premium'
+                          : 'Public sharing temporarily unavailable'}
+                  </Text>
                 </Pressable>
+                {publicSharing === 'premium-required' && onOpenSettings ? (
+                  <Pressable
+                    onPress={onOpenSettings}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open Premium settings"
+                  >
+                    <Text style={[styles.caption, styles.centered]}>Open Premium settings</Text>
+                  </Pressable>
+                ) : null}
                 {busy ? (
                   <Text style={[styles.caption, styles.centered]} accessibilityLiveRegion="polite">
                     Setting up a secure public link. This takes a few seconds.
@@ -875,33 +960,10 @@ export function StaticPreviewSheet({
                       </Text>
                     </View>
                   );
-                  // A live link to a server that went localhost-only still needs
-                  // the reason it may not load.
-                  const localHint = server.reachable ? null : (
-                    <View style={styles.localHint}>
-                      <Icon name="info" size={14} color={theme.colors.tone.attention} />
-                      <Text style={styles.localHintText}>
-                        Listens on localhost only, so the link cannot reach it. Restart it with
-                        --host 0.0.0.0 to share it.
-                      </Text>
-                    </View>
-                  );
-                  if (!server.reachable && !live) {
-                    return (
-                      <View
-                        key={port}
-                        style={[styles.serverRow, styles.serverRowLocal]}
-                        accessibilityLabel={`${server.name} on port ${port}, local only`}
-                      >
-                        <View style={styles.serverMain}>
-                          <View style={[styles.serverDot, styles.serverDotLocal]} />
-                          {text}
-                          <Text style={styles.localOnly}>Local only</Text>
-                        </View>
-                        {localHint}
-                      </View>
-                    );
-                  }
+                  const localHint =
+                    server.scope === 'project' ? (
+                      <Text style={styles.caption}>Project listener</Text>
+                    ) : null;
                   return (
                     <Pressable
                       key={port}

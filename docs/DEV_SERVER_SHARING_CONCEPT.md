@@ -1,6 +1,6 @@
 # Dev server detection and sharing
 
-**Status:** Concept, decided 2026-10-04. Not implemented.
+**Status:** Implementation in review, based on decisions from 2026-10-04.
 **Scope:** Verity server, preview-tunnel, sandbox image, agent-seed, and mobile client
 **Related:** [UPLINK_CHANNEL_PROTOCOL.md](UPLINK_CHANNEL_PROTOCOL.md),
 [ADR 0013](adr/0013-component-naming.md),
@@ -20,7 +20,7 @@ The public preview tunnel is the model for both paths. A share is a target in th
 an edge that gives access to it. The connector is identical; only the edge differs: an edge
 inside the Verity server process for local shares, an Uplink-hosted edge for public ones.
 
-## 2. Current state
+## 2. Baseline before implementation
 
 Two paths exist today and do not meet.
 
@@ -59,9 +59,9 @@ Compose variable. The server allocates a port from it per local share and runs a
 instance (`packages/preview-tunnel/src/index.ts`) in-process on that port. No Docker call and no
 container change happens per share. The sandbox ranges 3000-3099 and 8000-8099 are removed.
 
-Why this range: the ports are allocated dynamically, so mirroring framework defaults such as
-3000 or 8081 buys nothing. Docker runs one userland proxy process per published port, roughly
-2-4 MB each, so the default stays small. Concurrent local shares are bounded by active shares,
+Why this range: ports are allocated dynamically, so mirroring framework defaults such as
+3000 or 8081 buys nothing. Docker may run a userland proxy per published port, depending on
+its configuration. The memory cost must be measured on the host, so the default stays small. Concurrent local shares are bounded by active shares,
 not by running servers, and a single host rarely holds more than a handful. When the range is
 exhausted the app shows a clear message pointing at the variable rather than a silent failure.
 Enlarging the range is a `.env` change plus a restart of the Verity container; nothing durable
@@ -192,8 +192,8 @@ stream the app already holds.
 
 - Local shares are unauthenticated HTTP on the Verity host's network. The Verity container's
   published range replaces the sandbox ranges; the firewall guidance in `deploy/README.md`
-  moves with it and should mention `userland-proxy: false` as an optional way to avoid one
-  proxy process per published port.
+  moves with it and mentions `userland-proxy: false` as an optional way to reduce
+  proxy process overhead.
 - The in-process edge runs inside the Verity server. A misbehaving dev server can therefore
   consume server resources through its share. The edge's existing per-share request and stream
   pools and body limits apply; the default local range bounds the number of concurrent edges.
@@ -221,7 +221,40 @@ stream the app already holds.
    reachability probe with the three outcomes, inline listener card.
 6. Update `deploy/README.md`, the Compose files, and ADR 0020 references.
 
-## 6. Noted follow-ups, not part of this concept
+## 6. Implementation details and verification boundaries
+
+- Local edges and their connector leases are process-owned, not restored from the database.
+  A Server restart closes them; startup removes orphan local connectors, and opening again
+  allocates a new share. Active local and public shares block automatic sandbox sleep.
+- Both legacy and managed deployments publish `VERITY_LOCAL_PREVIEW_PORT_RANGE`. The managed
+  Gateway relays each port unchanged to the selected Server generation, preserving HTTP
+  origins, streaming bodies and WebSocket upgrades through the normal update lifecycle.
+- The Connector image resolver and static-folder browser operate independently of Uplink.
+  The ordinary PIN-authenticated edge remains the default. Only explicitly local edges
+  admit unauthenticated HTTP and preserve application cookies and cross-origin requests.
+- Local request bodies retain the 100 MiB limit. A shared budget admits at most two buffered
+  uploads across all local edges; bodyless asset requests do not consume that budget.
+- Discovery uses one long-lived sandbox watcher per active project. Completed agent tool events
+  trigger an immediate refresh across backends, serving the role of a native PostToolUse hook
+  without installing backend-specific hook files. Session snapshots use the existing event
+  stream; opening the sheet also fetches an initial snapshot. Transient scan failures retain
+  the last healthy snapshot, and inactive projects clear it.
+- Public availability comes from `GET /preview-capabilities`, which distinguishes entitlement
+  rejection from temporary transport failure. It is not inferred from whether a key is present
+  in the app. Local reachability probes identify the allocated edge by its share ID rather
+  than treating any HTTP server on a reused port as success.
+- Configured Dev Server screens, routes, autostart, retargeting and sandbox port publication
+  are removed. Historical database schema and store helpers remain for existing public-preview
+  records and upgrade compatibility; no saved configuration is imported into the new model.
+  Existing sandbox bindings disappear at their next explicit recreate, not during an agent turn.
+- The loopback relay binds a separate free port, since a wildcard socket cannot reuse the
+  original loopback listener's port. Relay processes are excluded from discovery.
+- Automated tests cover shared-edge HTTP/WebSocket behavior, cookies, redirects, lifecycle
+  fencing, failed creation cleanup, attribution, watcher lifecycle and mobile access decisions.
+  Live Docker deployment, device browser and Expo Go validation remain deployment smoke tests;
+  HTTP/WebSocket forwarding does not automatically rewrite addresses embedded in Expo manifests.
+
+## 7. Noted follow-ups, not part of this concept
 
 - PIN as a per-request header on the Uplink edge, for scripts and service-to-service calls.
 - Streaming request bodies through the tunnel instead of buffering them.

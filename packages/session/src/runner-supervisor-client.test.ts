@@ -1198,6 +1198,7 @@ describe('SupervisorRunnerClient', () => {
       },
     });
     expect(request?.sessionEnv).toEqual({
+      VERITY_SESSION_ID: 'session-1',
       VERITY_SESSION_BACKEND: 'claude',
       VERITY_SESSION_MODEL: 'claude-sonnet',
     });

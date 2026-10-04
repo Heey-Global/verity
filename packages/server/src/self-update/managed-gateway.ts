@@ -12,7 +12,7 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import type { AddressInfo, Socket } from 'node:net';
+import { connect, createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
 import { dirname } from 'node:path';
 import type { Duplex } from 'node:stream';
 
@@ -42,6 +42,8 @@ export interface ManagedGatewayConfig {
   readonly tls?: { readonly key: string | Buffer; readonly cert: string | Buffer };
   readonly publicHost?: string;
   readonly publicPort: number;
+  /** Local HTTP/WS preview ingress ports, forwarded unchanged to the selected Server. */
+  readonly localPreviewPorts?: readonly number[];
   readonly internalHost?: string;
   readonly internalPort: number;
   readonly backend: ManagedGatewayBackend;
@@ -173,6 +175,19 @@ function validateConfig(config: ManagedGatewayConfig): void {
     !validPort(config.backend.internalPort)
   ) {
     throw new Error('managed gateway ports must be valid');
+  }
+  const previewPorts = config.localPreviewPorts ?? [];
+  if (
+    new Set(previewPorts).size !== previewPorts.length ||
+    previewPorts.some(
+      (port) =>
+        !validPort(port) ||
+        port === 0 ||
+        port === config.publicPort ||
+        port === config.internalPort,
+    )
+  ) {
+    throw new Error('managed gateway preview ports must be distinct valid ports');
   }
   validateBackend(config.backend, config.allowedBackendHosts, config.allowManagedServerGenerations);
   if (config.requestTimeoutMs !== undefined && config.requestTimeoutMs <= 0) {
@@ -600,6 +615,58 @@ export async function startManagedGateway(
     await closeServer(publicServer, publicSockets);
     throw error;
   }
+  // Preserve HTTP Host, streaming and WebSocket upgrades without buffering bodies.
+  // The destination is always the selected, allowlisted Server on this fixed port.
+  const previewServers: ReturnType<typeof createTcpServer>[] = [];
+  const closePreviews = async (): Promise<void> => {
+    await Promise.all(
+      previewServers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          }),
+      ),
+    );
+  };
+  try {
+    for (const port of config.localPreviewPorts ?? []) {
+      const server = createTcpServer((socket) => {
+        if (maintenance) {
+          socket.destroy();
+          return;
+        }
+        upgradedSockets.add(socket);
+        socket.once('close', () => upgradedSockets.delete(socket));
+        socket.on('error', () => undefined);
+        const upstream = connect({ host: backend.host, port });
+        upstreamSockets.add(upstream);
+        upstream.once('close', () => {
+          upstreamSockets.delete(upstream);
+          socket.destroy();
+        });
+        upstream.on('error', () => socket.destroy());
+        socket.once('close', () => upstream.destroy());
+        socket.pipe(upstream).pipe(socket);
+      });
+      previewServers.push(server);
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, config.publicHost ?? '127.0.0.1', () => {
+          server.removeListener('error', reject);
+          resolve();
+        });
+      });
+    }
+  } catch (error) {
+    for (const socket of upgradedSockets) socket.destroy();
+    for (const socket of upstreamSockets) socket.destroy();
+    await Promise.all([
+      closePreviews(),
+      closeServer(publicServer, publicSockets),
+      closeServer(internalServer, internalSockets),
+    ]);
+    throw error;
+  }
   let closing: Promise<void> | undefined;
   return {
     publicPort,
@@ -664,10 +731,14 @@ export async function startManagedGateway(
         draining = false;
       }
     },
-    close: () =>
-      (closing ??= Promise.all([
+    close: () => {
+      for (const socket of upgradedSockets) socket.destroy();
+      for (const socket of upstreamSockets) socket.destroy();
+      return (closing ??= Promise.all([
+        closePreviews(),
         closeServer(publicServer, publicSockets),
         closeServer(internalServer, internalSockets),
-      ]).then(() => undefined)),
+      ]).then(() => undefined));
+    },
   };
 }

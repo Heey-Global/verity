@@ -528,14 +528,12 @@ that covers Docker's published ports and verify access from both an allowed
 client and a network that should be denied. See Docker's
 [firewall documentation](https://docs.docker.com/engine/network/packet-filtering-firewalls/#docker-and-ufw).
 
-**The Dev Server ranges must not be public.** Host ports `3000–3099` and
-`8000–8099` publish project Dev Servers as raw, unauthenticated HTTP — no
-bearer, no TLS. Anything an agent starts there is reachable by whoever can
-reach the port, and agents act on repository content you may not fully trust.
-On an internet-facing host, keep both ranges firewalled to your own clients or
-VPN; do not follow the remote-preview note in
-[Ports & environment reference](#ports--environment-reference) with a
-public-internet allow rule.
+**The local preview range must not be public.** Host ports `8100–8119`
+(default `VERITY_LOCAL_PREVIEW_PORT_RANGE`) serve local HTTP and WebSocket previews
+without authentication or TLS. Allow this range only from trusted LAN clients or
+your VPN. Docker-published ports need filtering that covers Docker forwarding;
+ordinary ufw input rules alone do not establish that the range is restricted.
+Public previews use the authenticated Uplink edge instead.
 
 **Do not expose anything else.** PostgreSQL and the Claude/Codex egress
 gateways (9443/9444) are intentionally unpublished; nothing outside the Compose
@@ -949,19 +947,32 @@ Verity's own secrets are additionally encrypted at rest.
 
 ## Ports & environment reference
 
-Verity reserves host ports `3000–3099` and `8000–8099` for project Dev Servers.
-The global database-backed registry assigns the lowest free port across both ranges
-and all projects; ports are not caller-selectable. Deleting a Dev Server or project
-releases its lease for reuse. Ensure both ranges are available on the Docker host
-and allowed by any host firewall when remote preview access is required — but
-only for clients you trust: these ports serve project Dev Servers without TLS or
-authentication, so on an internet-reachable host keep them restricted to your
-VPN or client addresses (see
-[Hardening an internet-reachable host](#hardening-an-internet-reachable-host)).
+Verity reserves one contiguous host range for local previews, default `8100–8119`.
+Set `VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119` in the deployment environment to
+change it (1–200 nonprivileged ports, excluding the API ports). The same range is
+published on the legacy Server or managed Gateway and used internally by the
+Server. Changing it requires restarting the ingress container; creating or
+revoking a share never recreates the project sandbox. Ports are assigned only
+while shares are active. A full range produces an explicit capacity error.
+
+Local previews are open HTTP, including REST APIs and WebSockets. Restrict the
+range to trusted clients or VPN addresses; it must never be exposed directly to
+the public internet. A network firewall may also need updating when the range
+changes. Docker's optional `userland-proxy: false` setting can reduce the process
+overhead of published ports; its actual memory cost depends on the Docker
+configuration and should be measured on the host.
+
+The old configured project Dev Servers, fixed sandbox host ports, autostart, and
+session retargeting are removed. Start a server yourself or ask the agent to start
+it, then open the detected listener in the session Preview sheet. Existing
+sandbox containers may still carry old Docker bindings until their next explicit
+recreate; remove old firewall allowances now. Server updates do not silently
+restart a sandbox to remove those bindings.
 
 | Variable                              | Default                                                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `VERITY_API_HOST_PORT`                | `8082`                                                               | Host port published to the mobile app. Container `PORT` remains `8082`.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `VERITY_LOCAL_PREVIEW_PORT_RANGE`     | `8100-8119`                                                          | Identical host/container range for open local HTTP and WebSocket previews. Restrict to trusted LAN/VPN clients; changing it requires restarting the ingress container.                                                                                                                                                                                                                                                                                                                                          |
 | `PORT`                                | `8082`                                                               | API listen port.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `VERITY_DOCKER_BASE_URL`              | `unix:///var/run/docker.sock`                                        | Docker access (mounted socket, or proxy URL).                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `VERITY_DOCKER_SOCKET_PATH`           | `/var/run/docker.sock`                                               | Host socket path mounted into the runner for the default raw-socket mode.                                                                                                                                                                                                                                                                                                                                                                                                                                       |

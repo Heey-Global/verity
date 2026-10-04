@@ -6985,7 +6985,7 @@ describe('DELETE /sessions/:id (worktree cleanup)', () => {
     }
   });
 
-  it('restarts a running preview on synchronized main before removing its session worktree', async () => {
+  it('does not restart a retired configured Dev Server while deleting its session', async () => {
     const projectWorktrees = fake();
     await ctx.store.upsertProject({
       id: 'p-preview-delete',
@@ -7053,14 +7053,8 @@ describe('DELETE /sessions/:id (worktree cleanup)', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s-preview-delete' });
       expect(res.statusCode).toBe(200);
-      expect(syncProjectCheckout).toHaveBeenCalledWith('p-preview-delete');
-      expect(startDevServer).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'p-preview-delete' }),
-        expect.objectContaining({
-          devServerId: devServer.id,
-          devServerCheckoutRoot: null,
-        }),
-      );
+      expect(syncProjectCheckout).not.toHaveBeenCalled();
+      expect(startDevServer).not.toHaveBeenCalled();
       expect(projectWorktrees.removed).toEqual([
         '/data/dev/heey-global-verity/.verity-sessions/agent-preview',
       ]);
@@ -13368,261 +13362,25 @@ describe('POST /projects/:id/repair', () => {
   });
 });
 
-describe('POST /projects/:id/setup-dev-servers', () => {
-  it('reports unavailable setup before validating the request body', async () => {
-    const a = buildServer({ eventStore: ctx.store, bus, conductor });
+describe('retired configured Dev Server routes', () => {
+  it('does not recreate a sandbox through a retired setup request', async () => {
+    const provisioner = {
+      provision: vi.fn(async () => {
+        throw new Error('unexpected provisioning');
+      }),
+    };
+    const deprovisioner = { deprovision: vi.fn() };
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, provisioner, deprovisioner });
     try {
       const res = await a.inject({
         method: 'POST',
         url: '/projects/missing/setup-dev-servers',
         payload: {},
       });
-      expect(res.statusCode).toBe(503);
-      expect(res.json()).toEqual({ error: 'project setup is not configured' });
-    } finally {
-      await a.close();
-    }
-  });
-
-  it('refuses reconfiguration while a project session is busy', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-busy-dev-setup',
-      owner: 'acme',
-      repo: 'website',
-      containerName: 'verity-acme--website',
-      state: 'active',
-    });
-    await ctx.store.createSession({
-      sessionId: 'busy-dev-setup-session',
-      worktree: '/work/busy-dev-setup-session',
-      model: 'claude-sonnet',
-      projectId: 'p-busy-dev-setup',
-    });
-    await ctx.store.recordDevServerDetection('p-busy-dev-setup', 'busy-fingerprint');
-    isBusy.mockImplementation((id) => id === 'busy-dev-setup-session');
-    const deprovisioner = { deprovision: vi.fn() };
-    const provisioner = { provision: vi.fn() };
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, deprovisioner, provisioner });
-    try {
-      const res = await a.inject({
-        method: 'POST',
-        url: '/projects/p-busy-dev-setup/setup-dev-servers',
-        payload: {
-          fingerprint: 'busy-fingerprint',
-          devServers: [
-            {
-              sourceKey: '.:dev',
-              name: 'Website',
-              command: 'npm run dev',
-              workdir: null,
-              containerPort: '3000',
-            },
-          ],
-        },
-      });
-      expect(res.statusCode).toBe(409);
-      expect(deprovisioner.deprovision).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(404);
       expect(provisioner.provision).not.toHaveBeenCalled();
-    } finally {
-      await a.close();
-    }
-  });
-
-  it('applies a same-port detected change live without restarting the project container', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-live-update',
-      owner: 'acme',
-      repo: 'website',
-      containerName: 'verity-acme--website',
-      state: 'active',
-    });
-    await ctx.store.createDevServer({
-      projectId: 'p-live-update',
-      sourceKey: '.:dev',
-      name: 'Website',
-      command: 'npm run dev',
-      containerPort: '3000',
-      autoStart: true,
-    });
-    await ctx.store.recordDevServerDetection('p-live-update', 'changed-fingerprint');
-    const startDevServer = vi.fn(async (project) => ({
-      projectId: project.id,
-      url: null,
-      running: true,
-      pid: '123',
-    }));
-    const projectRuntime = {
-      startDevServer,
-      devServerStatus: vi.fn(),
-      stopDevServer: vi.fn(),
-      devServerLogs: vi.fn(),
-      devServerHealth: vi.fn(),
-    };
-    const deprovisioner = { deprovision: vi.fn() };
-    const provisioner = { provision: vi.fn() };
-    const a = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      deprovisioner,
-      provisioner,
-      projectRuntime,
-      projectCloneRoot: '/data/dev',
-    });
-    try {
-      const res = await a.inject({
-        method: 'POST',
-        url: '/projects/p-live-update/setup-dev-servers',
-        payload: {
-          fingerprint: 'changed-fingerprint',
-          devServers: [
-            {
-              sourceKey: '.:dev',
-              name: 'Website',
-              command: 'npm run dev -- --turbo',
-              workdir: null,
-              containerPort: '3000',
-            },
-          ],
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
       expect(deprovisioner.deprovision).not.toHaveBeenCalled();
-      expect(provisioner.provision).not.toHaveBeenCalled();
-      expect(startDevServer).toHaveBeenCalledTimes(1);
-      expect((await ctx.store.listDevServers('p-live-update'))[0]?.command).toBe(
-        'npm run dev -- --turbo',
-      );
     } finally {
-      await a.close();
-    }
-  });
-
-  it('durably applies detected servers and queues the restart idempotently', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-live-setup',
-      owner: 'acme',
-      repo: 'website',
-      containerName: 'verity-acme--website',
-      state: 'active',
-    });
-    const deprovisioner = {
-      deprovision: vi.fn(async (projectId: string) => {
-        return (await ctx.store.updateProjectState(projectId, 'absent'))!;
-      }),
-    };
-    const provisioner = {
-      provisionWarnings: vi.fn(async () => []),
-      provision: vi.fn(async (projectId: string) => {
-        return (await ctx.store.updateProjectState(projectId, 'active'))!;
-      }),
-    };
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, deprovisioner, provisioner });
-    await ctx.store.recordDevServerDetection('p-live-setup', 'fingerprint-1');
-    const payload = {
-      fingerprint: 'fingerprint-1',
-      devServers: [
-        {
-          sourceKey: '.:dev',
-          name: 'Website',
-          command: 'npm run dev',
-          workdir: null,
-          containerPort: '3000',
-        },
-      ],
-    };
-    try {
-      const [first, duplicate] = await Promise.all([
-        a.inject({
-          method: 'POST',
-          url: '/projects/p-live-setup/setup-dev-servers',
-          payload,
-        }),
-        a.inject({
-          method: 'POST',
-          url: '/projects/p-live-setup/setup-dev-servers',
-          payload,
-        }),
-      ]);
-      expect(first.statusCode).toBe(202);
-      expect(duplicate.statusCode).toBe(202);
-      expect(first.json().project).toMatchObject({ id: 'p-live-setup', state: 'cloning' });
-      expect(await ctx.store.listDevServers('p-live-setup')).toHaveLength(1);
-      expect(provisioner.provision).toHaveBeenCalledWith('p-live-setup', {
-        confirmWarnings: false,
-      });
-      expect(provisioner.provision).toHaveBeenCalledTimes(1);
-      expect(deprovisioner.deprovision).toHaveBeenCalledTimes(1);
-
-      await ctx.store.updateProjectState('p-live-setup', 'active');
-      await ctx.store.recordDevServerDetection('p-live-setup', 'fingerprint-2');
-      const second = await a.inject({
-        method: 'POST',
-        url: '/projects/p-live-setup/setup-dev-servers',
-        payload: {
-          ...payload,
-          fingerprint: 'fingerprint-2',
-          devServers: [{ ...payload.devServers[0], command: 'npm run dev -- --turbo' }],
-        },
-      });
-      expect(second.statusCode).toBe(202);
-      const servers = await ctx.store.listDevServers('p-live-setup');
-      expect(servers).toHaveLength(1);
-      expect(servers[0]?.command).toBe('npm run dev -- --turbo');
-    } finally {
-      await a.close();
-    }
-  });
-
-  it('releases the fingerprint claim when queueing fails so retry can recover', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-setup-retry',
-      owner: 'acme',
-      repo: 'retry',
-      containerName: 'verity-acme--retry',
-      state: 'absent',
-    });
-    await ctx.store.recordDevServerDetection('p-setup-retry', 'retry-fingerprint');
-    const originalUpdate = ctx.store.updateProjectState.bind(ctx.store);
-    let failQueue = true;
-    const update = vi.spyOn(ctx.store, 'updateProjectState').mockImplementation((id, state) => {
-      if (state === 'cloning' && failQueue) {
-        failQueue = false;
-        return Promise.reject(new Error('queue unavailable'));
-      }
-      return originalUpdate(id, state);
-    });
-    const provisioner = {
-      provision: vi.fn(async (id: string) => (await ctx.store.getProject(id))!),
-    };
-    const deprovisioner = { deprovision: vi.fn() };
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, provisioner, deprovisioner });
-    const request = {
-      method: 'POST' as const,
-      url: '/projects/p-setup-retry/setup-dev-servers',
-      payload: {
-        fingerprint: 'retry-fingerprint',
-        devServers: [
-          {
-            sourceKey: '.:dev',
-            name: 'Web',
-            command: 'npm run dev',
-            workdir: null,
-            containerPort: '3000',
-          },
-        ],
-      },
-    };
-    try {
-      expect((await a.inject(request)).statusCode).toBe(500);
-      expect(await ctx.store.getDevServerDetectionState('p-setup-retry')).toMatchObject({
-        reviewedFingerprint: null,
-      });
-      expect((await a.inject(request)).statusCode).toBe(202);
-      expect(provisioner.provision).toHaveBeenCalledTimes(1);
-    } finally {
-      update.mockRestore();
       await a.close();
     }
   });

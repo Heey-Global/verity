@@ -1,3 +1,6 @@
+import { previewSharingCapability } from './preview-capability.js';
+import { LocalPreviewManager } from './local-preview-manager.js';
+import { ListenerDiscovery } from './listener-discovery.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
 import {
@@ -47,7 +50,7 @@ import type { Kysely } from 'kysely';
 import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
@@ -100,7 +103,12 @@ import {
 } from './github.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
-import { PreviewShareManager, sweepOrphanedPreviewShares } from './preview-share-manager.js';
+import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
+import {
+  PreviewShareConflictError,
+  PreviewShareManager,
+  sweepOrphanedPreviewShares,
+} from './preview-share-manager.js';
 import { UplinkControlClient } from './uplink-control-client.js';
 import {
   createRemoteConnectorPool,
@@ -784,6 +792,8 @@ export interface EmbeddedServerConfig {
   projectRelayGid?: number | undefined;
   /** Complete public-preview runtime. The subscription key is deliberately not
    * part of config: it is loaded from encrypted Verity settings. */
+  /** Local preview transport is available independently of Uplink. */
+  resolvePreviewConnectorImage?: (() => Promise<string | undefined>) | undefined;
   publicPreviews?:
     | {
         resolveConnectorImage: () => Promise<string | undefined>;
@@ -2074,7 +2084,6 @@ export async function buildEmbeddedServer(
     brokeredAliasCache.set(projectId, { names, expiresAt: Date.now() + ttlMs });
     return names;
   };
-  await eventStore.reconcileDevServerHostPorts();
   const secretKeyMeta = await eventStore.getSecretKeyMeta();
   const hasMasterPassword = secretKeyMeta !== undefined;
   // The one non-interactive way in (ADR 0008 D8): a Server promoted by a
@@ -2393,6 +2402,19 @@ export async function buildEmbeddedServer(
       }))
     : undefined;
   let previewShareManager: PreviewShareManager | undefined;
+  let localPreviewManager: LocalPreviewManager | undefined;
+  const withPreviewProjectMutation = async <T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+  ): Promise<T> => {
+    const runPublic = () =>
+      previewShareManager
+        ? previewShareManager.withProjectMutation(projectId, mutation)
+        : mutation();
+    return localPreviewManager
+      ? localPreviewManager.withProjectMutation(projectId, runPublic)
+      : runPublic();
+  };
   // Every line the Uplink client writes is conditional on this option being
   // present. Without it the handshake record, the close code and the refusal
   // reason are all no-ops, and a control channel that is being refused is
@@ -2456,6 +2478,13 @@ export async function buildEmbeddedServer(
         });
         return status.running;
       },
+      prepareTargetPort: (project, port) =>
+        new DockerProjectRuntime({ dockerBaseUrl: config.dockerBaseUrl }).ensurePreviewTarget(
+          project,
+          port,
+        ),
+      listSessionServers: (sessionId) =>
+        listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
       listListeningProcesses: async (project) =>
         await new DockerProjectRuntime({
           dockerBaseUrl: config.dockerBaseUrl,
@@ -3330,12 +3359,8 @@ export async function buildEmbeddedServer(
       onSandboxWakeFallback: (event) => {
         app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
       },
-      ...(previewShareManager !== undefined
-        ? {
-            withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
-              previewShareManager.withProjectMutation(project.id, mutation),
-          }
-        : {}),
+      withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
+        withPreviewProjectMutation(project.id, mutation),
       // Named data volume (M16): per-project mounts become volume subpaths instead
       // of host binds, so sibling sandboxes need no host-path knowledge.
       ...(config.dataVolume !== undefined ? { dataVolume: config.dataVolume } : {}),
@@ -3366,7 +3391,7 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
-      ...(config.publicPreviews !== undefined
+      ...(config.publicPreviews !== undefined || config.resolvePreviewConnectorImage !== undefined
         ? (() => {
             const verifier = createDockerGvisorRuntimeVerifier({
               docker,
@@ -3419,10 +3444,8 @@ export async function buildEmbeddedServer(
       // Revoke the project's Claude-egress client cert on teardown (opt-in).
       claudeEgressIdentity,
       projectRelayControl,
-      previewShareManager === undefined
-        ? undefined
-        : (project: ProjectRecord, mutation: () => Promise<ProjectRecord>) =>
-            previewShareManager.withProjectMutation(project.id, mutation),
+      (project: ProjectRecord, mutation: () => Promise<ProjectRecord>) =>
+        withPreviewProjectMutation(project.id, mutation),
       // Resource cleanup never blocks the deprovision, so the log is where a
       // leftover container, clone directory, or relay socket becomes visible.
       (project: ProjectRecord, step: string, cause: unknown) =>
@@ -3441,6 +3464,59 @@ export async function buildEmbeddedServer(
   // events the FileTailRunnerClient republishes off the tailed event file must
   // reach the exact bus the live stream reads from, not a second instance.
   const bus = new InMemoryEventBus();
+  const listenerDiscovery =
+    config.dockerBaseUrl && config.hostCloneRoot
+      ? new ListenerDiscovery({
+          eventStore,
+          bus,
+          hostCloneRoot: config.hostCloneRoot,
+          dockerBaseUrl: config.dockerBaseUrl,
+          scan: (project) =>
+            new DockerProjectRuntime({
+              dockerBaseUrl: config.dockerBaseUrl,
+            }).listListeningProcesses(project),
+        })
+      : undefined;
+
+  const localConnectorImage =
+    config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
+  localPreviewManager =
+    projectDocker && localConnectorImage && config.hostCloneRoot
+      ? new LocalPreviewManager({
+          store: eventStore,
+          docker: projectDocker,
+          resolveConnectorImage: localConnectorImage,
+          hostCloneRoot: config.hostCloneRoot,
+          ...(config.dataVolume ? { dataVolume: config.dataVolume } : {}),
+          ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
+          ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
+          isDevServerRunning: async () => false,
+          listListeningProcesses: (project) =>
+            new DockerProjectRuntime({
+              dockerBaseUrl: config.dockerBaseUrl,
+            }).listListeningProcesses(project),
+          listSessionServers: (sessionId) =>
+            listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
+          prepareTargetPort: (project, port) =>
+            new DockerProjectRuntime({ dockerBaseUrl: config.dockerBaseUrl }).ensurePreviewTarget(
+              project,
+              port,
+            ),
+          publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
+          connectorHost: hostname(),
+          resolveConnectorHost: async () => {
+            const server = await projectDocker.inspectContainer(hostname());
+            const address = server.networks?.['verity-net']?.ipAddress;
+            if (!address)
+              throw new PreviewShareConflictError('local preview server network is unavailable');
+            return address;
+          },
+          connectorNetwork: 'verity-net',
+          ...(process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE
+            ? { portRange: process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE }
+            : {}),
+        })
+      : undefined;
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised
   // when `config.runnerTransport` is on; cheap to build unconditionally.
@@ -3890,6 +3966,16 @@ export async function buildEmbeddedServer(
     ...(config.serverUpdateNotifierStatePath !== undefined
       ? { serverUpdateNotifierStatePath: config.serverUpdateNotifierStatePath }
       : {}),
+    ...(listenerDiscovery ? { listenerDiscovery } : {}),
+    ...(localPreviewManager ? { localPreviewManager } : {}),
+    previewSharingCapability: async () => {
+      const settings = await eventStore.getVeritySettings();
+      return previewSharingCapability(
+        uplinkControl?.isAvailable() === true,
+        Boolean(settings?.uplinkSubscriptionKey?.trim()),
+        uplinkControl?.diagnostics(),
+      );
+    },
     ...(previewShareManager !== undefined ? { previewShareManager } : {}),
     ...(uplinkControl !== undefined
       ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
@@ -4776,6 +4862,33 @@ export async function buildEmbeddedServer(
       },
     });
   }
+  if (localPreviewManager && projectDocker) {
+    const sweepLocalConnectors = () =>
+      sweepOrphanedLocalPreviews(projectDocker, hostname(), (id) =>
+        localPreviewManager!.ownsConnector(id),
+      );
+    await sweepLocalConnectors().catch((error) =>
+      app.log.warn({ err: error }, 'local connector cleanup deferred until Docker recovers'),
+    );
+    let reconcilingLocal = false;
+    const localTimer = setInterval(() => {
+      if (reconcilingLocal) return;
+      reconcilingLocal = true;
+      void sweepLocalConnectors()
+        .then(() => localPreviewManager!.reconcile())
+        .catch((error) => app.log.warn({ err: error }, 'local preview reconciliation failed'))
+        .finally(() => {
+          reconcilingLocal = false;
+        });
+    }, 10000);
+    localTimer.unref();
+    app.addHook('onClose', async () => {
+      clearInterval(localTimer);
+      await localPreviewManager.close();
+    });
+  }
+  app.addHook('onClose', () => listenerDiscovery?.close());
+  void listenerDiscovery?.reconcile();
   app.addHook('onClose', () => claudeCredentialSync.close());
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>

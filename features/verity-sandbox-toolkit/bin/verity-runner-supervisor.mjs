@@ -1616,7 +1616,7 @@ export function validateStartTurnRequest(request) {
       entries.length > 8 ||
       entries.some(
         ([key, value]) =>
-          !['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL'].includes(key) ||
+          !['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL', 'VERITY_SESSION_ID'].includes(key) ||
           typeof value !== 'string' ||
           value.length > 256,
       )

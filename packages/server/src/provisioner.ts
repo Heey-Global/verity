@@ -1661,44 +1661,6 @@ export class ProvisioningWarning extends Error {
   }
 }
 
-function validPort(value: string | null | undefined): string | null {
-  if (value == null) return null;
-  const trimmed = value.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const port = Number(trimmed);
-  return port >= 1 && port <= 65535 ? trimmed : null;
-}
-
-interface ProjectPortSettings {
-  devServerHostPort?: string | null;
-  devServerContainerPort?: string | null;
-}
-
-function projectPortBindings(
-  settings: unknown,
-): Array<{ hostPort: string; containerPort: string }> {
-  const candidates = Array.isArray(settings)
-    ? (settings as ProjectPortSettings[])
-    : [settings as ProjectPortSettings | undefined];
-  const seen = new Map<string, string>();
-  const bindings: Array<{ hostPort: string; containerPort: string }> = [];
-  for (const portSettings of candidates) {
-    const hostPort = validPort(portSettings?.devServerHostPort);
-    const containerPort = validPort(portSettings?.devServerContainerPort);
-    if (!hostPort || !containerPort) continue;
-    const existingContainerPort = seen.get(hostPort);
-    if (existingContainerPort !== undefined) {
-      if (existingContainerPort === containerPort) continue;
-      throw new Error(
-        `duplicate dev server host port ${hostPort} maps to both ${existingContainerPort} and ${containerPort}`,
-      );
-    }
-    seen.set(hostPort, containerPort);
-    bindings.push({ hostPort, containerPort });
-  }
-  return bindings;
-}
-
 function writeSecretFile(
   root: string,
   name: string,
@@ -4831,16 +4793,6 @@ export class ProvisionerImpl implements Provisioner {
         'project relay signing requires gitSecretRoot for capability material',
       );
     }
-    await this.opts.store.reconcileDevServerHostPorts(project.id);
-    const devServers = await this.opts.store.listDevServers(project.id);
-    const portBindings = projectPortBindings(
-      devServers.length > 0
-        ? devServers.map((server) => ({
-            devServerHostPort: server.hostPort,
-            devServerContainerPort: server.containerPort,
-          }))
-        : settings,
-    );
     const pathMode = image.usesDevcontainerImage ? 'neutral' : 'home';
     const devcontainerRuntime = image.usesDevcontainerImage
       ? devcontainerRuntimeSettings(join(dirs.clonePath, '.devcontainer'))
@@ -5493,7 +5445,6 @@ export class ProvisionerImpl implements Provisioner {
       ...(devcontainerRuntime.remoteUser !== undefined
         ? { user: devcontainerRuntime.remoteUser }
         : {}),
-      ...(portBindings.length > 0 ? { portBindings } : {}),
       ...(image.usesDevcontainerImage
         ? {
             entrypoint: DEVCONTAINER_TOOLKIT_ENTRYPOINT,

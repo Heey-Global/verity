@@ -139,8 +139,8 @@ import {
   type ViewToken,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { openLocalPreview } from '../../components/project/previewAccess';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
-import { openPublicPreview } from '../../components/premiumFeature';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
@@ -751,6 +751,37 @@ export function SessionChat({
   );
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
+  const [previewServer, setPreviewServer] =
+    useState<NonNullable<typeof session.devServers>[number]>();
+  const [previewOpening, setPreviewOpening] = useState(false);
+  const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
+    if (previewOpening) return;
+    setPreviewOpening(true);
+    try {
+      const capabilities = await client
+        .getPreviewCapabilities()
+        .catch(() => ({ publicSharing: 'unavailable' as const }));
+      const share = await client.createSessionLocalPreviewShare(sessionId, {
+        targetPort: server.port,
+      });
+      await openLocalPreview(
+        share,
+        capabilities.publicSharing,
+        () => {
+          setPreviewServer(server);
+          setStaticPreviewOpen(true);
+        },
+        () => router.push('/settings/services'),
+      );
+    } catch (caught) {
+      Alert.alert(
+        'Could not open preview',
+        caught instanceof Error ? caught.message : 'Try again.',
+      );
+    } finally {
+      setPreviewOpening(false);
+    }
+  };
   const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
   const [hasRunningDevServer, setHasRunningDevServer] = useState(false);
   // Set once a Core without port detection says so, so the header stops asking.
@@ -785,10 +816,11 @@ export function SessionChat({
   useEffect(() => {
     if (!loaded) return;
     refreshStaticPreview();
-    // Short enough that a server the agent just started lights the dot up soon.
-    const timer = setInterval(refreshStaticPreview, 20_000);
-    return () => clearInterval(timer);
   }, [refreshStaticPreview, loaded]);
+
+  useEffect(() => {
+    if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
+  }, [session.devServers]);
 
   const editAgentLoop = useCallback(() => {
     if (!agentLoop || sending || busy) return;
@@ -3533,10 +3565,8 @@ export function SessionChat({
           {projectId ? (
             <Pressable
               onPress={() => {
-                void openPublicPreview(client, () => {
-                  refreshStaticPreview();
-                  setStaticPreviewOpen(true);
-                });
+                refreshStaticPreview();
+                setStaticPreviewOpen(true);
               }}
               hitSlop={8}
               accessibilityRole="button"
@@ -3624,6 +3654,37 @@ export function SessionChat({
       keyboardVerticalOffset={0}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
+      {session.devServers
+        ?.filter((server) => server.scope !== 'project')
+        .map((server) => (
+          <View
+            key={server.port}
+            style={styles.headerLinks}
+            accessibilityLabel={`${server.name} is running on port ${String(server.port)}`}
+          >
+            <Text style={styles.headerBookmarkCount}>
+              {server.name} :{server.port}
+            </Text>
+            <Pressable
+              disabled={previewOpening}
+              onPress={() => void openDetectedLocally(server)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${server.name} locally`}
+            >
+              <Text style={styles.headerPreviewActiveText}>Open locally</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setPreviewServer(server);
+                setStaticPreviewOpen(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Share ${server.name} publicly`}
+            >
+              <Text style={styles.headerPreviewActiveText}>Share publicly</Text>
+            </Pressable>
+          </View>
+        ))}
       {workspaceFile !== null ? (
         <View style={styles.workspaceFileBar}>
           <Pressable
@@ -3734,11 +3795,18 @@ export function SessionChat({
       ) : null}
       {staticPreviewOpen && projectId ? (
         <StaticPreviewSheet
+          detectedServers={session.devServers}
+          initialServer={previewServer}
+          onOpenSettings={() => {
+            setStaticPreviewOpen(false);
+            router.push('/settings/services');
+          }}
           client={client}
           projectId={projectId}
           sessionId={sessionId}
           onClose={() => {
             setStaticPreviewOpen(false);
+            setPreviewServer(undefined);
             refreshStaticPreview();
           }}
         />

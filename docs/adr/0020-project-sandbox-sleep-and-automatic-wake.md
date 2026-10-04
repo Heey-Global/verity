@@ -37,8 +37,7 @@ compatibility and readiness, and fall back to full provisioning whenever reuse
 is unsafe.
 
 Automatic sleep will use activity leases rather than timestamps alone. Active
-turns, permission decisions, lifecycle mutations, explicitly retained
-development servers, and every unexpired, unrevoked public preview share will
+turns, permission decisions, lifecycle mutations, every unexpired, unrevoked local or public preview share will
 block sleep. Software updates will not wake stopped Sandboxes; an incompatible
 sleeping container will receive the update through cold provisioning when work
 next arrives.
@@ -105,17 +104,16 @@ Sleep is allowed only when all of the following are true:
   decision;
 - no project lifecycle, branch mutation, secret job, or container replacement
   operation holds the project activity lease;
-- no public preview share is active for the project;
-- no development server is configured to keep the project awake;
+- no local or public preview share is active for the project;
 - no explicit project policy disables automatic sleep.
 
 An active share is one that is neither revoked nor expired. It keeps the project
 awake on its own, independently of any dev-server condition: a share is bound to
 one container generation and serves only while that sandbox runs, so stopping the
 sandbox breaks a link that has already been handed to someone outside Verity.
-The dev-server rule does not subsume this. A share may target a static folder
-rather than a dev server, and that variant needs the running sandbox without any
-dev server being configured at all. Sleep eligibility therefore queries active
+A share may target a static folder rather than a listener, and that variant needs
+the running sandbox without a development server. Configured Dev Servers were
+removed by [the unified sharing concept](../DEV_SERVER_SHARING_CONCEPT.md). Sleep eligibility therefore queries active
 shares directly.
 
 Because shares carry their own expiry, this keep-awake condition clears itself.
@@ -463,8 +461,8 @@ Never log raw capability material or provider tokens.
 - Wake readiness failure cleans up the partial generation and provisions once.
 - Server restart during `waking` reconciles safely.
 - Explicit pause/delete cannot be undone by a queued wake.
-- A running turn, permission prompt, lifecycle mutation, or keep-awake dev
-  server prevents automatic sleep.
+- A running turn, permission prompt, lifecycle mutation, or active local/public
+  share prevents automatic sleep.
 - An active preview share prevents automatic sleep, including a static-folder
   share on a project with no dev server configured.
 - A share that expires or is revoked releases that block, and the project then
@@ -481,12 +479,8 @@ Never log raw capability material or provider tokens.
   does not demote it to `failed`.
 - A sleeping container is still stopped after a Docker daemon restart, while an
   active project's sandbox returns on its own.
-- A woken project whose auto-start dev server comes back is still eligible for
-  the next automatic sleep.
 - Sessions of a sleeping project raise no `sandbox_disconnected` attention
   marker.
-- A dev-server host port taken by something else during sleep produces a cold
-  fallback, not a failed wake.
 - A client that does not understand the new states still renders a sleeping
   project.
 

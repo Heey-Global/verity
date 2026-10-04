@@ -1,3 +1,4 @@
+import type { SessionDevServer } from './api.js';
 import type {
   AgentEvent,
   AgentStatus,
@@ -24,6 +25,7 @@ export interface SessionState {
   model: string | undefined;
   status: AgentStatus | undefined;
   messages: Message[];
+  devServers?: SessionDevServer[];
   /** Live cumulative token usage across the session's completed turns (§13a). */
   usage: UsageTotals;
   /** Tools the session's turns requested but were denied (§5b). Each entry may
@@ -141,6 +143,7 @@ function samePublishedMessage(left: Message, right: Message): boolean {
  * denied-tool list folded off `result` #26.)
  */
 export class SessionReducer {
+  private _devServers: SessionDevServer[] | undefined;
   private _sessionId: string | undefined;
   private _model: string | undefined;
   private _status: AgentStatus | undefined;
@@ -217,6 +220,9 @@ export class SessionReducer {
       this._pendingSkillToolId = null;
     }
     switch (event.t) {
+      case 'dev_servers_changed':
+        this._devServers = event.devServers;
+        break;
       case 'session':
         this._sessionId = event.id;
         this._model = event.model;
@@ -782,6 +788,7 @@ export class SessionReducer {
       model: this._model,
       status: this._status,
       messages: this.messages as Message[],
+      ...(this._devServers !== undefined ? { devServers: this._devServers } : {}),
       usage: { ...this._usage },
       permissionDenials: [...this._permissionDenials],
       rateLimit: this._rateLimit ? { ...this._rateLimit } : undefined,

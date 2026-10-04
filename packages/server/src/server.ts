@@ -149,12 +149,7 @@ import type {
   SessionProjectionFacts,
   SessionRecord,
 } from '@verity/store';
-import {
-  PROJECT_MEMORY_MAX_CHARS,
-  DeletedProjectError,
-  DevServerPortRangeExhaustedError,
-  SealedError,
-} from '@verity/store';
+import { PROJECT_MEMORY_MAX_CHARS, DeletedProjectError, SealedError } from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import rateLimitPlugin from '@fastify/rate-limit';
 import compressPlugin from '@fastify/compress';
@@ -253,7 +248,6 @@ import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
-import { registerProjectDevServerSetupRoute } from './project-dev-server-setup-route.js';
 import {
   parseRecreateContainerBody,
   registerProjectVerityControlRoutes,
@@ -307,15 +301,11 @@ import {
 import { parseOwnerRepo } from './canonical.js';
 import { startAgentLoopScheduler, type AgentLoopScheduler } from './agent-loop-scheduler.js';
 import { registerAgentLoopRoutes } from './agent-loop-routes.js';
-import {
-  registerDevServerRoutes,
-  runningDevServerIds,
-  startAutoDevServers,
-} from './dev-server-routes.js';
+import type { ListenerDiscovery } from './listener-discovery.js';
+import { registerLocalPreviewRoutes } from './local-preview-routes.js';
+import type { LocalPreviewManager } from './local-preview-manager.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import type { PreviewShareManager } from './preview-share-manager.js';
-import { detectDevServers } from './dev-server-detection.js';
-import { DevServerDetectionCache } from './dev-server-detection-cache.js';
 import { createAgentLoopExecutor } from './agent-loop-executor.js';
 import {
   PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
@@ -1050,6 +1040,15 @@ export interface ServerDeps {
    */
   serverUpdateNotifierStatePath?: string | undefined;
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
+  listenerDiscovery?: ListenerDiscovery | undefined;
+  localPreviewManager?: LocalPreviewManager | undefined;
+  previewSharingCapability?:
+    | (() =>
+        | Promise<'available' | 'premium-required' | 'unavailable'>
+        | 'available'
+        | 'premium-required'
+        | 'unavailable')
+    | undefined;
   previewShareManager?: PreviewShareManager | undefined;
   remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
   uplinkDiagnostics?:
@@ -3000,29 +2999,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionId: string,
     budget?: SessionArtifactPurgeBudget,
   ): Promise<boolean> => {
-    // `.catch()` alone would only cover a REJECTED promise; an implementation that
-    // throws before returning one would escape and fail the delete — the outcome the
-    // paragraph above says must never happen. try/catch covers both.
+    const session = await deps.eventStore.getSession(sessionId);
+    const release = session?.projectId
+      ? await deps.localPreviewManager?.beginSessionMove(session.projectId)
+      : undefined;
     try {
-      const purge = deps.purgeSessionArtifacts?.(sessionId);
-      // `Promise.race` attaches its own handler to `purge` immediately, so a purge
-      // that rejects after the timer won is already handled, not an unhandled
-      // rejection. The timer is unref'd: losing the race must not hold the process.
-      if (purge !== undefined) {
-        const allowance = budget?.remainingMs ?? SESSION_ARTIFACT_PURGE_TIMEOUT_MS;
-        const startedAt = Date.now();
-        await Promise.race([purge, sleep(allowance, undefined, { ref: false })]);
-        // Only time spent WAITING is charged, so a healthy volume — where each purge
-        // returns in milliseconds — never runs the budget down and every session in the
-        // loop gets its transcripts removed. It is a wedged volume the budget is for.
-        if (budget !== undefined) {
-          budget.remainingMs = Math.max(0, budget.remainingMs - (Date.now() - startedAt));
+      await deps.localPreviewManager?.stopSession(sessionId);
+      // `.catch()` alone would only cover a REJECTED promise; an implementation that
+      // throws before returning one would escape and fail the delete — the outcome the
+      // paragraph above says must never happen. try/catch covers both.
+      try {
+        const purge = deps.purgeSessionArtifacts?.(sessionId);
+        // `Promise.race` attaches its own handler to `purge` immediately, so a purge
+        // that rejects after the timer won is already handled, not an unhandled
+        // rejection. The timer is unref'd: losing the race must not hold the process.
+        if (purge !== undefined) {
+          const allowance = budget?.remainingMs ?? SESSION_ARTIFACT_PURGE_TIMEOUT_MS;
+          const startedAt = Date.now();
+          await Promise.race([purge, sleep(allowance, undefined, { ref: false })]);
+          // Only time spent WAITING is charged, so a healthy volume — where each purge
+          // returns in milliseconds — never runs the budget down and every session in the
+          // loop gets its transcripts removed. It is a wedged volume the budget is for.
+          if (budget !== undefined) {
+            budget.remainingMs = Math.max(0, budget.remainingMs - (Date.now() - startedAt));
+          }
         }
+      } catch {
+        // Logged by the implementation; never fatal here.
       }
-    } catch {
-      // Logged by the implementation; never fatal here.
+      return await deps.eventStore.deleteSession(sessionId);
+    } finally {
+      release?.();
     }
-    return await deps.eventStore.deleteSession(sessionId);
   };
   // Search projection is an eventually-consistent read model. Start/resume its
   // bounded backfill independently of requests; live event appends schedule it too.
@@ -3151,11 +3159,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     done();
   });
-  const devServerDetectionCache = deps.projectCloneRoot
-    ? new DevServerDetectionCache((project) =>
-        detectDevServers(projectClonePath(deps.projectCloneRoot!, project)),
-      )
-    : undefined;
   // Resolve the conductor: a factory is called with the app logger so its
   // background-failure sink can log through it (chicken/egg: the conductor is
   // built before the routes, but the logger exists once `app` does).
@@ -3269,18 +3272,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   const afterProjectProvision = async (projectId: string): Promise<void> => {
     if (await discardProvisionOfDeletedProject(projectId)) return;
-    devServerDetectionCache?.invalidate(projectId);
-    if (!deps.projectRuntime) return;
-    try {
-      await startAutoDevServers(
-        deps.eventStore,
-        deps.projectRuntime,
-        deps.projectCloneRoot,
-        projectId,
-      );
-    } catch (error) {
-      app.log.warn({ err: error, projectId }, 'verity: Dev Server auto-start failed');
-    }
   };
   /** Settle a provision the caller is not waiting on (the routes answer `202` and
    *  let the worker clone and build in the background). Either outcome ends at
@@ -3619,8 +3610,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return projectHasPersistentSandboxActivity({
       project,
       listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
-      listDevServers: () => deps.eventStore.listDevServers(projectId),
-      runtime: deps.projectRuntime,
+      hasLocalShares: () => deps.localPreviewManager?.hasProjectShares(projectId) ?? false,
     });
   };
   // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
@@ -6002,30 +5992,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onAgentLoopsChanged: () => agentLoopScheduler.wake(),
   });
 
-  registerDevServerRoutes(app, {
+  registerLocalPreviewRoutes(app, {
     eventStore: deps.eventStore,
-    ...(deps.projectRuntime ? { projectRuntime: deps.projectRuntime } : {}),
-    ...(devServerDetectionCache
-      ? {
-          detectDevServers: (project: ProjectRecord) => devServerDetectionCache.get(project),
-        }
-      : {}),
-    ...(deps.projectCloneRoot ? { projectCloneRoot: deps.projectCloneRoot } : {}),
-    ...(deps.provisioner?.syncProjectCheckout
-      ? {
-          syncProjectCheckout: (projectId: string) =>
-            deps.provisioner!.syncProjectCheckout!(projectId),
-        }
-      : {}),
-    ...(deps.previewShareManager
-      ? {
-          beginPublicPreviewMutation: (devServerId: string) =>
-            deps.previewShareManager!.beginDevServerMutation(devServerId),
-        }
-      : {}),
+    ...(deps.localPreviewManager ? { manager: deps.localPreviewManager } : {}),
+    ...(deps.previewSharingCapability ? { publicSharing: deps.previewSharingCapability } : {}),
   });
   registerPreviewShareRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.listenerDiscovery ? { listenerDiscovery: deps.listenerDiscovery } : {}),
+    ...(deps.localPreviewManager ? { localManager: deps.localPreviewManager } : {}),
     ...(deps.previewShareManager ? { manager: deps.previewShareManager } : {}),
   });
 
@@ -6644,7 +6619,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           deleteSessionEverywhere(sessionId, purgeBudget),
         );
       }
-      await deps.eventStore.releaseProjectDevServerHostPorts(id);
       return { code: 200, body: { projectId: id } };
     } finally {
       // A failed teardown leaves the project visible and the delete
@@ -6779,140 +6753,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         };
       } catch (error) {
         request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
-        throw error;
-      }
-    },
-  });
-
-  registerProjectDevServerSetupRoute(app, {
-    isAvailable: () => deps.provisioner !== undefined && deps.deprovisioner !== undefined,
-    setup: async (request, reply, id, body) => {
-      const provisioner = deps.provisioner!;
-      const deprovisioner = deps.deprovisioner!;
-      let project = await deps.eventStore.getProject(id);
-      if (!project || project.hiddenAt !== null) {
-        reply.code(404);
-        return { error: 'project not found' };
-      }
-      if (deps.secretCipher?.isSealed() === true) {
-        reply.code(503);
-        return { error: 'secret store is sealed', status: 'sealed' as const };
-      }
-      if (!body.confirmWarnings && provisioner.provisionWarnings !== undefined) {
-        const warnings = await provisioner.provisionWarnings(id);
-        if (warnings.length > 0) {
-          reply.code(409);
-          return { requiresConfirmation: true, warnings };
-        }
-      }
-      if (project.state === 'cloning' || project.state === 'container_starting') {
-        reply.code(202);
-        return { project };
-      }
-
-      const detectionState = await deps.eventStore.getDevServerDetectionState(id);
-      if (detectionState?.fingerprint !== body.fingerprint) {
-        reply.code(409);
-        return { error: 'detection result is stale' };
-      }
-      const before = await deps.eventStore.listDevServers(id);
-      const configsAlreadyApplied = body.devServers.every((config) => {
-        const current = before.find(({ sourceKey }) => sourceKey === config.sourceKey);
-        return (
-          current?.name === config.name &&
-          current.command === config.command &&
-          current.workdir === config.workdir &&
-          current.containerPort === config.containerPort
-        );
-      });
-      const canApplyLive =
-        project.state === 'active' &&
-        deps.projectRuntime !== undefined &&
-        body.devServers.every((config) => {
-          const current = before.find(({ sourceKey }) => sourceKey === config.sourceKey);
-          return current !== undefined && current.containerPort === config.containerPort;
-        });
-      if (
-        project.state === 'active' &&
-        configsAlreadyApplied &&
-        detectionState.reviewedFingerprint === body.fingerprint
-      ) {
-        reply.code(202);
-        return { project };
-      }
-
-      const busySession = (await deps.eventStore.listSessions()).find(
-        (session) =>
-          session.projectId === id &&
-          (conductor.isBusy(session.sessionId) || hasMeetingJob(session.sessionId)),
-      );
-      if (busySession !== undefined) {
-        reply.code(409);
-        return { error: `project session ${busySession.sessionId} is busy` };
-      }
-
-      const alreadyReviewed = detectionState.reviewedFingerprint === body.fingerprint;
-      if (!alreadyReviewed) {
-        const claimed = await deps.eventStore.reviewDevServerDetection(id, body.fingerprint);
-        if (!claimed) {
-          reply.code(409);
-          return { error: 'detection result is stale' };
-        }
-      }
-      try {
-        if (project.state !== 'absent' && !canApplyLive) {
-          project = await deprovisioner.deprovision(id, { purge: false });
-        }
-        const existing = await deps.eventStore.listDevServers(id);
-        for (const config of body.devServers) {
-          const current = existing.find(({ sourceKey }) => sourceKey === config.sourceKey);
-          if (current) {
-            await deps.eventStore.updateDevServer(current.id, {
-              name: config.name,
-              command: config.command,
-              workdir: config.workdir,
-              containerPort: config.containerPort,
-              autoStart: true,
-            });
-          } else {
-            await deps.eventStore.createDevServer({
-              projectId: id,
-              sourceKey: config.sourceKey,
-              name: config.name,
-              command: config.command,
-              workdir: config.workdir,
-              containerPort: config.containerPort,
-              autoStart: true,
-            });
-          }
-        }
-        if (canApplyLive && deps.projectRuntime) {
-          await startAutoDevServers(
-            deps.eventStore,
-            deps.projectRuntime,
-            deps.projectCloneRoot,
-            id,
-          );
-          reply.code(200);
-          return { project };
-        }
-        const queued = (await deps.eventStore.updateProjectState(id, 'cloning')) ?? project;
-        settleBackgroundProvision(
-          id,
-          provisioner.provision(id, { confirmWarnings: body.confirmWarnings }),
-          (error) =>
-            request.log.error({ err: error, projectId: id }, 'verity: Dev Server setup failed'),
-        );
-        reply.code(202);
-        return { project: queued };
-      } catch (error) {
-        if (!alreadyReviewed) {
-          await deps.eventStore.unreviewDevServerDetection(id, body.fingerprint);
-        }
-        if (error instanceof DevServerPortRangeExhaustedError) {
-          reply.code(409);
-          return { error: error.message };
-        }
         throw error;
       }
     },
@@ -8458,26 +8298,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // backend handle while that same fence is still held, before its worktree and
         // durable state disappear.
         conductor.closeSession?.(id);
-        const previewedServers =
-          session.projectId === null
-            ? []
-            : (await deps.eventStore.listDevServers(session.projectId)).filter(
-                (server) => server.previewSessionId === id,
-              );
-        const runningPreviewServerIds =
-          previewedServers.length > 0 && session.projectId !== null && deps.projectRuntime
-            ? await runningDevServerIds(
-                deps.eventStore,
-                deps.projectRuntime,
-                deps.projectCloneRoot,
-                session.projectId,
-                previewedServers.map(({ id: devServerId }) => devServerId),
-              )
-            : [];
-        if (previewedServers.length > 0 && deps.provisioner?.syncProjectCheckout) {
-          // Keep the session and its worktree intact if main cannot be refreshed.
-          await deps.provisioner.syncProjectCheckout(session.projectId!);
-        }
         let cleanupWorktrees = worktrees;
         if (session.projectId !== null && deps.projectCloneRoot !== undefined) {
           const project = await deps.eventStore.getProject(session.projectId);
@@ -8496,25 +8316,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // Raced with another delete between the lookup and here — already gone.
           reply.code(404);
           return { error: `session ${id} not found` };
-        }
-        if (previewedServers.length > 0 && session.projectId !== null && deps.projectRuntime) {
-          try {
-            // The FK cleared each preview pointer. Restore the persisted desired
-            // runtime state against the freshly synchronized main checkout before
-            // removing the old worktree.
-            await startAutoDevServers(
-              deps.eventStore,
-              deps.projectRuntime,
-              deps.projectCloneRoot,
-              session.projectId,
-              runningPreviewServerIds,
-            );
-          } catch (error) {
-            request.log.warn(
-              { err: error, projectId: session.projectId, sessionId: id },
-              'verity: failed to restore Dev Servers to main after session deletion',
-            );
-          }
         }
         // Best-effort filesystem cleanup. The session is already gone from the
         // store; a worktree-removal failure (e.g. it was already removed) must not
@@ -8975,31 +8776,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return { accepted: true };
   });
 
+  const beginPreviewSessionMove = async (projectId: string): Promise<() => void> => {
+    const releasePublic = await deps.previewShareManager?.beginSessionMove(projectId);
+    try {
+      const releaseLocal = await deps.localPreviewManager?.beginSessionMove(projectId);
+      return () => {
+        releaseLocal?.();
+        releasePublic?.();
+      };
+    } catch (error) {
+      releasePublic?.();
+      throw error;
+    }
+  };
+
   const recoverMovePreviews = async (sessionId: string, operationId: string): Promise<void> => {
     const move = await deps.eventStore.getSessionMove(sessionId, operationId);
     if (!move?.preview_restart_json) return;
-    const serverIds = JSON.parse(move.preview_restart_json) as string[];
-    if (serverIds.length > 0) {
-      if (!deps.projectRuntime)
-        throw new SessionMoveError(
-          'preview_recovery',
-          'Preview runtime is required to finish this move.',
-        );
-      await startAutoDevServers(
-        deps.eventStore,
-        deps.projectRuntime,
-        deps.projectCloneRoot,
-        move.source_project_id,
-        serverIds,
-      );
-    }
+    // Legacy configured Dev Servers are no longer restored during a move.
     await deps.eventStore.setMovePreviewRestart(sessionId, operationId, null);
   };
   app.addHook('onReady', async () => {
     for (const move of await deps.eventStore.listMovePreviewRestarts()) {
       let release: (() => void) | undefined;
       try {
-        release = await deps.previewShareManager?.beginSessionMove(move.source_project_id);
+        release = await beginPreviewSessionMove(move.source_project_id);
         await recoverMovePreviews(move.session_id, move.operation_id);
       } catch (error) {
         app.log.warn(
@@ -9051,7 +8852,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           'This retry key belongs to a different move.',
         );
       if (prior?.result_json) {
-        const release = await deps.previewShareManager?.beginSessionMove(prior.source_project_id);
+        const release = await beginPreviewSessionMove(prior.source_project_id);
         try {
           await recoverMovePreviews(id, body.operationId);
         } finally {
@@ -9108,16 +8909,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                   'This retry key belongs to a different move.',
                 );
               if (duplicate?.result_json) return JSON.parse(duplicate.result_json) as unknown;
-              if (deps.projectRuntime && !deps.previewShareManager)
-                throw new SessionMoveError(
-                  'unavailable',
-                  'Preview lifecycle coordination is unavailable.',
-                );
-              const releasePreview = await deps.previewShareManager?.beginSessionMove(source.id);
+              const releasePreview = await beginPreviewSessionMove(source.id);
               try {
                 await recoverMovePreviews(id, body.operationId);
-                const allServers = await deps.eventStore.listDevServers(source.id);
-                const previews = allServers.filter((server) => server.previewSessionId === id);
                 const snapshot = await captureMoveSnapshot(session.worktree);
                 const sourceSettings = await projectSettingsStore(
                   deps.eventStore,
@@ -9213,32 +9007,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                     /* The crash may predate branch creation. */
                   }
                 }
-                if (previews.length > 0) {
-                  if (!deps.projectRuntime || !deps.provisioner?.syncProjectCheckout)
-                    throw new SessionMoveError(
-                      'unavailable',
-                      'Preview runtime is required to move this session.',
-                    );
-                  const running = await runningDevServerIds(
-                    deps.eventStore,
-                    deps.projectRuntime,
-                    cloneRoot,
-                    source.id,
-                    previews.map((server) => server.id),
-                  );
-                  await deps.eventStore.setMovePreviewRestart(id, body.operationId, running);
-                  await deps.provisioner.syncProjectCheckout(source.id);
-                  for (const server of previews) {
-                    await deps.projectRuntime.stopDevServer(source, {
-                      defaultBranch: sourceSettings?.defaultBranch ?? null,
-                      defaultModel: sourceSettings?.defaultModel ?? null,
-                      devServerId: server.id,
-                      adoptLegacyDevServerFiles: allServers[0]?.id === server.id,
-                      devServerCommand: server.command,
-                      devServerUrl: server.url,
-                    });
-                  }
-                }
                 try {
                   const created = await provisioner.add(branch);
                   if (created !== targetWorktree) throw new Error('Unexpected move worktree path');
@@ -9270,6 +9038,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                     `The old workspace ${session.worktree} and branch ${snapshot.branch} are retained. ` +
                     `Commits were not transferred. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
                   await deps.previewShareManager?.revokeSessionShares(source.id, id);
+                  await deps.localPreviewManager?.stopSession(id);
                   await deps.eventStore.commitSessionMove(
                     id,
                     body.operationId,

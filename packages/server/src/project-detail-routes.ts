@@ -1,11 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import {
-  PROJECT_MEMORY_MAX_CHARS,
-  DevServerPortRangeExhaustedError,
-  SealedError,
-  type ProjectSettingsPatch,
-} from '@verity/store';
+import { PROJECT_MEMORY_MAX_CHARS, SealedError, type ProjectSettingsPatch } from '@verity/store';
 import { isValidBranchName } from './branches.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 
@@ -123,19 +118,11 @@ export function registerProjectDetailRoutes(
       reply.code(404);
       return { error: `project ${id} not found` };
     }
-    try {
-      const settings = await deps.updateSettings(id, patch);
-      if (settings === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      return { settings };
-    } catch (error) {
-      if (error instanceof DevServerPortRangeExhaustedError) {
-        reply.code(409);
-        return { error: error.message };
-      }
-      throw error;
+    const settings = await deps.updateSettings(id, patch);
+    if (settings === undefined) {
+      reply.code(404);
+      return { error: `project ${id} not found` };
     }
+    return { settings };
   });
 }

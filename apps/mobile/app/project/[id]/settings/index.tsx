@@ -83,7 +83,6 @@ function ProjectSettingsIndexView({
       | '/project/[id]/settings/github'
       | '/project/[id]/settings/environment'
       | '/project/[id]/settings/model'
-      | '/project/[id]/dev-server'
       | '/project/[id]/automations',
   ) => router.push({ pathname, params: { id: projectId } });
   const toService = (section: 'doppler' | 'drive' | 'mcp') =>
@@ -138,12 +137,6 @@ function ProjectSettingsIndexView({
 
       <SettingsGroup title="Project tools">
         <SettingsListPanel>
-          <SettingsNavRow
-            icon="monitor"
-            title="Dev Server"
-            subtitle="Local previews for this project"
-            onPress={() => to('/project/[id]/dev-server')}
-          />
           <SettingsNavRow
             icon="repeat"
             title="Automations"

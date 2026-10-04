@@ -8,6 +8,7 @@ const staticServer = staticRoot
   ? await startStaticPreviewServer(staticRoot, required('VERITY_PREVIEW_STATIC_PATH'))
   : undefined;
 const connector = new PreviewConnector({
+  accessMode: process.env.VERITY_PREVIEW_ACCESS_MODE === 'local-open' ? 'local-open' : 'pin',
   edgeUrl: required('VERITY_PREVIEW_EDGE_URL'),
   connectorToken: required('VERITY_PREVIEW_CONNECTOR_TOKEN'),
   targetOrigin: staticServer?.origin ?? required('VERITY_PREVIEW_TARGET_ORIGIN'),

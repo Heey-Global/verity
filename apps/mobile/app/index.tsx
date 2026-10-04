@@ -9,7 +9,6 @@ import {
   VerityApiError,
   type VerityClient,
   type DevServer,
-  type DevServerStatusMutation,
   type DevServerDetection,
   type ProjectRecord,
   type ProviderLimitRow,
@@ -26,7 +25,6 @@ import {
   sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   subscribeProjectStatusMutations,
-  subscribeDevServerStatusMutations,
   sandboxUpdateNeedsAttention,
   sessionBadge,
   attentionNotice,
@@ -835,16 +833,8 @@ const PROJECT_SETUP_POLL_MS = 2_000;
 
 function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [devServersByProject, setDevServersByProject] = useState<Map<string, DevServer[]>>(
-    () => new Map(),
-  );
-  const devServersByProjectRef = useRef<Map<string, DevServer[]>>(new Map());
-  const pendingDevServerMutations = useRef(
-    new Map<string, Map<string, { mutation: DevServerStatusMutation; generation: number }>>(),
-  );
-  const [detectionsByProject, setDetectionsByProject] = useState<Map<string, DevServerDetection>>(
-    () => new Map(),
-  );
+  const devServersByProject = new Map<string, DevServer[]>();
+  const detectionsByProject = new Map<string, DevServerDetection>();
   const [previewSessionIds, setPreviewSessionIds] = useState<ReadonlySet<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -852,8 +842,6 @@ function useProjects(client: VerityClient) {
   const pendingProjectMutations = useRef(
     new Map<string, { project: ProjectRecord; generation: number }>(),
   );
-  const detectionAttemptedProjectIds = useRef(new Set<string>());
-  devServersByProjectRef.current = devServersByProject;
 
   useEffect(
     () =>
@@ -873,45 +861,6 @@ function useProjects(client: VerityClient) {
     [],
   );
 
-  useEffect(
-    () =>
-      subscribeDevServerStatusMutations((mutation) => {
-        const projectPending =
-          pendingDevServerMutations.current.get(mutation.projectId) ??
-          new Map<string, { mutation: DevServerStatusMutation; generation: number }>();
-        projectPending.set(mutation.id, { mutation, generation: loadGeneration.current });
-        pendingDevServerMutations.current.set(mutation.projectId, projectPending);
-        const known = devServersByProjectRef.current.get(mutation.projectId);
-        if (known === undefined) return;
-        setDevServersByProject((current) => {
-          const servers = current.get(mutation.projectId);
-          if (!servers) return current;
-          const found = servers.some((server) => server.id === mutation.id);
-          const next = new Map(current);
-          next.set(
-            mutation.projectId,
-            found
-              ? servers.map((server) =>
-                  server.id === mutation.id
-                    ? (mutation.devServer ?? {
-                        ...server,
-                        ...(mutation.running === undefined ? {} : { running: mutation.running }),
-                        ...(mutation.previewSessionId === undefined
-                          ? {}
-                          : { previewSessionId: mutation.previewSessionId }),
-                      })
-                    : server,
-                )
-              : mutation.devServer
-                ? [...servers, mutation.devServer]
-                : servers,
-          );
-          return next;
-        });
-      }),
-    [],
-  );
-
   // `silent` skips the loading-spinner flip so the interval poll refreshes in
   // place (no flicker); the initial load + pull-to-refresh flip it as before.
   const load = useCallback(
@@ -921,33 +870,10 @@ function useProjects(client: VerityClient) {
       try {
         const nextProjects = await client.listProjects();
         const activeProjects = nextProjects.filter((project) => project.state === 'active');
-        const devServerResultsPromise = Promise.allSettled(
-          activeProjects.map(
-            async (project) => [project.id, await client.listDevServers(project.id)] as const,
-          ),
-        );
         const previewResultsPromise = Promise.allSettled(
           activeProjects.map((project) => client.listPublicPreviewShares(project.id)),
         );
-        const projectsToAnalyze = nextProjects.filter(
-          ({ id, state }) => state === 'active' && !detectionAttemptedProjectIds.current.has(id),
-        );
-        for (const { id } of projectsToAnalyze) detectionAttemptedProjectIds.current.add(id);
-        const detectionResultsPromise = Promise.allSettled(
-          projectsToAnalyze.map(async (project) => {
-            try {
-              return [project.id, await client.getDevServerDetection(project.id)] as const;
-            } catch (error) {
-              detectionAttemptedProjectIds.current.delete(project.id);
-              throw error;
-            }
-          }),
-        );
-        const [devServerResults, previewResults, detectionResults] = await Promise.all([
-          devServerResultsPromise,
-          previewResultsPromise,
-          detectionResultsPromise,
-        ]);
+        const previewResults = await previewResultsPromise;
         if (generation !== loadGeneration.current) return;
         if (previewResults.every((result) => result.status === 'fulfilled')) {
           const next = new Set<string>();
@@ -978,61 +904,6 @@ function useProjects(client: VerityClient) {
             .filter((project) => !seen.has(project.id)),
         ]);
         pendingProjectMutations.current.clear();
-        setDevServersByProject((current) => {
-          const projectIds = new Set(nextProjects.map(({ id }) => id));
-          const next = new Map([...current].filter(([projectId]) => projectIds.has(projectId)));
-          for (const result of devServerResults) {
-            if (result.status === 'fulfilled') {
-              const [projectId, servers] = result.value;
-              const pendingEntries = pendingDevServerMutations.current.get(projectId);
-              const pending = new Map(
-                [...(pendingEntries ?? [])]
-                  .filter(([, entry]) => entry.generation >= generation)
-                  .map(([id, entry]) => [id, entry.mutation]),
-              );
-              if (pending.size === 0) {
-                next.set(projectId, servers);
-                pendingDevServerMutations.current.delete(projectId);
-                continue;
-              }
-              const seen = new Set(servers.map((server) => server.id));
-              next.set(projectId, [
-                ...servers.map((server) => {
-                  const mutation = pending.get(server.id);
-                  return (
-                    mutation?.devServer ??
-                    (mutation
-                      ? {
-                          ...server,
-                          ...(mutation.running === undefined ? {} : { running: mutation.running }),
-                          ...(mutation.previewSessionId === undefined
-                            ? {}
-                            : { previewSessionId: mutation.previewSessionId }),
-                        }
-                      : server)
-                  );
-                }),
-                ...[...pending.values()].flatMap((mutation) =>
-                  !seen.has(mutation.id) && mutation.devServer ? [mutation.devServer] : [],
-                ),
-              ]);
-              pendingDevServerMutations.current.delete(projectId);
-            }
-          }
-          // Mutation callbacks run between renders and consult the ref. Keep it
-          // in lockstep with the committed cache instead of waiting for the next
-          // render, which could otherwise merge a fresh event into stale data.
-          devServersByProjectRef.current = next;
-          return next;
-        });
-        setDetectionsByProject((current) => {
-          const projectIds = new Set(nextProjects.map(({ id }) => id));
-          const next = new Map([...current].filter(([projectId]) => projectIds.has(projectId)));
-          for (const result of detectionResults) {
-            if (result.status === 'fulfilled') next.set(...result.value);
-          }
-          return next;
-        });
         setError(undefined); // recovered — clear any stale banner
       } catch (caught) {
         if (generation !== loadGeneration.current) return;

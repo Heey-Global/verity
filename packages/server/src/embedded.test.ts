@@ -2571,6 +2571,45 @@ describe('buildEmbeddedServer', () => {
     ).rejects.toThrow(/VERITY_DEFAULT_PROJECT_IMAGE must be pinned/);
   });
 
+  it('wires local previews and discovery without configuring Uplink', async () => {
+    server = await buildTestEmbeddedServer({
+      ...testProjectRelayConfig,
+      dockerBaseUrl: 'http://127.0.0.1:1',
+      hostCloneRoot: '/tmp/verity-projects',
+      resolvePreviewConnectorImage: async () => `example@sha256:${'a'.repeat(64)}`,
+    });
+    // A disabled manager returns 503 before inspecting a session; this catches
+    // accidentally restoring the publicPreviews condition in the composition root.
+    expect(
+      (
+        await server.app.inject({
+          method: 'POST',
+          url: '/sessions/missing/local-shares',
+          payload: { targetPort: 5173 },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await server.app.inject({
+          method: 'GET',
+          url: '/sessions/missing/dev-servers',
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await server.app.inject({
+          method: 'GET',
+          url: '/sessions/missing/public-static-directories',
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (await server.app.inject({ method: 'GET', url: '/preview-capabilities' })).json(),
+    ).toEqual({ publicSharing: 'premium-required' });
+  });
+
   it('wires /projects without a static GitHub token so DB-backed Apps can list repos', async () => {
     // The first-project onboarding step uses GET /projects after the GitHub App
     // has been configured through the encrypted DB settings. That deployment has

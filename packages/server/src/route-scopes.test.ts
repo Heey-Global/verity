@@ -172,7 +172,7 @@ describe('route scope declarations', () => {
       'GET /projects',
       'GET /sessions/:id',
       'GET /projects/:projectId/agent-loops',
-      'GET /projects/:projectId/dev-servers',
+      'GET /sessions/:sessionId/local-shares',
     ]) {
       expect(
         NON_OPERATOR_ROUTES.has(anchor),

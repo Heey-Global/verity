@@ -1,6 +1,4 @@
-import type { DevServerRecord, ProjectRecord, PublicPreviewShareRecord } from '@verity/store';
-
-import type { ProjectRuntime } from './project-runtime.js';
+import type { ProjectRecord, PublicPreviewShareRecord } from '@verity/store';
 
 export interface ProjectIdleSleepScheduler {
   runOnce(): Promise<void>;
@@ -12,34 +10,11 @@ export const PROJECT_SANDBOX_IDLE_TIMEOUT_MS = 30 * 60_000;
 export async function projectHasPersistentSandboxActivity(input: {
   project: ProjectRecord;
   listShares: () => Promise<readonly PublicPreviewShareRecord[]>;
-  listDevServers: () => Promise<readonly DevServerRecord[]>;
-  runtime?: ProjectRuntime | undefined;
+  hasLocalShares?: () => boolean;
 }): Promise<boolean> {
+  if (input.hasLocalShares?.()) return true;
   const shares = await input.listShares();
-  if (shares.some((share) => ['creating', 'active', 'revoking'].includes(share.state))) return true;
-  if (input.runtime === undefined || input.project.state !== 'active') return false;
-
-  const servers = await input.listDevServers();
-  for (const [index, server] of servers.entries()) {
-    try {
-      const status = await input.runtime.devServerStatus(input.project, {
-        defaultBranch: null,
-        defaultModel: null,
-        devServerId: server.id,
-        adoptLegacyDevServerFiles: index === 0,
-        devServerCommand: server.command,
-        devServerUrl: server.url,
-        devServerWorkdir: server.workdir,
-        devServerHostPort: server.hostPort,
-        devServerContainerPort: server.containerPort,
-      });
-      if (status.running) return true;
-    } catch {
-      // Unknown runtime state is not permission to stop the Sandbox.
-      return true;
-    }
-  }
-  return false;
+  return shares.some((share) => ['creating', 'active', 'revoking'].includes(share.state));
 }
 
 export function startProjectIdleSleepScheduler(input: {

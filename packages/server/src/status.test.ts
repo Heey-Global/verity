@@ -235,6 +235,7 @@ describe('projectionTailIsSelfContained', () => {
  * interesting on the day they were written.
  */
 const SAMPLES: Record<AgentEventType, AgentEvent> = {
+  dev_servers_changed: { t: 'dev_servers_changed', devServers: [] },
   session: { t: 'session', id: 's1', model: 'claude-opus-5', worktree: '/wt/s1' },
   status: running,
   text,
