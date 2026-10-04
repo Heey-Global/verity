@@ -129,11 +129,11 @@ export function registerProjectGoogleDriveRoutes(
   });
 
   const context = async (projectId: string, folderId: string) => {
+    const account = await deps.googleAccountIdentity?.();
     const [folder, accessToken] = await Promise.all([
       deps.getLinkedFolder(projectId, folderId),
       deps.googleAccessToken(),
     ]);
-    const account = await deps.googleAccountIdentity?.();
     return folder && accessToken ? { folder, accessToken, account } : undefined;
   };
 
