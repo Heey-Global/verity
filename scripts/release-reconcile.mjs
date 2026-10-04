@@ -264,7 +264,9 @@ if (existsSync(otaManifest)) {
   )
     throw new Error('Invalid OTA promotion manifest');
   const tag = candidate.tag;
-  const delivered = published.some((entry) => entry.tag_name === tag && !entry.draft);
+  const delivered = published.some(
+    (entry) => entry.tag_name === tag && !entry.draft && !entry.prerelease,
+  );
   if (!delivered) {
     // The manifest on main only changes through a merged promotion PR, so an
     // unpublished tag means an approved candidate whose delivery never ran or

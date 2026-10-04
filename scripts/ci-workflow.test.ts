@@ -4252,7 +4252,7 @@ describe('changed-area detector', () => {
     [...(detect?.run ?? '').matchAll(/\n +(backend|mobile|website|mobile-ota):([^\n)]+)\)\n/g)].map(
       ([, train, patterns]) => [
         train,
-        (patterns ?? '').split('|').map((pattern) => pattern.replace(/^\w+:/, '')),
+        (patterns ?? '').split('|').map((pattern) => pattern.replace(/^[\w-]+:/, '')),
       ],
     ),
   ) as Record<'backend' | 'mobile' | 'website' | 'mobile-ota', string[]>;
@@ -5039,6 +5039,30 @@ describe('changed-area detector', () => {
       ).toEqual(all('false'));
     },
   );
+
+  it('scopes the Staging OTA release PR using its actual managed files', async () => {
+    const manifest = JSON.parse(readFileSync('release-please-config.mobile-ota.json', 'utf8')) as {
+      packages: { '.': { 'version-file': string; 'changelog-path': string } };
+    };
+    const config = manifest.packages['.'];
+    const files = [
+      config['version-file'],
+      config['changelog-path'],
+      '.release-please-manifest.mobile-ota.json',
+    ];
+    expect(
+      await run(
+        {
+          name: 'pull_request',
+          baseRef: 'main',
+          releaseTrain: 'mobile-ota',
+          releasePr: '138',
+          prHead: 'release-please--branches--main--components--mobile-ota',
+        },
+        files,
+      ),
+    ).toEqual(all('false'));
+  });
 
   it('scopes Release Please synchronize events to their owning train', async () => {
     expect(

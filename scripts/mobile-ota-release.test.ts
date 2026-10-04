@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  fixedCandidate,
   planCandidate,
   releaseNotes,
   singleGroup,
@@ -24,6 +25,18 @@ const update = () => ({
 });
 
 describe('OTA release state', () => {
+  it('keeps successive staging versions while production skips unpromoted patches', () => {
+    const first = fixedCandidate('1.33.0', '1.33.2', sha, '1.33.3');
+    const second = fixedCandidate('1.33.0', '1.33.2', 'b'.repeat(40), '1.33.4');
+    expect(second.version).toBe('1.33.4');
+    expect(second.baseline).toBe(first.baseline);
+    expect(validateCandidate({ ...second, group, notes: ['Cumulative changes'] }).version).toBe(
+      '1.33.4',
+    );
+    expect(() => fixedCandidate('1.33.0', '1.33.4', sha, '1.33.3')).toThrow('follow production');
+    expect(() => fixedCandidate('1.34.0', '1.34.0', sha, '1.33.5')).toThrow('native runtime');
+  });
+
   it('keeps one planned version across distinct immutable candidates', () => {
     const first = planned();
     const second = planCandidate('1.33.0', '1.33.2', 'b'.repeat(40));
@@ -200,6 +213,7 @@ interface ServiceState {
   approvedOnMain?: string;
   deliveredWork?: string;
   largeReleasePayload?: boolean;
+  stagedVersion?: string;
 }
 
 function serviceFixture(changes: Partial<ServiceState> = {}) {
@@ -267,7 +281,7 @@ if(tool === 'gh') {
     if(endpoint?.includes('/releases?')) {
       s.releaseReads++;
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
-      const releases=[{tag_name:'mobile-v1.33.0',draft:false,prerelease:false},{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[])];
+      const releases=[{tag_name:'mobile-v1.33.0',draft:false,prerelease:false},{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[]),...(s.stagedVersion?[{tag_name:s.stagedVersion,draft:false,prerelease:true}]:[])];
       if (s.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'mobile-v1.32.'+index,draft:false,prerelease:false,body:'x'.repeat(20000)})));
       if(args.includes('--jq')) out(releases.map(({tag_name,draft,prerelease})=>JSON.stringify({tag_name,draft,prerelease})).join('\\n')+'\\n');
       out([releases]);
@@ -289,7 +303,7 @@ if(tool === 'gh') {
   if(args[0] === 'release' && args[1] === 'create') {s.draft=true;out('');}
   if(args[0] === 'release' && args[1] === 'edit') {
     if(s.loseRelease){s.loseRelease=false;fail();}
-    s.released=candidate.tag;s.draft=false;out('');
+    if(!args.includes('--prerelease=true'))s.released=candidate.tag;s.draft=false;out('');
   }
 }
 if(tool === 'npx') {
@@ -309,22 +323,26 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
   }
   return {
     run: (command: 'stage' | 'promote', overrides: Record<string, string> = {}) =>
-      spawnSync(process.execPath, [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0'], {
-        cwd,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH}`,
-          OTA_FAKE_STATE: statePath,
-          OTA_FAKE_CWD: cwd,
-          GITHUB_SHA: sha,
-          GITHUB_REPOSITORY: 'example/repo',
-          RUNNER_TEMP: cwd,
-          GITHUB_STEP_SUMMARY: join(cwd, 'summary'),
-          STAGING_GOOGLE_AUTH_ID: '123-staging.apps.googleusercontent.com',
-          ...overrides,
+      spawnSync(
+        process.execPath,
+        [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0', artifact().version],
+        {
+          cwd,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            OTA_FAKE_STATE: statePath,
+            OTA_FAKE_CWD: cwd,
+            GITHUB_SHA: sha,
+            GITHUB_REPOSITORY: 'example/repo',
+            RUNNER_TEMP: cwd,
+            GITHUB_STEP_SUMMARY: join(cwd, 'summary'),
+            STAGING_GOOGLE_AUTH_ID: '123-staging.apps.googleusercontent.com',
+            ...overrides,
+          },
         },
-      }),
+      ),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
   };
 }
@@ -332,9 +350,27 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
 describe('OTA CLI interrupted external operations', () => {
   it('exports Staging OTA with the native Staging OAuth identity', () => {
     const service = serviceFixture();
-    const result = service.run('stage');
+    const result = service.run('stage', { GITHUB_SHA: 'b'.repeat(40), OTA_SOURCE_SHA: sha });
     expect(result.status, result.stderr).toBe(0);
     expect(service.state().stagingOAuth).toBe('123-staging.apps.googleusercontent.com');
+  });
+  it('publishes a prerelease while retaining the production baseline and immutable group', () => {
+    const service = serviceFixture({ stagedVersion: 'mobile-v1.33.3' });
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    const calls = service.state().calls;
+    expect(
+      calls.some(
+        (call) =>
+          call.startsWith('gh release edit mobile-v1.33.3') && call.includes('--prerelease=true'),
+      ),
+    ).toBe(true);
+    expect(service.state().released).toBe('mobile-v1.33.2');
+    expect(calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
+    expect(calls.some((call) => call.includes('channel:edit production'))).toBe(false);
+    expect(service.state().tags['ota-artifact/mobile-v1.33.3/' + sha].message).toContain(
+      'mobile-v1.33.2',
+    );
   });
   it('refuses missing Staging OAuth configuration before publishing any candidate', () => {
     const service = serviceFixture();

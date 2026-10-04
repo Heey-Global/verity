@@ -13,7 +13,7 @@ merges do not approve a release.
 | Server | Release Please PR, then production promotion PR | Verified images, signed staging and stable update channels |
 | Website | Release Please PR | Versioned, smoke-tested website image |
 | Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build verified for internal TestFlight testing |
-| Mobile OTA | Rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
+| Mobile OTA | Staging Release Please PR, then rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
 
 ## Release ownership
 
@@ -232,11 +232,19 @@ There is one open OTA promotion PR per TestFlight runtime, not one PR per source
 merge. The PR contains the cumulative changelog since the latest **published**
 mobile release and points at the newest successfully prepared candidate.
 
-The planned patch version stays the same while source changes accumulate.
-Candidate references and EAS branches include the source identity, so updating
-the PR never overwrites a previously built candidate. Reserve the candidate
-before upload; retries reuse the recorded update group rather than publishing
-different bytes to the same candidate branch.
+Compatible merges accumulate in a Staging OTA Release Please PR. Merging it
+publishes its fixed patch version to Staging and creates a GitHub prerelease.
+Each merged Staging release advances the patch, even if production has not yet
+promoted the previous one. For example, Staging can publish 1.52.1 and 1.52.2;
+the rolling production PR then promotes 1.52.2 and skips 1.52.1.
+
+The native runtime remains X.Y.0. OTA versions live separately in
+`apps/mobile/ota/version.txt`; the release PR updates that marker and its changelog.
+Candidate references and EAS branches include the source identity. Retries reuse
+the recorded groups, and production promotion keeps the same version, source,
+and prepared production group without exporting another bundle. Staging and
+production have distinct native identities, so preparation exports one group for
+each identity before offering production approval.
 
 A promotion manifest binds the runtime, source commit, planned version, EAS
 branch, exact update group, and release notes. The staging workflow updates the

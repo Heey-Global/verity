@@ -163,7 +163,7 @@ jobs:
                   website:docs/website/CHANGELOG.md|website:docs/website/version.txt|website:.release-please-manifest.website.json)
                     :
                     ;;
-                  mobile-ota:apps/mobile/ota-promotion.json)
+                  mobile-ota:apps/mobile/ota-promotion.json|mobile-ota:apps/mobile/ota/version.txt|mobile-ota:apps/mobile/ota/CHANGELOG.md|mobile-ota:.release-please-manifest.mobile-ota.json)
                     :
                     ;;
                   *)
@@ -195,8 +195,7 @@ jobs:
                 release_scoped=true
                 ;;
               mobile-ota)
-                # The promotion workflow validates and applies this approval
-                # record; no application or backend source changed here.
+                # OTA release and promotion PRs contain metadata only.
                 release_scoped=true
                 ;;
               *)

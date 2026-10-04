@@ -62,6 +62,7 @@
     "prettier": "3.9.9",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "release-please": "17.11.2",
     "semver": "7.8.5",
     "typescript": "6.0.3",
     "typescript-eslint": "8.71.0",
