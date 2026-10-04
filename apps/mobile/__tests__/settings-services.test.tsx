@@ -333,6 +333,38 @@ describe('settings/services — AI backends', () => {
     expect(screen.queryByText(/Max 20x/)).toBeNull();
   });
 
+  // The app cannot read the plan out of a login; only the server can. Without
+  // a settings reload on connect, the card says "connected" with no plan until
+  // the screen happens to remount.
+  it('picks up the plan once a login completes', async () => {
+    const getVeritySettings = jest
+      .fn()
+      .mockResolvedValueOnce(makeSettings({ codexAuthJsonConfigured: false }))
+      .mockResolvedValue(
+        makeSettings({ codexAuthJsonConfigured: true, codexSubscriptionPlan: 'Pro' }),
+      );
+    const startAgentLogin = jest.fn().mockResolvedValue({
+      sessionId: '44444444-4444-4444-8444-444444444444',
+      provider: 'codex',
+      status: 'complete',
+      verificationUri: null,
+      userCode: null,
+      needsCode: false,
+      configured: true,
+      message: null,
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { getVeritySettings, startAgentLogin }),
+    );
+    render(<CodexScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Connect Codex'));
+
+    expect(
+      await screen.findByText('Codex Pro subscription, connected to this Verity server.'),
+    ).toBeOnTheScreen();
+  });
+
   // A disconnected account's quota is not the operator's any more; leaving it
   // on screen after Logout reads as a login that did not take.
   it('drops usage and plan once the provider is logged out', async () => {

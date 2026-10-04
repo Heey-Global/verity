@@ -53,7 +53,13 @@ export function ProviderUsagePanel({
     }, [client, provider]),
   );
 
-  if (usage.kind === 'loading') return null;
+  if (usage.kind === 'loading') {
+    return (
+      <View style={styles.card}>
+        <Text style={styles.empty}>Loading usage…</Text>
+      </View>
+    );
+  }
   if (usage.kind === 'failed' || usage.row === undefined) {
     return (
       <View style={styles.card}>

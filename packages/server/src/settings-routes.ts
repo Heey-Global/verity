@@ -93,9 +93,25 @@ export function registerSettingsRoutes(
     await pending;
   });
   app.get('/settings', async (request) => {
-    const settings = (await deps.store().getVeritySettingsRaw()) ?? null;
+    const settings = (await readSettingsForDisplay()) ?? null;
     return { settings: settings ? deps.publicSettings(settings, request) : null };
   });
+
+  // The public projection strips every secret, but a few labels it shows are
+  // derived from inside them (the subscription plan of a stored agent login).
+  // Read decrypted while the store is open; sealed — or if decryption fails —
+  // fall back to the raw row, so the screen that unlocks the store still loads
+  // and only those derived labels go blank.
+  async function readSettingsForDisplay(): Promise<VeritySettingsRecord | undefined> {
+    if (deps.secretCipher?.isSealed() !== true) {
+      try {
+        return await deps.store().getVeritySettings();
+      } catch {
+        // Fall through to the sealed-safe read.
+      }
+    }
+    return deps.store().getVeritySettingsRaw();
+  }
 
   app.get('/settings/transcription', async () => {
     const settings = (await deps.store().getVeritySettingsRaw()) ?? null;
