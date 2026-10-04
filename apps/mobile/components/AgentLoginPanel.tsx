@@ -67,6 +67,7 @@ export function AgentLoginPanel({
   autoStartProvider,
   compact = false,
   selectedProvider,
+  subscriptionPlans = {},
 }: {
   client: VerityClient;
   configured: AgentLoginConfiguredState;
@@ -80,6 +81,8 @@ export function AgentLoginPanel({
   /** Settings frame each provider as a standalone card; onboarding shows the guided flow. */
   compact?: boolean;
   selectedProvider?: AgentLoginProvider;
+  /** Plan labels the server derived from each stored login, when it knows one. */
+  subscriptionPlans?: Partial<Record<AgentLoginProvider, string | null>>;
 }) {
   const [logins, setLogins] = useState<Record<AgentLoginProvider, LoginState>>({
     claude: emptyLoginState(),
@@ -313,6 +316,7 @@ export function AgentLoginPanel({
           title="Claude"
           configured={configured.claude}
           state={logins.claude}
+          subscriptionPlan={subscriptionPlans.claude ?? null}
           compact={compact}
           allowDisconnect={allowDisconnect}
           onStart={() => start('claude')}
@@ -330,6 +334,7 @@ export function AgentLoginPanel({
           title="Codex"
           configured={configured.codex}
           state={logins.codex}
+          subscriptionPlan={subscriptionPlans.codex ?? null}
           compact={compact}
           allowDisconnect={allowDisconnect}
           onStart={() => start('codex')}
@@ -350,6 +355,7 @@ function ProviderCard({
   title,
   configured,
   state,
+  subscriptionPlan,
   allowDisconnect,
   compact,
   onStart,
@@ -364,6 +370,7 @@ function ProviderCard({
   title: string;
   configured: boolean;
   state: LoginState;
+  subscriptionPlan: string | null;
   allowDisconnect: boolean;
   compact: boolean;
   onStart: () => void;
@@ -658,7 +665,9 @@ function ProviderCard({
           </Text>
           <Text style={styles.providerCopy}>
             {ready
-              ? 'Subscription connected to this Verity server.'
+              ? subscriptionPlan !== null
+                ? `${title} ${subscriptionPlan} subscription, connected to this Verity server.`
+                : 'Subscription connected to this Verity server.'
               : 'Connect your ' + title + ' subscription to use it in sessions.'}
           </Text>
         </View>

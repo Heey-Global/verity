@@ -296,6 +296,7 @@ import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
+import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
@@ -609,6 +610,9 @@ type PublicVeritySettingsRecord = Omit<
   sandboxAutoUpdateNormal: boolean;
   claudeCodeOauthCredentialsConfigured: boolean;
   codexAuthJsonConfigured: boolean;
+  /** Plan labels derived from the stored logins (`agent-subscription.ts`). */
+  claudeSubscriptionPlan: string | null;
+  codexSubscriptionPlan: string | null;
   opencodeApiKeyConfigured: boolean;
   /** True once a Drive refresh token is stored (ADR 0009). The client id +
    *  account email pass through as plaintext for the connect UI. */
@@ -909,6 +913,8 @@ function publicVeritySettings(
     sandboxAutoUpdateNormal: false,
     claudeCodeOauthCredentialsConfigured: configured(claudeCodeOauthCredentialsJson),
     codexAuthJsonConfigured: configured(codexAuthJson),
+    claudeSubscriptionPlan: claudeSubscriptionPlan(claudeCodeOauthCredentialsJson),
+    codexSubscriptionPlan: codexSubscriptionPlan(codexAuthJson),
     opencodeApiKeyConfigured: configured(opencodeApiKey),
     googleDriveConnected:
       configured(googleDriveRefreshToken) && hasGoogleDriveScopes(settings.googleGrantedScopes),

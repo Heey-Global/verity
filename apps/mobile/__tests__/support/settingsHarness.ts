@@ -222,6 +222,7 @@ export type ClientOverrides = {
   completeHttpMcpOAuth?: jest.Mock;
   listIntegrations?: jest.Mock;
   listProviderLimits?: jest.Mock;
+  disconnectAgentLogin?: jest.Mock;
 };
 
 /**
@@ -250,7 +251,8 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     startAgentLogin: opts.startAgentLogin ?? jest.fn(notImplemented('startAgentLogin')),
     getAgentLogin: opts.getAgentLogin ?? jest.fn(notImplemented('getAgentLogin')),
     submitAgentLoginCode: jest.fn(notImplemented('submitAgentLoginCode')),
-    disconnectAgentLogin: jest.fn(notImplemented('disconnectAgentLogin')),
+    disconnectAgentLogin:
+      opts.disconnectAgentLogin ?? jest.fn(notImplemented('disconnectAgentLogin')),
     listProjects: opts.listProjects ?? jest.fn(notImplemented('listProjects')),
     recreateProjectContainer:
       opts.recreateProjectContainer ?? jest.fn(notImplemented('recreateProjectContainer')),

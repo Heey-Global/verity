@@ -129,17 +129,23 @@ export function ConnectionSettingsDetail({
                   claude: settings?.claudeCodeOauthCredentialsConfigured ?? false,
                   codex: settings?.codexAuthJsonConfigured ?? false,
                 }}
-                onConfiguredChange={(provider, configured) =>
+                onConfiguredChange={(provider, configured) => {
                   patchVeritySettingsLocally((current) => ({
                     ...current,
                     ...(provider === 'claude'
                       ? { claudeCodeOauthCredentialsConfigured: configured }
                       : { codexAuthJsonConfigured: configured }),
-                  }))
-                }
+                  }));
+                  // Only the server can read the plan out of the new login.
+                  if (configured) reload();
+                }}
                 onSealed={() => {
                   setVeritySettingsError('Unlock the secret store first.');
                   void refreshSecretStatus(client);
+                }}
+                subscriptionPlans={{
+                  claude: settings?.claudeSubscriptionPlan,
+                  codex: settings?.codexSubscriptionPlan,
                 }}
                 selectedProvider={section}
                 compact

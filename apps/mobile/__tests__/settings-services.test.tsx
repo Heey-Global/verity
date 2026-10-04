@@ -315,6 +315,58 @@ describe('settings/services — AI backends', () => {
     },
   );
 
+  it('names the subscription plan the server derived from the login', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({
+          codexAuthJsonConfigured: true,
+          codexSubscriptionPlan: 'Plus',
+          claudeSubscriptionPlan: 'Max 20x',
+        }),
+      }),
+    );
+    render(<CodexScreen />);
+
+    expect(
+      await screen.findByText('Codex Plus subscription, connected to this Verity server.'),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText(/Max 20x/)).toBeNull();
+  });
+
+  // A disconnected account's quota is not the operator's any more; leaving it
+  // on screen after Logout reads as a login that did not take.
+  it('drops usage and plan once the provider is logged out', async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    const disconnectAgentLogin = jest.fn().mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        disconnectAgentLogin,
+        listProviderLimits: jest.fn().mockResolvedValue([
+          {
+            status: 'allowed',
+            resetsAt,
+            window: 'five_hour',
+            usedPercent: 42,
+            providerLabel: 'Claude',
+          },
+        ]),
+        settings: makeSettings({
+          claudeCodeOauthCredentialsConfigured: true,
+          claudeSubscriptionPlan: 'Pro',
+        }),
+      }),
+    );
+    render(<ClaudeScreen />);
+    expect(await screen.findByText('42% used')).toBeOnTheScreen();
+    expect(screen.getByText(/Claude Pro subscription/)).toBeOnTheScreen();
+
+    fireEvent.press(screen.getByLabelText('Logout Claude'));
+
+    expect(await screen.findByLabelText('Connect Claude')).toBeOnTheScreen();
+    expect(screen.queryByText('42% used')).toBeNull();
+    expect(screen.queryByText(/Claude Pro subscription/)).toBeNull();
+  });
+
   it('hides usage while the provider is not connected', async () => {
     const listProviderLimits = jest.fn().mockResolvedValue([]);
     mockCreateVerityClient.mockReturnValue(
