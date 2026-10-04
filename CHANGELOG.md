@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.10.0](https://github.com/Heey-Global/verity/compare/v4.9.1...v4.10.0) (2026-10-04)
+
+
+### Features
+
+* **automations:** attach recurring automations to sessions ([#1097](https://github.com/Heey-Global/verity/issues/1097)) ([e1dc7eb](https://github.com/Heey-Global/verity/commit/e1dc7eb9b82d5ac39f0e0b1b8e6e9c643b9c0b76))
+
+
+### Bug Fixes
+
+* **mobile:** keep production promotion in TestFlight ([#1098](https://github.com/Heey-Global/verity/issues/1098)) ([a88ab65](https://github.com/Heey-Global/verity/commit/a88ab655297882db40e3110dee5ddd2286b0aa4a))
+* **session:** recognize model-specific usage limit refusals ([#1099](https://github.com/Heey-Global/verity/issues/1099)) ([e3068db](https://github.com/Heey-Global/verity/commit/e3068dbee38b23be5c218e0b61c74b0163e58da4))
+
 ## [4.9.1](https://github.com/Heey-Global/verity/compare/v4.9.0...v4.9.1) (2026-10-04)
 
 
