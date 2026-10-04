@@ -217,6 +217,7 @@ import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
+  hasConnectedGoogleAccount,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
   type GoogleService,
@@ -2393,6 +2394,7 @@ export function SessionChat({
     if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
+  const [googleConnected, setGoogleConnected] = useState(false);
   const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
     null,
@@ -2400,6 +2402,12 @@ export function SessionChat({
   useFocusEffect(
     useCallback(() => {
       let active = true;
+      setGoogleConnected(false);
+      void hasConnectedGoogleAccount(client, sessionId)
+        .then((connection) => {
+          if (active) setGoogleConnected(connection);
+        })
+        .catch(() => undefined);
       void client
         .getSessionGoogleWorkspaceFile(sessionId)
         .then((file) => {
@@ -3021,12 +3029,7 @@ export function SessionChat({
       setAttachMenuOpen(false);
       void connectSessionGoogleService(client, sessionId, projectId, service)
         .then((result) => {
-          if (result.kind === 'project' && projectId) {
-            router.push({
-              pathname: '/project/[id]/settings/services',
-              params: { id: projectId, section: 'google' },
-            });
-          } else if (result.kind === 'session') {
+          if (result.kind === 'session') {
             setGmailConnection(result.connections.gmail);
             setCalendarConnection(result.connections.calendar);
             setContactsConnection(result.connections.contacts);
@@ -3056,14 +3059,7 @@ export function SessionChat({
   const disableGoogleService = useCallback(
     (service: GoogleService) => {
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
-        .then((result) => {
-          if (result === 'project' && projectId) {
-            router.push({
-              pathname: '/project/[id]/settings/services',
-              params: { id: projectId, section: 'google' },
-            });
-            return;
-          }
+        .then(() => {
           if (service === 'gmail')
             setGmailConnection((current) =>
               current === null ? null : { ...current, enabled: false },
@@ -3715,14 +3711,17 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="mail" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Gmail{gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
+              Gmail{projectId ? ' · Project access' : ''}
+              {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
             </Text>
           </View>
           <Pressable
             onPress={disableGmail}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Gmail from this session"
+            accessibilityLabel={
+              projectId ? 'Disable Gmail for this project' : 'Disconnect Gmail from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3733,7 +3732,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="calendar" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Calendar
+              Google Calendar{projectId ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3741,7 +3740,11 @@ export function SessionChat({
             onPress={disableCalendar}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Calendar from this session"
+            accessibilityLabel={
+              projectId
+                ? 'Disable Google Calendar for this project'
+                : 'Disconnect Google Calendar from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3752,7 +3755,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="users" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Contacts
+              Google Contacts{projectId ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3760,7 +3763,11 @@ export function SessionChat({
             onPress={disableContacts}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Contacts from this session"
+            accessibilityLabel={
+              projectId
+                ? 'Disable Google Contacts for this project'
+                : 'Disconnect Google Contacts from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -4275,6 +4282,7 @@ export function SessionChat({
         onPickFiles={onPickFiles}
         onPickMeetingAudio={onPickMeetingAudio}
         onLiveMeeting={onLiveMeeting}
+        googleConnected={googleConnected}
         onConnectGmail={onConnectGmail}
         onConnectCalendar={onConnectCalendar}
         onConnectContacts={onConnectContacts}
@@ -8946,6 +8954,7 @@ function InputBar({
 // popover docked to it — a source per row (camera, photo library, or an arbitrary
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
+  googleConnected,
   visible,
   anchor,
   onCapturePhoto,
@@ -8959,6 +8968,7 @@ function AttachMenu({
   onClose,
   onDismiss,
 }: {
+  googleConnected: boolean;
   visible: boolean;
   anchor: AttachAnchor | null;
   onCapturePhoto: () => void;
@@ -8974,16 +8984,19 @@ function AttachMenu({
 }) {
   const { theme } = useUnistyles();
   const { width: winW, height: winH } = useWindowDimensions();
-  const rows = attachMenuRows({
-    onCapturePhoto,
-    onPickPhotos,
-    onPickFiles,
-    onPickMeetingAudio,
-    onLiveMeeting,
-    onConnectGmail,
-    onConnectCalendar,
-    onConnectContacts,
-  });
+  const rows = attachMenuRows(
+    {
+      onCapturePhoto,
+      onPickPhotos,
+      onPickFiles,
+      onPickMeetingAudio,
+      onLiveMeeting,
+      onConnectGmail,
+      onConnectCalendar,
+      onConnectContacts,
+    },
+    { googleConnected },
+  );
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).
   const MENU_WIDTH = 220;

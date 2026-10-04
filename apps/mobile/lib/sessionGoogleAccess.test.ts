@@ -1,5 +1,9 @@
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { connectSessionGoogleService, disconnectSessionGoogleService } from './sessionGoogleAccess';
+import {
+  hasConnectedGoogleAccount,
+  connectSessionGoogleService,
+  disconnectSessionGoogleService,
+} from './sessionGoogleAccess';
 
 const mockAuth = jest.fn();
 jest.mock('./googleDrive', () => ({
@@ -26,6 +30,8 @@ function fixture() {
   const project = jest.fn().mockResolvedValue({ connected: true, enabled: false });
   const client = {
     getProjectGoogleConnection: project,
+    enableProjectGoogleConnection: jest.fn().mockResolvedValue({ connected: true, enabled: true }),
+    disableProjectGoogleConnection: jest.fn().mockResolvedValue(undefined),
     getSessionGmailConnection: get,
     getSessionCalendarConnection: get,
     getSessionContactsConnection: get,
@@ -68,16 +74,22 @@ it.each(['gmail', 'calendar', 'contacts'] as const)(
   },
 );
 
-it('directs project grants to project settings without changing session permissions', async () => {
-  const { client, project, enable, disable } = fixture();
-  project.mockResolvedValue({ connected: true, enabled: true });
-  expect(await disconnectSessionGoogleService(client, 's1', 'p1', 'gmail')).toBe('project');
-  expect(await connectSessionGoogleService(client, 's1', 'p1', 'gmail')).toEqual({
-    kind: 'project',
-  });
-  expect(enable).not.toHaveBeenCalled();
-  expect(disable).not.toHaveBeenCalled();
-});
+it.each(['gmail', 'calendar', 'contacts'] as const)(
+  'toggles only the selected project %s grant directly',
+  async (service) => {
+    const { client, enable, disable } = fixture();
+    expect(await connectSessionGoogleService(client, 's1', 'p1', service)).toMatchObject({
+      kind: 'session',
+      connection: { enabled: true },
+    });
+    expect(client.enableProjectGoogleConnection).toHaveBeenCalledWith('p1', service);
+    expect(await disconnectSessionGoogleService(client, 's1', 'p1', service)).toBe('project');
+    expect(client.disableProjectGoogleConnection).toHaveBeenCalledWith('p1', service);
+    expect(enable).not.toHaveBeenCalled();
+    expect(disable).not.toHaveBeenCalled();
+    expect(mockAuth).not.toHaveBeenCalled();
+  },
+);
 
 it('does not bypass project authorization errors', async () => {
   const { client, project, enable, disable } = fixture();
@@ -156,4 +168,41 @@ it('refreshes sibling permissions after an OAuth account change', async () => {
   });
   expect(calendar).toHaveBeenCalledWith('s1');
   expect(contacts).toHaveBeenCalledWith('s1');
+});
+
+it('authorizes a missing project scope before enabling the selected service', async () => {
+  const { client, project, connect, enable } = fixture();
+  project.mockResolvedValue({ connected: false, enabled: false, clientId: 'google-client' });
+  mockAuth.mockResolvedValueOnce({ kind: 'cancelled' });
+  await expect(connectSessionGoogleService(client, 's1', 'p1', 'gmail')).resolves.toEqual({
+    kind: 'cancelled',
+  });
+  expect(client.enableProjectGoogleConnection).not.toHaveBeenCalled();
+  mockAuth.mockResolvedValueOnce({
+    kind: 'success',
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'app:/oauth',
+  });
+  await connectSessionGoogleService(client, 's1', 'p1', 'gmail');
+  expect(connect).toHaveBeenCalled();
+  expect(client.enableProjectGoogleConnection).toHaveBeenCalledWith('p1', 'gmail');
+  expect(enable).not.toHaveBeenCalled();
+});
+
+it('uses legacy account status only when the central endpoint is missing', async () => {
+  const { client, get } = fixture();
+  const central = jest.fn().mockRejectedValue(new VerityApiError(404, 'Not found'));
+  Object.assign(client, { getGoogleConnection: central });
+  await expect(hasConnectedGoogleAccount(client, 's1')).resolves.toBe(true);
+  get.mockResolvedValue({ connected: false });
+  await expect(hasConnectedGoogleAccount(client, 's1')).resolves.toBe(false);
+  central.mockRejectedValue(new VerityApiError(403, 'Forbidden'));
+  await expect(hasConnectedGoogleAccount(client, 's1')).rejects.toThrow('Forbidden');
+});
+it('does not expose legacy shortcuts when the central account is disconnected', async () => {
+  const { client, get } = fixture();
+  Object.assign(client, { getGoogleConnection: jest.fn().mockResolvedValue({ connected: false }) });
+  await expect(hasConnectedGoogleAccount(client, 's1')).resolves.toBe(false);
+  expect(get).not.toHaveBeenCalled();
 });
