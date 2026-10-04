@@ -6,7 +6,7 @@ import { computeNextRun } from '@verity/store';
 import type { SessionAutomationOutcome, SessionAutomationRecord } from '@verity/store';
 
 /** The store surface the scheduler needs (a subset of EventStore). */
-export interface AutomationSchedulerStore {
+interface AutomationSchedulerStore {
   listDueSessionAutomations(now: Date): Promise<SessionAutomationRecord[]>;
   nextSessionAutomationDueAt(): Promise<Date | null>;
   claimSessionAutomationRun(id: string, ranAt: Date, nextRunAt: Date): Promise<boolean>;

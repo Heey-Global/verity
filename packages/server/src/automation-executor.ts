@@ -4,7 +4,7 @@
 // operator confirms an automation that has a script.
 import type { ProjectRecord, SessionAutomationRecord, SessionRecord } from '@verity/store';
 
-export type AutomationRunOutcome = 'ok' | 'acted' | 'error' | 'skipped';
+type AutomationRunOutcome = 'ok' | 'acted' | 'error' | 'skipped';
 
 export interface AutomationRunResult {
   outcome: AutomationRunOutcome;
