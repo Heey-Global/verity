@@ -360,6 +360,15 @@ declare module 'fastify' {
   }
 }
 
+/** A check script's project cannot run right now (setting up, failed, or gone
+ * to sleep in a state that cannot be woken). */
+class ProjectNotReadyError extends Error {
+  constructor() {
+    super('The project workspace is not ready.');
+    this.name = 'ProjectNotReadyError';
+  }
+}
+
 function isProjectSessionModel(model: string | undefined): boolean {
   return (
     model === undefined ||
@@ -3396,7 +3405,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) {
         return deps.provisioner.ensureProjectSandboxAwake(project.id);
       }
-      throw new Error('The project workspace is not ready.');
+      throw new ProjectNotReadyError();
     },
     beginProjectActivity: (projectId) => {
       if (deps.provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) return undefined;
@@ -3438,7 +3447,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         : conductor.dispatchTurnWhenIdle(sessionId, prompt, model ? { model } : {}, {
             displayPrompt,
           }),
-    isSkippableError: (error) => error instanceof SealedError,
+    isModelAllowed: async (model, session) =>
+      session.projectId === null
+        ? (await availableModels()).models.includes(model)
+        : isConfiguredProjectSessionModel(model),
+    // A sealed secret store or a project that is still being set up is not the
+    // automation's fault; those slots are skipped rather than counted toward the
+    // pause after repeated failures.
+    isSkippableError: (error) =>
+      error instanceof SealedError || error instanceof ProjectNotReadyError,
   });
 
   const automationScheduler = startAutomationScheduler({

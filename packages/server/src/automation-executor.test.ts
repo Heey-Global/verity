@@ -148,6 +148,17 @@ describe('automation executor', () => {
     expect(runScript).not.toHaveBeenCalled();
   });
 
+  it('re-checks the model on every run', async () => {
+    const isModelAllowed = vi.fn(async () => false);
+    const { executor, dispatch } = harness({ isModelAllowed });
+    await expect(executor.run({ ...automation, model: 'verity/removed' })).resolves.toEqual({
+      outcome: 'error',
+      detail: 'The selected model is not available here.',
+    });
+    expect(isModelAllowed).toHaveBeenCalledWith('verity/removed', session);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('checks a script without ever dispatching a turn', async () => {
     const { executor, dispatch } = harness({
       script: { exitCode: AUTOMATION_RUN_EXIT_CODE, stdout: '', stderr: '', timedOut: false },

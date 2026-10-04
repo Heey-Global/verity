@@ -25,25 +25,33 @@ function clockTime(hour: number, minute: number): string {
   return formatClockTime(at.getTime() / 1000);
 }
 
-/** "Every Monday at 09:00", "Every day at 07:30", "Every 2 hours". */
-export function automationScheduleLabel(schedule: Schedule): string {
-  if (schedule.kind === 'daily') {
-    return `Every day at ${clockTime(schedule.hour, schedule.minute)}`;
+/**
+ * "Every Monday at 09:00", "Every day at 07:30", "Every 2 hours".
+ *
+ * A schedule's hour and minute are the server's local time. When the next run
+ * is known, the label takes its time and weekday from that instant instead, so
+ * a phone in another time zone shows the time the run actually happens there.
+ */
+export function automationScheduleLabel(schedule: Schedule, nextRunAt?: string | null): string {
+  if (schedule.kind === 'interval') {
+    const minutes = schedule.everyMinutes;
+    if (minutes % MINUTES_PER_DAY === 0) {
+      const days = minutes / MINUTES_PER_DAY;
+      return days === 1 ? 'Every day' : `Every ${String(days)} days`;
+    }
+    if (minutes % 60 === 0) {
+      const hours = minutes / 60;
+      return hours === 1 ? 'Every hour' : `Every ${String(hours)} hours`;
+    }
+    return `Every ${String(minutes)} minutes`;
   }
-  if (schedule.kind === 'weekly') {
-    const day = WEEKDAYS[schedule.weekday] ?? 'week';
-    return `Every ${day} at ${clockTime(schedule.hour, schedule.minute)}`;
-  }
-  const minutes = schedule.everyMinutes;
-  if (minutes % MINUTES_PER_DAY === 0) {
-    const days = minutes / MINUTES_PER_DAY;
-    return days === 1 ? 'Every day' : `Every ${String(days)} days`;
-  }
-  if (minutes % 60 === 0) {
-    const hours = minutes / 60;
-    return hours === 1 ? 'Every hour' : `Every ${String(hours)} hours`;
-  }
-  return `Every ${String(minutes)} minutes`;
+  const next = nextRunAt ? new Date(nextRunAt) : null;
+  const time = next
+    ? formatClockTime(next.getTime() / 1000)
+    : clockTime(schedule.hour, schedule.minute);
+  if (schedule.kind === 'daily') return `Every day at ${time}`;
+  const weekday = next ? next.getDay() : schedule.weekday;
+  return `Every ${WEEKDAYS[weekday] ?? 'week'} at ${time}`;
 }
 
 function startOfDay(date: Date): number {
@@ -100,7 +108,22 @@ export function automationLastRunText(
   }
 }
 
-/** Whether a proposal describes exactly the automation already in place. */
+function sameSchedule(a: Schedule, b: Schedule): boolean {
+  switch (a.kind) {
+    case 'interval':
+      return b.kind === 'interval' && a.everyMinutes === b.everyMinutes;
+    case 'daily':
+      return b.kind === 'daily' && a.hour === b.hour && a.minute === b.minute;
+    case 'weekly':
+      return (
+        b.kind === 'weekly' && a.weekday === b.weekday && a.hour === b.hour && a.minute === b.minute
+      );
+  }
+}
+
+/** Whether a proposal describes exactly the automation already in place. Field
+ * by field: the saved schedule comes back from the database with its keys in a
+ * different order than the proposal carries them. */
 export function isSameAutomation(
   automation: SessionAutomation | null,
   proposal: Proposal,
@@ -111,6 +134,6 @@ export function isSameAutomation(
     automation.prompt === proposal.prompt &&
     automation.script === (proposal.script ?? null) &&
     automation.model === (proposal.model ?? null) &&
-    JSON.stringify(automation.schedule) === JSON.stringify(proposal.schedule)
+    sameSchedule(automation.schedule, proposal.schedule)
   );
 }

@@ -42,6 +42,17 @@ describe('automationScheduleLabel', () => {
   });
 });
 
+it('takes the time from the next run when the server is in another time zone', () => {
+  // The schedule says 09:00 server time; the next run lands at 11:00 on this device.
+  const nextRunAt = new Date(2026, 9, 6, 11, 0).toISOString();
+  expect(automationScheduleLabel({ kind: 'daily', hour: 9, minute: 0 }, nextRunAt)).toBe(
+    'Every day at 11:00',
+  );
+  expect(
+    automationScheduleLabel({ kind: 'weekly', weekday: 1, hour: 9, minute: 0 }, nextRunAt),
+  ).toBe('Every Tuesday at 11:00');
+});
+
 describe('automation run sentences', () => {
   it('names nearby days instead of dates', () => {
     expect(automationRunTime(new Date(2026, 9, 5, 9, 0).toISOString(), now)).toBe('today at 09:00');
@@ -94,6 +105,13 @@ describe('isSameAutomation', () => {
     expect(isSameAutomation(null, proposal)).toBe(false);
     expect(isSameAutomation(base, { ...proposal, script: 'exit 0' })).toBe(false);
     expect(isSameAutomation(base, { ...proposal, model: 'codex/default' })).toBe(false);
+    // jsonb hands the saved schedule back with its keys reordered.
+    expect(
+      isSameAutomation(
+        { ...base, schedule: { hour: 9, kind: 'weekly', minute: 0, weekday: 1 } },
+        proposal,
+      ),
+    ).toBe(true);
     expect(
       isSameAutomation(base, { ...proposal, schedule: { kind: 'daily', hour: 9, minute: 0 } }),
     ).toBe(false);

@@ -3,7 +3,6 @@
 // into an automation. Deliberately non-technical: no run ids, exit codes, or
 // script output, only what runs, when, and how the last run went.
 import type { AutomationProposalMessage, SessionAutomation } from '@verity/mobile';
-import { useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -51,7 +50,7 @@ export function AutomationBar({
         <Text style={styles.barText} numberOfLines={1}>
           {automation.name} ·{' '}
           <Text style={styles.barSchedule}>
-            {paused ? 'Paused' : automationScheduleLabel(automation.schedule)}
+            {paused ? 'Paused' : automationScheduleLabel(automation.schedule, automation.nextRunAt)}
           </Text>
         </Text>
       </Pressable>
@@ -98,17 +97,26 @@ export function AutomationSheet({
         <Text style={styles.sheetTitle}>{automation.name}</Text>
         <ScrollView style={styles.sheetBody} contentContainerStyle={styles.sheetBodyContent}>
           <Section label="When">
-            <Text style={styles.sectionText}>{automationScheduleLabel(automation.schedule)}</Text>
+            <Text style={styles.sectionText}>
+              {automationScheduleLabel(automation.schedule, automation.nextRunAt)}
+            </Text>
             <Text style={styles.sectionHint}>{automationNextRunText(automation)}</Text>
           </Section>
           <Section label="What the agent does">
             <Text style={styles.sectionText}>{automation.prompt}</Text>
-            {automation.script !== null ? (
-              <Text style={styles.sectionHint}>
-                A quick check runs first, and the agent only starts when there is something to do.
-              </Text>
-            ) : null}
           </Section>
+          {automation.script !== null ? (
+            <Section label="Check before each run">
+              <Text style={styles.sectionHint}>
+                The agent only starts when this check finds something to do.
+              </Text>
+              <ScrollView style={styles.script} nestedScrollEnabled>
+                <Text selectable style={styles.scriptText}>
+                  {automation.script}
+                </Text>
+              </ScrollView>
+            </Section>
+          ) : null}
           <Section label="Last run">
             <Text style={styles.sectionText}>{automationLastRunText(automation)}</Text>
           </Section>
@@ -185,7 +193,6 @@ export function AutomationProposalCard({
   onConfirm: () => void;
 }) {
   const { theme } = useUnistyles();
-  const [showCheck, setShowCheck] = useState(false);
   const done = state === 'saved' || current === 'same';
   const inactive = disabled || superseded || done || state !== 'idle';
   const label = done
@@ -209,24 +216,18 @@ export function AutomationProposalCard({
         {proposal.prompt}
       </Text>
       {proposal.script ? (
+        // Confirming runs this agent-written check in the project container, now
+        // and before every run, so the operator sees it before saying yes.
         <View style={styles.checkBlock}>
           <Text style={styles.cardHint}>
-            A quick check runs first, and the agent only starts when there is something to do.
+            Before each run this check decides whether there is anything to do. It runs once right
+            away when you confirm.
           </Text>
-          <Pressable
-            onPress={() => setShowCheck((open) => !open)}
-            accessibilityRole="button"
-            accessibilityLabel={showCheck ? 'Hide check' : 'Show check'}
-          >
-            <Text style={styles.linkText}>{showCheck ? 'Hide check' : 'Show check'}</Text>
-          </Pressable>
-          {showCheck ? (
-            <ScrollView style={styles.script} nestedScrollEnabled>
-              <Text selectable style={styles.scriptText}>
-                {proposal.script}
-              </Text>
-            </ScrollView>
-          ) : null}
+          <ScrollView style={styles.script} nestedScrollEnabled>
+            <Text selectable style={styles.scriptText}>
+              {proposal.script}
+            </Text>
+          </ScrollView>
         </View>
       ) : null}
       {current === 'other' && !done ? (
@@ -465,11 +466,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   checkBlock: {
     gap: theme.spacing.xs,
-  },
-  linkText: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
   },
   script: {
     maxHeight: 200,

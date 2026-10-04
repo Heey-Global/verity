@@ -45,7 +45,8 @@ export interface AutomationExecutorDeps {
     opts: { model?: string; displayPrompt: string },
   ): Promise<{ accepted: boolean }>;
   appendNotice(sessionId: string, text: string): Promise<void>;
-  isModelAllowed?(model: string): boolean;
+  /** Re-checked on every run: settings can change after the operator confirmed. */
+  isModelAllowed?(model: string, session: SessionRecord): Promise<boolean> | boolean;
   /** Temporary infrastructure state (for example a sealed secret store) skips a
    * scheduled run instead of counting toward the error pause. */
   isSkippableError?(error: unknown): boolean;
@@ -132,7 +133,10 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
           const verdict = await scriptVerdict(automation.script, session);
           if (verdict !== 'run') return verdict;
         }
-        if (automation.model !== null && deps.isModelAllowed?.(automation.model) === false) {
+        if (
+          automation.model !== null &&
+          (await deps.isModelAllowed?.(automation.model, session)) === false
+        ) {
           return { outcome: 'error', detail: 'The selected model is not available here.' };
         }
         const { accepted } = await deps.dispatchTurnWhenIdle(session.sessionId, automation.prompt, {
