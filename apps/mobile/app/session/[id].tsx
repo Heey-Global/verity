@@ -3595,7 +3595,7 @@ export function SessionChat({
             <View style={styles.detectedPreviewTitle}>
               <Icon name="monitor" size={18} color={theme.colors.primary} />
               <Text style={styles.detectedPreviewName}>
-                {server.name} · Port {server.port}
+                {`${server.name} :${String(server.port)} is running`}
               </Text>
             </View>
             <View style={styles.detectedPreviewActions}>
@@ -3610,7 +3610,7 @@ export function SessionChat({
                   <ActivityIndicator size="small" color={theme.colors.primary} />
                 ) : null}
                 <Text style={styles.headerPreviewActiveText}>
-                  {previewOpening === server.port ? 'Opening preview…' : 'Open locally'}
+                  {previewOpening === server.port ? 'Opening…' : 'Open'}
                 </Text>
               </Pressable>
               <Pressable
@@ -3622,7 +3622,7 @@ export function SessionChat({
                 accessibilityRole="button"
                 accessibilityLabel={`Share ${server.name} publicly`}
               >
-                <Text style={styles.headerPreviewActiveText}>Share publicly</Text>
+                <Text style={styles.headerPreviewActiveText}>Share</Text>
               </Pressable>
             </View>
           </View>
