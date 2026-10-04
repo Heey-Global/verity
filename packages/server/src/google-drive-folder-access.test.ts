@@ -21,7 +21,7 @@ it('allows connecting a viewer folder read-only and refuses read/write without e
       async (url: string) =>
         new Response(
           JSON.stringify(
-            url.includes('oauth2.googleapis.com')
+            url === 'https://oauth2.googleapis.com/token'
               ? { access_token: 'token', expires_in: 3600 }
               : {
                   id: 'root',

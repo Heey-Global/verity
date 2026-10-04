@@ -271,6 +271,8 @@ export function registerProjectGoogleDriveRoutes(
 
   app.put(
     '/projects/:id/google-drive/folders/:folderId/files/:fileId/content',
+    // JSON escaping can require six wire bytes per accepted content byte.
+    { bodyLimit: 60_010_000 },
     async (request, reply) => {
       const { id, folderId, fileId } = fileParams.parse(request.params);
       const body = z

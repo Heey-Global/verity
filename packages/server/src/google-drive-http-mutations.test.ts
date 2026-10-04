@@ -200,3 +200,20 @@ it('rejects wildcard overwrite conditions instead of bypassing conflict protecti
     await app.close();
   }
 });
+
+it('accepts bounded overwrites above the default HTTP body limit', async () => {
+  const { app, fetch } = await setup('read-write');
+  const content = 'A'.repeat(3_000_000);
+  try {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `${prefix}/file/content`,
+      payload: { content, expectedVersion: '"v2"', confirmed: true },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = fetch.mock.calls.find(([, init]) => init?.method === 'PATCH')?.[1]?.body;
+    expect(Buffer.isBuffer(body) && body.byteLength).toBe(content.length);
+  } finally {
+    await app.close();
+  }
+});
