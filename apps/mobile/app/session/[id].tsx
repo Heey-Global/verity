@@ -525,6 +525,7 @@ interface SessionActions {
   /** The automation this session has now, so a proposal card knows whether it
    * is already active or would replace another one. */
   automation: SessionAutomation | null;
+  automationReady: boolean;
   /** Only the newest proposal can be confirmed; older cards are superseded. */
   latestAutomationProposalId: string | null;
 }
@@ -739,6 +740,7 @@ export function SessionChat({
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const effectiveModel = currentModel ?? session.model;
   const [automation, setAutomation] = useState<SessionAutomation | null>(null);
+  const [automationReady, setAutomationReady] = useState(false);
   const [automationSheetOpen, setAutomationSheetOpen] = useState(false);
   const [automationUpdating, setAutomationUpdating] = useState(false);
   // Name of a header action shown under the title after a long-press — the icon-only
@@ -776,17 +778,22 @@ export function SessionChat({
       .getSessionAutomation(sessionId)
       .then((loaded) => {
         if (generation !== automationGeneration.current) return;
+        setAutomationReady(true);
         setAutomation(loaded);
         publishSessionAutomationMutation(sessionId, loaded);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (generation === automationGeneration.current) setAutomationReady(false);
+      });
   }, [client, sessionId]);
   useEffect(() => {
+    setAutomationReady(false);
     if (loaded) void loadAutomation();
   }, [loadAutomation, loaded]);
   const applyAutomation = useCallback(
     (next: SessionAutomation | null) => {
       automationGeneration.current += 1;
+      setAutomationReady(true);
       setAutomation(next);
       publishSessionAutomationMutation(sessionId, next);
     },
@@ -947,7 +954,7 @@ export function SessionChat({
         setAutomationUpdating(false);
       }
     },
-    [applyAutomation, client, sessionId],
+    [applyAutomation, automationReady, client, sessionId],
   );
   // Keep configured OpenCode gateway models available in project sessions while
   // excluding provider IDs that the server cannot route.
@@ -3238,6 +3245,7 @@ export function SessionChat({
       recoverPending: onDismissPendingEcho,
       confirmAutomation,
       automation,
+      automationReady,
       latestAutomationProposalId,
     }),
     [
@@ -3248,6 +3256,7 @@ export function SessionChat({
       onDismissPendingEcho,
       confirmAutomation,
       automation,
+      automationReady,
       latestAutomationProposalId,
     ],
   );
@@ -7249,8 +7258,13 @@ function AutomationProposalRow({ message }: { message: AutomationProposalMessage
       proposal={proposal}
       state={shownState}
       current={current}
-      error={error}
-      disabled={actions === null || actions.sending || actions.dead}
+      error={
+        error ??
+        (actions && !actions.automationReady
+          ? 'Loading the current automation. If this persists, open the session again.'
+          : null)
+      }
+      disabled={actions === null || !actions.automationReady || actions.sending || actions.dead}
       superseded={actions !== null && actions.latestAutomationProposalId !== message.id}
       currentPaused={actions?.automation?.status === 'paused'}
       onConfirm={confirm}

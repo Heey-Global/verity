@@ -107,6 +107,14 @@ describe('automation executor', () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  it('checks an unsaved proposal without requiring a persisted automation claim', async () => {
+    const { executor, runScript } = harness({ isCurrent: async () => false });
+    await expect(
+      executor.checkScript({ ...automation, id: 'check:s1', script: 'exit 0' }),
+    ).resolves.toMatchObject({ outcome: 'ok' });
+    expect(runScript).toHaveBeenCalledOnce();
+  });
+
   it('does not run a script when its automation changes while waking the project', async () => {
     let current = true;
     const { executor, runScript, dispatch } = harness({
