@@ -28,5 +28,8 @@ export function localPreviewIngressMigration(
     portBindings[`${port}/tcp`] = [{ HostIp: address, HostPort: String(port) }];
   }
   if (configuredRange === range && Object.keys(portBindings).length === 0) return undefined;
-  return { env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: range }, portBindings };
+  return {
+    env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: range, VERITY_LOCAL_PREVIEW_BIND_ADDRESS: address },
+    portBindings,
+  };
 }

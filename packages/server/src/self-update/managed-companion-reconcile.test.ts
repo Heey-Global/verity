@@ -204,7 +204,10 @@ describe('managed companion reconciliation', () => {
       targetImage,
       undefined,
       expect.objectContaining({
-        env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119' },
+        env: {
+          VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119',
+          VERITY_LOCAL_PREVIEW_BIND_ADDRESS: '0.0.0.0',
+        },
         portBindings: expect.objectContaining({
           '8100/tcp': [{ HostIp: '0.0.0.0', HostPort: '8100' }],
         }),
@@ -241,10 +244,11 @@ describe('managed companion reconciliation', () => {
       docker: state.docker,
       journal,
       reconcileRunner: async () => undefined,
+      environment: { VERITY_LOCAL_PREVIEW_BIND_ADDRESS: '100.85.209.118' },
     });
     expect(state.inspect.get(id)?.env).toContain('VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9201');
     expect(state.inspect.get(id)?.portBindings?.['9201/tcp']).toEqual([
-      { HostIp: '0.0.0.0', HostPort: '9201' },
+      { HostIp: '100.85.209.118', HostPort: '9201' },
     ]);
   });
 
