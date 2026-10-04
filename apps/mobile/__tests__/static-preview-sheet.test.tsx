@@ -2,7 +2,12 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 import { Alert, Modal, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
+import { openLocalPreview } from '../components/project/previewAccess';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
+
+jest.mock('../components/project/previewAccess', () => ({
+  openLocalPreview: jest.fn(async () => undefined),
+}));
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
 
@@ -15,12 +20,14 @@ async function pickFolder(name = 'Share this folder') {
     expect(screen.getByRole('button', { name }).props.accessibilityState.disabled).toBe(false),
   );
   fireEvent.press(screen.getByRole('button', { name }));
-  expect(await screen.findByText('LINK EXPIRES AFTER')).toBeTruthy();
+  expect(await screen.findByText('PUBLIC LINK EXPIRES AFTER')).toBeTruthy();
 }
 
 // A PIN shown before the link exists reads as a link that is already out there.
 it('shows no PIN before the link exists and then the one it was created with', async () => {
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({
       directories: [],
       files: ['index.html'],
@@ -72,6 +79,8 @@ it('shows no PIN before the link exists and then the one it was created with', a
 
 it('submits the duration picked on the link step', async () => {
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({
       directories: [],
       files: ['index.html'],
@@ -115,6 +124,8 @@ it('explains a locked PIN and lets it be stopped and replaced without sharing th
     buttons?.find((button) => button.style === 'destructive')?.onPress?.();
   });
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => [
       {
@@ -175,6 +186,8 @@ it('refreshes PIN lock status while the live link is open', async () => {
     .mockResolvedValueOnce([share])
     .mockResolvedValue([{ ...share, pinLocked: true }]);
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares,
   } as unknown as VerityClient;
@@ -203,6 +216,8 @@ it('refreshes PIN lock status while the live link is open', async () => {
 it('shows and copies the saved PIN on a reopened link and shares it with the URL', async () => {
   const shareAction = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => [
       {
@@ -254,6 +269,8 @@ it('creates and shows a static share for the folder selected in the session work
     expiresAt: '2030-01-01T01:00:00Z',
   };
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) =>
       path === 'site' ? ['dist'] : ['site'],
     ),
@@ -296,6 +313,8 @@ it('creates and shows a static share for the folder selected in the session work
 
 it('shows regular files next to folders so the selected publish root can be checked', async () => {
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async (_sessionId: string, path: string) =>
       path === 'site'
         ? { directories: [], files: ['index.html', 'zoom-v2.html'] }
@@ -319,6 +338,8 @@ it('shows regular files next to folders so the selected publish root can be chec
 
 it('opens directly on the active link when the sheet is reopened', async () => {
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => [
       {
@@ -349,6 +370,8 @@ it('opens directly on the active link when the sheet is reopened', async () => {
 
 it('stays on the link step for the same folder after Core is unreachable', async () => {
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewDirectories: jest.fn(async () => ['demo']),
     listPublicPreviewShares: jest.fn(async () => []),
     createSessionStaticPreviewShare: jest.fn(async () => {
@@ -392,6 +415,8 @@ it('explains an Uplink internal error and permits retrying the same folder', asy
       expiresAt: '2030-01-01T01:00:00Z',
     });
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) =>
       path ? [] : ['demo'],
     ),
@@ -421,6 +446,8 @@ it('explains an Uplink internal error and permits retrying the same folder', asy
 it('keeps a newly created link when the initial share list arrives late', async () => {
   let resolveShares!: (shares: PublicPreviewShare[]) => void;
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) =>
       path ? [] : ['demo'],
     ),
@@ -461,6 +488,8 @@ it('ignores a child-folder response after returning to the session root', async 
   let resolveChild!: (directories: string[]) => void;
   let rootLoads = 0;
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) => {
       if (path === 'site') {
         return await new Promise<string[]>((resolve) => {
@@ -491,6 +520,8 @@ it('ignores a child-folder response after returning to the session root', async 
 
 it('does not offer folders from the previous location when navigation fails', async () => {
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) => {
       if (path === 'site') throw new Error('Folder unavailable');
       return ['site'];
@@ -515,6 +546,8 @@ it('does not offer folders from the previous location when navigation fails', as
 it('shows progress while a link is being created instead of only dimming the button', async () => {
   let resolveCreate!: (share: PublicPreviewShare) => void;
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => []),
     createSessionStaticPreviewShare: jest.fn(
@@ -569,6 +602,8 @@ it('shows the stop in progress and confirms it before offering a new link', asyn
   let resolveStop!: () => void;
   const onClose = jest.fn();
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => [
       {
@@ -629,6 +664,8 @@ it('keeps the link and explains when stopping fails', async () => {
     buttons?.find((button) => button.style === 'destructive')?.onPress?.();
   });
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => [
       {
@@ -668,6 +705,8 @@ it('keeps the link and explains when stopping fails', async () => {
 it('counts the remaining time down while the sheet stays open', async () => {
   jest.useFakeTimers({ now: new Date('2030-01-01T00:15:00Z') });
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => [
       {
@@ -709,6 +748,8 @@ it('counts the remaining time down while the sheet stays open', async () => {
 it('names the folder the explorer is in on the share button', async () => {
   let resolveDocs!: (entries: { directories: string[]; files: string[] }) => void;
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async (_session: string, path: string) =>
       path === 'docs'
         ? await new Promise<{ directories: string[]; files: string[] }>((resolve) => {
@@ -742,6 +783,8 @@ it('names the folder the explorer is in on the share button', async () => {
 it('goes back from the link step on Android back instead of closing the sheet', async () => {
   const onClose = jest.fn();
   const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
     listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
     listPublicPreviewShares: jest.fn(async () => []),
   } as unknown as VerityClient;
@@ -789,6 +832,8 @@ describe('dev server tab', () => {
       <StaticPreviewSheet
         client={
           {
+            getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+            listSessionLocalPreviewShares: jest.fn(async () => []),
             listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
             listPublicPreviewShares: jest.fn(async () => []),
             ...client,
@@ -857,29 +902,10 @@ describe('dev server tab', () => {
     expect(await screen.findByText('https://api.example')).toBeTruthy();
   });
 
-  it('explains why a loopback-only server cannot be shared instead of offering a link', async () => {
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]),
-      createSessionPortPreviewShare: jest.fn(),
-    });
-
+  it('allows sharing loopback listeners through the sandbox forwarder', async () => {
+    renderSheet({ listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]) });
     await openServers();
-    expect(await screen.findByText('Local only')).toBeTruthy();
-    expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Share Vite on port 5173' })).toBeNull();
-  });
-
-  // The link stays reachable from the row, but without the hint nothing says
-  // why it may not load any more.
-  it('keeps the loopback hint on a server whose link is still live', async () => {
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]),
-      listPublicPreviewShares: jest.fn(async () => [portShare()]),
-    });
-
-    await openServers();
-    expect(await screen.findByRole('button', { name: 'Show link for port 5173' })).toBeTruthy();
-    expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
   });
 
   // Folder is the default and sits first; the sheet must not open on an empty
@@ -928,50 +954,38 @@ describe('dev server tab', () => {
     expect(screen.getByRole('button', { name: 'Share this folder' })).toBeTruthy();
   });
 
-  it('marks the Dev server tab when a server starts while the sheet is open', async () => {
-    jest.useFakeTimers();
-    try {
-      const listSessionDevServers = jest
-        .fn<Promise<(typeof vite)[]>, [string]>()
-        .mockResolvedValueOnce([])
-        .mockResolvedValue([vite]);
-      renderSheet({ listSessionDevServers });
-
-      await waitFor(() => expect(listSessionDevServers).toHaveBeenCalledTimes(1));
-      expect(screen.queryByTestId('dev-server-tab-dot')).toBeNull();
-      await act(async () => {
-        jest.advanceTimersByTime(4_000);
-      });
-      expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
-      expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
-        true,
-      );
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  // The agent starts servers while the sheet is open; without the poll the list
-  // would stay on "No dev server running" until the sheet is reopened.
-  it('picks up a server that starts while the sheet is open', async () => {
-    jest.useFakeTimers();
-    try {
-      const listSessionDevServers = jest
-        .fn<Promise<(typeof vite)[]>, [string]>()
-        .mockResolvedValueOnce([])
-        .mockResolvedValue([vite]);
-      renderSheet({ listSessionDevServers });
-
-      await openServers();
-      expect(await screen.findByText('No dev server running')).toBeTruthy();
-      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
-      await act(async () => {
-        jest.advanceTimersByTime(4_000);
-      });
-      expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
-    } finally {
-      jest.useRealTimers();
-    }
+  it('updates detected servers from the live snapshot without polling', async () => {
+    const client = {
+      getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+      listSessionLocalPreviewShares: jest.fn(async () => []),
+      listPublicPreviewShares: jest.fn(async () => []),
+      listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+      listSessionDevServers: jest.fn(async () => []),
+    } as unknown as VerityClient;
+    const { rerender } = render(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        detectedServers={[]}
+        onClose={jest.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Folder' })).toBeTruthy());
+    expect(screen.queryByTestId('dev-server-tab-dot')).toBeNull();
+    rerender(
+      <StaticPreviewSheet
+        client={client}
+        projectId="project-one"
+        sessionId="session-one"
+        detectedServers={[vite]}
+        onClose={jest.fn()}
+      />,
+    );
+    expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
+    expect(client.listSessionDevServers).not.toHaveBeenCalled();
+    await openServers();
+    expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
   });
 
   // A Core older than port detection has no such route. Without the fallback the
@@ -1028,4 +1042,84 @@ describe('dev server tab', () => {
     expect(await screen.findByText('https://vite.example')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
   });
+});
+
+it('opens a local static folder without a public sharing entitlement', async () => {
+  const share = {
+    id: 'local-one',
+    url: 'http://host:8100/',
+    expiresAt: '2030-01-01T01:00:00Z',
+    staticPath: '.',
+  };
+  const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'premium-required' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
+    listPublicPreviewShares: jest.fn(async () => []),
+    listSessionStaticPreviewEntries: jest.fn(async () => ({
+      directories: [],
+      files: ['index.html'],
+    })),
+    createSessionLocalPreviewShare: jest.fn(async () => share),
+    createSessionStaticPreviewShare: jest.fn(),
+  } as unknown as VerityClient;
+  const openSettings = jest.fn();
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      onOpenSettings={openSettings}
+    />,
+  );
+  await pickFolder();
+  expect(screen.getByText('Public sharing requires Premium')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Open Premium settings' }));
+  expect(openSettings).toHaveBeenCalledTimes(1);
+  fireEvent.press(screen.getByRole('button', { name: 'Open locally' }));
+  await waitFor(() =>
+    expect(client.createSessionLocalPreviewShare).toHaveBeenCalledWith('session-one', {
+      staticPath: '.',
+    }),
+  );
+  expect(openLocalPreview).toHaveBeenCalledWith(
+    share,
+    'premium-required',
+    expect.any(Function),
+    openSettings,
+  );
+  expect(client.createSessionStaticPreviewShare).not.toHaveBeenCalled();
+  expect(client.listPublicPreviewShares).not.toHaveBeenCalled();
+});
+
+it('lets a free user revoke an existing local share', async () => {
+  const stopLocalPreviewShare = jest.fn(async () => undefined);
+  const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'premium-required' })),
+    listSessionLocalPreviewShares: jest.fn(async () => [
+      {
+        id: 'local-one',
+        url: 'http://server:8100/',
+        sessionId: 'session-one',
+        targetPort: 5173,
+        staticPath: null,
+        expiresAt: '2030-01-01T00:00:00Z',
+      },
+    ]),
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    stopLocalPreviewShare,
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Stop local preview local-one' }));
+  await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith('local-one'));
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: 'Stop local preview local-one' })).toBeNull(),
+  );
 });

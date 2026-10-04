@@ -12,6 +12,7 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
   session: { t: 'session', id: 's1', model: 'claude-sonnet-4-6', worktree: '/w/agent-s1' },
   status: { t: 'status', state: 'running' },
   text: { t: 'text', delta: 'hello' },
+  dev_servers_changed: { t: 'dev_servers_changed', devServers: [] },
   notice: { t: 'notice', text: 'Meeting transcript saved', role: 'agent' },
   prompt: { t: 'prompt', text: 'do the thing' },
   thinking: { t: 'thinking', blockId: 'b1', signature: 'sig', delta: 'pondering' },

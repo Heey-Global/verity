@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const root = process.env.VERITY_DEV_SERVER_STATE_DIR ?? '/tmp/verity-dev-servers';
+const args = process.argv.slice(2);
+const usage = 'Usage: verity-dev-server announce --port <1-65535> --name <name> | scan';
+try {
+  if (args[0] === 'scan' && args.length === 1) {
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'scan-request'), String(Date.now()));
+  } else if (args[0] === 'announce') {
+    const values = new Map();
+    for (let index = 1; index < args.length; index += 2) {
+      const flag = args[index];
+      const value = args[index + 1];
+      if (!['--port', '--name'].includes(flag) || value === undefined || values.has(flag)) {
+        throw new Error(usage);
+      }
+      values.set(flag, value);
+    }
+    const portText = values.get('--port') ?? '';
+    const port = Number(portText);
+    const name = (values.get('--name') ?? '').trim();
+    if (!/^\d+$/.test(portText) || port < 1 || port > 65535 || !name || name.length > 200) {
+      throw new Error(usage);
+    }
+    const dir = join(root, 'announcements');
+    mkdirSync(dir, { recursive: true });
+    const target = join(dir, `${port}.json`);
+    const temporary = `${target}.${process.pid}.tmp`;
+    writeFileSync(
+      temporary,
+      JSON.stringify({
+        port,
+        name,
+        sessionId: process.env.VERITY_SESSION_ID ?? null,
+        pid: process.ppid,
+        announcedAt: Date.now(),
+      }),
+      { mode: 0o600 },
+    );
+    renameSync(temporary, target);
+    writeFileSync(join(root, 'scan-request'), String(Date.now()));
+    console.log(
+      `Announced ${name} on port ${port}. Verity will verify the listener; access is shared from the app.`,
+    );
+  } else {
+    throw new Error(usage);
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+}

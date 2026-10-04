@@ -1,4 +1,4 @@
-// Create a project, then manage runtime, Dev Servers, and integrations on its project page.
+// Create a project, then manage runtime and integrations on its project page.
 import {
   VerityApiError,
   type VerityClient,
@@ -323,8 +323,7 @@ function NewProject({ client }: { client: VerityClient }) {
               </View>
             ) : null}
             <Text style={styles.hint}>
-              Verity clones this repository. Configure Dev Servers and integrations on the project
-              page.
+              Verity clones this repository. Configure integrations on the project page.
             </Text>
             {sortedRepositories.length === 0 && !loadingRepositories ? (
               <Pressable

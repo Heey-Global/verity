@@ -23479,6 +23479,19 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     worktree: import_zod.z.string().min(1)
   }),
   import_zod.z.object({
+    t: import_zod.z.literal("dev_servers_changed"),
+    devServers: import_zod.z.array(import_zod.z.object({
+      port: import_zod.z.number().int().min(1).max(65535),
+      reachable: import_zod.z.boolean(),
+      pid: import_zod.z.number().int(),
+      name: import_zod.z.string(),
+      command: import_zod.z.string(),
+      workdir: import_zod.z.string(),
+      scope: import_zod.z.enum(["session", "project"]).optional(),
+      sessionId: import_zod.z.string().optional()
+    }))
+  }),
+  import_zod.z.object({
     t: import_zod.z.literal("status"),
     state: agentStatusSchema,
     // Optional live detail for a non-terminal status. Clients may render this as
@@ -30268,7 +30281,11 @@ var PROTOCOL_VERSION2 = 1;
 var MAX_STDERR_CHARS = 64 * 1024;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
 var MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
-var SESSION_RUNTIME_ENV_KEYS = ["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL"];
+var SESSION_RUNTIME_ENV_KEYS = [
+  "VERITY_SESSION_BACKEND",
+  "VERITY_SESSION_MODEL",
+  "VERITY_SESSION_ID"
+];
 function sessionRuntimeEnv(env) {
   const forwarded = {};
   for (const key of SESSION_RUNTIME_ENV_KEYS) {
@@ -31414,7 +31431,8 @@ var startTurnRequestSchema = import_zod6.z.strictObject({
   mcpServers: import_zod6.z.array(httpMcpServerSchema).max(16).optional(),
   sessionEnv: import_zod6.z.strictObject({
     VERITY_SESSION_BACKEND: boundedString(256).optional(),
-    VERITY_SESSION_MODEL: boundedString(256).optional()
+    VERITY_SESSION_MODEL: boundedString(256).optional(),
+    VERITY_SESSION_ID: boundedString(256).optional()
   }).optional()
 }).superRefine((request2, context) => {
   const worktree = resolve2(request2.worktree);
@@ -31461,7 +31479,7 @@ if (request.mcpGatewayToken !== void 0 && request.backend !== "claude-acp" && re
 }
 if (request.sessionEnv !== void 0) {
   const entries = Object.entries(request.sessionEnv);
-  if (entries.length > 8 || entries.some(([key, value]) => !["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL"].includes(key) || typeof value !== "string" || value.length > 256)) {
+  if (entries.length > 8 || entries.some(([key, value]) => !["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL", "VERITY_SESSION_ID"].includes(key) || typeof value !== "string" || value.length > 256)) {
     throw new Error("runner worker received an unsupported session env");
   }
 }

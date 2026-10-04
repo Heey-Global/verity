@@ -843,6 +843,15 @@ async function main(): Promise<void> {
       // (optionally `…:/v1.41`). A `unix://` value selects the mounted-socket
       // transport in createDockerClient (ADR 0003 R2). Passed through unchanged.
       dockerBaseUrl: process.env.VERITY_DOCKER_BASE_URL,
+      resolvePreviewConnectorImage: () =>
+        resolveWithTimeout(
+          () =>
+            resolvePublicOciTagDigest(
+              releasePinnedRef(PREVIEW_CONNECTOR_IMAGE_REPO, 'v') ??
+                `${PREVIEW_CONNECTOR_IMAGE_REPO}:latest`,
+            ),
+          10_000,
+        ).catch(() => undefined),
       publicPreviews: {
         resolveConnectorImage: () =>
           resolveWithTimeout(

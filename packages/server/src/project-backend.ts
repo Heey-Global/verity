@@ -104,6 +104,9 @@ export class DockerExecBackend implements Backend {
         VERITY_SIGNING_DOCKER_CONTAINER: opts.containerName,
         VERITY_GH_TOKEN_DOCKER_CONTAINER: opts.containerName,
         ...opts.containerEnv,
+        ...(spawnOpts.env?.VERITY_SESSION_ID
+          ? { VERITY_SESSION_ID: spawnOpts.env.VERITY_SESSION_ID }
+          : {}),
       });
       const inContainer = [command, ...args];
       const dockerArgs = [
@@ -140,7 +143,11 @@ export class DockerExecBackend implements Backend {
       ...opts,
       // The live backend fingerprints the central OAuth token. A rotation must
       // restart the child because an already-spawned process keeps its old env.
-      env: { ...(opts.env ?? process.env), ...this.opts.containerEnv },
+      env: {
+        ...(opts.env ?? process.env),
+        ...this.opts.containerEnv,
+        ...(opts.storeSessionId ? { VERITY_SESSION_ID: opts.storeSessionId } : {}),
+      },
       spawner: this.spawner,
     });
   }

@@ -76,6 +76,10 @@ ${LANGUAGE_SYSTEM_PROMPT}
 
 ${SANDBOX_RESOURCES_SYSTEM_PROMPT}
 
+# Development servers (Verity)
+
+When starting a development HTTP or WebSocket server, bind it to 0.0.0.0 when the framework supports it. After it is listening, run \`verity-dev-server announce --port <port> --name <name>\` to label it in Verity. Verity verifies the listener and offers local access or public sharing in the app; announcing never publishes it. Local access is unauthenticated HTTP on your trusted network. For Expo, configure EXPO_PACKAGER_PROXY_URL to the local share URL before restarting the packager; a discovered port alone does not fix addresses embedded in manifests.
+
 ${BREVITY_SYSTEM_PROMPT}`;
 }
 

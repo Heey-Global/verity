@@ -631,6 +631,7 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/gh" /opt/agent-seed/bin/gh
 # session must not delete the tree it runs in). Transparent for every other git
 # invocation, so baking it first on PATH is inert on all other operations.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/git" /opt/agent-seed/bin/git
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/bin/verity-dev-server
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
@@ -650,6 +651,7 @@ install -m 0644 "$FEATURE_DIR/agent-seed/code-review-prompt.md" /opt/agent-seed/
 # GitHub token in the sandbox.
 ln -sf /opt/agent-seed/bin/gh /usr/local/bin/gh
 # Put the marker tool on PATH so `verity-code-review mark` works from any cwd.
+ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.

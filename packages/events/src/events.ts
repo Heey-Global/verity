@@ -324,6 +324,21 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     worktree: z.string().min(1),
   }),
   z.object({
+    t: z.literal('dev_servers_changed'),
+    devServers: z.array(
+      z.object({
+        port: z.number().int().min(1).max(65535),
+        reachable: z.boolean(),
+        pid: z.number().int(),
+        name: z.string(),
+        command: z.string(),
+        workdir: z.string(),
+        scope: z.enum(['session', 'project']).optional(),
+        sessionId: z.string().optional(),
+      }),
+    ),
+  }),
+  z.object({
     t: z.literal('status'),
     state: agentStatusSchema,
     // Optional live detail for a non-terminal status. Clients may render this as

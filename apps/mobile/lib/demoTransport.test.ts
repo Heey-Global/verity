@@ -60,7 +60,7 @@ it('serves the core surfaces through the real validating client', async () => {
   expect(await api.getProjectGoogleConnection(projects[0]!.id, 'gmail')).toMatchObject({
     connected: false,
   });
-  expect(await api.getDevServerDetection(projects[0]!.id)).toMatchObject({ suggestions: [] });
+  expect(await api.listSessionDevServers(id)).toEqual([]);
 });
 
 it('streams schema-valid replies and changes a local file without calling network fetch', async () => {

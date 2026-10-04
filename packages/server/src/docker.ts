@@ -288,6 +288,7 @@ export interface ContainerSpec {
    *  by its service DNS name (e.g. the commit-signing broker at
    *  `http://verity:8082`) container-to-container, without a host round-trip. */
   network?: string;
+  additionalNetworks?: string[];
   /** Static `/etc/hosts` entries, `host:ip` (`HostConfig.ExtraHosts`). */
   extraHosts?: string[];
   /** OCI runtime registered with the Docker daemon (`HostConfig.Runtime`). Secret jobs set this
@@ -1129,6 +1130,17 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
     );
     const body = {
       Image: spec.image,
+      ...(spec.additionalNetworks?.length
+        ? {
+            NetworkingConfig: {
+              EndpointsConfig: Object.fromEntries(
+                [spec.network, ...spec.additionalNetworks]
+                  .filter((name): name is string => Boolean(name))
+                  .map((name) => [name, {}]),
+              ),
+            },
+          }
+        : {}),
       // OpenContainers labels carry the host-side metadata; §19.3 sets
       // verity.project-id so a future reconcile pass finds Verity-owned containers.
       Labels: spec.labels ?? {},

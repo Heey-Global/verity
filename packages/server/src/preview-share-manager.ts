@@ -95,6 +95,11 @@ export interface PreviewShareManagerOptions {
   }) => Promise<boolean>;
   /** Lists the sandbox's TCP listeners; absent where no project runtime exists,
    *  which leaves session dev servers undiscoverable rather than guessed. */
+  listSessionServers?: (sessionId: string) => Promise<SessionDevServer[]>;
+  prepareTargetPort?: (
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    port: number,
+  ) => Promise<number>;
   listListeningProcesses?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
   ) => Promise<ListeningProcess[]>;
@@ -190,6 +195,42 @@ export class PreviewShareManager {
     this.now = options.now ?? (() => new Date());
   }
 
+  async prepareLocalTarget(
+    sessionId: string,
+    target: { targetPort?: number | undefined; staticPath?: string | undefined },
+  ) {
+    const session = await this.options.store.getSession(sessionId);
+    if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
+    const project = await this.options.store.getProject(session.projectId);
+    if (!project) throw new PreviewShareNotFoundError('project not found');
+    if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    const generation = containerGenerationOf(sandbox);
+    if (!sandbox.running || !generation)
+      throw new PreviewShareConflictError('sandbox is not running');
+    await assertEligibleSandbox(
+      sandbox,
+      projectNetworkName(project.id),
+      project.id,
+      projectWorkspaceSubpath(project, this.options),
+      this.options,
+      target.staticPath !== undefined,
+    );
+    let staticMount: ReturnType<PreviewShareManager['staticMount']> | undefined;
+    if (target.staticPath !== undefined) {
+      const path = target.staticPath.trim() === '.' ? '.' : normalizedStaticPath(target.staticPath);
+      const root = await this.staticSourceRoot(project, session.worktree);
+      await this.validateStaticDirectory(root, path);
+      staticMount = this.staticMount(root, path);
+    } else if (
+      target.targetPort !== undefined &&
+      !(await this.sessionPortReachable(project, session.worktree, target.targetPort))
+    ) {
+      throw new PreviewShareConflictError('nothing in this session listens on that port');
+    }
+    return { project, session, generation, staticMount };
+  }
+
   isAvailable(): boolean {
     return this.options.edge.isAvailable?.() ?? true;
   }
@@ -263,7 +304,9 @@ export class PreviewShareManager {
     // Without discovery wired there is simply nothing to show; a 409 here would
     // park the sheet's default tab on an error it can never leave.
     if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return [];
-    return this.sessionServers(project, session.worktree);
+    return (
+      this.options.listSessionServers?.(sessionId) ?? this.sessionServers(project, session.worktree)
+    );
   }
 
   private async sessionServers(
@@ -300,8 +343,17 @@ export class PreviewShareManager {
     worktree: string,
     port: number,
   ): Promise<boolean> {
-    return (await this.sessionServers(project, worktree)).some(
-      (server) => server.port === port && server.reachable,
+    const session = this.options.listSessionServers
+      ? (await this.options.store.listSessions()).find(
+          (entry) => entry.projectId === project.id && entry.worktree === worktree,
+        )
+      : undefined;
+    const servers = session
+      ? await this.options.listSessionServers!(session.sessionId)
+      : await this.sessionServers(project, worktree);
+    return servers.some(
+      (server) =>
+        server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
     );
   }
 
@@ -317,14 +369,8 @@ export class PreviewShareManager {
     let reachable = false;
     try {
       if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return false;
-      const sandboxWorktree = containerPathFor(
-        worktree,
-        projectClonePath(this.options.hostCloneRoot, project),
-      );
       const processes = await this.options.listListeningProcesses(project);
-      reachable = sessionDevServers(processes, sandboxWorktree).some(
-        (server) => server.port === port && server.reachable,
-      );
+      reachable = await this.sessionPortReachable(project, worktree, port);
       // A different session now owns the forwarded port. Waiting through the
       // restart grace period would expose that session through the old link.
       if (!reachable && processes.some((process) => process.port === port)) return false;
@@ -1018,6 +1064,15 @@ export class PreviewShareManager {
             matches =
               sandbox.running && containerGenerationOf(sandbox) === share.containerGeneration;
             matches = matches && connector.running;
+            if (matches && share.targetPort !== null) {
+              const preparedPort =
+                (await this.options.prepareTargetPort?.(project, share.targetPort)) ??
+                share.targetPort;
+              const origin = connector.env
+                ?.find((entry) => entry.startsWith('VERITY_PREVIEW_TARGET_ORIGIN='))
+                ?.slice('VERITY_PREVIEW_TARGET_ORIGIN='.length);
+              if (origin && Number(new URL(origin).port || '80') !== preparedPort) matches = false;
+            }
             if (matches && share.sessionId && session && share.staticPath) {
               const root = await this.staticSourceRoot(project, session.worktree);
               await this.validateStaticDirectory(root, share.staticPath);
@@ -1052,6 +1107,11 @@ export class PreviewShareManager {
     staticMount?: NonNullable<import('./docker.js').ContainerSpec['volumeMounts']>[number],
     timer?: PhaseTimer,
   ): Promise<string> {
+    const project = await this.options.store.getProject(share.projectId);
+    const targetPort =
+      share.targetPort === null || !project
+        ? share.targetPort
+        : ((await this.options.prepareTargetPort?.(project, share.targetPort)) ?? share.targetPort);
     const spec = {
       image: connectorImage,
       name: share.connectorContainerName,
@@ -1070,7 +1130,7 @@ export class PreviewShareManager {
         `VERITY_PREVIEW_CONNECTOR_TOKEN=${share.connectorToken}`,
         ...(share.targetKind === 'static-folder'
           ? ['VERITY_PREVIEW_STATIC_ROOT=/preview-workspace', 'VERITY_PREVIEW_STATIC_PATH=public']
-          : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${share.targetPort}`]),
+          : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${targetPort}`]),
       ],
       ...(staticMount ? { volumeMounts: [staticMount] } : {}),
       network: projectNetworkName(share.projectId),

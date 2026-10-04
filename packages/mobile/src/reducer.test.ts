@@ -1292,3 +1292,26 @@ describe('SessionReducer replay snapshot sharing', () => {
     expect(tools.messages[2]).not.toBe(oldTools[2]);
   });
 });
+
+describe('listener discovery snapshots', () => {
+  it('replaces listener state and removes stopped listeners without adding transcript messages', () => {
+    const reducer = new SessionReducer();
+    const listener = {
+      port: 5173,
+      reachable: true,
+      pid: 42,
+      name: 'Vite',
+      command: 'vite',
+      workdir: '.',
+      scope: 'session' as const,
+    };
+    reducer.apply(1, { t: 'dev_servers_changed', devServers: [listener] });
+    const first = reducer.state;
+    expect(first.devServers).toEqual([listener]);
+    expect(first.messages).toEqual([]);
+    reducer.apply(2, { t: 'dev_servers_changed', devServers: [] });
+    expect(reducer.state.devServers).toEqual([]);
+    expect(first.devServers).toEqual([listener]);
+    expect(reducer.state.messages).toEqual([]);
+  });
+});

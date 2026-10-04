@@ -457,27 +457,23 @@ export type AgentLoopPatchRequest = Partial<AgentLoopCreateRequest> & {
 const agentLoopResponseSchema = z.object({ loop: agentLoopSchema });
 const agentLoopsResponseSchema = z.object({ loops: z.array(agentLoopSchema) });
 
-// Dev servers — one-or-more named preview processes per project.
-const devServerSchema = z.object({
-  id: z.string(),
-  projectId: z.string(),
-  sourceKey: z.string().nullable().default(null),
-  name: z.string(),
-  command: z.string().nullable(),
-  url: z.string().nullable(),
-  workdir: z.string().nullable(),
-  hostPort: z.string().nullable(),
-  containerPort: z.string().nullable(),
-  /** Session whose worktree this server previews; null = the main checkout.
-   *  Defaulted for servers predating the preview feature. */
-  previewSessionId: z.string().nullable().default(null),
-  autoStart: z.boolean().default(false),
-  running: z.boolean().default(false),
-  sortOrder: z.number(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
-export type DevServer = z.infer<typeof devServerSchema>;
+export interface DevServer {
+  id: string;
+  projectId: string;
+  sourceKey: string | null;
+  name: string;
+  command: string | null;
+  url: string | null;
+  workdir: string | null;
+  hostPort: string | null;
+  containerPort: string | null;
+  previewSessionId: string | null;
+  autoStart: boolean;
+  running: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface DevServerCreateRequest {
   sourceKey?: string | null;
@@ -515,6 +511,17 @@ export interface PublicPreviewShareCreateRequest {
   ttlSeconds: number;
 }
 
+const localPreviewShareSchema = z.object({
+  id: z.string(),
+  url: z.string().url(),
+  projectId: z.string(),
+  sessionId: z.string(),
+  targetPort: z.number().int().nullable(),
+  staticPath: z.string().nullable(),
+  expiresAt: z.coerce.date(),
+});
+export type LocalPreviewShare = z.infer<typeof localPreviewShareSchema>;
+
 const sessionDevServerSchema = z.object({
   port: z.number().int(),
   /** False when the server listens on localhost only, which a public link cannot reach. */
@@ -523,6 +530,8 @@ const sessionDevServerSchema = z.object({
   name: z.string(),
   command: z.string(),
   workdir: z.string(),
+  scope: z.enum(['session', 'project']).optional(),
+  sessionId: z.string().optional(),
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
 
@@ -531,50 +540,25 @@ const publicPreviewSharesResponseSchema = z.object({
   shares: z.array(publicPreviewShareSchema),
 });
 
-export interface DetectedDevServerSetupRequest {
-  fingerprint: string;
-  confirmWarnings?: boolean;
-  devServers: Array<{
-    sourceKey: string;
+export interface DevServerSuggestion {
+  key: string;
+  name: string;
+  command: string;
+  workdir: string | null;
+  containerPort: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  evidence: string;
+  status: 'new' | 'changed' | 'configured' | 'missing';
+  alreadyConfigured: boolean;
+  existingDevServerId: string | null;
+  existingConfig: {
     name: string;
-    command: string;
+    command: string | null;
     workdir: string | null;
     containerPort: string | null;
-  }>;
+  } | null;
 }
 
-const devServerSuggestionSchema = z.object({
-  key: z.string(),
-  name: z.string(),
-  command: z.string(),
-  workdir: z.string().nullable(),
-  containerPort: z.string().nullable(),
-  confidence: z.enum(['high', 'medium', 'low']),
-  evidence: z.string(),
-  status: z.enum(['new', 'changed', 'configured', 'missing']).default('new'),
-  alreadyConfigured: z.boolean(),
-  existingDevServerId: z.string().nullable(),
-  existingConfig: z
-    .object({
-      name: z.string(),
-      command: z.string().nullable(),
-      workdir: z.string().nullable(),
-      containerPort: z.string().nullable(),
-    })
-    .nullable()
-    .default(null),
-});
-export type DevServerSuggestion = z.infer<typeof devServerSuggestionSchema>;
-
-const devServerResponseSchema = z.object({ devServer: devServerSchema });
-const devServersResponseSchema = z.object({ devServers: z.array(devServerSchema) });
-const devServerSuggestionsResponseSchema = z.object({
-  fingerprint: z.string().optional(),
-  detectedAt: z.string().optional(),
-  reviewedFingerprint: z.string().nullable().optional(),
-  reviewedAt: z.string().nullable().optional(),
-  suggestions: z.array(devServerSuggestionSchema),
-});
 export interface DevServerDetection {
   fingerprint: string | null;
   detectedAt: string | null;
@@ -582,13 +566,12 @@ export interface DevServerDetection {
   reviewedAt: string | null;
   suggestions: DevServerSuggestion[];
 }
-const devServerDetectionStateSchema = z.object({
-  fingerprint: z.string(),
-  detectedAt: z.string(),
-  reviewedFingerprint: z.string().nullable(),
-  reviewedAt: z.string().nullable(),
-});
-export type DevServerDetectionState = z.infer<typeof devServerDetectionStateSchema>;
+export interface DevServerDetectionState {
+  fingerprint: string;
+  detectedAt: string;
+  reviewedFingerprint: string | null;
+  reviewedAt: string | null;
+}
 const agentLoopRunsResponseSchema = z.object({ runs: z.array(agentLoopRunSchema) });
 const agentLoopTestResponseSchema = z.object({
   result: z.object({
@@ -1105,16 +1088,6 @@ export const projectRuntimeHealthSchema = z.object({
 });
 export type ProjectRuntimeHealth = z.infer<typeof projectRuntimeHealthSchema>;
 
-const projectRuntimeResponseSchema = z.object({ runtime: projectRuntimeStartedSchema });
-const projectRuntimeLogsResponseSchema = z.object({ logs: projectRuntimeLogsSchema });
-const projectRuntimeHealthResponseSchema = z.object({ health: projectRuntimeHealthSchema });
-// Declared after projectRuntimeStartedSchema (const, no hoisting): the preview
-// switch restarts a running server and then carries its runtime in the response.
-const devServerPreviewResponseSchema = z.object({
-  devServer: devServerSchema,
-  runtime: projectRuntimeStartedSchema.optional(),
-});
-export type DevServerPreviewResult = z.infer<typeof devServerPreviewResponseSchema>;
 const verityControlTokenRefreshResponseSchema = z.object({
   projectId: z.string().min(1),
   refreshedAt: z.string(),
@@ -1574,6 +1547,8 @@ export interface VerityClientOptions {
   appVariant?: 'production' | 'staging';
   /** Base URL of the control-plane server, no trailing slash (e.g. via Tailscale). */
   baseUrl: string;
+  /** Saved direct endpoint used for LAN previews, even when API traffic uses Uplink. */
+  localPreviewBaseUrl?: string | null;
   /** Fetch implementation; defaults to the global `fetch` (tests inject a fake). */
   fetch?: typeof fetch;
   /** Fetch implementation used only for native file-backed Blob uploads. Expo apps
@@ -2061,6 +2036,7 @@ export class VerityClient {
   }
   private readonly appVariant: 'production' | 'staging' | undefined;
   private readonly baseUrl: string;
+  private readonly localPreviewBaseUrl: string | null;
   private readonly fetchImpl: typeof fetch;
   private readonly uploadFetchImpl: typeof fetch;
   private readonly allowBackgroundUpload: boolean;
@@ -2070,6 +2046,8 @@ export class VerityClient {
   constructor(opts: VerityClientOptions) {
     this.appVariant = opts.appVariant;
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
+    this.localPreviewBaseUrl =
+      opts.localPreviewBaseUrl === undefined ? this.baseUrl : opts.localPreviewBaseUrl;
     this.fetchImpl = opts.fetch ?? fetch;
     this.uploadFetchImpl = opts.uploadFetch ?? this.fetchImpl;
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
@@ -3290,60 +3268,6 @@ export class VerityClient {
       .bindings;
   }
 
-  async startDevServer(devServerId: string): Promise<ProjectRuntimeStarted> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime`, {
-      method: 'POST',
-    });
-    return projectRuntimeResponseSchema.parse(await res.json()).runtime;
-  }
-
-  async getDevServerStatus(devServerId: string): Promise<ProjectRuntimeStarted> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime`, {
-      method: 'GET',
-    });
-    return projectRuntimeResponseSchema.parse(await res.json()).runtime;
-  }
-
-  async stopDevServer(devServerId: string): Promise<ProjectRuntimeStarted> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime/stop`, {
-      method: 'POST',
-    });
-    return projectRuntimeResponseSchema.parse(await res.json()).runtime;
-  }
-
-  /** Point the dev server at a session's worktree (preview before merge), or
-   *  back at the main checkout (`sessionId: null`). A running server is
-   *  restarted in the new checkout; the response then carries its runtime. */
-  async setDevServerPreviewSession(
-    devServerId: string,
-    sessionId: string | null,
-  ): Promise<DevServerPreviewResult> {
-    const res = await this.request(
-      `/dev-servers/${encodeURIComponent(devServerId)}/preview-session`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
-      },
-    );
-    return devServerPreviewResponseSchema.parse(await res.json());
-  }
-
-  async getDevServerLogs(devServerId: string): Promise<ProjectRuntimeLogs> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime/logs`, {
-      method: 'GET',
-    });
-    return projectRuntimeLogsResponseSchema.parse(await res.json()).logs;
-  }
-
-  async getDevServerHealth(devServerId: string): Promise<ProjectRuntimeHealth> {
-    const res = await this.request(
-      `/dev-servers/${encodeURIComponent(devServerId)}/runtime/health`,
-      { method: 'GET' },
-    );
-    return projectRuntimeHealthResponseSchema.parse(await res.json()).health;
-  }
-
   async createProject(body: CreateProjectRequest): Promise<ProjectRecord> {
     const res = await this.request('/projects', {
       method: 'POST',
@@ -3474,11 +3398,52 @@ export class VerityClient {
     await this.request(`/agent-loops/${encodeURIComponent(loopId)}${query}`, { method: 'DELETE' });
   }
 
-  async listDevServers(projectId: string): Promise<DevServer[]> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/dev-servers`, {
+  private resolveLocalPreview(share: LocalPreviewShare): LocalPreviewShare {
+    const url = new URL(share.url);
+    if (
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
+      this.localPreviewBaseUrl
+    ) {
+      url.hostname = new URL(this.localPreviewBaseUrl).hostname;
+    }
+    return { ...share, url: url.toString() };
+  }
+
+  async getPreviewCapabilities(): Promise<{
+    publicSharing: 'available' | 'premium-required' | 'unavailable';
+  }> {
+    const res = await this.request('/preview-capabilities', { method: 'GET' });
+    return z
+      .object({ publicSharing: z.enum(['available', 'premium-required', 'unavailable']) })
+      .parse(await res.json());
+  }
+
+  async createSessionLocalPreviewShare(
+    sessionId: string,
+    body: { targetPort?: number; staticPath?: string; ttlSeconds?: number },
+  ): Promise<LocalPreviewShare> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/local-shares`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return this.resolveLocalPreview(
+      z.object({ share: localPreviewShareSchema }).parse(await res.json()).share,
+    );
+  }
+
+  async listSessionLocalPreviewShares(sessionId: string): Promise<LocalPreviewShare[]> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/local-shares`, {
       method: 'GET',
     });
-    return devServersResponseSchema.parse(await res.json()).devServers;
+    return z
+      .object({ shares: z.array(localPreviewShareSchema) })
+      .parse(await res.json())
+      .shares.map((share) => this.resolveLocalPreview(share));
+  }
+
+  async stopLocalPreviewShare(shareId: string): Promise<void> {
+    await this.request(`/local-shares/${encodeURIComponent(shareId)}`, { method: 'DELETE' });
   }
 
   async listPublicPreviewShares(projectId: string): Promise<PublicPreviewShare[]> {
@@ -3486,21 +3451,6 @@ export class VerityClient {
       method: 'GET',
     });
     return publicPreviewSharesResponseSchema.parse(await res.json()).shares;
-  }
-
-  async createPublicPreviewShare(
-    devServerId: string,
-    body: PublicPreviewShareCreateRequest,
-  ): Promise<PublicPreviewShare> {
-    const res = await this.request(
-      `/dev-servers/${encodeURIComponent(devServerId)}/public-shares`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-    );
-    return publicPreviewShareResponseSchema.parse(await res.json()).share;
   }
 
   async stopPublicPreviewShare(shareId: string): Promise<void> {
@@ -3590,81 +3540,6 @@ export class VerityClient {
       },
     );
     return publicPreviewShareResponseSchema.parse(await res.json()).share;
-  }
-
-  async detectDevServers(projectId: string): Promise<DevServerSuggestion[]> {
-    return (await this.getDevServerDetection(projectId)).suggestions;
-  }
-
-  async getDevServerDetection(projectId: string): Promise<DevServerDetection> {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(projectId)}/dev-server-suggestions`,
-      { method: 'GET' },
-    );
-    const parsed = devServerSuggestionsResponseSchema.parse(await res.json());
-    return {
-      fingerprint: parsed.fingerprint ?? null,
-      detectedAt: parsed.detectedAt ?? null,
-      reviewedFingerprint: parsed.reviewedFingerprint ?? null,
-      reviewedAt: parsed.reviewedAt ?? null,
-      suggestions: parsed.suggestions,
-    };
-  }
-
-  async reviewDevServerDetection(
-    projectId: string,
-    fingerprint: string,
-  ): Promise<DevServerDetectionState> {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(projectId)}/dev-server-suggestions/reviewed`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fingerprint }),
-      },
-    );
-    return z.object({ detection: devServerDetectionStateSchema }).parse(await res.json()).detection;
-  }
-
-  async getDevServer(devServerId: string): Promise<DevServer> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}`, {
-      method: 'GET',
-    });
-    return devServerResponseSchema.parse(await res.json()).devServer;
-  }
-
-  async createDevServer(projectId: string, body: DevServerCreateRequest = {}): Promise<DevServer> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/dev-servers`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return devServerResponseSchema.parse(await res.json()).devServer;
-  }
-
-  async setupDetectedDevServers(
-    projectId: string,
-    body: DetectedDevServerSetupRequest,
-  ): Promise<ProjectRecord> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/setup-dev-servers`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
-  }
-
-  async updateDevServer(devServerId: string, patch: DevServerPatchRequest): Promise<DevServer> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-    return devServerResponseSchema.parse(await res.json()).devServer;
-  }
-
-  async deleteDevServer(devServerId: string): Promise<void> {
-    await this.request(`/dev-servers/${encodeURIComponent(devServerId)}`, { method: 'DELETE' });
   }
 
   async listAgentLoopRuns(loopId: string): Promise<AgentLoopRun[]> {

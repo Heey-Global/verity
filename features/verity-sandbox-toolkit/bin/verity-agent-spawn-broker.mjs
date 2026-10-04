@@ -98,7 +98,11 @@ const SPAWNABLE_AGENT_COMMANDS = new Set(['claude-agent-acp', 'codex-acp', 'open
  * turn runs on, so an in-Sandbox helper such as `verity-code-review` starts its
  * isolated reviewer on the same one instead of guessing from the environment.
  */
-const SESSION_RUNTIME_ENV_KEYS = ['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL'];
+const SESSION_RUNTIME_ENV_KEYS = [
+  'VERITY_SESSION_BACKEND',
+  'VERITY_SESSION_MODEL',
+  'VERITY_SESSION_ID',
+];
 const MAX_SESSION_ENV_VALUE_BYTES = 256;
 /**
  * Every neighbouring bound here is a size cap, but a value bound for a child's
@@ -120,6 +124,7 @@ const SESSION_ENV_VALUE_SHAPES = {
   // it is only length- and control-character-checked. Consumers must quote it:
   // it is an environment value, never a fragment of a command line.
   VERITY_SESSION_MODEL: undefined,
+  VERITY_SESSION_ID: undefined,
 };
 function hasControlCharacter(value) {
   for (let index = 0; index < value.length; index += 1) {

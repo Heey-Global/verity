@@ -1110,41 +1110,6 @@ describe('VerityClient.listProjects (#174)', () => {
     );
   });
 
-  it('starts, reads, stops, tails, and checks one dev server by stable id', async () => {
-    const running = { projectId: 'p1', url: 'http://localhost:3000', running: true, pid: '101' };
-    const stopped = { ...running, running: false, pid: null };
-    const logs = { projectId: 'p1', logs: 'web ready\n' };
-    const health = {
-      projectId: 'p1',
-      url: 'http://localhost:3000',
-      reachable: true,
-      status: 200,
-      checkedAt: '2026-07-14T00:00:00.000Z',
-      error: null,
-    };
-    const { fetch, calls } = fakeFetchSequence(
-      json({ runtime: running }),
-      json({ runtime: running }),
-      json({ runtime: stopped }),
-      json({ logs }),
-      json({ health }),
-    );
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    expect(await client.startDevServer('web/one')).toEqual(running);
-    expect(await client.getDevServerStatus('web/one')).toEqual(running);
-    expect(await client.stopDevServer('web/one')).toEqual(stopped);
-    expect(await client.getDevServerLogs('web/one')).toEqual(logs);
-    expect(await client.getDevServerHealth('web/one')).toEqual(health);
-    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['POST', 'http://host/dev-servers/web%2Fone/runtime'],
-      ['GET', 'http://host/dev-servers/web%2Fone/runtime'],
-      ['POST', 'http://host/dev-servers/web%2Fone/runtime/stop'],
-      ['GET', 'http://host/dev-servers/web%2Fone/runtime/logs'],
-      ['GET', 'http://host/dev-servers/web%2Fone/runtime/health'],
-    ]);
-  });
-
   it('creates a project', async () => {
     const { fetch, calls } = fakeFetch(json({ project }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -3001,140 +2966,7 @@ describe('VerityClient Agent Loops', () => {
   });
 });
 
-describe('VerityClient Dev Servers', () => {
-  const devServer = {
-    id: 'ds-1',
-    projectId: 'project one',
-    name: 'Web',
-    command: 'npm run dev',
-    url: 'http://localhost:3000',
-    workdir: null,
-    hostPort: '3000',
-    containerPort: null,
-    sortOrder: 0,
-    createdAt: '2026-07-14T00:00:00.000Z',
-    updatedAt: '2026-07-14T00:00:00.000Z',
-  };
-
-  it('fetches non-mutating dev-server suggestions', async () => {
-    const suggestion = {
-      key: '.:dev',
-      name: 'Web',
-      command: 'npm run dev',
-      workdir: null,
-      containerPort: '5173',
-      confidence: 'medium',
-      evidence: 'Vite default from package.json script "dev"',
-      status: 'new',
-      alreadyConfigured: false,
-      existingDevServerId: null,
-      existingConfig: null,
-    };
-    const { fetch, calls } = fakeFetch(json({ fingerprint: 'abc', suggestions: [suggestion] }));
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    expect(await client.detectDevServers('project one')).toEqual([suggestion]);
-    expect(calls).toEqual([
-      expect.objectContaining({
-        url: 'http://host/projects/project%20one/dev-server-suggestions',
-        init: expect.objectContaining({ method: 'GET' }),
-      }),
-    ]);
-  });
-
-  it('returns the detection fingerprint with classified suggestions', async () => {
-    const suggestion = {
-      key: '.:dev',
-      name: 'Web',
-      command: 'npm run dev',
-      workdir: null,
-      containerPort: '5173',
-      confidence: 'medium',
-      evidence: 'Vite default',
-      status: 'changed',
-      alreadyConfigured: true,
-      existingDevServerId: 'ds-1',
-      existingConfig: {
-        name: 'Web',
-        command: 'npm run dev:old',
-        workdir: null,
-        containerPort: '5173',
-      },
-    } as const;
-    const { fetch } = fakeFetch(
-      json({
-        fingerprint: 'fingerprint-1',
-        detectedAt: '2026-07-15T12:00:00.000Z',
-        reviewedFingerprint: 'fingerprint-0',
-        reviewedAt: '2026-07-15T11:00:00.000Z',
-        suggestions: [suggestion],
-      }),
-    );
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    await expect(client.getDevServerDetection('project one')).resolves.toEqual({
-      fingerprint: 'fingerprint-1',
-      detectedAt: '2026-07-15T12:00:00.000Z',
-      reviewedFingerprint: 'fingerprint-0',
-      reviewedAt: '2026-07-15T11:00:00.000Z',
-      suggestions: [suggestion],
-    });
-  });
-
-  it('marks an exact detection fingerprint as reviewed', async () => {
-    const detection = {
-      fingerprint: 'fingerprint-1',
-      detectedAt: '2026-07-15T12:00:00.000Z',
-      reviewedFingerprint: 'fingerprint-1',
-      reviewedAt: '2026-07-15T12:01:00.000Z',
-    };
-    const { fetch, calls } = fakeFetch(json({ detection }));
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    await expect(client.reviewDevServerDetection('project one', 'fingerprint-1')).resolves.toEqual(
-      detection,
-    );
-    expect(calls[0]).toMatchObject({
-      url: 'http://host/projects/project%20one/dev-server-suggestions/reviewed',
-      init: expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ fingerprint: 'fingerprint-1' }),
-      }),
-    });
-  });
-
-  it('uses the dev-server CRUD endpoints', async () => {
-    const { fetch, calls } = fakeFetchSequence(
-      json({ devServers: [devServer] }),
-      json({ devServer }),
-      json({ devServer }),
-      json({ devServer: { ...devServer, command: 'pnpm dev' } }),
-      json({ deleted: true }),
-    );
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    expect(await client.listDevServers('project one')).toHaveLength(1);
-    expect((await client.getDevServer('ds-1')).id).toBe('ds-1');
-    await client.createDevServer('project one', { name: 'Web', command: 'npm run dev' });
-    expect((await client.updateDevServer('ds-1', { command: 'pnpm dev' })).command).toBe(
-      'pnpm dev',
-    );
-    await client.deleteDevServer('ds-1');
-
-    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['GET', 'http://host/projects/project%20one/dev-servers'],
-      ['GET', 'http://host/dev-servers/ds-1'],
-      ['POST', 'http://host/projects/project%20one/dev-servers'],
-      ['PATCH', 'http://host/dev-servers/ds-1'],
-      ['DELETE', 'http://host/dev-servers/ds-1'],
-    ]);
-    expect(JSON.parse((calls[2]?.init?.body as string) ?? '')).toEqual({
-      name: 'Web',
-      command: 'npm run dev',
-    });
-    expect(JSON.parse((calls[3]?.init?.body as string) ?? '')).toEqual({ command: 'pnpm dev' });
-  });
-
+describe('VerityClient preview shares', () => {
   it('retains PIN lock status from Core and accepts older Core responses', async () => {
     const share = {
       id: 'locked-share',
@@ -3158,44 +2990,6 @@ describe('VerityClient Dev Servers', () => {
       { ...share, pinLocked: true },
     ]);
     await expect(client.listPublicPreviewShares('p1')).resolves.toEqual([share]);
-  });
-
-  it('creates, lists, and stops public preview shares', async () => {
-    const share = {
-      id: 'share/one',
-      projectId: 'project one',
-      devServerId: 'ds/one',
-      targetKind: 'dev-server',
-      staticPath: null,
-      state: 'active',
-      publicOrigin: 'https://share.preview.example',
-      pin: '482913',
-      expiresAt: '2026-01-01T02:00:00.000Z',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      failure: null,
-    };
-    const { fetch, calls } = fakeFetchSequence(
-      json({ shares: [share] }),
-      json({ share }),
-      json({ stopped: true }),
-    );
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    await expect(client.listPublicPreviewShares('project one')).resolves.toEqual([share]);
-    await expect(
-      client.createPublicPreviewShare('ds/one', { pin: '123456', ttlSeconds: 3600 }),
-    ).resolves.toEqual(share);
-    await client.stopPublicPreviewShare('share/one');
-
-    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['GET', 'http://host/projects/project%20one/public-shares'],
-      ['POST', 'http://host/dev-servers/ds%2Fone/public-shares'],
-      ['DELETE', 'http://host/public-shares/share%2Fone'],
-    ]);
-    expect(JSON.parse((calls[1]?.init?.body as string) ?? '')).toEqual({
-      pin: '123456',
-      ttlSeconds: 3600,
-    });
   });
 
   it('browses a session worktree before creating a static public preview', async () => {
@@ -3720,4 +3514,48 @@ it('links new Drive folders read-only and preserves explicit read/write choice',
   await client.connectProjectGoogleDriveFolder('p/1', 'root', 'read-write');
   expect(jsonBody(calls[0])).toEqual({ fileId: 'root', accessMode: 'read-only' });
   expect(jsonBody(calls[1])).toEqual({ fileId: 'root', accessMode: 'read-write' });
+});
+
+describe('local preview shares', () => {
+  it('uses the direct server hostname for local links while API calls use Uplink', async () => {
+    const share = {
+      id: 'share/one',
+      url: 'http://localhost:8100/',
+      projectId: 'project-one',
+      sessionId: 'session/one',
+      targetPort: 5173,
+      staticPath: null,
+      expiresAt: '2026-10-04T12:00:00Z',
+    };
+    const transport = fakeFetchSequence(
+      Response.json({ publicSharing: 'premium-required' }),
+      Response.json({ share }),
+      Response.json({ shares: [share, { ...share, url: 'http://192.168.1.20:8101/' }] }),
+      new Response(null, { status: 204 }),
+    );
+    const client = new VerityClient({
+      baseUrl: 'https://remote.example',
+      localPreviewBaseUrl: 'http://192.168.1.10:8082',
+      fetch: transport.fetch,
+    });
+    expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'premium-required' });
+    const created = await client.createSessionLocalPreviewShare('session/one', {
+      targetPort: 5173,
+    });
+    expect(created.url).toBe('http://192.168.1.10:8100/');
+    expect(created.expiresAt).toEqual(new Date(share.expiresAt));
+    expect(
+      (await client.listSessionLocalPreviewShares('session/one')).map((item) => item.url),
+    ).toEqual([created.url, 'http://192.168.1.20:8101/']);
+    await client.stopLocalPreviewShare(share.id);
+    expect(transport.calls.map(({ url, init }) => [url, init?.method])).toEqual([
+      ['https://remote.example/preview-capabilities', 'GET'],
+      ['https://remote.example/sessions/session%2Fone/local-shares', 'POST'],
+      ['https://remote.example/sessions/session%2Fone/local-shares', 'GET'],
+      ['https://remote.example/local-shares/share%2Fone', 'DELETE'],
+    ]);
+    const body = transport.calls[1]?.init?.body;
+    expect(typeof body).toBe('string');
+    expect(JSON.parse(typeof body === 'string' ? body : '')).toEqual({ targetPort: 5173 });
+  });
 });

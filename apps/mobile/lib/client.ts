@@ -122,6 +122,9 @@ export function createVerityClient(): VerityClient | null {
     endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, true) : undefined;
   const client = new VerityClient({
     baseUrl: serverUrl,
+    localPreviewBaseUrl:
+      getServerProfile()?.endpoints.find((item) => item.transport === 'direct')?.url ??
+      (endpoint?.transport === 'uplink' ? null : serverUrl),
     appVariant: Constants.expoConfig?.extra?.appVariant === 'staging' ? 'staging' : 'production',
     // expo-file-system File implements Blob through Expo's native networking
     // stack. Keep ordinary API calls on the global fetch and route only uploads

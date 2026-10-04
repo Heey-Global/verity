@@ -4105,6 +4105,36 @@ describe('Claude ACP sandbox smoke', () => {
       await waitForStdout('"type":"control_response"');
       expect(stdout).toContain('"response":{"subtype":"success","request_id":"initialize-smoke"');
       expect(stdout).toContain('"models":[{"value":"smoke"');
+      // The SDK leaves unanswered control requests pending until query cleanup.
+      child.stdin.write(
+        `${JSON.stringify({
+          type: 'control_request',
+          request_id: 'context-usage-smoke',
+          request: { subtype: 'get_context_usage' },
+        })}\n`,
+      );
+      await waitForStdout('"request_id":"context-usage-smoke"');
+      const contextResponse = stdout
+        .split('\n')
+        .map((line) => {
+          try {
+            return JSON.parse(line) as {
+              response?: {
+                request_id?: string;
+                subtype?: string;
+                response?: { maxTokens?: number };
+              };
+            };
+          } catch {
+            return null;
+          }
+        })
+        .find((frame) => frame?.response?.request_id === 'context-usage-smoke');
+      expect(contextResponse?.response).toMatchObject({
+        subtype: 'success',
+        response: { maxTokens: 200_000 },
+      });
+
       await expect(access(join(worktree, 'before'))).rejects.toThrow();
       child.stdin.write(
         `${JSON.stringify({

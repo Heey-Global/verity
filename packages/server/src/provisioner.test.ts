@@ -2432,7 +2432,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(again.state).toBe('active');
   });
 
-  it('publishes every configured dev-server port pair', async () => {
+  it('does not publish legacy configured dev-server ports', async () => {
     const id = await seedProject();
     await ctx.store.createDevServer({
       projectId: id,
@@ -2461,10 +2461,8 @@ describe('ProvisionerImpl (#174)', () => {
     await provisioner.provision(id);
 
     const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
-    expect(spec.portBindings).toEqual([
-      { hostPort: '3000', containerPort: '3000' },
-      { hostPort: '3001', containerPort: '4173' },
-    ]);
+    // Old persisted configuration must never reopen unauthenticated sandbox ports.
+    expect(spec.portBindings).toBeUndefined();
   });
 
   it('keeps the swap ceiling pinned to a configured memory ceiling', async () => {

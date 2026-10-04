@@ -34,6 +34,8 @@ services:
       # clients) is still recommended; see "Hardening an internet-reachable
       # host" in deploy/README.md.
       - '${VERITY_API_HOST_PORT:-8082}:8082'
+      # Local previews are unauthenticated HTTP; restrict this range to trusted clients.
+      - '${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}:${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}'
     # REMOVING A NAME FROM THIS BLOCK IS A COMPATIBILITY CHANGE, not a cleanup.
     # `managed-bootstrap` seals these names into the deployment spec as env SOURCES,
     # every managed generation copies that list forward verbatim, and the Updater
@@ -248,15 +250,13 @@ services:
       # than whatever `:latest` has moved to since. Builds without a release
       # version (dev/PR) keep resolving the `:latest` channel.
       # Set from .env only for a local/private override.
+      VERITY_LOCAL_PREVIEW_PORT_RANGE: ${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}
       VERITY_DEFAULT_PROJECT_IMAGE: ${VERITY_DEFAULT_PROJECT_IMAGE:-}
       # Managed publication keeps complete release trees below the configured
       # host root and switches only this pointer. Docker resolves the symlink at
       # sandbox creation, so an existing sandbox retains its immutable old
       # mount while a new sandbox receives one complete selected release.
       VERITY_AGENT_SEED_ROOT_HOST_PATH: ${VERITY_AGENT_SEED_HOST_PATH:-/opt/agent-seed}
-      # Enable the Docker-backed Dev Server start/stop/status API used by the
-      # project Dev Servers tab. Set to 0 only when this deployment intentionally
-      # disables process control inside project containers.
       # Same model for the injected devcontainer Feature: empty means resolve
       # ghcr.io/heey-global/verity/verity-sandbox-toolkit at this server's release
       # version to a digest at provisioning/recreate/update time (`:latest` on
@@ -563,8 +563,11 @@ services:
     environment:
       VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
       VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
+      VERITY_LOCAL_PREVIEW_PORT_RANGE: ${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}
     ports:
       - '${VERITY_API_HOST_PORT:-8082}:8082'
+      # Local previews are unauthenticated HTTP; restrict this range to trusted clients.
+      - '${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}:${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}'
     expose: ['8083']
     networks:
       default:

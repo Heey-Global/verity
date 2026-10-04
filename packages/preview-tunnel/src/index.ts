@@ -50,12 +50,15 @@ const CONNECTOR_HEARTBEAT_MS = 15_000;
 
 export interface PreviewEdgeOptions {
   shareId: string;
+  /** Open access is only enabled by the self-hosted local preview manager. */
+  accessMode?: 'pin' | 'local-open';
   /** Required in hosted production; the service persists attempts across edge restarts. */
   pinBudget?: PreviewPinBudget;
   pinHash: string;
   connectorTokenHash: string;
   sessionSecretHash: string;
   publicOrigin: string;
+  requestBudget?: { acquire(): boolean; release(): void };
   maxBodyBytes?: number;
   requestTimeoutMs?: number;
   maxConcurrentRequests?: number;
@@ -72,6 +75,7 @@ export interface PreviewEdgeOptions {
 }
 
 export interface PreviewConnectorOptions {
+  accessMode?: 'pin' | 'local-open';
   edgeUrl: string;
   connectorToken: string;
   targetOrigin: string;
@@ -195,8 +199,8 @@ export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex
 }
 
 export class PreviewEdge {
-  private readonly options: Required<Omit<PreviewEdgeOptions, 'pinBudget'>> &
-    Pick<PreviewEdgeOptions, 'pinBudget'>;
+  private readonly options: Required<Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget'>> &
+    Pick<PreviewEdgeOptions, 'pinBudget' | 'requestBudget'>;
   private readonly server: Server;
   private readonly websocketServer: WebSocketServer;
   private readonly clientSockets: WebSocketServer;
@@ -229,6 +233,7 @@ export class PreviewEdge {
     validatePositiveIntegerOption(options.maxConcurrentStreams, 'maxConcurrentStreams');
     const origin = new URL(options.publicOrigin);
     if (
+      options.accessMode !== 'local-open' &&
       origin.protocol !== 'https:' &&
       origin.hostname !== '127.0.0.1' &&
       origin.hostname !== 'localhost'
@@ -236,6 +241,7 @@ export class PreviewEdge {
       throw new Error('publicOrigin must use https');
     }
     this.options = {
+      accessMode: 'pin',
       ...options,
       publicOrigin: origin.origin,
       maxBodyBytes: options.maxBodyBytes ?? 10 * 1024 * 1024,
@@ -302,7 +308,10 @@ export class PreviewEdge {
         socket.destroy();
         return;
       }
-      if (!previewBrowserOriginAllowed(request, this.options.publicOrigin)) {
+      if (
+        this.options.accessMode !== 'local-open' &&
+        !previewBrowserOriginAllowed(request, this.options.publicOrigin)
+      ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
@@ -323,6 +332,7 @@ export class PreviewEdge {
         return;
       }
       const headers = websocketRequestHeaders(request.headers);
+      localRequestCookies(headers, request, this.options.accessMode);
       if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
         socket.write('HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n');
         socket.destroy();
@@ -669,6 +679,7 @@ export class PreviewEdge {
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let counted = false;
     let streaming = false;
+    let budgetAcquired = false;
     try {
       const url = new URL(request.url ?? '/', this.options.publicOrigin);
       if (url.pathname === LOGO_PATH) {
@@ -691,6 +702,7 @@ export class PreviewEdge {
         return;
       }
       if (
+        this.options.accessMode !== 'local-open' &&
         !['GET', 'HEAD', 'OPTIONS'].includes(request.method ?? 'GET') &&
         !previewBrowserOriginAllowed(request, this.options.publicOrigin)
       ) {
@@ -701,7 +713,15 @@ export class PreviewEdge {
         response.end('Forbidden preview origin.');
         return;
       }
-      if (url.pathname === LOGIN_PATH) {
+      if (this.options.accessMode === 'local-open' && url.pathname === '/__verity/health') {
+        response.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store',
+        });
+        response.end(JSON.stringify({ shareId: this.options.shareId }));
+        return;
+      }
+      if (this.options.accessMode !== 'local-open' && url.pathname === LOGIN_PATH) {
         await this.handleLogin(request, response);
         return;
       }
@@ -733,6 +753,7 @@ export class PreviewEdge {
         return;
       }
       const headers = filteredHeaders(request.headers);
+      localRequestCookies(headers, request, this.options.accessMode);
       if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
         response.writeHead(431, { 'content-type': 'text/plain; charset=utf-8' });
         response.end('Preview request headers are too large or invalid.');
@@ -751,6 +772,17 @@ export class PreviewEdge {
       if (this.activeRequests >= this.options.maxConcurrentRequests) {
         sendPreviewError(response, 503, 'The preview is busy. Try again shortly.', '1');
         return;
+      }
+      if (
+        this.options.requestBudget &&
+        (request.headers['transfer-encoding'] !== undefined ||
+          Number(request.headers['content-length'] ?? 0) > 0)
+      ) {
+        budgetAcquired = this.options.requestBudget.acquire();
+        if (!budgetAcquired) {
+          sendPreviewError(response, 503, 'Local previews are busy. Try again shortly.', '1');
+          return;
+        }
       }
       this.activeRequests += 1;
       counted = true;
@@ -815,7 +847,10 @@ export class PreviewEdge {
           head: (meta) => {
             const { status, headers: responseHeaders } = meta as HttpResponseMeta;
             headArrived = true;
-            response.writeHead(status, sanitizeResponseHeaders(responseHeaders));
+            response.writeHead(
+              status,
+              sanitizeResponseHeaders(responseHeaders, this.options.accessMode),
+            );
             response.flushHeaders();
           },
           data: (payload) => {
@@ -881,6 +916,7 @@ export class PreviewEdge {
         if (error instanceof RequestBodyError) request.destroy();
       });
     } finally {
+      if (budgetAcquired) this.options.requestBudget?.release();
       if (counted) this.activeRequests -= 1;
       if (streaming) this.activeStreams -= 1;
     }
@@ -1053,6 +1089,7 @@ export class PreviewEdge {
   }
 
   private sessionAuthorized(request: IncomingMessage): boolean {
+    if (this.options.accessMode === 'local-open') return true;
     const value = parseCookies(request.headers.cookie)[COOKIE_NAME];
     if (value === undefined) return false;
     // Legacy cookies carry no verifiable expiry and require a fresh PIN login.
@@ -1107,6 +1144,7 @@ export class PreviewConnector {
       throw new Error('targetOrigin must not contain credentials, path, query, or fragment');
     }
     this.options = {
+      accessMode: 'pin',
       ...options,
       edgeUrl: edge.toString(),
       targetOrigin: target.origin,
@@ -1341,7 +1379,9 @@ export class PreviewConnector {
       return this.faultStream(socket, streamId, 'protocol_error');
     }
     target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
-    const { protocols, headers } = websocketDialHeaders(meta.headers);
+    const { protocols, headers } = websocketDialHeaders(
+      targetRequestHeaders(meta.headers, this.options.accessMode),
+    );
     let upstream: WebSocket;
     try {
       upstream = new WebSocket(target, protocols, {
@@ -1480,7 +1520,7 @@ export class PreviewConnector {
       }, this.options.requestTimeoutMs);
       const init: RequestInit = {
         method: context.meta.method,
-        headers: context.meta.headers,
+        headers: targetRequestHeaders(context.meta.headers, this.options.accessMode),
         redirect: 'manual',
         signal: AbortSignal.any([expired.signal, context.cancelled.signal, disconnected.signal]),
       };
@@ -1502,7 +1542,7 @@ export class PreviewConnector {
         channel: 'http',
         meta: {
           status: upstream.status,
-          headers: filteredResponseHeaders(upstream.headers, target),
+          headers: filteredResponseHeaders(upstream.headers, target, this.options.accessMode),
         },
       });
       await this.relayBody(socket, streamId, context, upstream);
@@ -1830,7 +1870,11 @@ function filteredHeaders(headers: IncomingMessage['headers']): Record<string, st
   return result;
 }
 
-function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<string, string> {
+function filteredResponseHeaders(
+  headers: Headers,
+  requestUrl: URL,
+  mode: 'pin' | 'local-open' = 'pin',
+): Record<string, string> {
   const result: Record<string, string> = {};
   headers.forEach((value, name) => {
     if (
@@ -1841,6 +1885,12 @@ function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<stri
     )
       result[name] = value;
   });
+  for (const name of Object.keys(result))
+    if (name.startsWith('x-verity-local-set-cookie-')) delete result[name];
+  if (mode === 'local-open')
+    headers.getSetCookie().forEach((cookie, index) => {
+      result[`x-verity-local-set-cookie-${index}`] = cookie;
+    });
   const location = result.location;
   if (location) {
     try {
@@ -1857,15 +1907,27 @@ function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<stri
   return result;
 }
 
-function sanitizeResponseHeaders(headers: Record<string, string>): Record<string, string> {
+function sanitizeResponseHeaders(
+  headers: Record<string, string>,
+  mode: 'pin' | 'local-open' = 'pin',
+): Record<string, string | string[]> {
   const result: Record<string, string> = {};
   for (const [rawName, value] of Object.entries(headers)) {
     const name = rawName.toLowerCase();
     if (!HOP_BY_HOP.has(name) && name !== 'set-cookie' && name !== 'content-length')
       result[name] = value;
   }
-  result['cache-control'] ??= 'no-store';
-  return result;
+  const cookies: string[] = [];
+  for (const name of Object.keys(result)) {
+    if (name.startsWith('x-verity-local-set-cookie-')) {
+      if (mode === 'local-open') cookies.push(result[name]!);
+      delete result[name];
+    }
+  }
+  const output: Record<string, string | string[]> = result;
+  if (cookies.length) output['set-cookie'] = cookies;
+  output['cache-control'] ??= 'no-store';
+  return output;
 }
 
 function parseCookies(value: string | undefined): Record<string, string> {
@@ -1947,4 +2009,42 @@ function sendPreviewPage(
     ...(retryAfter ? { 'retry-after': retryAfter } : {}),
   });
   response.end(page);
+}
+
+function localRequestCookies(
+  headers: Record<string, string>,
+  request: IncomingMessage,
+  mode: 'pin' | 'local-open',
+): void {
+  for (const name of Object.keys(headers))
+    if (name.startsWith('x-verity-local-request-cookie-')) delete headers[name];
+  if (mode === 'local-open' && request.headers.cookie) {
+    const value = request.headers.cookie;
+    for (let offset = 0; offset < value.length; offset += 4096)
+      headers[`x-verity-local-request-cookie-${offset / 4096}`] = value.slice(
+        offset,
+        offset + 4096,
+      );
+  }
+}
+
+function targetRequestHeaders(
+  headers: Record<string, string>,
+  mode: 'pin' | 'local-open',
+): Record<string, string> {
+  const result = { ...headers };
+  const chunks: Array<[number, string]> = [];
+  for (const name of Object.keys(result)) {
+    if (name.startsWith('x-verity-local-request-cookie-')) {
+      const index = Number(name.slice('x-verity-local-request-cookie-'.length));
+      if (Number.isSafeInteger(index) && index >= 0) chunks.push([index, result[name]!]);
+      delete result[name];
+    }
+  }
+  if (mode === 'local-open' && chunks.length)
+    result.cookie = chunks
+      .sort((a, b) => a[0] - b[0])
+      .map((chunk) => chunk[1])
+      .join('');
+  return result;
 }

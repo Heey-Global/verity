@@ -19,12 +19,16 @@ const MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
  *
  * Forwarding the WHOLE environment would hand the broker (and through it the
  * agent) the caller's ambient env, which is exactly what the process split
- * exists to prevent — so only these two cross, and the broker re-checks that for
- * itself rather than trusting the frame. The same two keys are named in
+ * exists to prevent — so only this context crosses, and the broker re-checks that for
+ * itself rather than trusting the frame. The same keys are named in
  * `runner-worker-entry.ts` (guarding the request file) and in the broker; the
  * drift test in `broker-spawner.test.ts` keeps the three lists in step.
  */
-export const SESSION_RUNTIME_ENV_KEYS = ['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL'] as const;
+export const SESSION_RUNTIME_ENV_KEYS = [
+  'VERITY_SESSION_BACKEND',
+  'VERITY_SESSION_MODEL',
+  'VERITY_SESSION_ID',
+] as const;
 
 function sessionRuntimeEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const forwarded: Record<string, string> = {};

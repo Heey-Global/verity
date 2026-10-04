@@ -91,6 +91,9 @@ export interface ControlPlaneDeps {
   pushEnabled?: boolean | undefined;
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: ServerDeps['previewShareManager'];
+  listenerDiscovery?: ServerDeps['listenerDiscovery'];
+  localPreviewManager?: ServerDeps['localPreviewManager'];
+  previewSharingCapability?: ServerDeps['previewSharingCapability'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
@@ -344,6 +347,13 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
+    ...(deps.listenerDiscovery !== undefined ? { listenerDiscovery: deps.listenerDiscovery } : {}),
+    ...(deps.localPreviewManager !== undefined
+      ? { localPreviewManager: deps.localPreviewManager }
+      : {}),
+    ...(deps.previewSharingCapability !== undefined
+      ? { previewSharingCapability: deps.previewSharingCapability }
+      : {}),
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
       : {}),

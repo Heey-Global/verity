@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('selective Docker build contexts', () => {
@@ -13,6 +13,35 @@ describe('selective Docker build contexts', () => {
         /COPY --from=deps[^\n]* \/app\/node_modules \.\/node_modules\n(?:#[^\n]*\n)*COPY --from=deps[^\n]* \/app\/packages \.\/packages/,
       );
     }
+  });
+
+  it('ships compiled output for the server workspace dependency closure', () => {
+    const packages = new Map(
+      readdirSync('packages').map((directory) => {
+        const manifest = JSON.parse(readFileSync(`packages/${directory}/package.json`, 'utf8')) as {
+          name: string;
+          dependencies?: Record<string, string>;
+        };
+        return [manifest.name, { directory, manifest }] as const;
+      }),
+    );
+    const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
+    const visited = new Set<string>();
+    const visit = (name: string) => {
+      if (visited.has(name)) return;
+      visited.add(name);
+      const workspace = packages.get(name);
+      if (!workspace) return;
+      // A successful builder can hide missing workspace output in the final image.
+      expect(dockerfile, `missing runtime output for ${name}`).toMatch(
+        new RegExp(
+          `COPY --from=builder[^\\n]* /app/packages/${workspace.directory}/dist \\./packages/${workspace.directory}/dist`,
+        ),
+      );
+      for (const dependency of Object.keys(workspace.manifest.dependencies ?? {}))
+        visit(dependency);
+    };
+    visit('@verity/server');
   });
 
   it('includes every root TypeScript project in builders that run the root build', () => {
