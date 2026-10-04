@@ -58,6 +58,7 @@ export interface ProjectGoogleDriveRouteDeps {
     folderId: string,
   ): Promise<ProjectGoogleDriveFolder | undefined>;
   googleAccessToken(): Promise<string | undefined>;
+  googleAccountIdentity?(): Promise<string | undefined>;
   dataRoot?: string;
 }
 
@@ -132,7 +133,16 @@ export function registerProjectGoogleDriveRoutes(
       deps.getLinkedFolder(projectId, folderId),
       deps.googleAccessToken(),
     ]);
-    return folder && accessToken ? { folder, accessToken } : undefined;
+    const account = await deps.googleAccountIdentity?.();
+    return folder && accessToken ? { folder, accessToken, account } : undefined;
+  };
+
+  const recheckWrite = async (value: NonNullable<Awaited<ReturnType<typeof context>>>) => {
+    const current = await context(value.folder.projectId, value.folder.folderId);
+    if (!current || current.folder.accessMode === 'read-only' || current.account !== value.account)
+      throw new GoogleDriveFolderAuthorityError(
+        'Google Drive access changed during this operation',
+      );
   };
 
   app.get('/projects/:id/google-drive/folders/:folderId/files', async (request, reply) => {
@@ -179,6 +189,7 @@ export function registerProjectGoogleDriveRoutes(
       return reply.code(403).send({ error: 'Google Drive folder is read-only' });
     const parentId = body.parentId ?? folderId;
     await assertDriveFileInLinkedFolder(value.accessToken, folderId, parentId);
+    await recheckWrite(value);
     return {
       file: await createDriveFile(value.accessToken, {
         name: body.name,
@@ -202,6 +213,7 @@ export function registerProjectGoogleDriveRoutes(
         .code(415)
         .send({ error: 'Upload creates regular files; use Workspace tools for native contents' });
     const bytes = await bytesFromRequest(request);
+    await recheckWrite(value);
     return {
       file: await createDriveFile(value.accessToken, {
         name: query.name,
@@ -241,6 +253,7 @@ export function registerProjectGoogleDriveRoutes(
           if (!(error instanceof GoogleDriveFolderAuthorityError)) throw error;
         }
       }
+      await recheckWrite(value);
       return {
         file: await mutateDriveFile(value.accessToken, fileId, {
           expectedVersion: body.expectedVersion,
@@ -292,6 +305,7 @@ export function registerProjectGoogleDriveRoutes(
         encoding: body.encoding,
       });
       if (operation.action !== 'overwrite') throw new Error('Invalid overwrite operation');
+      await recheckWrite(value);
       return {
         file: await mutateDriveFile(value.accessToken, fileId, {
           expectedVersion: operation.expectedVersion,
@@ -316,6 +330,7 @@ export function registerProjectGoogleDriveRoutes(
       const body = z
         .object({ expectedVersion: z.string().min(1).max(1024), confirmed: z.literal(true) })
         .parse(request.body);
+      await recheckWrite(value);
       await mutateDriveFile(value.accessToken, fileId, {
         expectedVersion: body.expectedVersion,
         trashed: true,

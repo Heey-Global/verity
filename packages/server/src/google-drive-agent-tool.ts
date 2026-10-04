@@ -35,6 +35,9 @@ interface GoogleDriveAgentToolStore extends Pick<
   GoogleWorkspaceToolStore,
   'claimGoogleWorkspaceInvocation' | 'completeGoogleWorkspaceInvocation'
 > {
+  getCompletedGoogleWorkspaceInvocation?(
+    input: WorkspaceInvocationInput,
+  ): Promise<{ result: unknown } | undefined>;
   getVeritySettings?(): Promise<
     { googleDriveAccountEmail: string | null; googleDriveRefreshToken: string | null } | undefined
   >;
@@ -51,7 +54,7 @@ interface GoogleDriveAgentToolStore extends Pick<
 }
 
 export interface GoogleDriveAgentApi {
-  get(token: string, fileId: string): Promise<DriveFile>;
+  get(this: void, token: string, fileId: string): Promise<DriveFile>;
   list(input: {
     accessToken: string;
     parentId?: string;
@@ -209,6 +212,11 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         )
           throw new Error('The connected Google account changed during this operation');
       };
+      if (mutation) {
+        await recheck();
+        const completed = await deps.eventStore.getCompletedGoogleWorkspaceInvocation?.(input);
+        if (completed) return completed.result;
+      }
       const perform = async (operation: () => Promise<unknown>) => {
         await recheck();
         const claim = await deps.eventStore.claimGoogleWorkspaceInvocation(input);
@@ -277,7 +285,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
           throw new Error('Destination must be an available folder');
         if (
           request.action === 'upload' &&
-          request.mimeType.startsWith('application/vnd.google-apps.')
+          request.mimeType.trim().startsWith('application/vnd.google-apps.')
         )
           throw new Error('Use dedicated Workspace tools for native document contents');
         return perform(() =>

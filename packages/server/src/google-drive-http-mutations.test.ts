@@ -4,7 +4,7 @@ import { registerProjectGoogleDriveRoutes } from './google-drive-project-routes.
 
 afterEach(() => vi.unstubAllGlobals());
 async function setup(accessMode: 'read-only' | 'read-write') {
-  const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+  const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
     const id = new URL(url).pathname.split('/').at(-1)!;
     if (url.includes('/v2/'))
       return new Response(
@@ -27,13 +27,21 @@ async function setup(accessMode: 'read-only' | 'read-write') {
     );
   });
   vi.stubGlobal('fetch', fetch);
+  const getLinkedFolder = vi.fn(async () => ({
+    projectId: 'p',
+    folderId: 'root',
+    name: 'Root',
+    accessMode,
+  }));
+  const googleAccountIdentity = vi.fn(async () => 'account');
   const app = Fastify();
   registerProjectGoogleDriveRoutes(app, {
-    getLinkedFolder: async () => ({ projectId: 'p', folderId: 'root', name: 'Root', accessMode }),
+    getLinkedFolder,
+    googleAccountIdentity,
     googleAccessToken: async () => 'token',
   });
   await app.ready();
-  return { app, fetch };
+  return { app, fetch, getLinkedFolder, googleAccountIdentity };
 }
 const prefix = '/projects/p/google-drive/folders/root/files';
 it('enforces read-only permissions on every existing HTTP mutation route', async () => {
@@ -134,3 +142,39 @@ it('rejects invalid byte encodings before sending an overwrite', async () => {
     await app.close();
   }
 });
+
+it.each(['permission', 'account'])(
+  'rechecks %s immediately before HTTP dispatch',
+  async (changed) => {
+    const { app, fetch, getLinkedFolder, googleAccountIdentity } = await setup('read-write');
+    fetch.mockImplementation(async (url: string) => {
+      if (changed === 'permission')
+        getLinkedFolder.mockResolvedValue({
+          projectId: 'p',
+          folderId: 'root',
+          name: 'Root',
+          accessMode: 'read-only',
+        });
+      else googleAccountIdentity.mockResolvedValue('other-account');
+      return new Response(
+        JSON.stringify({
+          id: new URL(url).pathname.split('/').at(-1),
+          name: 'Note',
+          mimeType: 'text/plain',
+          parents: new URL(url).pathname.endsWith('/root') ? [] : ['root'],
+        }),
+      );
+    });
+    try {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `${prefix}/file`,
+        payload: { expectedVersion: 'v1', confirmed: true },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(fetch.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+    } finally {
+      await app.close();
+    }
+  },
+);

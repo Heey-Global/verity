@@ -41,6 +41,9 @@ function setup(files: Record<string, DriveFile> = {}) {
     })),
   };
   const eventStore = {
+    getCompletedGoogleWorkspaceInvocation: vi.fn(
+      async (): Promise<{ result: unknown } | undefined> => undefined,
+    ),
     getSession: vi.fn(async () => ({ projectId: 'p1' })),
     getProjectSettings: vi.fn(async () => ({ googleDriveFolderId: 'root' }) as never),
     setSessionWorkspaceFile: vi.fn(async () => undefined),
@@ -350,3 +353,42 @@ it('invalidates a mutation if the calling session is moved to another project', 
   ).rejects.toThrow('session changed');
   expect(drive.create).not.toHaveBeenCalled();
 });
+
+it.each(['application/vnd.google-apps.document', ' application/vnd.google-apps.document '])(
+  'rejects native conversion through an upload with MIME type %s',
+  async (mimeType) => {
+    const { tool, create } = setup();
+    await expect(
+      tool.invoke({
+        ...input,
+        request: { action: 'upload', name: 'New', mimeType, content: 'text' },
+      }),
+    ).rejects.toThrow('dedicated Workspace tools');
+    expect(create).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['overwrite', 'rename', 'move', 'trash'])(
+  'returns completed %s without consulting mutated target state',
+  async (action) => {
+    const { tool, drive, eventStore } = setup();
+    eventStore.getCompletedGoogleWorkspaceInvocation.mockResolvedValue({ result: { id: 'saved' } });
+    await expect(
+      tool.invoke({
+        ...input,
+        approvedByCard: true,
+        request: {
+          action,
+          fileId: 'missing',
+          name: 'Before',
+          expectedVersion: 'old',
+          ...(action === 'overwrite' ? { content: 'new' } : {}),
+          ...(action === 'rename' ? { newName: 'After' } : {}),
+          ...(action === 'move' ? { folderId: 'root' } : {}),
+        },
+      }),
+    ).resolves.toEqual({ id: 'saved' });
+    expect(drive.get).not.toHaveBeenCalled();
+    expect(drive.mutate).not.toHaveBeenCalled();
+  },
+);

@@ -146,6 +146,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         : undefined;
     },
     googleAccessToken: accessToken,
+    googleAccountIdentity: async () => {
+      const credentials = await resolveCredentials();
+      return credentials ? JSON.stringify(credentials) : undefined;
+    },
     ...(deps.dataRoot === undefined ? {} : { dataRoot: deps.dataRoot }),
   });
   app.get('/google-drive/connection', async () => {

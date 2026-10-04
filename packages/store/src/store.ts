@@ -2302,6 +2302,24 @@ export class EventStore implements EventSink {
     return this.claimGoogleSlideInvocation(input);
   }
 
+  async getCompletedGoogleWorkspaceInvocation(input: {
+    invocationId: string;
+    sessionId: string;
+    turnId: string;
+  }): Promise<{ result: unknown } | undefined> {
+    const row = await this.db
+      .selectFrom('google_slide_invocations')
+      .select(['session_id', 'turn_id', 'result_json'])
+      .where('invocation_id', '=', input.invocationId)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    if (row.session_id !== input.sessionId || row.turn_id !== input.turnId)
+      throw new Error('Google Workspace invocation id was reused across turns');
+    return row.result_json === null
+      ? undefined
+      : { result: JSON.parse(row.result_json) as unknown };
+  }
+
   async completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void> {
     await this.completeGoogleSlideInvocation(invocationId, result);
   }
