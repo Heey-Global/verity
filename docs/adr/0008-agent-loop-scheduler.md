@@ -23,7 +23,7 @@ and run cockpit was never used in practice and is retired. What replaces it:
   session (migration `0130`). Run history is reduced to the last outcome and a short
   operator-facing sentence; five consecutive errors pause the automation. The old
   `agent_loops` / `agent_loop_runs` tables and their proposal events are dropped.
-  `sessions.kind` stays in the schema only for rolling upgrades and is no longer read.
+  The unused `sessions.kind` column is dropped as well; no legacy compatibility layer remains.
 - **UI.** The session header shows a bar for the automation (tap for plain-language
   details, pause/resume, delete; the x asks before deleting). The session list marks
   sessions with an active automation. The project-settings Automations screen is gone.

@@ -142,7 +142,7 @@ interface ControlPlaneSessionCall {
  * reader, so it should not be widened.
  *
  * Deliberately absent: `name`. A session name looks like metadata, and often is — the
- * operator typed it, or it reads `Agent Loop: nightly`. But an unnamed session is auto-titled
+ * operator typed it, or it reads `Nightly audit`. But an unnamed session is auto-titled
  * by its own model from the first prompt and reply (`Conductor.maybeAutoTitle`), and that is
  * on by default. So the field is, in the common case, a three-word summary of another
  * project's opening conversation — and listing the fleet would hand every one of them over at

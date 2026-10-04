@@ -918,6 +918,11 @@ describe('migrateToLatest', () => {
         { t: 'text', delta: 'Set up.' },
       ]);
       await expect(sql`select id from agent_loops`.execute(ctx.db)).rejects.toThrow();
+      expect(
+        (await ctx.db.introspection.getTables())
+          .find((table) => table.name === 'sessions')
+          ?.columns.map((column) => column.name),
+      ).not.toContain('kind');
       await expect(ctx.store.getSessionAutomation('loop-setup')).resolves.toBeUndefined();
     } finally {
       await ctx.close();

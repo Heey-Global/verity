@@ -988,7 +988,7 @@ const migrations: Record<string, Migration> = {
       // 0130 retires both tables, so a full rollback reaches here without them.
       await db.schema.dropTable('agent_loop_runs').ifExists().execute();
       await db.schema.dropTable('agent_loops').ifExists().execute();
-      await db.schema.alterTable('sessions').dropColumn('kind').execute();
+      await sql`alter table sessions drop column if exists kind`.execute(db);
     },
   },
 
@@ -3584,10 +3584,8 @@ const migrations: Record<string, Migration> = {
       // never carried production data, so they are dropped rather than converted,
       // and the setup sessions' proposal events go with them: the event schema no
       // longer accepts that type, and the store refuses to read a log holding one.
-      // `sessions.kind` stays in place for rolling upgrades — an older generation
-      // still selects it — but nothing reads it any more.
       await sql`delete from events where type = 'agent_loop_proposal'`.execute(db);
-      await sql`update sessions set kind = 'normal' where kind <> 'normal'`.execute(db);
+      await sql`alter table sessions drop column kind`.execute(db);
       await sql`drop table if exists agent_loop_runs`.execute(db);
       await sql`drop table if exists agent_loops`.execute(db);
       await sql`create table session_automations (

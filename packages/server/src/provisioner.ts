@@ -1570,7 +1570,7 @@ export interface Provisioner {
   recoverInterruptedWake?(projectId: string): Promise<ProjectRecord>;
   /** Restart a retained Sandbox with freshly issued authority. */
   wakeProject?(projectId: string): Promise<ProjectRecord>;
-  /** Readiness gate used by turns and Agent Loops; concurrent callers share one wake. */
+  /** Readiness gate used by turns and automations; concurrent callers share one wake. */
   ensureProjectSandboxAwake?(
     projectId: string,
     requestingSessionIds?: ReadonlySet<string>,
