@@ -76,7 +76,7 @@ async function resolveRecognitionLocale(): Promise<{ lang: string; onDevice: boo
 function utteranceWords(s: string): string {
   return s
     .toLowerCase()
-    .replace(/[\s.,!?;:'"„“”‚‘’«»…()\-–—]+/g, ' ')
+    .replace(/[\s.,!?;:'"„“”‚‘’«»¿¡…()\-–—。、，！？：；]+/g, ' ')
     .trim();
 }
 
@@ -220,8 +220,15 @@ export function useVoiceInput(
       stoppingRef.current &&
       !utteranceOpenAtStopRef.current &&
       replaysUtterance(transcript, lastFinalTranscriptRef.current)
-    )
+    ) {
+      // A replay interim the prefix check missed (e.g. a mid-word partial) may
+      // be on screen; its final is the replay, so restore the committed text.
+      if (event.isFinal && interimActiveRef.current) {
+        interimActiveRef.current = false;
+        onChangeRef.current(baseRef.current);
+      }
       return;
+    }
     if (event.isFinal && !interimActiveRef.current && repeatsLastFinal) return;
     if (transcript.trim()) {
       cancelCountdown();
