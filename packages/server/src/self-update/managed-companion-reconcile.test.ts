@@ -78,7 +78,7 @@ function fake(images: { gateway: string; updater: string }) {
         portBindings: Object.fromEntries(
           Array.from({ length: 20 }, (_, i) => [
             `${8100 + i}/tcp`,
-            [{ HostIp: '127.0.0.1', HostPort: String(8100 + i) }],
+            [{ HostIp: '0.0.0.0', HostPort: String(8100 + i) }],
           ]),
         ),
       },
@@ -206,7 +206,7 @@ describe('managed companion reconciliation', () => {
       expect.objectContaining({
         env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119' },
         portBindings: expect.objectContaining({
-          '8100/tcp': [{ HostIp: '127.0.0.1', HostPort: '8100' }],
+          '8100/tcp': [{ HostIp: '0.0.0.0', HostPort: '8100' }],
         }),
       }),
     );
@@ -244,7 +244,7 @@ describe('managed companion reconciliation', () => {
     });
     expect(state.inspect.get(id)?.env).toContain('VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9201');
     expect(state.inspect.get(id)?.portBindings?.['9201/tcp']).toEqual([
-      { HostIp: '127.0.0.1', HostPort: '9201' },
+      { HostIp: '0.0.0.0', HostPort: '9201' },
     ]);
   });
 

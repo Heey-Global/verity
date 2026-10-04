@@ -7,11 +7,11 @@ const gateway = {
   portBindings: { '8082/tcp': [{ HostIp: '100.85.209.118', HostPort: '8082' }] },
 };
 
-it('adds legacy ingress on loopback by default and configures listeners', () => {
+it('adds legacy ingress on all interfaces by default and configures listeners', () => {
   const migration = localPreviewIngressMigration(gateway)!;
   expect(migration.env).toEqual({ VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119' });
   expect(Object.keys(migration.portBindings)).toHaveLength(20);
-  expect(migration.portBindings['8100/tcp']).toEqual([{ HostIp: '127.0.0.1', HostPort: '8100' }]);
+  expect(migration.portBindings['8100/tcp']).toEqual([{ HostIp: '0.0.0.0', HostPort: '8100' }]);
   expect(
     localPreviewIngressMigration({
       ...gateway,
@@ -21,7 +21,7 @@ it('adds legacy ingress on loopback by default and configures listeners', () => 
   ).toBeUndefined();
 });
 
-it('uses the running Server range and preserves existing custom preview bindings', () => {
+it('uses the running Server range and replaces old loopback preview bindings', () => {
   const migration = localPreviewIngressMigration(
     {
       ...gateway,
@@ -35,7 +35,8 @@ it('uses the running Server range and preserves existing custom preview bindings
   )!;
   expect(migration.env.VERITY_LOCAL_PREVIEW_PORT_RANGE).toBe('9200-9201');
   expect(migration.portBindings).toEqual({
-    '9201/tcp': [{ HostIp: '127.0.0.1', HostPort: '9201' }],
+    '9200/tcp': [{ HostIp: '0.0.0.0', HostPort: '9200' }],
+    '9201/tcp': [{ HostIp: '0.0.0.0', HostPort: '9201' }],
   });
 });
 
@@ -49,7 +50,7 @@ it.each(['', '0.0.0.0', '::', '203.0.113.2', '100.85.209.118'])(
       },
       '9200-9200',
     )!;
-    expect(migration.portBindings['9200/tcp']).toEqual([{ HostIp: '127.0.0.1', HostPort: '9200' }]);
+    expect(migration.portBindings['9200/tcp']).toEqual([{ HostIp: '0.0.0.0', HostPort: '9200' }]);
   },
 );
 
@@ -71,4 +72,17 @@ it.each(['100.85.209.118', '::1'])(
 it('refuses invalid binding configuration and API port overlap', () => {
   expect(() => localPreviewIngressMigration(gateway, '9200-9200', 'verity')).toThrow('IP address');
   expect(() => localPreviewIngressMigration(gateway, '8082-8083')).toThrow('overlap');
+});
+
+it('reconciles existing bindings when the range is already configured', () => {
+  const migration = localPreviewIngressMigration({
+    ...gateway,
+    env: ['VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9200'],
+    portBindings: {
+      ...gateway.portBindings,
+      '9200/tcp': [{ HostIp: '127.0.0.1', HostPort: '9200' }],
+    },
+  })!;
+  expect(migration.portBindings).toEqual({ '9200/tcp': [{ HostIp: '0.0.0.0', HostPort: '9200' }] });
+  expect(migration.portBindings['8082/tcp']).toBeUndefined();
 });
