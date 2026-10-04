@@ -1255,8 +1255,10 @@ describe('AcpClaudeBackend', () => {
     ]);
   });
 
-  it('settles a Claude session limit without a crashed status or replay', async () => {
-    const message = "You've hit your session limit · resets 7:30pm (UTC)";
+  it.each([
+    "You've hit your session limit · resets 7:30pm (UTC)",
+    "Internal error: You've reached your Fable limit. Switch to another model to continue.",
+  ])('settles a Claude usage limit without a crashed status or replay: %s', async (message) => {
     const fake = acpSpawner({ promptError: message });
     const result = await new AcpClaudeBackend().run({
       store: ctx.store,

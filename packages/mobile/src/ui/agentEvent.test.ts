@@ -37,6 +37,9 @@ describe('agentEventDescriptor', () => {
     'rate limit exceeded',
     'Your weekly quota has been reached. Internal error: request rejected',
     'Too many requests',
+    "You've reached your Fable limit. Switch to another model to continue.",
+    "Internal error: You've reached your Fable limit. Switch to another model to continue.",
+    "agent exited with code 1 without a terminal event: [session/load] diagnostic data\nInternal error: You've reached your Fable limit. Switch to another model to continue.",
     "You've hit your session limit · resets 7:30pm (UTC)",
     "Internal error: You've hit your session limit · resets 7:30pm (UTC)",
   ])('shows a compact system notice for a provider limit: %s', (message) => {
