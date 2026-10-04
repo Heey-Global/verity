@@ -8181,7 +8181,148 @@ describe('GET /sessions/:id/branches', () => {
     await withPrStatus.close();
   });
 
+  it('shares PR status and branch enumeration between devices, overview and background polls', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('feat/shared-pr');
+    branchSvc.switchable.mockResolvedValue(['main']);
+    branchSvc.previewable.mockResolvedValue([]);
+    const branchPrStatus = vi.fn(async () => ({
+      number: 119,
+      title: 'Shared PR',
+      url: 'https://github.com/example/repo/pull/119',
+      phase: 'open' as const,
+      pipeline: 'success' as const,
+      mergeable: true,
+      checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+    }));
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus,
+      pullRequestRepairPollMs: 20,
+    });
+    try {
+      await Promise.all(
+        Array.from({ length: 4 }, () =>
+          cachedApp.inject({
+            method: 'GET',
+            url: '/sessions/s1/branches',
+          }),
+        ),
+      );
+      await cachedApp.inject({ method: 'GET', url: '/sessions' });
+      await vi.waitFor(async () => {
+        const result = await cachedApp.inject({ method: 'GET', url: '/sessions' });
+        expect(result.json()[0].pr).toMatchObject({ pipeline: 'success' });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(branchPrStatus).toHaveBeenCalledTimes(1);
+      expect(branchSvc.current).toHaveBeenCalledTimes(1);
+      expect(branchSvc.switchable).toHaveBeenCalledTimes(1);
+      expect(branchSvc.previewable).toHaveBeenCalledTimes(1);
+    } finally {
+      await cachedApp.close();
+    }
+  });
+
+  it('resumes discovery immediately after a turn opens a PR', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('feat/new-pr');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    let status: PullRequestStatus | null = null;
+    const branchPrStatus = vi.fn(async () => status);
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus,
+    });
+    try {
+      await cachedApp.inject({ method: 'GET', url: '/sessions/s1/branches' });
+      status = {
+        number: 119,
+        title: 'New PR',
+        url: 'https://github.com/example/repo/pull/119',
+        phase: 'open',
+        pipeline: 'running',
+        mergeable: null,
+        checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+      };
+      bus.publish('s1', {
+        seq: 1,
+        ts: Date.now(),
+        event: {
+          t: 'result',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        },
+      });
+      await vi.waitFor(async () => {
+        const response = await cachedApp.inject({ method: 'GET', url: '/sessions/s1/branches' });
+        expect(response.json().pullRequest?.number).toBe(119);
+      });
+      expect(branchPrStatus).toHaveBeenCalledTimes(2);
+      expect(branchSvc.switchable).toHaveBeenCalledTimes(2);
+    } finally {
+      await cachedApp.close();
+    }
+  });
+
+  it.each(['ci', 'conflict'] as const)(
+    'repairs %s in the background without app requests or push registration',
+    async (failure) => {
+      let now = 0;
+      await createExistingSession('s1');
+      branchSvc.current.mockResolvedValue('feat/background-repair');
+      const branchPrStatus = vi.fn(async () => ({
+        number: 119,
+        title: 'Background repair',
+        url: 'https://github.com/heey-global/verity/pull/119',
+        phase: 'open' as const,
+        headSha: 'abc123',
+        pipeline: 'failure' as const,
+        checks: { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
+        mergeable: false,
+        ...(failure === 'conflict' ? { mergeState: 'dirty' as const } : {}),
+      }));
+      const backgroundApp = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+        branchPrStatus,
+        pullRequestRepairPollMs: 20,
+        pullRequestCacheNow: () => now,
+      });
+      try {
+        // No HTTP request drives discovery, and no device token enables it.
+        await backgroundApp.ready();
+        await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1));
+        const reads = branchPrStatus.mock.calls.length;
+        now += 120_000;
+        await vi.waitFor(() => expect(branchPrStatus.mock.calls.length).toBeGreaterThan(reads));
+        expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1);
+        expect(dispatchTurnWhenIdle).toHaveBeenCalledWith('s1', expect.any(String), undefined, {
+          displayPrompt:
+            failure === 'conflict'
+              ? 'Resolve merge conflicts for PR #119'
+              : 'Fix failing CI for PR #119',
+        });
+      } finally {
+        await backgroundApp.close();
+      }
+      const readsAfterClose = branchPrStatus.mock.calls.length;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(branchPrStatus).toHaveBeenCalledTimes(readsAfterClose);
+    },
+  );
+
   it('automatically asks the agent to fix failed CI once per PR head', async () => {
+    let now = 0;
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
     branchSvc.switchable.mockResolvedValue([]);
@@ -8204,11 +8345,15 @@ describe('GET /sessions/:id/branches', () => {
       conductor,
       branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
       branchPrStatus,
+      pullRequestCacheNow: () => now,
     });
 
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    const readsAfterRepair = branchPrStatus.mock.calls.length;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(branchPrStatus).toHaveBeenCalledTimes(readsAfterRepair);
     headSha = 'def456';
+    now += 30_000;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
 
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(2);
@@ -8307,6 +8452,7 @@ describe('GET /sessions/:id/branches', () => {
   });
 
   it('automatically asks the agent to resolve merge conflicts once per PR head', async () => {
+    let now = 0;
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
     branchSvc.switchable.mockResolvedValue([]);
@@ -8332,11 +8478,13 @@ describe('GET /sessions/:id/branches', () => {
       conductor,
       branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
       branchPrStatus,
+      pullRequestCacheNow: () => now,
     });
 
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
     headSha = 'def456';
+    now += 30_000;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
 
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(2);
@@ -8350,6 +8498,7 @@ describe('GET /sessions/:id/branches', () => {
   });
 
   it('dispatches conflict repair again when only the BASE branch moved', async () => {
+    let now = 0;
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
     branchSvc.switchable.mockResolvedValue([]);
@@ -8378,6 +8527,7 @@ describe('GET /sessions/:id/branches', () => {
       conductor,
       branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
       branchPrStatus,
+      pullRequestCacheNow: () => now,
     });
 
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
@@ -8385,6 +8535,7 @@ describe('GET /sessions/:id/branches', () => {
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1);
 
     baseSha = 'base222';
+    now += 30_000;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
 
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(2);
