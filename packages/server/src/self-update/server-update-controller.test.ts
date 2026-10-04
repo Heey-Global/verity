@@ -1,3 +1,4 @@
+import { createServer as createHttpServer } from 'node:http';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +7,11 @@ import {
   createServerUpdateController,
   notifyManagedMatrixConfigured,
 } from './server-update-controller.js';
-import { startUpdaterStatusServer, type UpdaterStatusServer } from './updater-status.js';
+import {
+  startUpdaterStatusServer,
+  updaterControlTokenPath,
+  type UpdaterStatusServer,
+} from './updater-status.js';
 
 const servers: UpdaterStatusServer[] = [];
 afterEach(async () => Promise.all(servers.splice(0).map((server) => server.close())));
@@ -23,6 +28,59 @@ async function mounted() {
 }
 
 describe('server update controller', () => {
+  it.each(['legacy', 'current', 'unreachable'] as const)(
+    'negotiates channel fencing with a %s Updater',
+    async (mode) => {
+      const { socketPath } = await mounted();
+      await writeFile(updaterControlTokenPath(socketPath), 'a'.repeat(32));
+      const bodies: unknown[] = [];
+      const peer = createHttpServer((req, res) => {
+        res.setHeader('content-type', 'application/json');
+        if (req.url === '/v1/update-channel') {
+          const status = mode === 'legacy' ? 404 : mode === 'unreachable' ? 503 : 200;
+          res
+            .writeHead(status)
+            .end(JSON.stringify(status === 200 ? { channel: 'stable' } : { error: 'unavailable' }));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => {
+          const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          bodies.push(body);
+          // A legacy Updater rejects unknown fields before attempting installation.
+          const invalid = mode === 'legacy' && Object.keys(body as object).length !== 2;
+          res
+            .writeHead(invalid ? 400 : 409)
+            .end(JSON.stringify({ error: invalid ? 'invalid-request' : 'operation-in-progress' }));
+        });
+      });
+      await new Promise<void>((resolve) => peer.listen(socketPath, resolve));
+      servers.push({
+        close: () =>
+          new Promise<void>((resolve, reject) =>
+            peer.close((error) => (error ? reject(error) : resolve())),
+          ),
+      });
+      const controller = await createServerUpdateController(socketPath, async () => undefined);
+      const targetDigest = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
+      await expect(
+        controller!.requestUpdate({ idempotencyKey: 'update-1', targetDigest, channel: 'stable' }),
+      ).rejects.toMatchObject({ status: mode === 'unreachable' ? 503 : 409 });
+      expect(bodies).toEqual(
+        mode === 'unreachable'
+          ? []
+          : [
+              {
+                idempotencyKey: 'update-1',
+                targetDigest,
+                ...(mode === 'current' ? { channel: 'stable' } : {}),
+              },
+            ],
+      );
+    },
+  );
+
   it('verifies the image before contacting the privileged Updater', async () => {
     const { socketPath } = await mounted();
     const verify = vi.fn().mockRejectedValue(new Error('bad signature'));

@@ -1352,12 +1352,20 @@ describe('the control boundary refusing to guess', () => {
 });
 
 describe('durable update channel preference', () => {
-  it('survives a control socket restart without changing the sealed deployment', async () => {
+  it('survives image replacement and a control socket restart without rewriting deployment settings', async () => {
     const { socketPath, token, managedRoot, server } = await fixture({ managed: true });
     const before = await readUpdaterDeployment({ socketPath, token });
     const { updaterUpdateChannel } = await import('./updater-status.js');
     expect(await updaterUpdateChannel({ socketPath, token }, 'staging')).toBe('staging');
     expect(await readUpdaterDeployment({ socketPath, token })).toEqual(before);
+    if (!before.managed) throw new Error('managed fixture is missing its authority');
+    const { advanceManagedDeploymentImage } = await import('./managed-deployment.js');
+    await advanceManagedDeploymentImage({
+      root: managedRoot,
+      deploymentId: before.marker.deploymentId,
+      fromImage: before.spec.image,
+      toImage: image('b'),
+    });
     await server.close();
     servers.splice(servers.indexOf(server), 1);
     servers.push(await startUpdaterStatusServer({ socketPath, token, managedRoot }));
