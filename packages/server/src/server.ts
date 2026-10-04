@@ -7998,8 +7998,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           await link(temporaryPath, destinationPath);
         } finally {
@@ -8253,8 +8252,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return knowledgeSlotFailure(reply, error);
       }
       try {
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
           if (stats === undefined) {
@@ -8292,14 +8290,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const sourcePath = `${source.directoryPath}/${source.name}`;
       const destinationPath = `${destination.directoryPath}/${destination.name}`;
-      const sharedRoot =
-        fromRoot.root === 'shared'
-          ? fromRoot.dir
-          : toRoot.root === 'shared'
-            ? toRoot.dir
-            : undefined;
-      const releaseMutation =
-        sharedRoot === undefined ? undefined : await acquireKnowledgeMutationLock(sharedRoot);
+      const releases: Array<() => void> = [];
+      // Acquire both roots in a stable order so opposite moves cannot deadlock.
+      for (const dir of [...new Set([fromRoot.dir, toRoot.dir])].sort()) {
+        releases.push(await acquireKnowledgeMutationLock(dir));
+      }
       try {
         const stats = await lstat(sourcePath).catch(() => undefined);
         if (stats === undefined) {
@@ -8359,7 +8354,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         throw error;
       } finally {
-        releaseMutation?.();
+        for (const release of releases.reverse()) release();
         await source.close();
         await destination.close();
       }

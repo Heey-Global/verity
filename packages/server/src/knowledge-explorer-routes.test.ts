@@ -18,6 +18,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 const observation = vi.hoisted(() => ({
   extractionFailure: false,
+  attempts: 0,
   path: '',
   root: '',
   depths: [] as number[],
@@ -28,6 +29,7 @@ vi.mock('./knowledge-mutation-lock.js', async (importOriginal) => {
   return {
     ...actual,
     acquireKnowledgeMutationLock: async (root: string) => {
+      observation.attempts++;
       const release = await actual.acquireKnowledgeMutationLock(root);
       observation.held.set(root, (observation.held.get(root) ?? 0) + 1);
       return () => {
@@ -605,6 +607,51 @@ describe('session explorer knowledge roots', () => {
     // Check disk before another request can repair the new note's permissions.
     expect(statSync(join(dir, 'insights/new.md')).mode & 0o777).toBe(provisionedMode);
   });
+  it.each(['worktree', 'knowledge'] as const)(
+    'queues %s deletes and renames behind an in-flight save lock',
+    async (root) => {
+      await app.inject({ method: 'GET', url: `/sessions/s-knowledge/files?root=${root}` });
+      const dir = root === 'worktree' ? worktree : projectKnowledgeDir(dataRoot, 'p-1');
+      const { acquireKnowledgeMutationLock } = await import('./knowledge-mutation-lock.js');
+      for (const operation of ['delete', 'move']) {
+        const path = `concurrent-${operation}.md`;
+        writeFileSync(join(dir, path), 'before save');
+        const releaseSave = await acquireKnowledgeMutationLock(dir);
+        const attempts = observation.attempts;
+        let settled = false;
+        const request = app
+          .inject(
+            operation === 'delete'
+              ? {
+                  method: 'DELETE',
+                  url: `/sessions/s-knowledge/files?root=${root}&path=${path}`,
+                }
+              : {
+                  method: 'POST',
+                  url: '/sessions/s-knowledge/files/move',
+                  payload: { root, path, toRoot: root, toFileName: `renamed-${path}` },
+                },
+          )
+          .then((response) => {
+            settled = true;
+            return response;
+          });
+        try {
+          // Mutation must wait before inspecting the pathname a save replaces.
+          await vi.waitFor(() => expect(observation.attempts).toBeGreaterThan(attempts));
+          expect(settled).toBe(false);
+          expect(readFileSync(join(dir, path), 'utf8')).toBe('before save');
+          writeFileSync(join(dir, path), 'published save');
+        } finally {
+          releaseSave();
+        }
+        expect((await request).statusCode).toBe(200);
+        if (operation === 'move')
+          expect(readFileSync(join(dir, `renamed-${path}`), 'utf8')).toBe('published save');
+      }
+    },
+  );
+
   it('opens a preview descriptor before releasing the pathname mutation lock', async () => {
     await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
