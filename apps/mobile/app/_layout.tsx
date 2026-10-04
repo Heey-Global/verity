@@ -219,10 +219,7 @@ function HydratedRoot() {
                 name="project/[id]/settings/services"
                 options={{ title: 'Connections' }}
               />
-              <Stack.Screen
-                name="project/[id]/settings/environment"
-                options={{ title: 'Environment' }}
-              />
+              <Stack.Screen name="project/[id]/settings/sandbox" options={{ title: 'Sandbox' }} />
               <Stack.Screen
                 name="project/[id]/settings/model"
                 options={{ title: 'Default model' }}

@@ -1,4 +1,4 @@
-// Environment — the project's runtime: run state + one state-driven lifecycle
+// Sandbox — the project's runtime: run state + one state-driven lifecycle
 // action, plus a slim update affordance when the sandbox image has one. No raw
 // container/Docker jargon; destructive removal lives on the settings index, not
 // here. The project counterpart of the Verity apply-settings banner.
@@ -31,7 +31,7 @@ import { repairProject } from '../../../../lib/projectRepair';
 import { toolkitDriftNotice } from '../../../../lib/projectSetup';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 
-export default function ProjectEnvironmentScreen() {
+export default function ProjectSandboxScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
   const projectId = projectIdParam(id);
   const client = useMemo(() => createVerityClient(), []);
@@ -40,20 +40,14 @@ export default function ProjectEnvironmentScreen() {
       <SettingsMessage
         title="Project unavailable"
         subtitle="This project could not be opened. Go back and pick it again."
-        screenTitle="Environment"
+        screenTitle="Sandbox"
       />
     );
   }
-  return <ProjectEnvironmentView client={client} projectId={projectId} />;
+  return <ProjectSandboxView client={client} projectId={projectId} />;
 }
 
-function ProjectEnvironmentView({
-  client,
-  projectId,
-}: {
-  client: VerityClient;
-  projectId: string;
-}) {
+function ProjectSandboxView({ client, projectId }: { client: VerityClient; projectId: string }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load, onProjectUpdated } = useProjectDetail(client, projectId);
 
@@ -69,19 +63,19 @@ function ProjectEnvironmentView({
       <SettingsMessage
         title="Couldn't load project"
         subtitle={error ?? 'Unknown error'}
-        screenTitle="Environment"
+        screenTitle="Sandbox"
         onRetry={() => load()}
       />
     );
   }
   return (
     <SettingsScaffold
-      title="Environment"
+      title="Sandbox"
       detail
       state={{ error, saving: false }}
       onRetry={() => load()}
     >
-      <EnvironmentSection
+      <SandboxSection
         client={client}
         project={detail.project}
         onUpdated={onProjectUpdated}
@@ -129,7 +123,7 @@ function shortDigest(ref: string): string | null {
   return match ? `sha256:${match[1].slice(0, 12)}` : null;
 }
 
-function EnvironmentSection({
+function SandboxSection({
   client,
   project,
   onUpdated,
@@ -222,7 +216,7 @@ function EnvironmentSection({
           ? 'needsSetup'
           : 'optional';
 
-  // Start / Repair: (re)provision the environment. Preserves the sealed-secret
+  // Start / Repair: (re)provision the sandbox. Preserves the sealed-secret
   // redirect and the server-warning confirmation from the old Reprovision path.
   const start = useCallback(() => {
     if (working !== undefined) return;
@@ -231,18 +225,18 @@ function EnvironmentSection({
     void repairProject({
       client,
       projectId: project.id,
-      returnTo: `/project/${project.id}/settings/environment`,
+      returnTo: `/project/${project.id}/settings/sandbox`,
       onUpdated,
       onError: setError,
     }).finally(() => setWorking(undefined));
   }, [client, onUpdated, project.id, working]);
 
-  // Pause: stop and remove the environment but keep the local clone for next start.
+  // Pause: stop and remove the sandbox but keep the local clone for next start.
   const pause = useCallback(() => {
     if (working !== undefined) return;
     Alert.alert(
       'Pause project?',
-      'This stops the project environment. Your local files stay, so you can start it again anytime.',
+      'This stops the project sandbox. Your local files stay, so you can start it again anytime.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -359,10 +353,10 @@ function EnvironmentSection({
     Alert.alert(
       blocked ? 'Update waiting for a turn' : 'Update project?',
       blocked
-        ? 'A turn is running in this project. Recreating the environment now would end it — cancel the turn first, then update.'
+        ? 'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.'
         : isSecuritySandboxUpdate(update)
-          ? 'This recreates the project environment and applies the pending security update.'
-          : 'This recreates the project environment and applies the pending update.',
+          ? 'This recreates the project sandbox and applies the pending security update.'
+          : 'This recreates the project sandbox and applies the pending update.',
       // No Update button while a turn holds the update off, and not out of
       // caution: the Server refuses this recreate for as long as the turn runs
       // (SBX-1), so the button could only ever produce the 409 the message just
@@ -387,7 +381,7 @@ function EnvironmentSection({
     if (working !== undefined) return;
     Alert.alert(
       'Rebuild image?',
-      'This rebuilds the project image from the repository devcontainer without the build cache, then recreates the environment. It can take several minutes.',
+      'This rebuilds the project image from the repository devcontainer without the build cache, then recreates the sandbox. It can take several minutes.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Rebuild', onPress: () => recreate(true, 'Could not rebuild project image') },
@@ -435,7 +429,7 @@ function EnvironmentSection({
   return (
     <>
       <SettingsGroup
-        title="Secure workspace"
+        title="Isolated container"
         trailing={
           <View style={styles.sectionHeaderRow}>
             {working && !rebuilding ? <ActivityIndicator size="small" /> : null}
@@ -471,7 +465,7 @@ function EnvironmentSection({
             </Text>
           </Pressable>
           {/* Both notices live beside Start/Repair/Update rather than on a facts
-              list somewhere else: they describe the environment, and the actions
+              list somewhere else: they describe the sandbox, and the actions
               that answer them are right here. */}
           {project.provisionWarning ? (
             <Text style={styles.footnote}>{project.provisionWarning}</Text>
@@ -500,7 +494,7 @@ function EnvironmentSection({
               onPress={runUpdate}
               disabled={working !== undefined}
               accessibilityRole="button"
-              accessibilityLabel="Update project environment"
+              accessibilityLabel="Update project sandbox"
             >
               <Text style={styles.reproButtonLabel}>
                 {working === 'update' ? 'Updating…' : 'Update'}

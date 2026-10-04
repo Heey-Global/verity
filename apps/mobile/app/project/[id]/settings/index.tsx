@@ -137,7 +137,7 @@ function ProjectSettingsIndexView({
   const { project } = detail;
   const defaultModel = detail.settings?.defaultModel ?? null;
   const badge = projectBadge(project);
-  const environmentIntent: StatusPillIntent = badge.pulsing
+  const sandboxIntent: StatusPillIntent = badge.pulsing
     ? 'transient'
     : badge.needsRepair
       ? 'needsSetup'
@@ -147,7 +147,7 @@ function ProjectSettingsIndexView({
   const to = (
     pathname:
       | '/project/[id]/settings/github'
-      | '/project/[id]/settings/environment'
+      | '/project/[id]/settings/sandbox'
       | '/project/[id]/settings/model',
   ) => router.push({ pathname, params: { id: projectId } });
   const toService = (section: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google') =>
@@ -254,14 +254,14 @@ function ProjectSettingsIndexView({
         </SettingsListPanel>
       </SettingsGroup>
 
-      <SettingsGroup title="Environment">
+      <SettingsGroup title="Sandbox">
         <SettingsListPanel>
           <SettingsNavRow
             icon="server"
-            title="Environment"
-            subtitle="Secure workspace, updates, rebuild"
-            status={{ intent: environmentIntent, label: badge.label }}
-            onPress={() => to('/project/[id]/settings/environment')}
+            title="Sandbox"
+            subtitle="Isolated container, updates, rebuild"
+            status={{ intent: sandboxIntent, label: badge.label }}
+            onPress={() => to('/project/[id]/settings/sandbox')}
           />
         </SettingsListPanel>
       </SettingsGroup>
