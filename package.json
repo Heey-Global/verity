@@ -47,7 +47,7 @@
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.31.0",
-    "@openai/codex": "0.159.2",
+    "@openai/codex": "0.159.3",
     "@types/node": "24.19.0",
     "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "5.0.2",

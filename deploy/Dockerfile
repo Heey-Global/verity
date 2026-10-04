@@ -227,7 +227,7 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # renovate: datasource=npm depName=@devcontainers/cli
 RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.285
+RUN npm install -g @anthropic-ai/claude-code@2.1.286
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.84.0
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
@@ -243,11 +243,11 @@ RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.m
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
 # renovate: datasource=npm depName=@openai/codex
-RUN npm install -g @openai/codex@0.159.2
+RUN npm install -g @openai/codex@0.159.3
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 RUN npm install -g @agentclientprotocol/codex-acp@2.0.1
 # renovate: datasource=npm depName=opencode-ai
-RUN npm install -g opencode-ai@1.18.33
+RUN npm install -g opencode-ai@1.18.34
 # OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
 # `opencode acp` subcommand, built by the script the sandbox toolkit uses for project
 # Sandboxes so the two cannot drift. Copied on its own, like the Claude hardening
