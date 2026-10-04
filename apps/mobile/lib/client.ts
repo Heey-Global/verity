@@ -2,7 +2,8 @@ import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VerityClient, normalizeServerUrl } from '@verity/mobile';
 import { fetch as expoFetch } from 'expo/fetch';
-import { clearAuthToken, getAuthToken } from './authToken';
+import { clearAuthToken, getAuthToken, getAuthTokenId } from './authToken';
+import { registerBranchesClientScope } from './branchesPrefetch';
 import { createPinnedFetch } from './pinnedTransport';
 import {
   getServerProfile,
@@ -108,12 +109,14 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
  *  falls back to master-password re-auth. */
 export function createVerityClient(): VerityClient | null {
   if (isDemoMode()) {
-    return new VerityClient({
+    const client = new VerityClient({
       baseUrl: DEMO_BASE_URL,
       fetch: demoFetch,
       uploadFetch: demoFetch,
       allowBackgroundUpload: false,
     });
+    registerBranchesClientScope(client, () => DEMO_BASE_URL);
+    return client;
   }
   const serverUrl = currentBaseUrl;
   if (!serverUrl) return null;
@@ -134,6 +137,7 @@ export function createVerityClient(): VerityClient | null {
       void clearAuthToken(serverUrl);
     },
   });
+  registerBranchesClientScope(client, () => `${serverUrl}:${getAuthTokenId(serverUrl) ?? 'guest'}`);
   const token = getAuthToken(serverUrl);
   if (
     token !== null &&

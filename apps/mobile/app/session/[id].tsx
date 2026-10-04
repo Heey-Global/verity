@@ -179,6 +179,7 @@ import {
 } from '../../hardwareKeyboard';
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
+import { shouldShowPullRequest } from '../../lib/pullRequestVisibility';
 import { useModels } from '../../hooks/useModels';
 import { useAttachmentMenuAnchor } from '../../hooks/useAttachmentMenuAnchor';
 import { useSessionKeyboardAvoidance } from '../../hooks/useSessionKeyboardAvoidance';
@@ -907,7 +908,7 @@ export function SessionChat({
   const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
-  const branches = useBranches(client, sessionId, loaded);
+  const branches = useBranches(client, sessionId, loaded || !locallyCreated);
   const branchesRefresh = branches.refresh;
   const [switcherOpen, setSwitcherOpen] = useState(false);
   // The chip names the CURRENT BRANCH; fall back to the session label while the
@@ -929,8 +930,8 @@ export function SessionChat({
   // older server) — the chip then renders non-tappable, never linking to a broken URL.
   const repoIdentity = { owner: branches.owner, repo: branches.repo };
   const issueUrl = githubRefUrl('issue', repoIdentity, issueNumber);
-  // Gate the PR bar until dismissed-state has loaded so a hidden bar does not flash
-  // before the local cache resolves.
+  // Open PRs cannot be dismissed, so they can render immediately. Wait for the
+  // dismissed-state cache only for terminal PRs to avoid flashing a hidden bar.
   const [pullRequestBarReady, setPullRequestBarReady] = useState(() =>
     dismissedPullRequests.loaded(),
   );
@@ -953,10 +954,13 @@ export function SessionChat({
     branches.pullRequest?.phase !== 'open' &&
     pullRequestKey !== null &&
     dismissedPullRequests.store.has(pullRequestKey);
-  const visiblePullRequest =
-    pullRequestBarReady && branches.pullRequest && !pullRequestDismissed
-      ? branches.pullRequest
-      : null;
+  const visiblePullRequest = shouldShowPullRequest(
+    branches.pullRequest?.phase,
+    pullRequestBarReady,
+    pullRequestDismissed,
+  )
+    ? branches.pullRequest
+    : null;
   const dismissPullRequest = useCallback(() => {
     if (pullRequestKey === null) return;
     dismissedPullRequests.store.add(pullRequestKey);

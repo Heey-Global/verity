@@ -209,6 +209,7 @@ import {
   type PushForegroundPresence,
 } from './push-fire-points.js';
 import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-ready-push.js';
+import { createSessionPrCache } from './session-pr-cache.js';
 import type { PushSender } from './push-sender.js';
 import {
   createGitWorktreeProvisioner,
@@ -1126,6 +1127,10 @@ export interface ServerDeps {
   /** PR-ready background refresh cadence. Production defaults to 30 seconds;
    * tests may shorten it. */
   pullRequestPushPollMs?: number | undefined;
+  /** Background PR repair cadence, independent of app presence and push tokens. */
+  pullRequestRepairPollMs?: number | undefined;
+  /** Injectable clock for PR cache freshness tests. Defaults to Date.now. */
+  pullRequestCacheNow?: (() => number) | undefined;
   /** Optional subscription-login service. Defaults to spawning Claude/Codex login CLIs. */
   agentLogin?: AgentLoginService | undefined;
   /** Serializes a credential DB write with propagation into live sandbox mounts. */
@@ -3757,6 +3762,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const scheduledMarker = `${repair.id}:${repair.key(sessionId, pr)}`;
     if (scheduledPrRepairTurns.has(scheduledMarker)) return;
     scheduledPrRepairTurns.add(scheduledMarker);
+    try {
+      // Already handled revisions need no fresh git/GitHub read on each app poll.
+      // The next cached discovery of a new head/base pair will have a new marker.
+      if (await deps.eventStore.hasSessionAutomationMarker(sessionId, scheduledMarker)) {
+        scheduledPrRepairTurns.delete(scheduledMarker);
+        return;
+      }
+    } catch {
+      scheduledPrRepairTurns.delete(scheduledMarker);
+      return;
+    }
     await conductor
       .runWhenIdle(sessionId, async () => {
         let marker: string | undefined;
@@ -4259,6 +4275,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    */
   const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
   const branchCache = new Map<string, { branch: string; at: number }>();
+  type BranchMetadata = { current: string; switchable: string[]; previewableRaw: string[] };
+  const branchMetadata = new Map<string, { value: BranchMetadata; at: number }>();
+  const branchMetadataInFlight = new Map<
+    string,
+    { disowned: boolean; read: Promise<BranchMetadata> }
+  >();
   /** The git read currently running for a worktree, if any — both the
    *  single-flight guard and the handle an invalidation uses to disown it. A read
    *  in flight started BEFORE the switch it raced, so writing its answer back
@@ -4274,6 +4296,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   const invalidateBranchCache = (worktree: string): void => {
     branchCache.delete(worktree);
+    branchMetadata.delete(worktree);
+    const metadataRead = branchMetadataInFlight.get(worktree);
+    if (metadataRead !== undefined) metadataRead.disowned = true;
     disownBranchRefresh(worktree);
   };
   /** Read git for this worktree, or join the read already running for it, and
@@ -4321,6 +4346,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (Date.now() - cached.at >= branchTtlMs) void readBranch(branches, worktree);
     return cached.branch;
   };
+  // Repeated PR-strip polls need current status, not a full branch enumeration
+  // each time. Share branch metadata across devices and refresh it at the same
+  // bounded cadence as the live branch label.
+  const readBranchMetadata = (
+    branches: GitBranchService,
+    worktree: string,
+  ): Promise<BranchMetadata> => {
+    const running = branchMetadataInFlight.get(worktree);
+    if (running !== undefined && !running.disowned) return running.read;
+    const cached = branchMetadata.get(worktree);
+    if (cached !== undefined && Date.now() - cached.at < branchTtlMs) {
+      return Promise.resolve(cached.value);
+    }
+    const token = {
+      disowned: false,
+      read: Promise.all([
+        readBranch(branches, worktree),
+        branches.switchable(worktree),
+        branches.previewable(worktree),
+      ]).then(([current, switchable, previewableRaw]) => ({ current, switchable, previewableRaw })),
+    };
+    branchMetadataInFlight.set(worktree, token);
+    void token.read
+      .then((value) => {
+        if (!token.disowned) branchMetadata.set(worktree, { value, at: Date.now() });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (branchMetadataInFlight.get(worktree) === token) branchMetadataInFlight.delete(worktree);
+      });
+    return token.read;
+  };
   /** Evict labels for worktrees that no longer exist, so a long-lived server does
    *  not keep one entry per session ever created — and a recreated worktree can
    *  never be answered from the deleted one's label. Same lifecycle and same call
@@ -4329,7 +4386,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    *  prune, but it also could not have opened one, so the map stays bounded by the
    *  worktrees this process actually served. */
   const pruneBranchCache = (liveWorktrees: ReadonlySet<string>): void => {
-    for (const worktree of branchCache.keys()) {
+    for (const worktree of new Set([
+      ...branchCache.keys(),
+      ...branchMetadata.keys(),
+      ...branchMetadataInFlight.keys(),
+    ])) {
       if (!liveWorktrees.has(worktree)) invalidateBranchCache(worktree);
     }
     // A refresh can outlive the entry it was started for, so eviction has to reach
@@ -4353,18 +4414,94 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (project === undefined || !isLocalProject(project)) return undefined;
     return { basePath: projectClonePath(deps.projectCloneRoot, project), project };
   };
-  const sessionPrStatus = async (session: SessionRecord): Promise<PullRequestStatus | null> => {
+  const sessionPrStatus = async (
+    session: SessionRecord,
+    current?: string,
+  ): Promise<PullRequestStatus | null> => {
     const { worktree } = session;
     const branches = await branchesForSession(session);
     if (!branches) return null;
     if (deps.branchPrStatusForBranches) {
-      return deps.branchPrStatusForBranches(await branches.sessionBranches(worktree), worktree);
+      const sessionBranches = await branches
+        .sessionBranches(worktree)
+        .catch(async () => [current ?? (await branches.current(worktree))]);
+      return deps.branchPrStatusForBranches(sessionBranches, worktree);
     }
     if (deps.branchPrStatus) {
-      return deps.branchPrStatus(await branches.current(worktree), worktree);
+      return deps.branchPrStatus(current ?? (await branches.current(worktree)), worktree);
     }
     return null;
   };
+  const sessionPrCache = createSessionPrCache({
+    load: sessionPrStatus,
+    now: deps.pullRequestCacheNow,
+  });
+  // App-driven status refreshes cannot discover failures while every client is
+  // closed. Keep repair discovery independent of push registration and presence.
+  let prRepairStopped = false;
+  let prRepairSweep: Promise<void> | undefined;
+  let prRepairTimer: ReturnType<typeof setInterval> | undefined;
+  const sweepPrRepairs = (): Promise<void> | undefined => {
+    if (prRepairStopped || prRepairSweep !== undefined) return prRepairSweep;
+    prRepairSweep = (async () => {
+      if (deps.secretCipher?.isSealed() === true) return;
+      const sessions = await deps.eventStore.listSessions();
+      const live = new Set(sessions.map((session) => session.worktree));
+      sessionPrCache.prune(live);
+      prunePrSummaryCache(live);
+      pruneBranchCache(live);
+      for (const session of sessions) {
+        if (prRepairStopped) break;
+        if (
+          session.kind !== 'normal' ||
+          sessionsBeingReaped.has(session.sessionId) ||
+          !sessionPrCache.isDue(session, true)
+        )
+          continue;
+        try {
+          if (!(await worktreeExists(session.worktree))) continue;
+          await maybeDispatchPrRepairTurns(
+            session,
+            await sessionPrCache.get(session, { background: true }),
+          );
+        } catch (err) {
+          app.log.warn({ err, sessionId: session.sessionId }, 'background PR repair check failed');
+        }
+      }
+    })()
+      .catch((err) => app.log.warn({ err }, 'background PR repair sweep failed'))
+      .finally(() => {
+        prRepairSweep = undefined;
+      });
+    return prRepairSweep;
+  };
+  app.addHook('onReady', () => {
+    if (deps.branchPrStatus === undefined && deps.branchPrStatusForBranches === undefined) return;
+    prRepairTimer = setInterval(
+      () => void sweepPrRepairs(),
+      deps.pullRequestRepairPollMs ?? 30_000,
+    );
+    prRepairTimer.unref();
+  });
+  app.addHook('onClose', async () => {
+    prRepairStopped = true;
+    clearInterval(prRepairTimer);
+    await prRepairSweep;
+  });
+  const unsubscribePrChanges = deps.bus.subscribeAll((sessionId, { event }) => {
+    if (event.t !== 'result') return;
+    // A completed turn may have pushed a new head or opened its first PR. Drop
+    // quiet-session backoff so discovery resumes on the next foreground/background poll.
+    void deps.eventStore
+      .getSession(sessionId)
+      .then((session) => {
+        if (prRepairStopped || session === undefined) return;
+        invalidateBranchCache(session.worktree);
+        invalidatePrSummaryAction(session);
+      })
+      .catch((err) => app.log.warn({ err, sessionId }, 'PR cache invalidation failed'));
+  });
+  app.addHook('onClose', () => unsubscribePrChanges());
   const pullRequestReadyMonitor =
     pushSender !== undefined &&
     pushPresence !== undefined &&
@@ -4384,7 +4521,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             );
             return live.filter(({ exists }) => exists).map(({ session }) => session);
           },
-          statusFor: sessionPrStatus,
+          statusFor: (session) => sessionPrCache.get(session, { background: true }),
           wasSent: (sessionId, marker) =>
             deps.eventStore.hasSessionAutomationMarker(sessionId, marker),
           markSent: (sessionId, marker) => deps.eventStore.markSessionAutomation(sessionId, marker),
@@ -4409,7 +4546,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const generation = prSummaryGeneration.get(worktree) ?? 0;
     prSummaryInFlight.add(worktree);
     try {
-      const status = await sessionPrStatus(session);
+      const status = await sessionPrCache.get(session);
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       await maybeDispatchPrRepairTurns(session, status);
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
@@ -4430,11 +4567,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   const applyPrSummaryAction = (session: SessionRecord, pr: SessionPrSummary | null): void => {
     const { worktree } = session;
+    sessionPrCache.invalidate(worktree);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
   const invalidatePrSummaryAction = (session: SessionRecord): void => {
     const { worktree } = session;
+    sessionPrCache.invalidate(worktree);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.delete(worktree);
   };
@@ -4459,6 +4598,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // unbounded as sessions are created/deleted over a long-lived server. Called from
   // the full-list route (which sees every live worktree at once).
   const prunePrSummaryCache = (liveWorktrees: ReadonlySet<string>): void => {
+    sessionPrCache.prune(liveWorktrees);
     for (const worktree of prSummaryCache.keys()) {
       if (!liveWorktrees.has(worktree)) {
         prSummaryCache.delete(worktree);
@@ -8955,22 +9095,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           pullRequest: null,
         };
       }
-      const branchState = await Promise.all([
-        branches.current(session.worktree),
-        branches.switchable(session.worktree),
-        branches.previewable(session.worktree),
-      ]).catch((error: unknown) => {
-        request.log.warn(
-          {
-            sessionId: id,
-            worktree: session.worktree,
-            errorType: error instanceof Error ? error.constructor.name : typeof error,
-            message: error instanceof Error ? error.message : String(error),
-          },
-          'verity: branch list degraded because git metadata is unavailable',
-        );
-        return null;
-      });
+      const branchState = await readBranchMetadata(branches, session.worktree).catch(
+        (error: unknown) => {
+          request.log.warn(
+            {
+              sessionId: id,
+              worktree: session.worktree,
+              errorType: error instanceof Error ? error.constructor.name : typeof error,
+              message: error instanceof Error ? error.message : String(error),
+            },
+            'verity: branch list degraded because git metadata is unavailable',
+          );
+          return null;
+        },
+      );
       if (branchState === null) {
         return {
           current: '',
@@ -8981,7 +9119,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           pullRequest: null,
         };
       }
-      const [current, switchable, previewableRaw] = branchState;
+      const { current, switchable, previewableRaw } = branchState;
       // A branch that's locally switchable here doesn't also need a preview row —
       // dedupe so each pushed branch shows in exactly one section.
       const switchableSet = new Set(switchable);
@@ -8992,16 +9130,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // number-only dep. Newer deployments return the compact PR status for the
       // composer strip; older deps can still provide only the number. Failures
       // degrade to null, never failing the list.
-      const pullRequest = deps.branchPrStatusForBranches
-        ? await branches
-            // A reflog/`current()` failure degrades to just the HEAD branch, so the
-            // resolver still runs (current-branch behavior) instead of failing the list.
-            .sessionBranches(session.worktree)
-            .catch(() => [current])
-            .then((bs) => deps.branchPrStatusForBranches?.(bs, session.worktree) ?? null)
-            .catch(() => null)
-        : deps.branchPrStatus
-          ? await deps.branchPrStatus(current, session.worktree).catch(() => null)
+      const pullRequest =
+        deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
+          ? await sessionPrCache.get(session, {
+              priority: true,
+              load: () => sessionPrStatus(session, current),
+            })
           : undefined;
       const currentPr =
         pullRequest !== undefined
@@ -9534,6 +9668,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The operator's own switch is the one branch change we can see, so drop
         // the cached label rather than making them wait out its TTL.
         invalidateBranchCache(session.worktree);
+        invalidatePrSummaryAction(session);
         return { branch: attempt.value };
       } catch (error) {
         if (error instanceof DirtyWorktreeError) {
