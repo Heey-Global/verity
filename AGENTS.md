@@ -5,7 +5,8 @@
 Verity is an npm-workspaces monorepo using Node.js 24 or newer and TypeScript
 with NodeNext module resolution.
 
-Run the standard verification commands from the repository root:
+Run verification commands from the repository root. These are the full checks;
+use the scoped local checks below when the impact is localized:
 
 - Build: `npm run build`
 - Test: `npm test`
@@ -37,6 +38,23 @@ in `~/.npmrc`, which npm reads as well and which nothing here overrides, and a
 token pasted into the tracked file is one `git add` from being published.
 
 ## Running the checks
+
+For localized changes, pass explicit file paths to
+`npm run format:changed -- <files>` and, for JavaScript/TypeScript files, to
+`npm run lint:changed -- <files>`. These scripts do not select files themselves.
+Include all relevant branch changes, not just the most recent commit. Use the
+full format or lint check when shared configuration changes affect the tree.
+When types or shared APIs change, also lint affected unchanged consumers with
+`npx eslint --no-warn-ignored --no-cache -- <files>`: ESLint's file cache does not
+invalidate unchanged files when an imported type changes.
+
+For TypeScript changes, build the affected projects and consumers, for example
+`npx tsc -b packages/server`. Build mode includes referenced dependencies, but
+does not discover downstream consumers; include those projects explicitly when
+changing shared APIs. Use the workspace's own build/typecheck script for
+projects outside the root TypeScript references. Run `npm run build` when root
+TypeScript configuration or broad/unclear dependency changes affect the build.
+Documentation-only changes do not require a build or code lint.
 
 One root Vitest configuration owns every workspace's suite
 (`packages/*/src/**/*.test.ts` and `scripts/**/*.test.ts`), so `npm test` runs
@@ -75,6 +93,10 @@ the last point at which a leaked credential is still local; once pushed it is
 burned and has to be rotated, whoever force-updates the branch afterwards. Do
 not commit credentials, private deployment data, generated local state, or
 `.env` files in the first place.
+
+In the final reply, briefly state what changed, which checks passed, and any
+relevant verification gaps. Describe scoped checks accurately; do not imply
+that the full suite ran when only affected tests were selected.
 
 ## Changes
 
