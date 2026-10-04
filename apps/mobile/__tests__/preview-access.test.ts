@@ -30,6 +30,11 @@ it('requires a deliberate choice before publishing an unreachable local preview'
   await openLocalPreview(share, 'available', publish);
   expect(publish).not.toHaveBeenCalled();
   const choices = alert.mock.calls[0]?.[2];
+  expect(choices?.map((choice) => choice.text)).toEqual([
+    'Share publicly',
+    'Copy local link',
+    'Cancel',
+  ]);
   choices?.find((choice) => choice.text === 'Share publicly')?.onPress?.();
   expect(publish).toHaveBeenCalledTimes(1);
 });

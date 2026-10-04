@@ -151,8 +151,37 @@ stream the app already holds.
   name, port, and intent. The scanner confirms that the port is actually listening. Announce and
   scan together are more robust than either alone.
 - When a new listener appears in a session, the app shows an inline card: framework and port,
-  with "Open locally" and "Share publicly". "Open locally" creates the local share with one tap
-  and opens the URL.
+  with "Open" and "Share". "Open" creates the local share with one tap and opens the URL.
+
+### 2.10 App flow: target first, then access
+
+The sheet asks its two questions one after the other and never mixes them.
+
+**Step one, the target.** One list, no tabs. Listeners running in the session come first, then
+project listeners, then folders of the worktree: the root, its top-level folders, and any
+folder that currently has a share. "Browse folders" opens the explorer for deeper paths. Each
+row carries badges for its active accesses, "Local open" and "Public until HH:MM", so the list
+already answers what is live without opening the target.
+
+**Step two, the access.** Two cards of equal weight, stacked, because both can be active at
+once and each owns its own state and primary action.
+
+- **Open on your network.** One primary "Open" button that creates the local share on first
+  use and hands reachability to the probe in 2.7, plus "Copy link". While a local share exists
+  the card shows its URL and "Stop". No duration, no PIN: nothing of the public form leaks in.
+- **Share publicly.** Without entitlement the card stays visible with a "Premium" badge, one
+  sentence, and a link to settings; no dead button. While the Uplink is offline it says
+  "Temporarily unavailable" instead. With entitlement and no link it shows the expiry picker,
+  the PIN note, and "Create public link". With a live link it shows the link, the PIN, "Share",
+  "Copy link", the remaining time, and "Stop". Stopping asks first.
+
+**Vocabulary.** "Preview" is the thing. "Open" always means the server's own network;
+"Share" always means public through the Uplink. The inline card that appears under an agent
+message when a listener starts uses the same two words and leads straight into step two.
+
+**Unreachable dialog.** When "Open" cannot reach the network, the way out leads: "Share
+publicly" first, then "Copy local link", then cancel. Without entitlement the first option
+becomes "Open settings" and the text names Verity Premium.
 
 ## 3. Security considerations
 

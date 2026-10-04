@@ -25,6 +25,12 @@ import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
 
+// The sheet asks two questions, one per step. Step one: which target, a server
+// running in the session or a folder of the worktree. Step two: which access,
+// opening it on the server's own network or sharing it publicly through the
+// Uplink. Both accesses sit side by side as cards because both can be active
+// at once, and each card owns its own state and primary action.
+
 /** "until 20:14", or with the day when the link outlives today. */
 function expiryLabel(expiresAt: string | Date, now = new Date()): string {
   const expiry = new Date(expiresAt);
@@ -54,8 +60,14 @@ function shareMessage(share: PublicPreviewShare): string {
   return `Preview: ${share.publicOrigin}\nPIN: ${share.pin}\nAvailable ${expiryLabel(share.expiresAt)}`;
 }
 
-function folderLabel(staticPath: string | null): string {
-  return !staticPath || staticPath === '.' ? 'Worktree' : staticPath;
+/** The worktree root is "" in the explorer and "." on the wire. */
+function normalizeFolder(path: string | null | undefined): string {
+  return !path || path === '.' ? '.' : path;
+}
+
+function folderTitle(path: string): string {
+  const normalized = normalizeFolder(path);
+  return normalized === '.' ? 'Worktree' : (normalized.split('/').pop() ?? normalized);
 }
 
 /** A share of a port detected in the session, as opposed to a configured dev server. */
@@ -74,23 +86,44 @@ function isLive(share: PublicPreviewShare): boolean {
   );
 }
 
-function serverLabel(port: number, servers: readonly SessionDevServer[]): string {
-  const server = servers.find((item) => item.port === port);
-  return `${server?.name ?? 'Dev server'} :${String(port)}`;
+function localIsLive(share: LocalPreviewShare): boolean {
+  return new Date(share.expiresAt).getTime() > Date.now();
 }
 
-type PreviewTab = 'server' | 'folder';
-
-/** What the link step is about to share, picked from the server list or the explorer. */
-type PreviewTarget = { kind: 'folder'; path: string } | { kind: 'port'; server: SessionDevServer };
+/** What step two is about: a detected listener or a folder of the worktree. */
+export type PreviewTarget =
+  { kind: 'folder'; path: string } | { kind: 'port'; server: SessionDevServer };
 
 function targetTitle(target: PreviewTarget): string {
   if (target.kind === 'port') return `${target.server.name} :${String(target.server.port)}`;
-  return target.path ? (target.path.split('/').pop() ?? target.path) : 'Worktree';
+  return folderTitle(target.path);
+}
+
+function targetDetail(target: PreviewTarget): string {
+  if (target.kind === 'port') return serverDetail(target.server);
+  const normalized = normalizeFolder(target.path);
+  return normalized === '.' ? 'Worktree root' : `Worktree / ${normalized}`;
 }
 
 function serverDetail(server: SessionDevServer): string {
   return server.workdir === '.' ? server.command : `${server.workdir} · ${server.command}`;
+}
+
+function publicShareMatches(share: PublicPreviewShare, target: PreviewTarget): boolean {
+  if (!isLive(share)) return false;
+  if (target.kind === 'port') return isPortShare(share) && share.targetPort === target.server.port;
+  return (
+    share.targetKind === 'static-folder' &&
+    normalizeFolder(share.staticPath) === normalizeFolder(target.path)
+  );
+}
+
+function localShareMatches(share: LocalPreviewShare, target: PreviewTarget): boolean {
+  if (!localIsLive(share)) return false;
+  if (target.kind === 'port') return share.targetPort === target.server.port;
+  return (
+    share.targetPort === null && normalizeFolder(share.staticPath) === normalizeFolder(target.path)
+  );
 }
 
 function previewError(caught: unknown): string {
@@ -103,6 +136,8 @@ function previewError(caught: unknown): string {
   }
   return message;
 }
+
+type PublicSharing = 'available' | 'premium-required' | 'unavailable';
 
 export function StaticPreviewSheet({
   client,
@@ -123,9 +158,7 @@ export function StaticPreviewSheet({
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
-  const [publicSharing, setPublicSharing] = useState<
-    'available' | 'premium-required' | 'unavailable'
-  >('unavailable');
+  const [publicSharing, setPublicSharing] = useState<PublicSharing>('unavailable');
   const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
   const [localShares, setLocalShares] = useState<LocalPreviewShare[]>([]);
   useEffect(() => {
@@ -149,41 +182,39 @@ export function StaticPreviewSheet({
       active = false;
     };
   }, [client, sessionId]);
+
+  // Folder browsing. The target list shows the worktree root and its top-level
+  // folders; "Browse folders" walks deeper with the same explorer.
+  const [browsing, setBrowsing] = useState(false);
   const [path, setPath] = useState('');
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
   const [files, setFiles] = useState<string[]>([]);
-  const [shares, setShares] = useState<PublicPreviewShare[]>([]);
-  const [sharesLoading, setSharesLoading] = useState(true);
-  const [duration, setDuration] = useState(3600);
-  const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
   const [folderError, setFolderError] = useState<string>();
-  const [copied, setCopied] = useState<{ id: string; what: 'link' | 'pin' }>();
-  // Stopping takes an Uplink round trip. Without its own state the button just
-  // sat there and the sheet later jumped to the create form unannounced.
-  const [stoppingId, setStoppingId] = useState<string>();
-  const [stopped, setStopped] = useState<{ tab: PreviewTab; label: string }>();
+  const [rootDirectories, setRootDirectories] = useState<string[]>([]);
+  const requestGeneration = useRef(0);
+
+  const [shares, setShares] = useState<PublicPreviewShare[]>([]);
+  // Native dialog callbacks can outlive the render that opened them.
+  const currentShares = useRef(shares);
+  currentShares.current = shares;
+  const [duration, setDuration] = useState(3600);
+  const [busy, setBusy] = useState<'local' | 'public' | 'stop-local' | 'stop-public'>();
+  const [error, setError] = useState<string>();
+  const [copied, setCopied] = useState<'local-link' | 'public-link' | 'pin'>();
+  const [justStopped, setJustStopped] = useState(false);
   // A Core older than port detection has no such route (the client reports
-  // null); the sheet then falls back to the folder-only flow instead of polling.
+  // null); the sheet then lists folders only instead of polling.
   const [devServersSupported, setDevServersSupported] = useState(
     typeof client.listSessionDevServers === 'function',
   );
-  // The sheet always opens on Folder and never switches tabs by itself; a
-  // running server only marks the Dev server tab, so nothing waits on detection
-  // and nothing moves under the user's finger.
-  const [tab, setTab] = useState<PreviewTab>(initialServer ? 'server' : 'folder');
   const [devServers, setDevServers] = useState<SessionDevServer[]>([]);
   const [devServersLoading, setDevServersLoading] = useState(devServersSupported);
   const [devServerError, setDevServerError] = useState<string>();
-  const [openPort, setOpenPort] = useState<number>();
-  // Picking a server or a folder only chooses it; expiry and the link follow on
-  // their own step, and the PIN first appears once the link exists.
   const [target, setTarget] = useState<PreviewTarget | undefined>(
     initialServer ? { kind: 'port', server: initialServer } : undefined,
   );
-  const requestGeneration = useRef(0);
   const createdShareIds = useRef(new Set<string>());
   const stoppedShareIds = useRef(new Set<string>());
 
@@ -212,6 +243,7 @@ export function StaticPreviewSheet({
         setFiles(entries.files);
         setLoadedPath(path);
         setFolderError(undefined);
+        if (path === '') setRootDirectories(entries.directories);
       }
     } catch (caught) {
       if (generation === requestGeneration.current) {
@@ -226,10 +258,14 @@ export function StaticPreviewSheet({
   }, [client, path, sessionId]);
 
   useEffect(() => {
-    if (!capabilitiesLoaded || publicSharing === 'premium-required') {
-      setSharesLoading(false);
-      return;
-    }
+    void refresh();
+    return () => {
+      requestGeneration.current += 1;
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!capabilitiesLoaded || publicSharing === 'premium-required') return;
     let active = true;
     let inFlight = false;
     const loadShares = () => {
@@ -238,33 +274,31 @@ export function StaticPreviewSheet({
       void client
         .listPublicPreviewShares(projectId)
         .then((nextShares) => {
-          if (active) {
-            setShares((current) => {
-              const local = current
-                .filter((share) => createdShareIds.current.has(share.id))
-                .map((share) => {
-                  const latest = nextShares.find(
-                    (item) => item.id === share.id && item.sessionId === sessionId,
-                  );
-                  return latest ? { ...share, ...latest } : share;
-                });
-              const remote = nextShares.filter(
-                (share) =>
-                  (share.targetKind === 'static-folder' || isPortShare(share)) &&
-                  share.sessionId === sessionId &&
-                  !stoppedShareIds.current.has(share.id) &&
-                  !createdShareIds.current.has(share.id),
-              );
-              return [...local, ...remote];
-            });
-          }
+          if (!active) return;
+          setShares((current) => {
+            const own = current
+              .filter((share) => createdShareIds.current.has(share.id))
+              .map((share) => {
+                const latest = nextShares.find(
+                  (item) => item.id === share.id && item.sessionId === sessionId,
+                );
+                return latest ? { ...share, ...latest } : share;
+              });
+            const remote = nextShares.filter(
+              (share) =>
+                (share.targetKind === 'static-folder' || isPortShare(share)) &&
+                share.sessionId === sessionId &&
+                !stoppedShareIds.current.has(share.id) &&
+                !createdShareIds.current.has(share.id),
+            );
+            return [...own, ...remote];
+          });
         })
         .catch((caught: unknown) => {
           if (active) setError(previewError(caught));
         })
         .finally(() => {
           inFlight = false;
-          if (active) setSharesLoading(false);
         });
     };
     loadShares();
@@ -274,13 +308,6 @@ export function StaticPreviewSheet({
       clearInterval(timer);
     };
   }, [capabilitiesLoaded, client, projectId, publicSharing, sessionId]);
-
-  useEffect(() => {
-    void refresh();
-    return () => {
-      requestGeneration.current += 1;
-    };
-  }, [refresh]);
 
   useEffect(() => {
     if (detectedServers !== undefined) {
@@ -309,42 +336,167 @@ export function StaticPreviewSheet({
     };
   }, [client, detectedServers, devServersSupported, sessionId]);
 
-  const openLocal = async (selection: PreviewTarget) => {
-    if (busy) return;
-    setBusy(true);
+  const localShareFor = (selection: PreviewTarget) =>
+    localShares.find((share) => localShareMatches(share, selection));
+  const publicShareFor = (selection: PreviewTarget) =>
+    currentShares.current.find((share) => publicShareMatches(share, selection));
+
+  const conflictingFolderShare = (selection: PreviewTarget) =>
+    selection.kind === 'folder'
+      ? currentShares.current.find(
+          (share) =>
+            share.targetKind === 'static-folder' &&
+            isLive(share) &&
+            !publicShareMatches(share, selection),
+        )
+      : undefined;
+
+  const ensureLocalShare = async (selection: PreviewTarget): Promise<LocalPreviewShare> => {
+    const existing = localShareFor(selection);
+    if (existing) {
+      const latest = await client.listSessionLocalPreviewShares(sessionId);
+      setLocalShares(latest);
+      const live = latest.find((share) => localShareMatches(share, selection));
+      if (live) return live;
+    }
+    const share = await client.createSessionLocalPreviewShare(
+      sessionId,
+      selection.kind === 'port'
+        ? { targetPort: selection.server.port }
+        : { staticPath: normalizeFolder(selection.path) },
+    );
+    setLocalShares((current) => [
+      ...current.filter(
+        (value) =>
+          value.id !== share.id &&
+          !(value.targetPort === share.targetPort && value.staticPath === share.staticPath),
+      ),
+      share,
+    ]);
+    return share;
+  };
+
+  const createPublic = async (selection: PreviewTarget) => {
+    if (busy || publicSharing !== 'available') return;
+    if (conflictingFolderShare(selection)) {
+      setError('Stop the existing public folder link before sharing another folder.');
+      return;
+    }
+    setBusy('public');
     setError(undefined);
+    setJustStopped(false);
+    const pin = generatePreviewPin();
     try {
-      const share = await client.createSessionLocalPreviewShare(
-        sessionId,
+      const share =
         selection.kind === 'port'
-          ? { targetPort: selection.server.port }
-          : { staticPath: selection.path || '.' },
-      );
-      setLocalShares((current) => [
-        ...current.filter(
-          (value) =>
-            value.id !== share.id &&
-            !(value.targetPort === share.targetPort && value.staticPath === share.staticPath),
-        ),
-        share,
-      ]);
-      await openLocalPreview(share, publicSharing, () => pick(selection), onOpenSettings);
+          ? await client.createSessionPortPreviewShare(sessionId, {
+              targetPort: selection.server.port,
+              pin,
+              ttlSeconds: duration,
+            })
+          : await client.createSessionStaticPreviewShare(sessionId, {
+              staticPath: normalizeFolder(selection.path),
+              pin,
+              ttlSeconds: duration,
+            });
+      createdShareIds.current.add(share.id);
+      setShares((current) => [share, ...current]);
     } catch (caught) {
       setError(previewError(caught));
     } finally {
-      setBusy(false);
+      setBusy(undefined);
     }
   };
 
-  const selectTab = (next: PreviewTab) => {
+  const openLocal = async (selection: PreviewTarget) => {
+    if (busy) return;
+    setBusy('local');
     setError(undefined);
-    setTarget(undefined);
-    setTab(next);
+    try {
+      const share = await ensureLocalShare(selection);
+      await openLocalPreview(
+        share,
+        publicSharing,
+        () => {
+          const existing = publicShareFor(selection);
+          if (existing?.pinLocked) {
+            setError(
+              'This PIN is locked. Stop sharing and create a new link before sharing it again.',
+            );
+          } else if (existing) {
+            void Share.share({ message: shareMessage(existing) }).catch((caught: unknown) =>
+              setError(previewError(caught)),
+            );
+          } else {
+            void createPublic(selection);
+          }
+        },
+        onOpenSettings,
+      );
+    } catch (caught) {
+      setError(previewError(caught));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const copyLocal = async (selection: PreviewTarget) => {
+    if (busy) return;
+    setBusy('local');
+    setError(undefined);
+    try {
+      const share = await ensureLocalShare(selection);
+      await Clipboard.setStringAsync(share.url);
+      setCopied('local-link');
+    } catch (caught) {
+      setError(previewError(caught));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const stopLocal = (share: LocalPreviewShare) => {
+    if (busy) return;
+    setBusy('stop-local');
+    setError(undefined);
+    void client
+      .stopLocalPreviewShare(share.id)
+      .then(() => setLocalShares((current) => current.filter((value) => value.id !== share.id)))
+      .catch((caught) => setError(previewError(caught)))
+      .finally(() => setBusy(undefined));
+  };
+
+  const stopPublic = (share: PublicPreviewShare) => {
+    Alert.alert('Stop public link?', 'The link will stop working immediately.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Stop sharing',
+        style: 'destructive',
+        onPress: () => {
+          setBusy('stop-public');
+          setError(undefined);
+          void client
+            .stopPublicPreviewShare(share.id)
+            .then(() => {
+              stoppedShareIds.current.add(share.id);
+              createdShareIds.current.delete(share.id);
+              setShares((current) => current.filter((item) => item.id !== share.id));
+              setJustStopped(true);
+            })
+            .catch((caught: unknown) =>
+              setError(caught instanceof Error ? caught.message : 'Could not stop preview'),
+            )
+            .finally(() => setBusy(undefined));
+        },
+      },
+    ]);
   };
 
   const pick = (next: PreviewTarget) => {
     setError(undefined);
-    setStopped(undefined);
+    setCopied(undefined);
+    setJustStopped(false);
+    setBrowsing(false);
     setTarget(next);
   };
 
@@ -353,774 +505,658 @@ export function StaticPreviewSheet({
     setTarget(undefined);
   };
 
-  const create = async () => {
-    if (!target || busy || publicSharing !== 'available') return;
-    setBusy(true);
-    setError(undefined);
-    const pin = generatePreviewPin();
-    try {
-      const share =
-        target.kind === 'port'
-          ? await client.createSessionPortPreviewShare(sessionId, {
-              targetPort: target.server.port,
-              pin,
-              ttlSeconds: duration,
-            })
-          : await client.createSessionStaticPreviewShare(sessionId, {
-              staticPath: target.path || '.',
-              pin,
-              ttlSeconds: duration,
-            });
-      createdShareIds.current.add(share.id);
-      setShares((current) => [share, ...current]);
-      setStopped(undefined);
-      if (target.kind === 'port') setOpenPort(target.server.port);
-      setTarget(undefined);
-    } catch (caught) {
-      setError(previewError(caught));
-    } finally {
-      setBusy(false);
-    }
+  const leaveBrowser = () => {
+    setBrowsing(false);
+    if (path !== '') navigate('');
   };
 
-  const stop = (share: PublicPreviewShare) => {
-    Alert.alert('Stop preview?', 'The link will stop working immediately.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Stop sharing',
-        style: 'destructive',
-        onPress: () => {
-          setBusy(true);
-          setError(undefined);
-          setStoppingId(share.id);
-          void client
-            .stopPublicPreviewShare(share.id)
-            .then(() => {
-              stoppedShareIds.current.add(share.id);
-              createdShareIds.current.delete(share.id);
-              setStopped(
-                isPortShare(share)
-                  ? { tab: 'server', label: serverLabel(share.targetPort!, devServers) }
-                  : { tab: 'folder', label: folderLabel(share.staticPath ?? null) },
-              );
-              setShares((current) => current.filter((item) => item.id !== share.id));
-            })
-            .catch((caught: unknown) =>
-              setError(caught instanceof Error ? caught.message : 'Could not stop preview'),
-            )
-            .finally(() => {
-              setBusy(false);
-              setStoppingId(undefined);
-            });
-        },
-      },
-    ]);
-  };
-
-  const portShare = (port: number) =>
-    shares.find((share) => isPortShare(share) && share.targetPort === port && isLive(share));
-  const activeShare =
-    tab === 'folder'
-      ? shares.find((share) => share.targetKind === 'static-folder' && isLive(share))
-      : openPort === undefined
-        ? undefined
-        : portShare(openPort);
-  const activeIsPort = activeShare !== undefined && isPortShare(activeShare);
-  const stoppedVisible = activeShare === undefined && stopped?.tab === tab;
-  const serverDetails = tab === 'server' && (activeShare !== undefined || stoppedVisible);
-  const detailsVisible = activeShare !== undefined || stoppedVisible;
-  const backToServers = () => {
-    setStopped(undefined);
-    setOpenPort(undefined);
-  };
-  const folderReady = loadedPath === path && !loading && !folderError;
-  const folderName = path ? (path.split('/').pop() ?? path) : 'Worktree';
-  const stopping = activeShare !== undefined && stoppingId === activeShare.id;
   // Re-render while a link is shown so "N min left" counts down and an
   // expired link drops out of the sheet instead of staying on screen.
   const [, setTick] = useState(0);
-  const ticking = activeShare !== undefined || shares.some(isLive);
+  const ticking = shares.some(isLive) || localShares.some(localIsLive);
   useEffect(() => {
     if (!ticking) return;
     const timer = setInterval(() => setTick((tick) => tick + 1), 30_000);
     return () => clearInterval(timer);
   }, [ticking]);
+
+  const onRequestClose = () => {
+    if (busy) return;
+    if (target) leaveTarget();
+    else if (browsing) leaveBrowser();
+    else onClose();
+  };
+
+  const folderReady = loadedPath === path && !loading && !folderError;
+  const sessionServers = devServers.filter((server) => server.scope !== 'project');
+  const projectServers = devServers.filter((server) => server.scope === 'project');
+  // Discovery can lose a listener while its access still needs to be stopped.
+  const orphanPorts = Array.from(
+    new Set([
+      ...shares
+        .filter((share) => isPortShare(share) && isLive(share))
+        .map((share) => share.targetPort!),
+      ...localShares
+        .filter((share) => share.targetPort !== null && localIsLive(share))
+        .map((share) => share.targetPort!),
+    ]),
+  ).filter((port) => !devServers.some((server) => server.port === port));
+  const liveFolderPaths = new Set<string>([
+    ...shares
+      .filter((share) => share.targetKind === 'static-folder' && isLive(share))
+      .map((share) => normalizeFolder(share.staticPath)),
+    ...localShares
+      .filter((share) => share.targetPort === null && localIsLive(share))
+      .map((share) => normalizeFolder(share.staticPath)),
+  ]);
+  const folderRows = Array.from(
+    new Set<string>([
+      '.',
+      ...rootDirectories,
+      ...Array.from(liveFolderPaths).filter((folder) => folder !== '.'),
+    ]),
+  );
+
+  const renderBadge = (selection: PreviewTarget) => {
+    const local = localShareFor(selection);
+    const pub = publicShareFor(selection);
+    if (!local && !pub) return null;
+    return (
+      <View style={styles.badges}>
+        {local ? (
+          <View style={[styles.badge, styles.badgeLocal]}>
+            <View style={[styles.badgeDot, styles.badgeDotLocal]} />
+            <Text style={styles.badgeText}>Local open</Text>
+          </View>
+        ) : null}
+        {pub ? (
+          <View style={[styles.badge, styles.badgePublic]}>
+            <View style={[styles.badgeDot, styles.badgeDotPublic]} />
+            <Text style={styles.badgeText}>{`Public ${expiryLabel(pub.expiresAt)}`}</Text>
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
+  const renderServerRow = (server: SessionDevServer) => {
+    const selection: PreviewTarget = { kind: 'port', server };
+    const port = String(server.port);
+    return (
+      <Pressable
+        key={`${server.scope ?? 'session'}:${port}`}
+        style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
+        onPress={() => pick(selection)}
+        accessibilityRole="button"
+        accessibilityLabel={`${server.name} on port ${port}`}
+      >
+        <View style={styles.rowMain}>
+          <View style={[styles.serverDot, server.reachable ? null : styles.serverDotLoopback]} />
+          <View style={styles.rowText}>
+            <Text style={styles.rowTitle} numberOfLines={1}>
+              {server.name}
+              <Text style={styles.rowPort}>{` :${port}`}</Text>
+            </Text>
+            <Text style={styles.rowDetail} numberOfLines={1}>
+              {serverDetail(server)}
+            </Text>
+          </View>
+          <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
+        </View>
+        {renderBadge(selection)}
+      </Pressable>
+    );
+  };
+
+  const renderFolderRow = (folder: string) => {
+    const selection: PreviewTarget = { kind: 'folder', path: folder === '.' ? '' : folder };
+    return (
+      <Pressable
+        key={`folder:${folder}`}
+        style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
+        onPress={() => pick(selection)}
+        accessibilityRole="button"
+        accessibilityLabel={folder === '.' ? 'Worktree root folder' : `Folder ${folder}`}
+      >
+        <View style={styles.rowMain}>
+          <Icon name="folder" size={18} color={theme.colors.textMuted} />
+          <View style={styles.rowText}>
+            <Text style={styles.rowTitle} numberOfLines={1}>
+              {folder === '.' ? 'Worktree' : folder}
+            </Text>
+          </View>
+          <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
+        </View>
+        {renderBadge(selection)}
+      </Pressable>
+    );
+  };
+
+  const renderTargetList = () => (
+    <View style={styles.content}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.list}
+        accessibilityLabel="Preview targets"
+      >
+        {devServersSupported ? (
+          <>
+            <Text style={styles.label}>RUNNING IN THIS SESSION</Text>
+            {devServersLoading && devServers.length === 0 ? (
+              <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
+            ) : null}
+            {!devServersLoading &&
+            sessionServers.length === 0 &&
+            orphanPorts.length === 0 &&
+            !devServerError ? (
+              <View style={styles.emptyRow}>
+                <Icon name="monitor" size={18} color={theme.colors.textFaint} />
+                <Text style={styles.caption}>
+                  No dev server running. When one starts in this session, it shows up here.
+                </Text>
+              </View>
+            ) : null}
+            {devServerError ? <Text style={styles.error}>{devServerError}</Text> : null}
+            {sessionServers.map(renderServerRow)}
+            {orphanPorts.map((targetPort) => {
+              const port = String(targetPort);
+              const server: SessionDevServer = {
+                port: targetPort,
+                reachable: true,
+                pid: 0,
+                name: 'Port',
+                command: 'Shared link',
+                workdir: '.',
+              };
+              return (
+                <Pressable
+                  key={`orphan:${port}`}
+                  style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
+                  onPress={() => pick({ kind: 'port', server })}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Show link for port ${port}`}
+                >
+                  <View style={styles.rowMain}>
+                    <View style={styles.rowText}>
+                      <Text style={styles.rowTitle}>{`Port ${port}`}</Text>
+                      <Text style={styles.rowDetail}>Active access without a detected server</Text>
+                    </View>
+                    <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
+                  </View>
+                  {renderBadge({ kind: 'port', server })}
+                </Pressable>
+              );
+            })}
+            {projectServers.length > 0 ? (
+              <>
+                <Text style={styles.label}>RUNNING IN THIS PROJECT</Text>
+                {projectServers.map(renderServerRow)}
+              </>
+            ) : null}
+          </>
+        ) : null}
+        <Text style={styles.label}>FOLDERS</Text>
+        {folderRows.map(renderFolderRow)}
+        <Pressable
+          onPress={() => setBrowsing(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Browse folders"
+          style={styles.inlineAction}
+        >
+          <Icon name="search" size={16} color={theme.colors.primary} />
+          <Text style={styles.inlineActionText}>Browse folders…</Text>
+        </Pressable>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+      </ScrollView>
+      <Text style={[styles.caption, styles.centered]}>
+        Open = on your server’s network · Share = public through Uplink
+      </Text>
+    </View>
+  );
+
+  const renderBrowser = () => (
+    <View style={styles.content}>
+      <View style={styles.browserHeader}>
+        <Pressable
+          onPress={() => (path ? navigate(path.split('/').slice(0, -1).join('/')) : leaveBrowser())}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel={path ? 'Back to parent folder' : 'Back to preview targets'}
+        >
+          <Icon name="chevron-left" size={20} color={theme.colors.primary} />
+        </Pressable>
+        <View style={styles.rowText}>
+          <Text style={styles.browserTitle} numberOfLines={1}>
+            {folderTitle(path)}
+          </Text>
+          <Text style={styles.rowDetail} numberOfLines={1}>
+            {path ? `Worktree / ${path}` : 'Worktree root'}
+          </Text>
+        </View>
+      </View>
+      <ScrollView style={styles.scroll} accessibilityLabel="Preview folder explorer">
+        {loading ? (
+          <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
+        ) : null}
+        {!loading &&
+          !folderError &&
+          directories.map((name) => {
+            const child = path ? `${path}/${name}` : name;
+            return (
+              <SessionFolderRow
+                key={child}
+                name={name}
+                onPress={() => navigate(child)}
+                accessibilityLabel={`Open folder ${child}`}
+              />
+            );
+          })}
+        {!loading &&
+          !folderError &&
+          files.map((name) => (
+            <View key={`file:${name}`} style={styles.fileRow} accessibilityLabel={`File ${name}`}>
+              <Icon name="file" size={18} color={theme.colors.textFaint} />
+              <Text style={styles.fileName} numberOfLines={2}>
+                {name}
+              </Text>
+            </View>
+          ))}
+        {!loading && !folderError && directories.length === 0 && files.length === 0 ? (
+          <Text style={styles.empty}>Empty folder</Text>
+        ) : null}
+      </ScrollView>
+      <View style={styles.footer}>
+        {folderError ? <Text style={styles.error}>{folderError}</Text> : null}
+        <Pressable
+          onPress={() => pick({ kind: 'folder', path })}
+          disabled={!folderReady}
+          accessibilityRole="button"
+          accessibilityLabel={path ? `Use folder ${path}` : 'Use the worktree root'}
+          accessibilityState={{ disabled: !folderReady }}
+          style={[styles.primaryButton, !folderReady ? styles.primaryButtonDisabled : null]}
+        >
+          <Text style={styles.primaryText} numberOfLines={1}>
+            {path ? `Use “${folderTitle(path)}”` : 'Use the worktree root'}
+          </Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+
+  const renderLocalCard = (selection: PreviewTarget) => {
+    const share = localShareFor(selection);
+    const working = busy === 'local';
+    return (
+      <View
+        style={[styles.card, share ? styles.cardLocalActive : null]}
+        accessibilityLabel="Open on your network"
+      >
+        <View style={styles.cardHeader}>
+          <Text style={styles.label}>OPEN ON YOUR NETWORK</Text>
+          {share ? (
+            <View style={[styles.badge, styles.badgeLocal]}>
+              <View style={[styles.badgeDot, styles.badgeDotLocal]} />
+              <Text style={styles.badgeText}>Active</Text>
+            </View>
+          ) : null}
+        </View>
+        <Text style={styles.caption}>
+          For you and devices on your server’s network. No access protection, no TLS.
+        </Text>
+        <View style={styles.actions}>
+          <Pressable
+            onPress={() => void openLocal(selection)}
+            disabled={busy !== undefined}
+            accessibilityRole="button"
+            accessibilityLabel="Open"
+            accessibilityState={{ disabled: busy !== undefined, busy: working }}
+            style={[styles.primaryButton, styles.actionGrow]}
+          >
+            {working ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+            <Text style={styles.primaryText}>{working ? 'Opening…' : 'Open'}</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void copyLocal(selection)}
+            disabled={busy !== undefined}
+            accessibilityRole="button"
+            accessibilityLabel="Copy local link"
+            style={styles.secondaryButton}
+          >
+            <Icon
+              name={copied === 'local-link' ? 'check' : 'copy'}
+              size={16}
+              color={theme.colors.text}
+            />
+            <Text style={styles.secondaryText}>
+              {copied === 'local-link' ? 'Copied' : 'Copy link'}
+            </Text>
+          </Pressable>
+        </View>
+        {share ? (
+          <View style={styles.cardFooter}>
+            <Text style={styles.link} numberOfLines={1}>
+              {share.url}
+            </Text>
+            <Pressable
+              onPress={() => stopLocal(share)}
+              disabled={busy !== undefined}
+              accessibilityRole="button"
+              accessibilityLabel="Stop local access"
+              hitSlop={8}
+            >
+              <Text style={styles.dangerText}>{busy === 'stop-local' ? 'Stopping…' : 'Stop'}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
+  const renderPublicCard = (selection: PreviewTarget) => {
+    const share = publicShareFor(selection);
+    const creating = busy === 'public';
+    const stopping = busy === 'stop-public';
+    if (share) {
+      const pending = share.state !== 'active' || stopping;
+      return (
+        <View
+          style={[styles.card, styles.cardPublicActive, stopping ? styles.cardDimmed : null]}
+          accessibilityLabel="Share publicly"
+        >
+          <View style={styles.cardHeader}>
+            <Text style={styles.label}>SHARE PUBLICLY</Text>
+            <View style={[styles.badge, styles.badgePublic]}>
+              <View
+                style={[styles.badgeDot, pending ? styles.badgeDotPending : styles.badgeDotPublic]}
+              />
+              <Text style={styles.badgeText}>
+                {stopping || share.state === 'revoking'
+                  ? 'Stopping'
+                  : share.state === 'creating'
+                    ? 'Starting'
+                    : `Active ${expiryLabel(share.expiresAt)}`}
+              </Text>
+            </View>
+          </View>
+          {share.publicOrigin ? (
+            <View style={styles.linkBox}>
+              <Text style={styles.linkLabel}>LINK</Text>
+              <Pressable
+                disabled={stopping}
+                onPress={() => void Linking.openURL(share.publicOrigin!).catch(() => undefined)}
+                accessibilityRole="link"
+                accessibilityLabel={`Open preview link ${share.publicOrigin}`}
+              >
+                <Text style={styles.link} numberOfLines={2}>
+                  {share.publicOrigin}
+                </Text>
+              </Pressable>
+              {share.pinLocked ? (
+                <Text style={styles.error}>
+                  PIN access locked after too many failed attempts. Already signed-in visitors can
+                  still use this link. Stop sharing, then create a new link to let new visitors in.
+                </Text>
+              ) : (
+                <View style={styles.pinRow}>
+                  <Text style={styles.linkLabel}>PIN</Text>
+                  <Text
+                    style={styles.pinValue}
+                    accessibilityLabel={`PIN ${share.pin.split('').join(' ')}`}
+                  >
+                    {pinLabel(share.pin)}
+                  </Text>
+                  <Pressable
+                    onPress={() =>
+                      void Clipboard.setStringAsync(share.pin).then(() => setCopied('pin'))
+                    }
+                    disabled={stopping}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel="Copy PIN"
+                  >
+                    <Icon
+                      name={copied === 'pin' ? 'check' : 'copy'}
+                      size={18}
+                      color={theme.colors.primary}
+                    />
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          ) : (
+            <Text style={styles.caption}>The link starts working in a moment.</Text>
+          )}
+          {share.publicOrigin ? (
+            <View style={styles.actions}>
+              {!share.pinLocked ? (
+                <Pressable
+                  style={[styles.primaryButton, styles.actionGrow]}
+                  onPress={() =>
+                    void Share.share({ message: shareMessage(share) }).catch(() => undefined)
+                  }
+                  disabled={stopping}
+                  accessibilityRole="button"
+                  accessibilityLabel="Share link and PIN"
+                >
+                  <Icon name="share" size={16} color={theme.colors.onPrimary} />
+                  <Text style={styles.primaryText}>Share</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={() =>
+                  void Clipboard.setStringAsync(share.publicOrigin!).then(() =>
+                    setCopied('public-link'),
+                  )
+                }
+                disabled={stopping}
+                accessibilityRole="button"
+                accessibilityLabel="Copy preview link"
+              >
+                <Icon
+                  name={copied === 'public-link' ? 'check' : 'copy'}
+                  size={16}
+                  color={theme.colors.text}
+                />
+                <Text style={styles.secondaryText}>
+                  {copied === 'public-link' ? 'Copied' : 'Copy link'}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={styles.cardFooter}>
+            <Text style={styles.caption}>
+              {`Visitors need link and PIN · ${remainingLabel(share.expiresAt)}`}
+            </Text>
+            <Pressable
+              onPress={() => stopPublic(share)}
+              disabled={busy !== undefined}
+              accessibilityRole="button"
+              accessibilityLabel="Stop sharing"
+              accessibilityState={{ disabled: busy !== undefined, busy: stopping }}
+              hitSlop={8}
+            >
+              <Text style={styles.dangerText}>{stopping ? 'Stopping…' : 'Stop'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
+    if (publicSharing !== 'available') {
+      const premium = publicSharing === 'premium-required';
+      return (
+        <View style={styles.card} accessibilityLabel="Share publicly">
+          <View style={styles.cardHeader}>
+            <Text style={styles.label}>SHARE PUBLICLY</Text>
+            <View style={[styles.badge, premium ? styles.badgePremium : styles.badgeMuted]}>
+              <View
+                style={[styles.badgeDot, premium ? styles.badgeDotPremium : styles.badgeDotMuted]}
+              />
+              <Text style={styles.badgeText}>
+                {premium ? 'Premium' : 'Temporarily unavailable'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.caption}>
+            A link through Uplink, with a PIN and an expiry, for anyone you send it to.
+          </Text>
+          <Text style={styles.body}>
+            {premium
+              ? 'Public sharing is part of Verity Premium.'
+              : 'Uplink is not reachable right now. Public links return once it is.'}
+          </Text>
+          {premium && onOpenSettings ? (
+            <Pressable
+              onPress={onOpenSettings}
+              accessibilityRole="button"
+              accessibilityLabel="Open Premium settings"
+              style={styles.inlineAction}
+            >
+              <Text style={styles.inlineActionText}>Learn more ›</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      );
+    }
+    const otherFolder = conflictingFolderShare(selection);
+    if (otherFolder) {
+      return (
+        <View style={styles.card} accessibilityLabel="Share publicly">
+          <Text style={styles.label}>SHARE PUBLICLY</Text>
+          <Text style={styles.body}>
+            Only one folder can be shared publicly per session. Stop the existing link before
+            sharing another folder.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Manage existing folder link"
+            style={styles.secondaryButton}
+            onPress={() => pick({ kind: 'folder', path: normalizeFolder(otherFolder.staticPath) })}
+          >
+            <Text style={styles.secondaryText}>
+              Manage {folderTitle(normalizeFolder(otherFolder.staticPath))}
+            </Text>
+          </Pressable>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.card} accessibilityLabel="Share publicly">
+        <View style={styles.cardHeader}>
+          <Text style={styles.label}>SHARE PUBLICLY</Text>
+          {justStopped ? (
+            <Text style={styles.caption} accessibilityLiveRegion="polite">
+              Link stopped
+            </Text>
+          ) : null}
+        </View>
+        <Text style={styles.caption}>
+          A link through Uplink, with a PIN and an expiry, for anyone you send it to.
+        </Text>
+        <Text style={styles.label}>EXPIRES AFTER</Text>
+        <View style={styles.durations}>
+          {PUBLIC_PREVIEW_DURATIONS.map((option) => (
+            <Pressable
+              key={option.seconds}
+              onPress={() => setDuration(option.seconds)}
+              disabled={creating}
+              accessibilityRole="radio"
+              accessibilityLabel={option.a11y}
+              accessibilityState={{ selected: duration === option.seconds }}
+              style={[styles.duration, duration === option.seconds ? styles.durationActive : null]}
+            >
+              <Text
+                style={
+                  duration === option.seconds ? styles.durationTextActive : styles.durationText
+                }
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.accessNote}>
+          <Icon name="lock" size={18} color={theme.colors.textMuted} />
+          <View style={styles.rowText}>
+            <Text style={styles.accessTitle}>Protected by a PIN</Text>
+            <Text style={styles.caption}>You get it together with the link.</Text>
+          </View>
+        </View>
+        <Pressable
+          onPress={() => void createPublic(selection)}
+          disabled={busy !== undefined}
+          accessibilityRole="button"
+          accessibilityLabel={creating ? 'Creating link' : 'Create public link'}
+          accessibilityState={{ disabled: busy !== undefined, busy: creating }}
+          style={styles.primaryButton}
+        >
+          {creating ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+          <Text style={styles.primaryText}>
+            {creating ? 'Creating link…' : 'Create public link'}
+          </Text>
+        </Pressable>
+        {creating ? (
+          <Text style={[styles.caption, styles.centered]} accessibilityLiveRegion="polite">
+            Setting up a secure public link. This takes a few seconds.
+          </Text>
+        ) : null}
+      </View>
+    );
+  };
+
+  const renderAccess = (selection: PreviewTarget) => (
+    <View style={styles.content}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.list}
+        accessibilityLabel="Preview access"
+      >
+        {renderLocalCard(selection)}
+        {renderPublicCard(selection)}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+      </ScrollView>
+    </View>
+  );
+
   return (
-    <Modal
-      visible
-      transparent
-      animationType="slide"
-      // Android back leaves the link step the way its header chevron does.
-      onRequestClose={target ? () => (busy ? undefined : leaveTarget()) : onClose}
-    >
+    <Modal visible transparent animationType="slide" onRequestClose={onRequestClose}>
       <KeyboardAvoidingView style={styles.overlay} behavior="padding" automaticOffset>
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityRole="button" />
-        <View
-          style={[
-            styles.sheet,
-            !detailsVisible ? styles.createSheet : null,
-            { paddingBottom: insets.bottom + theme.spacing.md },
-          ]}
-        >
+        <View style={[styles.sheet, { paddingBottom: insets.bottom + theme.spacing.md }]}>
           <View style={styles.handle} />
           <View style={styles.header}>
             {target ? (
               <Pressable
                 onPress={leaveTarget}
-                disabled={busy}
+                disabled={busy !== undefined}
                 style={styles.headerBack}
                 accessibilityRole="button"
-                accessibilityLabel={
-                  target.kind === 'port' ? 'Back to dev servers' : 'Back to folder'
-                }
+                accessibilityLabel="Back to preview targets"
                 hitSlop={12}
               >
                 <Icon name="chevron-left" size={22} color={theme.colors.text} />
-                <Text style={styles.title} numberOfLines={1}>
-                  {`Share ${targetTitle(target)}`}
-                </Text>
+                <View style={styles.rowText}>
+                  <Text style={styles.title} numberOfLines={1}>
+                    {targetTitle(target)}
+                  </Text>
+                  <Text style={styles.rowDetail} numberOfLines={1}>
+                    {targetDetail(target)}
+                  </Text>
+                </View>
               </Pressable>
             ) : (
-              <Text style={styles.title}>Share preview</Text>
+              <Text style={styles.title}>Preview</Text>
             )}
             <Pressable
               onPress={onClose}
               accessibilityRole="button"
-              accessibilityLabel="Close preview sharing"
+              accessibilityLabel="Close preview"
               hitSlop={12}
             >
               <Icon name="x" size={20} color={theme.colors.textMuted} />
             </Pressable>
           </View>
-          {devServersSupported && !target ? (
-            <View style={styles.tabs} accessibilityRole="tablist">
-              {(
-                [
-                  ['folder', 'Folder'],
-                  ['server', 'Dev server'],
-                ] as const
-              ).map(([value, label]) => {
-                // The same green dot as the header's Preview button: a server is
-                // running, or a port link is still public even though discovery
-                // no longer sees its server, without the sheet switching to it.
-                const marked =
-                  value === 'server' &&
-                  (devServers.length > 0 ||
-                    shares.some((share) => isPortShare(share) && isLive(share)));
-                return (
-                  <Pressable
-                    key={value}
-                    onPress={() => selectTab(value)}
-                    accessibilityRole="tab"
-                    accessibilityLabel={label}
-                    accessibilityHint={
-                      !marked
-                        ? undefined
-                        : devServers.length > 0
-                          ? 'A dev server is running'
-                          : 'A port link is still shared'
-                    }
-                    accessibilityState={{ selected: tab === value }}
-                    style={[styles.tab, tab === value ? styles.tabActive : null]}
-                  >
-                    <Text style={tab === value ? styles.tabTextActive : styles.tabText}>
-                      {label}
-                    </Text>
-                    {marked ? <View testID="dev-server-tab-dot" style={styles.tabDot} /> : null}
-                  </Pressable>
-                );
-              })}
-            </View>
-          ) : null}
-          {serverDetails && !target ? (
-            <Pressable
-              onPress={backToServers}
-              style={styles.backRow}
-              accessibilityRole="button"
-              accessibilityLabel="Back to dev servers"
-              hitSlop={8}
-            >
-              <Icon name="chevron-left" size={16} color={theme.colors.primary} />
-              <Text style={styles.backText}>All dev servers</Text>
-            </Pressable>
-          ) : null}
-          {localShares
-            .filter((share) => new Date(share.expiresAt).getTime() > Date.now())
-            .map((share) => (
-              <View key={share.id} style={styles.backRow}>
-                <Text style={styles.caption}>
-                  {share.targetPort
-                    ? `Local port ${share.targetPort}`
-                    : `Local folder ${share.staticPath}`}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Stop local preview ${share.id}`}
-                  onPress={() => {
-                    void client
-                      .stopLocalPreviewShare(share.id)
-                      .then(() =>
-                        setLocalShares((current) =>
-                          current.filter((value) => value.id !== share.id),
-                        ),
-                      )
-                      .catch((caught) => setError(previewError(caught)));
-                  }}
-                >
-                  <Text style={styles.actionText}>Stop local sharing</Text>
-                </Pressable>
-              </View>
-            ))}
-          {target ? (
-            <View style={styles.content}>
-              <ScrollView
-                style={styles.detailsScroll}
-                contentContainerStyle={styles.detailsContent}
-                accessibilityLabel="Link settings"
-              >
-                <View style={styles.summary}>
-                  <Icon
-                    name={target.kind === 'port' ? 'server' : 'folder'}
-                    size={20}
-                    color={theme.colors.textMuted}
-                  />
-                  <View style={styles.serverText}>
-                    <Text style={styles.serverName} numberOfLines={1}>
-                      {target.kind === 'port' ? target.server.name : targetTitle(target)}
-                      {target.kind === 'port' ? (
-                        <Text style={styles.serverPort}>{` :${String(target.server.port)}`}</Text>
-                      ) : null}
-                    </Text>
-                    <Text style={styles.serverCommand} numberOfLines={1}>
-                      {target.kind === 'port'
-                        ? serverDetail(target.server)
-                        : `Worktree${target.path ? ` / ${target.path}` : ''}`}
-                    </Text>
-                  </View>
-                </View>
-                <Pressable
-                  onPress={() => void openLocal(target)}
-                  disabled={busy}
-                  accessibilityRole="button"
-                  accessibilityLabel="Open locally"
-                  style={styles.actionButton}
-                >
-                  <Text style={styles.actionText}>Open locally</Text>
-                </Pressable>
-                <Text style={styles.caption}>
-                  Local previews use HTTP without access protection and are available to everyone
-                  who can reach your server.
-                </Text>
-                <Text style={styles.label}>PUBLIC LINK EXPIRES AFTER</Text>
-                <View style={styles.durations}>
-                  {PUBLIC_PREVIEW_DURATIONS.map((option) => (
-                    <Pressable
-                      key={option.seconds}
-                      onPress={() => setDuration(option.seconds)}
-                      disabled={busy}
-                      accessibilityRole="radio"
-                      accessibilityLabel={option.a11y}
-                      accessibilityState={{ selected: duration === option.seconds }}
-                      style={[
-                        styles.duration,
-                        duration === option.seconds ? styles.durationActive : null,
-                      ]}
-                    >
-                      <Text
-                        style={
-                          duration === option.seconds
-                            ? styles.durationTextActive
-                            : styles.durationText
-                        }
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-                <Text style={styles.label}>ACCESS</Text>
-                <View style={styles.accessNote}>
-                  <Icon name="lock" size={18} color={theme.colors.textMuted} />
-                  <View style={styles.serverText}>
-                    <Text style={styles.accessTitle}>Protected by a PIN</Text>
-                    <Text style={styles.caption}>You get it together with the link.</Text>
-                  </View>
-                </View>
-                {error ? <Text style={styles.error}>{error}</Text> : null}
-              </ScrollView>
-              <View style={styles.footer}>
-                <Pressable
-                  onPress={() => void create()}
-                  disabled={busy || publicSharing !== 'available'}
-                  accessibilityRole="button"
-                  accessibilityLabel={busy ? 'Creating link' : 'Create link'}
-                  accessibilityState={{ disabled: busy, busy }}
-                  style={styles.createButton}
-                >
-                  {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-                  <Text style={styles.createText}>
-                    {busy
-                      ? 'Creating link…'
-                      : publicSharing === 'available'
-                        ? 'Create public link'
-                        : publicSharing === 'premium-required'
-                          ? 'Public sharing requires Premium'
-                          : 'Public sharing temporarily unavailable'}
-                  </Text>
-                </Pressable>
-                {publicSharing === 'premium-required' && onOpenSettings ? (
-                  <Pressable
-                    onPress={onOpenSettings}
-                    accessibilityRole="button"
-                    accessibilityLabel="Open Premium settings"
-                  >
-                    <Text style={[styles.caption, styles.centered]}>Open Premium settings</Text>
-                  </Pressable>
-                ) : null}
-                {busy ? (
-                  <Text style={[styles.caption, styles.centered]} accessibilityLiveRegion="polite">
-                    Setting up a secure public link. This takes a few seconds.
-                  </Text>
-                ) : null}
-              </View>
-            </View>
-          ) : detailsVisible ? (
-            <View style={styles.detailsBody}>
-              <ScrollView
-                style={styles.detailsScroll}
-                contentContainerStyle={styles.detailsContent}
-                accessibilityLabel={activeShare ? 'Active preview link' : 'Preview link stopped'}
-              >
-                {sharesLoading && !activeShare && !stoppedVisible ? (
-                  <ActivityIndicator color={theme.colors.textMuted} />
-                ) : null}
-                {activeShare ? (
-                  <View style={[styles.shareCard, stopping ? styles.shareCardStopping : null]}>
-                    <View style={styles.statusPill}>
-                      <View
-                        style={[
-                          styles.statusDot,
-                          activeShare.state !== 'active' || stopping
-                            ? styles.statusDotPending
-                            : null,
-                        ]}
-                      />
-                      <Text style={styles.statusText}>
-                        {stopping
-                          ? 'Stopping'
-                          : activeShare.state === 'active'
-                            ? 'Live'
-                            : activeShare.state === 'creating'
-                              ? 'Starting'
-                              : 'Stopping'}
-                      </Text>
-                    </View>
-                    <View style={styles.heroText}>
-                      <Text style={styles.heroTitle}>
-                        {stopping || activeShare.state === 'revoking'
-                          ? 'Stopping your preview'
-                          : activeShare.state === 'creating'
-                            ? 'Starting your preview'
-                            : 'Your preview is live'}
-                      </Text>
-                      <Text style={styles.caption}>
-                        {stopping || activeShare.state === 'revoking'
-                          ? 'Switching the link off. This takes a few seconds.'
-                          : activeShare.state === 'creating'
-                            ? 'The link starts working in a moment.'
-                            : activeIsPort
-                              ? 'Anyone with this link and the PIN can open the dev server.'
-                              : 'Anyone with this link and the PIN can view the folder.'}
-                      </Text>
-                    </View>
-                    {activeShare.publicOrigin ? (
-                      <>
-                        <Pressable
-                          style={styles.linkBox}
-                          disabled={stopping}
-                          onPress={() =>
-                            void Linking.openURL(activeShare.publicOrigin!).catch(() => undefined)
-                          }
-                          accessibilityRole="link"
-                          accessibilityLabel={`Open preview link ${activeShare.publicOrigin}`}
-                        >
-                          <Icon name="link" size={16} color={theme.colors.primary} />
-                          <Text style={styles.link} numberOfLines={2}>
-                            {activeShare.publicOrigin}
-                          </Text>
-                        </Pressable>
-                        {activeShare.pinLocked ? (
-                          <Text style={styles.error}>
-                            PIN access locked after too many failed attempts. Already signed-in
-                            visitors can still use this link. Stop sharing, then create a new link
-                            to let new visitors in.
-                          </Text>
-                        ) : (
-                          <View style={styles.pinBox}>
-                            <Icon name="lock" size={16} color={theme.colors.textMuted} />
-                            <Text
-                              style={styles.pinValue}
-                              accessibilityLabel={`PIN ${activeShare.pin.split('').join(' ')}`}
-                            >
-                              {pinLabel(activeShare.pin)}
-                            </Text>
-                            <Pressable
-                              onPress={() =>
-                                void Clipboard.setStringAsync(activeShare.pin).then(() =>
-                                  setCopied({ id: activeShare.id, what: 'pin' }),
-                                )
-                              }
-                              disabled={stopping}
-                              hitSlop={10}
-                              accessibilityRole="button"
-                              accessibilityLabel="Copy PIN"
-                            >
-                              <Icon
-                                name={
-                                  copied?.id === activeShare.id && copied.what === 'pin'
-                                    ? 'check'
-                                    : 'copy'
-                                }
-                                size={18}
-                                color={theme.colors.primary}
-                              />
-                            </Pressable>
-                          </View>
-                        )}
-                        <View style={styles.actions}>
-                          {!activeShare.pinLocked ? (
-                            <Pressable
-                              style={[styles.actionButton, styles.actionButtonPrimary]}
-                              onPress={() =>
-                                void Share.share({ message: shareMessage(activeShare) }).catch(
-                                  () => undefined,
-                                )
-                              }
-                              disabled={stopping}
-                              accessibilityRole="button"
-                              accessibilityLabel="Share link and PIN"
-                            >
-                              <Icon name="share" size={16} color={theme.colors.onPrimary} />
-                              <Text style={styles.actionTextPrimary}>Share</Text>
-                            </Pressable>
-                          ) : null}
-                          <Pressable
-                            style={styles.actionButton}
-                            onPress={() =>
-                              void Clipboard.setStringAsync(activeShare.publicOrigin!).then(() =>
-                                setCopied({ id: activeShare.id, what: 'link' }),
-                              )
-                            }
-                            disabled={stopping}
-                            accessibilityRole="button"
-                            accessibilityLabel="Copy preview link"
-                          >
-                            <Icon
-                              name={
-                                copied?.id === activeShare.id && copied.what === 'link'
-                                  ? 'check'
-                                  : 'copy'
-                              }
-                              size={16}
-                              color={theme.colors.text}
-                            />
-                            <Text style={styles.actionText}>
-                              {copied?.id === activeShare.id && copied.what === 'link'
-                                ? 'Copied'
-                                : 'Copy link'}
-                            </Text>
-                          </Pressable>
-                          <Pressable
-                            style={styles.actionButton}
-                            onPress={() =>
-                              void Linking.openURL(activeShare.publicOrigin!).catch(() => undefined)
-                            }
-                            disabled={stopping}
-                            accessibilityRole="button"
-                            accessibilityLabel="Open preview in browser"
-                          >
-                            <Icon name="external-link" size={16} color={theme.colors.text} />
-                            <Text style={styles.actionText}>Open</Text>
-                          </Pressable>
-                        </View>
-                      </>
-                    ) : null}
-                    <View style={styles.facts}>
-                      <View style={styles.fact}>
-                        <Icon
-                          name={activeIsPort ? 'server' : 'folder'}
-                          size={16}
-                          color={theme.colors.textMuted}
-                        />
-                        <Text style={styles.factLabel}>{activeIsPort ? 'Server' : 'Folder'}</Text>
-                        <Text style={styles.factValue} numberOfLines={1}>
-                          {activeIsPort
-                            ? serverLabel(activeShare.targetPort!, devServers)
-                            : folderLabel(activeShare.staticPath)}
-                        </Text>
-                      </View>
-                      <View style={styles.fact}>
-                        <Icon name="clock" size={16} color={theme.colors.textMuted} />
-                        <Text style={styles.factLabel}>Expires</Text>
-                        <Text style={styles.factValue} numberOfLines={1}>
-                          {`${remainingLabel(activeShare.expiresAt)} · ${expiryLabel(activeShare.expiresAt)}`}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                ) : null}
-                {stoppedVisible ? (
-                  <View style={styles.stoppedCard} accessibilityLiveRegion="polite">
-                    <Icon name="check-circle" size={32} color={theme.colors.tone.done} />
-                    <Text style={styles.heroTitle}>Link stopped</Text>
-                    <Text style={[styles.caption, styles.centered]}>
-                      {`The link for ${stopped?.label ?? 'this preview'} no longer works. Anyone who still has it sees nothing.`}
-                    </Text>
-                  </View>
-                ) : null}
-                {error ? <Text style={styles.error}>{error}</Text> : null}
-              </ScrollView>
-              {activeShare ? (
-                <Pressable
-                  style={[styles.stopButton, stopping ? styles.stopButtonBusy : null]}
-                  onPress={() => stop(activeShare)}
-                  disabled={busy}
-                  accessibilityRole="button"
-                  accessibilityLabel="Stop sharing"
-                  accessibilityState={{ disabled: busy, busy: stopping }}
-                >
-                  {stopping ? (
-                    <ActivityIndicator size="small" color={theme.colors.tone.danger} />
-                  ) : (
-                    <Icon name="slash" size={16} color={theme.colors.tone.danger} />
-                  )}
-                  <Text style={styles.dangerText}>
-                    {stopping ? 'Stopping link…' : 'Stop sharing'}
-                  </Text>
-                </Pressable>
-              ) : null}
-              {stoppedVisible ? (
-                <View style={styles.stoppedActions}>
-                  <Pressable
-                    style={styles.createButton}
-                    onPress={() => (tab === 'server' ? backToServers() : setStopped(undefined))}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.createText}>
-                      {tab === 'server' ? 'Back to dev servers' : 'Create a new link'}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.secondaryButton}
-                    onPress={onClose}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.secondaryText}>Done</Text>
-                  </Pressable>
-                </View>
-              ) : null}
-            </View>
-          ) : tab === 'server' ? (
-            <View style={styles.content}>
-              <Text style={styles.label}>RUNNING IN THIS SESSION</Text>
-              <ScrollView
-                style={styles.explorer}
-                contentContainerStyle={styles.serverList}
-                accessibilityLabel="Dev servers in this session"
-              >
-                {devServersLoading && devServers.length === 0 ? (
-                  <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
-                ) : null}
-                {!devServersLoading &&
-                devServers.length === 0 &&
-                !shares.some((share) => isPortShare(share) && isLive(share)) &&
-                !devServerError ? (
-                  <View style={styles.emptyServers}>
-                    <Icon name="monitor" size={28} color={theme.colors.textFaint} />
-                    <Text style={styles.heroTitle}>No dev server running</Text>
-                    <Text style={[styles.caption, styles.centered]}>
-                      When a server starts in this session, it shows up here automatically.
-                    </Text>
-                  </View>
-                ) : null}
-                {shares
-                  .filter(
-                    (share) =>
-                      isPortShare(share) &&
-                      isLive(share) &&
-                      !devServers.some((server) => server.port === share.targetPort),
-                  )
-                  .map((share) => (
-                    <View key={share.id} style={styles.serverRow}>
-                      <View style={styles.serverMain}>
-                        <View style={styles.serverText}>
-                          <Text
-                            style={styles.serverName}
-                          >{`Port ${String(share.targetPort)}`}</Text>
-                          <Text style={styles.serverCommand}>Shared link</Text>
-                        </View>
-                        <Pressable
-                          style={styles.livePill}
-                          onPress={() => {
-                            setStopped(undefined);
-                            setOpenPort(share.targetPort ?? undefined);
-                          }}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Show link for port ${String(share.targetPort)}`}
-                        >
-                          <View style={styles.statusDot} />
-                          <Text style={styles.liveText}>Live</Text>
-                          <Icon name="chevron-right" size={14} color={theme.colors.primary} />
-                        </Pressable>
-                      </View>
-                    </View>
-                  ))}
-                {devServers.map((server) => {
-                  const live = portShare(server.port);
-                  const port = String(server.port);
-                  const text = (
-                    <View style={styles.serverText}>
-                      <Text style={styles.serverName} numberOfLines={1}>
-                        {server.name}
-                        <Text style={styles.serverPort}>{` :${port}`}</Text>
-                      </Text>
-                      <Text style={styles.serverCommand} numberOfLines={1}>
-                        {serverDetail(server)}
-                      </Text>
-                    </View>
-                  );
-                  const localHint =
-                    server.scope === 'project' ? (
-                      <Text style={styles.caption}>Project listener</Text>
-                    ) : null;
-                  return (
-                    <Pressable
-                      key={port}
-                      style={({ pressed }) => [
-                        styles.serverRow,
-                        pressed ? styles.serverRowPressed : null,
-                      ]}
-                      onPress={() => {
-                        if (live) {
-                          setStopped(undefined);
-                          setOpenPort(server.port);
-                        } else {
-                          pick({ kind: 'port', server });
-                        }
-                      }}
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        live ? `Show link for port ${port}` : `Share ${server.name} on port ${port}`
-                      }
-                    >
-                      <View style={styles.serverMain}>
-                        <View
-                          style={[
-                            styles.serverDot,
-                            server.reachable ? null : styles.serverDotLocal,
-                          ]}
-                        />
-                        {text}
-                        {live ? (
-                          <View style={styles.livePill}>
-                            <View style={styles.statusDot} />
-                            <Text style={styles.liveText}>Live</Text>
-                          </View>
-                        ) : null}
-                        <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
-                      </View>
-                      {localHint}
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-              <View style={styles.footer}>
-                {devServerError ? <Text style={styles.error}>{devServerError}</Text> : null}
-                {error ? <Text style={styles.error}>{error}</Text> : null}
-              </View>
-            </View>
-          ) : (
-            <View style={styles.content}>
-              <View style={styles.browser}>
-                <View style={styles.browserHeader}>
-                  {path ? (
-                    <Pressable
-                      onPress={() => navigate(path.split('/').slice(0, -1).join('/'))}
-                      hitSlop={10}
-                      accessibilityRole="button"
-                      accessibilityLabel="Back to parent folder"
-                    >
-                      <Icon name="chevron-left" size={20} color={theme.colors.primary} />
-                    </Pressable>
-                  ) : (
-                    <Icon name="folder" size={18} color={theme.colors.textMuted} />
-                  )}
-                  <View style={styles.serverText}>
-                    <Text style={styles.browserTitle} numberOfLines={1}>
-                      {folderName}
-                    </Text>
-                    {path ? (
-                      <Text style={styles.serverCommand} numberOfLines={1}>
-                        {`Worktree / ${path}`}
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-                <ScrollView style={styles.explorer} accessibilityLabel="Preview folder explorer">
-                  {loading ? (
-                    <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
-                  ) : null}
-                  {!loading &&
-                    !folderError &&
-                    directories.map((name) => {
-                      const child = path ? `${path}/${name}` : name;
-                      return (
-                        <SessionFolderRow
-                          key={child}
-                          name={name}
-                          onPress={() => navigate(child)}
-                          accessibilityLabel={`Open folder ${child}`}
-                        />
-                      );
-                    })}
-                  {!loading &&
-                    !folderError &&
-                    files.map((name) => (
-                      <View
-                        key={`file:${name}`}
-                        style={styles.fileRow}
-                        accessibilityLabel={`File ${name}`}
-                      >
-                        <Icon name="file" size={18} color={theme.colors.textFaint} />
-                        <Text style={styles.fileName} numberOfLines={2}>
-                          {name}
-                        </Text>
-                      </View>
-                    ))}
-                  {!loading && !folderError && directories.length === 0 && files.length === 0 ? (
-                    <Text style={styles.empty}>Empty folder</Text>
-                  ) : null}
-                </ScrollView>
-              </View>
-              <View style={styles.footer}>
-                {folderError ? <Text style={styles.error}>{folderError}</Text> : null}
-                {error ? <Text style={styles.error}>{error}</Text> : null}
-                <Pressable
-                  onPress={() => pick({ kind: 'folder', path })}
-                  disabled={!folderReady}
-                  accessibilityRole="button"
-                  accessibilityLabel={path ? `Share folder ${path}` : 'Share this folder'}
-                  accessibilityState={{ disabled: !folderReady }}
-                  style={[styles.createButton, !folderReady ? styles.createButtonDisabled : null]}
-                >
-                  <Icon name="share-2" size={16} color={theme.colors.onPrimary} />
-                  <Text style={styles.createText} numberOfLines={1}>
-                    {path ? `Share “${folderName}”` : 'Share this folder'}
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
+          {target ? renderAccess(target) : browsing ? renderBrowser() : renderTargetList()}
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -1131,7 +1167,7 @@ const styles = StyleSheet.create((theme) => ({
   overlay: { flex: 1, justifyContent: 'flex-end' },
   backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
   sheet: {
-    maxHeight: '82%',
+    height: '86%',
     minHeight: 0,
     backgroundColor: theme.colors.surface,
     borderTopLeftRadius: theme.radius.lg,
@@ -1140,7 +1176,6 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     paddingHorizontal: theme.spacing.lg,
   },
-  createSheet: { height: '82%' },
   handle: {
     alignSelf: 'center',
     width: 36,
@@ -1154,86 +1189,35 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: theme.spacing.md,
     marginBottom: theme.spacing.md,
   },
-  title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-  content: { flex: 1, minHeight: 0, gap: theme.spacing.md },
-  detailsBody: { flexShrink: 1, minHeight: 0, gap: theme.spacing.md },
-  detailsScroll: { flexShrink: 1 },
-  explorer: { flex: 1, minHeight: 0 },
-  detailsContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.md },
-  footer: { gap: theme.spacing.md },
-  label: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
-  browser: {
-    flex: 1,
-    minHeight: 0,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    overflow: 'hidden',
-  },
-  browserHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    padding: theme.spacing.sm,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  browserTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
   headerBack: {
     flex: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.xs,
+    gap: theme.spacing.sm,
   },
-  summary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  accessNote: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
-  accessTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+  content: { flex: 1, minHeight: 0, gap: theme.spacing.md },
+  scroll: { flex: 1, minHeight: 0 },
+  list: { gap: theme.spacing.sm, paddingBottom: theme.spacing.md },
+  footer: { gap: theme.spacing.md },
+  label: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
+  caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+  body: { color: theme.colors.text, fontSize: theme.text.sm },
+  centered: { textAlign: 'center' },
+  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
   loading: { padding: theme.spacing.md },
   empty: { color: theme.colors.textMuted, padding: theme.spacing.sm, fontSize: theme.text.sm },
-  fileRow: {
-    minHeight: 46,
+  emptyRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.xs,
     paddingVertical: theme.spacing.sm,
   },
-  fileName: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.md },
-  durations: {
-    flexDirection: 'row',
-    padding: 3,
-    gap: 3,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  duration: {
-    flex: 1,
-    minHeight: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.sm + 1,
-  },
-  durationActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  durationText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-  durationTextActive: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  pinBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  row: {
     gap: theme.spacing.sm,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
@@ -1241,6 +1225,112 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
+  rowPressed: { borderColor: theme.colors.primary },
+  rowMain: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  rowText: { flex: 1, minWidth: 0, gap: 2 },
+  rowTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
+  rowPort: { color: theme.colors.textMuted, fontWeight: '500' },
+  rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  serverDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.done },
+  serverDotLoopback: { backgroundColor: theme.colors.tone.attention },
+  badges: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.xs },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 3,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+  },
+  badgeLocal: {
+    borderColor: theme.colors.tone.done,
+    backgroundColor: `${theme.colors.tone.done}22`,
+  },
+  badgePublic: { borderColor: theme.colors.primary, backgroundColor: `${theme.colors.primary}22` },
+  badgePremium: { borderColor: theme.colors.accent, backgroundColor: `${theme.colors.accent}22` },
+  badgeMuted: { borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  badgeDot: { width: 7, height: 7, borderRadius: 4 },
+  badgeDotLocal: { backgroundColor: theme.colors.tone.done },
+  badgeDotPublic: { backgroundColor: theme.colors.primary },
+  badgeDotPending: { backgroundColor: theme.colors.tone.attention },
+  badgeDotPremium: { backgroundColor: theme.colors.accent },
+  badgeDotMuted: { backgroundColor: theme.colors.textFaint },
+  badgeText: { color: theme.colors.text, fontSize: theme.text.xs, fontWeight: '600' },
+  inlineAction: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
+  inlineActionText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  browserHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  browserTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  fileName: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.md },
+  card: {
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  cardLocalActive: { borderColor: theme.colors.tone.done },
+  cardPublicActive: { borderColor: theme.colors.primary },
+  cardDimmed: { opacity: 0.7 },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  cardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  actions: { flexDirection: 'row', gap: theme.spacing.sm },
+  actionGrow: { flex: 1 },
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    minHeight: 48,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.primary,
+  },
+  primaryButtonDisabled: { opacity: 0.45 },
+  primaryText: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.md },
+  secondaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    minHeight: 48,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
+  dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
+  link: { flex: 1, minWidth: 0, color: theme.colors.text, fontSize: theme.text.sm },
+  linkBox: {
+    gap: theme.spacing.xs,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  linkLabel: { color: theme.colors.textFaint, fontSize: theme.text.xs, fontWeight: '600' },
+  pinRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   pinValue: {
     flex: 1,
     color: theme.colors.text,
@@ -1249,173 +1339,24 @@ const styles = StyleSheet.create((theme) => ({
     letterSpacing: 2,
     fontVariant: ['tabular-nums'],
   },
-  createButton: {
+  durations: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    minHeight: 48,
-    backgroundColor: theme.colors.primary,
+    gap: 4,
+    padding: 4,
     borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
-  },
-  createButtonDisabled: { opacity: 0.45 },
-  createText: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.md },
-  centered: { textAlign: 'center' },
-  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
-  shareCard: { gap: theme.spacing.lg },
-  shareCardStopping: { opacity: 0.6 },
-  statusPill: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 2,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-  },
-  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.done },
-  statusDotPending: { backgroundColor: theme.colors.tone.attention },
-  statusText: {
-    color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  heroText: { gap: theme.spacing.xs },
-  heroTitle: { color: theme.colors.text, fontSize: theme.text.xl - 4, fontWeight: '700' },
-  caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
-  linkBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
   },
-  link: { flex: 1, minWidth: 0, color: theme.colors.primary, fontSize: theme.text.sm },
-  actions: { flexDirection: 'row', gap: theme.spacing.sm },
-  actionButton: {
+  duration: {
     flex: 1,
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 44,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.sm,
   },
-  actionButtonPrimary: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  actionText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
-  actionTextPrimary: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.sm },
-  facts: {
-    gap: theme.spacing.md,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  fact: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  factLabel: { width: 64, color: theme.colors.textMuted, fontSize: theme.text.sm },
-  factValue: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
-  stopButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    minHeight: 48,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
-  },
-  stopButtonBusy: { opacity: 0.8 },
-  dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.md },
-  stoppedCard: {
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.xl,
-    paddingHorizontal: theme.spacing.lg,
-  },
-  stoppedActions: { gap: theme.spacing.sm },
-  tabs: {
-    flexDirection: 'row',
-    padding: 3,
-    gap: 3,
-    marginBottom: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  tab: {
-    flex: 1,
-    minHeight: 36,
-    flexDirection: 'row',
-    gap: theme.spacing.xs,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.sm + 1,
-  },
-  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.tone.done },
-  tabActive: { backgroundColor: theme.colors.surface },
-  tabText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-  tabTextActive: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 2,
-    marginBottom: theme.spacing.sm,
-  },
-  backText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
-  serverList: { gap: theme.spacing.sm },
-  emptyServers: {
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.xl,
-    paddingHorizontal: theme.spacing.lg,
-  },
-  serverRow: {
-    gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  serverRowLocal: { opacity: 0.7 },
-  serverRowPressed: { borderColor: theme.colors.primary },
-  serverMain: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  serverDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.done },
-  serverDotLocal: { backgroundColor: theme.colors.tone.attention },
-  serverText: { flex: 1, minWidth: 0, gap: 2 },
-  serverName: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  serverPort: { color: theme.colors.textMuted, fontWeight: '600' },
-  serverCommand: { color: theme.colors.textFaint, fontSize: theme.text.xs },
-  livePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 36,
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.primary,
-  },
-  liveText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '700' },
-  localOnly: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
-  localHint: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.xs },
-  localHintText: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
-  secondaryButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
-    borderRadius: theme.radius.md,
-  },
-  secondaryText: { color: theme.colors.textMuted, fontWeight: '600', fontSize: theme.text.md },
+  durationActive: { backgroundColor: theme.colors.primary },
+  durationText: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+  durationTextActive: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '700' },
+  accessNote: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  accessTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
 }));

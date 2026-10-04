@@ -13,25 +13,27 @@ export async function openLocalPreview(
     return;
   }
   Alert.alert(
-    'Local preview is unreachable',
+    'Preview not reachable on your network',
     publicSharing === 'available'
       ? 'Your device cannot reach this preview on your server’s network. Share it publicly through Uplink instead?'
       : publicSharing === 'premium-required'
         ? 'This preview is only available on your server’s network or VPN. Public sharing requires Verity Premium.'
         : 'This preview is only available on your server’s network or VPN. Uplink is temporarily unavailable.',
+    // The way out comes first: publishing is the fix when the network is the
+    // problem, so it leads; the local link is the fallback for a device at home.
     [
-      { text: 'Cancel', style: 'cancel' },
+      ...(publicSharing === 'available'
+        ? [{ text: 'Share publicly', onPress: sharePublicly }]
+        : publicSharing === 'premium-required' && openSettings
+          ? [{ text: 'Open settings', onPress: openSettings }]
+          : []),
       {
         text: 'Copy local link',
         onPress: () => {
           void Clipboard.setStringAsync(share.url);
         },
       },
-      ...(publicSharing === 'available'
-        ? [{ text: 'Share publicly', onPress: sharePublicly }]
-        : publicSharing === 'premium-required' && openSettings
-          ? [{ text: 'Open settings', onPress: openSettings }]
-          : []),
+      { text: 'Cancel', style: 'cancel' },
     ],
   );
 }
