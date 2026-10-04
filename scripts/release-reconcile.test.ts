@@ -18,7 +18,7 @@ type Fixture = {
   pending?: Partial<Record<'server' | 'mobile' | 'website', number[]>>;
   mergedAt?: string;
   approvedAt?: string;
-  releases?: { tag_name: string; draft?: boolean }[];
+  releases?: { tag_name: string; draft?: boolean; prerelease?: boolean }[];
   releaseRuns?: Run[];
   promoteRuns?: Run[];
   ota?: boolean;
@@ -67,7 +67,7 @@ if (joined.startsWith('workflow run')) process.exit(0);
 if (!args.includes('--paginate') && /\\/(releases|pulls|runs)\\?/.test(joined)) throw new Error('listing must paginate: ' + joined);
 if (joined.includes('/runs?') && (!args.includes('--slurp') || !/created=>=\\d{4}-\\d{2}-\\d{2}/.test(joined))) throw new Error('run listing must slurp pages since a day: ' + joined);
 if (joined.includes('/releases?')) {
-  process.stdout.write((fixture.releases ?? []).map((r) => JSON.stringify({ tag_name: r.tag_name, draft: !!r.draft, prerelease: false })).join('\\n') + '\\n');
+  process.stdout.write((fixture.releases ?? []).map((r) => JSON.stringify({ tag_name: r.tag_name, draft: !!r.draft, prerelease: !!r.prerelease })).join('\\n') + '\\n');
 } else if (joined.includes('/pulls?')) {
   const rows = [];
   for (const [component, numbers] of Object.entries(fixture.pending ?? {})) for (const number of numbers) rows.push(pr(component, number));
@@ -283,6 +283,12 @@ describe('release reconciliation sweep', () => {
     expect(result.stdout).toContain(
       'OTA: mobile-v1.33.1 is approved and no promotion run followed',
     );
+  });
+
+  it('does not mistake a staging prerelease for production delivery', () => {
+    const result = sweep({ releases: [{ tag_name: 'mobile-v1.33.1', prerelease: true }] });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([promote]);
   });
 
   it('leaves a running promotion alone', () => {

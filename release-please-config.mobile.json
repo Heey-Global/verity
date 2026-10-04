@@ -10,7 +10,13 @@
       "tag-separator": "-",
       "draft": true,
       "force-tag-creation": true,
-      "extra-files": [{ "type": "generic", "path": "app.config.ts" }]
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "app.config.ts"
+        }
+      ],
+      "exclude-paths": ["apps/mobile/ota"]
     }
   }
 }

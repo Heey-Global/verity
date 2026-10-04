@@ -13,6 +13,11 @@ recorded production build is available for internal TestFlight testing, then mar
 the GitHub release as production. Existing TestFlight tester groups control access.
 Promotion does not create an App Store version or submit the app for review.
 
+Merging the Staging OTA Release Please PR publishes its fixed patch version as a
+GitHub prerelease. Ordinary source merges update that release PR without publishing.
+Each Staging release advances the patch independently of production; promotion
+retains the selected version.
+
 OTA staging publishes separate updates for the two native identities. The Staging
 app uses channel `staging` and runtime `staging-X.Y.0`. The production app, including
 its TestFlight builds, uses channel `production` and runtime `X.Y.0`. Merging the

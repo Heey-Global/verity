@@ -67,7 +67,7 @@ describe('workflow token least privilege', () => {
         promote: { actions: 'write', contents: 'write', 'pull-requests': 'read', checks: 'read' },
       },
       'mobile-ota.yml': {
-        update: { actions: 'write', contents: 'write', 'pull-requests': 'write' },
+        update: { actions: 'write', contents: 'write', issues: 'write', 'pull-requests': 'write' },
       },
       'release-reconcile.yml': {
         // contents: write reads draft releases, which GitHub hides from read
@@ -4252,7 +4252,7 @@ describe('changed-area detector', () => {
     [...(detect?.run ?? '').matchAll(/\n +(backend|mobile|website|mobile-ota):([^\n)]+)\)\n/g)].map(
       ([, train, patterns]) => [
         train,
-        (patterns ?? '').split('|').map((pattern) => pattern.replace(/^\w+:/, '')),
+        (patterns ?? '').split('|').map((pattern) => pattern.replace(/^[\w-]+:/, '')),
       ],
     ),
   ) as Record<'backend' | 'mobile' | 'website' | 'mobile-ota', string[]>;
@@ -4667,9 +4667,9 @@ describe('changed-area detector', () => {
         .replace(shell ? /^[ \t]*#.*$/gm : /(?!)/g, '');
       for (const managed of releaseManaged) {
         // Delimited, so `version` does not answer for `version.txt`: a quote on
-        // both sides, or a `/` on the left for a path built from a root.
+        // both sides. A basename inside another path is a different input.
         const read = new RegExp(
-          `['"\`/]${managed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`,
+          `['"\`]${managed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`,
         ).test(code);
         expect(
           read,
@@ -5039,6 +5039,30 @@ describe('changed-area detector', () => {
       ).toEqual(all('false'));
     },
   );
+
+  it('scopes the Staging OTA release PR using its actual managed files', async () => {
+    const manifest = JSON.parse(readFileSync('release-please-config.mobile-ota.json', 'utf8')) as {
+      packages: { '.': { 'version-file': string; 'changelog-path': string } };
+    };
+    const config = manifest.packages['.'];
+    const files = [
+      config['version-file'],
+      config['changelog-path'],
+      '.release-please-manifest.mobile-ota.json',
+    ];
+    expect(
+      await run(
+        {
+          name: 'pull_request',
+          baseRef: 'main',
+          releaseTrain: 'mobile-ota',
+          releasePr: '138',
+          prHead: 'release-please--branches--main--components--mobile-ota',
+        },
+        files,
+      ),
+    ).toEqual(all('false'));
+  });
 
   it('scopes Release Please synchronize events to their owning train', async () => {
     expect(
