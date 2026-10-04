@@ -80,6 +80,23 @@ forwarding can bypass ufw rules. Restrict access to trusted devices or networks
 and verify reachability from outside the host; see the
 [deployment hardening guide](deploy/README.md#hardening-an-internet-reachable-host).
 
+For the reference Docker deployment, allow these **TCP ports** from the devices
+that need access:
+
+| Default host ports | Purpose                                    | Access                                                              |
+| ------------------ | ------------------------------------------ | ------------------------------------------------------------------- |
+| `8082`             | Verity API and mobile app connection (TLS) | Trusted devices or networks                                         |
+| `8100–8119`        | Local HTTP and WebSocket previews          | Trusted LAN or VPN clients only; previews have no access protection |
+
+The API host port is configurable through `VERITY_API_HOST_PORT`; the local
+preview range through `VERITY_LOCAL_PREVIEW_PORT_RANGE`. The deployment publishes
+the range once, and each local share uses an available port. Dev servers' own
+sandbox ports (for example `3000` or `5173`) do not need host publication.
+Public sharing through Uplink needs no inbound port forwarding for this range;
+do not expose local previews to the internet. See the
+[ports and environment reference](deploy/README.md#ports--environment-reference)
+for configuration details.
+
 The bootstrap temporarily downloads a version-pinned cosign binary, checks its
 embedded SHA-256 checksum, and verifies the Server image's release signature
 before using its installation code. You do not need to install cosign yourself.
