@@ -3566,18 +3566,6 @@ const migrations: Record<string, Migration> = {
       await sql`drop table project_google_connections`.execute(db);
     },
   },
-  '0130_matrix_import_diagnostics': {
-    async up(db: Kysely<unknown>): Promise<void> {
-      await sql`alter table integration_sources add column import_diagnostics jsonb not null default '[]'::jsonb, add column import_diagnostics_truncated boolean not null default false, add column import_diagnostics_reported_at timestamptz`.execute(
-        db,
-      );
-    },
-    async down(db: Kysely<unknown>): Promise<void> {
-      await sql`alter table integration_sources drop column import_diagnostics, drop column import_diagnostics_truncated, drop column import_diagnostics_reported_at`.execute(
-        db,
-      );
-    },
-  },
   '0129_drive_access_mode': {
     async up(db: Kysely<unknown>): Promise<void> {
       // Existing linked folders already permit uploads; preserve that explicit setup.
@@ -3625,6 +3613,18 @@ const migrations: Record<string, Migration> = {
     // Removal is permanent; rolling back must not recreate the retired loops.
     async down(db: Kysely<unknown>): Promise<void> {
       await sql`drop table session_automations`.execute(db);
+    },
+  },
+  '0131_matrix_import_diagnostics': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table integration_sources add column import_diagnostics jsonb not null default '[]'::jsonb, add column import_diagnostics_truncated boolean not null default false, add column import_diagnostics_reported_at timestamptz`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table integration_sources drop column import_diagnostics, drop column import_diagnostics_truncated, drop column import_diagnostics_reported_at`.execute(
+        db,
+      );
     },
   },
 };
