@@ -1,4 +1,9 @@
 import {
+  googleDriveRequestSchema,
+  googleDriveIsMutation,
+  googleDriveHasStandingAuthorization,
+} from './google-drive-request.js';
+import {
   excludeFileHistoryFromGit,
   recoverFileHistory,
   sessionFileHistory,
@@ -620,6 +625,7 @@ export interface ProjectSettingsRecord {
   memory: string | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
+  googleDriveAccessMode: 'read-only' | 'read-write';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -635,7 +641,8 @@ type ProjectSettingsKey =
   | 'defaultModel'
   | 'memory'
   | 'googleDriveFolderId'
-  | 'googleDriveFolderName';
+  | 'googleDriveFolderName'
+  | 'googleDriveAccessMode';
 
 type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -806,6 +813,7 @@ function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
     memory: null,
     googleDriveFolderId: null,
     googleDriveFolderName: null,
+    googleDriveAccessMode: 'read-only',
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -1014,6 +1022,7 @@ function publicProjectSettings(
     memory: settings.memory,
     googleDriveFolderId: settings.googleDriveFolderId,
     googleDriveFolderName: settings.googleDriveFolderName,
+    googleDriveAccessMode: settings.googleDriveAccessMode,
     createdAt: settings.createdAt,
     updatedAt: settings.updatedAt,
   };
@@ -5523,6 +5532,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               'Google Drive requires a folder connected to the calling project',
             );
           }
+          if (
+            googleDriveIsMutation(googleDriveRequestSchema.parse(input.request)) &&
+            settings.googleDriveAccessMode === 'read-only'
+          )
+            throw new ControlPlaneSessionAuthorityError(
+              'This project has read-only Google Drive access',
+            );
           return;
         }
         if (
@@ -5593,6 +5609,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             }
             return;
           }
+          const projectSettings = await deps.eventStore.getProjectSettings(projectId);
+          const action = (input.request as { action?: string }).action;
+          const writing =
+            toolName === 'verity_google_docs'
+              ? action === 'edit'
+              : toolName === 'verity_google_slides'
+                ? action === 'edit' || action === 'insert_image'
+                : ['write_range', 'clear_range', 'structural_edit'].includes(action ?? '');
+          if (
+            writing &&
+            projectSettings?.googleDriveFolderId &&
+            projectSettings.googleDriveAccessMode === 'read-only'
+          )
+            throw new ControlPlaneSessionAuthorityError(
+              'This project has read-only Google Drive access',
+            );
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           const expectedKind = toolName.slice('verity_google_'.length);
           const globalSettings = await deps.eventStore.getVeritySettings();
@@ -5685,6 +5717,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           );
         }
         if (toolName === 'verity_google_drive') {
+          if (!googleDriveHasStandingAuthorization(request)) return false;
           const session = await deps.eventStore.getSession(sessionId);
           const settings = await deps.eventStore.getProjectSettings(projectId);
           const globalSettings = await deps.eventStore.getVeritySettings();

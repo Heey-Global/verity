@@ -3565,6 +3565,17 @@ const migrations: Record<string, Migration> = {
       await sql`drop table project_google_connections`.execute(db);
     },
   },
+  '0129_drive_access_mode': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Existing linked folders already permit uploads; preserve that explicit setup.
+      await sql`alter table project_settings add column google_drive_access_mode text not null default 'read-write' check (google_drive_access_mode in ('read-only', 'read-write'))`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table project_settings drop column google_drive_access_mode`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

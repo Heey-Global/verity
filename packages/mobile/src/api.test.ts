@@ -3709,3 +3709,15 @@ describe('text-file saving', () => {
     ).toEqual(payload);
   });
 });
+
+it('links new Drive folders read-only and preserves explicit read/write choice', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ folder: { id: 'root', name: 'Root' } }),
+    json({ folder: { id: 'root', name: 'Root' } }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.connectProjectGoogleDriveFolder('p/1', 'root');
+  await client.connectProjectGoogleDriveFolder('p/1', 'root', 'read-write');
+  expect(jsonBody(calls[0])).toEqual({ fileId: 'root', accessMode: 'read-only' });
+  expect(jsonBody(calls[1])).toEqual({ fileId: 'root', accessMode: 'read-write' });
+});

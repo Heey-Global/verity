@@ -859,6 +859,7 @@ describe('EventStore — projects', () => {
       defaultModel: 'claude-sonnet-4-6',
       googleDriveFolderId: ' drive-folder-1 ',
       googleDriveFolderName: ' Product docs ',
+      googleDriveAccessMode: 'read-only',
     });
 
     expect(created).toMatchObject({
@@ -869,6 +870,7 @@ describe('EventStore — projects', () => {
       defaultModel: 'claude-sonnet-4-6',
       googleDriveFolderId: 'drive-folder-1',
       googleDriveFolderName: 'Product docs',
+      googleDriveAccessMode: 'read-only',
     });
     expect(created?.createdAt).toBeInstanceOf(Date);
     expect(created?.updatedAt).toBeInstanceOf(Date);
@@ -881,6 +883,7 @@ describe('EventStore — projects', () => {
       defaultModel: null,
       googleDriveFolderId: 'drive-folder-1',
       googleDriveFolderName: 'Product docs',
+      googleDriveAccessMode: 'read-only',
     });
     expect(await ctx.store.getProjectSettings(projectId)).toMatchObject({
       projectId,

@@ -1,3 +1,4 @@
+import { googleDriveRequestSchema } from './google-drive-request.js';
 import { googleContactsRequestSchema } from './google-contacts.js';
 import { googleCalendarRequestSchema } from './google-calendar.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
@@ -369,19 +370,7 @@ const TOOL_SCHEMAS = {
       })
       .strict(),
   ]),
-  verity_google_drive: z
-    .object({
-      action: z.enum(['list', 'search', 'read', 'upload', 'select_workspace_file']),
-      folderId: z.string().min(1).max(512).optional(),
-      fileId: z.string().min(1).max(512).optional(),
-      name: z.string().min(1).max(255).optional(),
-      query: z.string().min(1).max(200).optional(),
-      mimeType: z.string().min(1).max(255).optional(),
-      content: z.string().max(10_000_000).optional(),
-      encoding: z.enum(['utf8', 'base64']).optional(),
-      pageToken: z.string().min(1).max(4096).optional(),
-    })
-    .strict(),
+  verity_google_drive: googleDriveRequestSchema,
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
@@ -410,7 +399,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_gmail:
     'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:
-    'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
+    'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload creates a new regular file; create_folder creates a folder. Read a file or folder to obtain expectedVersion before overwrite, rename, move, or trash. Those actions require explicit approval. Trash is recoverable through Google Drive and includes folder contents; the linked root cannot be changed. Overwrite only replaces regular file bytes, never native Workspace contents. Read-only projects cannot mutate files.',
 };
 
 type JsonSchemaObject = Record<string, unknown>;

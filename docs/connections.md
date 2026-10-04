@@ -24,7 +24,7 @@ individual projects.
 
 - **GitHub:** the project's repository. Author and signing configuration stay
   server-wide.
-- **Google Drive:** a selected folder. Docs, Sheets, and Slides editing still
+- **Google Drive:** a selected folder with read-only or read/write access. Docs, Sheets, and Slides editing still
   requires explicitly assigning a native file in a session's file browser.
 - **Google Gmail, Calendar, and Contacts:** enable each service separately for
   the project. These grants apply to every session in that project. Upgrading
@@ -42,5 +42,5 @@ attachment menu also provides shortcuts to the Google project settings.
 A Google Drive suggestion in the files browser can be hidden on this device.
 Hiding it does not change access, and project settings remain available.
 
-NAS/SMB and additional Drive file actions are separate planned features. They are
-not presented as usable connections before their implementations exist.
+Drive file actions and approval/recovery behavior are described in [File connections](file-connections.md). NAS/SMB remains a separate planned feature and is not presented as usable before
+its implementation exists.

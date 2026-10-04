@@ -373,6 +373,7 @@ export interface ProjectSettingsTable {
   /** Google Drive folder exposed as this project's shared read/write workspace. */
   google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
+  google_drive_access_mode: Generated<'read-only' | 'read-write'>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }

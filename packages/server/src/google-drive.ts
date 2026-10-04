@@ -56,6 +56,7 @@ export interface GoogleTransportOptions {
   timeoutMs?: number | undefined;
   /** Hard cap for a downloaded or exported file. */
   maxDownloadBytes?: number | undefined;
+  expectedVersion?: string;
 }
 
 /** Tokens returned by the OAuth token endpoint. `refreshToken` is present only on
@@ -275,6 +276,8 @@ export interface DriveFile {
   canEdit?: boolean;
   parents?: string[];
   webViewLink?: string;
+  version?: string;
+  trashed?: boolean;
 }
 
 export interface DriveFileList {
@@ -350,35 +353,6 @@ export async function createDriveFile(
       opts,
     );
   }
-  const file = parseDriveFile(await response.json().catch(() => ({})));
-  if (file === undefined)
-    throw new GoogleDriveError('Google Drive returned malformed file metadata', 'malformed');
-  return file;
-}
-
-/** Rename a file and, when requested, move it between two authorized parents. */
-export async function updateDriveFile(
-  accessToken: string,
-  fileId: string,
-  input: { name?: string; addParentId?: string; removeParentId?: string },
-  opts: GoogleTransportOptions = {},
-): Promise<DriveFile> {
-  const query = new URLSearchParams({
-    fields: DRIVE_FILE_FIELDS,
-    supportsAllDrives: 'true',
-    ...(input.addParentId ? { addParents: input.addParentId } : {}),
-    ...(input.removeParentId ? { removeParents: input.removeParentId } : {}),
-  });
-  const response = await driveMutation(
-    `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}?${query.toString()}`,
-    accessToken,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(input.name === undefined ? {} : { name: input.name }),
-      contentType: 'application/json',
-    },
-    opts,
-  );
   const file = parseDriveFile(await response.json().catch(() => ({})));
   if (file === undefined)
     throw new GoogleDriveError('Google Drive returned malformed file metadata', 'malformed');
@@ -500,7 +474,7 @@ export async function getDriveFile(
 async function driveMutation(
   url: string,
   accessToken: string,
-  init: { method: string; body?: string | Buffer; contentType?: string },
+  init: { method: string; body?: string | Buffer; contentType?: string; expectedVersion?: string },
   opts: GoogleTransportOptions,
 ): Promise<GoogleHttpResponse> {
   const { doFetch, timeoutMs } = resolveTransport(opts);
@@ -511,6 +485,7 @@ async function driveMutation(
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/json',
+        ...(init.expectedVersion ? { 'If-Match': init.expectedVersion } : {}),
         ...(init.contentType === undefined ? {} : { 'Content-Type': init.contentType }),
       },
       ...(init.body === undefined ? {} : { body: init.body }),
@@ -519,6 +494,8 @@ async function driveMutation(
   } catch {
     throw new GoogleDriveError('could not reach Google Drive', 'network');
   }
+  if (response.status === 412)
+    throw new GoogleDriveError('The Drive file changed; read it again before retrying', 'conflict');
   if (!response.ok) {
     const slug = await extractDriveErrorSlug(response);
     throw new GoogleDriveError(
@@ -629,14 +606,22 @@ async function driveGetBytes(
   const { doFetch, timeoutMs } = resolveTransport(opts);
   let res: GoogleHttpResponse;
   try {
-    res = await doFetch(`${GOOGLE_DRIVE_API}${path}`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    res = await doFetch(
+      `${opts.expectedVersion ? 'https://www.googleapis.com/drive/v2' : GOOGLE_DRIVE_API}${path}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          ...(opts.expectedVersion ? { 'If-Match': opts.expectedVersion } : {}),
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+    );
   } catch {
     throw new GoogleDriveError('could not reach Google Drive', 'network');
   }
+  if (res.status === 412)
+    throw new GoogleDriveError('The Drive file changed; read it again before retrying', 'conflict');
   if (!res.ok) {
     throw new GoogleDriveError(
       `Google Drive download failed (${String(res.status)})`,
@@ -879,4 +864,94 @@ export function createCachedGoogleAccessToken(
     inflight.clear();
   };
   return provider;
+}
+
+const DRIVE_SNAPSHOT_FIELDS =
+  'id,title,mimeType,modifiedDate,fileSize,parents/id,alternateLink,editable,etag,labels/trashed';
+async function readDriveSnapshot(response: GoogleHttpResponse): Promise<DriveFile> {
+  const value = await response.json().catch(() => undefined);
+  if (typeof value !== 'object' || value === null)
+    throw new GoogleDriveError('Drive returned malformed file metadata', 'malformed');
+  const raw = value as Record<string, unknown>;
+  const file = parseDriveFile({
+    ...raw,
+    name: raw.title,
+    modifiedTime: raw.modifiedDate,
+    size: raw.fileSize,
+    webViewLink: raw.alternateLink,
+    capabilities: { canEdit: raw.editable },
+    parents: Array.isArray(raw.parents)
+      ? raw.parents.map((parent: unknown) =>
+          typeof parent === 'object' && parent !== null
+            ? (parent as { id?: unknown }).id
+            : undefined,
+        )
+      : [],
+  });
+  if (!file || typeof raw.etag !== 'string' || !raw.etag || /[\r\n]/.test(raw.etag))
+    throw new GoogleDriveError('Drive returned no usable file version', 'malformed');
+  return {
+    ...file,
+    version: raw.etag,
+    trashed: (raw.labels as { trashed?: boolean } | undefined)?.trashed === true,
+  };
+}
+
+/** Drive v2 exposes resource ETags, which v3's File representation omits. */
+export async function getDriveFileSnapshot(
+  accessToken: string,
+  fileId: string,
+  opts: GoogleTransportOptions = {},
+): Promise<DriveFile> {
+  const response = await driveMutation(
+    `https://www.googleapis.com/drive/v2/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=${encodeURIComponent(DRIVE_SNAPSHOT_FIELDS)}`,
+    accessToken,
+    { method: 'GET' },
+    opts,
+  );
+  return readDriveSnapshot(response);
+}
+
+/** Conditional updates share the representation whose ETag was read by the caller. */
+export async function mutateDriveFile(
+  accessToken: string,
+  fileId: string,
+  input: {
+    expectedVersion: string;
+    name?: string;
+    addParentId?: string;
+    removeParentId?: string;
+    trashed?: boolean;
+    bytes?: Buffer;
+    mimeType?: string;
+  },
+  opts: GoogleTransportOptions = {},
+): Promise<DriveFile> {
+  if (!input.expectedVersion || /[\r\n]/.test(input.expectedVersion))
+    throw new GoogleDriveError('A file version is required', 'malformed');
+  const query = new URLSearchParams({
+    supportsAllDrives: 'true',
+    fields: DRIVE_SNAPSHOT_FIELDS,
+    ...(input.addParentId ? { addParents: input.addParentId } : {}),
+    ...(input.removeParentId ? { removeParents: input.removeParentId } : {}),
+    ...(input.bytes ? { uploadType: 'media' } : {}),
+  });
+  const metadata = {
+    ...(input.name === undefined ? {} : { title: input.name }),
+    ...(input.trashed === undefined ? {} : { labels: { trashed: input.trashed } }),
+  };
+  const response = await driveMutation(
+    `${input.bytes ? 'https://www.googleapis.com/upload/drive/v2' : 'https://www.googleapis.com/drive/v2'}/files/${encodeURIComponent(fileId)}?${query.toString()}`,
+    accessToken,
+    {
+      method: 'PATCH',
+      body: input.bytes ?? JSON.stringify(metadata),
+      contentType: input.bytes
+        ? (input.mimeType ?? 'application/octet-stream')
+        : 'application/json',
+      expectedVersion: input.expectedVersion,
+    },
+    opts,
+  );
+  return readDriveSnapshot(response);
 }

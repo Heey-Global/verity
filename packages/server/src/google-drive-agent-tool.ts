@@ -5,12 +5,21 @@ import {
   createDriveFile,
   downloadDriveFile,
   exportDriveFile,
-  getDriveFile,
+  getDriveFileSnapshot,
+  mutateDriveFile,
   listDriveFiles,
   type DriveFile,
   type DriveFileList,
 } from './google-drive.js';
-import type { WorkspaceInvocationInput } from './google-workspace-tool-types.js';
+import type {
+  WorkspaceInvocationInput,
+  GoogleWorkspaceToolStore,
+} from './google-workspace-tool-types.js';
+import {
+  googleDriveRequestSchema,
+  googleDriveIsMutation,
+  googleDriveNeedsApproval,
+} from './google-drive-request.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const NATIVE_EXPORTS: Record<string, { mimeType: string; text: boolean }> = {
@@ -22,7 +31,13 @@ const NATIVE_EXPORTS: Record<string, { mimeType: string; text: boolean }> = {
   },
 };
 
-interface GoogleDriveAgentToolStore {
+interface GoogleDriveAgentToolStore extends Pick<
+  GoogleWorkspaceToolStore,
+  'claimGoogleWorkspaceInvocation' | 'completeGoogleWorkspaceInvocation'
+> {
+  getVeritySettings?(): Promise<
+    { googleDriveAccountEmail: string | null; googleDriveRefreshToken: string | null } | undefined
+  >;
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   getProjectSettings(projectId: string): Promise<ProjectSettingsRecord | undefined>;
   setSessionWorkspaceFile(input: {
@@ -44,9 +59,11 @@ export interface GoogleDriveAgentApi {
     pageToken?: string;
     pageSize?: number;
   }): Promise<DriveFileList>;
-  download(token: string, fileId: string): Promise<Uint8Array>;
+  download(token: string, fileId: string, opts?: { expectedVersion?: string }): Promise<Uint8Array>;
+  mutate: typeof mutateDriveFile;
   export(token: string, fileId: string, mimeType: string): Promise<Uint8Array>;
   create(
+    this: void,
     token: string,
     input: { name: string; mimeType: string; parentId: string; bytes?: Buffer },
   ): Promise<DriveFile>;
@@ -58,70 +75,13 @@ export interface GoogleDriveAgentToolDeps {
   drive?: GoogleDriveAgentApi;
 }
 
-type DriveRequest =
-  | { action: 'list'; folderId?: string; pageToken?: string }
-  | { action: 'search'; query: string; pageToken?: string }
-  | { action: 'read'; fileId?: string; name?: string }
-  | { action: 'select_workspace_file'; fileId?: string; name?: string }
-  | {
-      action: 'upload';
-      name: string;
-      mimeType: string;
-      content: string;
-      encoding?: 'utf8' | 'base64';
-      folderId?: string;
-    };
-
-function parseRequest(value: unknown): DriveRequest {
-  if (typeof value !== 'object' || value === null) throw new Error('Google Drive request required');
-  const request = value as Record<string, unknown>;
-  if (request.action === 'list') {
-    if (request.folderId !== undefined && typeof request.folderId !== 'string') {
-      throw new Error('folderId must be a string');
-    }
-    return request as DriveRequest;
-  }
-  if (request.action === 'search') {
-    if (typeof request.query !== 'string' || request.query.trim().length === 0) {
-      throw new Error('search requires a query');
-    }
-    return request as DriveRequest;
-  }
-  if (request.action === 'read' || request.action === 'select_workspace_file') {
-    if (
-      (typeof request.fileId !== 'string' || request.fileId.length === 0) &&
-      (typeof request.name !== 'string' || request.name.trim().length === 0)
-    ) {
-      throw new Error(`${request.action} requires fileId or name`);
-    }
-    return request as DriveRequest;
-  }
-  if (request.action === 'upload') {
-    if (
-      typeof request.name !== 'string' ||
-      request.name.trim().length === 0 ||
-      typeof request.mimeType !== 'string' ||
-      request.mimeType.trim().length === 0 ||
-      typeof request.content !== 'string'
-    )
-      throw new Error('upload requires name, mimeType, and content');
-    if (
-      request.encoding !== undefined &&
-      request.encoding !== 'utf8' &&
-      request.encoding !== 'base64'
-    )
-      throw new Error('unsupported upload encoding');
-    return request as DriveRequest;
-  }
-  throw new Error('Unsupported Google Drive action');
-}
-
 async function isWithinFolder(
   drive: Pick<GoogleDriveAgentApi, 'get'>,
   token: string,
   file: DriveFile,
   rootId: string,
 ): Promise<boolean> {
+  if (file.trashed) return false;
   if (file.id === rootId) return true;
   const pending = [...(file.parents ?? [])];
   const visited = new Set<string>([file.id]);
@@ -142,6 +102,7 @@ async function isWithinFolder(
       }
       throw error;
     }
+    if (parent.trashed) return false;
     pending.push(...(parent.parents ?? []));
   }
   return false;
@@ -203,7 +164,8 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
   invoke(input: WorkspaceInvocationInput): Promise<unknown>;
 } {
   const drive: GoogleDriveAgentApi = deps.drive ?? {
-    get: getDriveFile,
+    get: getDriveFileSnapshot,
+    mutate: mutateDriveFile,
     list: listDriveFiles,
     download: downloadDriveFile,
     export: exportDriveFile,
@@ -215,14 +177,61 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
       if (session === undefined || session.projectId !== input.projectId) {
         throw new Error('Google Drive is restricted to the calling session');
       }
-      const rootId = (await deps.eventStore.getProjectSettings(input.projectId))
-        ?.googleDriveFolderId;
+      const settings = await deps.eventStore.getProjectSettings(input.projectId);
+      const rootId = settings?.googleDriveFolderId;
+      const credential = await deps.eventStore.getVeritySettings?.();
       if (rootId === undefined || rootId === null) {
         throw new Error('No Google Drive folder is linked to this project');
       }
       const token = await deps.googleAccessToken();
       if (token === undefined) throw new Error('Google Drive is not connected');
-      const request = parseRequest(input.request);
+      const request = googleDriveRequestSchema.parse(input.request);
+      const mutation = googleDriveIsMutation(request);
+      if (mutation && settings?.googleDriveAccessMode === 'read-only')
+        throw new Error('This project has read-only Google Drive access');
+      if (googleDriveNeedsApproval(request) && input.approvedByCard !== true)
+        throw new Error('This Drive change requires explicit approval');
+      const recheck = async () => {
+        const callingSession = await deps.eventStore.getSession(input.sessionId);
+        if (callingSession?.projectId !== input.projectId)
+          throw new Error('The calling session changed projects during this operation');
+        const current = await deps.eventStore.getProjectSettings(input.projectId);
+        const account = await deps.eventStore.getVeritySettings?.();
+        if (
+          current?.googleDriveFolderId !== rootId ||
+          (mutation && current.googleDriveAccessMode === 'read-only')
+        )
+          throw new Error('Google Drive project access changed during this operation');
+        if (
+          credential &&
+          (credential.googleDriveAccountEmail !== account?.googleDriveAccountEmail ||
+            credential.googleDriveRefreshToken !== account?.googleDriveRefreshToken)
+        )
+          throw new Error('The connected Google account changed during this operation');
+      };
+      const perform = async (operation: () => Promise<unknown>) => {
+        await recheck();
+        const claim = await deps.eventStore.claimGoogleWorkspaceInvocation(input);
+        if (claim.status === 'completed') return claim.result;
+        if (claim.status === 'pending')
+          throw new Error(
+            'This Drive change may already have happened; inspect the file before retrying',
+          );
+        await recheck();
+        const result = await operation();
+        await deps.eventStore.completeGoogleWorkspaceInvocation(input.invocationId, result);
+        return result;
+      };
+      if (request.action === 'capabilities')
+        return {
+          read: true,
+          write: settings?.googleDriveAccessMode !== 'read-only',
+          conditionalWrites: true,
+          trash: 'recoverable',
+          recursiveFolderTrash: true,
+          nativeContentOverwrite: false,
+          maxWriteBytes: 10_000_000,
+        };
       if (request.action === 'list') {
         const folder =
           request.folderId === undefined
@@ -253,7 +262,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         }
         return { files, ...(page.nextPageToken ? { nextPageToken: page.nextPageToken } : {}) };
       }
-      if (request.action === 'upload') {
+      if (request.action === 'upload' || request.action === 'create_folder') {
         const folder =
           request.folderId === undefined
             ? await drive.get(token, rootId)
@@ -264,12 +273,83 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
                 fileId: request.folderId,
                 mimeTypes: [FOLDER_MIME],
               });
-        return drive.create(token, {
-          name: request.name.trim(),
-          mimeType: request.mimeType.trim(),
-          parentId: folder.id,
-          bytes: Buffer.from(request.content, request.encoding ?? 'utf8'),
+        if (folder.mimeType !== FOLDER_MIME || folder.trashed)
+          throw new Error('Destination must be an available folder');
+        if (
+          request.action === 'upload' &&
+          request.mimeType.startsWith('application/vnd.google-apps.')
+        )
+          throw new Error('Use dedicated Workspace tools for native document contents');
+        return perform(() =>
+          drive.create(token, {
+            name: request.name.trim(),
+            mimeType: request.action === 'create_folder' ? FOLDER_MIME : request.mimeType.trim(),
+            parentId: folder.id,
+            ...(request.action === 'upload'
+              ? { bytes: Buffer.from(request.content, request.encoding ?? 'utf8') }
+              : {}),
+          }),
+        );
+      }
+      if (
+        request.action === 'overwrite' ||
+        request.action === 'rename' ||
+        request.action === 'move' ||
+        request.action === 'trash'
+      ) {
+        const file = await resolveProjectDriveFile({
+          drive,
+          token,
+          rootId,
+          fileId: request.fileId,
         });
+        if (file.id === rootId) throw new Error('The linked project folder cannot be changed');
+        if (file.trashed) throw new Error('This Drive file is already in the trash');
+        if (file.name !== request.name)
+          throw new Error('The Drive file name changed; read it again before approving');
+        if (file.version !== request.expectedVersion)
+          throw new Error('The Drive file changed; read it again before retrying');
+        if (
+          request.action === 'overwrite' &&
+          file.mimeType.startsWith('application/vnd.google-apps.')
+        )
+          throw new Error(
+            'Native files and folders cannot be overwritten; use Workspace content tools',
+          );
+        if (request.action === 'move') {
+          const destination = await resolveProjectDriveFile({
+            drive,
+            token,
+            rootId,
+            fileId: request.folderId,
+            mimeTypes: [FOLDER_MIME],
+          });
+          if (
+            destination.id === file.id ||
+            (await isWithinFolder(drive, token, destination, file.id))
+          )
+            throw new Error('A folder cannot be moved into itself or its descendants');
+          if (destination.trashed) throw new Error('Destination is in the trash');
+        }
+        return perform(() =>
+          drive.mutate(token, file.id, {
+            expectedVersion: request.expectedVersion,
+            ...(request.action === 'rename' ? { name: request.newName } : {}),
+            ...(request.action === 'trash' ? { trashed: true } : {}),
+            ...(request.action === 'overwrite'
+              ? {
+                  bytes: Buffer.from(request.content, request.encoding ?? 'utf8'),
+                  mimeType: file.mimeType,
+                }
+              : {}),
+            ...(request.action === 'move'
+              ? {
+                  addParentId: request.folderId,
+                  ...(file.parents?.length ? { removeParentId: file.parents.join(',') } : {}),
+                }
+              : {}),
+          }),
+        );
       }
       if (request.action === 'select_workspace_file') {
         const file = await resolveProjectDriveFile({
@@ -307,15 +387,23 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         ...(request.fileId === undefined ? {} : { fileId: request.fileId }),
         ...(request.name === undefined ? {} : { name: request.name }),
       });
-      if (file.mimeType === FOLDER_MIME) throw new Error('A folder cannot be read as a file');
-      const native = NATIVE_EXPORTS[file.mimeType];
+      const snapshot = await drive.get(token, file.id);
+      if (!(await isWithinFolder(drive, token, snapshot, rootId)))
+        throw new Error('Google Drive file is outside the linked project folder');
+      await recheck();
+      if (file.mimeType === FOLDER_MIME)
+        return { file: snapshot, expectedVersion: snapshot.version };
+      const native = NATIVE_EXPORTS[snapshot.mimeType];
       const bytes = native
         ? await drive.export(token, file.id, native.mimeType)
-        : await drive.download(token, file.id);
-      const text = native?.text === true || file.mimeType.startsWith('text/');
+        : await drive.download(token, file.id, {
+            ...(snapshot.version ? { expectedVersion: snapshot.version } : {}),
+          });
+      const text = native?.text === true || snapshot.mimeType.startsWith('text/');
       return {
-        file,
-        mimeType: native?.mimeType ?? file.mimeType,
+        file: snapshot,
+        expectedVersion: snapshot.version,
+        mimeType: native?.mimeType ?? snapshot.mimeType,
         encoding: text ? 'utf8' : 'base64',
         content: Buffer.from(bytes).toString(text ? 'utf8' : 'base64'),
       };

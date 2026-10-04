@@ -363,12 +363,13 @@ export const projectSettingsSchema = z.object({
   memory: z.string().nullable().optional(),
   googleDriveFolderId: z.string().nullable().optional(),
   googleDriveFolderName: z.string().nullable().optional(),
+  googleDriveAccessMode: z.enum(['read-only', 'read-write']).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
 
-type ProjectSettingsKey = 'defaultBranch' | 'defaultModel' | 'memory';
+type ProjectSettingsKey = 'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -749,6 +750,8 @@ export type MeetingTranscriptionBackendStatus = z.infer<
 
 // ── Google Drive sources (ADR 0009) ──────────────────────────────────────────
 export const driveFileSchema = z.object({
+  version: z.string().optional(),
+  trashed: z.boolean().optional(),
   id: z.string(),
   name: z.string(),
   mimeType: z.string(),
@@ -2784,13 +2787,14 @@ export class VerityClient {
   async connectProjectGoogleDriveFolder(
     projectId: string,
     fileId: string,
+    accessMode: 'read-only' | 'read-write' = 'read-only',
   ): Promise<{ id: string; name: string }> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/google-drive/folder`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId }),
+        body: JSON.stringify({ fileId, accessMode }),
       },
     );
     return z

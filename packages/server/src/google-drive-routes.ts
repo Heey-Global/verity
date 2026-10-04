@@ -137,7 +137,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     getLinkedFolder: async (projectId, folderId) => {
       const settings = await deps.eventStore.getProjectSettings(projectId);
       return settings?.googleDriveFolderId === folderId && settings.googleDriveFolderName
-        ? { projectId, folderId, name: settings.googleDriveFolderName }
+        ? {
+            projectId,
+            folderId,
+            name: settings.googleDriveFolderName,
+            accessMode: settings.googleDriveAccessMode,
+          }
         : undefined;
     },
     googleAccessToken: accessToken,
@@ -341,7 +346,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
 
   app.put('/projects/:id/google-drive/folder', async (request, reply) => {
     const { id } = projectParams.parse(request.params);
-    const { fileId } = importBody.parse(request.body);
+    const { fileId, accessMode } = importBody
+      .extend({ accessMode: z.enum(['read-only', 'read-write']).default('read-only') })
+      .parse(request.body);
     if ((await deps.eventStore.getProject(id)) === undefined) {
       reply.code(404);
       return { error: `project ${id} not found` };
@@ -357,13 +364,14 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         reply.code(415);
         return { error: 'Choose a Google Drive folder' };
       }
-      if (folder.canEdit !== true) {
+      if (accessMode === 'read-write' && folder.canEdit !== true) {
         reply.code(403);
         return { error: 'You need edit access to connect this folder' };
       }
       await deps.eventStore.updateProjectSettings(id, {
         googleDriveFolderId: folder.id,
         googleDriveFolderName: folder.name,
+        googleDriveAccessMode: accessMode,
       });
       await clearProjectWorkspaceFiles(id);
       return { folder: { id: folder.id, name: folder.name } };

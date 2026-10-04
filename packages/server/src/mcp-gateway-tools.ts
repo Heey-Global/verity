@@ -76,12 +76,22 @@ export function createMcpGatewayToolExecutor(options: {
         turnId: string;
         invocationId: string;
         request: unknown;
+        approvedByCard?: boolean;
       }) => Promise<unknown>)
     | undefined;
 }): McpGatewayDeps['invokeTool'] {
   const runTrustedCli = options.runTrustedCli ?? runSupervisorTrustedCli;
   const runnerRoot = options.runnerRoot;
-  return async ({ projectId, sessionId, turnId, callId, invocationId, toolName, request }) => {
+  return async ({
+    projectId,
+    sessionId,
+    turnId,
+    callId,
+    invocationId,
+    toolName,
+    request,
+    approvedByCard,
+  }) => {
     if (toolName === 'verity_secret_run') {
       if (runnerRoot === undefined) throw new Error('trusted CLI execution is unavailable');
       return await options.trustedCliTool(
@@ -125,7 +135,14 @@ export function createMcpGatewayToolExecutor(options: {
     }
     if (toolName === 'verity_google_drive') {
       if (options.googleDrive === undefined) throw new Error('Google Drive is unavailable');
-      return options.googleDrive({ projectId, sessionId, turnId, invocationId, request });
+      return options.googleDrive({
+        projectId,
+        sessionId,
+        turnId,
+        invocationId,
+        request,
+        ...(approvedByCard === undefined ? {} : { approvedByCard }),
+      });
     }
     if (toolName === 'verity_knowledge') {
       throw new Error('knowledge tools are unavailable');
