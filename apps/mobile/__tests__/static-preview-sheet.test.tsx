@@ -543,7 +543,8 @@ it('settles the folder tab without waiting for links when the Uplink is unavaila
     getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'unavailable' as const })),
     listPublicPreviewShares: jest.fn(() => new Promise<PublicPreviewShare[]>(() => undefined)),
   });
-  const view = renderSheet(client, { detectedServers: [] });
+  // No fallback timeout: only the unavailable Uplink may settle the tab here.
+  const view = renderSheet(client, { detectedServers: [], settleTimeoutMs: 60_000 });
   await waitFor(() =>
     expect(
       screen.getByRole('tab', { name: 'Static files' }).props.accessibilityState.selected,
@@ -560,6 +561,17 @@ it('settles the folder tab without waiting for links when the Uplink is unavaila
   );
   expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+// A list that never answers must not leave the sheet loading forever.
+it('decides the default tab after the timeout when a list hangs', async () => {
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(() => new Promise<SessionDevServer[]>(() => undefined)),
+    }),
+    { settleTimeoutMs: 10 },
+  );
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
 });
 
 // A server that starts while the user walks the folders marks the server tab
@@ -595,6 +607,7 @@ it('shows no tab content until the polled servers decide the default', async () 
           }),
       ),
     }),
+    { settleTimeoutMs: 60_000 },
   );
   await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
   expect(screen.queryByRole('button', { name: 'Open folder dist' })).toBeNull();

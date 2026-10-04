@@ -32,7 +32,7 @@ import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewSha
 // open it — on the server's own network without a PIN, or over the internet
 // through the Uplink with a PIN and an expiry. Both accesses sit side by side as
 // cards because both can be active at once, and each card owns its own state
-// and primary action.
+// and actions.
 
 /** "until 20:14", or with the day when the link outlives today. */
 function expiryLabel(expiresAt: string | Date, now = new Date()): string {
@@ -156,6 +156,7 @@ export function StaticPreviewSheet({
   detectedServers,
   initialServer,
   onOpenSettings,
+  settleTimeoutMs = 1_000,
 }: {
   client: VerityClient;
   projectId: string;
@@ -164,6 +165,8 @@ export function StaticPreviewSheet({
   detectedServers?: SessionDevServer[] | undefined;
   initialServer?: SessionDevServer | undefined;
   onOpenSettings?: (() => void) | undefined;
+  /** How long the default tab waits for slow lists before deciding. */
+  settleTimeoutMs?: number;
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
@@ -176,9 +179,9 @@ export function StaticPreviewSheet({
   // default tab is decided with what has arrived.
   const [settleTimedOut, setSettleTimedOut] = useState(false);
   useEffect(() => {
-    const timer = setTimeout(() => setSettleTimedOut(true), 1_000);
+    const timer = setTimeout(() => setSettleTimedOut(true), settleTimeoutMs);
     return () => clearTimeout(timer);
-  }, []);
+  }, [settleTimeoutMs]);
   useEffect(() => {
     let active = true;
     void client

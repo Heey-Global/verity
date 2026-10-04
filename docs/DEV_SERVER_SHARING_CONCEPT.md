@@ -174,19 +174,20 @@ second at the latest; a server that starts later only marks its tab and never sw
 view. A Core without port detection shows the static files without tabs. Rows carry badges for
 their active accesses, "On network" and "Online until HH:MM".
 
-**Step two, how.** Two cards of equal weight, stacked, because both can be active at once and
-each owns its own state and primary action. Each card names who can see the preview.
+**Step two, how.** Two cards, stacked, because both can be active at once and each owns its
+own state and actions. Each card names who can see the preview.
 
 - **On your network.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
-  the card says that anyone on that network can open it. "Open in
-  browser" creates the local share on first use and hands reachability to the probe in 2.7,
-  plus "Copy link". While a local share exists the card shows its URL and "Turn off".
+  the card says that anyone on that network can open it. "Open in browser" creates the local
+  share on first use and hands reachability to the probe in 2.7, plus "Copy link". While a local
+  share exists the card shows its URL and "Turn off".
 - **Over the internet.** A link through the Uplink, protected by a PIN, expiring automatically.
   Without entitlement the card stays visible with a "Premium" badge, one sentence, and a link to
   settings; no dead button. While the Uplink is offline it says "Temporarily unavailable"
-  instead. With entitlement and no link it shows the expiry picker and "Create link with PIN".
-  With a live link it shows the link, the PIN, "Send link and PIN", "Copy link", the remaining
-  time, and "Stop sharing". Stopping asks first.
+  instead. With entitlement and no link it shows the expiry picker and "Create link with PIN" as
+  a secondary button, so opening on the network stays the one primary action on screen. With a
+  live link it shows the link, the PIN, "Send link and PIN", "Copy link", the remaining time, and
+  "Stop sharing". Stopping asks first.
 
 **Vocabulary.** "Preview" is the thing. "Network" always means the server's own network;
 "online" and "internet" always mean public through the Uplink with a PIN.
