@@ -6069,14 +6069,13 @@ function AgentMarkdown({
   }, []);
   const showActions = useCallback(
     (anchor: MenuAnchor) => {
-      if (messageId != null) setActionsMenu({ messageId, anchor });
+      if (messageId == null) return;
+      // Keep the message highlighted with its action row while the menu is open.
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+      setActionsMenu({ messageId, anchor });
     },
     [messageId],
   );
-  // Keep the message highlighted with its action row while the menu opens and is open.
-  const holdActionRow = useCallback(() => {
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-  }, []);
   // Measured after any keyboard dismissal settles (the Modal would dismiss it and
   // leave the menu at a stale position), same as the composer's attachment menu.
   const measureActions = useAttachmentMenuAnchor(moreRef, showActions);
@@ -6155,7 +6154,6 @@ function AgentMarkdown({
               {hasMoreActions ? (
                 <Pressable
                   ref={moreRef}
-                  onPressIn={holdActionRow}
                   onPress={measureActions}
                   hitSlop={6}
                   accessibilityRole="button"
@@ -6239,6 +6237,7 @@ function MessageActionsMenu({
   bookmark: { bookmarked: boolean; toggle: () => void } | null;
 }) {
   const { width: winW, height: winH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [saving, setSaving] = useState(false);
   const saveKnowledge = (): void => {
     if (!knowledge || knowledge.saved || saving) return;
@@ -6260,10 +6259,18 @@ function MessageActionsMenu({
   const right = Math.min(Math.max(margin, winW - (anchor.x + anchor.width)), winW - width - margin);
   // Only used to pick a side; the card itself sizes to its content.
   const estimatedHeight = rows * MESSAGE_MENU_ROW_HEIGHT + 2 * gap;
-  const below = anchor.y + anchor.height + gap + estimatedHeight <= winH - margin;
+  // Keep the card clear of the status bar / notch and the home indicator.
+  const minTop = insets.top + margin;
+  const maxBottom = winH - insets.bottom - margin;
+  const below = anchor.y + anchor.height + gap + estimatedHeight <= maxBottom;
   const position = below
     ? { top: anchor.y + anchor.height + gap }
-    : { bottom: Math.max(margin, winH - anchor.y + gap) };
+    : {
+        bottom: Math.min(
+          Math.max(insets.bottom + margin, winH - anchor.y + gap),
+          winH - minTop - estimatedHeight,
+        ),
+      };
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessible={false} />
