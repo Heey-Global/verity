@@ -42,6 +42,13 @@ export interface SessionsTable {
    */
   project_id: ColumnType<string | null, string | null | undefined, string | null>;
   /**
+   * Retired session discriminator from the original Agent Loop design (ADR 0008,
+   * amended). Always `'normal'` since migration 0130 and read by nothing; it stays
+   * only because an older server generation still selects it during a rolling
+   * upgrade. Drop it in a later migration.
+   */
+  kind: ColumnType<string, string | undefined, string>;
+  /**
    * Operator's "last seen" mark for the overview unread dot (#387): the session's
    * `eventCount` at the last open. NULL = never opened → not unread. Global (no
    * per-device scoping), so the mark syncs across every device hitting this server.
