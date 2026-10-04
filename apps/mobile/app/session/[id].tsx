@@ -200,6 +200,7 @@ import {
 } from '../../lib/attachments';
 import { getAuthToken } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { isDemoMode } from '../../lib/demoMode';
 import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
@@ -4757,6 +4758,18 @@ function SessionFilesSheet({
           cacheDir.create({ idempotent: true, intermediates: true });
           const token = getAuthToken(baseUrl);
           const destination = new FsFile(cacheDir, fileNameFromPath(filePath));
+          if (isDemoMode()) {
+            const { content } = await client.getSessionFileContent(sessionId, filePath, root);
+            destination.write(content);
+            const sharing = await loadSharingModule();
+            if (sharing !== undefined && (await sharing.isAvailableAsync())) {
+              await sharing.shareAsync(destination.uri, {
+                mimeType: mimeTypeForFile(filePath),
+                dialogTitle: `Open ${fileNameFromPath(filePath)}`,
+              });
+            }
+            return;
+          }
           const headers =
             token !== null && token.length > 0 ? { authorization: `Bearer ${token}` } : undefined;
           const file = directTlsPin
@@ -5559,7 +5572,7 @@ function SessionFilesSheet({
                           // Every row stays draggable while selecting: grabbing
                           // one outside the selection drags just that file, the
                           // same as Finder. `items` already encodes which.
-                          enabled
+                          enabled={!isDemoMode()}
                           items={dragItemsByPath.get(entry.path) ?? []}
                           authorization={authorization}
                           tlsPin={directTlsPin ?? ''}

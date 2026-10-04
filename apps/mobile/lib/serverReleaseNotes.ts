@@ -17,6 +17,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { useEffect, useState } from 'react';
+import { isDemoMode } from './demoMode';
 
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -34,6 +35,7 @@ async function loadReleaseNotes(
   client: VerityClient,
   target: string,
 ): Promise<ServerReleaseNotes | null> {
+  if (isDemoMode()) return null;
   // An older Server's health check carries no version; the notes then cover
   // the target release alone rather than a guessed range.
   const running = await client

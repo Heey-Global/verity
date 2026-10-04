@@ -30,6 +30,7 @@ import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
+import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
 import {
   retryFailedVeritySettings,
   saveVeritySettings,
@@ -197,11 +198,34 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           reconfigure mode; the only way back to it once a non-null URL is persisted. */}
       <SettingsGroup title="This app">
         <SettingsListPanel>
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="play"
+              title="Try demo"
+              subtitle="Local sample data and simulated AI; your server connection is preserved"
+              onPress={() => {
+                void enterDemoMode()
+                  .then(() => router.replace('/'))
+                  .catch((error: unknown) =>
+                    Alert.alert(
+                      'Could not start demo',
+                      error instanceof Error ? error.message : 'Please try again.',
+                    ),
+                  );
+              }}
+            />
+          ) : null}
           <SettingsNavRow
             icon="server"
             title="Server address"
-            value={getVerityBaseUrl() ?? 'Not set'}
-            onPress={() => router.push('/onboarding/server-url?reconfigure=1')}
+            value={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            onPress={() => {
+              if (isDemoMode()) {
+                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
+              } else {
+                router.push('/onboarding/server-url?reconfigure=1');
+              }
+            }}
             accessibilityLabel="Change server address"
           />
         </SettingsListPanel>

@@ -23,6 +23,12 @@ const mockCanGoBack = jest.fn<boolean, []>(() => false);
 let mockSegments: string[] = [];
 let mockPathname = '/';
 let mockSearchParams: Record<string, string | string[]> = {};
+let mockDemoMode = false;
+const mockEnterDemoMode = jest.fn<Promise<void>, []>();
+jest.mock('../lib/demoMode', () => ({
+  isDemoMode: () => mockDemoMode,
+  enterDemoMode: () => mockEnterDemoMode(),
+}));
 
 jest.mock('expo-router', () => ({
   router: {
@@ -93,6 +99,9 @@ function makeClient(
 }
 
 beforeEach(() => {
+  mockDemoMode = false;
+  mockEnterDemoMode.mockReset();
+  mockEnterDemoMode.mockResolvedValue(undefined);
   mockReplace.mockReset();
   mockPush.mockReset();
   mockBack.mockReset();
@@ -115,6 +124,15 @@ beforeEach(() => {
 });
 
 describe('onboarding wizard shell — step screen', () => {
+  it('opens the demo from the welcome screen without pairing', async () => {
+    render(<OnboardingWelcome />);
+    await act(async () => fireEvent.press(screen.getByLabelText('Try demo')));
+    expect(mockEnterDemoMode).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith('/');
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
   it('renders the welcome step with its progress indicator and product orientation', () => {
     render(<OnboardingWelcome />);
     // Welcome is preflight before any server/secret setup, not a numbered wizard step.
@@ -156,6 +174,24 @@ describe('onboarding wizard shell — step screen', () => {
 });
 
 describe('onboarding first-run gate', () => {
+  it('opens demo screens without reading real authentication or contacting the saved server', async () => {
+    mockDemoMode = true;
+    mockHasConfiguredVerityBaseUrl.mockReturnValue(false);
+    render(<GateProbe />);
+    expect(await screen.findByText('gate:done')).toBeOnTheScreen();
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+    expect(mockGetAuthToken).not.toHaveBeenCalled();
+    expect(mockHasStoredAuthToken).not.toHaveBeenCalled();
+  });
+
+  it.each(['onboarding', 'unlock-device'])('keeps %s routes out of the demo', async (route) => {
+    mockDemoMode = true;
+    mockSegments = [route];
+    render(<GateProbe />);
+    expect(await screen.findByText('gate:done:/')).toBeOnTheScreen();
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+  });
+
   it('does not refetch on ordinary navigation and uses the latest route when sealed', async () => {
     jest.useFakeTimers();
     try {
