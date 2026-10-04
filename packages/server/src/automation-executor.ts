@@ -45,7 +45,11 @@ export interface AutomationExecutorDeps {
   dispatchTurnWhenIdle(
     sessionId: string,
     prompt: string,
-    opts: { model?: string; displayPrompt: string },
+    opts: {
+      model?: string;
+      displayPrompt: string;
+      validateSession: (session: SessionRecord) => Promise<boolean>;
+    },
   ): Promise<{ accepted: boolean }>;
   appendNotice(sessionId: string, text: string): Promise<void>;
   /** Re-checked on every run: settings can change after the operator confirmed. */
@@ -161,6 +165,10 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
         }
         const { accepted } = await deps.dispatchTurnWhenIdle(session.sessionId, automation.prompt, {
           ...(automation.model !== null ? { model: automation.model } : {}),
+          validateSession: async (acceptedSession) =>
+            acceptedSession.projectId === session.projectId &&
+            acceptedSession.worktree === session.worktree &&
+            (await deps.isCurrent?.(automation, acceptedSession)) !== false,
           displayPrompt: `Automation · ${automation.name}\n\n${automation.prompt}`,
         });
         return accepted

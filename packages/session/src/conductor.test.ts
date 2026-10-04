@@ -1724,6 +1724,31 @@ describe('Conductor.dispatchTurn', () => {
     expect(fake.calls).toHaveLength(1);
   });
 
+  it('validates idle dispatch under its lock and releases rejected admissions', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      bus: new InMemoryEventBus(),
+      backend: unreachableBackend().backend,
+      worktreeExists: async () => true,
+    });
+    await expect(
+      conductor.dispatchTurnWhenIdle(
+        's1',
+        'stale automation',
+        {},
+        {
+          validateSession: async () => {
+            expect(conductor.isBusy('s1')).toBe(true);
+            return false;
+          },
+        },
+      ),
+    ).resolves.toEqual({ accepted: false });
+    expect(conductor.isBusy('s1')).toBe(false);
+    expect(await ctx.store.getEvents('s1')).toEqual([]);
+  });
+
   it('dispatchTurnWhenIdle refuses busy sessions without steering or queueing', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     let release = (): void => undefined;

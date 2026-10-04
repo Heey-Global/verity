@@ -3448,7 +3448,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     appendNotice: async (sessionId, text) => {
       await deps.eventStore.appendEvent(sessionId, { t: 'notice', text, role: 'agent' });
     },
-    dispatchTurnWhenIdle: async (sessionId, prompt, { model, displayPrompt }) =>
+    dispatchTurnWhenIdle: async (sessionId, prompt, { model, displayPrompt, validateSession }) =>
       // A run that fires while the session's project is being torn down would
       // start a turn against a worktree the purge is removing. Report it as not
       // accepted; by the next slot the session is gone or usable again.
@@ -3456,6 +3456,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ? { accepted: false }
         : conductor.dispatchTurnWhenIdle(sessionId, prompt, model ? { model } : {}, {
             displayPrompt,
+            validateSession,
           }),
     isModelAllowed: async (model, session) =>
       session.projectId === null

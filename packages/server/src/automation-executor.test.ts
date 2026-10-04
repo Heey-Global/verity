@@ -59,6 +59,7 @@ describe('automation executor', () => {
     await expect(executor.run(automation)).resolves.toEqual({ outcome: 'acted', detail: null });
     expect(runScript).not.toHaveBeenCalled();
     expect(dispatch).toHaveBeenCalledWith('s1', 'Summarize the open pull requests.', {
+      validateSession: expect.any(Function),
       displayPrompt: 'Automation · Morning review\n\nSummarize the open pull requests.',
     });
   });
@@ -105,6 +106,19 @@ describe('automation executor', () => {
     });
     expect(runScript).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a workspace change at turn admission after the final check', async () => {
+    const { executor } = harness({
+      dispatchTurnWhenIdle: async (_id, _prompt, opts) => ({
+        accepted: await opts.validateSession({
+          ...session,
+          projectId: 'target',
+          worktree: '/target/session',
+        }),
+      }),
+    });
+    await expect(executor.run(automation)).resolves.toMatchObject({ outcome: 'skipped' });
   });
 
   it('checks an unsaved proposal without requiring a persisted automation claim', async () => {

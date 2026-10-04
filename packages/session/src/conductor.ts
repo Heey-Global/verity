@@ -3167,13 +3167,25 @@ export class Conductor {
     sessionId: string,
     prompt: string,
     opts: TurnOptions = {},
-    dispatchOpts: DispatchTurnOptions = {},
+    dispatchOpts: DispatchTurnOptions & {
+      /** Validate background work while the session admission lock is held. */
+      validateSession?: (session: SessionRecord) => Promise<boolean>;
+    } = {},
   ): Promise<{ accepted: boolean }> {
     let session: SessionRecord;
     try {
       session = await this.accept(sessionId, prompt, opts); // lock held on success
     } catch (error) {
       if (error instanceof SessionBusyError) return { accepted: false };
+      throw error;
+    }
+    try {
+      if (dispatchOpts.validateSession && !(await dispatchOpts.validateSession(session))) {
+        this.releaseInFlight(sessionId);
+        return { accepted: false };
+      }
+    } catch (error) {
+      this.releaseInFlight(sessionId);
       throw error;
     }
     this.launchAcceptedTurn(
