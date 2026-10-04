@@ -137,7 +137,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
 /** Strip a backend's MCP qualification (`mcp__verity__`, OpenCode's `verity_`) off a known
  * Verity tool, so per-tool tables match whichever backend ran the call. Other names pass
  * through untouched. */
-export function canonicalToolName(name: string): string {
+function canonicalToolName(name: string): string {
   if (Object.hasOwn(VERITY_TOOL_LABELS, name)) return name;
   for (const bare of Object.keys(VERITY_TOOL_LABELS)) {
     if (name === `mcp__verity__${bare}` || name === `verity_${bare}`) return bare;
@@ -146,7 +146,7 @@ export function canonicalToolName(name: string): string {
 }
 
 /** The human-facing name of a tool: a Verity tool's label, else the reported name. */
-export function toolDisplayName(name: string): string {
+function toolDisplayName(name: string): string {
   const canonical = canonicalToolName(name);
   // Own-property check: a tool named `constructor` must not resolve to Object's.
   return Object.hasOwn(VERITY_TOOL_LABELS, canonical) ? VERITY_TOOL_LABELS[canonical]! : name;
