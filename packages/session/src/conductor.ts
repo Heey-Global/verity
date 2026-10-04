@@ -2760,13 +2760,19 @@ export class Conductor {
     const toolName = brokeredGrantToolName(request.toolName);
     const check = this.deps.checkBrokeredHttpGrant;
     if (toolName === undefined || check === undefined) return false;
-    const target = brokeredGrantTarget(toolName, request.input);
     const channel = statedChannel ?? this.turns.get(sessionId)?.grantChannel;
-    if (target === undefined || channel === undefined) return false;
+    if (channel === undefined) return false;
     try {
       const session = await this.deps.store.getSession(sessionId);
       const projectId = session?.projectId;
-      if (projectId == null) return false;
+      if (session === undefined || projectId == null) return false;
+      const target = brokeredGrantTarget(
+        toolName,
+        toolName === 'verity_secret_run'
+          ? { ...request.input, cwd: session.worktree }
+          : request.input,
+      );
+      if (target === undefined) return false;
       const covered = await Promise.all(
         target.secretAliases.map((secretAlias) =>
           check({
@@ -2797,8 +2803,6 @@ export class Conductor {
     if (persist === undefined) throw new Error('brokered secret grant persistence is unavailable');
     const toolName = brokeredGrantToolName(request.toolName);
     if (toolName === undefined) throw new Error('tool does not support brokered secret grants');
-    const target = brokeredGrantTarget(toolName, request.input);
-    if (target === undefined) throw new Error('invalid brokered secret grant target');
     // The channel the operator answered on is recorded with the grant (ADR 0014 D3), so
     // it must come from the live turn — or, for a prompt no turn carries, from the caller
     // that raised it — rather than be assumed. Without one the allow still stands for this
@@ -2808,7 +2812,15 @@ export class Conductor {
     if (channel === undefined) throw new Error('brokered secret turn has no resolved channel');
     const session = await this.deps.store.getSession(sessionId);
     const projectId = session?.projectId;
-    if (projectId == null) throw new Error('brokered secret session has no project');
+    if (session === undefined || projectId == null)
+      throw new Error('brokered secret session has no project');
+    const target = brokeredGrantTarget(
+      toolName,
+      toolName === 'verity_secret_run'
+        ? { ...request.input, cwd: session.worktree }
+        : request.input,
+    );
+    if (target === undefined) throw new Error('invalid brokered secret grant target');
     for (const secretAlias of target.secretAliases) {
       await persist({
         projectId,

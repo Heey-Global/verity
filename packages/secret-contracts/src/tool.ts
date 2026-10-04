@@ -472,7 +472,7 @@ export const trustedCliRequestSchema = z
     entryScript: trustedCliEntryScriptSchema
       .optional()
       .describe(
-        'For a worktree script invoked by a root-owned interpreter, name the exact script, SHA-256, and loading mode approved by the user. Use `isolated` only when the script needs no mutable worktree reads; it is the sole reusable form. Use `dynamic` when it imports, sources, or reads worktree files; it always requires one-time approval. Omit for ordinary installed CLIs and inline/eval/stdin invocations.',
+        'For a worktree script invoked by a root-owned interpreter, name the exact script, SHA-256, and loading mode approved by the user. Use `isolated` only when the script needs no mutable worktree reads; its approval binds the script content. Use `dynamic` when it imports, sources, or reads worktree files; scoped approval accepts that those files may change. Omit for ordinary installed CLIs and inline/eval/stdin invocations.',
       ),
   })
   .strict()
@@ -513,7 +513,7 @@ export const TRUSTED_CLI_TOOL_DESCRIPTION =
   'Run one trusted CLI command with named Doppler secrets injected into environment variables — or into files whose paths those variables hold, via `injection: "file"`. ' +
   'This is the only way to give a program a project secret: reading it yourself through Bash or the Doppler CLI is not available to you. ' +
   'List every secret the command needs in `secrets`; a CLI that wants a key id, an issuer id and a private key gets all three from one call. Do not ask for a combined JSON alias and do not try to split one. ' +
-  'There is no implicit shell. The executable and each argument are separate tokens, and the executable must be an installed root-owned program. A worktree entry script is allowed only when `entryScript` names its absolute path, SHA-256, and loading mode; Verity shows and verifies them. Use `loading: "isolated"` only when the script needs no mutable worktree files; Verity denies those reads and may reuse approval. Use `loading: "dynamic"` for imports, sourced files, and other worktree reads; it always requires one-time approval. Inline eval, stdin, and modules are also one-time only. ' +
+  'There is no implicit shell. The executable and each argument are separate tokens, and the executable must be an installed root-owned program. A worktree entry script is allowed only when `entryScript` names its absolute path, SHA-256, and loading mode; Verity shows and verifies them. Use `loading: "isolated"` only when the script needs no mutable worktree files; Verity denies those reads and may reuse approval. Use `loading: "dynamic"` for imports, sourced files, and other worktree reads; scoped approval accepts that those files may change. Ordinary CLIs, inline eval, stdin, and modules also support once, session, and 30-day project approval bound to the exact invocation and execution directory. ' +
   'With `injection: "file"` Verity writes the secret to /run/verity-runner/secrets/<env>; because nothing expands `$VAR`, the argument has to spell that path out in full, in whichever form the tool takes. ' +
   'Verity shows the exact command, every environment variable, and every secret name for approval. The command can read or disclose the secrets; output redaction is hygiene only.';
 

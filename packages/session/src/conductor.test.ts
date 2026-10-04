@@ -9317,6 +9317,56 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     });
   });
 
+  it('binds project CLI grants to the server-resolved execution directory', async () => {
+    await createProjectSession('cwd-first');
+    await createProjectSession('cwd-second');
+    const targets = new Set<string>();
+    const check = vi.fn(async (grant: { target: string }) => targets.has(grant.target));
+    const persist = vi.fn(async (grant: { target: string }) => {
+      targets.add(grant.target);
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      persistBrokeredHttpGrant: persist,
+    });
+    const request = (sessionId: string, toolUseId: string) =>
+      conductor.requestExternalPermission({
+        sessionId,
+        toolUseId,
+        toolName: 'verity_secret_run',
+        input: {
+          command: ['/usr/bin/example-cli', 'deploy', './config'],
+          secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN' }],
+        },
+        channel: 'acp',
+        allowStandingGrant: true,
+      });
+    const first = request('cwd-first', 'first');
+    await vi.waitFor(async () => expect((await ctx.store.getEvents('cwd-first')).length).toBe(1));
+    await conductor.decidePermission(
+      'cwd-first',
+      'first',
+      { behavior: 'allow' },
+      { scope: 'project' },
+    );
+    await first;
+    await expect(request('cwd-first', 'reuse')).resolves.toMatchObject({ decidedBy: 'grant' });
+    // Relative operands in another worktree must not inherit the first directory's consent.
+    const second = request('cwd-second', 'other');
+    await vi.waitFor(async () => expect((await ctx.store.getEvents('cwd-second')).length).toBe(1));
+    expect(check.mock.calls.at(-1)?.[0].target).not.toBe(persist.mock.calls[0]?.[0].target);
+    await conductor.decidePermission('cwd-second', 'other', {
+      behavior: 'deny',
+      message: 'different directory',
+    });
+    await expect(second).resolves.toMatchObject({
+      decidedBy: 'card',
+      decision: { behavior: 'deny' },
+    });
+  });
+
   it('requires a fresh trusted CLI decision even when grant lookup would allow it', async () => {
     await createProjectSession('x4-cli');
     const check = vi.fn(async () => true);
