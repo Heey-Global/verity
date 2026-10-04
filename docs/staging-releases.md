@@ -24,7 +24,7 @@ Previously recorded `testflight` candidates retain their delivery channel.
 ## Mobile registration
 
 Register `build.verity.app.staging` in App Store Connect and an iOS Google OAuth
-client for that bundle ID. Set repository variables `STAGING_ASC_APP_ID` and
+client for that bundle ID. Set repository secrets `STAGING_ASC_APP_ID` and
 `STAGING_GOOGLE_AUTH_ID`. The workflow deliberately refuses to substitute the
 production app when Staging registration is missing. The existing Apple and Expo
 credentials are reused; the Apple API key must have access to both apps. EAS must
@@ -33,8 +33,8 @@ also have signing credentials for the additional bundle ID.
 The apps use different URL schemes and can be installed side by side. Pair each
 app with the intended Server. Servers support both app identities independently of their release channel.
 `GOOGLE_AUTH_ID` configures the production iOS client; `STAGING_GOOGLE_AUTH_ID`
-configures the Staging client. Official Server images bake in both repository
-variables at release time. A missing Staging client disables Staging Google
+configures the Staging client. Official Server images bake in the production repository variable (or its
+official default) and the Staging repository secret at release time. A missing Staging client disables Staging Google
 connection attempts rather than substituting the production client. The app sends
 its native variant with API requests; the Server selects only its configured client.
 Existing refresh tokens retain their stored client ID. Google services still use
