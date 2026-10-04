@@ -17,6 +17,7 @@ const setupStatusBody = z.object({
 });
 const settingsBody = z
   .object({
+    googleDriveAccessMode: z.enum(['read-only', 'read-write']).optional(),
     dopplerProject: z.string().nullable().optional(),
     dopplerConfig: z.string().nullable().optional(),
     defaultBranch: z

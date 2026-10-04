@@ -794,3 +794,26 @@ describe('project settings — GitHub', () => {
     alert.mockRestore();
   });
 });
+
+it('changes only the project Drive access mode', async () => {
+  setSearchParams({ id: 'p/1', section: 'drive' });
+  const detail = makeDetail();
+  detail.settings = {
+    ...detail.settings!,
+    googleDriveFolderId: 'root',
+    googleDriveFolderName: 'Documents',
+    googleDriveAccessMode: 'read-only',
+  };
+  const updateProjectSettings = jest
+    .fn()
+    .mockResolvedValue({ ...detail.settings, googleDriveAccessMode: 'read-write' });
+  mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
+  render(<ProjectServicesScreen />);
+  fireEvent.press(await screen.findByText('Google Drive folder'));
+  fireEvent.press(await screen.findByLabelText('Allow changes to Google Drive files'));
+  await waitFor(() =>
+    expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
+      googleDriveAccessMode: 'read-write',
+    }),
+  );
+});

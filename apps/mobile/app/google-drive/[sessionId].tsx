@@ -310,6 +310,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
             <Pressable
               style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
               onPress={connectCurrentFolder}
+              accessibilityHint="Connects read-only. Allow changes later in project settings."
               disabled={importingId !== null}
               accessibilityRole="button"
               accessibilityLabel={`Connect ${path.at(-1)?.name ?? 'this folder'}`}

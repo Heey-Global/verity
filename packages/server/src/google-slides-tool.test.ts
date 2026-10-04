@@ -615,3 +615,29 @@ describe('Google Slides agent tool', () => {
     tool.close();
   });
 });
+
+it('preserves native Slides reads while refusing edits in read-only projects', async () => {
+  const eventStore = store({
+    getProjectSettings: vi
+      .fn()
+      .mockResolvedValue({ googleDriveFolderId: 'root', googleDriveAccessMode: 'read-only' }),
+  });
+  const { tool, slides } = dependencies(eventStore);
+  await tool.invoke({
+    projectId: 'project-1',
+    sessionId: 'session-1',
+    request: { action: 'inspect_deck' },
+  });
+  await expect(
+    tool.invoke({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      request: {
+        action: 'edit',
+        revisionId: 'rev-1',
+        requests: [{ createSlide: { objectId: 'new' } }],
+      },
+    }),
+  ).rejects.toThrow('read-only');
+  expect(slides.update).not.toHaveBeenCalled();
+});

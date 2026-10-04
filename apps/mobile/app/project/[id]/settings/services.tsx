@@ -433,12 +433,34 @@ function GoogleDriveFolderSection({
     <SettingsDisclosure
       title="Google Drive folder"
       icon="folder"
-      summary={folderName ?? 'Not connected'}
+      summary={
+        folderName
+          ? `${folderName} · ${settings?.googleDriveAccessMode === 'read-only' ? 'Read only' : 'Read/write'}`
+          : 'Not connected'
+      }
     >
       <Text style={styles.reproSubtitle}>
-        Verity can read, create, and edit files in the connected folder from this project's
-        sessions.
+        Choose whether this project can only read files or also change them. Overwrites and trash
+        actions still require confirmation.
       </Text>
+      {folderName ? (
+        <SettingsToggleRow
+          label="Allow changes to Google Drive files"
+          value={settings?.googleDriveAccessMode !== 'read-only'}
+          onValueChange={(enabled) => {
+            if (disconnecting) return;
+            setDisconnecting(true);
+            void client
+              .updateProjectSettings(projectId, {
+                googleDriveAccessMode: enabled ? 'read-write' : 'read-only',
+              })
+              .then(onSaved)
+              .catch(() => Alert.alert('Could not change Drive access'))
+              .finally(() => setDisconnecting(false));
+          }}
+          disabled={disconnecting}
+        />
+      ) : null}
       <View style={styles.actionRow}>
         {folderName ? (
           <Pressable

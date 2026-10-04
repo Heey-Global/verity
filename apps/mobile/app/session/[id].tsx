@@ -4376,6 +4376,7 @@ function SessionFilesSheet({
   const [selected, setSelected] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [driveActive, setDriveActive] = useState(false);
+  const [driveCanWrite, setDriveCanWrite] = useState(false);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
@@ -4486,17 +4487,21 @@ function SessionFilesSheet({
       try {
         let folderId = driveFolderId;
         let nextPath = drivePath;
-        if (!folderId) {
-          const detail = await client.getProject(projectId);
-          folderId = detail.settings?.googleDriveFolderId ?? null;
-          const folderName = detail.settings?.googleDriveFolderName ?? null;
-          if (!folderId || !folderName) {
-            if (active) {
-              setDriveEntries([]);
-              setDriveUnconfigured(true);
-            }
-            return;
+        const detail = await client.getProject(projectId);
+        const configuredFolderId = detail.settings?.googleDriveFolderId ?? null;
+        const folderName = detail.settings?.googleDriveFolderName ?? null;
+        if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
+        if (!configuredFolderId || !folderName) {
+          if (active) {
+            setDriveEntries([]);
+            setDriveFolderId(null);
+            setDriveCanWrite(false);
+            setDriveUnconfigured(true);
           }
+          return;
+        }
+        if (!folderId || folderId !== configuredFolderId) {
+          folderId = configuredFolderId;
           nextPath = [{ id: folderId, name: folderName }];
           if (active) {
             setDriveFolderId(folderId);
@@ -4577,7 +4582,7 @@ function SessionFilesSheet({
   }, [client, path, root, sessionId]);
 
   const uploadDriveFiles = useCallback(() => {
-    if (!projectId || !driveFolderId || drivePath.length === 0) return;
+    if (!projectId || !driveFolderId || drivePath.length === 0 || !driveCanWrite) return;
     void (async () => {
       let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
       try {
@@ -4609,7 +4614,7 @@ function SessionFilesSheet({
         setUploading(false);
       }
     })();
-  }, [client, driveFolderId, drivePath, projectId]);
+  }, [client, driveFolderId, drivePath, projectId, driveCanWrite]);
 
   const openDriveFile = useCallback(
     (file: DriveFile) => {
@@ -5231,9 +5236,17 @@ function SessionFilesSheet({
                   icon={driveActive ? 'upload' : 'plus'}
                   tone="tinted"
                   busy={uploading}
-                  disabled={mutating || error !== null || (driveActive && driveUnconfigured)}
+                  disabled={
+                    mutating ||
+                    error !== null ||
+                    (driveActive && (driveUnconfigured || !driveCanWrite))
+                  }
                   accessibilityLabel={
-                    driveActive ? 'Upload files to Google Drive' : 'New or upload files'
+                    driveActive
+                      ? driveCanWrite
+                        ? 'Upload files to Google Drive'
+                        : 'Google Drive is read-only'
+                      : 'New or upload files'
                   }
                   onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
                 />

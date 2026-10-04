@@ -454,6 +454,7 @@ export interface ProjectSettingsRecord {
   memory: string | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
+  googleDriveAccessMode: 'read-only' | 'read-write';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -494,7 +495,8 @@ type ProjectSettingsKey =
   | 'defaultModel'
   | 'memory'
   | 'googleDriveFolderId'
-  | 'googleDriveFolderName';
+  | 'googleDriveFolderName'
+  | 'googleDriveAccessMode';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -2298,6 +2300,24 @@ export class EventStore implements EventSink {
     input: Parameters<EventStore['claimGoogleSlideInvocation']>[0],
   ): ReturnType<EventStore['claimGoogleSlideInvocation']> {
     return this.claimGoogleSlideInvocation(input);
+  }
+
+  async getCompletedGoogleWorkspaceInvocation(input: {
+    invocationId: string;
+    sessionId: string;
+    turnId: string;
+  }): Promise<{ result: unknown } | undefined> {
+    const row = await this.db
+      .selectFrom('google_slide_invocations')
+      .select(['session_id', 'turn_id', 'result_json'])
+      .where('invocation_id', '=', input.invocationId)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    if (row.session_id !== input.sessionId || row.turn_id !== input.turnId)
+      throw new Error('Google Workspace invocation id was reused across turns');
+    return row.result_json === null
+      ? undefined
+      : { result: JSON.parse(row.result_json) as unknown };
   }
 
   async completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void> {
@@ -5906,6 +5926,7 @@ export class EventStore implements EventSink {
       memory: string | null;
       google_drive_folder_id: string | null;
       google_drive_folder_name: string | null;
+      google_drive_access_mode: 'read-only' | 'read-write';
       created_at: Date;
       updated_at: Date;
       // See veritySettingsRowToRecord: false → no decrypt (sealed-safe public read).
@@ -5927,6 +5948,7 @@ export class EventStore implements EventSink {
       memory: row.memory,
       googleDriveFolderId: row.google_drive_folder_id,
       googleDriveFolderName: row.google_drive_folder_name,
+      googleDriveAccessMode: row.google_drive_access_mode,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5945,6 +5967,7 @@ export class EventStore implements EventSink {
     'memory',
     'google_drive_folder_id',
     'google_drive_folder_name',
+    'google_drive_access_mode',
     'created_at',
     'updated_at',
   ] as const;
@@ -6977,6 +7000,7 @@ export class EventStore implements EventSink {
       memory,
       google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
+      google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
     };
     return this.db.transaction().execute(async (tx) => {
       // Ensure and lock the per-project settings row before applying the patch.
@@ -7028,6 +7052,9 @@ export class EventStore implements EventSink {
             ...(patch.memory !== undefined ? { memory } : {}),
             ...(patch.googleDriveFolderId !== undefined
               ? { google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId) }
+              : {}),
+            ...(patch.googleDriveAccessMode !== undefined
+              ? { google_drive_access_mode: patch.googleDriveAccessMode }
               : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
