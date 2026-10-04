@@ -89,7 +89,35 @@ describe('toolCallView', () => {
       }),
     );
     expect(untitled.subtitle).toBeNull();
-    expect(untitled.headline).toBe('verity_session_handoff');
+    expect(untitled.headline).toBe('Handoff');
+  });
+
+  it('labels Verity tools the same under every backend qualification', () => {
+    // Claude reports `mcp__verity__<tool>` and OpenCode `verity_<tool>`; a table keyed only by
+    // the bare name would show the doubled raw identifier for the very same call.
+    for (const name of ['verity_gmail', 'mcp__verity__verity_gmail', 'verity_verity_gmail']) {
+      const view = toolCallView(tool({ name, state: 'running', input: { action: 'search' } }));
+      expect(view.title).toBe('Gmail');
+      expect(view.headline).toBe('Gmail search');
+    }
+    const handoff = toolCallView(
+      tool({
+        name: 'mcp__verity__verity_session_handoff',
+        state: 'running',
+        input: { briefing: 'x'.repeat(200) },
+      }),
+    );
+    expect(handoff.headline).toBe('Handoff');
+    expect(handoff.subtitle).toBeNull();
+  });
+
+  it('leaves unrelated tool names untouched', () => {
+    expect(toolCallView(tool({ name: 'verity_unknown', state: 'running', input: {} })).title).toBe(
+      'verity_unknown',
+    );
+    expect(
+      toolCallView(tool({ name: 'mcp__other__verity_gmail', state: 'running', input: {} })).title,
+    ).toBe('mcp__other__verity_gmail');
   });
 
   it('spells out bidi controls on the line, where they reorder what the reader compares', () => {
