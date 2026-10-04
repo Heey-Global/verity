@@ -5234,17 +5234,23 @@ function SessionFilesSheet({
                     if (entry) void openFile(entry);
                   },
                 },
-                {
-                  key: 'select',
-                  label: 'Select',
-                  icon: 'check-circle' as const,
-                  onPress: () => {
-                    const entry = entries.find((entry) => entry.path === menuFor.path);
-                    if (entry) startSelection(entry);
-                  },
-                },
               ]
             : []),
+          ...(() => {
+            // Offered only where it will do something: a file past the download
+            // limit has a menu but cannot be selected (see isSelectableFile).
+            const entry = entries.find((entry) => entry.path === menuFor.path);
+            return !menuFor.inPreview && !driveActive && entry && isSelectableFile(entry)
+              ? [
+                  {
+                    key: 'select',
+                    label: 'Select',
+                    icon: 'check-circle' as const,
+                    onPress: () => startSelection(entry),
+                  },
+                ]
+              : [];
+          })(),
           ...(menuFor.inPreview && preview
             ? [
                 {
