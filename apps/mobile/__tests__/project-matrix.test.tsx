@@ -4,7 +4,7 @@ import { Alert } from 'react-native';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 import { ProjectMatrixRooms } from '../components/settings/ProjectMatrixRooms';
-import { resetSettingsHarness } from './support/settingsHarness';
+import { mockPush, resetSettingsHarness } from './support/settingsHarness';
 
 const source = {
   accountId: 'account',
@@ -49,4 +49,14 @@ it('keeps existing room assignment intact until a user changes it', async () => 
   expect(screen.getByText('paused')).toBeOnTheScreen();
   expect(client.bindIntegrationSource).not.toHaveBeenCalled();
   expect(client.disconnectIntegrationSource).not.toHaveBeenCalled();
+});
+
+it('opens the Matrix settings directly when connecting an account', async () => {
+  const client = {
+    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
+  } as unknown as VerityClient;
+  render(<ProjectMatrixRooms client={client} projectId="project-a" />);
+
+  fireEvent.press(await screen.findByLabelText('Connect Matrix'));
+  expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix');
 });

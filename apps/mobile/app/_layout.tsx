@@ -254,10 +254,6 @@ function HydratedRoot() {
                 options={{ title: 'Add MCP connection' }}
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
-              <Stack.Screen
-                name="settings/services/matrix/account"
-                options={{ title: 'Matrix account' }}
-              />
               <Stack.Screen name="settings/server-update" options={{ title: 'Server update' }} />
               <Stack.Screen name="settings/live-meeting-stt" options={{ title: 'Live STT test' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
