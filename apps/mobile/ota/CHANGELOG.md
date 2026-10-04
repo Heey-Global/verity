@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.52.2](https://github.com/Heey-Global/verity/compare/mobile-v1.52.1...mobile-v1.52.2) (2026-10-04)
+
+
+### Features
+
+* **mobile:** brand Verity tool labels and name Verity CLI runs ([#1125](https://github.com/Heey-Global/verity/issues/1125)) ([856e2d6](https://github.com/Heey-Global/verity/commit/856e2d61e7f537d37f67bdad6ad625014bfea05b))
+
+
+### Bug Fixes
+
+* **mobile:** include staging prereleases in server changelog ([#1123](https://github.com/Heey-Global/verity/issues/1123)) ([41009e3](https://github.com/Heey-Global/verity/commit/41009e3a2452f5ec660186698ebcd0b99d234a62))
+* **mobile:** separate Claude and Codex settings ([#1120](https://github.com/Heey-Global/verity/issues/1120)) ([715744d](https://github.com/Heey-Global/verity/commit/715744d789bc7d4d346fcfb3aacded26d0ecd911))
+* **mobile:** show readable names for Verity gateway tools ([#1122](https://github.com/Heey-Global/verity/issues/1122)) ([d790cee](https://github.com/Heey-Global/verity/commit/d790ceee9c0afb562c6b39d02f075f572fcde394))
+
 ## [1.52.1](https://github.com/Heey-Global/verity/compare/mobile-v1.52.0...mobile-v1.52.1) (2026-10-04)
 
 
