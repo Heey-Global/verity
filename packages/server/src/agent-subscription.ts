@@ -53,7 +53,10 @@ export function codexSubscriptionPlan(authJson: string | null | undefined): stri
   if (typeof idToken !== 'string') return null;
   const payload = jwtPayload(idToken);
   const namespaced = record(payload?.[OPENAI_AUTH_CLAIM]);
-  return planLabel(namespaced?.chatgpt_plan_type ?? payload?.chatgpt_plan_type, CODEX_PLANS);
+  return (
+    planLabel(namespaced?.chatgpt_plan_type, CODEX_PLANS) ??
+    planLabel(payload?.chatgpt_plan_type, CODEX_PLANS)
+  );
 }
 
 function planLabel(value: unknown, known: Record<string, string>): string | null {

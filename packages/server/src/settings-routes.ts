@@ -106,8 +106,8 @@ export function registerSettingsRoutes(
     if (deps.secretCipher?.isSealed() !== true) {
       try {
         return await deps.store().getVeritySettings();
-      } catch {
-        // Fall through to the sealed-safe read.
+      } catch (error) {
+        app.log.warn({ err: error }, 'settings: decrypted read failed; serving the raw row');
       }
     }
     return deps.store().getVeritySettingsRaw();
