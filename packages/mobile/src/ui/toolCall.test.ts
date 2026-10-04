@@ -89,7 +89,7 @@ describe('toolCallView', () => {
       }),
     );
     expect(untitled.subtitle).toBeNull();
-    expect(untitled.headline).toBe('Handoff');
+    expect(untitled.headline).toBe('Verity Handoff');
   });
 
   it('labels Verity tools the same under every backend qualification', () => {
@@ -107,8 +107,20 @@ describe('toolCallView', () => {
         input: { briefing: 'x'.repeat(200) },
       }),
     );
-    expect(handoff.headline).toBe('Handoff');
+    expect(handoff.headline).toBe('Verity Handoff');
     expect(handoff.subtitle).toBeNull();
+  });
+
+  it('names a Verity CLI run through Bash by the CLI, not the agent-written description', () => {
+    const headline = (command: string) =>
+      toolCallView(
+        tool({ name: 'Bash', state: 'running', input: { command, description: 'Review diff' } }),
+      ).headline;
+    expect(headline('verity-code-review run 2>&1 | tail -30')).toBe('Verity Code Review run');
+    expect(headline('verity-memory append "note"')).toBe('Verity Memory append');
+    expect(headline('verity-code-review')).toBe('Verity Code Review');
+    // Only the program position counts: a mention elsewhere is an ordinary command.
+    expect(headline('echo verity-code-review')).toBe('Ran Review diff');
   });
 
   it('leaves unrelated tool names untouched', () => {
