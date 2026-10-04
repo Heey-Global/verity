@@ -45,3 +45,45 @@ it('rejects malformed base64 instead of silently writing truncated bytes', () =>
     }).success,
   ).toBe(false);
 });
+
+it.each(['upload', 'overwrite'])(
+  'accepts valid base64 at the encoded limit for %s without stack overflow',
+  (action) => {
+    expect(
+      fileOperationRequestSchema.safeParse({
+        action,
+        name: 'New',
+        ...(action === 'upload'
+          ? { mimeType: 'application/octet-stream' }
+          : { fileId: 'file', expectedVersion: 'v1' }),
+        content: 'A'.repeat(10_000_000),
+        encoding: 'base64',
+      }).success,
+    ).toBe(true);
+  },
+);
+it.each(['A', 'AAA', 'A===', '=AAA', 'AA=A', 'AAAA====', 'AA==AAAA', 'AAAA\n'])(
+  'rejects invalid base64 length, padding, or characters: %j',
+  (content) => {
+    expect(
+      fileOperationRequestSchema.safeParse({
+        action: 'upload',
+        name: 'New',
+        mimeType: 'application/octet-stream',
+        content,
+        encoding: 'base64',
+      }).success,
+    ).toBe(false);
+  },
+);
+it.each(['', 'AAAA', 'AA==', 'AAA='])('accepts valid base64 padding: %j', (content) => {
+  expect(
+    fileOperationRequestSchema.safeParse({
+      action: 'upload',
+      name: 'New',
+      mimeType: 'application/octet-stream',
+      content,
+      encoding: 'base64',
+    }).success,
+  ).toBe(true);
+});

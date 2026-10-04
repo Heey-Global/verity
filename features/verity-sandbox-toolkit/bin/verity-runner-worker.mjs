@@ -24706,7 +24706,14 @@ function fitsUtf8Limit(text) {
   }
   return true;
 }
-var validContent = (value) => value.encoding === "base64" ? /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.content) : fitsUtf8Limit(value.content);
+function validBase64(text) {
+  if (text.length % 4 !== 0)
+    return false;
+  const padding = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
+  const unpadded = padding === 0 ? text : text.slice(0, -padding);
+  return !/[^A-Za-z0-9+/]/.test(unpadded);
+}
+var validContent = (value) => value.encoding === "base64" ? validBase64(value.content) : fitsUtf8Limit(value.content);
 var fileOperationRequestSchema = import_zod5.z.discriminatedUnion("action", [
   import_zod5.z.object({ action: import_zod5.z.literal("capabilities") }).strict(),
   import_zod5.z.object({

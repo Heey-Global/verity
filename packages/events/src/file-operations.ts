@@ -24,10 +24,15 @@ function fitsUtf8Limit(text: string): boolean {
   }
   return true;
 }
+function validBase64(text: string): boolean {
+  if (text.length % 4 !== 0) return false;
+  const padding = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0;
+  // Repeated capture groups overflow V8's regexp stack on accepted large files.
+  const unpadded = padding === 0 ? text : text.slice(0, -padding);
+  return !/[^A-Za-z0-9+/]/.test(unpadded);
+}
 const validContent = (value: { content: string; encoding?: string | undefined }) =>
-  value.encoding === 'base64'
-    ? /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.content)
-    : fitsUtf8Limit(value.content);
+  value.encoding === 'base64' ? validBase64(value.content) : fitsUtf8Limit(value.content);
 
 /** Approval and execution must interpret the same bounded file-operation payload. */
 export const fileOperationRequestSchema = z.discriminatedUnion('action', [
