@@ -40,11 +40,27 @@ token pasted into the tracked file is one `git add` from being published.
 
 One root Vitest configuration owns every workspace's suite
 (`packages/*/src/**/*.test.ts` and `scripts/**/*.test.ts`), so `npm test` runs
-all of it and the packages have no `test` script of their own. Scope it while
-iterating with a path — `npx vitest run packages/server/src/auth.test.ts`, or
-`npx vitest run packages/server` for one package — and run the full suite once
-before pushing. `apps/mobile` is the exception — it is outside that glob and
-runs Jest, via `npm test --workspace @verity/mobile-app`.
+all of it and the packages have no `test` script of their own. Scope local runs
+with paths — `npx vitest run packages/server/src/auth.test.ts`, or
+`npx vitest run packages/server` for one package. Before pushing, run the tests
+for changed behavior and affected consumers/integration paths, including guards
+for changed scripts, fixtures, or configuration. Record the commands and scope
+in the PR description. Do not repeat passing checks unless subsequent changes
+or unresolved failures invalidate them.
+
+The CI workflow owns the full suite for runtime changes; a full local run is
+not required for every push. Run it locally when changes have broad or unclear
+impact, such as shared test infrastructure, root dependency/configuration
+changes, or cross-cutting runtime contracts. Documentation-only changes need
+formatting checks, plus any repository guards that read the changed documents.
+Do not rely solely on `vitest --changed` or `vitest related`: tests also launch
+child processes and read fixtures/resources by path, outside the import graph.
+
+`apps/mobile` is outside the root glob and runs Jest, via
+`npm test --workspace @verity/mobile-app`; select affected suites with Jest's
+path filters when the change is localized. `packages/mobile` also has its own
+Vitest configuration and is excluded from the root suite; run its affected
+tests with `npm test --workspace @verity/mobile`.
 
 Sandboxes run under a container memory limit shared with other sessions.
 Treat the checked-in `maxWorkers` / `-j` / `--parallel` values as an upper
