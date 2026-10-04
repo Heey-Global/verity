@@ -4,7 +4,7 @@ import { link, lstat, mkdtemp, open, realpath, rename, rmdir, unlink } from 'nod
 import { openFileHistory, recoverFileHistory } from './session-file-history.js';
 import { isProbablyText, type KnowledgeFileSlot } from './session-files.js';
 
-export const MAX_EDIT_BYTES = 1_000_000;
+const MAX_EDIT_BYTES = 1_000_000;
 export const fileVersion = (bytes: Buffer): string =>
   createHash('sha256').update(bytes).digest('hex');
 export class FileWriteError extends Error {

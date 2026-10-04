@@ -54,7 +54,7 @@ const sessionFileWriteBody = z.object({
     .regex(/^[a-f0-9]{64}$/)
     .nullable(),
 });
-export type SessionFileWriteBody = z.infer<typeof sessionFileWriteBody>;
+type SessionFileWriteBody = z.infer<typeof sessionFileWriteBody>;
 
 type SessionFileUploadQuery = z.infer<typeof sessionFileUploadQuery>;
 type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
