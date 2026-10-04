@@ -117,9 +117,12 @@ describe('reconcileHostRuntimes', () => {
     const { docker, runtimes } = daemon(secretOnly);
     const dir = await requestDir({ version: 1, trigger: 'systemd-path' });
     // Stands in for the path unit: answer once the request lands.
+    let answered = false;
     const answer = setInterval(() => {
       void readFile(join(dir, 'request.json'), 'utf8').then(
         async (body) => {
+          if (answered) return;
+          answered = true;
           clearInterval(answer);
           const request = JSON.parse(body) as { id: string; requirements: HostRuntimeRequirements };
           expect(request.requirements).toEqual(requirements);
@@ -165,9 +168,13 @@ describe('reconcileHostRuntimes', () => {
   it("relays the host component's failure", async () => {
     const { docker } = daemon(secretOnly);
     const dir = await requestDir({ version: 1, trigger: 'systemd-path' });
+    let answered = false;
     const answer = setInterval(() => {
       void readFile(join(dir, 'request.json'), 'utf8').then(
         async () => {
+          // Clearing the timer does not cancel reads already in flight.
+          if (answered) return;
+          answered = true;
           clearInterval(answer);
           await writeFile(
             join(dir, 'result.json'),
@@ -196,9 +203,13 @@ describe('reconcileHostRuntimes', () => {
     const stale = join(dir, 'result.json');
     await writeFile(stale, JSON.stringify({ version: 1, id: 'u9', ok: false, message: 'old' }));
     await utimes(stale, new Date(0), new Date(0));
+    let answered = false;
     const answer = setInterval(() => {
       void readFile(join(dir, 'request.json'), 'utf8').then(
         async () => {
+          // Clearing the timer does not cancel reads already in flight.
+          if (answered) return;
+          answered = true;
           clearInterval(answer);
           runtimes['runsc-project'] = {
             path: PINNED_RUNSC_PATH,

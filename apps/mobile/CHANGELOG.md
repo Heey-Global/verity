@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.51.0](https://github.com/Heey-Global/verity/compare/mobile-v1.50.0...mobile-v1.51.0) (2026-10-03)
+
+
+### Features
+
+* **mobile:** show reusable premium notice for preview sharing ([#1003](https://github.com/Heey-Global/verity/issues/1003)) ([4015fde](https://github.com/Heey-Global/verity/commit/4015fde3c288fb668576d389c09d8ce21abd77ef))
+* **preview:** enforce durable PIN lockout and show locked links ([#1006](https://github.com/Heey-Global/verity/issues/1006)) ([6281a4a](https://github.com/Heey-Global/verity/commit/6281a4a8ca8e729b5eb1ec55818c3910adaf9621))
+* **preview:** use six-digit PINs for every share duration ([#1004](https://github.com/Heey-Global/verity/issues/1004)) ([49d1695](https://github.com/Heey-Global/verity/commit/49d1695b61882c3839ff73c5985285571f708d05))
+* **release:** add staging channels and production promotion ([#1035](https://github.com/Heey-Global/verity/issues/1035)) ([55a7aea](https://github.com/Heey-Global/verity/commit/55a7aea98f8e2bb3aedbf8d6b84a19c0692ce2de))
+
+
+### Bug Fixes
+
+* **mobile:** settle chat navigation jumps against measured layout ([#1012](https://github.com/Heey-Global/verity/issues/1012)) ([f378079](https://github.com/Heey-Global/verity/commit/f37807975963bb84d578ac2e8ae96319a831b390))
+* show local save only for project file changes ([#1017](https://github.com/Heey-Global/verity/issues/1017)) ([b77f133](https://github.com/Heey-Global/verity/commit/b77f133616fa290511edcecb9881180151592de3))
+
 ## [1.50.0](https://github.com/Heey-Global/verity/compare/mobile-v1.49.0...mobile-v1.50.0) (2026-10-02)
 
 

@@ -307,6 +307,33 @@ describe('preview session cookie expiry', () => {
   });
 });
 
+describe('application WebSocket receiver errors', () => {
+  it('closes oversized messages while keeping the edge and stream slots usable', async () => {
+    const port = await wsTarget((socket) => {
+      socket.on('message', (data, binary) => socket.send(data, { binary }));
+    });
+    const { edgePort, cookie } = await bridge('receiver-errors', port, {
+      maxBodyBytes: 128,
+      maxConcurrentStreams: 1,
+    });
+    const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    const closed = new Promise<number>((resolve) => client.once('close', resolve));
+    client.send(Buffer.alloc(129));
+    expect(await closed).toBe(1009);
+
+    const next = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+    cleanups.push(() => next.terminate());
+    await opened(next);
+    const echoed = new Promise<string>((resolve) =>
+      next.once('message', (data: WebSocket.RawData) => resolve(rawText(data))),
+    );
+    next.send('still available');
+    expect(await echoed).toBe('still available');
+  });
+});
+
 describe('connector reconnect policy', () => {
   it('resets failure backoff after a successful connection and retries disconnects', async () => {
     let calls = 0;

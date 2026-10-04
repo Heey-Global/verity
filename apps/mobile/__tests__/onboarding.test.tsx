@@ -55,7 +55,7 @@ jest.mock('../lib/client', () => ({
 }));
 
 import OnboardingWelcome from '../app/onboarding/welcome';
-import OnboardingGithub from '../app/onboarding/github';
+import OnboardingAiBackends from '../app/onboarding/ai-backends';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { Text } from 'react-native';
 
@@ -139,9 +139,15 @@ describe('onboarding wizard shell — step screen', () => {
         jest.fn().mockResolvedValue(makeStatus({ masterPasswordSet: true, sealed: false })),
       ),
     );
-    render(<OnboardingGithub />);
+    mockCreateVerityClient.mockReturnValue({
+      fetchOnboardingStatus: jest
+        .fn()
+        .mockResolvedValue(makeStatus({ masterPasswordSet: true, sealed: false })),
+      getVeritySettings: jest.fn().mockResolvedValue({}),
+    } as unknown as VerityClient);
+    render(<OnboardingAiBackends />);
     // GitHub is step 2 of 4 and can go back to the master-password step.
-    expect(screen.getByLabelText('Step 2 of 4')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Step 2 of 2')).toBeOnTheScreen();
     mockCanGoBack.mockReturnValue(true);
     fireEvent.press(screen.getByLabelText('Back'));
     expect(mockBack).not.toHaveBeenCalled();
@@ -153,9 +159,14 @@ describe('onboarding first-run gate', () => {
   it('does not refetch on ordinary navigation and uses the latest route when sealed', async () => {
     jest.useFakeTimers();
     try {
-      const fetchStatus = jest
-        .fn()
-        .mockResolvedValue(makeStatus({ complete: true, sealed: false, masterPasswordSet: true }));
+      const fetchStatus = jest.fn().mockResolvedValue(
+        makeStatus({
+          complete: true,
+          claudeConfigured: true,
+          sealed: false,
+          masterPasswordSet: true,
+        }),
+      );
       const secretStatus = jest.fn().mockResolvedValue('unlocked');
       mockCreateVerityClient.mockReturnValue(makeClient(fetchStatus, secretStatus));
       const view = render(<GateProbe />);
@@ -215,7 +226,7 @@ describe('onboarding first-run gate', () => {
     mockCreateVerityClient.mockReturnValue(makeClient(jest.fn().mockResolvedValue(status)));
     render(<GateProbe />);
 
-    expect(await screen.findByText('gate:done:/onboarding/github')).toBeOnTheScreen();
+    expect(await screen.findByText('gate:done:/onboarding/ai-backends')).toBeOnTheScreen();
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -226,7 +237,7 @@ describe('onboarding first-run gate', () => {
     render(<GateProbe />);
 
     expect(
-      await screen.findByText('gate:done:/unlock-device?returnTo=%2Fonboarding%2Fgithub'),
+      await screen.findByText('gate:done:/unlock-device?returnTo=%2Fonboarding%2Fai-backends'),
     ).toBeOnTheScreen();
     expect(mockReplace).not.toHaveBeenCalledWith('/onboarding/github');
     expect(mockReplace).not.toHaveBeenCalled();
@@ -314,6 +325,7 @@ describe('onboarding first-run gate', () => {
             signingKeyConfigured: true,
             hasProject: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),
@@ -334,11 +346,15 @@ describe('onboarding first-run gate', () => {
     mockGetAuthToken.mockReturnValue(null);
     mockCreateVerityClient.mockReturnValue(
       makeClient(
-        jest
-          .fn()
-          .mockResolvedValue(
-            makeStatus({ sealed: false, masterPasswordSet: true, complete: true, nextStep: null }),
-          ),
+        jest.fn().mockResolvedValue(
+          makeStatus({
+            sealed: false,
+            masterPasswordSet: true,
+            complete: true,
+            claudeConfigured: true,
+            nextStep: null,
+          }),
+        ),
       ),
     );
     render(<GateProbe />);
@@ -363,6 +379,7 @@ describe('onboarding first-run gate', () => {
             signingKeyConfigured: true,
             hasProject: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),
@@ -382,6 +399,7 @@ describe('onboarding first-run gate', () => {
             sealed: true,
             masterPasswordSet: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),
@@ -403,6 +421,7 @@ describe('onboarding first-run gate', () => {
             sealed: false,
             masterPasswordSet: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),

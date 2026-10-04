@@ -4,6 +4,8 @@ import WebSocket from 'ws';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CLOSE_TIMEOUT_MS,
+  MAX_CONTROL_PENDING_MESSAGES,
+  MAX_CONTROL_PENDING_BYTES,
   RECONNECT_CAPACITY_MS,
   RECONNECT_MAX_MS,
   UplinkControlClient,
@@ -183,6 +185,99 @@ async function flush(): Promise<void> {
 
 describe('UplinkControlClient', () => {
   beforeEach(() => vi.useRealTimers());
+
+  it.each(['count', 'bytes'] as const)(
+    'bounds the %s backlog behind a stalled handler and discards retired socket messages',
+    async (limit) => {
+      const fixture = await welcomed(setup());
+      let release!: () => void;
+      fixture.expired.mockImplementationOnce(
+        () =>
+          new Promise<undefined>((resolve) => {
+            release = () => resolve(undefined);
+          }),
+      );
+      fixture.socket.message({ type: 'share.expired', shareId: 'blocked' });
+      await flush();
+      const frame = JSON.stringify({
+        type: 'share.expired',
+        shareId: limit === 'bytes' ? 'x'.repeat(60 * 1024) : 'queued',
+      });
+      const budget =
+        limit === 'bytes'
+          ? Math.floor(MAX_CONTROL_PENDING_BYTES / Buffer.byteLength(frame)) + 1
+          : MAX_CONTROL_PENDING_MESSAGES;
+      try {
+        for (let i = 0; i < budget; i += 1) fixture.socket.emit('message', Buffer.from(frame));
+        expect(fixture.socket.close).toHaveBeenCalledWith(1013, 'control backlog exceeded');
+        expect(fixture.client.diagnostics().sharing).toBe('unavailable');
+        // A retired peer must not keep adding work while the first handler is stalled.
+        for (let i = 0; i < 10; i += 1) fixture.socket.emit('message', Buffer.from(frame));
+      } finally {
+        release();
+        await fixture.client.stop();
+      }
+      expect(fixture.expired).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not restore authority from a stalled welcome after overload and reconnect', async () => {
+    vi.useFakeTimers();
+    const fixture = setup();
+    fixture.client.start();
+    await flush();
+    let resume!: () => void;
+    fixture.store.updateVeritySettings.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resume = () => resolve({ ...fixture.settings, uplinkInstallationId: 'installation-1' });
+        }),
+    );
+    fixture.socket.open();
+    const welcome = {
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    };
+    fixture.socket.message(welcome);
+    await flush();
+    const replacement = new FakeSocket();
+    fixture.socketFactory.mockReturnValue(replacement as unknown as WebSocket);
+    try {
+      for (let i = 0; i < MAX_CONTROL_PENDING_MESSAGES; i += 1) {
+        fixture.socket.message({ type: 'share.expired', shareId: 'queued' });
+      }
+      expect(fixture.socket.close).toHaveBeenCalledWith(1013, 'control backlog exceeded');
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS);
+      replacement.open();
+      resume();
+      for (let i = 0; i < MAX_CONTROL_PENDING_MESSAGES; i += 1) await flush();
+      expect(fixture.client.isAvailable()).toBe(false);
+      replacement.message(welcome);
+      await flush();
+      expect(fixture.client.isAvailable()).toBe(true);
+      expect(replacement.close).not.toHaveBeenCalled();
+    } finally {
+      resume();
+      await fixture.client.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns backlog capacity after completed handlers', async () => {
+    const fixture = await welcomed(setup());
+    try {
+      for (let i = 0; i < MAX_CONTROL_PENDING_MESSAGES * 2; i += 1) {
+        fixture.socket.message({ type: 'share.expired', shareId: 'completed' });
+        await flush();
+      }
+      expect(fixture.socket.close).not.toHaveBeenCalled();
+      expect(fixture.expired).toHaveBeenCalledTimes(MAX_CONTROL_PENDING_MESSAGES * 2);
+    } finally {
+      await fixture.client.stop();
+    }
+  });
 
   it('reports control and sharing readiness from the live socket and granted features', async () => {
     const fixture = setup();

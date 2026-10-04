@@ -1048,6 +1048,9 @@ function trustedCliInterpreterName(token) {
 
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.verity-trusted-cli-policy.json';
 export const LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.breeze-trusted-cli-policy.json';
+// Paginated diagnostic modes can exceed 64 routes; keep the whole policy bounded
+// without invalidating every existing route when another mode is installed.
+const MAX_TRUSTED_CLI_ARGV_POLICY_ROUTES = 256;
 const MAX_TRUSTED_CLI_ARGV_POLICY_BYTES = 64 * 1024;
 const TRUSTED_CLI_POLICY_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/u;
 
@@ -1058,7 +1061,7 @@ function parseTrustedCliArgvPolicy(raw) {
     Object.keys(raw).some((key) => key !== 'version' && key !== 'routes') ||
     !Array.isArray(raw.routes) ||
     raw.routes.length === 0 ||
-    raw.routes.length > 64
+    raw.routes.length > MAX_TRUSTED_CLI_ARGV_POLICY_ROUTES
   ) {
     throw new Error('trusted CLI argv policy is invalid');
   }

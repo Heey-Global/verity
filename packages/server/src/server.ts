@@ -1,4 +1,12 @@
 import { googleAppClient } from './google-app-client.js';
+import {
+  excludeFileHistoryFromGit,
+  recoverFileHistory,
+  sessionFileHistory,
+  pruneFileHistory,
+} from './session-file-history.js';
+import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
+import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
@@ -122,6 +130,7 @@ import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
   KNOWLEDGE_MEETINGS_DIR,
+  KNOWLEDGE_INSIGHTS_DIR,
   KNOWLEDGE_MOUNT_TARGET,
 } from './knowledge-folder.js';
 import {
@@ -216,6 +225,8 @@ import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
+import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
@@ -1562,7 +1573,10 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
     reply.code(400);
     return { error: error.message };
   }
-  if (error instanceof Error && error.message === 'invalid path') {
+  if (
+    (error instanceof Error && error.message === 'invalid path') ||
+    ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+  ) {
     reply.code(400);
     return { error: 'invalid path' };
   }
@@ -4048,12 +4062,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const userId = registry.resolveUserId(token);
       if (userId === undefined) return reply.code(401).send({ error: 'unauthorized' });
       request.localUserId = userId;
-      const access = await authorizePairedRoute(
-        deps.eventStore,
-        userId,
-        request.method,
-        request.routeOptions.url ?? pathname,
-        (request.params ?? {}) as Record<string, unknown>,
+      const access = await measureLatencyPhase('request_authorization', () =>
+        authorizePairedRoute(
+          deps.eventStore,
+          userId,
+          request.method,
+          request.routeOptions.url ?? pathname,
+          (request.params ?? {}) as Record<string, unknown>,
+        ),
       );
       if (access === 'not_found') return reply.code(404).send({ error: 'not found' });
       if (access === 'forbidden') return reply.code(403).send({ error: 'forbidden' });
@@ -4880,6 +4896,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerConnectionUsageRoutes(
+    app,
+    deps.eventStore,
+    async () => (await availableModels()).default,
+  );
+  registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
@@ -6055,23 +6077,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // storm, and a release deleted on GitHub is cleared rather than pinned.
     let fresh: ReleaseSummary | null | undefined;
     if (opts?.awaitRefresh === true && deps.refreshLatestRelease !== undefined) {
-      fresh = await deps.refreshLatestRelease(project.owner, project.repo);
+      fresh = await measureLatencyPhase('project_release_refresh', () =>
+        deps.refreshLatestRelease!(project.owner, project.repo),
+      );
     } else {
       fresh = deps.latestRelease?.(project.owner, project.repo);
       // If the nonblocking cache is unknown, await one refresh. This is what
       // lets DB-backed GitHub-App deployments (no PAT/gh-token) populate release
       // badges from the project overview instead of staying permanently blank.
       if (fresh === undefined && deps.refreshLatestRelease !== undefined) {
-        fresh = await deps.refreshLatestRelease(project.owner, project.repo);
+        fresh = await measureLatencyPhase('project_release_refresh', () =>
+          deps.refreshLatestRelease!(project.owner, project.repo),
+        );
       }
     }
     if (fresh !== undefined && releaseDiffers(project, fresh)) {
-      await deps.eventStore.updateProjectReleaseStatus(project.id, {
-        tag: fresh?.tag ?? null,
-        name: fresh?.name ?? null,
-        url: fresh?.url ?? null,
-        publishedAt: fresh?.publishedAt ?? null,
-      });
+      await measureLatencyPhase('project_release_persist', () =>
+        deps.eventStore.updateProjectReleaseStatus(project.id, {
+          tag: fresh?.tag ?? null,
+          name: fresh?.name ?? null,
+          url: fresh?.url ?? null,
+          publishedAt: fresh?.publishedAt ?? null,
+        }),
+      );
     }
     // A cold/unknown lookup (undefined) falls back to the persisted value so
     // the badge never blanks out right after a restart.
@@ -6235,8 +6263,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const projectsForOverview = async (projects: ProjectRecord[]): Promise<ProjectRecord[]> => {
     const withoutControl = projects.filter((project) => !isControlPlaneProject(project));
-    if (!(await advancedModeEnabled())) return withoutControl;
-    return [await ensureVerityControlProject(), ...withoutControl];
+    if (!(await measureLatencyPhase('project_settings', advancedModeEnabled)))
+      return withoutControl;
+    return [
+      await measureLatencyPhase('project_control', ensureVerityControlProject),
+      ...withoutControl,
+    ];
   };
 
   const appearsInProjectOverview = (project: ProjectRecord): boolean =>
@@ -7861,6 +7893,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
 
       try {
+        const release = await acquireKnowledgeMutationLock(root.dir);
+        try {
+          await recoverFileHistory(`/proc/self/fd/${directoryHandle.fd}`);
+        } finally {
+          release();
+        }
         const descriptorPath = `/proc/self/fd/${String(directoryHandle.fd)}`;
         const dirents = await readdir(descriptorPath, { withFileTypes: true });
         const hidden = hiddenSessionFileNames(root.root, target.rel);
@@ -7981,8 +8019,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           await link(temporaryPath, destinationPath);
         } finally {
@@ -8022,7 +8059,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'invalid path' };
       }
       let fileHandle;
+      const editablePath = !isManagedKnowledgePath(root.root, target.rel);
+      const release = editablePath ? await acquireKnowledgeMutationLock(root.dir) : () => {};
       try {
+        if (editablePath) {
+          let slot;
+          try {
+            slot = await openKnowledgeFileSlot(root, path);
+            await recoverFileHistory(slot.directoryPath);
+          } finally {
+            await slot?.close();
+          }
+        }
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
           root.dir,
@@ -8030,12 +8078,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       } catch (error) {
         await fileHandle?.close().catch(() => undefined);
-        if (error instanceof Error && error.message === 'invalid path') {
+        if (
+          (error instanceof Error && error.message === 'invalid path') ||
+          ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+        ) {
           reply.code(400);
           return { error: 'invalid path' };
         }
         reply.code(404);
         return { error: 'file not found' };
+      } finally {
+        release();
       }
       try {
         const stats = await fileHandle.stat();
@@ -8057,6 +8110,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(413);
@@ -8073,14 +8127,103 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(415);
           return { error: 'file is not a text file' };
         }
-        return { path: target.rel, content: bytes.toString('utf8'), size: stats.size };
+        return {
+          path: target.rel,
+          content: bytes.toString('utf8'),
+          size: stats.size,
+          version: fileVersion(bytes),
+          editable: !isManagedKnowledgePath(root.root, target.rel),
+        };
       } finally {
         await fileHandle.close();
+      }
+    },
+    history: async (reply, root, path, version) => {
+      let slot;
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        slot = await openKnowledgeFileSlot(root, path);
+        await recoverFileHistory(slot.directoryPath);
+        if (!version) {
+          await pruneFileHistory(slot.directoryPath, slot.name).catch((error: unknown) => {
+            app.log.warn(
+              { err: error },
+              'File history cleanup failed; retained versions remain available',
+            );
+          });
+        }
+        return await sessionFileHistory(slot.directoryPath, slot.name, version);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          reply.code(404);
+          return { error: 'version not found' };
+        }
+        return knowledgeSlotFailure(reply, error);
+      } finally {
+        await slot?.close();
+        release();
+      }
+    },
+    write: async (reply, root, body) => {
+      let slot;
+      try {
+        slot = await openKnowledgeFileSlot(root, body.path);
+      } catch (error) {
+        return knowledgeSlotFailure(reply, error);
+      }
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        if (
+          root.root === 'knowledge' &&
+          slot.rel === 'overview.md' &&
+          body.content.length > PROJECT_MEMORY_MAX_CHARS
+        ) {
+          reply.code(413);
+          return { error: 'overview.md exceeds the project overview limit' };
+        }
+        if (root.root === 'worktree') await excludeFileHistoryFromGit(root.dir);
+        const creationMode =
+          root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
+            ? 0o666
+            : 0o644;
+        const saved = await writeSessionText(
+          slot,
+          body.content,
+          body.expectedVersion,
+          creationMode,
+        );
+        let warning: string | undefined;
+        const updates: Array<() => Promise<unknown>> = [];
+        if (root.root === 'knowledge' && slot.rel === 'overview.md')
+          updates.push(() => markProjectOverviewAuthoritative(root.dir));
+        if (root.root !== 'worktree') updates.push(() => extractKnowledgeFile(root.dir, slot.rel));
+        for (const update of updates) {
+          try {
+            await update();
+          } catch (err) {
+            app.log.warn(
+              { err, path: slot.rel, root: root.root },
+              'saved file Knowledge refresh failed',
+            );
+            warning = 'The file was saved. Knowledge search and context may be out of date.';
+          }
+        }
+        return warning ? { ...saved, warning } : saved;
+      } catch (error) {
+        if (error instanceof FileWriteError) {
+          reply.code(error.status);
+          return { error: error.message };
+        }
+        throw error;
+      } finally {
+        release();
+        await slot.close();
       }
     },
     download: async (reply, root, path) => {
@@ -8138,8 +8281,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return knowledgeSlotFailure(reply, error);
       }
       try {
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
           if (stats === undefined) {
@@ -8177,14 +8319,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const sourcePath = `${source.directoryPath}/${source.name}`;
       const destinationPath = `${destination.directoryPath}/${destination.name}`;
-      const sharedRoot =
-        fromRoot.root === 'shared'
-          ? fromRoot.dir
-          : toRoot.root === 'shared'
-            ? toRoot.dir
-            : undefined;
-      const releaseMutation =
-        sharedRoot === undefined ? undefined : await acquireKnowledgeMutationLock(sharedRoot);
+      const releases: Array<() => void> = [];
+      // Acquire both roots in a stable order so opposite moves cannot deadlock.
+      for (const dir of [...new Set([fromRoot.dir, toRoot.dir])].sort()) {
+        releases.push(await acquireKnowledgeMutationLock(dir));
+      }
       try {
         const stats = await lstat(sourcePath).catch(() => undefined);
         if (stats === undefined) {
@@ -8208,20 +8347,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // existing destination, and a move between the project folder and the
         // shared one is a scope change (ADR 0022 D1) — the one place where
         // overwriting somebody else's file must fail loudly. Both roots live
-        // under the same data root, so the hard link always resolves.
-        await link(sourcePath, destinationPath);
-        await unlink(sourcePath);
+        // under the same data root, so the hard link always resolves. A rename
+        // inside the worktree stays on one filesystem too, and must not replace
+        // a file the agent wrote under the new name either.
+        if (fromRoot.root === 'worktree') {
+          await renameWorktreeFile(sourcePath, destinationPath);
+        } else {
+          await link(sourcePath, destinationPath);
+          await unlink(sourcePath);
+        }
         if (fromRoot.root === 'knowledge' && source.rel === 'overview.md')
           await markProjectOverviewAuthoritative(fromRoot.dir);
         if (toRoot.root === 'knowledge' && destination.rel === 'overview.md')
           await markProjectOverviewAuthoritative(toRoot.dir);
-        const movedExtraction = await moveKnowledgeExtraction(
-          fromRoot.dir,
-          source.rel,
-          toRoot.dir,
-          destination.rel,
-        );
-        if (!movedExtraction) await extractKnowledgeFile(toRoot.dir, destination.rel);
+        // The worktree keeps no extracted-text mirror; only knowledge files carry one.
+        if (toRoot.root !== 'worktree') {
+          const movedExtraction = await moveKnowledgeExtraction(
+            fromRoot.dir,
+            source.rel,
+            toRoot.dir,
+            destination.rel,
+          );
+          if (!movedExtraction) await extractKnowledgeFile(toRoot.dir, destination.rel);
+        }
         return { path: destination.rel, root: toRoot.root };
       } catch (error) {
         if (
@@ -8235,7 +8383,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         throw error;
       } finally {
-        releaseMutation?.();
+        for (const release of releases.reverse()) release();
         await source.close();
         await destination.close();
       }

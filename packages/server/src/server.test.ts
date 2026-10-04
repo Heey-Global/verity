@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -2173,7 +2174,15 @@ describe('session worktree files', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ path: 'note.txt', content: 'hello\n', size: 6 });
+    expect(res.json()).toEqual({
+      path: 'note.txt',
+      content: 'hello\n',
+      size: 6,
+      editable: true,
+      version: createHash('sha256')
+        .update(readFileSync(join(worktree, 'note.txt')))
+        .digest('hex'),
+    });
   });
 
   it('downloads binary files with attachment headers', async () => {

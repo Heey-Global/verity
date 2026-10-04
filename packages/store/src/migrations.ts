@@ -3550,6 +3550,21 @@ const migrations: Record<string, Migration> = {
       await sql`drop table public_preview_pin_locks`.execute(db);
     },
   },
+  '0128_project_google_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Session grants remain session-only; migration must not widen authorization.
+      await sql`create table project_google_connections (
+        project_id text not null references projects(id) on delete cascade,
+        service text not null check (service in ('gmail', 'calendar', 'contacts')),
+        account_email text not null,
+        enabled_at timestamptz not null default now(),
+        primary key (project_id, service)
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table project_google_connections`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

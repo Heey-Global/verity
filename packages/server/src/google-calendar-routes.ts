@@ -224,6 +224,13 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
         return { error: `session ${id} not found` };
       }
       await deps.eventStore.disableSessionCalendar(id);
+      // Older clients must not report a successful logout while project access remains.
+      if ((await deps.eventStore.getSessionCalendarConnection(id)) !== undefined) {
+        return reply.code(409).send({
+          error:
+            'Google access is enabled for this project. Manage it in project settings with an updated app.',
+        });
+      }
       reply.code(204);
     });
   });

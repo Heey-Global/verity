@@ -12,6 +12,7 @@
 // None of these touch `getVeritySettings()` (which decrypts) or any secret value.
 import type { EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 
 /**
@@ -19,7 +20,8 @@ import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
  * about. `nextStep` is the first INCOMPLETE required credential step; projects and
  * Doppler are created/configured from inside the app and never block `complete`.
  */
-type OnboardingStep = 'master-password' | 'github';
+// Keep the legacy wire enum: older apps already map first-project to AI setup.
+type OnboardingStep = 'master-password' | 'first-project';
 
 export interface OnboardingStatus {
   /** The at-rest cipher is sealed (no key loaded). Mirrors `/secret/status`. */
@@ -37,12 +39,13 @@ export interface OnboardingStatus {
    *  `nextStep`. */
   dopplerConfigured: boolean;
   /** A Claude Code subscription login (credentials JSON) is stored (presence only).
-   *  INFORMATIONAL — optional, NEVER gates `complete`/`nextStep`. */
+   *  One configured AI provider gates completion. */
   claudeConfigured: boolean;
   /** A Codex subscription credential is stored (presence only).
-   *  INFORMATIONAL — optional, same rationale as {@link claudeConfigured}. */
+   *  One configured AI provider gates completion. */
   codexConfigured: boolean;
-  /** All REQUIRED steps done (Doppler and backend logins are optional, excluded). */
+  opencodeConfigured: boolean;
+  /** Protected secret store and at least one AI provider are configured. */
   complete: boolean;
   /** First incomplete required step, or `null` once complete. */
   nextStep: OnboardingStep | null;
@@ -88,14 +91,17 @@ async function computeOnboardingStatus(
   const claudeConfigured = present(settings?.claudeCodeOauthCredentialsJson);
   const codexConfigured = present(settings?.codexAuthJson);
 
-  const complete = masterPasswordSet && githubAppConfigured && signingKeyConfigured;
+  const opencodeConfigured =
+    present(settings?.opencodeBaseUrl) &&
+    present(settings?.opencodeApiKey) &&
+    selectedOpenCodeModels(settings).length > 0;
+  const complete = masterPasswordSet && (claudeConfigured || codexConfigured || opencodeConfigured);
 
-  // First incomplete REQUIRED step, in fixed order. Doppler is optional and never
-  // appears here (so it never blocks `complete` or drives `nextStep`).
+  // Optional integrations must never prevent starting a local project.
   const nextStep: OnboardingStep | null = !masterPasswordSet
     ? 'master-password'
-    : !githubAppConfigured || !signingKeyConfigured
-      ? 'github'
+    : !claudeConfigured && !codexConfigured && !opencodeConfigured
+      ? 'first-project'
       : null;
 
   return {
@@ -107,6 +113,7 @@ async function computeOnboardingStatus(
     dopplerConfigured,
     claudeConfigured,
     codexConfigured,
+    opencodeConfigured,
     complete,
     nextStep,
   };
@@ -140,6 +147,7 @@ export function registerOnboardingRoutes(
       dopplerConfigured: false,
       claudeConfigured: false,
       codexConfigured: false,
+      opencodeConfigured: false,
       complete: false,
       nextStep: null,
     };

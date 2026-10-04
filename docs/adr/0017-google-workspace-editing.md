@@ -51,9 +51,11 @@ edits.
 
 ### User interface
 
-The composer menu has one **Google Workspace** action. The existing Drive browser assigns a native
-Slides, Docs, or Sheets file, and a single type-specific chip opens or clears the active file. The
-authoritative visual view remains Google's editor; Docs and Sheets do not add generated previews.
+The session file browser exposes **Google Drive**. Selecting a native file and choosing
+**Use in this chat** assigns a Slides, Docs, or Sheets file; a type-specific chip opens
+or clears the active file. Account consent is also available under **Settings →
+Connections → Google**. The authoritative visual view remains Google's editor;
+Docs and Sheets do not add generated previews.
 
 ## Consequences
 
