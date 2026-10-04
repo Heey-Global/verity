@@ -3182,10 +3182,12 @@ export class Conductor {
     try {
       if (dispatchOpts.validateSession && !(await dispatchOpts.validateSession(session))) {
         this.releaseInFlight(sessionId);
+        this.drainNext(sessionId);
         return { accepted: false };
       }
     } catch (error) {
       this.releaseInFlight(sessionId);
+      this.drainNext(sessionId);
       throw error;
     }
     this.launchAcceptedTurn(

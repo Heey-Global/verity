@@ -1724,6 +1724,54 @@ describe('Conductor.dispatchTurn', () => {
     expect(fake.calls).toHaveLength(1);
   });
 
+  it.each([false, true])(
+    'drains messages queued during rejected admission (throws: %s)',
+    async (throws) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const fake = scriptedBackend();
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+      });
+      let release!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const admission = conductor.dispatchTurnWhenIdle(
+        's1',
+        'stale automation',
+        {},
+        {
+          validateSession: async () => {
+            entered();
+            await gate;
+            if (throws) throw new Error('validation failed');
+            return false;
+          },
+        },
+      );
+      const settled = admission.catch(() => ({ accepted: false }));
+      await started;
+      expect(await conductor.dispatchTurn('s1', 'queued message')).toEqual({ queued: true });
+      expect(conductor.queuedCount('s1')).toBe(1);
+      release();
+      await settled;
+      // An admission rejected before launch has no turn completion to drain its queue.
+      await vi.waitFor(() => {
+        expect(fake.calls).toHaveLength(1);
+      });
+      await vi.waitFor(() => {
+        expect(conductor.isBusy('s1')).toBe(false);
+      });
+      expect(conductor.queuedCount('s1')).toBe(0);
+    },
+  );
+
   it('validates idle dispatch under its lock and releases rejected admissions', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({
