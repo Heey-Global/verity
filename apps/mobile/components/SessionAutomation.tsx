@@ -494,7 +494,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     gap: theme.spacing.sm,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.primary,
   },
   confirmText: {
     color: theme.colors.background,

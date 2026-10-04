@@ -23428,18 +23428,28 @@ var choicesPayloadSchema = import_zod.z.object({
   options: import_zod.z.array(choicesOptionSchema).min(1).max(20),
   multiSelect: import_zod.z.boolean().optional()
 }).refine((payload) => payload.options.filter((option) => option.recommended === true).length <= 1, { message: "at most one choice option may be recommended", path: ["options"] });
+var automationTimeZoneSchema = import_zod.z.string().refine((timeZone) => {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}, "invalid time zone");
 var automationScheduleSchema = import_zod.z.discriminatedUnion("kind", [
   import_zod.z.object({ kind: import_zod.z.literal("interval"), everyMinutes: import_zod.z.number().int().min(15) }),
   import_zod.z.object({
     kind: import_zod.z.literal("daily"),
     hour: import_zod.z.number().int().min(0).max(23),
-    minute: import_zod.z.number().int().min(0).max(59)
+    minute: import_zod.z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional()
   }),
   import_zod.z.object({
     kind: import_zod.z.literal("weekly"),
     weekday: import_zod.z.number().int().min(0).max(6),
     hour: import_zod.z.number().int().min(0).max(23),
-    minute: import_zod.z.number().int().min(0).max(59)
+    minute: import_zod.z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional()
   })
 ]);
 var automationProposalSchema = import_zod.z.object({
@@ -24570,7 +24580,7 @@ function parseAutomationProposal(input) {
   const text = input.replace(AUTOMATION_FENCE_RE, (fence, body) => validProposal(body) === void 0 ? fence : "").trimEnd();
   return { text, proposal };
 }
-var SCHEDULE_HELP = '`schedule` is `{"kind":"daily","hour":9,"minute":0}`, `{"kind":"weekly","weekday":1,"hour":9,"minute":0}` (weekday 0 is Sunday), or `{"kind":"interval","everyMinutes":60}` (at least 15). Times are in the Verity server\'s local time.';
+var SCHEDULE_HELP = '`schedule` is `{"kind":"daily","hour":9,"minute":0}`, `{"kind":"weekly","weekday":1,"hour":9,"minute":0}` (weekday 0 is Sunday), or `{"kind":"interval","everyMinutes":60}` (at least 15). Times default to the user\'s local time; the app attaches the device time zone on confirmation. Never convert them to server time. An explicit IANA `timeZone` (for example `Europe/Berlin`) may be added to daily or weekly schedules when the user requests another zone.';
 var PROPOSAL_RULES = "The app turns the block into a confirmation card. The automation exists only after the user confirms it there, so never claim it is active before that. A session has at most one automation; a newly confirmed proposal replaces the current one. The user pauses or deletes it from the session header.";
 var AUTOMATION_SYSTEM_PROMPT = `# Recurring automations (Verity)
 

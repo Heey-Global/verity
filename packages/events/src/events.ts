@@ -230,18 +230,29 @@ export const choicesPayloadSchema = z
   );
 export type ChoicesPayload = z.infer<typeof choicesPayloadSchema>;
 
+const automationTimeZoneSchema = z.string().refine((timeZone) => {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'invalid time zone');
+
 export const automationScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('interval'), everyMinutes: z.number().int().min(15) }),
   z.object({
     kind: z.literal('daily'),
     hour: z.number().int().min(0).max(23),
     minute: z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional(),
   }),
   z.object({
     kind: z.literal('weekly'),
     weekday: z.number().int().min(0).max(6),
     hour: z.number().int().min(0).max(23),
     minute: z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional(),
   }),
 ]);
 export type AutomationSchedule = z.infer<typeof automationScheduleSchema>;

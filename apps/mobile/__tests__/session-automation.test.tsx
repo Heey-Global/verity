@@ -51,7 +51,7 @@ function card(overrides: Partial<Parameters<typeof AutomationProposalCard>[0]> =
 describe('AutomationProposalCard', () => {
   it('creates the automation on one tap and says when it runs', () => {
     const onConfirm = card();
-    expect(screen.getByText('Every Monday at 09:00 server time')).toBeTruthy();
+    expect(screen.getByText('Every Monday at 09:00')).toBeTruthy();
     fireEvent.press(screen.getByRole('button', { name: 'Create automation' }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });

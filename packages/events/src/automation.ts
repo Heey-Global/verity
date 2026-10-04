@@ -34,7 +34,7 @@ export function parseAutomationProposal(input: string): ParsedAutomationProposal
 }
 
 const SCHEDULE_HELP =
-  '`schedule` is `{"kind":"daily","hour":9,"minute":0}`, `{"kind":"weekly","weekday":1,"hour":9,"minute":0}` (weekday 0 is Sunday), or `{"kind":"interval","everyMinutes":60}` (at least 15). Times are in the Verity server\'s local time.';
+  '`schedule` is `{"kind":"daily","hour":9,"minute":0}`, `{"kind":"weekly","weekday":1,"hour":9,"minute":0}` (weekday 0 is Sunday), or `{"kind":"interval","everyMinutes":60}` (at least 15). Times default to the user\'s local time; the app attaches the device time zone on confirmation. Never convert them to server time. An explicit IANA `timeZone` (for example `Europe/Berlin`) may be added to daily or weekly schedules when the user requests another zone.';
 
 const PROPOSAL_RULES =
   'The app turns the block into a confirmation card. The automation exists only after the user confirms it there, so never claim it is active before that. A session has at most one automation; a newly confirmed proposal replaces the current one. The user pauses or deletes it from the session header.';

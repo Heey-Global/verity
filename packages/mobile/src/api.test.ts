@@ -2910,9 +2910,55 @@ describe('VerityClient session automations', () => {
       ['PATCH', 'http://host/sessions/s%201/automation'],
       ['DELETE', 'http://host/sessions/s%201/automation'],
     ]);
-    expect(JSON.parse((calls[1]?.init?.body as string) ?? '')).toEqual(request);
+    expect(JSON.parse((calls[1]?.init?.body as string) ?? '')).toEqual({
+      ...request,
+      schedule: { ...request.schedule, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+    });
     expect(JSON.parse((calls[2]?.init?.body as string) ?? '')).toEqual({ status: 'paused' });
   });
+});
+
+it.each([
+  { kind: 'daily' as const, hour: 22, minute: 33, timeZone: 'Europe/Berlin' },
+  { kind: 'weekly' as const, weekday: 1, hour: 9, minute: 0 },
+  { kind: 'interval' as const, everyMinutes: 30 },
+])('saves explicit zones and defaults only calendar schedules: %j', async (schedule) => {
+  const automation = {
+    id: 'a1',
+    sessionId: 's1',
+    name: 'Hello',
+    status: 'enabled',
+    schedule,
+    prompt: 'Say hello',
+    script: null,
+    model: null,
+    consecutiveErrorCount: 0,
+    lastRunAt: null,
+    lastOutcome: null,
+    lastDetail: null,
+    nextRunAt: null,
+    createdAt: '',
+    updatedAt: '',
+  };
+  const { fetch, calls } = fakeFetchSequence(json({ automation }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  const result = await client.saveSessionAutomation('s1', {
+    name: automation.name,
+    prompt: automation.prompt,
+    schedule,
+  });
+  expect(result.schedule).toEqual(schedule);
+  expect(JSON.parse(calls[0]?.init?.body as string).schedule).toEqual(
+    schedule.kind === 'interval'
+      ? schedule
+      : {
+          ...schedule,
+          timeZone:
+            'timeZone' in schedule
+              ? schedule.timeZone
+              : Intl.DateTimeFormat().resolvedOptions().timeZone,
+        },
+  );
 });
 
 describe('VerityClient preview shares', () => {

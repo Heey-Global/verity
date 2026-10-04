@@ -382,12 +382,18 @@ export type ProjectSettingsPatch = {
 // from an agent's proposal after the operator confirms it.
 export const automationScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('interval'), everyMinutes: z.number() }),
-  z.object({ kind: z.literal('daily'), hour: z.number(), minute: z.number() }),
+  z.object({
+    kind: z.literal('daily'),
+    hour: z.number(),
+    minute: z.number(),
+    timeZone: z.string().optional(),
+  }),
   z.object({
     kind: z.literal('weekly'),
     weekday: z.number(),
     hour: z.number(),
     minute: z.number(),
+    timeZone: z.string().optional(),
   }),
 ]);
 export type AutomationSchedule = z.infer<typeof automationScheduleSchema>;
@@ -3327,7 +3333,17 @@ export class VerityClient {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...body,
+        schedule:
+          body.schedule.kind === 'interval'
+            ? body.schedule
+            : {
+                ...body.schedule,
+                timeZone:
+                  body.schedule.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+              },
+      }),
     });
     return sessionAutomationResponseSchema.parse(await res.json()).automation;
   }

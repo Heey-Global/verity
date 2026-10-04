@@ -45,6 +45,23 @@ describe('EventStore — session automations', () => {
     expect(await ctx.store.getSessionAutomation('s1')).toEqual(automation);
   });
 
+  it('persists the user zone and reuses it when resuming after a DST change', async () => {
+    const schedule = { ...daily, timeZone: 'Europe/Berlin' };
+    const automation = await ctx.store.setSessionAutomation(
+      { ...input, schedule },
+      new Date('2026-10-24T06:00:00Z'),
+    );
+    expect(automation.nextRunAt?.toISOString()).toBe('2026-10-24T07:00:00.000Z');
+    expect((await ctx.store.getSessionAutomation('s1'))?.schedule).toEqual(schedule);
+    await ctx.store.setSessionAutomationStatus('s1', 'paused');
+    const resumed = await ctx.store.setSessionAutomationStatus(
+      's1',
+      'enabled',
+      new Date('2026-10-25T06:00:00Z'),
+    );
+    expect(resumed?.nextRunAt?.toISOString()).toBe('2026-10-25T08:00:00.000Z');
+  });
+
   it('replaces the existing automation instead of adding a second one', async () => {
     const first = await ctx.store.setSessionAutomation(input);
     await ctx.store.recordSessionAutomationOutcome(first.id, { outcome: 'error', detail: 'x' });
