@@ -659,14 +659,16 @@ describe('Conductor.sendTurn', () => {
     expect(terminal[0]).toMatchObject({ t: 'error', kind: 'crashed' });
   });
 
-  it('settles a session-limit exit without exposing the crash stderr tail', async () => {
+  it.each([
+    "You've hit your session limit · resets 7:30pm (UTC)",
+    "You've reached your Fable limit. Switch to another model to continue.",
+  ])('settles a usage-limit exit without exposing the crash stderr tail: %s', async (message) => {
     await ctx.store.createSession({ sessionId: 's-limit', worktree: '/wt/x', model: 'm' });
     const backend: Backend = {
       run: async (opts) => ({
         sessionId: opts.storeSessionId,
         exitCode: 1,
-        stderr:
-          "[session/load] diagnostic data\nInternal error: You've hit your session limit · resets 7:30pm (UTC)",
+        stderr: `[session/load] diagnostic data\nInternal error: ${message}`,
         aborted: false,
       }),
     };

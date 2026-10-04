@@ -24777,7 +24777,7 @@ var import_zod6 = __toESM(require_zod(), 1);
 
 // packages/session/dist/backend-contract.js
 function isUsageLimitError(message) {
-  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) hit your (?:session|usage|weekly) limit)\b/i.test(message);
+  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) (?:hit your (?:session|usage|weekly)|reached your [\w -]{1,40}) limit)\b/i.test(message);
 }
 function isExplicitPreExecutionRejection(message) {
   return /\b(?:login required|not logged in|authentication failed|unauthorized|invalid api key|token expired)\b/i.test(message) || /\b(?:rate limit|too many requests|quota exceeded)\b/i.test(message) || /\b(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)\b/i.test(message);

@@ -282,7 +282,7 @@ export interface RunResult {
 
 /** Recognize provider usage refusals independently of whether the prompt ran. */
 export function isUsageLimitError(message: string): boolean {
-  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) hit your (?:session|usage|weekly) limit)\b/i.test(
+  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) (?:hit your (?:session|usage|weekly)|reached your [\w -]{1,40}) limit)\b/i.test(
     message,
   );
 }
