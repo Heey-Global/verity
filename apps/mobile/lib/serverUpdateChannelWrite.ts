@@ -20,7 +20,6 @@ export function setServerUpdateChannelWritePending(value: boolean, server = getV
 }
 
 // Separate settings routes must agree before offering an install target.
-export function useServerUpdateChannelWritePending() {
-  const server = getVerityBaseUrl();
+export function useServerUpdateChannelWritePending(server = getVerityBaseUrl()) {
   return useSyncExternalStore(subscribe, () => isServerUpdateChannelWritePending(server));
 }

@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { getVerityBaseUrl } from '../../lib/client';
 import {
   isServerUpdateChannelWritePending,
   setServerUpdateChannelWritePending,
@@ -46,8 +47,12 @@ export function ServerUpdateSection({
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
-  const changingChannel = useServerUpdateChannelWritePending();
-  const channelSavingChanged = setServerUpdateChannelWritePending;
+  const server = getVerityBaseUrl();
+  const changingChannel = useServerUpdateChannelWritePending(server);
+  const channelSavingChanged = useCallback(
+    (value: boolean) => setServerUpdateChannelWritePending(value, server),
+    [server],
+  );
   const [channelNeedsRefresh, setChannelNeedsRefresh] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // Key of an install request whose outcome is still unknown: it was not
@@ -76,7 +81,7 @@ export function ServerUpdateSection({
 
   const refresh = useCallback(
     (force = false) => {
-      if (isServerUpdateChannelWritePending() && !force) return Promise.resolve();
+      if (isServerUpdateChannelWritePending(server) && !force) return Promise.resolve();
       const generation = ++refreshGeneration.current;
       return (
         client
@@ -84,7 +89,7 @@ export function ServerUpdateSection({
           .then((next) => {
             if (
               generation !== refreshGeneration.current ||
-              (isServerUpdateChannelWritePending() && !force)
+              (isServerUpdateChannelWritePending(server) && !force)
             )
               return;
             const pending = unansweredRef.current;
@@ -108,7 +113,7 @@ export function ServerUpdateSection({
           .catch(() => undefined)
       );
     },
-    [client, settle],
+    [client, settle, server],
   );
 
   const invalidateChannel = useCallback(() => {
@@ -159,7 +164,7 @@ export function ServerUpdateSection({
 
   const install = useCallback(
     (targetDigest: string, idempotencyKey: string) => {
-      if (starting || isServerUpdateChannelWritePending() || channelNeedsRefresh) return;
+      if (starting || isServerUpdateChannelWritePending(server) || channelNeedsRefresh) return;
       setStarting(true);
       setActionError(undefined);
       // The key is derived by describeServerUpdate: stable for a retry after a
@@ -208,7 +213,7 @@ export function ServerUpdateSection({
           setUnanswered(idempotencyKey);
         });
     },
-    [client, settle, starting, changingChannel, channelNeedsRefresh],
+    [client, settle, starting, changingChannel, channelNeedsRefresh, server],
   );
 
   if (status === undefined) {

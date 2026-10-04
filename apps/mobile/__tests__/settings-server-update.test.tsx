@@ -18,6 +18,8 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 
 import ServerUpdateScreen from '../app/settings/server-update';
 import ServerUpdateChannelScreen from '../app/settings/server-update-channel';
+import * as clientConfig from '../lib/client';
+import { isServerUpdateChannelWritePending } from '../lib/serverUpdateChannelWrite';
 import { resetServerReleaseNotesCache } from '../lib/serverReleaseNotes';
 import { resetVeritySettingsStore, saveVeritySettings } from '../lib/settingsStore';
 import {
@@ -712,7 +714,13 @@ describe('server update channel selection', () => {
     await act(async () => undefined);
     expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
     expect(client.getServerUpdates).not.toHaveBeenCalled();
+    const originalServer = clientConfig.getVerityBaseUrl();
+    const serverUrl = jest
+      .spyOn(jest.requireMock('../lib/client') as typeof clientConfig, 'getVerityBaseUrl')
+      .mockReturnValue('https://other.example');
     await act(async () => finishWrite('staging'));
+    expect(isServerUpdateChannelWritePending(originalServer)).toBe(false);
+    serverUrl.mockRestore();
     expect(await screen.findByLabelText('Install 1.4.0')).toBeEnabled();
   });
 
