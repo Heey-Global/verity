@@ -1,7 +1,8 @@
 import type { VerityClient } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { Alert, Text } from 'react-native';
+import { SettingsChoiceRow, SettingsGroup, SettingsListPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
 
 type Channel = 'stable' | 'staging';
@@ -118,33 +119,28 @@ export function ServerUpdateChannel({
   };
   if (channel === undefined) return null;
   return (
-    <View>
-      <Text style={styles.updateTitle}>Server update channel</Text>
-      <Text style={styles.updateDetail}>
-        Choose which releases this server receives. Updates are installed manually.
-      </Text>
-      {(['stable', 'staging'] as const).map((value) => (
-        <Pressable
-          key={value}
-          accessibilityRole="radio"
-          accessibilityState={{ checked: channel === value, disabled: disabled || saving }}
-          disabled={disabled || saving}
-          onPress={() => select(value)}
-          style={styles.updateButton}
-        >
-          <Text style={styles.updateTitle}>
-            {value === 'stable' ? 'Stable' : 'Prereleases'}
-            {channel === value ? ' ✓' : ''}
-          </Text>
-          <Text style={styles.updateDetail}>
-            {value === 'stable'
-              ? 'Approved releases for regular use.'
-              : 'New versions before general release. May contain bugs.'}
-          </Text>
-        </Pressable>
-      ))}
-      {saving ? <Text style={styles.updateDetail}>Changing channel…</Text> : null}
+    <SettingsGroup
+      title="Update channel"
+      description="Choose which releases this server is offered. Updates are always installed manually."
+    >
+      <SettingsListPanel>
+        {(['stable', 'staging'] as const).map((value) => (
+          <SettingsChoiceRow
+            key={value}
+            title={value === 'stable' ? 'Stable' : 'Prereleases'}
+            subtitle={
+              value === 'stable'
+                ? 'Approved releases for regular use.'
+                : 'Early versions before general release. May contain bugs.'
+            }
+            selected={channel === value}
+            disabled={disabled || saving}
+            onPress={() => select(value)}
+          />
+        ))}
+      </SettingsListPanel>
+      {saving ? <Text style={styles.groupDescription}>Changing channel…</Text> : null}
       {error ? <Text style={styles.reproHint}>{error}</Text> : null}
-    </View>
+    </SettingsGroup>
   );
 }
