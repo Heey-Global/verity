@@ -5042,6 +5042,7 @@ export class EventStore implements EventSink {
       select exists (
         select 1 from sessions where project_id = ${projectId}
         union all select 1 from project_settings where project_id = ${projectId}
+        union all select 1 from project_google_connections where project_id = ${projectId}
         union all select 1 from agent_loops where project_id = ${projectId}
         union all select 1 from dev_servers where project_id = ${projectId}
         union all select 1 from dev_server_detection_state where project_id = ${projectId}
