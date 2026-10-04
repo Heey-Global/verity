@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.11.1](https://github.com/Heey-Global/verity/compare/v4.11.0...v4.11.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **preview:** enable local access through LAN and VPN interfaces ([#1124](https://github.com/Heey-Global/verity/issues/1124)) ([0539b70](https://github.com/Heey-Global/verity/commit/0539b705c3aeac16146f6cc82688f5572c28faba))
+
 ## [4.11.0](https://github.com/Heey-Global/verity/compare/v4.10.0...v4.11.0) (2026-10-04)
 
 
