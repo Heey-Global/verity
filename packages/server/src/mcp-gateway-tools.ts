@@ -148,6 +148,7 @@ export function createMcpGatewayToolExecutor(options: {
       throw new Error('knowledge tools are unavailable');
     }
     if (
+      toolName === 'verity_diagnostics' ||
       toolName === 'verity_list_sessions' ||
       toolName === 'verity_session_handoff' ||
       toolName === 'verity_session_progress' ||

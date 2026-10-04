@@ -1,3 +1,7 @@
+import {
+  diagnosticsRequestSchema,
+  DIAGNOSTICS_TOOL_DESCRIPTION,
+} from './control-diagnostics-tool.js';
 import { googleDriveRequestSchema } from './google-drive-request.js';
 import { googleContactsRequestSchema } from './google-contacts.js';
 import { googleCalendarRequestSchema } from './google-calendar.js';
@@ -259,6 +263,7 @@ const TOOL_SCHEMAS = {
   verity_knowledge: knowledgeToolRequestSchema,
   verity_http_request: brokeredHttpRequestSchema,
   verity_secret_run: trustedCliRequestSchema,
+  verity_diagnostics: diagnosticsRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
   verity_send_session_message: z
@@ -377,6 +382,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_knowledge: KNOWLEDGE_TOOL_DESCRIPTION,
   verity_http_request: BROKERED_HTTP_TOOL_DESCRIPTION,
   verity_secret_run: TRUSTED_CLI_TOOL_DESCRIPTION,
+  verity_diagnostics: DIAGNOSTICS_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
   verity_send_session_message:

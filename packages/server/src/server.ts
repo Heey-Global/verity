@@ -1,3 +1,4 @@
+import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
 import { googleAppClient } from './google-app-client.js';
 import {
   googleDriveRequestSchema,
@@ -1640,6 +1641,7 @@ So: repo work belongs in a project session. When a task needs to read a private 
 What this container does have:
 - The Verity HTTP API, reachable in-cluster, for inspecting projects, sessions and server state.
 - The \`verity_list_sessions\` and \`verity_session_handoff\` tools. List first and let the user choose an exact existing session or New session; a new-session handoff creates the target and uses the briefing as its first turn. A bare project target is only a convenience when exactly one eligible session exists and never chooses among several.
+- Use \`verity_diagnostics\` on demand for a read-only version, readiness and Uplink snapshot, optionally selecting one session for bounded structured failures. Missing data is explicit; a status code alone is not a proven cause. Prepare remediation through a project-session handoff, then verify the affected live state.
 - The on-demand \`verity_session_progress\` tool returns structured lifecycle/cached branch-PR facts and recent technical diagnostics without transcript content. \`verity_recent_session_messages\` reads one explicitly selected session only after a separate approval that names the purpose and bounded window. Never poll either tool.
 - Project sessions can publish a bounded, explicit outcome summary with \`verity_publish_session_progress\`; the server binds it to the calling session. A completed turn is not proof that the requested outcome was delivered.
 - Outbound HTTPS, so public documentation and public repositories are readable.
@@ -5507,6 +5509,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         };
       },
     });
+    const controlDiagnosticsTool = createControlDiagnosticsTool({
+      authorizeCaller: (input) => controlPlaneSessionTools.authorizeCaller(input),
+      readProgress: (input) => controlPlaneSessionTools.progress(input),
+      version: SERVER_VERSION,
+      pushEnabled: deps.pushEnabled === true,
+      publicPreviewsEnabled: () => deps.previewShareManager?.isAvailable() === true,
+      runtimeReadiness: deps.secretJobRuntimeReadiness,
+      uplinkDiagnostics: deps.uplinkDiagnostics,
+    });
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -5682,6 +5693,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         }
         if (
+          toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
           toolName !== 'verity_session_handoff' &&
           toolName !== 'verity_session_progress' &&
@@ -5834,6 +5846,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return publishSharedInsight(deps.dataRoot, input.projectId, request);
         }
+        if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
         if (input.toolName === 'verity_session_handoff')
