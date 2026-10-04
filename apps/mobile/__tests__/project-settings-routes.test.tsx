@@ -58,7 +58,9 @@ describe('project settings index — destinations', () => {
   it.each(['doppler', 'drive', 'mcp'] as const)(
     'opens %s directly from the project overview',
     async (section) => {
-      mockCreateVerityClient.mockReturnValue(makeClient());
+      mockCreateVerityClient.mockReturnValue(
+        makeClient({ listHttpMcpConnections: jest.fn().mockResolvedValue([{ id: 'mcp-one' }]) }),
+      );
       render(<ProjectSettingsIndexScreen />);
 
       const label = section === 'drive' ? 'Google Drive' : section === 'mcp' ? 'MCP' : 'Doppler';
@@ -69,6 +71,22 @@ describe('project settings index — destinations', () => {
       });
     },
   );
+
+  it('hides disconnected services but keeps discovery available', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        getVeritySettings: jest.fn().mockResolvedValue(null),
+        getGoogleDriveConnection: jest.fn().mockResolvedValue({ connected: false }),
+        listHttpMcpConnections: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    fireEvent.press(await screen.findByLabelText('Add connection'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/services');
+    expect(screen.queryByLabelText('Doppler')).toBeNull();
+    expect(screen.queryByLabelText('Google Drive')).toBeNull();
+    expect(screen.queryByLabelText('MCP')).toBeNull();
+  });
 
   it('shows the environment state and default model without GitHub details', async () => {
     mockCreateVerityClient.mockReturnValue(
@@ -642,13 +660,13 @@ describe('project settings — connected services', () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it('keeps Matrix in Verity settings instead of project services', async () => {
+  it('offers Matrix account setup from project room settings', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectServicesScreen />);
 
     expect(await screen.findByText('Credentials')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Matrix')).toBeNull();
-    expect(screen.queryByText('Knowledge sources')).toBeNull();
+    expect(await screen.findByText('Matrix rooms')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Connect Matrix')).toBeOnTheScreen();
   });
 });
 

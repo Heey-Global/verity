@@ -212,7 +212,10 @@ function HydratedRoot() {
                 options={{ title: 'Project settings' }}
               />
               <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
-              <Stack.Screen name="project/[id]/settings/services" options={{ title: 'Services' }} />
+              <Stack.Screen
+                name="project/[id]/settings/services"
+                options={{ title: 'Connections' }}
+              />
               <Stack.Screen
                 name="project/[id]/settings/environment"
                 options={{ title: 'Environment' }}
@@ -228,10 +231,16 @@ function HydratedRoot() {
                 it is on home by `route.name === 'index'`. */}
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
+              <Stack.Screen name="settings/remote-access" options={{ title: 'Remote access' }} />
+              <Stack.Screen name="settings/secret-store" options={{ title: 'Secret store' }} />
               <Stack.Screen
-                name="settings/services/index"
-                options={{ title: 'Connected services' }}
+                name="settings/transcription"
+                options={{ title: 'Meeting transcription' }}
               />
+              <Stack.Screen name="settings/services/ai" options={{ title: 'AI providers' }} />
+              <Stack.Screen name="settings/services/doppler" options={{ title: 'Doppler' }} />
+              <Stack.Screen name="settings/services/index" options={{ title: 'Connections' }} />
               <Stack.Screen
                 name="settings/services/mcp/index"
                 options={{ title: 'MCP connections' }}

@@ -212,6 +212,13 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
         return { error: `session ${id} not found` };
       }
       await deps.eventStore.disableSessionContacts(id);
+      // Older clients must not report a successful logout while project access remains.
+      if ((await deps.eventStore.getSessionContactsConnection(id)) !== undefined) {
+        return reply.code(409).send({
+          error:
+            'Google access is enabled for this project. Manage it in project settings with an updated app.',
+        });
+      }
       reply.code(204);
     });
   });

@@ -506,3 +506,5 @@ export {
 } from './api.js';
 
 export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';
+
+export { selectedOpenCodeModels } from '@verity/events';

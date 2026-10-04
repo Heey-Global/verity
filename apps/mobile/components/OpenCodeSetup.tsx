@@ -1,4 +1,4 @@
-import { VerityApiError, type VerityClient } from '@verity/mobile';
+import { selectedOpenCodeModels, VerityApiError, type VerityClient } from '@verity/mobile';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -40,10 +40,11 @@ export function OpenCodeSetup({
       .then((settings) => {
         if (cancelled) return;
         const nextBaseUrl = settings?.opencodeBaseUrl ?? '';
-        const nextModels = settings?.opencodeModels ?? '';
         const nextKeyConfigured = settings?.opencodeApiKeyConfigured ?? false;
         const nextConfigured =
-          nextKeyConfigured && nextBaseUrl.trim().length > 0 && nextModels.trim().length > 0;
+          nextKeyConfigured &&
+          nextBaseUrl.trim().length > 0 &&
+          selectedOpenCodeModels(settings).length > 0;
         setBaseUrl(nextBaseUrl);
         setSavedBaseUrl(nextBaseUrl.trim());
         setKeyConfigured(nextKeyConfigured);
@@ -73,10 +74,11 @@ export function OpenCodeSetup({
       })
       .then((settings) => {
         const nextBaseUrl = settings?.opencodeBaseUrl ?? baseUrl.trim();
-        const nextModels = settings?.opencodeModels ?? '';
         const nextKeyConfigured = settings?.opencodeApiKeyConfigured ?? apiKey.trim().length > 0;
         const nextConfigured =
-          nextKeyConfigured && nextBaseUrl.trim().length > 0 && nextModels.trim().length > 0;
+          nextKeyConfigured &&
+          nextBaseUrl.trim().length > 0 &&
+          selectedOpenCodeModels(settings).length > 0;
         setApiKey('');
         setBaseUrl(nextBaseUrl);
         setSavedBaseUrl(nextBaseUrl.trim());

@@ -1398,6 +1398,26 @@ describe('EventStore — projects', () => {
       expect(await ctx.store.getProject(added)).toBeDefined();
     });
 
+    it('preserves Google grants when a local project tries to adopt their placeholder', async () => {
+      const configured = randomUUID();
+      await ctx.store.upsertProject({
+        id: configured,
+        owner: 'heey-global',
+        repo: 'google-placeholder',
+        containerName: 'verity-google-placeholder',
+        state: 'absent',
+      });
+      await ctx.store.enableProjectGoogleConnection(configured, 'gmail', 'me@example.test');
+      const id = await createLocal();
+      // Adoption cascades the placeholder away, silently deleting its access configuration.
+      await expect(
+        ctx.store.reserveProjectIdentity(id, { owner: 'heey-global', repo: 'google-placeholder' }),
+      ).resolves.toBe(false);
+      expect(await ctx.store.getProjectGoogleConnection(configured, 'gmail')).toMatchObject({
+        accountEmail: 'me@example.test',
+      });
+    });
+
     it('refuses to adopt a sync placeholder with dependent configuration', async () => {
       const configured = randomUUID();
       await ctx.store.upsertProject({

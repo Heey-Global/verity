@@ -48,7 +48,9 @@ export function createGoogleCalendarTool(deps: {
       !settings.googleDriveRefreshToken?.trim() ||
       settings.googleDriveAccountEmail?.toLowerCase() !== connection.accountEmail.toLowerCase()
     )
-      throw new Error('Google Calendar is not enabled for the calling session');
+      throw new Error(
+        'Google Calendar is not enabled for the calling session. Open Project settings → Connections to grant this project access',
+      );
     return {
       email: settings.googleDriveAccountEmail,
       refreshToken: settings.googleDriveRefreshToken,

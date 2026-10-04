@@ -1911,6 +1911,86 @@ export class EventStore implements EventSink {
       .execute();
   }
 
+  async countLegacyProjectGoogleSessions(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<number> {
+    const table =
+      service === 'gmail'
+        ? 'session_gmail_connections'
+        : service === 'calendar'
+          ? 'session_calendar_connections'
+          : 'session_contacts_connections';
+    const result = await this.db
+      .selectFrom(table)
+      .innerJoin('sessions', 'sessions.session_id', `${table}.session_id`)
+      .select((eb) => eb.fn.countAll().as('count'))
+      .where('sessions.project_id', '=', projectId)
+      .executeTakeFirstOrThrow();
+    return Number(result.count);
+  }
+
+  async getProjectGoogleConnection(projectId: string, service: 'gmail' | 'calendar' | 'contacts') {
+    const row = await this.db
+      .selectFrom('project_google_connections')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .where('service', '=', service)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : { accountEmail: row.account_email, enabledAt: row.enabled_at };
+  }
+
+  async enableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+    accountEmail: string,
+  ): Promise<void> {
+    await this.db
+      .insertInto('project_google_connections')
+      .values({ project_id: projectId, service, account_email: accountEmail })
+      .onConflict((conflict) =>
+        conflict.columns(['project_id', 'service']).doUpdateSet({ account_email: accountEmail }),
+      )
+      .execute();
+  }
+
+  async disableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<void> {
+    await this.db.transaction().execute(async (transaction) => {
+      await transaction
+        .deleteFrom('project_google_connections')
+        .where('project_id', '=', projectId)
+        .where('service', '=', service)
+        .execute();
+      // Disabling the project also revokes legacy grants in its sessions.
+      const sessionIds = transaction
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('project_id', '=', projectId);
+      const table =
+        service === 'gmail'
+          ? 'session_gmail_connections'
+          : service === 'calendar'
+            ? 'session_calendar_connections'
+            : 'session_contacts_connections';
+      await transaction.deleteFrom(table).where('session_id', 'in', sessionIds).execute();
+    });
+  }
+
+  private async getProjectGoogleConnectionForSession(
+    sessionId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ) {
+    const session = await this.getSession(sessionId);
+    if (!session?.projectId) return undefined;
+    const grant = await this.getProjectGoogleConnection(session.projectId, service);
+    return grant === undefined ? undefined : { sessionId, ...grant };
+  }
+
   async getSessionGmailConnection(sessionId: string): Promise<SessionGmailConnection | undefined> {
     const row = await this.db
       .selectFrom('session_gmail_connections')
@@ -1918,7 +1998,7 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return row === undefined
-      ? undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'gmail')
       : {
           sessionId: row.session_id,
           accountEmail: row.account_email,
@@ -1956,6 +2036,7 @@ export class EventStore implements EventSink {
 
   async clearSessionGmailConnections(): Promise<void> {
     await this.db.deleteFrom('session_gmail_connections').execute();
+    await this.db.deleteFrom('project_google_connections').where('service', '=', 'gmail').execute();
   }
 
   async getSessionCalendarConnection(
@@ -1967,7 +2048,7 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return row === undefined
-      ? undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'calendar')
       : {
           sessionId: row.session_id,
           accountEmail: row.account_email,
@@ -2005,6 +2086,10 @@ export class EventStore implements EventSink {
 
   async clearSessionCalendarConnections(): Promise<void> {
     await this.db.deleteFrom('session_calendar_connections').execute();
+    await this.db
+      .deleteFrom('project_google_connections')
+      .where('service', '=', 'calendar')
+      .execute();
   }
 
   async getSessionContactsConnection(
@@ -2016,7 +2101,7 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return row === undefined
-      ? undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'contacts')
       : {
           sessionId: row.session_id,
           accountEmail: row.account_email,
@@ -2054,6 +2139,10 @@ export class EventStore implements EventSink {
 
   async clearSessionContactsConnections(): Promise<void> {
     await this.db.deleteFrom('session_contacts_connections').execute();
+    await this.db
+      .deleteFrom('project_google_connections')
+      .where('service', '=', 'contacts')
+      .execute();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.
@@ -4953,6 +5042,7 @@ export class EventStore implements EventSink {
       select exists (
         select 1 from sessions where project_id = ${projectId}
         union all select 1 from project_settings where project_id = ${projectId}
+        union all select 1 from project_google_connections where project_id = ${projectId}
         union all select 1 from agent_loops where project_id = ${projectId}
         union all select 1 from dev_servers where project_id = ${projectId}
         union all select 1 from dev_server_detection_state where project_id = ${projectId}
