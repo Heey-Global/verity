@@ -2,7 +2,11 @@
 // automation, created from an agent's proposal once the operator confirms it in
 // the app. The operator's confirmation is the gate: the agent never calls these.
 import { automationProposalSchema } from '@verity/events';
-import type { EventStore, SessionRecord } from '@verity/store';
+import {
+  SessionAutomationWorkspaceChangedError,
+  type EventStore,
+  type SessionRecord,
+} from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -67,14 +71,25 @@ export function registerAutomationRoutes(
         };
       }
     }
-    const automation = await deps.eventStore.setSessionAutomation({
-      sessionId: id,
-      name: body.name,
-      schedule: body.schedule,
-      prompt: body.prompt,
-      script,
-      model,
-    });
+    let automation;
+    try {
+      automation = await deps.eventStore.setSessionAutomation(
+        {
+          sessionId: id,
+          name: body.name,
+          schedule: body.schedule,
+          prompt: body.prompt,
+          script,
+          model,
+        },
+        new Date(),
+        session,
+      );
+    } catch (error) {
+      if (!(error instanceof SessionAutomationWorkspaceChangedError)) throw error;
+      reply.code(409);
+      return { error: error.message, code: 'automationWorkspaceChanged' };
+    }
     changed();
     return { automation };
   });

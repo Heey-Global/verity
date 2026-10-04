@@ -3395,6 +3395,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // sleeping project for the turn itself; only a check script needs the
   // project container directly.
   const automationExecutor = createAutomationExecutor({
+    isCurrent: async (automation, snapshot) => {
+      const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
+      const session = await deps.eventStore.getSession(automation.sessionId);
+      return (
+        current?.id === automation.id &&
+        current.status === 'enabled' &&
+        session?.projectId === snapshot.projectId &&
+        session.worktree === snapshot.worktree
+      );
+    },
     getSession: (sessionId) => deps.eventStore.getSession(sessionId),
     getProject: (projectId) => deps.eventStore.getProject(projectId),
     prepareProject: async (project) => {

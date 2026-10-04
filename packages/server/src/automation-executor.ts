@@ -29,6 +29,9 @@ export type AutomationRunInput = Pick<
 export interface AutomationExecutorDeps {
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
   getProject(projectId: string): Promise<ProjectRecord | undefined>;
+  /** A claim can outlive a pause, replacement, or move. Confirm it still belongs
+   * to this workspace before a script or its resulting prompt is dispatched. */
+  isCurrent?(automation: AutomationRunInput, session: SessionRecord): Promise<boolean>;
   /** Wake or otherwise prepare the project before a check script runs. */
   prepareProject?(project: ProjectRecord): Promise<ProjectRecord>;
   /** Hold an activity lease while the script uses the project Sandbox. */
@@ -129,6 +132,9 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
     async run(automation) {
       const result = await guarded(automation, async () => {
         const session = await loadSession(automation.sessionId);
+        if ((await deps.isCurrent?.(automation, session)) === false) {
+          return { outcome: 'skipped', detail: 'The automation or its workspace changed.' };
+        }
         if (automation.script !== null) {
           const verdict = await scriptVerdict(automation.script, session);
           if (verdict !== 'run') return verdict;
@@ -138,6 +144,9 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
           (await deps.isModelAllowed?.(automation.model, session)) === false
         ) {
           return { outcome: 'error', detail: 'The selected model is not available here.' };
+        }
+        if ((await deps.isCurrent?.(automation, session)) === false) {
+          return { outcome: 'skipped', detail: 'The automation or its workspace changed.' };
         }
         const { accepted } = await deps.dispatchTurnWhenIdle(session.sessionId, automation.prompt, {
           ...(automation.model !== null ? { model: automation.model } : {}),

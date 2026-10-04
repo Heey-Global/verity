@@ -147,3 +147,25 @@ it('keeps a prompt-only automation running after a move', async () => {
   await ctx.store.commitSessionMove('s', 'move', 'Moved to b', '{}');
   expect(await ctx.store.getSessionAutomation('s')).toMatchObject({ status: 'enabled' });
 });
+
+it.each([false, true])(
+  'rejects source-approved saves after a move (existing automation: %s)',
+  async (existing) => {
+    const input = {
+      sessionId: 's',
+      name: 'Check',
+      schedule: { kind: 'daily' as const, hour: 9, minute: 0 },
+      prompt: 'Review changes.',
+      script: 'exit 10',
+    };
+    const source = (await ctx.store.getSession('s'))!;
+    if (existing) await ctx.store.setSessionAutomation(input);
+    await ctx.store.commitSessionMove('s', 'move', 'Moved', '{}');
+    await expect(ctx.store.setSessionAutomation(input, new Date(), source)).rejects.toThrow(
+      'workspace changed',
+    );
+    const saved = await ctx.store.getSessionAutomation('s');
+    if (existing) expect(saved).toMatchObject({ status: 'paused', nextRunAt: null });
+    else expect(saved).toBeUndefined();
+  },
+);

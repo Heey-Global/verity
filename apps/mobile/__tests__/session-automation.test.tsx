@@ -69,7 +69,7 @@ describe('AutomationProposalCard', () => {
   });
 
   it('does not call a paused automation active', () => {
-    card({ current: 'same', currentPaused: true });
+    card({ state: 'saved', current: 'same', currentPaused: true });
     expect(screen.getByRole('button', { name: 'Automation paused' })).toBeTruthy();
   });
 

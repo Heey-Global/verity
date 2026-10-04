@@ -366,6 +366,13 @@ export interface SessionAutomationRecord {
 }
 
 /** Input to {@link EventStore.setSessionAutomation}. */
+export class SessionAutomationWorkspaceChangedError extends Error {
+  constructor() {
+    super('The session workspace changed. Confirm the automation again in its current project.');
+    this.name = 'SessionAutomationWorkspaceChangedError';
+  }
+}
+
 export interface SessionAutomationInput {
   sessionId: string;
   name: string;
@@ -5480,6 +5487,7 @@ export class EventStore implements EventSink {
   async setSessionAutomation(
     input: SessionAutomationInput,
     now: Date = new Date(),
+    checkedWorkspace?: Pick<SessionRecord, 'projectId' | 'worktree'>,
   ): Promise<SessionAutomationRecord> {
     const values = {
       name: input.name,
@@ -5494,22 +5502,39 @@ export class EventStore implements EventSink {
       last_detail: null,
       next_run_at: computeNextRun(input.schedule, now).toISOString(),
     };
-    const row = await this.db
-      .insertInto('session_automations')
-      .values({ id: randomUUID(), session_id: input.sessionId, ...values })
-      // A replacement gets a fresh id. Claims and outcomes are keyed by id, so a
-      // run of the previous configuration still in flight cannot record its result
-      // (or its errors) against the one the operator just confirmed.
-      .onConflict((oc) =>
-        oc
-          .column('session_id')
-          .doUpdateSet({ ...values, id: randomUUID(), updated_at: sql`now()` }),
-      )
-      .returningAll()
-      .executeTakeFirst();
-    if (!row)
-      throw new Error('verity: setSessionAutomation RETURNING yielded no row — dialect bug');
-    return this.sessionAutomationRowToRecord(row);
+    return this.db.transaction().execute(async (tx) => {
+      // Serialize with commitSessionMove: a script checked in the old workspace
+      // must not overwrite the move's pause or become enabled in the new one.
+      const session = await tx
+        .selectFrom('sessions')
+        .select(['project_id', 'worktree'])
+        .where('session_id', '=', input.sessionId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (
+        checkedWorkspace !== undefined &&
+        (session.project_id !== checkedWorkspace.projectId ||
+          session.worktree !== checkedWorkspace.worktree)
+      ) {
+        throw new SessionAutomationWorkspaceChangedError();
+      }
+      const row = await tx
+        .insertInto('session_automations')
+        .values({ id: randomUUID(), session_id: input.sessionId, ...values })
+        // A replacement gets a fresh id. Claims and outcomes are keyed by id, so a
+        // run of the previous configuration still in flight cannot record its result
+        // (or its errors) against the one the operator just confirmed.
+        .onConflict((oc) =>
+          oc
+            .column('session_id')
+            .doUpdateSet({ ...values, id: randomUUID(), updated_at: sql`now()` }),
+        )
+        .returningAll()
+        .executeTakeFirst();
+      if (!row)
+        throw new Error('verity: setSessionAutomation RETURNING yielded no row — dialect bug');
+      return this.sessionAutomationRowToRecord(row);
+    });
   }
 
   async getSessionAutomation(sessionId: string): Promise<SessionAutomationRecord | undefined> {

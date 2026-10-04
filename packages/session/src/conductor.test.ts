@@ -92,11 +92,12 @@ const RESUME_SET = [
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
+  AUTOMATION_SYSTEM_PROMPT,
 ];
 
 /**
- * Ceiling for the assembled set, which remains under 4.2 KB with the compact
- * autonomy convergence fragment. A tripwire on the whole re-sent payload rather
+ * Ceiling for the assembled set, which includes the automation contract for existing sessions
+ * alongside the compact autonomy convergence fragment. A tripwire on the whole re-sent payload rather
  * than a target: the cost here is per operator message, not per context, so growth that
  * is cheap in a fresh turn is not cheap in this one. Membership is checked
  * exactly by {@link expectResumeSet}; this is the only instrument that notices
@@ -106,12 +107,12 @@ const RESUME_SET = [
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
  * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 5000 - 3100 = 1900 characters. If they grow past that,
+ * members sum to under 6500 - 3100 = 3400 characters. If they grow past that,
  * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
  * the fix is to raise this one after reading what actually grew, not to derive
  * either number from the other.
  */
-const RESUME_SET_BUDGET = 5000;
+const RESUME_SET_BUDGET = 6500;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -454,7 +455,7 @@ describe('Conductor.sendTurn', () => {
     expect(conductor.isBusy('s1')).toBe(false);
   });
 
-  it('sends compact convergence directives on resumed turns', async () => {
+  it('sends current automation and convergence directives on resumed turns', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
     const fake = scriptedBackend({ text: 'hi' });
@@ -464,7 +465,7 @@ describe('Conductor.sendTurn', () => {
       worktreeExists: async () => true,
     });
 
-    await conductor.sendTurn('s1', 'go');
+    await conductor.sendTurn('s1', 'Review my pull requests every morning');
 
     expect(fake.last().resumeSessionId).toBe('s1');
     // Membership is checked exhaustively below; only the exclusion needs its own

@@ -99,7 +99,8 @@ const LOCAL_PROJECT_TURN_SYSTEM_PROMPT = assembleTurnSystemPrompt(true);
  * whose violation ends another session has to keep reaching the contexts that
  * are already running. The compact autonomy directive also converges existing
  * contexts onto the current outcome and Quick-Action semantics without paying
- * the full fresh-context contracts on every turn.
+ * the full fresh-context contracts on every turn. The automation contract also
+ * reaches existing sessions so they can propose the current confirmation fence.
  */
 export const RESUME_SYSTEM_PROMPT = `${TERMINOLOGY_SYSTEM_PROMPT}
 
@@ -107,7 +108,9 @@ ${AUTONOMY_RESUME_SYSTEM_PROMPT}
 
 ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
-${SANDBOX_RESOURCES_SYSTEM_PROMPT}`;
+${SANDBOX_RESOURCES_SYSTEM_PROMPT}
+
+${AUTOMATION_SYSTEM_PROMPT}`;
 
 export function turnSystemPrompt(localProject = false): string {
   return localProject ? LOCAL_PROJECT_TURN_SYSTEM_PROMPT : TURN_SYSTEM_PROMPT;

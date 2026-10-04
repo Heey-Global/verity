@@ -93,6 +93,22 @@ describe('session automation routes', () => {
     expect(res.json().automation.script).toBe('exit 0');
   });
 
+  it('rejects a confirmation when the workspace changes during its script check', async () => {
+    checkScript.mockImplementationOnce(async () => {
+      await ctx.db
+        .updateTable('sessions')
+        .set({ worktree: '/wt/moved' })
+        .where('session_id', '=', 's1')
+        .execute();
+      return { outcome: 'ok', detail: null };
+    });
+    const res = await put({ ...proposal, script: 'exit 0' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('automationWorkspaceChanged');
+    expect(await store.getSessionAutomation('s1')).toBeUndefined();
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it('rejects a model the session cannot run', async () => {
     const res = await put({ ...proposal, model: 'other/model' });
     expect(res.statusCode).toBe(400);

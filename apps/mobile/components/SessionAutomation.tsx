@@ -199,7 +199,7 @@ export function AutomationProposalCard({
   const done = state === 'saved' || current === 'same';
   const inactive = disabled || superseded || done || state !== 'idle';
   const label = done
-    ? currentPaused && state !== 'saved'
+    ? current === 'same' && currentPaused
       ? 'Automation paused'
       : 'Automation active'
     : state === 'saving'

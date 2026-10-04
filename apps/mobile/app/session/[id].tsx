@@ -761,6 +761,13 @@ export function SessionChat({
   // Bumped by every local change, so a read that started earlier cannot bring
   // back an automation the operator just paused, replaced, or deleted.
   const automationGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      // A closed chat must not publish an old read over mutations from its replacement.
+      automationGeneration.current += 1;
+    },
+    [sessionId],
+  );
   const loadAutomation = useCallback(() => {
     const generation = automationGeneration.current;
     return client

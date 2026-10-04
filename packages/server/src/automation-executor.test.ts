@@ -95,6 +95,31 @@ describe('automation executor', () => {
     expect(dispatch).toHaveBeenCalledOnce();
   });
 
+  it('does not execute a claimed script after its automation was paused by a move', async () => {
+    const { executor, runScript, dispatch } = harness({
+      getSession: async () => ({ ...session, projectId: 'target', worktree: '/target/session' }),
+      isCurrent: async () => false,
+    });
+    await expect(executor.run({ ...automation, script: 'exit 10' })).resolves.toMatchObject({
+      outcome: 'skipped',
+    });
+    expect(runScript).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch a check result into a workspace that moved during the check', async () => {
+    const isCurrent = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const { executor, runScript, dispatch } = harness({
+      isCurrent,
+      script: { exitCode: 10, stdout: '', stderr: '', timedOut: false },
+    });
+    await expect(executor.run({ ...automation, script: 'exit 10' })).resolves.toMatchObject({
+      outcome: 'skipped',
+    });
+    expect(runScript).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('reports a failing check in the session without leaking its output', async () => {
     const { executor, dispatch, notice } = harness({
       script: { exitCode: 2, stdout: 'TOKEN=secret', stderr: 'boom', timedOut: false },

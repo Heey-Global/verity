@@ -90,6 +90,7 @@ export {
   type SessionAutomationRecord,
   type SessionAutomationStatus,
   type SessionAutomationInput,
+  SessionAutomationWorkspaceChangedError,
   type SessionAutomationOutcome,
   type SecretKeyMetaRecord,
   type AuthTokenRecord,
