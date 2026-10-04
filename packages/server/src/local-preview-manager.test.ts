@@ -128,7 +128,7 @@ it('retries Docker cleanup after the edge has already closed', async () => {
 it('revokes immediately when another process takes over the target', async () => {
   const { manager, options } = fixture();
   const share = await manager.create('s1', { targetPort: 3000 });
-  vi.mocked(PreviewShareManager.prototype.prepareLocalTarget).mockRejectedValueOnce(
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValueOnce(
     new Error('ownership changed'),
   );
   options.listListeningProcesses = async () => [
