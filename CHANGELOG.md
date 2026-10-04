@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.1](https://github.com/Heey-Global/verity/compare/v4.9.0...v4.9.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **preview:** allow local connector transport and clarify opening actions ([#1090](https://github.com/Heey-Global/verity/issues/1090)) ([a59dc7d](https://github.com/Heey-Global/verity/commit/a59dc7db4e420f479c5278ca548e0963eeb452e0))
+
 ## [4.9.0](https://github.com/Heey-Global/verity/compare/v4.8.0...v4.9.0) (2026-10-04)
 
 
