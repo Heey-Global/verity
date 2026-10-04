@@ -44,10 +44,12 @@ function reactNativeBindings(source: string): string {
 describe('keyboard handling', () => {
   it('opens the attachment menu through the post-dismissal anchor measurement', () => {
     const session = readFileSync(join(MOBILE_ROOT, 'app', 'session', '[id].tsx'), 'utf8');
-    const binding = session.match(/const\s+(\w+)\s*=\s*useAttachmentMenuAnchor\(/);
-    expect(binding).not.toBeNull();
-    // Measuring inline on press silently restores the pre-dismissal menu anchor.
-    expect(session).toContain(`onPress={${binding?.[1]}}`);
+    const bindings = [...session.matchAll(/const\s+(\w+)\s*=\s*useAttachmentMenuAnchor\(/g)];
+    expect(bindings.map((binding) => binding[1])).toContain('openAttachMenu');
+    // Measuring inline on press silently restores the pre-dismissal menu anchor —
+    // for every anchored menu (composer attachments, the message "…" menu), not
+    // just the first one declared.
+    for (const binding of bindings) expect(session).toContain(`onPress={${binding[1]}}`);
     expect(session).not.toContain('.measureInWindow(');
   });
 
