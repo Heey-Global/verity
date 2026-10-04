@@ -77,7 +77,7 @@ function sameUtterance(a: string, b: string): boolean {
   const words = (s: string) =>
     s
       .toLowerCase()
-      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .replace(/[\s.,!?;:'"„“”‚‘’«»…()\-–—]+/g, ' ')
       .trim();
   const wa = words(a);
   return wa !== '' && wa === words(b);
@@ -226,6 +226,8 @@ export function useVoiceInput(
       interimActiveRef.current = false;
       lastFinalTranscriptRef.current = transcript;
       baseRef.current = next;
+      // The utterance open at stop is now committed; further replays of it are repeats.
+      if (stoppingRef.current) utteranceOpenAtStopRef.current = false;
       finalReadyRef.current = true;
       startCountdown();
     }

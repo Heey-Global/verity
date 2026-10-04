@@ -249,3 +249,17 @@ it('commits an utterance still open when stop is tapped', async () => {
   act(() => handlers.result({ results: [{ transcript: ' Again' }], isFinal: true }));
   expect(onChangeText).toHaveBeenLastCalledWith('Again Again');
 });
+
+it('ignores a replay of the utterance committed after stop', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: false }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: true }));
+  act(() => handlers.result({ results: [{ transcript: ' Again' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Again.' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenLastCalledWith('Again');
+});
