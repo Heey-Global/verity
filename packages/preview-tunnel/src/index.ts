@@ -1127,7 +1127,11 @@ export class PreviewConnector {
     validatePositiveIntegerOption(options.maxConcurrentStreams, 'maxConcurrentStreams');
     const edge = new URL(options.edgeUrl);
     if (!['ws:', 'wss:'].includes(edge.protocol)) throw new Error('edgeUrl must use ws or wss');
-    if (edge.protocol !== 'wss:' && !isLoopbackHostname(edge.hostname)) {
+    if (
+      options.accessMode !== 'local-open' &&
+      edge.protocol !== 'wss:' &&
+      !isLoopbackHostname(edge.hostname)
+    ) {
       throw new Error('edgeUrl must use wss outside loopback development');
     }
     const target = new URL(options.targetOrigin);
