@@ -63,7 +63,7 @@ export function ProjectMatrixRooms({
             icon="link"
             title="Connect Matrix"
             subtitle="Connect an account before choosing rooms."
-            onPress={() => router.push('/settings/services/matrix/account')}
+            onPress={() => router.push('/settings/services/matrix')}
           />
         </SettingsListPanel>
       ) : null}

@@ -1,15 +1,12 @@
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
-import MatrixRoomsScreen from '../app/settings/services/matrix';
-import MatrixAccountScreen from '../app/settings/services/matrix/account';
+import MatrixScreen from '../app/settings/services/matrix';
 import {
   mockCreateVerityClient,
-  mockPush,
   resetSettingsHarness,
   setSearchParams,
 } from './support/settingsHarness';
@@ -28,7 +25,7 @@ const source = {
 
 afterEach(() => resetSettingsHarness());
 
-it('shows the room overview and opens the Matrix account from its row', async () => {
+it('shows account setup directly and keeps rooms in project settings', async () => {
   const connectedRoom = {
     ...source,
     sourceId: '!team:example.test',
@@ -37,6 +34,7 @@ it('shows the room overview and opens the Matrix account from its row', async ()
     status: 'active' as const,
   };
   mockCreateVerityClient.mockReturnValue({
+    getMatrixConfig: jest.fn().mockResolvedValue(null),
     listIntegrations: jest
       .fn()
       .mockResolvedValue({ accounts: [], sources: [source, connectedRoom] }),
@@ -45,21 +43,20 @@ it('shows the room overview and opens the Matrix account from its row', async ()
       .mockResolvedValue([{ id: 'project-one', owner: 'team', repo: 'first', archived: true }]),
   } as unknown as VerityClient);
   setSearchParams({});
-  render(<MatrixRoomsScreen />);
+  render(<MatrixScreen />);
 
+  expect(await screen.findByLabelText('Matrix homeserver URL')).toBeOnTheScreen();
+  expect(screen.queryByText('Connected rooms')).toBeNull();
   expect(screen.queryByText('Project chat')).toBeNull();
-  expect(await screen.findByText('Connected rooms')).toBeOnTheScreen();
-  expect(screen.getByText('Team room')).toBeOnTheScreen();
-  expect(await screen.findByText('team/first · active')).toBeOnTheScreen();
-  expect(screen.queryByText('project-one')).toBeNull();
-  expect(screen.queryByLabelText('Matrix password')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Matrix account'));
-  expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix/account');
+  expect(screen.queryByText('Team room')).toBeNull();
+  expect(screen.queryByText('Manage in project')).toBeNull();
+  expect(screen.getByLabelText('Matrix password')).toBeOnTheScreen();
 });
 
-it('configures the Matrix account on its detail screen', async () => {
+it('configures the Matrix account directly on the Matrix screen', async () => {
   const saveMatrixConfig = jest.fn().mockResolvedValue(undefined);
   mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     getMatrixConfig: jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
       endpoint: 'https://matrix.example.test',
       username: '@verity:example.test',
@@ -67,7 +64,7 @@ it('configures the Matrix account on its detail screen', async () => {
     }),
     saveMatrixConfig,
   } as unknown as VerityClient);
-  render(<MatrixAccountScreen />);
+  render(<MatrixScreen />);
 
   fireEvent.changeText(
     await screen.findByLabelText('Matrix homeserver URL'),
@@ -96,10 +93,11 @@ it('configures the Matrix account on its detail screen', async () => {
 // and announced, and it may only light up once every required field is filled.
 it('keeps the save button disabled until the account is complete', async () => {
   mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     getMatrixConfig: jest.fn().mockResolvedValue(null),
     saveMatrixConfig: jest.fn(),
   } as unknown as VerityClient);
-  render(<MatrixAccountScreen />);
+  render(<MatrixScreen />);
 
   const button = await screen.findByRole('button', { name: 'Save Matrix account' });
   expect(button).toBeDisabled();
@@ -118,6 +116,7 @@ it('keeps the save button disabled until the account is complete', async () => {
 it('shows the saved identity read-only and only replaces the password', async () => {
   const saveMatrixConfig = jest.fn().mockResolvedValue(undefined);
   mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     getMatrixConfig: jest.fn().mockResolvedValue({
       endpoint: 'https://matrix.example.test',
       username: '@verity:example.test',
@@ -125,13 +124,14 @@ it('shows the saved identity read-only and only replaces the password', async ()
     }),
     saveMatrixConfig,
   } as unknown as VerityClient);
-  render(<MatrixAccountScreen />);
+  render(<MatrixScreen />);
 
   expect(await screen.findByText('https://matrix.example.test')).toBeOnTheScreen();
   expect(screen.getByText('@verity:example.test')).toBeOnTheScreen();
   expect(screen.queryByLabelText('Matrix homeserver URL')).toBeNull();
   expect(screen.queryByLabelText('Matrix account ID')).toBeNull();
-  expect(screen.getByText('All changes saved')).toBeOnTheScreen();
+  expect(screen.queryByText('All changes saved')).toBeNull();
+  expect(screen.queryByText(/^Saved at /)).toBeNull();
   const button = screen.getByRole('button', { name: 'Update password' });
   expect(button).toBeDisabled();
 
@@ -154,10 +154,11 @@ it('shows the saved identity read-only and only replaces the password', async ()
 
 it('does not offer a save form when the server lacks Matrix settings', async () => {
   mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     getMatrixConfig: jest.fn().mockRejectedValue(new VerityApiError(404, 'Not found')),
     saveMatrixConfig: jest.fn(),
   } as unknown as VerityClient);
-  render(<MatrixAccountScreen />);
+  render(<MatrixScreen />);
 
   expect(await screen.findByText(/Update the server and retry/)).toBeOnTheScreen();
   expect(screen.queryByLabelText('Matrix password')).toBeNull();
@@ -165,6 +166,7 @@ it('does not offer a save form when the server lacks Matrix settings', async () 
 
 it('shows the server reason when saving the Matrix account fails', async () => {
   mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     getMatrixConfig: jest.fn().mockResolvedValue(null),
     saveMatrixConfig: jest
       .fn()
@@ -175,7 +177,7 @@ it('shows the server reason when saving the Matrix account fails', async () => {
         ),
       ),
   } as unknown as VerityClient);
-  render(<MatrixAccountScreen />);
+  render(<MatrixScreen />);
 
   fireEvent.changeText(
     await screen.findByLabelText('Matrix homeserver URL'),
@@ -199,10 +201,11 @@ it('keeps the Matrix form editable after validation fails and allows a retry', a
     .mockRejectedValueOnce(new VerityApiError(400, 'Invalid integration request'))
     .mockResolvedValueOnce(undefined);
   mockCreateVerityClient.mockReturnValue({
+    listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     getMatrixConfig: jest.fn().mockResolvedValue(null),
     saveMatrixConfig,
   } as unknown as VerityClient);
-  render(<MatrixAccountScreen />);
+  render(<MatrixScreen />);
 
   fireEvent.changeText(
     await screen.findByLabelText('Matrix homeserver URL'),
@@ -224,4 +227,29 @@ it('keeps the Matrix form editable after validation fails and allows a retry', a
     username: '@verity:example.test',
     password: 'private-password',
   });
+});
+
+// A bare error badge hides the connector's explanation and looks like an
+// ongoing connection attempt when rendered with the transient spinner.
+it('shows the connector failure reason alongside its account status', async () => {
+  mockCreateVerityClient.mockReturnValue({
+    getMatrixConfig: jest.fn().mockResolvedValue(null),
+    listIntegrations: jest.fn().mockResolvedValue({
+      accounts: [
+        {
+          accountId: '@verity:example.test',
+          provider: 'matrix',
+          displayName: 'Matrix',
+          endpoint: 'https://matrix.example.test',
+          status: 'error',
+          lastError: '2 message imports are retrying',
+        },
+      ],
+      sources: [],
+    }),
+    listProjects: jest.fn().mockResolvedValue([]),
+  } as unknown as VerityClient);
+  render(<MatrixScreen />);
+
+  expect(await screen.findByText('2 message imports are retrying')).toBeOnTheScreen();
 });
