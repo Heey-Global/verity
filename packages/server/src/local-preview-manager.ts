@@ -30,6 +30,7 @@ interface ActiveShare {
   edgeClosed?: boolean;
   edgeStarted?: boolean;
   ready?: boolean;
+  provisioning?: boolean;
   preparedPort?: number;
 }
 export interface LocalPreviewManagerOptions extends Omit<PreviewShareManagerOptions, 'edge'> {
@@ -177,6 +178,7 @@ export class LocalPreviewManager {
       port,
       edge,
       generation: target.generation,
+      provisioning: true,
     };
     this.active.set(id, state);
     try {
@@ -264,9 +266,11 @@ export class LocalPreviewManager {
         this.blockedSessions.has(sessionId)
       )
         throw new PreviewShareConflictError('project changed during preview creation');
+      state.provisioning = false;
       state.ready = true;
       return state.share;
     } catch (error) {
+      state.provisioning = false;
       await this.stop(id);
       throw error;
     }
@@ -328,7 +332,11 @@ export class LocalPreviewManager {
   }
   async reconcile(): Promise<void> {
     for (const state of this.active.values()) {
-      if (!state.ready) continue;
+      if (state.provisioning) continue;
+      if (!state.ready) {
+        await this.stop(state.share.id);
+        continue;
+      }
       if (state.share.expiresAt.getTime() <= Date.now()) {
         await this.stop(state.share.id);
         continue;

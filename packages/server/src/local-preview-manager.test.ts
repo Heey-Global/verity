@@ -185,3 +185,14 @@ it('releases a slot when its HTTP edge cannot bind', async () => {
   await expect(manager.create('s1', { targetPort: 3000 })).rejects.toThrow('port occupied');
   expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
 });
+
+it('retries cleanup after both provisioning and Docker removal fail', async () => {
+  const { manager, docker } = fixture();
+  docker.startContainer.mockRejectedValueOnce(new Error('startup failed'));
+  docker.removeContainer.mockRejectedValueOnce(new Error('Docker offline'));
+  await expect(manager.create('s1', { targetPort: 3000 })).rejects.toThrow('Docker offline');
+  expect(manager.list('s1')).toEqual([]);
+  await manager.reconcile();
+  expect(docker.removeContainer).toHaveBeenCalledTimes(2);
+  expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
+});
