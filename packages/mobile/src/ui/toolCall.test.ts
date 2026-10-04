@@ -237,6 +237,12 @@ describe('toolCallView', () => {
     expect(
       toolCallView(tool({ name: 'verity_secret_run', state: 'error', input: {}, result })).preview,
     ).toBe(result);
+    // Claude reports the same tool qualified; truncating there would hide the cause again.
+    expect(
+      toolCallView(
+        tool({ name: 'mcp__verity__verity_secret_run', state: 'error', input: {}, result }),
+      ).preview,
+    ).toBe(result);
   });
 
   it('allows unlock retry only for confirmed-not-started materialization failures', () => {

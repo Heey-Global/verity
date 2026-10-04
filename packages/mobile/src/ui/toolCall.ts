@@ -162,7 +162,7 @@ export function toolCallView(tool: ToolCall): ToolCallView {
     subtitle: summarizeInput(name, tool.input),
     tone,
     // No result preview/images until the call settles — a running call has none yet.
-    preview: tool.state === 'running' ? null : previewResult(tool.name, tool.result),
+    preview: tool.state === 'running' ? null : previewResult(name, tool.result),
     images: tool.state === 'running' ? [] : extractToolImages(tool.result),
   };
 }
