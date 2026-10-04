@@ -414,7 +414,7 @@ export const trustedCliEntryScriptSchema = z
       .enum(['isolated', 'dynamic'])
       .default('dynamic')
       .describe(
-        '`isolated` requires a system interpreter under /bin or /usr, denies reads from mutable worktree files, and permits reusable approval. `dynamic` keeps worktree loading available and therefore always requires one-time approval.',
+        '`isolated` requires a system interpreter under /bin or /usr, denies reads from mutable worktree files, and permits reusable approval. `dynamic` keeps worktree loading available; session or 30-day project approval accepts that mutable code and configuration may change.',
       ),
   })
   .strict();
