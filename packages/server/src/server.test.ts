@@ -5013,6 +5013,39 @@ describe('agent login routes', () => {
 });
 
 describe('GET/PATCH /settings', () => {
+  // GET /settings now projects the DECRYPTED row so it can derive plan labels.
+  // A secret the projection forgot to strip would then leave as plaintext, not
+  // ciphertext — so every stored credential is planted and searched for.
+  it('derives subscription plans without exposing any stored credential', async () => {
+    const claudeCredentials = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'planted-claude-access',
+        refreshToken: 'planted-claude-refresh',
+        subscriptionType: 'max',
+        rateLimitTier: 'default_claude_max_20x',
+      },
+    });
+    const secrets = {
+      gitSshPrivateKey: 'planted-ssh-key',
+      githubAppPrivateKey: 'planted-github-key',
+      dopplerServiceToken: 'planted-doppler',
+      transcribeApiKey: 'planted-transcribe',
+      claudeCodeOauthCredentialsJson: claudeCredentials,
+      codexAuthJson: JSON.stringify({ tokens: { access_token: 'planted-codex-access' } }),
+      opencodeApiKey: 'planted-opencode',
+      googleDriveRefreshToken: 'planted-drive',
+      uplinkSubscriptionKey: 'planted-uplink',
+    };
+    await ctx.store.updateVeritySettings(secrets);
+
+    const response = await app.inject({ method: 'GET', url: '/settings' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().settings.claudeSubscriptionPlan).toBe('Max 20x');
+    expect(response.json().settings.codexSubscriptionPlan).toBeNull();
+    expect(response.body).not.toMatch(/planted-/);
+  });
+
   it('does not accept a manually supplied OpenCode model catalog', async () => {
     const response = await app.inject({
       method: 'PATCH',

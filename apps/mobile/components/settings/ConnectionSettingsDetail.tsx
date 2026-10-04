@@ -132,9 +132,17 @@ export function ConnectionSettingsDetail({
                 onConfiguredChange={(provider, configured) => {
                   patchVeritySettingsLocally((current) => ({
                     ...current,
+                    // A plan belongs to the login it was read from; a later
+                    // login may be another account, so drop it until reload.
                     ...(provider === 'claude'
-                      ? { claudeCodeOauthCredentialsConfigured: configured }
-                      : { codexAuthJsonConfigured: configured }),
+                      ? {
+                          claudeCodeOauthCredentialsConfigured: configured,
+                          ...(configured ? {} : { claudeSubscriptionPlan: null }),
+                        }
+                      : {
+                          codexAuthJsonConfigured: configured,
+                          ...(configured ? {} : { codexSubscriptionPlan: null }),
+                        }),
                   }));
                   // Only the server can read the plan out of the new login.
                   if (configured) reload();
