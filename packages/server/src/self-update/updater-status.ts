@@ -3,7 +3,12 @@ import { createServer, request, type Server } from 'node:http';
 import { chmod, chown, lstat, mkdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { readManagedDeployment, type ManagedDeploymentState } from './managed-deployment.js';
+import {
+  readManagedDeployment,
+  readManagedUpdateChannel,
+  writeManagedUpdateChannel,
+  type ManagedDeploymentState,
+} from './managed-deployment.js';
 import type { ManagedServerReconcileVerdict } from './managed-server-owner.js';
 import {
   readAgentSeedStamp,
@@ -778,6 +783,8 @@ export const UPDATER_CONTROL_ROUTES = [
   'GET /v1/deployment',
   'GET /v1/reconcile',
   'GET /v1/update',
+  'GET /v1/update-channel',
+  'POST /v1/update-channel',
   'POST /v1/update',
   'POST /v1/matrix-connector/configured',
   'GET /v1/handoff',
@@ -807,6 +814,53 @@ async function serveUpdaterRequest(
   }
   if (!authorized(req.headers.authorization, options.token)) {
     res.writeHead(401).end(JSON.stringify({ error: 'unauthorized' }));
+    return;
+  }
+  if (path === '/v1/update-channel') {
+    try {
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        const value: unknown = body === null ? null : JSON.parse(body);
+        const channel = (value as { channel?: unknown } | null)?.channel;
+        if (
+          typeof value !== 'object' ||
+          value === null ||
+          Array.isArray(value) ||
+          Object.keys(value).length !== 1 ||
+          (channel !== 'stable' && channel !== 'staging')
+        ) {
+          res.writeHead(400).end(JSON.stringify({ error: 'invalid-request' }));
+          return;
+        }
+        await withUpdateJournalLease(options.journalRoot ?? options.managedRoot, async () => {
+          const journal = await readUpdateJournal(options.journalRoot ?? options.managedRoot);
+          if (journal !== null && !isTerminalOperationState(projectUpdateOperation(journal).state))
+            throw new UpdaterRequestError(409, 'operation-in-progress');
+          await writeManagedUpdateChannel(options.managedRoot, channel);
+        });
+      }
+      const channel = await readManagedUpdateChannel(options.managedRoot);
+      res.writeHead(200).end(JSON.stringify({ channel }));
+    } catch (error) {
+      const status =
+        error instanceof UpdaterRequestError
+          ? error.status
+          : error instanceof SyntaxError
+            ? 400
+            : (error as Error).message.includes('owns the update journal')
+              ? 409
+              : 503;
+      res.writeHead(status).end(
+        JSON.stringify({
+          error:
+            status === 409
+              ? 'operation-in-progress'
+              : status === 400
+                ? 'invalid-request'
+                : 'unavailable',
+        }),
+      );
+    }
     return;
   }
   if (path === '/v1/matrix-connector/configured') {
@@ -1369,4 +1423,20 @@ function parseStatus(value: unknown): ManagedDeploymentState | null {
     marker: { schemaVersion: 1, deploymentId: markerRecord.deploymentId },
     spec,
   };
+}
+
+export async function updaterUpdateChannel(
+  options: UpdaterCallOptions,
+  channel?: 'stable' | 'staging',
+): Promise<'stable' | 'staging'> {
+  const result = await call(options, {
+    method: channel === undefined ? 'GET' : 'POST',
+    path: '/v1/update-channel',
+    ...(channel === undefined ? {} : { body: { channel } }),
+  });
+  if (result.status !== 200) throw new UpdaterRequestError(result.status, errorCode(result.value));
+  const value = (result.value as { channel?: unknown } | null)?.channel;
+  if (value !== 'stable' && value !== 'staging')
+    throw new Error('invalid updater channel response');
+  return value;
 }

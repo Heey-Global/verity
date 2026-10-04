@@ -1,3 +1,4 @@
+import { googleAppClient } from './google-app-client.js';
 import type { EventStore, SealableSecretCipher, VeritySettingsRecord } from '@verity/store';
 import { chmod } from 'node:fs/promises';
 import { SealedError } from '@verity/store';
@@ -93,6 +94,7 @@ interface GoogleDriveRouteDeps {
       | 'listSessions'
     >;
   googleDriveClientId?: string;
+  stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
   dataRoot?: string;
   onCredentialsChanged?: () => void;
@@ -143,7 +145,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     googleAccessToken: accessToken,
     ...(deps.dataRoot === undefined ? {} : { dataRoot: deps.dataRoot }),
   });
-  app.get('/google-drive/connection', async () => {
+  app.get('/google-drive/connection', async (request) => {
     const settings =
       deps.secretCipher?.isSealed() === true
         ? undefined
@@ -153,7 +155,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       hasGoogleDriveScopes(settings?.googleGrantedScopes);
     return {
       connected,
-      clientId: deps.googleDriveClientId ?? settings?.googleDriveClientId ?? null,
+      clientId:
+        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
+        (request.headers['x-verity-app-variant'] === undefined
+          ? settings?.googleDriveClientId
+          : null) ??
+        null,
       accountEmail: connected ? (settings?.googleDriveAccountEmail ?? null) : null,
       scopes: settings?.googleGrantedScopes ?? [],
     };
@@ -164,7 +171,8 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     async (request, reply) => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
       const body = connectBody.parse(request.body);
-      const clientId = deps.googleDriveClientId ?? '';
+      const clientId =
+        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ?? '';
       if (!clientId) {
         reply.code(400);
         return { error: 'Google Drive is not configured on this server' };

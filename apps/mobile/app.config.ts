@@ -202,7 +202,7 @@ const config: ExpoConfig = {
     // view during prebuild and includes it in the generated app target.
     inlineModules: { watchedDirectories: ['native'] },
   },
-  extra: { eas: { projectId: expoProjectId } },
+  extra: { appVariant, eas: { projectId: expoProjectId } },
 };
 
 // A native X.Y.0 release owns exactly one OTA line. Version fields are excluded

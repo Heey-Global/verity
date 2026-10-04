@@ -3,6 +3,7 @@ import { lstat, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ServerUpdateController } from '../server.js';
 import {
+  updaterUpdateChannel,
   acknowledgeUpdaterStandby,
   claimUpdaterHandoffEnvelope,
   publishUpdaterHandoff,
@@ -72,6 +73,12 @@ export async function createServerUpdateController(
   const channel = await openControlChannel(socketPath);
   if (channel === undefined) return undefined;
   return {
+    async readChannel() {
+      return updaterUpdateChannel(await channel());
+    },
+    async setChannel(value) {
+      return updaterUpdateChannel(await channel(), value);
+    },
     async readOperation() {
       return readUpdaterOperation(await channel());
     },

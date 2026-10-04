@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VerityClient, normalizeServerUrl } from '@verity/mobile';
 import { fetch as expoFetch } from 'expo/fetch';
@@ -104,6 +105,7 @@ export function createVerityClient(): VerityClient | null {
     endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, true) : undefined;
   const client = new VerityClient({
     baseUrl: serverUrl,
+    appVariant: Constants.expoConfig?.extra?.appVariant === 'staging' ? 'staging' : 'production',
     // expo-file-system File implements Blob through Expo's native networking
     // stack. Keep ordinary API calls on the global fetch and route only uploads
     // through expo/fetch so large picked files stream without a JS copy.

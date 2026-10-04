@@ -1,3 +1,4 @@
+import { googleAppClient } from './google-app-client.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
@@ -852,7 +853,7 @@ function effectiveExternalTranscription(
 
 function publicVeritySettings(
   settings: VeritySettingsRecord,
-  googleDriveClientId?: string,
+  googleDriveClientId?: string | null,
 ): PublicVeritySettingsRecord {
   const {
     gitSshPrivateKey,
@@ -894,7 +895,8 @@ function publicVeritySettings(
     // The app reads this to build the OAuth request. Prefer the env-baked client
     // id (ADR 0009) so it is present even before the first connect; fall back to
     // whatever the connection persisted.
-    googleDriveClientId: googleDriveClientId ?? settings.googleDriveClientId,
+    googleDriveClientId:
+      googleDriveClientId === undefined ? settings.googleDriveClientId : googleDriveClientId,
   };
 }
 
@@ -1070,6 +1072,7 @@ export interface ServerDeps {
    *  uses it for the code exchange + refresh. Omit → the Drive feature reports
    *  "not configured". */
   googleDriveClientId?: string | undefined;
+  stagingGoogleClientId?: string | undefined;
   /** Invalidate access tokens minted from shared Google credentials after OAuth reconnects. */
   onGoogleCredentialsChanged?: (() => void) | undefined;
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
@@ -4848,7 +4851,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     storeAgentCredentials,
-    publicSettings: (settings) => publicVeritySettings(settings, deps.googleDriveClientId),
+    publicSettings: (settings, request) =>
+      publicVeritySettings(
+        settings,
+        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
+      ),
     effectiveTranscription: effectiveExternalTranscription,
     transcriptionConfigured: externalMeetingTranscriptionConfigured,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
@@ -4862,6 +4870,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerGoogleDriveRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.googleDriveClientId !== undefined
       ? { googleDriveClientId: deps.googleDriveClientId }
@@ -4873,6 +4882,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerGmailRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
@@ -4881,6 +4891,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerGoogleCalendarRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
@@ -4889,6 +4900,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerGoogleContactsRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined

@@ -1,3 +1,4 @@
+import { googleAppClient } from './google-app-client.js';
 import rateLimitPlugin from '@fastify/rate-limit';
 import {
   SealedError,
@@ -43,6 +44,7 @@ type CalendarRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySe
 interface CalendarRouteDeps {
   eventStore: CalendarRouteStore;
   googleClientId?: string;
+  stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
   fetch?: GoogleFetch;
   onCredentialsChanged?: () => void;
@@ -93,7 +95,8 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       async (request, reply) => {
         if (deps.secretCipher?.isSealed() === true) throw new SealedError();
         const body = connectBody.parse(request.body);
-        const clientId = deps.googleClientId ?? '';
+        const clientId =
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ?? '';
         if (!clientId) {
           reply.code(400);
           return { error: 'Google is not configured on this server' };
@@ -175,7 +178,12 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       return {
         enabled: connection !== undefined,
         connected,
-        clientId: deps.googleClientId ?? current?.googleDriveClientId ?? null,
+        clientId:
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined
+            ? current?.googleDriveClientId
+            : null) ??
+          null,
         accountEmail: connection === undefined ? null : (current?.googleDriveAccountEmail ?? null),
       };
     });
@@ -200,7 +208,11 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       return {
         enabled: true as const,
         connected: true as const,
-        clientId: deps.googleClientId ?? current.googleDriveClientId,
+        clientId:
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined
+            ? current.googleDriveClientId
+            : null),
         accountEmail: current.googleDriveAccountEmail,
       };
     });

@@ -114,7 +114,7 @@ async function fixture(
       : { onMatrixConfigured: options.onMatrixConfigured }),
   });
   servers.push(server);
-  return { socketPath, token, managedRoot, accepted };
+  return { socketPath, token, managedRoot, accepted, server };
 }
 
 describe('managed Updater status boundary', () => {
@@ -1348,5 +1348,35 @@ describe('the control boundary refusing to guess', () => {
     }
     // Past the 4 KiB request limit the boundary hangs up instead of buffering.
     expect((await post(JSON.stringify({ idempotencyKey: 'x'.repeat(8192) }))).status).toBe(0);
+  });
+});
+
+describe('durable update channel preference', () => {
+  it('survives a control socket restart without changing the sealed deployment', async () => {
+    const { socketPath, token, managedRoot, server } = await fixture({ managed: true });
+    const before = await readUpdaterDeployment({ socketPath, token });
+    const { updaterUpdateChannel } = await import('./updater-status.js');
+    expect(await updaterUpdateChannel({ socketPath, token }, 'staging')).toBe('staging');
+    expect(await readUpdaterDeployment({ socketPath, token })).toEqual(before);
+    await server.close();
+    servers.splice(servers.indexOf(server), 1);
+    servers.push(await startUpdaterStatusServer({ socketPath, token, managedRoot }));
+    expect(await updaterUpdateChannel({ socketPath, token })).toBe('staging');
+    expect(await updaterUpdateChannel({ socketPath, token }, 'stable')).toBe('stable');
+  });
+
+  it('refuses unauthorized, unmanaged, invalid and in-progress channel changes', async () => {
+    const { updaterUpdateChannel } = await import('./updater-status.js');
+    const managed = await fixture({ managed: true });
+    await expect(
+      updaterUpdateChannel({ ...managed, token: 'wrong' }, 'staging'),
+    ).rejects.toMatchObject({ status: 401 });
+    await expect(updaterUpdateChannel(managed, 'beta' as 'staging')).rejects.toMatchObject({
+      status: 400,
+    });
+    await requestUpdaterOperation({ ...managed, idempotencyKey: 'busy', targetDigest: image('b') });
+    await expect(updaterUpdateChannel(managed, 'staging')).rejects.toMatchObject({ status: 409 });
+    const unmanaged = await fixture();
+    await expect(updaterUpdateChannel(unmanaged, 'staging')).rejects.toMatchObject({ status: 503 });
   });
 });

@@ -12,6 +12,8 @@ import { UpdaterRequestError } from './self-update/updater-status.js';
  * never learns Docker verbs, journal paths, or container identities.
  */
 export interface ServerUpdateController {
+  readChannel?(): Promise<'stable' | 'staging'>;
+  setChannel?(channel: 'stable' | 'staging'): Promise<'stable' | 'staging'>;
   readOperation(): Promise<UpdateOperation | null>;
   requestUpdate(input: {
     readonly idempotencyKey: string;
@@ -42,6 +44,35 @@ export function registerServerUpdateRoutes(
   // Read-only compatibility surface this build advertises (ADR 0008 slice 1).
   // The global bearer gate protects it like any other authenticated route.
   app.get('/server/compat', () => SERVER_COMPAT);
+
+  app.get('/server/update-channel', async (_request, reply) => {
+    if (!deps.serverUpdateController?.readChannel)
+      return reply.code(503).send({ error: 'channel selection is unavailable' });
+    try {
+      return { channel: await deps.serverUpdateController.readChannel() };
+    } catch {
+      return reply.code(503).send({ error: 'channel selection is unavailable' });
+    }
+  });
+  app.post('/server/update-channel', async (request, reply) => {
+    if (!deps.authRegistry?.isEnabled())
+      return reply.code(403).send({ error: 'channel changes require a paired device' });
+    const parsed = z
+      .object({ channel: z.enum(['stable', 'staging']) })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid update channel' });
+    const { channel } = parsed.data;
+    if (!deps.serverUpdateController?.setChannel)
+      return reply.code(503).send({ error: 'channel selection is unavailable' });
+    try {
+      return { channel: await deps.serverUpdateController.setChannel(channel) };
+    } catch (error) {
+      return reply
+        .code(error instanceof UpdaterRequestError && error.status === 409 ? 409 : 503)
+        .send({ error: 'channel change is unavailable' });
+    }
+  });
 
   // The resolver accepts only signed, official, digest-pinned channel metadata;
   // the operation is the Updater's own journal projection, never local guesswork.

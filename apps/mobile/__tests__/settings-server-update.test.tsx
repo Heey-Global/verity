@@ -7,6 +7,7 @@
 // that reports a stale result forever.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError } from '@verity/mobile';
+import { Alert } from 'react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('react-native/Libraries/Linking/Linking', () =>
@@ -663,4 +664,46 @@ describe('settings/server-update', () => {
       await screen.findByText('Set a master password before updating Verity.'),
     ).toBeOnTheScreen();
   });
+});
+
+describe('server update channel selection', () => {
+  it.each([false, true])(
+    'requires confirmation and refreshes availability (lost response: %s)',
+    async (lostResponse) => {
+      const alert = jest.spyOn(Alert, 'alert');
+      const getServerUpdates = jest
+        .fn()
+        .mockResolvedValue({ state: 'current', release: RELEASE, operation: null });
+      const setServerUpdateChannel = lostResponse
+        ? jest.fn().mockRejectedValue(new Error('response lost'))
+        : jest.fn().mockResolvedValue('staging');
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', {
+          getServerUpdates,
+          getServerUpdateChannel: jest
+            .fn()
+            .mockResolvedValueOnce('stable')
+            .mockResolvedValue('staging'),
+          setServerUpdateChannel,
+        }),
+      );
+      render(<ServerUpdateScreen />);
+      const prereleases = await screen.findByText('Prereleases');
+      fireEvent.press(prereleases);
+      expect(setServerUpdateChannel).not.toHaveBeenCalled();
+      expect(alert).toHaveBeenCalledWith(
+        'Use prereleases?',
+        expect.stringContaining('does not install an older version'),
+        expect.any(Array),
+      );
+      const actions = alert.mock.calls[0]![2]!;
+      await act(async () => {
+        actions.find((action) => action.text === 'Change channel')!.onPress!();
+      });
+      expect(setServerUpdateChannel).toHaveBeenCalledWith('staging');
+      expect(await screen.findByText('Prereleases ✓')).toBeTruthy();
+      expect(screen.queryByText('Could not confirm the update channel. Try again.')).toBeNull();
+      expect(getServerUpdates.mock.calls.length).toBeGreaterThan(1);
+    },
+  );
 });

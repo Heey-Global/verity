@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
 import { SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
@@ -184,6 +185,11 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   return (
     <SettingsPanel>
+      <ServerUpdateChannel
+        client={client}
+        disabled={starting || unanswered !== undefined || view.busy}
+        onChanged={refresh}
+      />
       <View style={styles.updateHeader}>
         <Text style={styles.updateTitle} accessibilityRole="header">
           {view.title}
