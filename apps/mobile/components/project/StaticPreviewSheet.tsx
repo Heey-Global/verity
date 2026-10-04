@@ -126,6 +126,7 @@ export function StaticPreviewSheet({
   const [publicSharing, setPublicSharing] = useState<
     'available' | 'premium-required' | 'unavailable'
   >('unavailable');
+  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
   const [localShares, setLocalShares] = useState<LocalPreviewShare[]>([]);
   useEffect(() => {
     let active = true;
@@ -134,7 +135,10 @@ export function StaticPreviewSheet({
       .then((value) => {
         if (active) setPublicSharing(value.publicSharing);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setCapabilitiesLoaded(true);
+      });
     void client
       .listSessionLocalPreviewShares(sessionId)
       .then((value) => {
@@ -222,7 +226,7 @@ export function StaticPreviewSheet({
   }, [client, path, sessionId]);
 
   useEffect(() => {
-    if (publicSharing !== 'available') {
+    if (!capabilitiesLoaded || publicSharing === 'premium-required') {
       setSharesLoading(false);
       return;
     }
@@ -269,7 +273,7 @@ export function StaticPreviewSheet({
       active = false;
       clearInterval(timer);
     };
-  }, [client, projectId, publicSharing, sessionId]);
+  }, [capabilitiesLoaded, client, projectId, publicSharing, sessionId]);
 
   useEffect(() => {
     void refresh();
@@ -542,6 +546,33 @@ export function StaticPreviewSheet({
               <Text style={styles.backText}>All dev servers</Text>
             </Pressable>
           ) : null}
+          {localShares
+            .filter((share) => new Date(share.expiresAt).getTime() > Date.now())
+            .map((share) => (
+              <View key={share.id} style={styles.backRow}>
+                <Text style={styles.caption}>
+                  {share.targetPort
+                    ? `Local port ${share.targetPort}`
+                    : `Local folder ${share.staticPath}`}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Stop local preview ${share.id}`}
+                  onPress={() => {
+                    void client
+                      .stopLocalPreviewShare(share.id)
+                      .then(() =>
+                        setLocalShares((current) =>
+                          current.filter((value) => value.id !== share.id),
+                        ),
+                      )
+                      .catch((caught) => setError(previewError(caught)));
+                  }}
+                >
+                  <Text style={styles.actionText}>Stop local sharing</Text>
+                </Pressable>
+              </View>
+            ))}
           {target ? (
             <View style={styles.content}>
               <ScrollView

@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
+import { createServer, createConnection } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord } from '@verity/store';
 import {
@@ -32,7 +32,7 @@ const project: ProjectRecord = {
 };
 
 describe('DockerProjectRuntime', () => {
-  it('starts loopback helpers using the unprivileged agent identity', async () => {
+  it('starts loopback helpers using the configured container identity', async () => {
     const runner = vi
       .fn<RuntimeRunner>()
       .mockResolvedValue({ stdout: '42000\n', stderr: '', exitCode: 0 });
@@ -43,56 +43,70 @@ describe('DockerProjectRuntime', () => {
     expect(await runtime.ensurePreviewTarget(project, 5173)).toBe(42000);
     expect(runner.mock.calls[0]?.[1]).toEqual([
       'exec',
-      '--user',
-      '1000:1000',
       project.containerName,
       'node',
       '-e',
       PREVIEW_FORWARDER_SCRIPT,
       '5173',
+      '127.0.0.1',
     ]);
   });
 
-  it('restarts a crashed loopback relay on its existing port and ignores unrelated live PIDs', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'verity-relay-test-'));
-    const target = createServer((socket) => socket.end('hello'));
-    await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
-    const port = (target.address() as { port: number }).port;
-    let pid: number | undefined;
-    const run = async () =>
-      Number(
-        (
-          await promisify(execFile)(
-            process.execPath,
-            ['-e', PREVIEW_FORWARDER_SCRIPT, String(port)],
-            { env: { ...process.env, VERITY_PREVIEW_FORWARDER_STATE_DIR: root } },
-          )
-        ).stdout.trim(),
-      );
-    try {
-      const relay = await run();
-      pid = JSON.parse(await readFile(join(root, `${port}.json`), 'utf8')).pid;
-      expect(await run()).toBe(relay);
-      process.kill(pid!, 'SIGKILL');
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      await writeFile(
-        join(root, `${port}.json`),
-        JSON.stringify({ pid: process.pid, port: relay }),
-      );
-      expect(await run()).toBe(relay);
-      const restarted = JSON.parse(await readFile(join(root, `${port}.json`), 'utf8'));
-      pid = restarted.pid;
-      expect(restarted.pid).not.toBe(process.pid);
-    } finally {
-      if (pid) {
-        try {
-          process.kill(pid);
-        } catch {}
+  it.each(['127.0.0.1', '127.0.0.2', '::1'])(
+    'restarts a crashed relay for %s and ignores unrelated live PIDs',
+    async (address) => {
+      const root = await mkdtemp(join(tmpdir(), 'verity-relay-test-'));
+      const target = createServer((socket) => socket.end('hello'));
+      await new Promise<void>((resolve) => target.listen(0, address, resolve));
+      const port = (target.address() as { port: number }).port;
+      let pid: number | undefined;
+      const run = async () =>
+        Number(
+          (
+            await promisify(execFile)(
+              process.execPath,
+              ['-e', PREVIEW_FORWARDER_SCRIPT, String(port), address],
+              { env: { ...process.env, VERITY_PREVIEW_FORWARDER_STATE_DIR: root } },
+            )
+          ).stdout.trim(),
+        );
+      try {
+        const relay = await run();
+        const body = await new Promise<string>((resolve, reject) => {
+          const socket = createConnection({ host: '127.0.0.1', port: relay });
+          let value = '';
+          socket.on('data', (chunk) => {
+            value += chunk.toString();
+          });
+          socket.on('end', () => resolve(value));
+          socket.on('error', reject);
+        });
+        expect(body).toBe('hello');
+        pid = JSON.parse(await readFile(join(root, `${port}.json`), 'utf8')).pid;
+        expect(await run()).toBe(relay);
+        process.kill(pid!, 'SIGKILL');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await writeFile(
+          join(root, `${port}.json`),
+          JSON.stringify({ pid: process.pid, port: relay }),
+        );
+        expect(await run()).toBe(relay);
+        const restarted = JSON.parse(await readFile(join(root, `${port}.json`), 'utf8'));
+        pid = restarted.pid;
+        expect(restarted.pid).not.toBe(process.pid);
+      } finally {
+        if (pid) {
+          try {
+            process.kill(pid);
+          } catch {
+            // The relay may already have exited with its source listener.
+          }
+        }
+        target.close();
+        await rm(root, { recursive: true, force: true });
       }
-      target.close();
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+    },
+  );
 
   it.each([
     ['IPv6 wildcard', '00000000000000000000000000000000', '[true]', true],
@@ -116,7 +130,7 @@ describe('DockerProjectRuntime', () => {
       .mockResolvedValueOnce({ stdout: probeResult, stderr: '', exitCode: 0 });
     const processes = await new DockerProjectRuntime({ runner }).listListeningProcesses(project);
 
-    expect(runner.mock.calls[0]?.[1]).toEqual(expect.arrayContaining(['--user', '1000:1000']));
+    expect(runner.mock.calls[0]?.[1]).not.toContain('--user');
     expect(processes).toEqual([expect.objectContaining({ port: 5173, reachable })]);
     expect(processes[0]?.ipv6Wildcard).toBe(kind === 'IPv6 wildcard' ? true : undefined);
     expect(runner.mock.calls[1]?.[1]).toEqual(
@@ -599,4 +613,22 @@ describe('DockerProjectRuntime', () => {
       expect.objectContaining({ redirect: 'manual' }),
     );
   });
+});
+
+it('uses the resolved agent identity and original loopback address', async () => {
+  const runner = vi.fn<RuntimeRunner>().mockResolvedValue({ stdout: '42000', stderr: '' });
+  const runtime = new DockerProjectRuntime({ runner, resolveUser: async () => '2000:2000' });
+  vi.spyOn(runtime, 'listListeningProcesses').mockResolvedValue([
+    {
+      port: 5173,
+      pid: 10,
+      cwd: '/work',
+      command: 'vite',
+      bind: 'loopback',
+      loopbackAddress: '::1',
+    },
+  ]);
+  expect(await runtime.ensurePreviewTarget(project, 5173)).toBe(42000);
+  expect(runner.mock.calls[0]?.[1]).toEqual(expect.arrayContaining(['--user', '2000:2000']));
+  expect(runner.mock.calls[0]?.[1].at(-1)).toBe('::1');
 });

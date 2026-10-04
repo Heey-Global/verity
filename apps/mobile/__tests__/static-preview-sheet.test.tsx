@@ -1091,3 +1091,35 @@ it('opens a local static folder without a public sharing entitlement', async () 
   expect(client.createSessionStaticPreviewShare).not.toHaveBeenCalled();
   expect(client.listPublicPreviewShares).not.toHaveBeenCalled();
 });
+
+it('lets a free user revoke an existing local share', async () => {
+  const stopLocalPreviewShare = jest.fn(async () => undefined);
+  const client = {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'premium-required' })),
+    listSessionLocalPreviewShares: jest.fn(async () => [
+      {
+        id: 'local-one',
+        url: 'http://server:8100/',
+        sessionId: 'session-one',
+        targetPort: 5173,
+        staticPath: null,
+        expiresAt: '2030-01-01T00:00:00Z',
+      },
+    ]),
+    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
+    stopLocalPreviewShare,
+  } as unknown as VerityClient;
+  render(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Stop local preview local-one' }));
+  await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith('local-one'));
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: 'Stop local preview local-one' })).toBeNull(),
+  );
+});

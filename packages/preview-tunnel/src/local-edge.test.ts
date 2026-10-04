@@ -70,7 +70,7 @@ it('preserves target cookies and makes absolute target redirects relative for LA
       'other=value; Path=/',
     ]);
   } finally {
-    await connector.close();
+    connector.close();
     await new Promise<void>((resolve, reject) =>
       target.close((error) => (error ? reject(error) : resolve())),
     );

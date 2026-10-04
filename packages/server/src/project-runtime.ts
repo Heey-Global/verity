@@ -133,7 +133,7 @@ function dockerHostHealthCheckUrl(value: string, dockerBaseUrl: string | undefin
 /** The state retains the relay port so active connectors survive helper restarts. */
 export const PREVIEW_FORWARDER_SCRIPT = `
 const fs=require('node:fs'),net=require('node:net'),cp=require('node:child_process');
-const port=Number(process.argv[1]),dir=process.env.VERITY_PREVIEW_FORWARDER_STATE_DIR||'/tmp/verity-preview-forwarders';
+const address=process.argv[2]||'127.0.0.1';const port=Number(process.argv[1]),dir=process.env.VERITY_PREVIEW_FORWARDER_STATE_DIR||'/tmp/verity-preview-forwarders';
 fs.mkdirSync(dir,{recursive:true});const path=dir+'/'+port+'.json';let previous;
 function ownsListener(pid,relay){
   try{
@@ -145,8 +145,8 @@ function ownsListener(pid,relay){
 }
 try{previous=JSON.parse(fs.readFileSync(path,'utf8'));if(Number.isInteger(previous.port)&&previous.port>0&&previous.port<65536&&ownsListener(previous.pid,previous.port)){console.log(previous.port);process.exit(0)}}catch{}
 const relay=Number.isInteger(previous?.port)&&previous.port>0&&previous.port<65536?previous.port:0;
-const code=\`const net=require('node:net'),fs=require('node:fs');const port=Number(process.env.VERITY_PREVIEW_FORWARDER),relay=Number(process.env.VERITY_PREVIEW_FORWARDER_PORT);const server=net.createServer(client=>{const target=net.connect({host:'127.0.0.1',port});client.pipe(target);target.pipe(client);client.on('error',()=>target.destroy());target.on('error',()=>client.destroy());client.on('close',()=>target.destroy());target.on('close',()=>client.destroy())});server.on('error',()=>process.exit(1));server.listen(relay,'0.0.0.0',()=>{process.send({port:server.address().port});process.disconnect()});setInterval(()=>{try{const present=['/proc/net/tcp','/proc/net/tcp6'].some(p=>fs.readFileSync(p,'utf8').split('\\\\n').some(l=>{const f=l.trim().split(/\\\\s+/);return f[3]==='0A'&&parseInt(f[1]?.split(':')[1],16)===port}));if(!present)process.exit(0)}catch{}},2000).unref();\`;
-const child=cp.spawn(process.execPath,['-e',code],{detached:true,env:{...process.env,VERITY_PREVIEW_FORWARDER:String(port),VERITY_PREVIEW_FORWARDER_PORT:String(relay)},stdio:['ignore','ignore','ignore','ipc']});
+const code=\`const net=require('node:net'),fs=require('node:fs');const port=Number(process.env.VERITY_PREVIEW_FORWARDER),relay=Number(process.env.VERITY_PREVIEW_FORWARDER_PORT);const server=net.createServer(client=>{const target=net.connect({host:process.env.VERITY_PREVIEW_FORWARDER_ADDRESS,port});client.pipe(target);target.pipe(client);client.on('error',()=>target.destroy());target.on('error',()=>client.destroy());client.on('close',()=>target.destroy());target.on('close',()=>client.destroy())});server.on('error',()=>process.exit(1));server.listen(relay,'0.0.0.0',()=>{process.send({port:server.address().port});process.disconnect()});setInterval(()=>{try{const present=['/proc/net/tcp','/proc/net/tcp6'].some(p=>fs.readFileSync(p,'utf8').split('\\\\n').some(l=>{const f=l.trim().split(/\\\\s+/);return f[3]==='0A'&&parseInt(f[1]?.split(':')[1],16)===port}));if(!present)process.exit(0)}catch{}},2000).unref();\`;
+const child=cp.spawn(process.execPath,['-e',code],{detached:true,env:{...process.env,VERITY_PREVIEW_FORWARDER:String(port),VERITY_PREVIEW_FORWARDER_PORT:String(relay),VERITY_PREVIEW_FORWARDER_ADDRESS:address},stdio:['ignore','ignore','ignore','ipc']});
 child.on('message',value=>{fs.writeFileSync(path,JSON.stringify({pid:child.pid,port:value.port}),{mode:0o600});console.log(value.port);child.unref()});child.on('error',()=>process.exit(1));child.on('exit',()=>process.exit(1));setTimeout(()=>process.exit(1),4000).unref();
 `;
 
@@ -161,6 +161,7 @@ const defaultRunner: RuntimeRunner = async (command, args, opts) => {
 };
 
 export interface DockerProjectRuntimeOptions {
+  resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
   dockerCommand?: string | undefined;
   dockerBaseUrl?: string | undefined;
   containerProjectRoot?: string | undefined;
@@ -299,6 +300,11 @@ export class DockerProjectRuntime implements ProjectRuntime {
     return this.devServerStatus(project, settings);
   }
 
+  private async userArgs(project: ProjectRecord): Promise<string[]> {
+    const user = await this.opts.resolveUser?.(project);
+    return user ? ['--user', user] : [];
+  }
+
   /** A separate high port avoids colliding with the original loopback socket. */
   async ensurePreviewTarget(project: ProjectRecord, port: number): Promise<number> {
     const listener = (await this.listListeningProcesses(project)).find(
@@ -310,7 +316,16 @@ export class DockerProjectRuntime implements ProjectRuntime {
     const script = PREVIEW_FORWARDER_SCRIPT;
     const result = await this.runner(
       this.opts.dockerCommand ?? 'docker',
-      ['exec', '--user', '1000:1000', project.containerName, 'node', '-e', script, String(port)],
+      [
+        'exec',
+        ...(await this.userArgs(project)),
+        project.containerName,
+        'node',
+        '-e',
+        script,
+        String(port),
+        listener.loopbackAddress ?? '127.0.0.1',
+      ],
       { env: this.dockerEnv(), timeoutMs: 5000, maxBuffer: 4096 },
     );
     const targetPort = Number(result?.stdout.trim());
@@ -322,7 +337,14 @@ export class DockerProjectRuntime implements ProjectRuntime {
   async listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]> {
     const result = await this.runner(
       this.opts.dockerCommand ?? 'docker',
-      ['exec', '--user', '1000:1000', project.containerName, 'sh', '-c', LISTENING_PORTS_SCRIPT],
+      [
+        'exec',
+        ...(await this.userArgs(project)),
+        project.containerName,
+        'sh',
+        '-c',
+        LISTENING_PORTS_SCRIPT,
+      ],
       { env: this.dockerEnv(), timeoutMs: 10_000, maxBuffer: 4 * 1024 * 1024 },
     );
     const processes = parseListeningProcesses(result?.stdout ?? '');

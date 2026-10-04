@@ -261,3 +261,15 @@ stream the app already holds.
 - A local CA for trusted HTTPS on local shares.
 - Expo Go through a public share, which would need a secret share URL without a login step.
 - An on-device port forward through Remote Control, once that transport exists.
+
+### Trusted browser boundary
+
+Local previews on different ports use the same host and therefore share the browser cookie
+namespace. They forward application cookies and permit cross-origin HTTP/WebSocket access
+so a local frontend can use a separately shared API. Only use this open mode for applications
+and projects you trust; it does not isolate browser credentials between local previews.
+Cookie rewriting would change application behavior, and separate preview hostnames require
+additional local DNS infrastructure. Both are outside the agreed open local transport.
+
+If a listener changes its binding and requires a different connector target port, reconciliation
+revokes the old link; reopening creates a connector for the new binding.

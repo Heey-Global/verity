@@ -64,12 +64,13 @@ describe('independent listener discovery', () => {
       state: 'active',
     };
     const sessions = [{ sessionId: 'a', projectId: 'p', worktree: '/data/org-repo/a' }];
+    const appendEvent = vi.fn(async () => ({ seq: 1, ts: Date.now() }));
     const store = {
       getSession: vi.fn(async () => sessions[0]),
       getProject: vi.fn(async () => project),
       listSessions: vi.fn(async () => sessions),
       listProjects: vi.fn(async () => [project]),
-      appendEvent: vi.fn(async () => ({ seq: 1, ts: Date.now() })),
+      appendEvent,
     } as unknown as EventStore;
     const scan = vi.fn(async () => [
       { port: 5173, pid: 1, cwd: '/work/a', command: 'vite', bind: 'any' as const },
@@ -83,27 +84,25 @@ describe('independent listener discovery', () => {
     try {
       expect(await discovery.listSessionDevServers('a')).toHaveLength(1);
       const child = vi.mocked(spawn).mock.results.at(-1)!.value;
-      expect(vi.mocked(spawn).mock.calls.at(-1)![1]).toEqual(
-        expect.arrayContaining(['--user', '1000:1000']),
-      );
+      expect(vi.mocked(spawn).mock.calls.at(-1)![1]).not.toContain('--user');
       scan.mockRejectedValueOnce(new Error('Docker unavailable'));
       expect(await discovery.listSessionDevServers('a')).toHaveLength(1);
       project.containerName = 'replacement';
       await discovery.reconcile();
-      expect(child.kill).toHaveBeenCalled();
+      expect(vi.mocked(child).kill).toHaveBeenCalled();
       project.state = 'sleeping';
       await discovery.reconcile();
       expect(await discovery.listSessionDevServers('a')).toEqual([]);
-      expect(store.appendEvent).toHaveBeenCalledWith('a', {
+      expect(appendEvent).toHaveBeenCalledWith('a', {
         t: 'dev_servers_changed',
         devServers: [],
       });
       project.state = 'active';
       await discovery.reconcile();
       const finalChild = vi.mocked(spawn).mock.results.at(-1)!.value;
-      vi.mocked(store.listProjects).mockResolvedValueOnce([]);
+      vi.mocked(store).listProjects.mockResolvedValueOnce([]);
       await discovery.reconcile();
-      expect(finalChild.kill).toHaveBeenCalled();
+      expect(vi.mocked(finalChild).kill).toHaveBeenCalled();
     } finally {
       discovery.close();
     }

@@ -2401,8 +2401,24 @@ export async function buildEmbeddedServer(
         ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
       }))
     : undefined;
+  const resolvePreviewUser = async (project: ProjectRecord): Promise<string | undefined> => {
+    const sandbox = await projectDocker?.inspectContainer(project.containerName);
+    const env = Object.fromEntries(
+      (sandbox?.env ?? []).map((entry) => {
+        const index = entry.indexOf('=');
+        return [entry.slice(0, index), entry.slice(index + 1)];
+      }),
+    );
+    if (env.VERITY_RUNNER_RUNTIME) {
+      const uid = env.VERITY_AGENT_UID,
+        gid = env.VERITY_AGENT_GID;
+      if (!uid || !gid || !/^\d+$/.test(uid) || !/^\d+$/.test(gid))
+        throw new Error('sandbox agent identity is unavailable');
+      return `${uid}:${gid}`;
+    }
+    return sandbox?.user || undefined;
+  };
   let previewShareManager: PreviewShareManager | undefined;
-  let localPreviewManager: LocalPreviewManager | undefined;
   const withPreviewProjectMutation = async <T>(
     projectId: string,
     mutation: () => Promise<T>,
@@ -2465,6 +2481,7 @@ export async function buildEmbeddedServer(
         : {}),
       isDevServerRunning: async ({ project, devServer }) => {
         const status = await new DockerProjectRuntime({
+          resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
         }).devServerStatus(project, {
           defaultBranch: null,
@@ -2479,14 +2496,15 @@ export async function buildEmbeddedServer(
         return status.running;
       },
       prepareTargetPort: (project, port) =>
-        new DockerProjectRuntime({ dockerBaseUrl: config.dockerBaseUrl }).ensurePreviewTarget(
-          project,
-          port,
-        ),
+        new DockerProjectRuntime({
+          resolveUser: resolvePreviewUser,
+          dockerBaseUrl: config.dockerBaseUrl,
+        }).ensurePreviewTarget(project, port),
       listSessionServers: (sessionId) =>
         listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
       listListeningProcesses: async (project) =>
         await new DockerProjectRuntime({
+          resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
         }).listListeningProcesses(project),
       edge: uplinkControl,
@@ -3471,8 +3489,10 @@ export async function buildEmbeddedServer(
           bus,
           hostCloneRoot: config.hostCloneRoot,
           dockerBaseUrl: config.dockerBaseUrl,
+          resolveUser: resolvePreviewUser,
           scan: (project) =>
             new DockerProjectRuntime({
+              resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
             }).listListeningProcesses(project),
         })
@@ -3480,7 +3500,7 @@ export async function buildEmbeddedServer(
 
   const localConnectorImage =
     config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
-  localPreviewManager =
+  const localPreviewManager =
     projectDocker && localConnectorImage && config.hostCloneRoot
       ? new LocalPreviewManager({
           store: eventStore,
@@ -3490,18 +3510,19 @@ export async function buildEmbeddedServer(
           ...(config.dataVolume ? { dataVolume: config.dataVolume } : {}),
           ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
-          isDevServerRunning: async () => false,
+          isDevServerRunning: () => Promise.resolve(false),
           listListeningProcesses: (project) =>
             new DockerProjectRuntime({
+              resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
             }).listListeningProcesses(project),
           listSessionServers: (sessionId) =>
             listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
-            new DockerProjectRuntime({ dockerBaseUrl: config.dockerBaseUrl }).ensurePreviewTarget(
-              project,
-              port,
-            ),
+            new DockerProjectRuntime({
+              resolveUser: resolvePreviewUser,
+              dockerBaseUrl: config.dockerBaseUrl,
+            }).ensurePreviewTarget(project, port),
           publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
           connectorHost: hostname(),
           resolveConnectorHost: async () => {
@@ -4273,7 +4294,12 @@ export async function buildEmbeddedServer(
               }
             : {}),
           ...(config.enableProjectRuntime === true
-            ? { projectRuntime: new DockerProjectRuntime({ dockerBaseUrl: config.dockerBaseUrl }) }
+            ? {
+                projectRuntime: new DockerProjectRuntime({
+                  resolveUser: resolvePreviewUser,
+                  dockerBaseUrl: config.dockerBaseUrl,
+                }),
+              }
             : {}),
         }
       : {}),
@@ -4865,7 +4891,7 @@ export async function buildEmbeddedServer(
   if (localPreviewManager && projectDocker) {
     const sweepLocalConnectors = () =>
       sweepOrphanedLocalPreviews(projectDocker, hostname(), (id) =>
-        localPreviewManager!.ownsConnector(id),
+        localPreviewManager.ownsConnector(id),
       );
     await sweepLocalConnectors().catch((error) =>
       app.log.warn({ err: error }, 'local connector cleanup deferred until Docker recovers'),
@@ -4875,7 +4901,7 @@ export async function buildEmbeddedServer(
       if (reconcilingLocal) return;
       reconcilingLocal = true;
       void sweepLocalConnectors()
-        .then(() => localPreviewManager!.reconcile())
+        .then(() => localPreviewManager.reconcile())
         .catch((error) => app.log.warn({ err: error }, 'local preview reconciliation failed'))
         .finally(() => {
           reconcilingLocal = false;

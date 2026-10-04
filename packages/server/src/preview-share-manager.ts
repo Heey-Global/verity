@@ -1065,7 +1065,13 @@ export class PreviewShareManager {
               sandbox.running && containerGenerationOf(sandbox) === share.containerGeneration;
             matches = matches && connector.running;
             if (matches && share.targetPort !== null) {
-              await this.options.prepareTargetPort?.(project, share.targetPort);
+              const preparedPort =
+                (await this.options.prepareTargetPort?.(project, share.targetPort)) ??
+                share.targetPort;
+              const origin = connector.env
+                ?.find((entry) => entry.startsWith('VERITY_PREVIEW_TARGET_ORIGIN='))
+                ?.slice('VERITY_PREVIEW_TARGET_ORIGIN='.length);
+              if (origin && Number(new URL(origin).port) !== preparedPort) matches = false;
             }
             if (matches && share.sessionId && session && share.staticPath) {
               const root = await this.staticSourceRoot(project, session.worktree);

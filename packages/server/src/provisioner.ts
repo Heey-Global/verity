@@ -4777,7 +4777,6 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
     }
-    const settings = await this.opts.store.getProjectSettings(project.id);
     // Central settings carry git identity/signing material. Doppler credentials
     // stay broker-side and are never part of project provisioning.
     let veritySettings: VeritySettingsRecord | undefined;

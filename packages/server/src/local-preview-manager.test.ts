@@ -114,3 +114,36 @@ it('repairs the loopback target while an active local share is reconciled', asyn
   expect(prepareTargetPort).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }), 5173);
   expect(manager.list('s1').map((value) => value.id)).toContain(share.id);
 });
+
+it('retries Docker cleanup after the edge has already closed', async () => {
+  const { manager, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  docker.removeContainer.mockRejectedValueOnce(new Error('Docker offline'));
+  await expect(manager.stop(share.id)).rejects.toThrow('Docker offline');
+  await expect(manager.stop(share.id)).resolves.toBe(true);
+  expect(manager.list('s1')).toEqual([]);
+  expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
+});
+
+it('revokes immediately when another process takes over the target', async () => {
+  const { manager, options } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  vi.mocked(PreviewShareManager.prototype.prepareLocalTarget).mockRejectedValueOnce(
+    new Error('ownership changed'),
+  );
+  options.listListeningProcesses = async () => [
+    { port: 3000, pid: 42, cwd: '/other-session', command: 'node', bind: 'any' },
+  ];
+  await manager.reconcile();
+  expect(manager.list('s1')).not.toContainEqual(share);
+});
+
+it('revokes a link when the prepared connector port changes', async () => {
+  const { manager, options } = fixture();
+  const prepare = vi.fn(async () => 3000);
+  options.prepareTargetPort = prepare;
+  await manager.create('s1', { targetPort: 3000 });
+  prepare.mockResolvedValueOnce(43000);
+  await manager.reconcile();
+  expect(manager.list('s1')).toEqual([]);
+});

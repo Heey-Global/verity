@@ -27,6 +27,7 @@ export class ListenerDiscovery {
       bus: EventBus;
       hostCloneRoot: string;
       dockerBaseUrl?: string;
+      resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
       scan: (project: ProjectRecord) => Promise<ListeningProcess[]>;
     },
   ) {
@@ -45,7 +46,7 @@ export class ListenerDiscovery {
     const project = await this.options.eventStore.getProject(session.projectId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (!this.active(project)) return [];
-    this.watch(project);
+    await this.watch(project);
     let processes: ListeningProcess[];
     try {
       processes = await this.options.scan(project);
@@ -71,7 +72,7 @@ export class ListenerDiscovery {
             {
               id: session.sessionId,
               path: containerPathFor(
-                session.worktree!,
+                session.worktree,
                 projectClonePath(this.options.hostCloneRoot, project),
               ),
             },
@@ -167,7 +168,7 @@ export class ListenerDiscovery {
     );
   }
 
-  private watch(project: ProjectRecord): void {
+  private async watch(project: ProjectRecord): Promise<void> {
     if (this.closed || !this.active(project)) return;
     const existing = this.watchers.get(project.id);
     if (existing?.containerName === project.containerName) return;
@@ -177,9 +178,20 @@ export class ListenerDiscovery {
     }
     // Keep the inspection inside one exec; only changed snapshots cross Docker.
     const script = `const fs=require('node:fs');let last='';function tick(){try{const sockets=['/proc/net/tcp','/proc/net/tcp6'].flatMap(p=>{try{return fs.readFileSync(p,'utf8').split('\\n').filter(l=>l.trim().split(/\\s+/)[3]==='0A')}catch{return[]}}).sort();let hints='';try{hints=fs.readdirSync('/tmp/verity-dev-servers/announcements').sort().map(f=>{try{return fs.readFileSync('/tmp/verity-dev-servers/announcements/'+f,'utf8')}catch{return''}}).join('')}catch{}try{hints+=fs.statSync('/tmp/verity-dev-servers/scan-request').mtimeMs}catch{}const value=JSON.stringify([sockets,hints]);if(value!==last){last=value;process.stdout.write('changed\\n')}}catch{process.exit(1)}}tick();setInterval(tick,1500);process.stdin.resume();process.stdin.on('end',()=>process.exit(0));`;
+    const user = await this.options.resolveUser?.(project);
+    if (this.closed || !this.active(project)) return;
+    if (this.watchers.get(project.id)?.containerName === project.containerName) return;
     const child = spawn(
       'docker',
-      ['exec', '-i', '--user', '1000:1000', project.containerName, 'node', '-e', script],
+      [
+        'exec',
+        '-i',
+        ...(user ? ['--user', user] : []),
+        project.containerName,
+        'node',
+        '-e',
+        script,
+      ],
       {
         stdio: ['pipe', 'pipe', 'ignore'],
         env: {
@@ -215,7 +227,7 @@ export class ListenerDiscovery {
           if (project) await this.refresh(project);
         }
       }
-      for (const project of projects) if (this.active(project)) this.watch(project);
+      for (const project of projects) if (this.active(project)) await this.watch(project);
     } catch {
       /* Retry discovery after the store or Docker recovers. */
     }

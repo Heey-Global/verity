@@ -13,6 +13,7 @@ export interface ListeningProcess {
   command: string;
   /** An IPv6 wildcard needs an IPv4 probe before the connector can use it. */
   ipv6Wildcard?: boolean;
+  loopbackAddress?: string;
   reachable?: boolean;
 }
 
@@ -82,7 +83,12 @@ function bindOf(hexAddress: string): ListeningProcess['bind'] {
 export function parseListeningProcesses(output: string): ListeningProcess[] {
   const listeners = new Map<
     string,
-    { port: number; bind: ListeningProcess['bind']; ipv6Wildcard?: boolean }
+    {
+      port: number;
+      bind: ListeningProcess['bind'];
+      ipv6Wildcard?: boolean;
+      loopbackAddress?: string;
+    }
   >();
   const owners = new Map<string, number>();
   const processes = new Map<number, { cwd: string; command: string }>();
@@ -106,6 +112,25 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
       listeners.set(inode, {
         port: Number.parseInt(portHex, 16),
         bind: bindOf(address),
+        ...(bindOf(address) === 'loopback'
+          ? {
+              loopbackAddress:
+                address.length === 8
+                  ? address
+                      .match(/../g)!
+                      .reverse()
+                      .map((byte) => Number.parseInt(byte, 16))
+                      .join('.')
+                  : address === '00000000000000000000000001000000'
+                    ? '::1'
+                    : address
+                        .slice(-8)
+                        .match(/../g)!
+                        .reverse()
+                        .map((byte) => Number.parseInt(byte, 16))
+                        .join('.'),
+            }
+          : {}),
         ...(address.length === 32 && /^0+$/u.test(address) ? { ipv6Wildcard: true } : {}),
       });
     } else if (section === '#fd') {

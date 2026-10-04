@@ -816,6 +816,8 @@ export function SessionChat({
   useEffect(() => {
     if (!loaded) return;
     refreshStaticPreview();
+    const timer = setInterval(refreshStaticPreview, 20_000);
+    return () => clearInterval(timer);
   }, [refreshStaticPreview, loaded]);
 
   useEffect(() => {

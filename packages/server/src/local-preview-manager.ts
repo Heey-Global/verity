@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { PreviewEdge, hashPreviewSecret } from '@verity/preview-tunnel';
 import type { EventStore } from '@verity/store';
-import { DockerError, type DockerClient } from './docker.js';
+import { DockerError } from './docker.js';
 import { projectNetworkName } from './provisioner.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import { localPreviewPorts } from './local-preview-ports.js';
@@ -27,6 +27,8 @@ interface ActiveShare {
   connectorId?: string;
   generation: string;
   missingSince?: number;
+  edgeClosed?: boolean;
+  preparedPort?: number;
 }
 export interface LocalPreviewManagerOptions extends Omit<PreviewShareManagerOptions, 'edge'> {
   publicHost: string;
@@ -70,9 +72,7 @@ export class LocalPreviewManager {
     this.targets = new PreviewShareManager({
       ...options,
       edge: {
-        create: async () => {
-          throw new Error('no public edge');
-        },
+        create: () => Promise.reject(new Error('no public edge')),
         remove: async () => {},
       },
     });
@@ -187,6 +187,7 @@ export class LocalPreviewManager {
           ? undefined
           : ((await this.options.prepareTargetPort?.(target.project, input.targetPort)) ??
             input.targetPort);
+      if (targetPort !== undefined) state.preparedPort = targetPort;
       const connectorHost =
         (await this.options.resolveConnectorHost?.()) ?? this.options.connectorHost;
       const spec = {
@@ -270,7 +271,10 @@ export class LocalPreviewManager {
     const state = this.active.get(id);
     if (!state) return false;
     // Keep the lease until both resources are closed; a failed Docker removal is retried.
-    await state.edge.close();
+    if (!state.edgeClosed) {
+      await state.edge.close();
+      state.edgeClosed = true;
+    }
     if (state.connectorId) {
       try {
         await this.options.docker.removeContainer(state.connectorId);
@@ -346,10 +350,25 @@ export class LocalPreviewManager {
           ...(state.share.staticPath === null ? {} : { staticPath: state.share.staticPath }),
         });
         if (state.share.targetPort !== null) {
-          await this.options.prepareTargetPort?.(project, state.share.targetPort);
+          const preparedPort =
+            (await this.options.prepareTargetPort?.(project, state.share.targetPort)) ??
+            state.share.targetPort;
+          if (preparedPort !== state.preparedPort) {
+            await this.stop(state.share.id);
+            continue;
+          }
         }
         delete state.missingSince;
       } catch {
+        if (state.share.targetPort !== null) {
+          const processes = await this.options
+            .listListeningProcesses?.(project)
+            .catch(() => undefined);
+          if (processes?.some((process) => process.port === state.share.targetPort)) {
+            await this.stop(state.share.id);
+            continue;
+          }
+        }
         state.missingSince ??= Date.now();
         if (Date.now() - state.missingSince >= 90_000) await this.stop(state.share.id);
       }
