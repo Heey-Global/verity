@@ -395,7 +395,16 @@ export function StaticPreviewSheet({
       await openLocalPreview(
         share,
         publicSharing,
-        () => void createPublic(selection),
+        () => {
+          const existing = publicShareFor(selection);
+          if (existing) {
+            void Share.share({ message: shareMessage(existing) }).catch((caught: unknown) =>
+              setError(previewError(caught)),
+            );
+          } else {
+            void createPublic(selection);
+          }
+        },
         onOpenSettings,
       );
     } catch (caught) {
@@ -495,14 +504,17 @@ export function StaticPreviewSheet({
   const folderReady = loadedPath === path && !loading && !folderError;
   const sessionServers = devServers.filter((server) => server.scope !== 'project');
   const projectServers = devServers.filter((server) => server.scope === 'project');
-  // Ports whose public link outlives the server discovery still deserve a row,
-  // so the link can be stopped from here.
-  const orphanPortShares = shares.filter(
-    (share) =>
-      isPortShare(share) &&
-      isLive(share) &&
-      !devServers.some((server) => server.port === share.targetPort),
-  );
+  // Discovery can lose a listener while its access still needs to be stopped.
+  const orphanPorts = Array.from(
+    new Set([
+      ...shares
+        .filter((share) => isPortShare(share) && isLive(share))
+        .map((share) => share.targetPort!),
+      ...localShares
+        .filter((share) => share.targetPort !== null && localIsLive(share))
+        .map((share) => share.targetPort!),
+    ]),
+  ).filter((port) => !devServers.some((server) => server.port === port));
   const liveFolderPaths = new Set<string>([
     ...shares
       .filter((share) => share.targetKind === 'static-folder' && isLive(share))
@@ -609,7 +621,7 @@ export function StaticPreviewSheet({
             ) : null}
             {!devServersLoading &&
             sessionServers.length === 0 &&
-            orphanPortShares.length === 0 &&
+            orphanPorts.length === 0 &&
             !devServerError ? (
               <View style={styles.emptyRow}>
                 <Icon name="monitor" size={18} color={theme.colors.textFaint} />
@@ -620,10 +632,10 @@ export function StaticPreviewSheet({
             ) : null}
             {devServerError ? <Text style={styles.error}>{devServerError}</Text> : null}
             {sessionServers.map(renderServerRow)}
-            {orphanPortShares.map((share) => {
-              const port = String(share.targetPort);
+            {orphanPorts.map((targetPort) => {
+              const port = String(targetPort);
               const server: SessionDevServer = {
-                port: share.targetPort!,
+                port: targetPort,
                 reachable: true,
                 pid: 0,
                 name: 'Port',
@@ -641,7 +653,7 @@ export function StaticPreviewSheet({
                   <View style={styles.rowMain}>
                     <View style={styles.rowText}>
                       <Text style={styles.rowTitle}>{`Port ${port}`}</Text>
-                      <Text style={styles.rowDetail}>Public link without a detected server</Text>
+                      <Text style={styles.rowDetail}>Active access without a detected server</Text>
                     </View>
                     <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
                   </View>

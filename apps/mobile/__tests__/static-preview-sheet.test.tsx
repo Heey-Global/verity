@@ -567,3 +567,37 @@ it('keeps a newly created link when the share list arrives late without it', asy
   });
   expect(screen.getByText('https://vite.example')).toBeTruthy();
 });
+
+it('keeps a local port access stoppable after its listener disappears', async () => {
+  const stopLocalPreviewShare = jest.fn(async () => undefined);
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(async () => []),
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      stopLocalPreviewShare,
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Stop local access' }));
+  await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith(localShare.id));
+});
+
+it('reuses the public link when local access is unreachable and both accesses exist', async () => {
+  const createSessionPortPreviewShare = jest.fn();
+  const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+      createSessionPortPreviewShare,
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  await screen.findByText('https://vite.example');
+  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+  const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
+  await act(async () => fallback());
+  expect(share).toHaveBeenCalledWith({ message: expect.stringContaining('https://vite.example') });
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+});
