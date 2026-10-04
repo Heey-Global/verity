@@ -538,6 +538,30 @@ it('keeps the folder root when a server starts after the sheet opened', async ()
   expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
 });
 
+it('settles the folder tab without waiting for links when the Uplink is unavailable', async () => {
+  const client = makeClient({
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'unavailable' as const })),
+    listPublicPreviewShares: jest.fn(() => new Promise<PublicPreviewShare[]>(() => undefined)),
+  });
+  const view = renderSheet(client, { detectedServers: [] });
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Static files' }).props.accessibilityState.selected,
+    ).toBe(true),
+  );
+  view.rerender(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
 // A server that starts while the user walks the folders marks the server tab
 // but must not switch away from the explorer.
 it('keeps the folder explorer open when a server starts during browsing', async () => {

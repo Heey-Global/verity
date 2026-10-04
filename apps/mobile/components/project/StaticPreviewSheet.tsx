@@ -572,7 +572,7 @@ export function StaticPreviewSheet({
   const initialStateKnown =
     !devServersLoading &&
     localSharesLoaded &&
-    (publicSharesLoaded || (capabilitiesLoaded && publicSharing === 'premium-required'));
+    (publicSharesLoaded || (capabilitiesLoaded && publicSharing !== 'available'));
   useEffect(() => {
     if (tab === undefined && initialStateKnown) setTab(defaultTab);
   }, [defaultTab, initialStateKnown, tab]);
