@@ -108,3 +108,65 @@ it('encrypts Matrix credentials and exposes only a redacted summary', async () =
     }),
   ).rejects.toThrow(/Changing the Matrix account/u);
 });
+
+it('rejects delayed failure evidence after disconnecting and reconnecting a room', async () => {
+  const projectId = randomUUID();
+  await ctx.store.upsertProject({
+    id: projectId,
+    owner: 'example',
+    repo: 'retry-test',
+    containerName: `retry-${projectId}`,
+    state: 'absent',
+  });
+  const store = ctx.store.integrations;
+  const accountId = '@verity:example.test';
+  const sourceId = '!room:example.test';
+  await store.upsertAccount({
+    id: accountId,
+    provider: 'matrix',
+    endpoint: 'https://matrix.example.test',
+    displayName: 'Matrix',
+    status: 'online',
+  });
+  await store.discoverSource({ accountId, sourceId, displayName: 'Room' });
+  const first = await store.setSourceBinding(accountId, sourceId, projectId);
+  const diagnostic = {
+    sourceId,
+    eventId: '$old-binding',
+    occurredAt: first!.activatedAt!.toISOString(),
+    lastAttemptAt: new Date().toISOString(),
+    attempts: 1,
+    httpStatus: 422,
+    code: 'target_message_not_found' as const,
+  };
+  await store.replaceImportDiagnostics(accountId, [diagnostic]);
+  expect((await store.listSources(projectId))[0]?.importDiagnostics).toEqual([diagnostic]);
+  const beforeRebind = (await store.listSources(projectId))[0]!;
+  // An idempotent bind must not hide an unresolved import failure.
+  await store.setSourceBinding(accountId, sourceId, projectId);
+  const afterRebind = (await store.listSources(projectId))[0]!;
+  expect(afterRebind.importDiagnostics).toEqual([diagnostic]);
+  expect(afterRebind.importDiagnosticsReportedAt).toEqual(beforeRebind.importDiagnosticsReportedAt);
+  expect(afterRebind.activatedAt).toEqual(beforeRebind.activatedAt);
+  await store.setSourceBinding(accountId, sourceId, null);
+  await store.replaceImportDiagnostics(accountId, [diagnostic]);
+  expect((await store.listSources())[0]?.importDiagnostics).toEqual([]);
+  await store.setSourceBinding(accountId, sourceId, projectId);
+  // Use the binding stored in the database, rather than timing a race with the clock.
+  await ctx.db
+    .updateTable('integration_sources')
+    .set({ activated_at: new Date(first!.activatedAt!.getTime() + 1000) })
+    .where('account_id', '=', accountId)
+    .where('source_id', '=', sourceId)
+    .execute();
+  await store.replaceImportDiagnostics(accountId, [diagnostic]);
+  expect((await store.listSources(projectId))[0]?.importDiagnostics).toEqual([]);
+  expect(JSON.stringify(await store.listSources())).not.toContain(diagnostic.eventId);
+  const current = {
+    ...diagnostic,
+    eventId: '$current-binding',
+    occurredAt: new Date(first!.activatedAt!.getTime() + 1000).toISOString(),
+  };
+  await store.replaceImportDiagnostics(accountId, [current]);
+  expect((await store.listSources(projectId))[0]?.importDiagnostics).toEqual([current]);
+});

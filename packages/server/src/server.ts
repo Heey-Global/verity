@@ -1,3 +1,4 @@
+import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
 import { googleAppClient } from './google-app-client.js';
 import {
@@ -5512,6 +5513,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const controlDiagnosticsTool = createControlDiagnosticsTool({
       authorizeCaller: (input) => controlPlaneSessionTools.authorizeCaller(input),
       readProgress: (input) => controlPlaneSessionTools.progress(input),
+      readMatrixDiagnostics: (projectId, selectedEvent) =>
+        readMatrixDiagnosticSnapshot(
+          deps.eventStore.integrations,
+          (target) => controlPlaneSessionTools.authorizeDiagnosticProject(target),
+          projectId,
+          selectedEvent,
+        ),
       version: SERVER_VERSION,
       pushEnabled: deps.pushEnabled === true,
       publicPreviewsEnabled: () => deps.previewShareManager?.isAvailable() === true,

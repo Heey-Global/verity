@@ -231,11 +231,15 @@ describe('VerityClient Matrix integrations', () => {
       json({ ok: true }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listIntegrations()).toEqual({ accounts: [account], sources: [source] });
-    expect(await client.listProjectIntegrations(projectId)).toEqual([source]);
+    const parsedSource = { ...source, importDiagnostics: [], importDiagnosticsTruncated: false };
+    expect(await client.listIntegrations()).toEqual({
+      accounts: [account],
+      sources: [parsedSource],
+    });
+    expect(await client.listProjectIntegrations(projectId)).toEqual([parsedSource]);
     expect(
       await client.bindIntegrationSource(source.accountId, source.sourceId, projectId),
-    ).toEqual(source);
+    ).toEqual(parsedSource);
     await client.pauseIntegrationSource(source.accountId, source.sourceId, true);
     await client.disconnectIntegrationSource(source.accountId, source.sourceId);
     expect(calls.map((call) => [call.url, call.init?.method])).toEqual([

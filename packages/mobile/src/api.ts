@@ -1703,6 +1703,29 @@ const integrationAccountSchema = z.object({
   status: z.string(),
   lastError: z.string().nullable(),
 });
+const matrixImportDiagnosticSchema = z.object({
+  sourceId: z.string(),
+  eventId: z.string(),
+  occurredAt: z.string(),
+  lastAttemptAt: z.string(),
+  attempts: z.number().int().min(1),
+  httpStatus: z.number().int().min(100).max(599).nullable(),
+  code: z.enum([
+    'invalid_request',
+    'target_message_not_found',
+    'knowledge_storage_unavailable',
+    'source_unavailable',
+    'event_predates_activation',
+    'source_binding_changed',
+    'invalid_attachment_encoding',
+    'empty_attachment',
+    'attachment_too_large',
+    'unauthorized_connector',
+    'import_failed',
+    'transport_error',
+    'media_download_failed',
+  ]),
+});
 const integrationSourceSchema = z.object({
   accountId: z.string(),
   sourceId: z.string(),
@@ -1713,6 +1736,8 @@ const integrationSourceSchema = z.object({
   activatedAt: z.string().nullable(),
   lastIngestedAt: z.string().nullable(),
   lastError: z.string().nullable(),
+  importDiagnostics: z.array(matrixImportDiagnosticSchema).default([]),
+  importDiagnosticsTruncated: z.boolean().default(false),
 });
 export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
 export type IntegrationSource = z.infer<typeof integrationSourceSchema>;

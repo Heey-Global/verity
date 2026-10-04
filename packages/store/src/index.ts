@@ -25,6 +25,8 @@ export {
 } from './db.js';
 export {
   IntegrationStore,
+  integrationImportCodes,
+  type IntegrationImportDiagnostic,
   type IntegrationAccount,
   type IntegrationSource,
   type IntegrationEvent,

@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, Text } from 'react-native';
 import { SettingsGroup, SettingsListPanel, SettingsNavRow, SettingsPanel } from './SettingsChrome';
 import { projectMatrixRooms } from '../../lib/projectMatrixRooms';
 import { settingsStyles as styles } from './settingsStyles';
+import { MatrixImportErrors } from './MatrixImportErrors';
 
 export function ProjectMatrixRooms({
   client,
@@ -111,6 +112,7 @@ export function ProjectMatrixRooms({
               ]);
             }}
           />
+          <MatrixImportErrors source={source} />
         </SettingsListPanel>
       ))}
       {rooms.invitations.map((source) => (

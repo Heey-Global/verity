@@ -34,6 +34,79 @@ use tokio::{fs, sync::RwLock, time::sleep};
 use tracing::{error, info, warn};
 
 const MAX_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
+const MAX_IMPORT_DIAGNOSTICS: usize = 20;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ImportCode {
+    InvalidRequest,
+    TargetMessageNotFound,
+    KnowledgeStorageUnavailable,
+    SourceUnavailable,
+    EventPredatesActivation,
+    SourceBindingChanged,
+    InvalidAttachmentEncoding,
+    EmptyAttachment,
+    AttachmentTooLarge,
+    UnauthorizedConnector,
+    ImportFailed,
+    TransportError,
+    MediaDownloadFailed,
+}
+
+#[derive(Debug)]
+struct ImportFailure {
+    http_status: Option<u16>,
+    code: ImportCode,
+}
+
+impl std::fmt::Display for ImportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Matrix import failed ({:?}, HTTP {:?})",
+            self.code, self.http_status
+        )
+    }
+}
+impl std::error::Error for ImportFailure {}
+
+fn rejection(status: u16, bytes: &[u8]) -> ImportFailure {
+    // Only our fixed vocabulary crosses the connector boundary; response text can contain secrets.
+    let code = serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("code").cloned())
+        .and_then(|value| serde_json::from_value::<ImportCode>(value).ok())
+        .filter(|code| {
+            !matches!(
+                code,
+                ImportCode::TransportError | ImportCode::MediaDownloadFailed
+            )
+        })
+        .unwrap_or(ImportCode::ImportFailed);
+    ImportFailure {
+        http_status: Some(status),
+        code,
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportDiagnostic {
+    source_id: String,
+    event_id: String,
+    occurred_at: DateTime<Utc>,
+    last_attempt_at: DateTime<Utc>,
+    attempts: u32,
+    http_status: Option<u16>,
+    code: ImportCode,
+}
+
+#[derive(Default)]
+struct ImportReport {
+    failures: usize,
+    diagnostics: Vec<ImportDiagnostic>,
+}
 
 #[derive(Clone)]
 struct Config {
@@ -251,13 +324,27 @@ impl Api {
     }
 
     async fn post<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<()> {
-        self.client
+        let response = self
+            .client
             .post(format!("{}{path}", self.base))
             .bearer_auth(&self.token)
             .json(body)
+            .timeout(Duration::from_secs(120))
             .send()
-            .await?
-            .error_for_status()?;
+            .await
+            .map_err(|_| ImportFailure {
+                http_status: None,
+                code: ImportCode::TransportError,
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let bytes = read_media_bounded(response, 4096)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            return Err(rejection(status.as_u16(), &bytes).into());
+        }
         Ok(())
     }
 
@@ -287,15 +374,18 @@ impl Api {
         endpoint: &str,
         status: &str,
         error: Option<String>,
+        imports: Option<&ImportReport>,
     ) -> Result<()> {
-        self.post(
-            "/internal/integrations/matrix/account",
-            &serde_json::json!({
-                "id": self.account_id, "endpoint": endpoint, "displayName": self.account_id,
-                "status": status, "lastError": error,
-            }),
-        )
-        .await
+        let mut payload = serde_json::json!({
+            "id": self.account_id, "endpoint": endpoint, "displayName": self.account_id,
+            "status": status, "lastError": error,
+        });
+        if let Some(imports) = imports {
+            payload["importDiagnostics"] = serde_json::to_value(&imports.diagnostics)?;
+            payload["importFailureCount"] = serde_json::json!(imports.failures);
+        }
+        self.post("/internal/integrations/matrix/account", &payload)
+            .await
     }
 
     async fn discover(&self, room: &Room) -> Result<()> {
@@ -394,15 +484,33 @@ impl Outbox {
         Ok(())
     }
 
+    async fn remove(&self, path: &Path) -> Result<()> {
+        match fs::remove_file(path.with_extension("retry")).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        fs::remove_file(path).await?;
+        Ok(())
+    }
+
+    async fn retry_diagnostic(&self, path: &Path) -> Result<Option<ImportDiagnostic>> {
+        match fs::read(path.with_extension("retry")).await {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     async fn flush(
         &self,
         api: &Api,
         client: &Client,
         bindings: &HashMap<String, Binding>,
-    ) -> Result<usize> {
+    ) -> Result<ImportReport> {
         let mut entries = fs::read_dir(&self.path).await?;
         let mut pending = Vec::new();
-        let mut failures = 0;
+        let mut report = ImportReport::default();
         while let Some(entry) = entries.next_entry().await? {
             if entry.path().extension().is_none_or(|ext| ext != "json") {
                 continue;
@@ -418,17 +526,24 @@ impl Outbox {
         });
         for (path, event) in pending {
             let Some(binding) = bindings.get(&event.source_id) else {
-                fs::remove_file(path).await?;
+                self.remove(&path).await?;
                 continue;
             };
             if binding
                 .activated_at
                 .is_some_and(|activated| event.occurred_at < activated)
             {
-                fs::remove_file(path).await?;
+                self.remove(&path).await?;
                 continue;
             }
             if binding.status != "active" {
+                // Pausing does not prove recovery: retain evidence without attempting delivery.
+                if let Some(diagnostic) = self.retry_diagnostic(&path).await? {
+                    report.failures += 1;
+                    if report.diagnostics.len() < MAX_IMPORT_DIAGNOSTICS {
+                        report.diagnostics.push(diagnostic);
+                    }
+                }
                 continue;
             }
             let result = if let Some(attachment) = &event.attachment {
@@ -472,15 +587,41 @@ impl Outbox {
             };
             match result {
                 Ok(()) => {
-                    fs::remove_file(path).await?;
+                    self.remove(&path).await?;
+                    info!(event_id = %event.event_id, room_id = %event.source_id,
+                        outcome = "imported", "Matrix event import confirmed");
                 }
                 Err(error) => {
-                    failures += 1;
-                    warn!(event_id = %event.event_id, %error, "event import will retry");
+                    report.failures += 1;
+                    let previous = self.retry_diagnostic(&path).await?;
+                    let failure = error.downcast_ref::<ImportFailure>();
+                    let diagnostic = ImportDiagnostic {
+                        source_id: event.source_id.clone(),
+                        event_id: event.event_id.clone(),
+                        occurred_at: event.occurred_at,
+                        last_attempt_at: Utc::now(),
+                        attempts: previous.map_or(1, |value| {
+                            value.attempts.saturating_add(1).min(i32::MAX as u32)
+                        }),
+                        http_status: failure.and_then(|value| value.http_status),
+                        code: failure
+                            .map_or(ImportCode::MediaDownloadFailed, |value| value.code.clone()),
+                    };
+                    write_private_atomic(
+                        &path.with_extension("retry"),
+                        &serde_json::to_vec(&diagnostic)?,
+                    )?;
+                    let code = serde_json::to_value(&diagnostic.code)?;
+                    warn!(event_id = %event.event_id, room_id = %event.source_id,
+                        http_status = diagnostic.http_status, code = code.as_str().unwrap_or("import_failed"),
+                        attempts = diagnostic.attempts, "event import will retry");
+                    if report.diagnostics.len() < MAX_IMPORT_DIAGNOSTICS {
+                        report.diagnostics.push(diagnostic);
+                    }
                 }
             }
         }
-        Ok(failures)
+        Ok(report)
     }
 }
 
@@ -569,7 +710,7 @@ async fn main() -> Result<()> {
         .to_string();
     let outbox = Arc::new(Outbox::new(config.data_dir.join("outbox")).await?);
     let bindings = Arc::new(RwLock::new(api.bindings().await?));
-    api.report_account(&credentials.endpoint, "offline", None)
+    api.report_account(&credentials.endpoint, "offline", None, None)
         .await?;
 
     {
@@ -785,30 +926,38 @@ async fn main() -> Result<()> {
                     }
                 }
                 match outbox.flush(&api, &client, &next).await {
-                    Ok(0) if sync_healthy.load(Ordering::Relaxed) => {
+                    Ok(ref report)
+                        if report.failures == 0 && sync_healthy.load(Ordering::Relaxed) =>
+                    {
                         if let Err(error) = api
-                            .report_account(&credentials.endpoint, "online", None)
+                            .report_account(&credentials.endpoint, "online", None, Some(report))
                             .await
                         {
                             warn!(%error, "could not update connector status");
                         }
                     }
-                    Ok(0) => {
+                    Ok(ref report) if report.failures == 0 => {
                         if let Err(error) = api
                             .report_account(
                                 &credentials.endpoint,
                                 "offline",
                                 Some("Waiting for Matrix sync".to_string()),
+                                Some(report),
                             )
                             .await
                         {
                             warn!(%error, "could not update connector status");
                         }
                     }
-                    Ok(failures) => {
-                        let note = format!("{failures} message imports are retrying");
+                    Ok(ref report) => {
+                        let note = format!("{} message imports are retrying", report.failures);
                         if let Err(error) = api
-                            .report_account(&credentials.endpoint, "error", Some(note))
+                            .report_account(
+                                &credentials.endpoint,
+                                "error",
+                                Some(note),
+                                Some(report),
+                            )
                             .await
                         {
                             warn!(%error, "could not update connector status");
@@ -828,6 +977,130 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn rejection_never_exposes_response_text_or_unknown_codes() {
+        let known = rejection(
+            422,
+            br#"{"code":"target_message_not_found","error":"private message and token"}"#,
+        );
+        assert_eq!(known.code, ImportCode::TargetMessageNotFound);
+        assert_eq!(known.http_status, Some(422));
+        assert!(!known.to_string().contains("private"));
+        for bytes in [
+            br#"{"code":"secret-token","error":"private"}"#.as_slice(),
+            b"private raw error",
+        ] {
+            assert_eq!(rejection(500, bytes).code, ImportCode::ImportFailed);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_event_is_retained_and_retry_success_clears_diagnostics() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for status in [422, 422, 200] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                        let length: usize = header
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let body = if status == 422 {
+                    r#"{"code":"target_message_not_found","error":"private message"}"#
+                } else {
+                    "{}"
+                };
+                socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let api = Api {
+            client: reqwest::Client::new(),
+            base: format!("http://{address}"),
+            token: "test-token".into(),
+            account_id: "@verity:example.test".into(),
+        };
+        let client = Client::builder()
+            .homeserver_url("https://example.test")
+            .build()
+            .await
+            .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "verity-matrix-retry-test-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let event = IngestEvent {
+            account_id: api.account_id.clone(),
+            source_id: "!room:example.test".into(),
+            event_id: "$edit".into(),
+            target_event_id: Some("$missing".into()),
+            kind: "edit".into(),
+            sender: "@person:example.test".into(),
+            occurred_at: Utc::now(),
+            body: Some("private message".into()),
+            attachment: None,
+        };
+        let bindings = HashMap::from([(
+            event.source_id.clone(),
+            Binding {
+                source_id: event.source_id.clone(),
+                status: "active".into(),
+                activated_at: None,
+            },
+        )]);
+        let outbox = Outbox::new(path.clone()).await.unwrap();
+        outbox.enqueue(&event).await.unwrap();
+        for attempts in 1..=2 {
+            let reopened = Outbox::new(path.clone()).await.unwrap();
+            let report = reopened.flush(&api, &client, &bindings).await.unwrap();
+            assert_eq!(report.failures, 1);
+            assert_eq!(report.diagnostics[0].attempts, attempts);
+            assert_eq!(report.diagnostics[0].event_id, event.event_id);
+            assert_eq!(
+                report.diagnostics[0].code,
+                ImportCode::TargetMessageNotFound
+            );
+            let diagnostic = serde_json::to_string(&report.diagnostics).unwrap();
+            assert!(!diagnostic.contains("private message"));
+            assert_eq!(
+                serde_json::from_slice::<IngestEvent>(
+                    &fs::read(outbox.file(&event)).await.unwrap()
+                )
+                .unwrap()
+                .body,
+                event.body
+            );
+        }
+        let mut paused = bindings.clone();
+        paused.get_mut(&event.source_id).unwrap().status = "paused".into();
+        let paused_report = outbox.flush(&api, &client, &paused).await.unwrap();
+        assert_eq!(paused_report.failures, 1);
+        assert_eq!(paused_report.diagnostics[0].attempts, 2);
+        assert!(outbox.file(&event).exists());
+        let report = outbox.flush(&api, &client, &bindings).await.unwrap();
+        assert_eq!(report.failures, 0);
+        assert!(report.diagnostics.is_empty());
+        assert!(!outbox.file(&event).exists());
+        assert!(!outbox.file(&event).with_extension("retry").exists());
+        fs::remove_dir_all(path).await.unwrap();
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn media_stream_stops_at_limit_without_a_declared_length() {

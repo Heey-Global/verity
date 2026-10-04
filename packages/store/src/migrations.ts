@@ -3615,6 +3615,18 @@ const migrations: Record<string, Migration> = {
       await sql`drop table session_automations`.execute(db);
     },
   },
+  '0131_matrix_import_diagnostics': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table integration_sources add column import_diagnostics jsonb not null default '[]'::jsonb, add column import_diagnostics_truncated boolean not null default false, add column import_diagnostics_reported_at timestamptz`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table integration_sources drop column import_diagnostics, drop column import_diagnostics_truncated, drop column import_diagnostics_reported_at`.execute(
+        db,
+      );
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
