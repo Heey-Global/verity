@@ -5949,10 +5949,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerAutomationRoutes(app, {
     eventStore: deps.eventStore,
     checkScript: (automation) => automationExecutor.checkScript(automation),
-    validateModel: async (model, session) =>
-      session.projectId === null || (await isConfiguredProjectSessionModel(model))
+    // The same rules a turn's model must pass, checked once when the operator
+    // confirms rather than on every unattended run.
+    validateModel: async (model, session) => {
+      if (session.projectId !== null) {
+        return (await isConfiguredProjectSessionModel(model)) ? null : PROJECT_MODEL_ERROR;
+      }
+      return (await availableModels()).models.includes(model)
         ? null
-        : PROJECT_MODEL_ERROR,
+        : 'That model is not available on this server.';
+    },
     onAutomationsChanged: () => automationScheduler.wake(),
   });
 

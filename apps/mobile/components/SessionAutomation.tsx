@@ -171,6 +171,7 @@ export function AutomationProposalCard({
   current,
   error,
   disabled,
+  superseded,
   onConfirm,
 }: {
   proposal: AutomationProposalMessage['proposal'];
@@ -179,12 +180,14 @@ export function AutomationProposalCard({
   current: 'none' | 'same' | 'other';
   error: string | null;
   disabled: boolean;
+  /** A newer proposal further down replaces this one. */
+  superseded: boolean;
   onConfirm: () => void;
 }) {
   const { theme } = useUnistyles();
   const [showCheck, setShowCheck] = useState(false);
   const done = state === 'saved' || current === 'same';
-  const inactive = disabled || done || state !== 'idle';
+  const inactive = disabled || superseded || done || state !== 'idle';
   const label = done
     ? 'Automation active'
     : state === 'saving'
@@ -230,6 +233,9 @@ export function AutomationProposalCard({
         <Text style={styles.cardHint}>
           This session already has an automation. It will be replaced.
         </Text>
+      ) : null}
+      {superseded && !done ? (
+        <Text style={styles.cardHint}>A newer version of this proposal is further down.</Text>
       ) : null}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       <Pressable

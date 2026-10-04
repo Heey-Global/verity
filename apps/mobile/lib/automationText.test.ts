@@ -93,6 +93,7 @@ describe('isSameAutomation', () => {
     expect(isSameAutomation(base, proposal)).toBe(true);
     expect(isSameAutomation(null, proposal)).toBe(false);
     expect(isSameAutomation(base, { ...proposal, script: 'exit 0' })).toBe(false);
+    expect(isSameAutomation(base, { ...proposal, model: 'codex/default' })).toBe(false);
     expect(
       isSameAutomation(base, { ...proposal, schedule: { kind: 'daily', hour: 9, minute: 0 } }),
     ).toBe(false);

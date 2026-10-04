@@ -110,6 +110,7 @@ export function isSameAutomation(
     automation.name === proposal.name &&
     automation.prompt === proposal.prompt &&
     automation.script === (proposal.script ?? null) &&
+    automation.model === (proposal.model ?? null) &&
     JSON.stringify(automation.schedule) === JSON.stringify(proposal.schedule)
   );
 }

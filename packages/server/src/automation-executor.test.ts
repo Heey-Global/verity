@@ -137,6 +137,17 @@ describe('automation executor', () => {
     });
   });
 
+  it('refuses a check script in a session without a project', async () => {
+    const { executor, runScript } = harness({
+      getSession: async () => ({ ...session, projectId: null }),
+    });
+    await expect(executor.checkScript({ ...automation, script: 'exit 0' })).resolves.toEqual({
+      outcome: 'error',
+      detail: 'Check scripts need a session in a project.',
+    });
+    expect(runScript).not.toHaveBeenCalled();
+  });
+
   it('checks a script without ever dispatching a turn', async () => {
     const { executor, dispatch } = harness({
       script: { exitCode: AUTOMATION_RUN_EXIT_CODE, stdout: '', stderr: '', timedOut: false },

@@ -2416,6 +2416,15 @@ export class EventStore implements EventSink {
         .set({ project_id: move.target_project_id, worktree: move.target_worktree })
         .where('session_id', '=', sessionId)
         .execute();
+      // The operator confirmed a check script against the source project. In the
+      // target it would run against another repository and other secrets without
+      // anyone having seen it there, so it waits until they resume it.
+      await tx
+        .updateTable('session_automations')
+        .set({ status: 'paused', next_run_at: null, updated_at: sql`now()` })
+        .where('session_id', '=', sessionId)
+        .where('script', 'is not', null)
+        .execute();
       await tx
         .updateTable('dev_servers')
         .set({ preview_session_id: null })
@@ -5488,8 +5497,13 @@ export class EventStore implements EventSink {
     const row = await this.db
       .insertInto('session_automations')
       .values({ id: randomUUID(), session_id: input.sessionId, ...values })
+      // A replacement gets a fresh id. Claims and outcomes are keyed by id, so a
+      // run of the previous configuration still in flight cannot record its result
+      // (or its errors) against the one the operator just confirmed.
       .onConflict((oc) =>
-        oc.column('session_id').doUpdateSet({ ...values, updated_at: sql`now()` }),
+        oc
+          .column('session_id')
+          .doUpdateSet({ ...values, id: randomUUID(), updated_at: sql`now()` }),
       )
       .returningAll()
       .executeTakeFirst();
@@ -5517,21 +5531,31 @@ export class EventStore implements EventSink {
     status: SessionAutomationStatus,
     now: Date = new Date(),
   ): Promise<SessionAutomationRecord | undefined> {
-    const existing = await this.getSessionAutomation(sessionId);
-    if (!existing) return undefined;
-    const row = await this.db
-      .updateTable('session_automations')
-      .set({
-        status,
-        next_run_at:
-          status === 'enabled' ? computeNextRun(existing.schedule, now).toISOString() : null,
-        ...(status === 'enabled' ? { consecutive_error_count: 0 } : {}),
-        updated_at: sql`now()`,
-      })
-      .where('session_id', '=', sessionId)
-      .returningAll()
-      .executeTakeFirst();
-    return row ? this.sessionAutomationRowToRecord(row) : undefined;
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('session_automations')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return undefined;
+      // Re-sending the current status must neither reset the error budget nor
+      // push an already armed slot further out.
+      if (row.status === status) return this.sessionAutomationRowToRecord(row);
+      const updated = await tx
+        .updateTable('session_automations')
+        .set({
+          status,
+          next_run_at:
+            status === 'enabled' ? computeNextRun(row.schedule, now).toISOString() : null,
+          ...(status === 'enabled' ? { consecutive_error_count: 0 } : {}),
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return this.sessionAutomationRowToRecord(updated);
+    });
   }
 
   async deleteSessionAutomation(sessionId: string): Promise<boolean> {

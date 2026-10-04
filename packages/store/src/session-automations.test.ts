@@ -54,7 +54,18 @@ describe('EventStore — session automations', () => {
       schedule: { kind: 'weekly', weekday: 1, hour: 9, minute: 0 },
       script: 'exit 10',
     });
-    expect(second.id).toBe(first.id);
+    // A run of the first configuration may still be in flight; it must not be
+    // able to claim or report against the replacement.
+    expect(second.id).not.toBe(first.id);
+    expect(
+      await ctx.store.claimSessionAutomationRun(
+        first.id,
+        new Date('2100-01-01'),
+        new Date('2100-01-02'),
+      ),
+    ).toBe(false);
+    await ctx.store.recordSessionAutomationOutcome(first.id, { outcome: 'error', detail: 'stale' });
+    expect((await ctx.store.getSessionAutomation('s1'))?.consecutiveErrorCount).toBe(0);
     expect(second).toMatchObject({
       name: 'Weekly review',
       script: 'exit 10',
@@ -78,6 +89,19 @@ describe('EventStore — session automations', () => {
     const resumed = await ctx.store.setSessionAutomationStatus('s1', 'enabled');
     expect(resumed).toMatchObject({ status: 'enabled', consecutiveErrorCount: 0 });
     expect(resumed?.nextRunAt).not.toBeNull();
+
+    // Re-sending the current status keeps the armed slot and the error count.
+    await ctx.store.recordSessionAutomationOutcome(automation.id, {
+      outcome: 'error',
+      detail: 'x',
+    });
+    const again = await ctx.store.setSessionAutomationStatus(
+      's1',
+      'enabled',
+      new Date('2100-01-01'),
+    );
+    expect(again?.nextRunAt).toEqual(resumed?.nextRunAt);
+    expect(again?.consecutiveErrorCount).toBe(1);
     expect(await ctx.store.setSessionAutomationStatus('s2', 'paused')).toBeUndefined();
   });
 

@@ -238,7 +238,7 @@ function simulateTurn(session: DemoSession, prompt: string): void {
     return;
   }
   if (
-    /automation|recurring|regularly|\bevery\b|daily|weekly|hourly|regelmäßig|täglich|wöchentlich|\bjeden?\b/i.test(
+    /automation|recurring|regularly|every (day|morning|evening|week|hour|monday|tuesday|wednesday|thursday|friday)|daily|weekly|hourly|regelmäßig|täglich|wöchentlich|jeden (tag|morgen|abend|montag|dienstag|mittwoch|donnerstag|freitag)/i.test(
       prompt,
     )
   ) {

@@ -525,6 +525,8 @@ interface SessionActions {
   /** The automation this session has now, so a proposal card knows whether it
    * is already active or would replace another one. */
   automation: SessionAutomation | null;
+  /** Only the newest proposal can be confirmed; older cards are superseded. */
+  latestAutomationProposalId: string | null;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
@@ -756,19 +758,26 @@ export function SessionChat({
   );
   // The automation is read when the session opens and again whenever its sheet
   // opens, so the "last run" sentence reflects runs that happened meanwhile.
-  const loadAutomation = useCallback(
-    () =>
-      client
-        .getSessionAutomation(sessionId)
-        .then(setAutomation)
-        .catch(() => undefined),
-    [client, sessionId],
-  );
+  // Bumped by every local change, so a read that started earlier cannot bring
+  // back an automation the operator just paused, replaced, or deleted.
+  const automationGeneration = useRef(0);
+  const loadAutomation = useCallback(() => {
+    const generation = automationGeneration.current;
+    return client
+      .getSessionAutomation(sessionId)
+      .then((loaded) => {
+        if (generation !== automationGeneration.current) return;
+        setAutomation(loaded);
+        publishSessionAutomationMutation(sessionId, loaded);
+      })
+      .catch(() => undefined);
+  }, [client, sessionId]);
   useEffect(() => {
     if (loaded) void loadAutomation();
   }, [loadAutomation, loaded]);
   const applyAutomation = useCallback(
     (next: SessionAutomation | null) => {
+      automationGeneration.current += 1;
       setAutomation(next);
       publishSessionAutomationMutation(sessionId, next);
     },
@@ -3181,6 +3190,13 @@ export function SessionChat({
     },
     [scrollToLatest, sendTurn],
   );
+  const latestAutomationProposalId = useMemo(() => {
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const message = session.messages[i];
+      if (message?.kind === 'automation-proposal') return message.id;
+    }
+    return null;
+  }, [session.messages]);
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -3190,6 +3206,7 @@ export function SessionChat({
       recoverPending: onDismissPendingEcho,
       confirmAutomation,
       automation,
+      latestAutomationProposalId,
     }),
     [
       sendQuickReply,
@@ -3199,6 +3216,7 @@ export function SessionChat({
       onDismissPendingEcho,
       confirmAutomation,
       automation,
+      latestAutomationProposalId,
     ],
   );
   // Local upload placeholders may sit after the transcript tail, but quick-action
@@ -7201,6 +7219,7 @@ function AutomationProposalRow({ message }: { message: AutomationProposalMessage
       current={current}
       error={error}
       disabled={actions === null || actions.sending || actions.dead}
+      superseded={actions !== null && actions.latestAutomationProposalId !== message.id}
       onConfirm={confirm}
     />
   );
