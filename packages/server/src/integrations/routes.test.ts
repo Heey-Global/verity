@@ -327,6 +327,15 @@ it('keeps safe failed import evidence on its room and clears it only with a new 
   const url = '/internal/integrations/matrix/account';
   await app.inject({ method: 'POST', url, headers, payload });
   await ctx.store.integrations.discoverSource({ accountId: id, sourceId, displayName: 'Room' });
+  const projectId = randomUUID();
+  await ctx.store.upsertProject({
+    id: projectId,
+    owner: 'example',
+    repo: 'diagnostics-test',
+    containerName: `diagnostics-${projectId}`,
+    state: 'absent',
+  });
+  await ctx.store.integrations.setSourceBinding(id, sourceId, projectId);
   const rejected = await app.inject({
     method: 'POST',
     url: '/internal/integrations/matrix/event',

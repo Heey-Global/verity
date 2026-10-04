@@ -181,25 +181,32 @@ export class IntegrationStore {
     failureCount = diagnostics.length,
   ): Promise<void> {
     await this.db.transaction().execute(async (tx) => {
-      await tx
-        .updateTable('integration_sources')
-        .set({
-          import_diagnostics: '[]',
-          import_diagnostics_truncated: failureCount > diagnostics.length,
-          import_diagnostics_reported_at: new Date(),
-        })
+      const sources = await tx
+        .selectFrom('integration_sources')
+        .select(['source_id', 'project_id', 'activated_at'])
         .where('account_id', '=', accountId)
+        .orderBy('source_id')
+        .forUpdate()
         .execute();
-      for (const sourceId of new Set(diagnostics.map((item) => item.sourceId))) {
+      for (const source of sources) {
+        const connected = source.project_id !== null && source.activated_at !== null;
+        // A delayed worker snapshot must not resurrect evidence from an earlier room binding.
+        const current = connected
+          ? diagnostics.filter(
+              (item) =>
+                item.sourceId === source.source_id &&
+                new Date(item.occurredAt) >= source.activated_at!,
+            )
+          : [];
         await tx
           .updateTable('integration_sources')
           .set({
-            import_diagnostics: JSON.stringify(
-              diagnostics.filter((item) => item.sourceId === sourceId),
-            ),
+            import_diagnostics: JSON.stringify(current),
+            import_diagnostics_truncated: connected && failureCount > diagnostics.length,
+            import_diagnostics_reported_at: connected ? new Date() : null,
           })
           .where('account_id', '=', accountId)
-          .where('source_id', '=', sourceId)
+          .where('source_id', '=', source.source_id)
           .execute();
       }
     });
