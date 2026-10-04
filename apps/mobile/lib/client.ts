@@ -10,6 +10,8 @@ import {
   saveRemoteControlDescriptor,
 } from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
+import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
+import { DEMO_BASE_URL, demoFetch } from './demoTransport';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
 // RUNTIME-configurable + persisted on the device: the operator enters it in the
@@ -35,6 +37,7 @@ let lastDescriptorAttempt = 0;
  * the control-plane origin only.
  */
 export async function hydrateVerityBaseUrl(): Promise<void> {
+  await hydrateDemoMode();
   resetVeritySettingsStore();
   currentBaseUrl = null;
   configuredBaseUrl = false;
@@ -63,18 +66,23 @@ export async function hydrateVerityBaseUrl(): Promise<void> {
  *  at render (never a captured const) so they observe
  *  the runtime value hydrated/updated by `hydrateVerityBaseUrl`/`setVerityBaseUrl`. */
 export function getVerityBaseUrl(): string | null {
+  return isDemoMode() ? DEMO_BASE_URL : currentBaseUrl;
+}
+
+export function getSavedVerityBaseUrl(): string | null {
   return currentBaseUrl;
 }
 
 /** A verified installation identity shared by its direct and Uplink endpoints. */
 export function getActiveMeetingServerId(): string | null {
+  if (isDemoMode()) return null;
   const profile = getServerProfile();
   return profile?.activeUrl === currentBaseUrl ? profile.serverId : null;
 }
 
 /** Whether the device has explicitly selected a Verity server URL. */
 export function hasConfiguredVerityBaseUrl(): boolean {
-  return configuredBaseUrl;
+  return isDemoMode() || configuredBaseUrl;
 }
 
 /**
@@ -91,6 +99,7 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
   currentBaseUrl = normalized;
   configuredBaseUrl = true;
   await AsyncStorage.setItem(STORAGE_KEY, normalized);
+  if (isDemoMode()) await exitDemoMode();
 }
 
 /** Build the API client for the current base URL, or `null` when none is set.
@@ -98,6 +107,14 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
  *  every request, and a 401 from a gated route drops the stored token so the app
  *  falls back to master-password re-auth. */
 export function createVerityClient(): VerityClient | null {
+  if (isDemoMode()) {
+    return new VerityClient({
+      baseUrl: DEMO_BASE_URL,
+      fetch: demoFetch,
+      uploadFetch: demoFetch,
+      allowBackgroundUpload: false,
+    });
+  }
   const serverUrl = currentBaseUrl;
   if (!serverUrl) return null;
   const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === serverUrl);

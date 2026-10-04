@@ -24,6 +24,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
 import { ActiveMeetingOverlay } from '../components/ActiveMeetingOverlay';
 import { ServerUpdateBanner } from '../components/ServerUpdateBanner';
+import { DemoBanner } from '../components/DemoBanner';
 import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
 import { WindowControlsProbe } from '../components/WindowControls';
@@ -33,6 +34,7 @@ import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
+import { isDemoMode, useDemoRevision } from '../lib/demoMode';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
@@ -50,6 +52,7 @@ const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
 export default function RootLayout() {
   const { theme } = useUnistyles();
+  const demoRevision = useDemoRevision();
   // Learn the iPad keyboard type app-wide (see hardwareKeyboard.ts) so opening a
   // session can autofocus the composer on the first try when a hardware keyboard is
   // attached. No-op off iPad.
@@ -86,7 +89,9 @@ export default function RootLayout() {
       // the old server; keeping the app behind onboarding is the safe fallback.
       if (installationReady) {
         await hydrateVerityBaseUrl().catch(() => undefined);
-        await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
+        if (!isDemoMode()) {
+          await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
+        }
       }
       if (active) setHydrated(true);
     })();
@@ -108,11 +113,11 @@ export default function RootLayout() {
     );
   }
 
-  return <HydratedRoot />;
+  return <HydratedRoot key={demoRevision} />;
 }
 
 function HydratedRoot() {
-  useEffect(() => startLiveMeetingSync(), []);
+  useEffect(() => (isDemoMode() ? undefined : startLiveMeetingSync()), []);
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();
@@ -172,7 +177,7 @@ function HydratedRoot() {
         if (pathname === '/' || pathname.startsWith('/session/')) dispatchVoiceShortcut();
       }}
     >
-      <ForegroundUpdateSync />
+      {!isDemoMode() ? <ForegroundUpdateSync /> : null}
       <GestureHandlerRootView style={styles.root}>
         <SafeAreaProvider>
           {/*
@@ -263,7 +268,7 @@ function HydratedRoot() {
               {/* The onboarding wizard renders its own header/progress (#320). */}
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             </Stack>
-            <ActiveMeetingOverlay />
+            {isDemoMode() ? <DemoBanner /> : <ActiveMeetingOverlay />}
           </KeyboardProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>

@@ -1,3 +1,4 @@
+import { isDemoMode } from '../lib/demoMode';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { useVoiceInput } from './useVoiceInput';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
@@ -191,4 +192,18 @@ it('allows the same words in a new utterance after interim recognition', async (
   act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: false }));
   act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: true }));
   expect(onChangeText).toHaveBeenLastCalledWith('Again Again');
+});
+
+jest.mock('../lib/demoMode', () => ({ isDemoMode: jest.fn().mockReturnValue(false) }));
+afterEach(() => jest.mocked(isDemoMode).mockReturnValue(false));
+
+it('keeps demo dictation away from microphone permissions and native recognition', () => {
+  jest.clearAllMocks();
+  jest.mocked(isDemoMode).mockReturnValue(true);
+  const { result } = renderHook(() => useVoiceInput('', jest.fn()));
+  act(() => result.current.toggle());
+  expect(result.current.state).toBe('idle');
+  expect(result.current.error).toContain('local demo');
+  expect(ExpoSpeechRecognitionModule.requestPermissionsAsync).not.toHaveBeenCalled();
+  expect(ExpoSpeechRecognitionModule.start).not.toHaveBeenCalled();
 });

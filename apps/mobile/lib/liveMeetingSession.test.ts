@@ -1,3 +1,4 @@
+import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { liveMeetingSTT, type STTEvent } from './liveMeetingSTT';
 import { createVerityClient } from './client';
 import { waitFor } from '@testing-library/react-native';
@@ -10,6 +11,7 @@ import {
 } from './liveMeetingStore';
 import {
   currentMeeting,
+  hasActiveMeetingCapture,
   endMeeting,
   pauseMeeting,
   resumeMeeting,
@@ -660,4 +662,41 @@ it('does not leave "sending" on screen when capture pauses between two requests'
     unsubscribe();
     await endMeeting();
   }
+});
+
+jest.mock('./demoMode', () => ({
+  isDemoMode: jest.fn().mockReturnValue(false),
+  isEnteringDemoMode: jest.fn().mockReturnValue(false),
+}));
+afterEach(() => jest.mocked(isDemoMode).mockReturnValue(false));
+
+it('reports pending starts and active capture until the meeting ends', async () => {
+  const pending = startMeeting('session-1');
+  expect(hasActiveMeetingCapture()).toBe(true);
+  try {
+    await pending;
+    expect(hasActiveMeetingCapture()).toBe(true);
+  } finally {
+    await endMeeting();
+  }
+  expect(hasActiveMeetingCapture()).toBe(false);
+});
+
+it('does not start native capture during an asynchronous demo transition', async () => {
+  jest.mocked(isEnteringDemoMode).mockReturnValue(true);
+  try {
+    await expect(startMeeting('session-1')).rejects.toThrow('Exit the demo');
+    expect(createMeeting).not.toHaveBeenCalled();
+    expect(liveMeetingSTT?.start).not.toHaveBeenCalled();
+  } finally {
+    jest.mocked(isEnteringDemoMode).mockReturnValue(false);
+  }
+});
+
+it('does not create a persisted meeting or start native capture in demo mode', async () => {
+  jest.mocked(isDemoMode).mockReturnValue(true);
+  await expect(startMeeting('demo-session')).rejects.toThrow('Exit the demo');
+  expect(createMeeting).not.toHaveBeenCalled();
+  expect(liveMeetingSTT?.engines).not.toHaveBeenCalled();
+  expect(liveMeetingSTT?.start).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { isDemoMode } from './demoMode';
 import type { VerityClient } from '@verity/mobile';
 import { Alert, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
@@ -126,3 +127,15 @@ it.each([true, false])('resolves browser consent with acceptance=%s', async (acc
     else Reflect.deleteProperty(globalThis, 'confirm');
   }
 });
+
+jest.mock('./demoMode', () => ({ isDemoMode: jest.fn().mockReturnValue(false) }));
+afterEach(() => jest.mocked(isDemoMode).mockReturnValue(false));
+
+it.each([runGoogleDriveAuth, runGmailAuth, runCalendarAuth, runContactsAuth])(
+  'does not launch Google OAuth from the local demo',
+  async (authorize) => {
+    jest.mocked(isDemoMode).mockReturnValue(true);
+    await expect(authorize('client.apps.googleusercontent.com')).rejects.toThrow('Exit the demo');
+    expect(AuthSession.AuthRequest).not.toHaveBeenCalled();
+  },
+);
