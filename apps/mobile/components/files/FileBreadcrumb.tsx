@@ -1,7 +1,7 @@
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { FileIcon as Icon, type IconName } from './FileIcon';
+import { Icon, type IconName } from '../Icon';
 
 /** Where the list is inside the active tab. It sits below the tabs because it
  * is a path within the chosen root: the root shows as that tab's icon, not its
@@ -21,6 +21,7 @@ export function FileBreadcrumb({
   /** -1 for the root, otherwise the index of the segment tapped. */
   onNavigate: (index: number) => void;
 }) {
+  const { theme } = useUnistyles();
   const atRoot = segments.length === 0;
   return (
     <ScrollView
@@ -37,13 +38,17 @@ export function FileBreadcrumb({
         accessibilityLabel={atRoot ? rootLabel : `Back to ${rootLabel}`}
         style={({ pressed }) => [styles.root, pressed ? styles.pressed : null]}
       >
-        <Icon name={rootIcon} size={15} color="#ffffff" />
+        <Icon
+          name={rootIcon}
+          size={15}
+          color={disabled || atRoot ? theme.colors.textMuted : theme.colors.primary}
+        />
       </Pressable>
       {segments.map((segment, index) => {
         const last = index === segments.length - 1;
         return (
           <View key={segment.key} style={styles.segment}>
-            <Icon name="chevron-right" size={14} color="#ffffff" />
+            <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
             <Pressable
               onPress={() => onNavigate(index)}
               disabled={disabled || last}
@@ -80,14 +85,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.xs,
   },
   root: {
-    paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
   },
-  pressed: { opacity: 0.7 },
+  pressed: { opacity: 0.5 },
   segment: {
     flexDirection: 'row',
     alignItems: 'center',

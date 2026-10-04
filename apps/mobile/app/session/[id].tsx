@@ -1,4 +1,3 @@
-import { FileIcon } from '../../components/files/FileIcon';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -150,7 +149,11 @@ import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
 import { FileNameDialog } from '../../components/files/FileNameDialog';
-import { FileToolbarButton } from '../../components/files/FileToolbarButton';
+import {
+  FileSheetHeader,
+  HeaderIconButton,
+  HeaderTextButton,
+} from '../../components/files/FileSheetHeader';
 import { usePermissionHaptic } from '../../components/usePermissionHaptic';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
@@ -537,6 +540,9 @@ const BookmarksContext = createContext<Bookmarks | null>(null);
 // message "…" sheet, the Explorer tabs and its breadcrumb all read as the same
 // thing; the labels tell the two scopes apart.
 const KNOWLEDGE_ICON: IconName = 'book-open';
+// Where the native drag zone owns the long press; see the row's onLongPress.
+const longPressDrags = Platform.OS === 'ios' && Platform.isPad;
+
 const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   worktree: 'folder',
   knowledge: KNOWLEDGE_ICON,
@@ -5003,6 +5009,16 @@ function SessionFilesSheet({
     setSelected((current) => toggleFileSelection(current, entry.path));
   }, []);
 
+  // Selection starts from a row, never from the header: the file you held or
+  // chose "Select" for is the first one picked, so the mode never opens empty.
+  const startSelection = useCallback((entry: SessionFileEntry) => {
+    if (!isSelectableFile(entry)) return;
+    modifierClick.current = { anchor: entry.path, range: [] };
+    setSelected([entry.path]);
+    setSelecting(true);
+    void Haptics.selectionAsync();
+  }, []);
+
   const endSelection = useCallback(() => {
     setSelecting(false);
     setSelected([]);
@@ -5185,11 +5201,6 @@ function SessionFilesSheet({
     return byPath;
   }, [entries, selected, downloadUrlFor]);
 
-  const canSelect = useMemo(
-    () => !driveActive && entries.some(isSelectableFile),
-    [driveActive, entries],
-  );
-
   const editFile = async (filePath: string) => {
     if (mutating) return;
     setMutating(true);
@@ -5220,6 +5231,32 @@ function SessionFilesSheet({
                     if (entry) void openFile(entry);
                   },
                 },
+                {
+                  key: 'select',
+                  label: 'Select',
+                  icon: 'check-circle' as const,
+                  onPress: () => {
+                    const entry = entries.find((entry) => entry.path === menuFor.path);
+                    if (entry) startSelection(entry);
+                  },
+                },
+              ]
+            : []),
+          ...(menuFor.inPreview && preview
+            ? [
+                {
+                  // Chunked rendering means native text selection stops at each
+                  // block, so drag-selecting the whole file does not work — this
+                  // copies the exact content the server returned instead.
+                  key: 'copy',
+                  label: 'Copy contents',
+                  icon: 'copy' as const,
+                  onPress: () => {
+                    void Clipboard.setStringAsync(preview.content).then(() =>
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success),
+                    );
+                  },
+                },
               ]
             : []),
           ...(menuFor.inPreview && preview && Platform.OS !== 'web'
@@ -5238,7 +5275,9 @@ function SessionFilesSheet({
             icon: 'share' as const,
             onPress: () => openWith(menuFor.path),
           },
-          ...(isTextPreviewCandidate(menuFor.path) && (!menuFor.inPreview || preview?.editable)
+          // An open file already has Edit in its header; listing it twice would
+          // make the menu disagree with the bar above it about where editing lives.
+          ...(isTextPreviewCandidate(menuFor.path) && !menuFor.inPreview
             ? [
                 {
                   key: 'edit',
@@ -5278,89 +5317,62 @@ function SessionFilesSheet({
       <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
         <SheetResizeHandle panHandlers={sheet.panHandlers} />
         {!preview ? (
-          <View style={styles.filesHeader}>
-            <View style={styles.filesTitleWrap}>
-              <Text style={styles.sheetTitle} numberOfLines={1}>
-                {selecting
-                  ? selected.length > 0
-                    ? selectionSummary(selected.length)
-                    : 'Select files'
-                  : driveActive
-                    ? 'Google Drive'
-                    : root === 'worktree'
-                      ? compactRootLabels
-                        ? 'Repo'
-                        : 'Repository'
-                      : root === 'knowledge'
-                        ? compactRootLabels
-                          ? 'Project'
-                          : 'Project Knowledge'
-                        : compactRootLabels
-                          ? 'Global'
-                          : 'Global Knowledge'}
-              </Text>
-            </View>
-            {selecting ? (
-              <>
-                <FileToolbarButton
-                  label={allSelected ? 'Select none' : 'Select all'}
+          selecting ? (
+            <FileSheetHeader
+              leading={
+                <HeaderTextButton
+                  label={allSelected ? 'Select None' : 'Select All'}
                   disabled={mutating}
                   onPress={() => {
                     modifierClick.current = { anchor: null, range: [] };
                     setSelected(allSelected ? [] : selectableEntries.map((entry) => entry.path));
                   }}
                 />
-                {/* Text, not a glyph: the old toggle turned into an X beside the X
-                  that closes the sheet, and nobody could tell which ended what. */}
-                <FileToolbarButton
+              }
+              title={selected.length > 0 ? selectionSummary(selected.length) : 'Select files'}
+              trailing={
+                // Text, not a glyph: the old toggle turned into an X beside the X
+                // that closes the sheet, and nobody could tell which ended what.
+                <HeaderTextButton
                   label="Done"
-                  tone="primary"
+                  emphasis="strong"
                   disabled={mutating}
                   accessibilityLabel="Done selecting files"
                   onPress={endSelection}
                 />
-              </>
-            ) : !preview ? (
-              <>
-                {canSelect ? (
-                  <FileToolbarButton
-                    label="Select"
-                    disabled={mutating}
-                    accessibilityLabel="Select files"
-                    onPress={() => setSelecting(true)}
+              }
+            />
+          ) : (
+            <FileSheetHeader
+              title="Files"
+              trailing={
+                <>
+                  {/* One way in to adding, as in every file app's toolbar. Selecting
+                      is not up here: a long press on a row starts it, as does
+                      "Select" in the row's menu, so the bar stays two glyphs. */}
+                  <HeaderIconButton
+                    icon={driveActive ? 'upload' : 'plus'}
+                    tint
+                    busy={uploading}
+                    disabled={
+                      mutating ||
+                      error !== null ||
+                      (driveActive && (driveUnconfigured || !driveCanWrite))
+                    }
+                    accessibilityLabel={
+                      driveActive
+                        ? driveCanWrite
+                          ? 'Upload files to Google Drive'
+                          : 'Google Drive is read-only'
+                        : 'New or upload files'
+                    }
+                    onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
                   />
-                ) : null}
-                <FileToolbarButton
-                  label={driveActive ? 'Upload' : 'New'}
-                  icon={driveActive ? 'upload' : 'plus'}
-                  tone="tinted"
-                  busy={uploading}
-                  disabled={
-                    mutating ||
-                    error !== null ||
-                    (driveActive && (driveUnconfigured || !driveCanWrite))
-                  }
-                  accessibilityLabel={
-                    driveActive
-                      ? driveCanWrite
-                        ? 'Upload files to Google Drive'
-                        : 'Google Drive is read-only'
-                      : 'New or upload files'
-                  }
-                  onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
-                />
-              </>
-            ) : null}
-            <Pressable
-              onPress={onClose}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Close files"
-              style={styles.bookmarkRemove}
-            >
-              <FileIcon name="x" size={20} color="#ffffff" />
-            </Pressable>
-          </View>
+                  <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
+                </>
+              }
+            />
+          )
         ) : null}
         {!preview ? (
           <View style={styles.filesRootBar}>
@@ -5389,16 +5401,26 @@ function SessionFilesSheet({
                   setError(null);
                 }}
                 accessibilityRole="tab"
-                accessibilityState={{ selected: root === candidate }}
+                accessibilityState={{ selected: !driveActive && root === candidate }}
                 accessibilityLabel={label}
                 style={[
                   styles.filesRootButton,
-                  root === candidate ? styles.filesRootButtonActive : null,
+                  !driveActive && root === candidate ? styles.filesRootButtonActive : null,
                 ]}
               >
-                <FileIcon name={FILE_ROOT_ICON[candidate]} size={14} color="#ffffff" />
+                <Icon
+                  name={FILE_ROOT_ICON[candidate]}
+                  size={14}
+                  color={
+                    !driveActive && root === candidate ? theme.colors.text : theme.colors.textMuted
+                  }
+                />
                 <Text
-                  style={root === candidate ? styles.filesRootLabelActive : styles.filesRootLabel}
+                  style={
+                    !driveActive && root === candidate
+                      ? styles.filesRootLabelActive
+                      : styles.filesRootLabel
+                  }
                 >
                   {label}
                 </Text>
@@ -5421,7 +5443,11 @@ function SessionFilesSheet({
                 accessibilityLabel="Google Drive"
                 style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
               >
-                <FileIcon name="hard-drive" size={14} color="#ffffff" />
+                <Icon
+                  name="hard-drive"
+                  size={14}
+                  color={driveActive ? theme.colors.text : theme.colors.textMuted}
+                />
                 <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
                   Google Drive
                 </Text>
@@ -5430,7 +5456,7 @@ function SessionFilesSheet({
           </View>
         ) : null}
         {preview ? null : driveActive ? (
-          drivePath.length > 0 ? (
+          drivePath.length > 1 ? (
             <FileBreadcrumb
               rootIcon="hard-drive"
               rootLabel={drivePath[0]?.name ?? 'Google Drive'}
@@ -5439,7 +5465,9 @@ function SessionFilesSheet({
               onNavigate={(index) => setDrivePath((current) => current.slice(0, index + 2))}
             />
           ) : null
-        ) : (
+        ) : path ? (
+          // At the top of a tab the tab itself says where you are; a breadcrumb
+          // of nothing but the root would be a control with nowhere to go.
           <FileBreadcrumb
             rootIcon={FILE_ROOT_ICON[root]}
             rootLabel={
@@ -5456,7 +5484,7 @@ function SessionFilesSheet({
             disabled={mutating || selecting}
             onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
           />
-        )}
+        ) : null}
         {driveActive ? (
           <ScrollView style={styles.filesList}>
             {error ? <Text style={styles.sheetError}>{error}</Text> : null}
@@ -5512,16 +5540,20 @@ function SessionFilesSheet({
                       pressed ? styles.sheetRowPressed : null,
                     ]}
                   >
-                    <FileIcon name={folder ? 'folder' : 'file'} size={18} color="#ffffff" />
+                    <Icon
+                      name={folder ? 'folder' : 'file'}
+                      size={18}
+                      color={theme.colors.textMuted}
+                    />
                     <View style={styles.fileMain}>
                       <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
                         {file.name}
                       </Text>
                     </View>
-                    <FileIcon
+                    <Icon
                       name={folder ? 'chevron-right' : 'more-horizontal'}
                       size={17}
-                      color="#ffffff"
+                      color={theme.colors.textFaint}
                     />
                   </Pressable>
                 );
@@ -5530,61 +5562,35 @@ function SessionFilesSheet({
           </ScrollView>
         ) : preview ? (
           <View style={styles.filesPreviewWrap}>
-            <View style={styles.filesPreviewHeader}>
-              <Pressable
-                onPress={closePreview}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Back to file list"
-                style={styles.bookmarkRemove}
-              >
-                <FileIcon name="chevron-left" size={20} color="#ffffff" />
-              </Pressable>
-              <View style={styles.filesTitleWrap}>
-                <Text style={styles.filesPreviewTitle} numberOfLines={1}>
-                  {fileNameFromPath(preview.path)}
-                </Text>
-                {parentPath(preview.path) ? (
-                  <Text style={styles.filesPath} numberOfLines={1}>
-                    {parentPath(preview.path)}
-                  </Text>
-                ) : null}
-              </View>
-              {preview.editable && preview.version ? (
-                <FileToolbarButton
-                  label="Edit"
-                  disabled={mutating}
-                  onPress={() => setEditing(preview)}
+            <FileSheetHeader
+              leading={
+                <HeaderIconButton
+                  icon="chevron-left"
+                  accessibilityLabel="Back to file list"
+                  onPress={closePreview}
                 />
-              ) : null}
-              {/* Chunked rendering means native text selection stops at each block, so
-                  drag-selecting the whole file no longer works — this copies the exact
-                  content the server returned, which is what select-all was for anyway. */}
-              <CopyButton
-                value={preview.content}
-                label="Copy"
-                accessibilityLabel="Copy file contents"
-              />
-              <Pressable
-                onPress={() => setMenuFor({ path: preview.path, inPreview: true })}
-                disabled={mutating}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
-                style={styles.bookmarkRemove}
-              >
-                <FileIcon name="more-horizontal" size={20} color="#ffffff" />
-              </Pressable>
-              <Pressable
-                onPress={onClose}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Close files"
-                style={styles.bookmarkRemove}
-              >
-                <FileIcon name="x" size={20} color="#ffffff" />
-              </Pressable>
-            </View>
+              }
+              title={fileNameFromPath(preview.path)}
+              subtitle={parentPath(preview.path) || null}
+              trailing={
+                <>
+                  {preview.editable && preview.version ? (
+                    <HeaderTextButton
+                      label="Edit"
+                      disabled={mutating}
+                      onPress={() => setEditing(preview)}
+                    />
+                  ) : null}
+                  <HeaderIconButton
+                    icon="more-horizontal"
+                    disabled={mutating}
+                    accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
+                    onPress={() => setMenuFor({ path: preview.path, inPreview: true })}
+                  />
+                  <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
+                </>
+              }
+            />
             <FileContentPreview
               key={preview.path}
               path={preview.path}
@@ -5682,6 +5688,15 @@ function SessionFilesSheet({
                               onPress={() => {
                                 pressFileRow(entry);
                               }}
+                              // Not on iPad, where a long press is the lift that
+                              // starts a native drag (UIDragInteraction is off on
+                              // iPhone by default); both firing at ~500 ms would
+                              // race. There the row menu and ⌘-click remain.
+                              onLongPress={
+                                !selecting && selectable && !longPressDrags
+                                  ? () => startSelection(entry)
+                                  : undefined
+                              }
                               disabled={inert}
                               accessibilityRole={selecting ? 'checkbox' : 'button'}
                               accessibilityLabel={entry.name}
@@ -5692,7 +5707,11 @@ function SessionFilesSheet({
                                 inert ? styles.sheetRowDisabled : null,
                               ]}
                             >
-                              <FileIcon name={fileIcon(entry)} size={18} color="#ffffff" />
+                              <Icon
+                                name={fileIcon(entry)}
+                                size={18}
+                                color={theme.colors.textMuted}
+                              />
                               <View style={styles.fileMain}>
                                 <Text
                                   style={[styles.sheetRowLabel, styles.fileName]}
@@ -5709,10 +5728,10 @@ function SessionFilesSheet({
                               </View>
                               {selecting ? (
                                 <View style={styles.fileDownload}>
-                                  <FileIcon
+                                  <Icon
                                     name={picked ? 'check-circle' : 'circle'}
                                     size={18}
-                                    color="#ffffff"
+                                    color={picked ? theme.colors.primary : theme.colors.textFaint}
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
@@ -5724,10 +5743,18 @@ function SessionFilesSheet({
                                   accessibilityLabel={`More actions for ${entry.name}`}
                                   style={styles.fileDownload}
                                 >
-                                  <FileIcon name="more-horizontal" size={18} color="#ffffff" />
+                                  <Icon
+                                    name="more-horizontal"
+                                    size={18}
+                                    color={theme.colors.textMuted}
+                                  />
                                 </Pressable>
                               ) : (
-                                <FileIcon name="chevron-right" size={17} color="#ffffff" />
+                                <Icon
+                                  name="chevron-right"
+                                  size={17}
+                                  color={theme.colors.textFaint}
+                                />
                               )}
                             </Pressable>
                           )}
@@ -5738,7 +5765,7 @@ function SessionFilesSheet({
                 </ScrollView>
                 {dropActive ? (
                   <View pointerEvents="none" style={styles.filesDropHint}>
-                    <FileIcon name="download" size={18} color="#ffffff" />
+                    <Icon name="download" size={18} color={theme.colors.primary} />
                     <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
                   </View>
                 ) : null}
@@ -5751,10 +5778,9 @@ function SessionFilesSheet({
                 ) : (
                   <View />
                 )}
-                <FileToolbarButton
+                <HeaderTextButton
                   label="Delete…"
-                  icon="trash-2"
-                  tone="danger"
+                  emphasis="destructive"
                   disabled={mutating || selected.length === 0}
                   accessibilityLabel="Delete selected files"
                   onPress={deleteSelectedFiles}
@@ -9768,16 +9794,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.lg,
     alignItems: 'center',
   },
-  filesHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    marginBottom: theme.spacing.sm,
-  },
-  filesTitleWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
   filesPath: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
@@ -9794,21 +9810,26 @@ const styles = StyleSheet.create((theme) => ({
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
   },
+  // Tabs mark the active root with an underline, not a filled chip: a fill is
+  // what a button looks like, and these are places, not actions.
   filesRootBar: {
     flexDirection: 'row',
-    gap: theme.spacing.xs,
+    gap: theme.spacing.md,
     marginBottom: theme.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
   },
   filesRootButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.sm,
+    paddingVertical: theme.spacing.sm,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+    marginBottom: -StyleSheet.hairlineWidth,
   },
   filesRootButtonActive: {
-    backgroundColor: theme.colors.surfaceAlt,
+    borderBottomColor: theme.colors.primary,
   },
   filesRootLabel: {
     color: theme.colors.textMuted,
@@ -9877,20 +9898,6 @@ const styles = StyleSheet.create((theme) => ({
   filesPreviewWrap: {
     flex: 1,
     minHeight: 280,
-  },
-  filesPreviewHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    paddingBottom: theme.spacing.sm,
-  },
-  filesPreviewTitle: {
-    flex: 1,
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
   },
   filesPreview: {
     flex: 1,

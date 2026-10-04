@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, Text, TextInput, View } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { HeaderTextButton } from './FileSheetHeader';
 
 /** Asks for a file name. `Alert.prompt` exists only on iOS, so the dialog is
  * drawn over the sheet. The stem is preselected, leaving the extension in place
@@ -98,34 +99,14 @@ export function FileNameDialog({
             </Text>
           ) : null}
           <View style={styles.actions}>
-            <Pressable
-              onPress={onCancel}
-              disabled={submitting}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel"
-              style={({ pressed }) => [styles.action, pressed ? styles.pressed : null]}
-            >
-              <Text style={styles.cancelLabel}>Cancel</Text>
-            </Pressable>
-            <Pressable
+            <HeaderTextButton label="Cancel" disabled={submitting} onPress={onCancel} />
+            <HeaderTextButton
+              label={confirmLabel}
+              emphasis="strong"
+              busy={submitting}
+              disabled={problem !== null || unchanged}
               onPress={submit}
-              disabled={problem !== null || unchanged || submitting}
-              accessibilityRole="button"
-              accessibilityLabel={confirmLabel}
-              accessibilityState={{ disabled: problem !== null || unchanged || submitting }}
-              style={({ pressed }) => [
-                styles.action,
-                styles.confirm,
-                problem !== null || unchanged ? styles.confirmDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-            >
-              {submitting ? (
-                <ActivityIndicator size="small" color={theme.colors.onPrimary} />
-              ) : (
-                <Text style={styles.confirmLabel}>{confirmLabel}</Text>
-              )}
-            </Pressable>
+            />
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -184,26 +165,5 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'flex-end',
     gap: theme.spacing.sm,
     marginTop: theme.spacing.xs,
-  },
-  action: {
-    minHeight: 36,
-    minWidth: 80,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.pill,
-  },
-  pressed: { opacity: 0.7 },
-  cancelLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  confirm: { backgroundColor: theme.colors.primary },
-  confirmDisabled: { opacity: 0.45 },
-  confirmLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
   },
 }));

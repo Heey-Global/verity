@@ -1,7 +1,7 @@
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { FileIcon as Icon, type IconName } from './FileIcon';
+import { Icon, type IconName } from '../Icon';
 
 export interface FileAction {
   key: string;
@@ -25,6 +25,7 @@ export function FileActionMenu({
   actions: readonly FileAction[];
   onDismiss: () => void;
 }) {
+  const { theme } = useUnistyles();
   const safe = actions.filter((action) => !action.destructive);
   const destructive = actions.filter((action) => action.destructive);
   const row = (action: FileAction) => (
@@ -41,7 +42,11 @@ export function FileActionMenu({
       <Text style={[styles.itemLabel, action.destructive ? styles.destructive : null]}>
         {action.label}
       </Text>
-      <Icon name={action.icon} size={18} color="#ffffff" />
+      <Icon
+        name={action.icon}
+        size={18}
+        color={action.destructive ? theme.colors.tone.danger : theme.colors.textMuted}
+      />
     </Pressable>
   );
   return (

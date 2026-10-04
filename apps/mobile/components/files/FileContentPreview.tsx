@@ -1,12 +1,20 @@
 import { chunkFilePreview } from '@verity/mobile';
 import { useMemo, useState, type ReactNode } from 'react';
-import { FlatList, Text, View, type StyleProp, type ViewStyle, type TextStyle } from 'react-native';
+import {
+  FlatList,
+  Pressable,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle,
+  type TextStyle,
+} from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import {
   fileMarkdownItems,
   isMarkdownFile,
   type FileMarkdownItem,
 } from '../../lib/fileMarkdownPreview';
-import { FileToolbarButton } from './FileToolbarButton';
 
 /** Mount with a file-specific key so opening another file starts in Preview. */
 export function FileContentPreview({
@@ -37,19 +45,28 @@ export function FileContentPreview({
   return (
     <>
       {markdown ? (
-        <View style={{ flexDirection: 'row', gap: 8, paddingVertical: 8 }}>
-          <FileToolbarButton
-            label="Preview"
-            selected={!source}
-            tone={!source ? 'primary' : 'plain'}
-            onPress={() => setSource(false)}
-          />
-          <FileToolbarButton
-            label="Source"
-            selected={source}
-            tone={source ? 'primary' : 'plain'}
-            onPress={() => setSource(true)}
-          />
+        // The same underlined tabs as the explorer's roots: two views of one
+        // file are a place to be, not an action to take.
+        <View style={styles.modes} accessibilityRole="tablist">
+          {(
+            [
+              ['Preview', false],
+              ['Source', true],
+            ] as const
+          ).map(([label, value]) => (
+            <Pressable
+              key={label}
+              onPress={() => setSource(value)}
+              accessibilityRole="tab"
+              accessibilityLabel={label}
+              accessibilityState={{ selected: source === value }}
+              style={[styles.mode, source === value ? styles.modeActive : null]}
+            >
+              <Text style={source === value ? styles.modeLabelActive : styles.modeLabel}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
         </View>
       ) : null}
       <FlatList
@@ -75,3 +92,21 @@ export function FileContentPreview({
     </>
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  modes: {
+    flexDirection: 'row',
+    gap: theme.spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
+  },
+  mode: {
+    paddingVertical: theme.spacing.sm,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+    marginBottom: -StyleSheet.hairlineWidth,
+  },
+  modeActive: { borderBottomColor: theme.colors.primary },
+  modeLabel: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  modeLabelActive: { color: theme.colors.text, fontSize: theme.text.xs, fontWeight: '600' },
+}));

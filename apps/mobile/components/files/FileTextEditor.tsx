@@ -7,7 +7,7 @@ import { StyleSheet } from 'react-native-unistyles';
 import { renameProblem, parentPath } from '../../lib/sessionFileUi';
 import { FileActionMenu } from './FileActionMenu';
 import { FileNameDialog } from './FileNameDialog';
-import { FileToolbarButton } from './FileToolbarButton';
+import { FileSheetHeader, HeaderIconButton, HeaderTextButton } from './FileSheetHeader';
 
 export function FileTextEditor({
   file,
@@ -118,27 +118,31 @@ export function FileTextEditor({
         behavior="padding"
       >
         <View style={styles.toolbar}>
-          <FileToolbarButton label="Cancel" disabled={busy} onPress={close} />
-          <Text style={styles.title} numberOfLines={1}>
-            {name}
-            {dirty ? ' • edited' : ''}
-          </Text>
-          {onHistory && base.version ? (
-            <FileToolbarButton
-              label="Versions"
-              icon="clock"
-              disabled={busy}
-              onPress={() => {
-                void openVersions();
-              }}
-            />
-          ) : null}
-          <FileToolbarButton
-            label="Save"
-            tone="primary"
-            disabled={!dirty || tooLarge}
-            busy={busy}
-            onPress={saveCurrent}
+          <FileSheetHeader
+            leading={<HeaderTextButton label="Cancel" disabled={busy} onPress={close} />}
+            title={name}
+            subtitle={dirty ? 'Edited' : parentPath(base.path) || null}
+            trailing={
+              <>
+                {onHistory && base.version ? (
+                  <HeaderIconButton
+                    icon="clock"
+                    accessibilityLabel="Versions"
+                    disabled={busy}
+                    onPress={() => {
+                      void openVersions();
+                    }}
+                  />
+                ) : null}
+                <HeaderTextButton
+                  label="Save"
+                  emphasis="strong"
+                  disabled={!dirty || tooLarge}
+                  busy={busy}
+                  onPress={saveCurrent}
+                />
+              </>
+            }
           />
         </View>
         {error ? (
@@ -234,12 +238,11 @@ export function FileTextEditor({
 const styles = StyleSheet.create((theme) => ({
   editor: { flex: 1, backgroundColor: theme.colors.surface, paddingTop: 48, paddingBottom: 24 },
   toolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    padding: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
   },
-  title: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm },
   error: {
     color: theme.colors.tone.danger,
     paddingHorizontal: theme.spacing.lg,
