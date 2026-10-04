@@ -8,7 +8,7 @@
 import type { ProjectDetail, VerityClient } from '@verity/mobile';
 
 /** A neutral project-detail payload. The project is `absent` (paused) so the
- *  Environment screen makes no lifecycle calls on mount. */
+ *  Sandbox screen makes no lifecycle calls on mount. */
 export function makeDetail(
   overrides: {
     dopplerProject?: string | null;
