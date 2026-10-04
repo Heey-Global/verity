@@ -866,6 +866,7 @@ export function createCachedGoogleAccessToken(
   return provider;
 }
 
+const CONCRETE_ETAG = /^"[\x21\x23-\x7e\x80-\xff]+"$/;
 const DRIVE_SNAPSHOT_FIELDS =
   'id,title,mimeType,modifiedDate,fileSize,parents/id,alternateLink,editable,etag,labels/trashed';
 async function readDriveSnapshot(response: GoogleHttpResponse): Promise<DriveFile> {
@@ -888,7 +889,7 @@ async function readDriveSnapshot(response: GoogleHttpResponse): Promise<DriveFil
         )
       : [],
   });
-  if (!file || typeof raw.etag !== 'string' || !raw.etag || /[\r\n]/.test(raw.etag))
+  if (!file || typeof raw.etag !== 'string' || !CONCRETE_ETAG.test(raw.etag))
     throw new GoogleDriveError('Drive returned no usable file version', 'malformed');
   return {
     ...file,
@@ -927,7 +928,7 @@ export async function mutateDriveFile(
   },
   opts: GoogleTransportOptions = {},
 ): Promise<DriveFile> {
-  if (!input.expectedVersion || /[\r\n]/.test(input.expectedVersion))
+  if (!CONCRETE_ETAG.test(input.expectedVersion))
     throw new GoogleDriveError('A file version is required', 'malformed');
   const query = new URLSearchParams({
     supportsAllDrives: 'true',

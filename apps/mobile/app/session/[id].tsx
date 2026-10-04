@@ -4453,18 +4453,21 @@ function SessionFilesSheet({
       try {
         let folderId = driveFolderId;
         let nextPath = drivePath;
-        if (!folderId) {
-          const detail = await client.getProject(projectId);
-          folderId = detail.settings?.googleDriveFolderId ?? null;
-          if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
-          const folderName = detail.settings?.googleDriveFolderName ?? null;
-          if (!folderId || !folderName) {
-            if (active) {
-              setDriveEntries([]);
-              setDriveUnconfigured(true);
-            }
-            return;
+        const detail = await client.getProject(projectId);
+        const configuredFolderId = detail.settings?.googleDriveFolderId ?? null;
+        const folderName = detail.settings?.googleDriveFolderName ?? null;
+        if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
+        if (!configuredFolderId || !folderName) {
+          if (active) {
+            setDriveEntries([]);
+            setDriveFolderId(null);
+            setDriveCanWrite(false);
+            setDriveUnconfigured(true);
           }
+          return;
+        }
+        if (!folderId || folderId !== configuredFolderId) {
+          folderId = configuredFolderId;
           nextPath = [{ id: folderId, name: folderName }];
           if (active) {
             setDriveFolderId(folderId);

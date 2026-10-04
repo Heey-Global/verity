@@ -165,7 +165,7 @@ describe('project Google Drive agent tool', () => {
       blocked: { id: 'blocked', name: 'Plan', mimeType: 'text/plain', parents: ['hidden'] },
       allowed: { id: 'allowed', name: 'Plan', mimeType: 'text/plain', parents: ['root'] },
     });
-    const originalGet = drive.get.bind(drive);
+    const originalGet = drive.get;
     drive.get = vi.fn(async (token: string, fileId: string) => {
       if (fileId === 'hidden') throw new GoogleDriveError('forbidden', 'http_403');
       return originalGet(token, fileId);
