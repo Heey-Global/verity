@@ -12,15 +12,20 @@ it('adds Matrix diagnostics when upgrading a database with all released migratio
       name.endsWith('_matrix_import_diagnostics'),
     )!;
     const released = Object.fromEntries(
-      Object.entries(migrations).filter(([name]) => name !== pending),
+      Object.entries(migrations).filter(
+        ([name]) => name !== pending && name <= '0130_session_automations',
+      ),
     );
     const before = await new Migrator({
       db: ctx.db,
       provider: { getMigrations: async () => released },
     }).migrateToLatest();
     expect(before.error).toBeUndefined();
+    // Pin the deployed generation: later migrations must not become part of this upgrade fixture.
     // Fresh databases hide a migration inserted before the deployed generation.
-    const after = await new Migrator({ db: ctx.db, provider: migrationProvider }).migrateToLatest();
+    const after = await new Migrator({ db: ctx.db, provider: migrationProvider }).migrateTo(
+      pending,
+    );
     expect(after.error).toBeUndefined();
     expect(after.results?.filter((result) => result.status === 'Success')).toHaveLength(1);
     await expect(
