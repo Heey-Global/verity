@@ -108,3 +108,65 @@ describe('Control diagnostics', () => {
     ).rejects.toThrow();
   });
 });
+
+it('scopes Matrix evidence to the requested project and drops free-form source fields', async () => {
+  const readMatrixDiagnostics = vi.fn(async () => ({
+    projectId: 'project',
+    truncated: false,
+    sources: [
+      {
+        accountId: '@verity:example.test',
+        sourceId: '!room:example.test',
+        status: 'active',
+        lastIngestedAt: null,
+        lastError: 'private message',
+        importDiagnostics: [
+          {
+            sourceId: '!room:example.test',
+            eventId: '$event',
+            occurredAt: '2026-01-01T00:00:00Z',
+            lastAttemptAt: '2026-01-01T00:01:00Z',
+            attempts: 2,
+            httpStatus: 422,
+            code: 'target_message_not_found',
+          },
+        ],
+      },
+    ],
+  }));
+  const result = await createControlDiagnosticsTool({ ...setup(), readMatrixDiagnostics })({
+    ...input,
+    request: { projectId: 'project' },
+  });
+  expect(readMatrixDiagnostics).toHaveBeenCalledWith('project', undefined);
+  expect(result.matrix?.sources[0]?.importDiagnostics[0]?.eventId).toBe('$event');
+  expect(JSON.stringify(result)).not.toContain('private message');
+});
+
+it('requires an explicit project for an event receipt and omits persisted message content', async () => {
+  const matrixEvent = {
+    accountId: '@verity:example.test',
+    sourceId: '!room:example.test',
+    eventId: '$event',
+  };
+  const readMatrixDiagnostics = vi.fn(async () => ({
+    projectId: 'project',
+    sources: [],
+    truncated: false,
+    event: {
+      stored: true,
+      kind: 'message',
+      targetEventId: null,
+      occurredAt: '2026-01-01T00:00:00Z',
+      body: 'private message',
+      sender: 'private sender',
+    },
+  }));
+  const tool = createControlDiagnosticsTool({ ...setup(), readMatrixDiagnostics });
+  await expect(tool({ ...input, request: { matrixEvent } })).rejects.toThrow('requires projectId');
+  expect(readMatrixDiagnostics).not.toHaveBeenCalled();
+  const result = await tool({ ...input, request: { projectId: 'project', matrixEvent } });
+  expect(readMatrixDiagnostics).toHaveBeenCalledWith('project', matrixEvent);
+  expect(result.matrix?.event?.stored).toBe(true);
+  expect(JSON.stringify(result)).not.toMatch(/private message|private sender/);
+});

@@ -2,6 +2,31 @@ import type { Kysely } from 'kysely';
 import type { Database } from './schema.js';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
 
+export const integrationImportCodes = [
+  'invalid_request',
+  'target_message_not_found',
+  'knowledge_storage_unavailable',
+  'source_unavailable',
+  'event_predates_activation',
+  'source_binding_changed',
+  'invalid_attachment_encoding',
+  'empty_attachment',
+  'attachment_too_large',
+  'unauthorized_connector',
+  'import_failed',
+  'transport_error',
+  'media_download_failed',
+] as const;
+export interface IntegrationImportDiagnostic {
+  sourceId: string;
+  eventId: string;
+  occurredAt: string;
+  lastAttemptAt: string;
+  attempts: number;
+  httpStatus: number | null;
+  code: (typeof integrationImportCodes)[number];
+}
+
 export type IntegrationProvider = 'matrix';
 export type IntegrationSourceStatus = 'pending' | 'active' | 'paused';
 export type IntegrationEventKind = 'message' | 'edit' | 'redaction';
@@ -16,6 +41,9 @@ export interface IntegrationAccount {
 }
 
 export interface IntegrationSource {
+  importDiagnostics: IntegrationImportDiagnostic[];
+  importDiagnosticsTruncated: boolean;
+  importDiagnosticsReportedAt: Date | null;
   accountId: string;
   sourceId: string;
   displayName: string;
@@ -147,6 +175,36 @@ export class IntegrationStore {
       .execute();
   }
 
+  async replaceImportDiagnostics(
+    accountId: string,
+    diagnostics: IntegrationImportDiagnostic[],
+    failureCount = diagnostics.length,
+  ): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      await tx
+        .updateTable('integration_sources')
+        .set({
+          import_diagnostics: '[]',
+          import_diagnostics_truncated: failureCount > diagnostics.length,
+          import_diagnostics_reported_at: new Date(),
+        })
+        .where('account_id', '=', accountId)
+        .execute();
+      for (const sourceId of new Set(diagnostics.map((item) => item.sourceId))) {
+        await tx
+          .updateTable('integration_sources')
+          .set({
+            import_diagnostics: JSON.stringify(
+              diagnostics.filter((item) => item.sourceId === sourceId),
+            ),
+          })
+          .where('account_id', '=', accountId)
+          .where('source_id', '=', sourceId)
+          .execute();
+      }
+    });
+  }
+
   async listAccounts(): Promise<IntegrationAccount[]> {
     const rows = await this.db.selectFrom('integration_accounts').selectAll().execute();
     return rows.map((row) => ({
@@ -201,6 +259,9 @@ export class IntegrationStore {
       activatedAt: row.activated_at,
       lastIngestedAt: row.last_ingested_at,
       lastError: row.last_error,
+      importDiagnostics: row.import_diagnostics,
+      importDiagnosticsTruncated: row.import_diagnostics_truncated,
+      importDiagnosticsReportedAt: row.import_diagnostics_reported_at,
     }));
   }
 
@@ -236,6 +297,9 @@ export class IntegrationStore {
           status: projectId ? 'active' : 'pending',
           activated_at: projectId ? (current.activated_at ?? new Date()) : null,
           last_error: null,
+          import_diagnostics: '[]',
+          import_diagnostics_truncated: false,
+          import_diagnostics_reported_at: null,
         })
         .where('account_id', '=', accountId)
         .where('source_id', '=', sourceId)
@@ -253,6 +317,9 @@ export class IntegrationStore {
           activatedAt: row.activated_at,
           lastIngestedAt: row.last_ingested_at,
           lastError: row.last_error,
+          importDiagnostics: row.import_diagnostics,
+          importDiagnosticsTruncated: row.import_diagnostics_truncated,
+          importDiagnosticsReportedAt: row.import_diagnostics_reported_at,
         }
       : null;
   }
@@ -270,7 +337,14 @@ export class IntegrationStore {
   async deleteSource(accountId: string, sourceId: string): Promise<boolean> {
     const row = await this.db
       .updateTable('integration_sources')
-      .set({ project_id: null, status: 'pending', activated_at: null })
+      .set({
+        project_id: null,
+        status: 'pending',
+        activated_at: null,
+        import_diagnostics: '[]',
+        import_diagnostics_truncated: false,
+        import_diagnostics_reported_at: null,
+      })
       .where('account_id', '=', accountId)
       .where('source_id', '=', sourceId)
       .where('project_id', 'is not', null)

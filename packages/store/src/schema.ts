@@ -195,6 +195,13 @@ interface MatrixConnectorConfigTable {
 }
 
 interface IntegrationSourcesTable {
+  import_diagnostics_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  import_diagnostics_truncated: ColumnType<boolean, boolean | undefined, boolean>;
+  import_diagnostics: ColumnType<
+    import('./integrations.js').IntegrationImportDiagnostic[],
+    string | undefined,
+    string
+  >;
   account_id: string;
   source_id: string;
   display_name: string;

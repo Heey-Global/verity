@@ -709,3 +709,17 @@ it('rejects a materialized snapshot when the caller becomes knowledge-bearing', 
     'knowledge transfer blocked',
   );
 });
+
+it('limits diagnostic projects to existing non-Control projects without Knowledge exposure', async () => {
+  const h = harness({ canAccessKnowledgeTarget: async () => false });
+  await expect(h.tools.authorizeDiagnosticProject('k8s')).rejects.toThrow(
+    'unavailable for cross-project access',
+  );
+  await expect(h.tools.authorizeDiagnosticProject(CONTROL_PROJECT_ID)).rejects.toThrow(
+    'target project unavailable',
+  );
+  await expect(h.tools.authorizeDiagnosticProject('missing')).rejects.toThrow(
+    'target project unavailable',
+  );
+  await expect(harness().tools.authorizeDiagnosticProject('k8s')).resolves.toBeUndefined();
+});

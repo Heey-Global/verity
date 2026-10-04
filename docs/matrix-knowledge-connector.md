@@ -29,6 +29,31 @@ The worker syncs invitations and joined-room events. It may show pending invitat
 
 The worker writes events and media references into a private on-disk outbox before forwarding them. It downloads media with a 50 MiB streaming limit and decrypts encrypted attachments when flushing the outbox; failed downloads and unavailable Verity servers are retried. The server stores each event under a unique `(account_id, source_id, event_id)` key, then rewrites the affected Knowledge source. A restart can retry queued events without duplicating entries.
 
+## Import diagnostics
+
+Rejected imports return a stable, allowlisted `code` alongside the HTTP status.
+The connector reads a bounded error response and retains only that code; raw
+response bodies, message text, filenames and credentials are excluded from its
+retry logs and diagnostic reports. A failed edit or redaction whose original
+message is unavailable reports `target_message_not_found`. This identifies the
+rejection, not why the original message is absent.
+
+Each failed event remains in the private outbox. A private `.retry` sidecar stores
+its room/event IDs, event timestamp, last attempt, HTTP status, code and attempt
+count across restarts. Pausing preserves that evidence without attempting delivery.
+A successful retry removes the outbox event and its sidecar, and the next account
+report clears the corresponding notice. No reset or deletion is needed to diagnose
+an import failure.
+
+The connector reports at most 20 failed imports per account update, together with
+the total failure count. Truncated reports are explicitly marked incomplete.
+The Matrix overview and project room display show safe reasons and retry details;
+Control can request the same project-scoped evidence through `verity_diagnostics`.
+Existing Knowledge access restrictions apply. A cleared notice alone is not proof
+that a specific event was projected into Knowledge; verify the affected event and
+Knowledge source after remediation. Older connectors that omit diagnostics do not
+clear previously reported evidence.
+
 ## Knowledge projection
 
 Write one Markdown source per room and day under `sources/documents/matrix/`, using a hash of the account, stable room ID, and binding activation time in the path and a date in the filename. A later reconnection therefore cannot overwrite an earlier project's source. Each entry carries a timestamp, sender, event ID, and quoted body. Messages over 8,000 characters carry a visible truncation marker. The header says that participants' messages are untrusted external content.

@@ -23,3 +23,27 @@ explicitly. A status code is evidence of a failure, not proof of its root cause.
 Use existing fleet observations to corroborate a diagnosis, prepare a concrete
 project-session handoff for remediation, and read the affected live state once
 more after the fix. Do not poll this tool.
+
+## Matrix import failures
+
+Select `projectId` to read Matrix room import diagnostics for that project. The
+existing Control caller and cross-project Knowledge restrictions apply. The
+snapshot exposes identifiers, timestamps, HTTP status, attempt counts and
+allowlisted failure codes, never response bodies or message contents. At most 20
+rooms and 20 active failed imports from each account's connector report are
+available; additional failures may be omitted.
+
+The connector reports active failures through its authenticated account update.
+An omitted `importDiagnostics` field preserves existing evidence for older
+connectors; an empty snapshot clears it after successful retries. Event data
+remains in the outbox until import succeeds. `target_message_not_found` identifies
+a rejected edit or redaction whose original message was unavailable. It does not
+prove why that original message is absent.
+
+An optional `matrixEvent: { accountId, sourceId, eventId }` with `projectId`
+checks a single persisted event without revealing its content or sender. Room
+binding and activation are checked before and after reading; events from an
+older activation are hidden. A stored event alone does not prove Knowledge
+projection succeeded. A missing retry alone does not prove import succeeded.
+`importDiagnosticsReportedAt` identifies the last connector snapshot and
+`importDiagnosticsTruncated` warns that a bounded report omitted failures.

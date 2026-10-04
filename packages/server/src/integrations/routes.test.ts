@@ -306,3 +306,105 @@ it('stores Matrix configuration globally, redacts its settings response, and lim
   expect(worker.json()).toEqual({ config: payload });
   await app.close();
 });
+
+it('keeps safe failed import evidence on its room and clears it only with a new worker snapshot', async () => {
+  const app = Fastify();
+  const token = 'a-secret-long-enough-for-the-worker-route';
+  registerIntegrationRoutes(app, {
+    store: ctx.store.integrations,
+    connectorToken: token,
+    dataRoot: root,
+  });
+  const headers = { authorization: `Bearer ${token}` };
+  const id = `@diagnostics-${randomUUID()}:example.test`;
+  const sourceId = '!diagnostics:example.test';
+  const payload = {
+    id,
+    endpoint: 'https://matrix.example.test',
+    displayName: 'Matrix',
+    status: 'online',
+  };
+  const url = '/internal/integrations/matrix/account';
+  await app.inject({ method: 'POST', url, headers, payload });
+  await ctx.store.integrations.discoverSource({ accountId: id, sourceId, displayName: 'Room' });
+  const rejected = await app.inject({
+    method: 'POST',
+    url: '/internal/integrations/matrix/event',
+    headers,
+    payload: {
+      accountId: id,
+      sourceId,
+      eventId: '$edit',
+      targetEventId: '$missing',
+      kind: 'edit',
+      sender: '@sender:example.test',
+      occurredAt: new Date().toISOString(),
+      body: 'private message',
+    },
+  });
+  expect(rejected.statusCode).toBe(422);
+  expect(rejected.json()).toEqual({
+    error: 'Target message not found',
+    code: 'target_message_not_found',
+  });
+  const diagnostic = {
+    sourceId,
+    eventId: '$failed',
+    occurredAt: new Date().toISOString(),
+    lastAttemptAt: new Date().toISOString(),
+    attempts: 2,
+    httpStatus: 422,
+    code: 'target_message_not_found',
+  };
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { ...payload, importDiagnostics: [{ ...diagnostic, error: 'private message' }] },
+      })
+    ).statusCode,
+  ).toBe(400);
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { ...payload, importDiagnostics: [diagnostic], importFailureCount: 21 },
+      })
+    ).statusCode,
+  ).toBe(200);
+  const read = async () =>
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnostics;
+  expect(await read()).toEqual([diagnostic]);
+  expect(
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnosticsTruncated,
+  ).toBe(true);
+  expect(
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnosticsReportedAt,
+  ).toBeInstanceOf(Date);
+  await app.inject({ method: 'POST', url, headers, payload });
+  expect(await read()).toEqual([diagnostic]);
+  expect(
+    (await app.inject({ method: 'POST', url, payload: { ...payload, importDiagnostics: [] } }))
+      .statusCode,
+  ).toBe(401);
+  expect(await read()).toEqual([diagnostic]);
+  await app.inject({
+    method: 'POST',
+    url,
+    headers,
+    payload: { ...payload, importDiagnostics: [] },
+  });
+  expect(await read()).toEqual([]);
+  expect(
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnosticsTruncated,
+  ).toBe(false);
+  await app.close();
+});

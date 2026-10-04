@@ -310,6 +310,7 @@ export interface ControlPlaneSessionTools {
    * a Verity Control session.
    */
   authorizeCaller(input: Pick<ControlPlaneSessionCall, 'projectId' | 'sessionId'>): Promise<void>;
+  authorizeDiagnosticProject(projectId: string): Promise<void>;
 }
 
 function isControlPlaneTarget(project: ProjectRecord, controlProjectId: string): boolean {
@@ -550,6 +551,16 @@ export function createControlPlaneSessionTools(
 
   return {
     authorizeCaller: requireControlPlaneCaller,
+    async authorizeDiagnosticProject(projectId) {
+      const project = (await deps.listProjects()).find((candidate) => candidate.id === projectId);
+      if (
+        !project ||
+        project.hiddenAt !== null ||
+        isControlPlaneTarget(project, deps.controlProjectId)
+      )
+        throw new ControlPlaneSessionToolError('target project unavailable');
+      await requireKnowledgeTarget(projectId);
+    },
     async listSessions(input) {
       await requireControlPlaneCaller(input);
       const request = listSessionsRequestSchema.parse(input.request);
