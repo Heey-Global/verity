@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
@@ -66,6 +68,11 @@ describe('GET /onboarding/status', () => {
       // WITHOUT unlocking — it is the pre-unlock gate.
       expect(cipher.isSealed()).toBe(true);
       const status = await getStatus(app);
+      // A stale smoke expectation rejects a healthy freshly installed server.
+      const smoke = readFileSync('deploy/bin/verity-clean-install-smoke', 'utf8');
+      const expected = smoke.match(/const expected = (\{[\s\S]*?\});/);
+      expect(expected).not.toBeNull();
+      expect(status).toEqual(runInNewContext(`(${expected![1]})`));
       expect(status).toEqual({
         sealed: true,
         masterPasswordSet: false,

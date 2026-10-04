@@ -3576,3 +3576,77 @@ describe('Uplink diagnostics schema', () => {
     expect(parsed).toEqual({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
   });
 });
+
+describe('connection catalog and project Google access contracts', () => {
+  it('loads account scopes and project usage without dropping account metadata', async () => {
+    const account = {
+      connected: true,
+      accountEmail: 'me@example.test',
+      scopes: ['scope'],
+      projects: [{ id: 'project/one', name: 'One' }],
+    };
+    const usage = {
+      github: 1,
+      claude: 0,
+      codex: 0,
+      opencode: 0,
+      google: 1,
+      matrix: 0,
+      doppler: 0,
+      mcp: 0,
+    };
+    const { fetch, calls } = fakeFetchSequence(json(account), json(usage));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getGoogleConnection()).toEqual(account);
+    expect(await client.getConnectionUsage()).toEqual(usage);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/google/connection',
+      '/connections/usage',
+    ]);
+  });
+  it.each(['gmail', 'calendar', 'contacts'] as const)(
+    'scopes %s grants to the selected project and preserves legacy access counts',
+    async (service) => {
+      const connection = {
+        enabled: false,
+        connected: true,
+        accountEmail: 'me@example.test',
+        clientId: 'client',
+      };
+      const { fetch, calls } = fakeFetchSequence(
+        json({ ...connection, legacySessionCount: 2 }),
+        json({ ...connection, enabled: true }),
+        new Response(null, { status: 204 }),
+      );
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      expect(await client.getProjectGoogleConnection('project/one', service)).toEqual({
+        ...connection,
+        legacySessionCount: 2,
+      });
+      expect(await client.enableProjectGoogleConnection('project/one', service)).toEqual({
+        ...connection,
+        enabled: true,
+      });
+      await client.disableProjectGoogleConnection('project/one', service);
+      expect(calls.map((call) => [new URL(call.url).pathname, call.init?.method])).toEqual(
+        ['GET', 'PUT', 'DELETE'].map((method) => [
+          `/projects/project%2Fone/google/${service}`,
+          method,
+        ]),
+      );
+    },
+  );
+  it('rejects invalid access counts rather than displaying unsafe account state', async () => {
+    const { fetch } = fakeFetch(
+      json({
+        enabled: false,
+        connected: true,
+        accountEmail: null,
+        clientId: null,
+        legacySessionCount: -1,
+      }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.getProjectGoogleConnection('one', 'gmail')).rejects.toThrow();
+  });
+});
