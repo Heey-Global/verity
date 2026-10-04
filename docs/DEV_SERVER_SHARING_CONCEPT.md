@@ -26,8 +26,8 @@ inside the Verity server process for local shares, an Uplink-hosted edge for pub
 
 The Verity container publishes one contiguous range, default `8100-8119`, configured through a
 Compose variable. The server allocates a port from it per local share and runs a `PreviewEdge`
-instance (`packages/preview-tunnel/src/index.ts`) in-process on that port. The sandbox itself
-publishes no host ports; each share starts a connector without recreating the sandbox.
+instance (`packages/preview-tunnel/src/index.ts`) in-process on that port. Newly provisioned
+sandboxes publish no host ports; each share starts a connector without recreating the sandbox.
 
 Ports are allocated dynamically, independently of the service listening ports. Docker may run
 a userland proxy per published port, depending on its configuration. The memory cost must be

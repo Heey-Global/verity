@@ -964,7 +964,8 @@ configuration and should be measured on the host.
 
 Start an HTTP/WebSocket service yourself or ask the agent to start it, then open
 the detected listener in the session Preview sheet. Local access uses the Verity
-ingress range; the sandbox does not publish the service's listening port to the host.
+ingress range. Newly provisioned sandboxes do not publish service listening ports
+to the host.
 
 | Variable                              | Default                                                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
