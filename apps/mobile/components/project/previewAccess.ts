@@ -15,7 +15,7 @@ export async function openLocalPreview(
   Alert.alert(
     'Preview not reachable on your network',
     publicSharing === 'available'
-      ? 'Your device cannot reach this preview on your server’s network. Share it publicly through Uplink instead?'
+      ? 'Your device cannot reach this preview on your server’s network. Share it online with a PIN instead?'
       : publicSharing === 'premium-required'
         ? 'This preview is only available on your server’s network or VPN. Public sharing requires Verity Premium.'
         : 'This preview is only available on your server’s network or VPN. Uplink is temporarily unavailable.',
@@ -23,7 +23,7 @@ export async function openLocalPreview(
     // problem, so it leads; the local link is the fallback for a device at home.
     [
       ...(publicSharing === 'available'
-        ? [{ text: 'Share publicly', onPress: sharePublicly }]
+        ? [{ text: 'Share online', onPress: sharePublicly }]
         : publicSharing === 'premium-required' && openSettings
           ? [{ text: 'Open settings', onPress: openSettings }]
           : []),

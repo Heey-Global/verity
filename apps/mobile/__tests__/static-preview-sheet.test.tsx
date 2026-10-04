@@ -95,16 +95,31 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
-// Step one lists both kinds of target together: the question "what" is answered
-// before "where", and nothing hides behind a tab.
-it('lists running servers and worktree folders together as targets', async () => {
+// Step one separates the two kinds of target, because they behave differently:
+// a dev server is live, a folder is served as files. The sheet opens on the
+// servers while one runs, and the folder tab is the explorer itself.
+it('separates running servers and static folders into two tabs', async () => {
   renderSheet(makeClient());
   expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
   expect(screen.getByText('web · node node_modules/.bin/vite --host 0.0.0.0')).toBeTruthy();
-  expect(await screen.findByRole('button', { name: 'Worktree root folder' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Folder dist' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Folder docs' })).toBeTruthy();
-  expect(screen.queryByRole('tab')).toBeNull();
+  expect(screen.getByRole('tab', { name: 'Dev server' }).props.accessibilityState.selected).toBe(
+    true,
+  );
+  expect(screen.queryByRole('button', { name: 'Open folder dist' })).toBeNull();
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Open folder docs' })).toBeTruthy();
+  expect(screen.getByLabelText('File index.html')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+it('opens on static files when no server runs in the session', async () => {
+  renderSheet(makeClient({ listSessionDevServers: jest.fn(async () => []) }), {
+    detectedServers: [],
+  });
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+  fireEvent.press(screen.getByRole('tab', { name: 'Dev server' }));
+  expect(await screen.findByText('No dev server running')).toBeTruthy();
 });
 
 // Step two shows both accesses as equals. A public link form that already
@@ -115,15 +130,14 @@ it('shows both access cards for a picked server and creates the public link on d
   renderSheet(makeClient({ createSessionPortPreviewShare }));
 
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  expect(await screen.findByLabelText('Open on your network')).toBeTruthy();
-  expect(screen.getByLabelText('Share publicly')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
-  expect(screen.getByText('Protected by a PIN')).toBeTruthy();
+  expect(await screen.findByLabelText('On your network')).toBeTruthy();
+  expect(screen.getByLabelText('Over the internet')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy();
   expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
 
   fireEvent.press(screen.getByRole('radio', { name: '24 hours' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Create public link' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
   await waitFor(() =>
     expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
       targetPort: 5173,
@@ -134,7 +148,7 @@ it('shows both access cards for a picked server and creates the public link on d
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
   expect(screen.getByText('123 456')).toBeTruthy();
   // Both cards stay on screen: the local one is unaffected by the public link.
-  expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy();
 });
 
 it('shares only the server that was picked from several', async () => {
@@ -152,7 +166,7 @@ it('shares only the server that was picked from several', async () => {
   );
   fireEvent.press(await screen.findByRole('button', { name: 'API on port 3000' }));
   expect(await screen.findByText('API :3000')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create public link' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
   await waitFor(() =>
     expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
       'session-one',
@@ -172,7 +186,7 @@ it('opens a server on the local network without creating a public link', async (
     onOpenSettings: openSettings,
   });
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Open' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open in browser' }));
   await waitFor(() =>
     expect(createSessionLocalPreviewShare).toHaveBeenCalledWith('session-one', {
       targetPort: 5173,
@@ -186,7 +200,7 @@ it('opens a server on the local network without creating a public link', async (
   );
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   expect(await screen.findByText('http://server:8100/')).toBeTruthy();
-  expect(screen.getByText('Active')).toBeTruthy();
+  expect(screen.getByText('On')).toBeTruthy();
 });
 
 // The unreachable dialog's "Share publicly" lands directly on a link with the
@@ -200,7 +214,7 @@ it('creates the public link when the unreachable dialog asks to share instead', 
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Open' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open in browser' }));
   await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
   const sharePublicly = (openLocalPreview as jest.Mock).mock.calls[0]?.[2] as () => void;
   act(() => sharePublicly());
@@ -243,13 +257,13 @@ it('marks a target with an existing local share and lets it be stopped from its 
       stopLocalPreviewShare,
     }),
   );
-  expect(await screen.findByText('Local open')).toBeTruthy();
+  expect(await screen.findByText('On network')).toBeTruthy();
   fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
   expect(await screen.findByText('http://server:8100/')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Stop local access' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Turn off local access' }));
   await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith('local-one'));
   await waitFor(() => expect(screen.queryByText('http://server:8100/')).toBeNull());
-  expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy();
 });
 
 // Without entitlement the public card stays visible and explains itself. It
@@ -269,11 +283,11 @@ it('shows the public card as Premium without a create button for a free user', a
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   expect(await screen.findByText('Premium')).toBeTruthy();
   expect(screen.getByText('Public sharing is part of Verity Premium.')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Create public link' })).toBeNull();
-  expect(screen.queryByText('Protected by a PIN')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create link with PIN' })).toBeNull();
+  expect(screen.queryByRole('radio', { name: '24 hours' })).toBeNull();
   fireEvent.press(screen.getByRole('button', { name: 'Open Premium settings' }));
   expect(openSettings).toHaveBeenCalledTimes(1);
-  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
   await waitFor(() => expect(createSessionLocalPreviewShare).toHaveBeenCalledTimes(1));
   expect(openLocalPreview).toHaveBeenCalledWith(
     localShare,
@@ -292,7 +306,7 @@ it('says the Uplink is temporarily unavailable rather than Premium when it is of
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   expect(await screen.findByText('Temporarily unavailable')).toBeTruthy();
   expect(screen.queryByText('Premium')).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Create public link' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create link with PIN' })).toBeNull();
 });
 
 // Reopening the sheet on a server with a live link shows link and PIN at once
@@ -308,7 +322,7 @@ it('shows the live public link with its PIN on reopen and stops it after confirm
   );
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
   expect(screen.getByText('123 456')).toBeTruthy();
-  expect(screen.getByText(/^Active until/)).toBeTruthy();
+  expect(screen.getByText(/^Live until/)).toBeTruthy();
 
   const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
   fireEvent.press(screen.getByRole('button', { name: 'Share link and PIN' }));
@@ -322,7 +336,7 @@ it('shows the live public link with its PIN on reopen and stops it after confirm
   const confirm = alert.mock.calls[0]?.[2]?.find((choice) => choice.text === 'Stop sharing');
   act(() => confirm?.onPress?.());
   await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('port-share'));
-  expect(await screen.findByRole('button', { name: 'Create public link' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'Create link with PIN' })).toBeTruthy();
   expect(screen.getByText('Link stopped')).toBeTruthy();
   expect(screen.queryByText('https://vite.example')).toBeNull();
 });
@@ -349,10 +363,13 @@ it('badges rows with their active accesses', async () => {
       listPublicPreviewShares: jest.fn(async () => [portShare(), folderShare()]),
     }),
   );
-  expect(await screen.findByText('Local open')).toBeTruthy();
-  await waitFor(() => expect(screen.getAllByText(/^Public until/)).toHaveLength(2));
-  // The folder with a public link is listed even though it is not a root folder.
-  expect(screen.getByRole('button', { name: 'Folder dist' })).toBeTruthy();
+  expect(await screen.findByText('On network')).toBeTruthy();
+  expect(await screen.findByText(/^Online until/)).toBeTruthy();
+  // A shared folder is listed on top of the explorer even when it sits deeper,
+  // so its link can be found again without walking the tree.
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  expect(await screen.findByRole('button', { name: 'Shared folder dist' })).toBeTruthy();
+  expect(screen.getByText(/^Online until/)).toBeTruthy();
 });
 
 // Folder shares are matched by path, not "any folder": two folders can be
@@ -366,21 +383,25 @@ it('shows the public link of the picked folder only', async () => {
       ]),
     }),
   );
-  fireEvent.press(await screen.findByRole('button', { name: 'Folder docs' }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Shared folder docs' }));
   expect(await screen.findByText('https://docs.example')).toBeTruthy();
   expect(screen.queryByText('https://dist.example')).toBeNull();
 });
 
-it('creates a static share for the worktree root picked from the list', async () => {
+it('creates a static share for the whole worktree from the explorer root', async () => {
   const createSessionStaticPreviewShare = jest.fn(
     async (_sessionId: string, body: { pin: string; staticPath: string }) =>
       folderShare({ id: 'root-share', staticPath: body.staticPath, pin: body.pin }),
   );
   renderSheet(makeClient({ createSessionStaticPreviewShare }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Worktree root folder' }));
-  expect(await screen.findByText('Worktree')).toBeTruthy();
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  const whole = await screen.findByRole('button', { name: 'Preview the whole worktree' });
+  await waitFor(() => expect(whole.props.accessibilityState.disabled).toBe(false));
+  fireEvent.press(whole);
+  expect(await screen.findByText('Whole worktree')).toBeTruthy();
   expect(screen.getByText('Worktree root')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create public link' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
   await waitFor(() =>
     expect(createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
       staticPath: '.',
@@ -408,17 +429,17 @@ it('browses into a nested folder and uses it as the target', async () => {
     folderShare({ staticPath: 'docs/slides' }),
   );
   renderSheet(makeClient({ listSessionStaticPreviewEntries, createSessionStaticPreviewShare }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Browse folders' }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
   fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
   expect(await screen.findByLabelText('File README.md')).toBeTruthy();
   fireEvent.press(screen.getByRole('button', { name: 'Open folder docs/slides' }));
   expect(await screen.findByLabelText('File index.html')).toBeTruthy();
-  const use = screen.getByRole('button', { name: 'Use folder docs/slides' });
+  const use = screen.getByRole('button', { name: 'Preview folder docs/slides' });
   await waitFor(() => expect(use.props.accessibilityState.disabled).toBe(false));
   fireEvent.press(use);
   expect(await screen.findByText('slides')).toBeTruthy();
   expect(screen.getByText('Worktree / docs/slides')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create public link' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
   await waitFor(() =>
     expect(createSessionStaticPreviewShare).toHaveBeenCalledWith(
       'session-one',
@@ -433,12 +454,12 @@ it('does not offer folders from the previous location when navigation fails', as
     throw new Error('Folder vanished');
   });
   renderSheet(makeClient({ listSessionStaticPreviewEntries }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Browse folders' }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
   fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
   expect(await screen.findByText('Folder vanished')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Open folder docs' })).toBeNull();
   expect(
-    screen.getByRole('button', { name: 'Use folder docs' }).props.accessibilityState.disabled,
+    screen.getByRole('button', { name: 'Preview folder docs' }).props.accessibilityState.disabled,
   ).toBe(true);
 });
 
@@ -471,13 +492,14 @@ it('separates project listeners from the session’s own', async () => {
       ]),
     }),
   );
-  expect(await screen.findByText('RUNNING IN THIS PROJECT')).toBeTruthy();
+  expect(await screen.findByText('OTHER SERVERS IN THIS PROJECT')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Storybook on port 8080' })).toBeTruthy();
 });
 
 it('updates detected servers from the live snapshot without polling', async () => {
   const listSessionDevServers = jest.fn(async () => [vite]);
   const view = renderSheet(makeClient({ listSessionDevServers }), { detectedServers: [] });
+  fireEvent.press(await screen.findByRole('tab', { name: 'Dev server' }));
   expect(await screen.findByText(/No dev server running/)).toBeTruthy();
   view.rerender(
     <StaticPreviewSheet
@@ -492,12 +514,115 @@ it('updates detected servers from the live snapshot without polling', async () =
   expect(listSessionDevServers).not.toHaveBeenCalled();
 });
 
+// The default tab is decided once the first state is known; a server that
+// starts later must not pull the folder root away from the user.
+it('keeps the folder root when a server starts after the sheet opened', async () => {
+  const view = renderSheet(makeClient(), { detectedServers: [] });
+  await screen.findByRole('button', { name: 'Open folder docs' });
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Static files' }).props.accessibilityState.selected,
+    ).toBe(true),
+  );
+  view.rerender(
+    <StaticPreviewSheet
+      client={makeClient()}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Preview the whole worktree' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+it('settles the folder tab without waiting for links when the Uplink is unavailable', async () => {
+  const client = makeClient({
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'unavailable' as const })),
+    listPublicPreviewShares: jest.fn(() => new Promise<PublicPreviewShare[]>(() => undefined)),
+  });
+  // No fallback timeout: only the unavailable Uplink may settle the tab here.
+  const view = renderSheet(client, { detectedServers: [], settleTimeoutMs: 60_000 });
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Static files' }).props.accessibilityState.selected,
+    ).toBe(true),
+  );
+  view.rerender(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+// A list that never answers must not leave the sheet loading forever.
+it('decides the default tab after the timeout when a list hangs', async () => {
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(() => new Promise<SessionDevServer[]>(() => undefined)),
+    }),
+    { settleTimeoutMs: 10 },
+  );
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+});
+
+// A server that starts while the user walks the folders marks the server tab
+// but must not switch away from the explorer.
+it('keeps the folder explorer open when a server starts during browsing', async () => {
+  const view = renderSheet(makeClient(), { detectedServers: [] });
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  await screen.findByRole('button', { name: 'Back to parent folder' });
+  view.rerender(
+    <StaticPreviewSheet
+      client={makeClient()}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Back to parent folder' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+// Without the live snapshot the servers arrive by polling. The sheet waits for
+// them instead of showing the folders first and then jumping to the servers.
+it('shows no tab content until the polled servers decide the default', async () => {
+  let resolve: (servers: SessionDevServer[]) => void = () => undefined;
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(
+        () =>
+          new Promise<SessionDevServer[]>((done) => {
+            resolve = done;
+          }),
+      ),
+    }),
+    { settleTimeoutMs: 60_000 },
+  );
+  await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+  expect(screen.queryByRole('button', { name: 'Open folder dist' })).toBeNull();
+  await act(async () => {
+    resolve([vite]);
+  });
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
+});
+
 // A Core without port detection reports null; the sheet then lists folders
 // only instead of an empty server section.
 it('lists folders only when Core has no port detection', async () => {
   renderSheet(makeClient({ listSessionDevServers: jest.fn(async () => null) }));
-  expect(await screen.findByRole('button', { name: 'Worktree root folder' })).toBeTruthy();
-  await waitFor(() => expect(screen.queryByText('RUNNING IN THIS SESSION')).toBeNull());
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+  await waitFor(() => expect(screen.queryByRole('tab')).toBeNull());
 });
 
 it('explains an Uplink internal error and allows retrying', async () => {
@@ -507,11 +632,11 @@ it('explains an Uplink internal error and allows retrying', async () => {
     .mockResolvedValueOnce(portShare());
   renderSheet(makeClient({ createSessionPortPreviewShare }));
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Create public link' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
   expect(
     await screen.findByText('Uplink could not create this link. Please try again later.'),
   ).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create public link' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
 });
 
@@ -525,10 +650,12 @@ it('shows progress while a public link is being created', async () => {
   );
   renderSheet(makeClient({ createSessionPortPreviewShare }));
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Create public link' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
   expect(await screen.findByText('Creating link…')).toBeTruthy();
   expect(screen.getByText(/takes a few seconds/)).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Open' }).props.accessibilityState.disabled).toBe(true);
+  expect(
+    screen.getByRole('button', { name: 'Open in browser' }).props.accessibilityState.disabled,
+  ).toBe(true);
   await act(async () => {
     resolve(portShare());
   });
@@ -537,18 +664,20 @@ it('shows progress while a public link is being created', async () => {
 
 // Android back reaches the sheet through Modal.onRequestClose. It walks back
 // one step at a time rather than closing from the access step.
-it('steps back from the access step and the browser on Android back', async () => {
+it('steps back from the access step and out of nested folders on Android back', async () => {
   const onClose = jest.fn();
   renderSheet(makeClient(), { onClose });
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  expect(await screen.findByLabelText('Open on your network')).toBeTruthy();
+  expect(await screen.findByLabelText('On your network')).toBeTruthy();
   act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
-  expect(await screen.findByRole('button', { name: 'Browse folders' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled();
-  fireEvent.press(screen.getByRole('button', { name: 'Browse folders' }));
-  expect(await screen.findByLabelText('Preview folder explorer')).toBeTruthy();
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  expect(await screen.findByRole('button', { name: 'Back to parent folder' })).toBeTruthy();
   act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
-  expect(await screen.findByRole('button', { name: 'Browse folders' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'Preview the whole worktree' })).toBeTruthy();
+  expect(onClose).not.toHaveBeenCalled();
   act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
   expect(onClose).toHaveBeenCalledTimes(1);
 });
@@ -568,7 +697,7 @@ it('keeps a newly created link when the share list arrives late without it', asy
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Create public link' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
   await act(async () => {
     resolveList([]);
@@ -586,7 +715,7 @@ it('keeps a local port access stoppable after its listener disappears', async ()
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Stop local access' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Turn off local access' }));
   await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith(localShare.id));
 });
 
@@ -602,7 +731,7 @@ it('reuses the public link when local access is unreachable and both accesses ex
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   await screen.findByText('https://vite.example');
-  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
   await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
   const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
   await act(async () => fallback());
@@ -622,9 +751,9 @@ it('replaces a cached local access revoked by Core before opening', async () => 
       createSessionLocalPreviewShare,
     }),
   );
-  await screen.findByText('Local open');
+  await screen.findByText('On network');
   fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
   await waitFor(() =>
     expect(openLocalPreview).toHaveBeenCalledWith(
       replacement,
@@ -645,7 +774,7 @@ it('does not share a locked PIN from the unreachable-local fallback', async () =
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   await screen.findByText('https://vite.example');
-  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
   await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
   await act(async () => jest.mocked(openLocalPreview).mock.calls[0]![2]());
   expect(share).not.toHaveBeenCalled();
@@ -672,7 +801,7 @@ it('checks the updated PIN lock when a delayed network-dialog action is selected
     );
     fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
     await screen.findByText('https://vite.example');
-    fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
     await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
     const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
     await act(async () => {
@@ -706,11 +835,15 @@ it('directs a second folder to its existing public link and blocks fallback crea
       })),
     }),
   );
-  await screen.findByText(/Public until/);
-  fireEvent.press(screen.getByRole('button', { name: 'Folder docs' }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  await screen.findByRole('button', { name: 'Shared folder dist' });
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  const docs = await screen.findByRole('button', { name: 'Preview folder docs' });
+  await waitFor(() => expect(docs.props.accessibilityState.disabled).toBe(false));
+  fireEvent.press(docs);
   expect(await screen.findByRole('button', { name: 'Manage existing folder link' })).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Create public link' })).toBeNull();
-  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  expect(screen.queryByRole('button', { name: 'Create link with PIN' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
   await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
   await act(async () => jest.mocked(openLocalPreview).mock.calls[0]![2]());
   expect(createSessionStaticPreviewShare).not.toHaveBeenCalled();
