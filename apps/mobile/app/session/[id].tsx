@@ -9727,6 +9727,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     gap: theme.spacing.xs,
     flexGrow: 1,
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
   },
   detectedPreviewButton: {

@@ -519,6 +519,11 @@ it('updates detected servers from the live snapshot without polling', async () =
 it('keeps the folder root when a server starts after the sheet opened', async () => {
   const view = renderSheet(makeClient(), { detectedServers: [] });
   await screen.findByRole('button', { name: 'Open folder docs' });
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Static files' }).props.accessibilityState.selected,
+    ).toBe(true),
+  );
   view.rerender(
     <StaticPreviewSheet
       client={makeClient()}
