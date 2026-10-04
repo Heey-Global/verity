@@ -2916,7 +2916,10 @@ export class Conductor {
       // briefly asks for an answer that the saved approval already provides.
       if (
         params.allowStandingGrant !== false &&
-        (await this.isCoveredByBrokeredGrant(sessionId, request, channel))
+        (await Promise.race([
+          this.isCoveredByBrokeredGrant(sessionId, request, channel),
+          answered.then(() => false),
+        ]))
       ) {
         this.settleExternalPermission(sessionId, toolUseId, {
           decision: { behavior: 'allow' },

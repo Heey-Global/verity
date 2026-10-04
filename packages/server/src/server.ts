@@ -5924,8 +5924,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             toolName,
             input,
             channel: 'acp',
-            // Only HTTP calls may save a standing grant for their request shape.
-            allowStandingGrant: toolName === 'verity_http_request',
+            // Secret tools reuse consent for their bound request shape.
+            allowStandingGrant:
+              toolName === 'verity_http_request' || toolName === 'verity_secret_run',
             signal,
           });
         } catch (error) {

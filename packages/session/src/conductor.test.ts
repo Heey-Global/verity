@@ -9274,6 +9274,24 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it('aborts promptly while a standing grant lookup remains unresolved', async () => {
+    await createProjectSession('x4-abort-lookup');
+    const check = vi.fn(() => new Promise<boolean>(() => {}));
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+    });
+    const controller = new AbortController();
+    const answered = ask(conductor, 'x4-abort-lookup', 'toolu_abort_lookup', controller.signal);
+    await vi.waitFor(() => expect(check).toHaveBeenCalled());
+    // A stalled permission store must not hold cancellation hostage.
+    controller.abort();
+    await expect(answered).resolves.toMatchObject({ decision: { behavior: 'deny' } });
+    expect(conductor.pendingPermissions('x4-abort-lookup')).toEqual([]);
+    expect(await ctx.store.getEvents('x4-abort-lookup')).toEqual([]);
+  });
+
   it('auto-approves against ACP grants only, and records the scope on that channel', async () => {
     await createProjectSession('x4');
     const check = vi.fn(async () => true);
