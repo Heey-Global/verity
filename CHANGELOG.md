@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.9.0](https://github.com/Heey-Global/verity/compare/v4.8.0...v4.9.0) (2026-10-04)
+
+
+### Features
+
+* **explorer:** edit text files with recoverable version history ([#1061](https://github.com/Heey-Global/verity/issues/1061)) ([6e93566](https://github.com/Heey-Global/verity/commit/6e9356675b72f22d43c8c811ad8e401bce294792))
+
+
+### Bug Fixes
+
+* **deps:** update dependency pg to v8.23.1 ([#1068](https://github.com/Heey-Global/verity/issues/1068)) ([edf0b66](https://github.com/Heey-Global/verity/commit/edf0b664b4a45d6dcd7ce7b55c3fe89387563c1a))
+* **deps:** update dependency sanitize-html to v2.18.0 ([#1071](https://github.com/Heey-Global/verity/issues/1071)) ([ffb3a73](https://github.com/Heey-Global/verity/commit/ffb3a73e4957fb9018fbb53f0789e16ca1ec638b))
+
 ## [4.8.0](https://github.com/Heey-Global/verity/compare/v4.7.0...v4.8.0) (2026-10-03)
 
 
