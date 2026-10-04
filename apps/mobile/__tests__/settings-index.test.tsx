@@ -59,10 +59,8 @@ describe('settings index — destinations', () => {
     expect(screen.getByText('Not connected')).toBeOnTheScreen();
   });
 
-  // Each row is the entry point to one of the sub-screens the settings surface
-  // was split into. They are the only way to reach four of the five routes.
+  // Each destination must still reach its settings or recovery screen.
   it.each([
-    ['Secret store', '/settings/secret-store'],
     ['Remote access', '/settings/remote-access'],
     ['Meeting transcription', '/settings/transcription'],
     ['Connections', '/settings/services'],
@@ -120,12 +118,16 @@ describe('settings index — destinations', () => {
     expect(screen.queryByText('78901234')).toBeNull();
   });
 
-  it('marks Connected services as locked while the store is sealed', async () => {
-    mockCreateVerityClient.mockReturnValue(makeClient('sealed'));
-    render(<SettingsIndexScreen />);
+  it.each(['unlocked', 'sealed'] as const)(
+    'omits the redundant secret-store navigation row when %s',
+    async (status) => {
+      mockCreateVerityClient.mockReturnValue(makeClient(status));
+      render(<SettingsIndexScreen />);
 
-    expect(await screen.findByLabelText('Secret store')).toBeOnTheScreen();
-  });
+      await screen.findByLabelText('Connections');
+      expect(screen.queryByLabelText('Secret store')).toBeNull();
+    },
+  );
 
   // Settings is the way back to an update once the overview banner has been
   // scrolled past or the push dismissed, so the row names the waiting version.
