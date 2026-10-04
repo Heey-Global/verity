@@ -211,6 +211,7 @@ import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
+  hasConnectedGoogleAccount,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
   type GoogleService,
@@ -2357,10 +2358,9 @@ export function SessionChat({
     useCallback(() => {
       let active = true;
       setGoogleConnected(false);
-      void client
-        .getGoogleConnection()
+      void hasConnectedGoogleAccount(client, sessionId)
         .then((connection) => {
-          if (active) setGoogleConnected(connection.connected);
+          if (active) setGoogleConnected(connection);
         })
         .catch(() => undefined);
       void client
@@ -3673,14 +3673,17 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="mail" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Gmail{gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
+              Gmail{projectId ? ' · Project access' : ''}
+              {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
             </Text>
           </View>
           <Pressable
             onPress={disableGmail}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Gmail from this session"
+            accessibilityLabel={
+              projectId ? 'Disable Gmail for this project' : 'Disconnect Gmail from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3691,7 +3694,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="calendar" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Calendar
+              Google Calendar{projectId ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3699,7 +3702,11 @@ export function SessionChat({
             onPress={disableCalendar}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Calendar from this session"
+            accessibilityLabel={
+              projectId
+                ? 'Disable Google Calendar for this project'
+                : 'Disconnect Google Calendar from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3710,7 +3717,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="users" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Contacts
+              Google Contacts{projectId ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3718,7 +3725,11 @@ export function SessionChat({
             onPress={disableContacts}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Contacts from this session"
+            accessibilityLabel={
+              projectId
+                ? 'Disable Google Contacts for this project'
+                : 'Disconnect Google Contacts from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>

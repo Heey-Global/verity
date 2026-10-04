@@ -108,3 +108,20 @@ export async function disconnectSessionGoogleService(
   await sessionMethods(client, service).disable(sessionId);
   return 'session';
 }
+
+export async function hasConnectedGoogleAccount(
+  client: VerityClient,
+  sessionId: string,
+): Promise<boolean> {
+  try {
+    return (await client.getGoogleConnection()).connected;
+  } catch (error) {
+    if (!(error instanceof VerityApiError) || error.status !== 404) throw error;
+    const connections = await Promise.all(
+      (['gmail', 'calendar', 'contacts'] as const).map((service) =>
+        sessionMethods(client, service).get(sessionId),
+      ),
+    );
+    return connections.some((connection) => connection.connected);
+  }
+}

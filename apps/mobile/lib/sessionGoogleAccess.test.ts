@@ -1,5 +1,9 @@
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { connectSessionGoogleService, disconnectSessionGoogleService } from './sessionGoogleAccess';
+import {
+  hasConnectedGoogleAccount,
+  connectSessionGoogleService,
+  disconnectSessionGoogleService,
+} from './sessionGoogleAccess';
 
 const mockAuth = jest.fn();
 jest.mock('./googleDrive', () => ({
@@ -184,4 +188,21 @@ it('authorizes a missing project scope before enabling the selected service', as
   expect(connect).toHaveBeenCalled();
   expect(client.enableProjectGoogleConnection).toHaveBeenCalledWith('p1', 'gmail');
   expect(enable).not.toHaveBeenCalled();
+});
+
+it('uses legacy account status only when the central endpoint is missing', async () => {
+  const { client, get } = fixture();
+  const central = jest.fn().mockRejectedValue(new VerityApiError(404, 'Not found'));
+  Object.assign(client, { getGoogleConnection: central });
+  await expect(hasConnectedGoogleAccount(client, 's1')).resolves.toBe(true);
+  get.mockResolvedValue({ connected: false });
+  await expect(hasConnectedGoogleAccount(client, 's1')).resolves.toBe(false);
+  central.mockRejectedValue(new VerityApiError(403, 'Forbidden'));
+  await expect(hasConnectedGoogleAccount(client, 's1')).rejects.toThrow('Forbidden');
+});
+it('does not expose legacy shortcuts when the central account is disconnected', async () => {
+  const { client, get } = fixture();
+  Object.assign(client, { getGoogleConnection: jest.fn().mockResolvedValue({ connected: false }) });
+  await expect(hasConnectedGoogleAccount(client, 's1')).resolves.toBe(false);
+  expect(get).not.toHaveBeenCalled();
 });
