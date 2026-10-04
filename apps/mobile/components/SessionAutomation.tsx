@@ -266,32 +266,25 @@ export function AutomationProposalCard({
   );
 }
 
-/** One starting point on the empty-session screen. */
+/**
+ * One starting point on the empty-session screen. Informational only: every
+ * option starts the same way — by writing in the composer — so a tappable card
+ * would promise a choice that does not exist.
+ */
 export function SessionStarterCard({
   icon,
   title,
   text,
   badge,
-  onPress,
 }: {
   icon: 'code' | 'message-circle' | 'repeat';
   title: string;
   text: string;
   badge?: string;
-  onPress: () => void;
 }) {
   const { theme } = useUnistyles();
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={title}
-      style={({ pressed }) => [
-        styles.starter,
-        badge ? styles.starterHighlighted : null,
-        pressed ? styles.pressed : null,
-      ]}
-    >
+    <View style={styles.starter}>
       <View style={styles.starterIcon}>
         <Icon name={icon} size={18} color={theme.colors.primary} />
       </View>
@@ -306,7 +299,7 @@ export function SessionStarterCard({
         </View>
         <Text style={styles.starterText}>{text}</Text>
       </View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -517,9 +510,6 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-  },
-  starterHighlighted: {
-    borderColor: theme.colors.primary,
   },
   starterIcon: {
     width: 32,
