@@ -786,10 +786,10 @@ export function SessionChat({
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
-  const [previewOpening, setPreviewOpening] = useState(false);
+  const [previewOpening, setPreviewOpening] = useState<number | null>(null);
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
-    if (previewOpening) return;
-    setPreviewOpening(true);
+    if (previewOpening !== null) return;
+    setPreviewOpening(server.port);
     try {
       const capabilities = await client
         .getPreviewCapabilities()
@@ -812,7 +812,7 @@ export function SessionChat({
         caught instanceof Error ? caught.message : 'Try again.',
       );
     } finally {
-      setPreviewOpening(false);
+      setPreviewOpening(null);
     }
   };
   const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
@@ -3585,30 +3585,42 @@ export function SessionChat({
         .map((server) => (
           <View
             key={server.port}
-            style={styles.headerLinks}
+            style={styles.detectedPreviewCard}
             accessibilityLabel={`${server.name} is running on port ${String(server.port)}`}
           >
-            <Text style={styles.headerBookmarkCount}>
-              {server.name} :{server.port}
-            </Text>
-            <Pressable
-              disabled={previewOpening}
-              onPress={() => void openDetectedLocally(server)}
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${server.name} locally`}
-            >
-              <Text style={styles.headerPreviewActiveText}>Open locally</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                setPreviewServer(server);
-                setStaticPreviewOpen(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={`Share ${server.name} publicly`}
-            >
-              <Text style={styles.headerPreviewActiveText}>Share publicly</Text>
-            </Pressable>
+            <View style={styles.detectedPreviewTitle}>
+              <Icon name="monitor" size={18} color={theme.colors.primary} />
+              <Text style={styles.detectedPreviewName}>
+                {server.name} · Port {server.port}
+              </Text>
+            </View>
+            <View style={styles.detectedPreviewActions}>
+              <Pressable
+                style={[styles.detectedPreviewButton, previewOpening !== null && { opacity: 0.5 }]}
+                disabled={previewOpening !== null}
+                onPress={() => void openDetectedLocally(server)}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${server.name} locally`}
+              >
+                {previewOpening === server.port ? (
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                ) : null}
+                <Text style={styles.headerPreviewActiveText}>
+                  {previewOpening === server.port ? 'Opening preview…' : 'Open locally'}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.detectedPreviewButton}
+                onPress={() => {
+                  setPreviewServer(server);
+                  setStaticPreviewOpen(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Share ${server.name} publicly`}
+              >
+                <Text style={styles.headerPreviewActiveText}>Share publicly</Text>
+              </Pressable>
+            </View>
           </View>
         ))}
       {workspaceFile !== null ? (
@@ -9556,7 +9568,40 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 11 * theme.fontScale,
     fontWeight: '600',
   },
-  headerPreviewActiveText: { color: theme.colors.primary },
+  detectedPreviewCard: {
+    marginHorizontal: theme.spacing.md,
+    marginVertical: theme.spacing.xs,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    gap: theme.spacing.sm,
+  },
+  detectedPreviewTitle: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  detectedPreviewName: {
+    flexShrink: 1,
+    color: theme.colors.textMuted,
+    fontSize: 13 * theme.fontScale,
+  },
+  detectedPreviewActions: { flexDirection: 'row', gap: theme.spacing.sm, flexWrap: 'wrap' },
+  detectedPreviewButton: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    minHeight: 44,
+    flexGrow: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  headerPreviewActiveText: {
+    color: theme.colors.primary,
+    fontSize: 13 * theme.fontScale,
+    fontWeight: '600',
+  },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',

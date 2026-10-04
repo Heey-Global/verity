@@ -90,3 +90,15 @@ it('preserves target cookies and makes absolute target redirects relative for LA
     );
   }
 });
+
+// Docker DNS names must pass startup validation before the connector can dial the local edge.
+it('allows Docker edge addresses only for the explicit local mode', () => {
+  const options = {
+    edgeUrl: 'ws://verity-server:8100/__verity/connector',
+    connectorToken: 'connector',
+    targetOrigin: 'http://project-sandbox:3033',
+  };
+  expect(() => new PreviewConnector({ ...options, accessMode: 'local-open' })).not.toThrow();
+  expect(() => new PreviewConnector(options)).toThrow('must use wss');
+  expect(() => new PreviewConnector({ ...options, accessMode: 'pin' })).toThrow('must use wss');
+});
