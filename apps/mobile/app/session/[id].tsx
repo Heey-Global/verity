@@ -531,13 +531,14 @@ const SessionActionsContext = createContext<SessionActions | null>(null);
 // nothing rather than crashing (never happens in practice; the FlashList is always
 // wrapped).
 const BookmarksContext = createContext<Bookmarks | null>(null);
-// One icon per file root, used everywhere that root appears (Explorer tabs and
-// breadcrumb, the message "…" sheet), so Project and Global Knowledge are
-// recognisable by the same symbol across the app.
+// Knowledge — Project and Global alike — has one symbol across the app, so the
+// message "…" sheet, the Explorer tabs and its breadcrumb all read as the same
+// thing; the labels tell the two scopes apart.
+const KNOWLEDGE_ICON: IconName = 'book-open';
 const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   worktree: 'folder',
-  knowledge: 'book-open',
-  shared: 'globe',
+  knowledge: KNOWLEDGE_ICON,
+  shared: KNOWLEDGE_ICON,
 };
 
 const KnowledgeSaveContext = createContext<{
@@ -6241,7 +6242,7 @@ function MessageActionsSheet({
         />
         {knowledge ? (
           <MessageActionRow
-            icon={knowledge.saved ? 'check' : FILE_ROOT_ICON.knowledge}
+            icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
             title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
             subtitle="Keep it as a project insight for future sessions"
             tint={theme.colors.primary}
@@ -6669,7 +6670,7 @@ function ThinkingBlock({ text }: { text: string }) {
 // Images a tool returned (e.g. a Read of a PNG, #115) render inline — they ARE
 // the payload the operator wants to see, not hidden behind a tap. Shared by the
 // single-tool ToolCard and the collapsed ToolGroup so a Read that happens to sit
-// next to another tool call never buries its image behind the group's "N steps" line.
+// next to another tool call never buries its image behind the group's "+N more" line.
 // The inline slot is only a preview though (a fixed-height, letterboxed strip), so
 // a tap opens the image in the zoomable full-screen lightbox — a floor plan or a
 // screenshot is unreadable at strip size. The Pressable also swallows the tap so it
@@ -6766,17 +6767,15 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   );
 }
 
+// The collapsed line already shows one call (the latest), so the count names the
+// hidden rest: "+9 more" for a run of ten.
 function ToolGroupCount({ count }: { count: number }) {
-  return (
-    <View style={styles.toolGroupCount}>
-      <Text style={styles.toolGroupCountText}>{`${String(count)} steps`}</Text>
-    </View>
-  );
+  return <Text style={styles.toolGroupCountText}>{`+${String(count - 1)} more`}</Text>;
 }
 
 // A run of consecutive tool calls. One tool → the plain line. Several → a single
 // collapsed line showing the LATEST tool (the "currently running" command as it
-// streams in) plus an "N steps" pill; tap to expand the whole run as individual
+// streams in) plus a quiet "+N more" count; tap to expand the whole run as individual
 // lines.
 function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   const { theme } = useUnistyles();
@@ -10435,20 +10434,11 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
   },
-  // Collapsed multi-tool group count: a spelled-out "N steps" pill, so the number
-  // explains itself instead of reading as a stray "·N".
-  toolGroupCount: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 2,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-  },
+  // Collapsed multi-tool group count: quiet caption text, spelled out ("+9 more")
+  // so it explains itself instead of reading as a stray "·N".
   toolGroupCountText: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '600',
   },
   // The expanded run: individual tool lines, indented under the group line.
   toolGroupList: {
