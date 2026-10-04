@@ -38,6 +38,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      issues: write
       pull-requests: write
     # A stalled Metro export / EAS publish must not hold the serialized release
     # slot indefinitely.
