@@ -133,6 +133,13 @@ describe('onboarding wizard shell — step screen', () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
+  it('keeps Continue from racing a demo that is still starting', async () => {
+    mockEnterDemoMode.mockReturnValue(new Promise<void>(() => undefined));
+    render(<OnboardingWelcome />);
+    await act(async () => fireEvent.press(screen.getByLabelText('Try demo')));
+    expect(screen.getByLabelText('Continue')).toBeDisabled();
+  });
+
   it('renders the welcome step with its progress indicator and product orientation', () => {
     render(<OnboardingWelcome />);
     // Welcome is preflight before any server/secret setup, not a numbered wizard step.

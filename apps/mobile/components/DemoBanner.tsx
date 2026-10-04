@@ -12,7 +12,7 @@ export function DemoBanner() {
   return (
     <View style={[styles.banner, { paddingBottom: Math.max(insets.bottom, 8) }]}>
       <Text style={styles.text} accessibilityLiveRegion="polite">
-        Demo · Local sample data and simulated AI. No server or accounts required.
+        Demo · Local sample data and simulated AI. Do not enter real credentials.
       </Text>
       <View style={styles.actions}>
         <Pressable

@@ -91,6 +91,7 @@ export default function OnboardingWelcome() {
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.nextButton, pressed ? styles.pressed : null]}
+            disabled={startingDemo}
             onPress={() => router.push(NEXT)}
             accessibilityRole="button"
             accessibilityLabel="Continue"
