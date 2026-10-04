@@ -8,76 +8,13 @@ describe('secretGrantScopes', () => {
     expect(secretGrantScopes('verity_http_request')).toEqual(['session', 'project']);
   });
 
-  it('keeps every trusted-CLI action one-time only', () => {
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        command: ['/usr/local/bin/kubectl', 'get', 'pods'],
-      }),
-    ).toEqual([]);
-  });
-
-  it('keeps interpreter inline and module code one-time only', () => {
-    expect(
-      secretGrantScopes('verity_secret_run', { command: ['/bin/sh', '-c', '. ./payload.sh'] }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', { command: ['/usr/bin/env', 'python3', '-m', 'app'] }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', { command: ['/bin/sh', '-ec', '. ./payload.sh'] }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        command: ['/usr/bin/node', '--eval=require("./payload")'],
-      }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        command: ['/usr/bin/env', '--split-string', 'sh /work/payload.sh'],
-      }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        command: ['/usr/bin/env', 'NODE_OPTIONS=--require=./payload.js', 'node'],
-      }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        command: ['/usr/bin/python3.12', '-m', 'mutable_module'],
-      }),
-    ).toEqual([]);
-  });
-
-  it('offers reusable scopes only for a direct hash-bound entry script', () => {
-    const input = {
-      secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN' }],
-      command: ['/usr/bin/python3', '/work/project/deploy.py', '--apply'],
-      entryScript: {
-        path: '/work/project/deploy.py',
-        projectPath: 'deploy.py',
-        sha256: 'a'.repeat(64),
-        loading: 'isolated',
-      },
-    };
+  it.each([
+    { command: ['/usr/local/bin/kubectl', 'get', 'pods'] },
+    { command: ['/bin/sh', '-c', '. ./payload.sh'] },
+    { command: ['/usr/bin/python3', '-m', 'app'] },
+    { command: ['/usr/bin/node', '/work/deploy.js'], entryScript: { loading: 'dynamic' } },
+  ])('offers the same scopes for every secret-tool invocation: %j', (input) => {
     expect(secretGrantScopes('verity_secret_run', input)).toEqual(['session', 'project']);
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        ...input,
-        entryScript: { ...input.entryScript, loading: 'dynamic' },
-      }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        ...input,
-        command: ['/usr/bin/python3', '-m', 'deploy', '/work/project/deploy.py'],
-      }),
-    ).toEqual([]);
-    expect(
-      secretGrantScopes('verity_secret_run', {
-        ...input,
-        command: ['/opt/custom/python', '/work/project/deploy.py'],
-      }),
-    ).toEqual([]);
   });
 
   it('does not offer reusable grants for ordinary tools', () => {

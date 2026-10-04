@@ -2737,35 +2737,9 @@ export class Conductor {
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
   ): void {
-    const toolName = brokeredGrantToolName(request.toolName);
-    if (toolName === undefined) return;
-    const check = this.deps.checkBrokeredHttpGrant;
-    if (check === undefined) return;
-    const target = brokeredGrantTarget(toolName, request.input);
-    if (target === undefined) return;
-    // Which transport this prompt arrived on decides which grants may answer it
-    // (ADR 0014 D3). A prompt with no live turn to read it from is left to the card:
-    // guessing a channel here could hand a prompt grants it is not entitled to use.
-    const channel = statedChannel ?? this.turns.get(sessionId)?.grantChannel;
-    if (channel === undefined) return;
     void (async () => {
+      if (!(await this.isCoveredByBrokeredGrant(sessionId, request, statedChannel))) return;
       try {
-        const session = await this.deps.store.getSession(sessionId);
-        const projectId = session?.projectId;
-        if (projectId == null) return;
-        const covered = await Promise.all(
-          target.secretAliases.map((secretAlias) =>
-            check({
-              projectId,
-              sessionId,
-              channel,
-              secretAlias,
-              toolName: target.toolName,
-              target: target.target,
-            }),
-          ),
-        );
-        if (!covered.every(Boolean)) return;
         await this.decidePermission(
           sessionId,
           request.toolUseId,
@@ -2778,6 +2752,39 @@ export class Conductor {
     })();
   }
 
+  private async isCoveredByBrokeredGrant(
+    sessionId: string,
+    request: PermissionRequest,
+    statedChannel?: BrokeredGrantChannel,
+  ): Promise<boolean> {
+    const toolName = brokeredGrantToolName(request.toolName);
+    const check = this.deps.checkBrokeredHttpGrant;
+    if (toolName === undefined || check === undefined) return false;
+    const target = brokeredGrantTarget(toolName, request.input);
+    const channel = statedChannel ?? this.turns.get(sessionId)?.grantChannel;
+    if (target === undefined || channel === undefined) return false;
+    try {
+      const session = await this.deps.store.getSession(sessionId);
+      const projectId = session?.projectId;
+      if (projectId == null) return false;
+      const covered = await Promise.all(
+        target.secretAliases.map((secretAlias) =>
+          check({
+            projectId,
+            sessionId,
+            channel,
+            secretAlias,
+            toolName: target.toolName,
+            target: target.target,
+          }),
+        ),
+      );
+      return covered.every(Boolean);
+    } catch {
+      return false;
+    }
+  }
+
   private async persistBrokeredGrant(
     sessionId: string,
     request: PermissionRequest,
@@ -2785,6 +2792,7 @@ export class Conductor {
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
   ): Promise<void> {
+    if (scope === 'forever') throw new Error('permanent brokered secret grants are unsupported');
     const persist = this.deps.persistBrokeredHttpGrant;
     if (persist === undefined) throw new Error('brokered secret grant persistence is unavailable');
     const toolName = brokeredGrantToolName(request.toolName);
@@ -2859,7 +2867,7 @@ export class Conductor {
     toolName: string;
     input: Record<string, unknown>;
     channel: BrokeredGrantChannel;
-    /** Explicitly false for tools, such as trusted CLI, that require a fresh decision. */
+    /** Explicitly false for tools that require a fresh decision. */
     allowStandingGrant?: boolean | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<ExternalPermissionAnswer> {
@@ -2902,11 +2910,22 @@ export class Conductor {
       grantChannel: channel,
     };
     try {
-      const persisted = await this.deps.store.appendEvent(sessionId, event);
-      this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
       if (signal?.aborted === true) onAbort();
       else signal?.addEventListener('abort', onAbort, { once: true });
-      if (params.allowStandingGrant !== false) this.maybeAutoApprove(sessionId, request, channel);
+      // A reusable grant must settle before publishing a card: publishing first
+      // briefly asks for an answer that the saved approval already provides.
+      if (
+        params.allowStandingGrant !== false &&
+        (await this.isCoveredByBrokeredGrant(sessionId, request, channel))
+      ) {
+        this.settleExternalPermission(sessionId, toolUseId, {
+          decision: { behavior: 'allow' },
+          decidedBy: 'grant',
+        });
+      } else if (this.externalPermissions.has(`${sessionId}\0${toolUseId}`)) {
+        const persisted = await this.deps.store.appendEvent(sessionId, event);
+        this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
+      }
       return await answered;
     } finally {
       signal?.removeEventListener('abort', onAbort);

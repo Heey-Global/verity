@@ -329,12 +329,12 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
     await expect(store.check(target)).resolves.toBe(true);
   });
 
-  it('creates and redeems a hash-bound trusted CLI grant', async () => {
+  it.each(['v1', 'v2'])('creates and redeems a versioned CLI grant (%s)', async (version) => {
     const store = createBrokeredHttpGrantStore(ctx.db);
     const run = {
       ...target,
       toolName: 'verity_secret_run' as const,
-      target: `v1:/usr/bin/python3#${'a'.repeat(64)}`,
+      target: `${version}:/usr/bin/python3#${'a'.repeat(64)}`,
     };
     await store.grant({ ...run, scope: 'project' });
     await expect(store.check(run)).resolves.toBe(true);
@@ -347,7 +347,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
       toolName: 'verity_secret_run' as const,
       target: '/usr/bin/kubectl',
     };
-    await expect(store.grant({ ...legacy, scope: 'project' })).rejects.toThrow(/hash-bound/u);
+    await expect(store.grant({ ...legacy, scope: 'project' })).rejects.toThrow(/versioned/u);
     await expect(store.check(legacy)).resolves.toBe(false);
   });
 
@@ -370,15 +370,15 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
 });
 
 describe('brokered grant channel ceiling (ADR 0014 D3)', () => {
-  it('stops auto-approving on ACP after 24 hours', async () => {
+  it('honours the full project lifetime on ACP', async () => {
     const store = createBrokeredHttpGrantStore(ctx.db);
     await store.grant({ ...acp, scope: 'project' });
     await expect(store.check(acp)).resolves.toBe(true);
 
     await ageAcpApprovals(25 * 60 * 60 * 1_000);
 
-    await expect(store.check(acp)).resolves.toBe(false);
-    // The grant row itself remains listed, but no longer auto-approves.
+    await expect(store.check(acp)).resolves.toBe(true);
+    // The project grant remains usable and visible throughout its selected lifetime.
     await expect(store.list('project-1', target.bindingId)).resolves.toHaveLength(1);
 
     // Answering the card again restarts the window without minting a second grant.
@@ -392,18 +392,16 @@ describe('brokered grant channel ceiling (ADR 0014 D3)', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('ages out a session-scoped grant on ACP even though the grant row never expires', async () => {
+  it('honours session scope beyond 24 hours on ACP', async () => {
     const store = createBrokeredHttpGrantStore(ctx.db);
     await store.grant({ ...acp, scope: 'session' });
     await expect(store.check(acp)).resolves.toBe(true);
 
     await ageAcpApprovals(25 * 60 * 60 * 1_000);
 
-    // `session` scope stores a NULL expiry, so without the approval record a session
-    // grant would auto-approve on ACP for as long as the session lived.
-    await expect(store.check(acp)).resolves.toBe(false);
+    await expect(store.check(acp)).resolves.toBe(true);
     // Re-approving a live `session` grant writes nothing to the grant row, so the
-    // approval record is the only thing that can restart its window.
+    // approval record still records consent on the selected channel.
     await store.grant({ ...acp, scope: 'session' });
     await expect(store.check(acp)).resolves.toBe(true);
   });

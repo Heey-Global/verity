@@ -106,6 +106,22 @@ grant target: every invocation requires a contemporaneous decision covering the
 complete command and secret-injection request. Only the operator can approve
 either form; nothing the model or the workspace does can.
 
+### Updated decision — uniform scoped approvals
+
+The current approval contract supersedes the restrictions in D3 and the reusable-script
+restriction below: both `verity_http_request` and `verity_secret_run` offer once,
+this session, and 30 days in the project. ACP approvals must still match their
+channel, but have no additional 24-hour ceiling. Permanent grants remain unavailable.
+
+CLI grants bind the complete invocation and secret mappings in a versioned digest.
+Isolated scripts retain their content-bound descriptor; other CLI invocations use
+an invocation-bound descriptor, including their execution context. Changing that
+invocation requires new consent. Mutable executable code or configuration can
+change without changing the invocation; accepting session or project scope now
+explicitly accepts that residual risk for the selected duration.
+
+The following original decision records the prior policy for historical context.
+
 ### D3 — Standing grants on the ACP path expire after 24 hours, and `forever` is unavailable
 
 This covers `verity_http_request`, the tool for which the grant store can derive a

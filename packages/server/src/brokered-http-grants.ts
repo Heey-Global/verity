@@ -7,19 +7,6 @@ import type { Kysely } from 'kysely';
 const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 /**
- * How long an approval on the ACP channel keeps auto-approving matching prompts
- * (ADR 0014 D3). The operator set this ceiling deliberately: on ACP a grant is a
- * bounded delegation to anything that can reach the loopback endpoint, not a
- * per-call human check, because that channel cannot prove an MCP call is the ACP
- * tool call it claims to be. A day bounds how long a stolen endpoint keeps
- * redeeming a grant without ever showing a card.
- *
- * The native relay has no equivalent ceiling because it does not need one: it
- * attests each call, so a grant there answers only calls the agent actually made.
- */
-const ACP_APPROVAL_TTL_MS = 24 * 60 * 60 * 1_000;
-
-/**
  * `issuer` value marking the rows this store owns in `secret_provider_permissions`. The
  * table is shared with the catalog authorization path, and a `tool_id` prefix cannot tell
  * the two apart: a catalog tool id is `<profileId>@<version>:<policyHash>` and a profile id
@@ -29,7 +16,7 @@ const ACP_APPROVAL_TTL_MS = 24 * 60 * 60 * 1_000;
  * prompt auto-approved by something the operator never granted.
  */
 const GRANT_ISSUER = 'brokered-prompt';
-const TRUSTED_CLI_GRANT_TARGET = /^v1:\/[^#]+#[a-f0-9]{64}$/u;
+const TRUSTED_CLI_GRANT_TARGET = /^v[12]:\/[^#]+#[a-f0-9]{64}$/u;
 
 function validGrantTarget(toolName: BrokeredGrantToolName, target: string): boolean {
   return toolName !== 'verity_secret_run' || TRUSTED_CLI_GRANT_TARGET.test(target);
@@ -79,8 +66,7 @@ export interface BrokeredGrantRecord {
 /**
  * Scoped operator grants for the brokered secret tools (ADR 0011 D2), persisted in the
  * `secret_provider_permissions` table keyed by (project, alias, tool, target). The target is
- * the destination host for `verity_http_request`, or the hash-bound command descriptor for
- * an explicitly attested trusted-CLI entry script.
+ * the destination host for `verity_http_request`, or the versioned descriptor of the approved CLI invocation.
  * `session` scope binds to one session; `project` covers the whole project across sessions
  * for 30 days; `forever` is the same reach without an expiry. Because `forever` never ages
  * out, `list`/`revoke` are the only way it ends — they are part of the feature, not an
@@ -89,7 +75,7 @@ export interface BrokeredGrantRecord {
  * Grants are additionally keyed by the CHANNEL they were approved on (ADR 0014 D3),
  * recorded in `brokered_grant_approvals` rather than on the grant row so the two
  * channels cannot refresh each other's windows. On ACP a grant auto-approves only
- * while its own approval is under 24 hours old, and `forever` is refused outright.
+ * for the duration of its selected scope, and `forever` is refused outright.
  * The former native channel is retired and cannot reach this API.
  */
 export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
@@ -106,12 +92,11 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
       channel: BrokeredGrantChannel;
     }): Promise<void> {
       if (!validGrantTarget(input.toolName, input.target)) {
-        throw new Error('invalid hash-bound trusted CLI grant target');
+        throw new Error('invalid versioned trusted CLI grant target');
       }
       // ADR 0014 D3: `forever` is not available on ACP. Refusing it here is the
       // server-side half of that rule — the ACP approval card not offering the choice
-      // is the other, and a card is not a boundary. A permanent grant is the one shape
-      // the 24-hour ceiling could not bound, so an ACP decision must never mint one,
+      // is the other, and a card is not a boundary. An ACP decision must never mint one,
       // including for the native path: the row it would create outlives every channel.
       if (input.channel === 'acp' && input.scope === 'forever') {
         throw new Error('a permanent grant cannot be approved on the ACP channel');
@@ -166,7 +151,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
        * roll back together. Split across two statements, a failure or crash between
        * them leaves a grant that `grant()` reported as failed but that is live and
        * redeemable — and redeemable specifically on the native channel, which never
-       * consults an approval record. The ACP ceiling would then be enforced against a
+       * consults an approval record. Channel consent would then be checked against a
        * row nobody believes exists.
        */
       const operation = previous
@@ -202,8 +187,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
               }
               // Every scope records the approval, including the two that write nothing to
               // the grant row itself. Skipping it here would make an ACP re-approval of a
-              // live `session` grant a no-op, so the grant would go on ageing out of its
-              // 24-hour window while the operator kept answering the card.
+              // live `session` grant fail to record consent on the current channel.
               await recordApproval(tx, existing);
               return;
             }
@@ -352,13 +336,8 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
     /**
      * Does a standing grant answer this prompt on this channel (ADR 0011 D2, ADR 0014 D3)?
      *
-     * `channel` is where the ceiling bites. On `native` the answer is the scope match
-     * alone, as it has always been: that channel attests each call, so a grant there
-     * covers only calls the agent actually made. On `acp` the same scope match must
-     * ALSO carry an ACP approval under 24 hours old — because that channel cannot tell
-     * the model's call from a repository process replaying the stolen loopback
-     * endpoint, so an unbounded grant there is an unbounded delegation to the whole
-     * workspace. `channel` must come from the resolved backend, never from the request.
+     * Approval must belong to the resolved transport. Its lifetime follows the
+     * selected scope: the session or 30 days in the project.
      */
     async check(input: {
       projectId: string;
@@ -369,9 +348,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
       target: string;
       channel: BrokeredGrantChannel;
     }): Promise<boolean> {
-      // Legacy generic-argv rows remain visible and revocable, but can never be
-      // redeemed. Only the versioned descriptor produced from an isolated,
-      // hash-bound entry script crosses this boundary.
+      // Unversioned legacy rows cannot establish consent for a concrete invocation.
       if (!validGrantTarget(input.toolName, input.target)) return false;
       const rows = await db
         .selectFrom('secret_provider_permissions')
@@ -394,8 +371,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
       if (covering.length === 0) return false;
       // `forever` is unreachable by construction — `grant` refuses to mint one
       // there, so no ACP approval row can exist for it. Dropping it here as well keeps
-      // that true of rows this store did not write, since a permanent auto-approval is
-      // exactly what the ceiling exists to rule out on this channel.
+      // that true for rows this store did not write.
       const eligible = covering.filter((row) => row.scope !== 'forever');
       if (eligible.length === 0) return false;
       const approvals = await db
@@ -407,7 +383,6 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
           eligible.map((row) => row.id),
         )
         .where('channel', '=', input.channel)
-        .where('approved_at', '>', new Date(now - ACP_APPROVAL_TTL_MS))
         .execute();
       return approvals.length > 0;
     },
