@@ -90,8 +90,9 @@ that need access:
 
 The API host port is configurable through `VERITY_API_HOST_PORT`; the local
 preview range through `VERITY_LOCAL_PREVIEW_PORT_RANGE`. The deployment publishes
-the range once, and each local share uses an available port. Dev servers' own
-sandbox ports (for example `3000` or `5173`) do not need host publication.
+the range once, and each local share uses an available port. Services keep their own listening ports inside the sandbox; devices access them
+through the allocated local preview port. No separate sandbox ports need
+publishing or firewall rules.
 Public sharing through Uplink needs no inbound port forwarding for this range;
 do not expose local previews to the internet. See the
 [ports and environment reference](deploy/README.md#ports--environment-reference)

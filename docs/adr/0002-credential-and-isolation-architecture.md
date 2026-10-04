@@ -60,7 +60,7 @@ nails the credential and isolation decisions that sit inside it.
   identity defaults.
 - **Project (per repo):** project Doppler service token (user-entered), scoped
   GitHub token (**derived** — minted from the global App, 1 h TTL, ~50 min
-  refresh), project runtime/dev-server config.
+  refresh), project runtime settings.
 - **Session (ephemeral):** worktree + branch, the dev-server *target*, agent/
   model selection + transcript. Sessions **consume** injected creds; they never
   **store** them.
@@ -74,9 +74,11 @@ container + one per-repo token per project. Within a project the real blast
 radius is *operational*, not security.
 
 - **Project = container = security boundary** (one per repo).
-- **Multiple named dev servers per project** — each server has a stable identity,
-  process files, worktree, and globally leased host port. Runtime operations use
-  `/dev-servers/:id/runtime`; there is no project-wide implicit server owner.
+- **Detected web services per project** — agents or users start services in
+  their worktrees. Verity discovers their listeners and provides local shares
+  through its ingress port range or protected public shares through Uplink.
+  Sandboxes have no fixed dev-server host-port leases or configured runtime
+  endpoints; see the [sharing concept](../DEV_SERVER_SHARING_CONCEPT.md).
 - **Strong worktree isolation** — separate branches (git-native: a branch checks
   out in only one worktree; commits in X never touch Y).
 - **Per-worktree `node_modules`, hardlink-seeded** from the canonical project

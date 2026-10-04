@@ -22,7 +22,9 @@ inside the Verity server process for local shares, an Uplink-hosted edge for pub
 
 ## 2. Baseline before implementation
 
-Two paths exist today and do not meet.
+The following describes the retired baseline before this implementation. These
+are historical port ranges and configuration paths, not installation requirements.
+The two access paths previously did not meet.
 
 - **Configured project Dev Servers** carry a name, a start command, autostart, and a fixed
   host port that Docker publishes on the sandbox from the ranges 3000-3099 and 8000-8099
