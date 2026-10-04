@@ -79,3 +79,27 @@ repository. New meeting recordings are not written to `docs/meetings/`.
 There is no Wiki, folder grant screen, overview approval, or Knowledge model
 setting. Retrieval indexing and semantic search may be added later on top of the
 same files; the folder remains the source of truth.
+
+## Explorer editing and versions
+
+The explorer can edit UTF-8 text files up to 1 MB in Repository, Project Knowledge,
+and Global Knowledge. Markdown files can also be created from the New menu.
+Saving checks the version opened by the editor; a conflict offers reload,
+conditional overwrite, or saving a new copy.
+
+Each edit retains versions in a private `.verity-file-history/` directory beside
+its file. Repository versions are excluded through Git's local `info/exclude`;
+the explorer hides and reserves these directories in every root. The editor's
+Versions action loads an earlier version as a draft; Save restores it with the
+same conflict check as an ordinary edit.
+
+A saved version is a fixed text snapshot. The original entry also retains the
+previous inode, because a process with an already-open descriptor can write to
+it after the explorer saves. Versions are not automatically pruned: deleting
+such an inode could discard a late save. Administrators may remove history only
+when those writers have finished and backups are no longer needed.
+
+A durable capture record allows the explorer to restore an interrupted save
+when its folder or file is next opened. Recovery never replaces a file already
+at that name. Completed edits do not resurrect files deleted later. Private
+history is local to the filesystem and is not a substitute for external backup.

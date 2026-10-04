@@ -1,3 +1,4 @@
+import { FILE_HISTORY_DIR } from './session-file-history.js';
 import { STANDARD_MOUNTS, standardKnowledgeBinds } from './sandbox-standard-mounts.js';
 import { constants as fsConstants } from 'node:fs';
 import { mkdir, open, readdir, rename, rmdir, stat, writeFile } from 'node:fs/promises';
@@ -186,6 +187,8 @@ async function makeInsightsHandleWritable(handle: Awaited<ReturnType<typeof open
   await handle.chmod(0o777);
   const directoryPath = `/proc/self/fd/${String(handle.fd)}`;
   for (const entry of await readdir(directoryPath, { withFileTypes: true })) {
+    // Version snapshots and recovery records must remain private to the server.
+    if (entry.name === FILE_HISTORY_DIR) continue;
     const child = await open(
       join(directoryPath, entry.name),
       fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,

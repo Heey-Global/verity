@@ -3538,3 +3538,62 @@ describe('Uplink diagnostics schema', () => {
     expect(parsed).toEqual({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
   });
 });
+
+describe('text-file saving', () => {
+  it('sends conditional edits and create-only requests to the content route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ path: 'notes/a.md', content: 'edited', size: 6, version: 'saved', editable: true }),
+      json({ path: 'notes/new.md', content: '', size: 0, version: 'created', editable: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const saved = await client.saveSessionFileContent(
+      's/1',
+      'knowledge',
+      'notes/a.md',
+      'edited',
+      'original',
+    );
+    expect(saved).toMatchObject({ content: 'edited', version: 'saved', editable: true });
+    await client.saveSessionFileContent('s/1', 'knowledge', 'notes/new.md', '', null);
+    expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/files/content');
+    expect(calls[0]?.init?.method).toBe('PUT');
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      root: 'knowledge',
+      path: 'notes/a.md',
+      content: 'edited',
+      expectedVersion: 'original',
+    });
+    expect(JSON.parse(calls[1]?.init?.body as string)).toMatchObject({ expectedVersion: null });
+  });
+  it('lists and reads file versions with encoded paths and version identifiers', async () => {
+    const versions = [
+      { id: 'save-abc/snapshot', createdAt: '2026-10-03T10:00:00Z', kind: 'snapshot' },
+    ];
+    const { fetch, calls } = fakeFetchSequence(json({ versions }), json({ content: 'older text' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listSessionFileVersions('s1', 'shared', 'notes/a b.md')).toEqual(versions);
+    expect(
+      await client.readSessionFileVersion('s1', 'shared', 'notes/a b.md', versions[0]!.id),
+    ).toBe('older text');
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md',
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md&version=save-abc%2Fsnapshot',
+    ]);
+    expect(calls.every(({ init }) => init?.method === 'GET')).toBe(true);
+  });
+  it('preserves the committed-save warning for the editor', async () => {
+    const payload = {
+      path: 'note.md',
+      content: 'saved',
+      size: 5,
+      version: 'saved-version',
+      editable: true,
+      warning: 'Knowledge refresh failed',
+    };
+    const { fetch } = fakeFetch(json(payload));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.saveSessionFileContent('s1', 'knowledge', 'note.md', 'saved', null),
+    ).toEqual(payload);
+  });
+});

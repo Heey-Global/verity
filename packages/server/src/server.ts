@@ -1,3 +1,9 @@
+import {
+  excludeFileHistoryFromGit,
+  recoverFileHistory,
+  sessionFileHistory,
+} from './session-file-history.js';
+import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
@@ -122,6 +128,7 @@ import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
   KNOWLEDGE_MEETINGS_DIR,
+  KNOWLEDGE_INSIGHTS_DIR,
   KNOWLEDGE_MOUNT_TARGET,
 } from './knowledge-folder.js';
 import {
@@ -1560,7 +1567,10 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
     reply.code(400);
     return { error: error.message };
   }
-  if (error instanceof Error && error.message === 'invalid path') {
+  if (
+    (error instanceof Error && error.message === 'invalid path') ||
+    ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+  ) {
     reply.code(400);
     return { error: 'invalid path' };
   }
@@ -7862,6 +7872,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
 
       try {
+        const release = await acquireKnowledgeMutationLock(root.dir);
+        try {
+          await recoverFileHistory(`/proc/self/fd/${directoryHandle.fd}`);
+        } finally {
+          release();
+        }
         const descriptorPath = `/proc/self/fd/${String(directoryHandle.fd)}`;
         const dirents = await readdir(descriptorPath, { withFileTypes: true });
         const hidden = hiddenSessionFileNames(root.root, target.rel);
@@ -7982,8 +7998,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           await link(temporaryPath, destinationPath);
         } finally {
@@ -8023,7 +8038,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'invalid path' };
       }
       let fileHandle;
+      const editablePath = !isManagedKnowledgePath(root.root, target.rel);
+      const release = editablePath ? await acquireKnowledgeMutationLock(root.dir) : () => {};
       try {
+        if (editablePath) {
+          let slot;
+          try {
+            slot = await openKnowledgeFileSlot(root, path);
+            await recoverFileHistory(slot.directoryPath);
+          } finally {
+            await slot?.close();
+          }
+        }
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
           root.dir,
@@ -8031,12 +8057,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       } catch (error) {
         await fileHandle?.close().catch(() => undefined);
-        if (error instanceof Error && error.message === 'invalid path') {
+        if (
+          (error instanceof Error && error.message === 'invalid path') ||
+          ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+        ) {
           reply.code(400);
           return { error: 'invalid path' };
         }
         reply.code(404);
         return { error: 'file not found' };
+      } finally {
+        release();
       }
       try {
         const stats = await fileHandle.stat();
@@ -8058,6 +8089,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(413);
@@ -8074,14 +8106,95 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(415);
           return { error: 'file is not a text file' };
         }
-        return { path: target.rel, content: bytes.toString('utf8'), size: stats.size };
+        return {
+          path: target.rel,
+          content: bytes.toString('utf8'),
+          size: stats.size,
+          version: fileVersion(bytes),
+          editable: !isManagedKnowledgePath(root.root, target.rel),
+        };
       } finally {
         await fileHandle.close();
+      }
+    },
+    history: async (reply, root, path, version) => {
+      let slot;
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        slot = await openKnowledgeFileSlot(root, path);
+        await recoverFileHistory(slot.directoryPath);
+        return await sessionFileHistory(slot.directoryPath, slot.name, version);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          reply.code(404);
+          return { error: 'version not found' };
+        }
+        return knowledgeSlotFailure(reply, error);
+      } finally {
+        await slot?.close();
+        release();
+      }
+    },
+    write: async (reply, root, body) => {
+      let slot;
+      try {
+        slot = await openKnowledgeFileSlot(root, body.path);
+      } catch (error) {
+        return knowledgeSlotFailure(reply, error);
+      }
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        if (
+          root.root === 'knowledge' &&
+          slot.rel === 'overview.md' &&
+          body.content.length > PROJECT_MEMORY_MAX_CHARS
+        ) {
+          reply.code(413);
+          return { error: 'overview.md exceeds the project overview limit' };
+        }
+        if (root.root === 'worktree') await excludeFileHistoryFromGit(root.dir);
+        const creationMode =
+          root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
+            ? 0o666
+            : 0o644;
+        const saved = await writeSessionText(
+          slot,
+          body.content,
+          body.expectedVersion,
+          creationMode,
+        );
+        let warning: string | undefined;
+        const updates: Array<() => Promise<unknown>> = [];
+        if (root.root === 'knowledge' && slot.rel === 'overview.md')
+          updates.push(() => markProjectOverviewAuthoritative(root.dir));
+        if (root.root !== 'worktree') updates.push(() => extractKnowledgeFile(root.dir, slot.rel));
+        for (const update of updates) {
+          try {
+            await update();
+          } catch (err) {
+            app.log.warn(
+              { err, path: slot.rel, root: root.root },
+              'saved file Knowledge refresh failed',
+            );
+            warning = 'The file was saved. Knowledge search and context may be out of date.';
+          }
+        }
+        return warning ? { ...saved, warning } : saved;
+      } catch (error) {
+        if (error instanceof FileWriteError) {
+          reply.code(error.status);
+          return { error: error.message };
+        }
+        throw error;
+      } finally {
+        release();
+        await slot.close();
       }
     },
     download: async (reply, root, path) => {
@@ -8139,8 +8252,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return knowledgeSlotFailure(reply, error);
       }
       try {
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
           if (stats === undefined) {
@@ -8178,14 +8290,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const sourcePath = `${source.directoryPath}/${source.name}`;
       const destinationPath = `${destination.directoryPath}/${destination.name}`;
-      const sharedRoot =
-        fromRoot.root === 'shared'
-          ? fromRoot.dir
-          : toRoot.root === 'shared'
-            ? toRoot.dir
-            : undefined;
-      const releaseMutation =
-        sharedRoot === undefined ? undefined : await acquireKnowledgeMutationLock(sharedRoot);
+      const releases: Array<() => void> = [];
+      // Acquire both roots in a stable order so opposite moves cannot deadlock.
+      for (const dir of [...new Set([fromRoot.dir, toRoot.dir])].sort()) {
+        releases.push(await acquireKnowledgeMutationLock(dir));
+      }
       try {
         const stats = await lstat(sourcePath).catch(() => undefined);
         if (stats === undefined) {
@@ -8245,7 +8354,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         throw error;
       } finally {
-        releaseMutation?.();
+        for (const release of releases.reverse()) release();
         await source.close();
         await destination.close();
       }

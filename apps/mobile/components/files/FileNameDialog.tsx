@@ -12,6 +12,7 @@ export function FileNameDialog({
   title,
   subtitle,
   initialName,
+  allowUnchanged = false,
   confirmLabel,
   validate,
   onSubmit,
@@ -20,6 +21,7 @@ export function FileNameDialog({
   title: string;
   subtitle?: string;
   initialName: string;
+  allowUnchanged?: boolean;
   confirmLabel: string;
   validate: (name: string) => string | null;
   onSubmit: (name: string) => Promise<void>;
@@ -32,7 +34,7 @@ export function FileNameDialog({
   const [selection, setSelection] = useState<{ start: number; end: number }>();
   const preselected = useRef(false);
   const problem = validate(name);
-  const unchanged = name === initialName;
+  const unchanged = !allowUnchanged && name === initialName;
   const stem = initialName.lastIndexOf('.') > 0 ? initialName.lastIndexOf('.') : initialName.length;
 
   const submit = () => {

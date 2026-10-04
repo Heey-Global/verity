@@ -2,6 +2,7 @@ import { constants as fsConstants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 
+import { FILE_HISTORY_DIR } from './session-file-history.js';
 import { EXTRACTED_TEXT_DIR, SHARED_KNOWLEDGE_DIR } from './knowledge-folder.js';
 
 type SessionFileKind = 'directory' | 'file' | 'symlink' | 'other';
@@ -29,12 +30,13 @@ export function isKnowledgeRoot(root: SessionFileRootName): boolean {
  * PDF's extracted text from `.text/`.
  */
 export function hiddenSessionFileNames(root: SessionFileRootName, rel: string): readonly string[] {
-  if (root === 'worktree') return ['.git'];
+  if (root === 'worktree') return ['.git', FILE_HISTORY_DIR];
   // `.text/` mirrors every file, and a project folder carries an empty `shared/`
   // as the mount point for the shared folder (which has an explorer root of its
   // own). Listing either would show the same material twice.
-  if (root === 'knowledge' && rel === '') return [EXTRACTED_TEXT_DIR, SHARED_KNOWLEDGE_DIR];
-  return [EXTRACTED_TEXT_DIR];
+  if (root === 'knowledge' && rel === '')
+    return [EXTRACTED_TEXT_DIR, SHARED_KNOWLEDGE_DIR, FILE_HISTORY_DIR];
+  return [EXTRACTED_TEXT_DIR, FILE_HISTORY_DIR];
 }
 
 /**
@@ -45,7 +47,7 @@ export function hiddenSessionFileNames(root: SessionFileRootName, rel: string): 
  * the Shared root.
  */
 export function isManagedKnowledgePath(root: SessionFileRootName, rel: string): boolean {
-  if (rel === '') return true;
+  if (rel === '' || rel.split('/').includes(FILE_HISTORY_DIR)) return true;
   const first = rel.split('/')[0];
   if (first === EXTRACTED_TEXT_DIR) return true;
   return root === 'knowledge' && first === SHARED_KNOWLEDGE_DIR;
@@ -60,7 +62,7 @@ export interface SessionFileEntry {
 }
 
 function isHiddenGitPath(path: string): boolean {
-  return path.split(/[\\/]+/).some((part) => part === '.git');
+  return path.split(/[\\/]+/).some((part) => part === '.git' || part === FILE_HISTORY_DIR);
 }
 
 export function normalizeSessionRelativePath(path: string): string {
