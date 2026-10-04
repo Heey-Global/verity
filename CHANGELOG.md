@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.11.0](https://github.com/Heey-Global/verity/compare/v4.10.0...v4.11.0) (2026-10-04)
+
+
+### Features
+
+* **control:** add read-only diagnostic snapshots ([#1104](https://github.com/Heey-Global/verity/issues/1104)) ([1c44827](https://github.com/Heey-Global/verity/commit/1c4482752b8d0ef71a946a1a2be982311886ea3d))
+* **matrix:** expose import failures to Control and room status ([#1112](https://github.com/Heey-Global/verity/issues/1112)) ([90db73c](https://github.com/Heey-Global/verity/commit/90db73cb77b94001b7a52190e1b44a5d6a936ee9))
+* **mobile:** version staging OTA releases through Release Please PRs ([#1115](https://github.com/Heey-Global/verity/issues/1115)) ([80a15be](https://github.com/Heey-Global/verity/commit/80a15be8c3637af9efa9873f8774367647da0fcf))
+
+
+### Bug Fixes
+
+* **automation:** default schedules to the user's time zone ([#1117](https://github.com/Heey-Global/verity/issues/1117)) ([f9a6844](https://github.com/Heey-Global/verity/commit/f9a684430b83f6df2b3181815bbf62f2b0dafc03))
+* **mobile:** show GitHub's pending merge test instead of a dead merge button ([#1105](https://github.com/Heey-Global/verity/issues/1105)) ([94600b1](https://github.com/Heey-Global/verity/commit/94600b1c8a15a35dff395fad8c92558a438dc09d))
+* preserve read sessions across restarts and separate update channel settings ([#1111](https://github.com/Heey-Global/verity/issues/1111)) ([1a688a4](https://github.com/Heey-Global/verity/commit/1a688a495520f110e4c841b477bd6c8b55220f37))
+* **preview:** migrate local gateway ingress during managed updates ([#1116](https://github.com/Heey-Global/verity/issues/1116)) ([b9b648a](https://github.com/Heey-Global/verity/commit/b9b648a263632749fcae8e6fe6365f867317b1fa))
+* **server:** hide worktree recovery metadata from session output ([#1114](https://github.com/Heey-Global/verity/issues/1114)) ([21b702f](https://github.com/Heey-Global/verity/commit/21b702fde35c2478acf14b131722a0429613a223))
+
 ## [4.10.0](https://github.com/Heey-Global/verity/compare/v4.9.1...v4.10.0) (2026-10-04)
 
 
