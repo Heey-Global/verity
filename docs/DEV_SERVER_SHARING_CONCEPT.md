@@ -169,10 +169,10 @@ The sheet asks two questions one after the other and never mixes them.
   picks the folder the explorer stands in. `index.html` is highlighted as the entry page.
 
 The sheet opens on the server tab while a server or a port access exists, otherwise on the
-static files. The default is decided once, when servers and accesses have loaded or after one second
-at the latest; a server that starts later only marks its tab and never switches the view. A Core without port detection
-shows the static files without tabs. Rows carry badges for their active accesses, "On network"
-and "Online until HH:MM".
+static files. The default is decided once, when servers and accesses have loaded or after one
+second at the latest; a server that starts later only marks its tab and never switches the
+view. A Core without port detection shows the static files without tabs. Rows carry badges for
+their active accesses, "On network" and "Online until HH:MM".
 
 **Step two, how.** Two cards of equal weight, stacked, because both can be active at once and
 each owns its own state and primary action. Each card names who can see the preview.
