@@ -48,7 +48,7 @@ GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
 CODEX_VERSION="${CODEXVERSION:-0.159.3}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-2.0.1}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.1.0}"
 # renovate: datasource=npm depName=opencode-ai
 OPENCODE_VERSION="${OPENCODEVERSION:-1.18.34}"
 RUNNER_UID="${RUNNERUID:-1101}"
