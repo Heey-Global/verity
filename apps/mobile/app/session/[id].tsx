@@ -8436,7 +8436,7 @@ function PullRequestBar({
   const conflicted = isPullRequestConflicted(pullRequest);
   const unavailable = pullRequest.pipeline === 'unknown' && !conflicted;
   // Green checks but GitHub hasn't finished its merge test yet: the button stays off,
-  // and the dot pulses so the wait reads as progress rather than a dead button.
+  // and the (still green) dot pulses so the wait reads as progress, not a dead button.
   const checkingMergeability = isPullRequestCheckingMergeability(pullRequest);
   // Only a CONFIRMED conflict (mergeable === false) blocks. `null` means GitHub is
   // still computing mergeability just after a push — treat that as "checks green,
@@ -8453,7 +8453,7 @@ function PullRequestBar({
   const checksText = pullRequestStatusText(pullRequest);
   const statusColor = mergeBlocked
     ? theme.colors.tone.danger
-    : pending || checks.total === 0 || checkingMergeability
+    : pending || checks.total === 0
       ? theme.colors.tone.attention
       : theme.colors.tone.done;
   const canMerge =

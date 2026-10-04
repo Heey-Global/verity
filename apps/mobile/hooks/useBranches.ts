@@ -1,4 +1,5 @@
 import {
+  isPullRequestCheckingMergeability,
   VerityApiError,
   type VerityClient,
   type BranchList,
@@ -249,7 +250,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       pullRequest.pipeline === 'pending' ||
       (pullRequest.checks.failed === 0 && pullRequest.checks.total === 0) ||
       // GitHub's merge test usually settles within seconds; the button waits on it.
-      (pullRequest.pipeline === 'success' && pullRequest.mergeable === null));
+      isPullRequestCheckingMergeability(pullRequest));
   const intervalMs =
     pullRequest === null
       ? discoveryPollMs

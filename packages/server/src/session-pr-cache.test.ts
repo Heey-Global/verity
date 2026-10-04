@@ -122,11 +122,14 @@ describe('shared session PR cache', () => {
     const load = vi.fn(async () => status);
     const cache = createSessionPrCache({ load, now: () => now });
     await cache.get(session);
-    now = 5_000;
+    now = 14_999;
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(1);
+    now = 15_000;
     status = { ...status, mergeable: true };
     expect(await cache.get(session)).toMatchObject({ mergeable: true });
     expect(load).toHaveBeenCalledTimes(2);
-    now = 10_000;
+    now = 40_000;
     await cache.get(session);
     expect(load).toHaveBeenCalledTimes(2);
   });
