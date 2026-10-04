@@ -35,6 +35,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
+  const [changingChannel, setChangingChannel] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // Key of an install request whose outcome is still unknown: it was not
   // answered, and no status since has shown whether it started — which is what
@@ -108,7 +109,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const install = useCallback(
     (targetDigest: string, idempotencyKey: string) => {
-      if (starting) return;
+      if (starting || changingChannel) return;
       setStarting(true);
       setActionError(undefined);
       // The key is derived by describeServerUpdate: stable for a retry after a
@@ -157,7 +158,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           setUnanswered(idempotencyKey);
         });
     },
-    [client, settle, starting],
+    [client, settle, starting, changingChannel],
   );
 
   if (status === undefined) {
@@ -189,6 +190,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         client={client}
         disabled={starting || unanswered !== undefined || view.busy}
         onChanged={refresh}
+        onSavingChange={setChangingChannel}
       />
       <View style={styles.updateHeader}>
         <Text style={styles.updateTitle} accessibilityRole="header">
@@ -212,11 +214,11 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           style={({ pressed }) => [
             styles.primaryButton,
             styles.updateButton,
-            starting ? styles.buttonDisabled : null,
+            starting || changingChannel ? styles.buttonDisabled : null,
             pressed ? styles.pressed : null,
           ]}
           onPress={() => install(target, attempt)}
-          disabled={starting}
+          disabled={starting || changingChannel}
           accessibilityRole="button"
           accessibilityLabel={view.action}
         >

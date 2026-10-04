@@ -11,10 +11,12 @@ export function ServerUpdateChannel({
   client,
   disabled,
   onChanged,
+  onSavingChange,
 }: {
   client: VerityClient;
   disabled: boolean;
   onChanged: () => Promise<unknown>;
+  onSavingChange: (value: boolean) => void;
 }) {
   const [channel, setChannel] = useState<Channel>();
   const [saving, setSaving] = useState(false);
@@ -38,6 +40,7 @@ export function ServerUpdateChannel({
 
   const save = (next: Channel) => {
     setSaving(true);
+    onSavingChange(true);
     setError(undefined);
     void client
       .setServerUpdateChannel(next)
@@ -55,7 +58,10 @@ export function ServerUpdateChannel({
         }
         setError('Could not confirm the update channel. Try again.');
       })
-      .finally(() => setSaving(false));
+      .finally(() => {
+        setSaving(false);
+        onSavingChange(false);
+      });
   };
   const select = (next: Channel) => {
     if (next === channel || disabled || saving) return;

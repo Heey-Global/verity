@@ -667,6 +667,38 @@ describe('settings/server-update', () => {
 });
 
 describe('server update channel selection', () => {
+  it('blocks installation while the channel selection is being saved', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    let finish!: (value: 'staging') => void;
+    const saved = new Promise<'staging'>((resolve) => {
+      finish = resolve;
+    });
+    const requestServerUpdate = jest.fn();
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest
+          .fn()
+          .mockResolvedValue({ state: 'available', release: RELEASE, operation: null }),
+        getServerUpdateChannel: jest.fn().mockResolvedValue('stable'),
+        setServerUpdateChannel: jest.fn(() => saved),
+        requestServerUpdate,
+      }),
+    );
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByText('Prereleases'));
+    await act(async () => {
+      alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+    });
+    const install = await screen.findByLabelText('Install 1.4.0');
+    expect(install).toBeDisabled();
+    fireEvent.press(install);
+    expect(requestServerUpdate).not.toHaveBeenCalled();
+    await act(async () => {
+      finish('staging');
+    });
+    expect(install).not.toBeDisabled();
+  });
+
   it.each([false, true])(
     'requires confirmation and refreshes availability (lost response: %s)',
     async (lostResponse) => {
