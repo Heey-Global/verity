@@ -254,6 +254,10 @@ function HydratedRoot() {
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
               <Stack.Screen name="settings/server-update" options={{ title: 'Server update' }} />
+              <Stack.Screen
+                name="settings/server-update-channel"
+                options={{ title: 'Update channel' }}
+              />
               <Stack.Screen name="settings/live-meeting-stt" options={{ title: 'Live STT test' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
               <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />

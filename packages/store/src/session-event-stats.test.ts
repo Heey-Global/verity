@@ -47,6 +47,26 @@ async function insertRaw(id: number, sessionId = 'a', at = '2026-01-01T00:00:00Z
 }
 
 describe('durable session event statistics', () => {
+  it('restores the latest listener snapshot across unrelated message events', async () => {
+    expect(await ctx.store.getLatestDevServersEvent('a')).toBeUndefined();
+    const listeners = [
+      { port: 5173, reachable: true, pid: 1, name: 'vite', command: 'vite', workdir: '/work/a' },
+    ];
+    await ctx.store.appendEvent('a', { t: 'dev_servers_changed', devServers: listeners });
+    expect((await ctx.store.getLatestDevServersEvent('a'))?.devServers).toEqual(listeners);
+    await ctx.store.appendEvent('a', { t: 'dev_servers_changed', devServers: [] });
+    await ctx.store.setSessionSeen('a', (await ctx.store.getSessionEventStats('a'))!.eventCount);
+    await ctx.store.appendEvent('a', { t: 'text', delta: 'new message' });
+    expect(await ctx.store.getLatestDevServersEvent('a')).toEqual({
+      t: 'dev_servers_changed',
+      devServers: [],
+    });
+    expect(await ctx.store.getLatestDevServersEvent('b')).toBeUndefined();
+    expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBeGreaterThan(
+      (await ctx.store.getSession('a'))!.lastSeenEventCount!,
+    );
+  });
+
   it('keeps never-written sessions empty and removes markers on session deletion', async () => {
     expect(await ctx.store.getSessionEventStats('a')).toBeUndefined();
     expect(

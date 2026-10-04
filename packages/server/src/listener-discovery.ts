@@ -144,10 +144,20 @@ export class ListenerDiscovery {
       )) {
         const devServers = await this.attribute(project, session.sessionId, processes);
         const snapshot = JSON.stringify(devServers);
-        if (this.snapshots.get(session.sessionId) === snapshot || this.closed) continue;
-        this.snapshots.set(session.sessionId, snapshot);
+        let previous = this.snapshots.get(session.sessionId);
+        if (previous === undefined) {
+          // Re-emitting the first scan after every restart silently marks all
+          // sessions unread even though their listeners have not changed.
+          const persisted = await this.options.eventStore.getLatestDevServersEvent(
+            session.sessionId,
+          );
+          previous = JSON.stringify(persisted?.devServers ?? []);
+          this.snapshots.set(session.sessionId, previous);
+        }
+        if (previous === snapshot || this.closed) continue;
         const event = { t: 'dev_servers_changed' as const, devServers };
         const { seq, ts } = await this.options.eventStore.appendEvent(session.sessionId, event);
+        this.snapshots.set(session.sessionId, snapshot);
         this.options.bus.publish(session.sessionId, { seq, ts, event });
       }
     })()

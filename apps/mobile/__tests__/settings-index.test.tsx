@@ -77,6 +77,13 @@ describe('settings index — destinations', () => {
     expect(mockPush).toHaveBeenCalledWith(href);
   });
 
+  it('keeps update channel preferences inside server update', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<SettingsIndexScreen />);
+    await screen.findByLabelText('Server update');
+    expect(screen.queryByLabelText('Update channel')).toBeNull();
+  });
+
   it('shows the configured server address without tapping in', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);

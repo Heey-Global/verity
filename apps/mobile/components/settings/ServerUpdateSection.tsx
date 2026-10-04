@@ -19,6 +19,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { getVerityBaseUrl } from '../../lib/client';
+import {
+  isServerUpdateChannelWritePending,
+  setServerUpdateChannelWritePending,
+  useServerUpdateChannelWritePending,
+} from '../../lib/serverUpdateChannelWrite';
 import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
 import { SettingsGroup, SettingsPanel } from './SettingsChrome';
@@ -31,16 +37,22 @@ const UNANSWERED_POLL_MS = 2_000;
 // the operation; a status read before that lands still shows the old one.
 const UNANSWERED_GRACE_MS = 20_000;
 
-export function ServerUpdateSection({ client }: { client: VerityClient }) {
+export function ServerUpdateSection({
+  client,
+  mode = 'install',
+}: {
+  client: VerityClient;
+  mode?: 'install' | 'channel';
+}) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
-  const [changingChannel, setChangingChannel] = useState(false);
-  const channelWritePending = useRef(false);
-  const channelSavingChanged = useCallback((value: boolean) => {
-    channelWritePending.current = value;
-    setChangingChannel(value);
-  }, []);
+  const server = getVerityBaseUrl();
+  const changingChannel = useServerUpdateChannelWritePending(server);
+  const channelSavingChanged = useCallback(
+    (value: boolean) => setServerUpdateChannelWritePending(value, server),
+    [server],
+  );
   const [channelNeedsRefresh, setChannelNeedsRefresh] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // Key of an install request whose outcome is still unknown: it was not
@@ -69,13 +81,17 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const refresh = useCallback(
     (force = false) => {
-      if (channelWritePending.current && !force) return Promise.resolve();
+      if (isServerUpdateChannelWritePending(server) && !force) return Promise.resolve();
       const generation = ++refreshGeneration.current;
       return (
         client
           .getServerUpdates()
           .then((next) => {
-            if (generation !== refreshGeneration.current) return;
+            if (
+              generation !== refreshGeneration.current ||
+              (isServerUpdateChannelWritePending(server) && !force)
+            )
+              return;
             const pending = unansweredRef.current;
             // An unchanged status is not yet proof that nothing started: the
             // request may still be on its way into the Updater's journal.
@@ -97,7 +113,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           .catch(() => undefined)
       );
     },
-    [client, settle],
+    [client, settle, server],
   );
 
   const invalidateChannel = useCallback(() => {
@@ -113,6 +129,13 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     setActionError(undefined);
     publishServerUpdateStatusMutation(invalidated);
   }, []);
+  const previousChannelWrite = useRef(false);
+  useEffect(() => {
+    if (changingChannel) invalidateChannel();
+    else if (previousChannelWrite.current) void refresh();
+    previousChannelWrite.current = changingChannel;
+  }, [changingChannel, invalidateChannel, refresh]);
+
   const channelChanged = useCallback(async () => {
     invalidateChannel();
     await refresh(true);
@@ -141,7 +164,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const install = useCallback(
     (targetDigest: string, idempotencyKey: string) => {
-      if (starting || changingChannel || channelNeedsRefresh) return;
+      if (starting || isServerUpdateChannelWritePending(server) || channelNeedsRefresh) return;
       setStarting(true);
       setActionError(undefined);
       // The key is derived by describeServerUpdate: stable for a retry after a
@@ -190,7 +213,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           setUnanswered(idempotencyKey);
         });
     },
-    [client, settle, starting, changingChannel, channelNeedsRefresh],
+    [client, settle, starting, changingChannel, channelNeedsRefresh, server],
   );
 
   if (status === undefined) {
@@ -215,6 +238,25 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const publishedAt =
     'release' in status ? formatReleaseDate(status.release.publishedAt) : undefined;
+
+  if (mode === 'channel') {
+    return (
+      <>
+        <ServerUpdateChannel
+          client={client}
+          disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
+          onChanged={channelChanged}
+          onSavingChange={channelSavingChanged}
+          onChanging={invalidateChannel}
+        />
+        {channelNeedsRefresh ? (
+          <Text style={styles.updateDetail}>
+            Checking the selected channel… Retrying if the server is unavailable.
+          </Text>
+        ) : null}
+      </>
+    );
+  }
 
   return (
     <>
@@ -277,13 +319,6 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           )}
         </SettingsPanel>
       </SettingsGroup>
-      <ServerUpdateChannel
-        client={client}
-        disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
-        onChanged={channelChanged}
-        onSavingChange={channelSavingChanged}
-        onChanging={invalidateChannel}
-      />
     </>
   );
 }
