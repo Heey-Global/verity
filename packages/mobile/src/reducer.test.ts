@@ -524,21 +524,20 @@ describe('SessionReducer', () => {
     }
   });
 
-  it('renders an Agent Loop proposal as its own interactive message', () => {
+  it('renders an automation proposal as its own interactive message', () => {
     const r = new SessionReducer();
     r.apply(1, {
-      t: 'agent_loop_proposal',
+      t: 'automation_proposal',
       proposal: {
-        loopId: '11111111-1111-4111-8111-111111111111',
-        name: 'Dependency audit',
-        script: 'exit 0',
-        schedule: { kind: 'daily', hour: 3, minute: 0 },
+        name: 'Morning review',
+        schedule: { kind: 'daily', hour: 9, minute: 0 },
+        prompt: 'Summarize the open pull requests.',
       },
     });
     expect(r.messages[0]).toMatchObject({
-      kind: 'agent-loop-proposal',
-      id: 'agent-loop-proposal-1',
-      proposal: { name: 'Dependency audit' },
+      kind: 'automation-proposal',
+      id: 'automation-proposal-1',
+      proposal: { name: 'Morning review' },
     });
   });
 

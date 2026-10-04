@@ -45,7 +45,6 @@ describe('project settings index — destinations', () => {
   it.each([
     ['Environment', '/project/[id]/settings/environment'],
     ['Default model', '/project/[id]/settings/model'],
-    ['Automations', '/project/[id]/automations'],
   ])('routes %s to %s', async (label, pathname) => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectSettingsIndexScreen />);

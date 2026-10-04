@@ -1,7 +1,7 @@
 import type {
   AgentEvent,
-  AgentLoopProposal,
   Attachment,
+  AutomationProposal,
   BrokeredGrantChannel,
   ChoicesOption,
   RiskClass,
@@ -123,11 +123,13 @@ export interface ChoicesMessage {
   multiSelect: boolean;
 }
 
-export interface AgentLoopProposalMessage {
-  kind: 'agent-loop-proposal';
+/** An agent's proposal for a recurring automation of this session, rendered
+ * as a card the operator confirms before anything is scheduled. */
+export interface AutomationProposalMessage {
+  kind: 'automation-proposal';
   id: string;
   createdAt: number;
-  proposal: AgentLoopProposal;
+  proposal: AutomationProposal;
 }
 
 /**
@@ -169,4 +171,4 @@ export type Message =
   | ModeSwitchMessage
   | DependencyStatusMessage
   | ChoicesMessage
-  | AgentLoopProposalMessage;
+  | AutomationProposalMessage;

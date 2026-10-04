@@ -1,7 +1,7 @@
 import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
-  AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT,
+  AUTOMATION_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
@@ -481,45 +481,8 @@ describe('Conductor.sendTurn', () => {
     // is checked exactly, not sampled: a `toContain` per fragment cannot see a
     // fourth one joining, which is the growth that costs here. It also pins the
     // composition claim the turn prompt does not share: the resume branch returns
-    // this set verbatim while only the fresh-turn branch composes on kind.
+    // this set verbatim.
     expectResumeSet(fake.last().appendSystemPrompt);
-  });
-
-  it('sends the same resume set for an unattended Agent Loop session', async () => {
-    // The kind-independence above is the load-bearing half of that assertion and
-    // was the half nothing exercised: the fresh-turn branch demonstrably composes
-    // on kind, so "the resume branch does not" is a claim, not a given. The kind
-    // to pin it with is this one — an Agent Loop resumes on a schedule with nobody
-    // watching, which is the case the sandbox rule is justified by.
-    await ctx.store.createSession({
-      sessionId: 'loop-resume',
-      worktree: '/wt/loop',
-      model: 'm',
-      kind: 'agent_loop',
-    });
-    // The `session` event is what marks the session Claude-origin, via its
-    // `model`; its `id` is not a backend session id — that only exists once
-    // `upsertSessionBackendState` has run, which nothing here does. So the resume
-    // handle is the STORE key, and the id here is deliberately unlike it so the
-    // assertion below cannot pass while reading the wrong one.
-    await ctx.store.appendEvent('loop-resume', {
-      t: 'session',
-      id: 'claude-loop-1',
-      model: 'm',
-      worktree: '/wt/loop',
-    });
-    const fake = scriptedBackend({ text: 'hi' });
-    const conductor = new Conductor({
-      store: ctx.store,
-      backend: fake.backend,
-      worktreeExists: async () => true,
-    });
-
-    await conductor.sendTurn('loop-resume', 'go');
-
-    expect(fake.last().resumeSessionId).toBe('loop-resume');
-    expectResumeSet(fake.last().appendSystemPrompt);
-    expect(fake.last().appendSystemPrompt).not.toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
   });
 
   it('starts the first turn of an empty precreated session without resuming a backend id', async () => {
@@ -544,7 +507,7 @@ describe('Conductor.sendTurn', () => {
     expect(captured?.resumeSessionId).toBeUndefined();
     expect(captured?.appendSystemPrompt).toContain(CHOICES_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(AUTONOMY_SYSTEM_PROMPT);
-    expect(captured?.appendSystemPrompt).not.toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
+    expect(captured?.appendSystemPrompt).toContain(AUTOMATION_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(MEMORY_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(VISIBLE_MEDIA_SYSTEM_PROMPT);
     expect(await ctx.store.getSessionBackendState('s-empty', 'claude')).toMatchObject({
@@ -598,18 +561,17 @@ describe('Conductor.sendTurn', () => {
     expect(captured?.transcript).toBeUndefined();
   });
 
-  it('adds Agent Loop proposal guidance only to Agent Loop sessions', async () => {
+  it('offers every fresh context the automation contract exactly once', async () => {
     await ctx.store.createSession({
-      sessionId: 'loop-session',
-      worktree: '/wt/loop',
+      sessionId: 'automation-session',
+      worktree: '/wt/a',
       model: 'm',
-      kind: 'agent_loop',
     });
     let captured: RunTurnOptions | undefined;
     const backend: Backend = {
       run: async (opts) => {
         captured = opts;
-        await opts.onSession?.('backend-loop');
+        await opts.onSession?.('backend-automation');
         return { sessionId: opts.storeSessionId, exitCode: 0, stderr: '', aborted: false };
       },
     };
@@ -619,17 +581,13 @@ describe('Conductor.sendTurn', () => {
       worktreeExists: async () => true,
     });
 
-    await conductor.sendTurn('loop-session', 'configure');
+    await conductor.sendTurn('automation-session', 'every morning, check the build');
 
-    expect(captured?.appendSystemPrompt).toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
-    // The kind-specific branch adds to the base rather than replacing it, and an
-    // Agent Loop runs turns unattended — exactly the kind that can spend a
-    // container's memory with nobody watching. This is also the only path that
-    // composes prompts, so it is where a duplicate would appear first.
-    expect(captured?.appendSystemPrompt).toContain(SANDBOX_RESOURCES_SYSTEM_PROMPT);
-    expect(
-      (captured?.appendSystemPrompt ?? '').split(SANDBOX_RESOURCES_SYSTEM_PROMPT),
-    ).toHaveLength(2);
+    // Without it the agent answers a recurring request in prose and nothing can
+    // ever be confirmed: the app only renders a proposal it can parse.
+    const appended = captured?.appendSystemPrompt ?? '';
+    expect(appended.split(AUTOMATION_SYSTEM_PROMPT)).toHaveLength(2);
+    expect(appended.split(SANDBOX_RESOURCES_SYSTEM_PROMPT)).toHaveLength(2);
   });
 
   it('settles a silent non-zero exit with a synthetic crashed marker (P0a)', async () => {
@@ -8423,7 +8381,7 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
     };
   }
 
-  it('injects project memory into a pre-created Agent Loop session', async () => {
+  it('injects project memory into a pre-created project session', async () => {
     await ctx.store.upsertProject({
       id: 'p-loop',
       owner: 'example-org',
@@ -8436,7 +8394,6 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
       worktree: '/wt/loop-memory',
       model: 'codex/default',
       projectId: 'p-loop',
-      kind: 'agent_loop',
     });
     await ctx.store.appendProjectMemory('p-loop', 'keep the loop deterministic');
 
@@ -8449,14 +8406,13 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
 
     await conductor.startSession({
       sessionId: 'loop-memory',
-      sessionKind: 'agent_loop',
       worktree: '/wt/loop-memory',
-      prompt: 'Configure this Agent Loop',
+      prompt: 'Set up a recurring check',
       model: 'codex/default',
     });
     await waitFor(() => !conductor.isBusy('loop-memory'));
 
-    expect(seen[0]?.appendSystemPrompt).toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
+    expect(seen[0]?.appendSystemPrompt).toContain(AUTOMATION_SYSTEM_PROMPT);
     expect(seen[0]?.appendSystemPrompt).toContain(MEMORY_HEADER);
     expect(seen[0]?.appendSystemPrompt).toContain('keep the loop deterministic');
   });

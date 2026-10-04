@@ -237,16 +237,18 @@ describe('managed knowledge', () => {
       { folderId: parent.id, mode: 'read' },
       { folderId: secret.id, mode: 'read' },
     ]);
-    const loop = await ctx.store.createAgentLoop({ projectId: 'p', name: 'Knowledge loop' });
-    await ctx.db
-      .updateTable('agent_loops')
-      .set({ session_id: actor.sessionId })
-      .where('id', '=', loop.id)
-      .execute();
+    await ctx.store.setSessionAutomation({
+      sessionId: actor.sessionId,
+      name: 'Knowledge review',
+      schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Review the knowledge base.',
+    });
     await k.runAgent(actor, 'read', { documentId: doc.id });
     await k.deleteFolder(parent.id);
     // Deleting one source must not silently detach scheduled work or fence unrelated reads.
-    expect((await ctx.store.getAgentLoop(loop.id))?.sessionId).toBe(actor.sessionId);
+    expect(await ctx.store.getSessionAutomation(actor.sessionId)).toMatchObject({
+      status: 'enabled',
+    });
     await expect(k.runAgent(actor, 'read', { documentId: hidden.id })).resolves.toMatchObject({
       id: hidden.id,
     });

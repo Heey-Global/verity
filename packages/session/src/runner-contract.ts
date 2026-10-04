@@ -185,7 +185,7 @@ export interface RunnerServer {
 export interface RunnerClientContext {
   /**
    * The bound Verity session id, or `null` on the fresh-spawn path before the
-   * backend mints one. Pre-created sessions (project/Agent Loop turns, reattach,
+   * backend mints one. Pre-created sessions (project turns, reattach,
    * and every steering turn) always carry it; only a fresh project-less
    * control-plane spawn (e.g. Verity Control) reaches the factory before its id
    * binds, and such spawns have no per-project supervisor anyway (`projectId`

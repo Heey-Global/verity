@@ -732,6 +732,26 @@ describe('SessionListModel.applyPullRequestStatus', () => {
   });
 });
 
+describe('SessionListModel.applySessionAutomation', () => {
+  it('marks and unmarks a session without waiting for the next poll', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValueOnce([session('s1', 'completed'), session('s2', 'completed')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+
+    model.applySessionAutomation('s1', { status: 'enabled' });
+    expect(model.state.sessions.find((s) => s.sessionId === 's1')?.automation).toEqual({
+      status: 'enabled',
+    });
+    expect(model.state.sessions.find((s) => s.sessionId === 's2')?.automation).toBeUndefined();
+
+    model.applySessionAutomation('s1', undefined);
+    expect('automation' in (model.state.sessions.find((s) => s.sessionId === 's1') ?? {})).toBe(
+      false,
+    );
+  });
+});
+
 describe('SessionListModel.applySessionStatus', () => {
   it('removes a stale needs-input status immediately after an accepted action', async () => {
     const { client, listSessions } = makeClient();

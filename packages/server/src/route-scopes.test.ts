@@ -171,7 +171,7 @@ describe('route scope declarations', () => {
       'GET /sessions',
       'GET /projects',
       'GET /sessions/:id',
-      'GET /projects/:projectId/agent-loops',
+      'GET /sessions/:id/automation',
       'GET /sessions/:sessionId/local-shares',
     ]) {
       expect(

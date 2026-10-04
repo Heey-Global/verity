@@ -226,6 +226,18 @@ export class SessionListModel {
     this.emit();
   }
 
+  /** Reflect a confirmed, paused, resumed, or deleted automation before polling. */
+  applySessionAutomation(sessionId: string, automation: SessionSummary['automation']): void {
+    this._sessions = this._sessions.map((session) => {
+      if (session.sessionId !== sessionId) return session;
+      const next = { ...session };
+      if (automation === undefined) delete next.automation;
+      else next.automation = automation;
+      return next;
+    });
+    this.emit();
+  }
+
   /** Reflect an accepted action (for example a notification reply) before polling. */
   applySessionStatus(sessionId: string, status: SessionSummary['status']): void {
     const present = this._sessions.some((session) => session.sessionId === sessionId);

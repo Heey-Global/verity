@@ -11,12 +11,12 @@ import { FileContentPreview } from '../../components/files/FileContentPreview';
 // plugin (root: 'app') processes them.
 import {
   type AgentTextMessage,
-  type AgentLoop,
-  type AgentLoopProposalMessage,
   type Attachment,
+  type AutomationProposalMessage,
   type AttachmentUpload,
   type BranchSwitchRequest,
   type DriveFile,
+  type SessionAutomation,
   VerityApiError,
   type VerityClient,
   type ChoicesMessage,
@@ -34,7 +34,6 @@ import {
   type ToolCallMessage,
   type UserTextMessage,
   agentEventDescriptor,
-  agentLoopConfigFingerprint,
   briefingExtent,
   engineLabel,
   groupModelsByEngine,
@@ -55,8 +54,7 @@ import {
   modelDisplayName,
   orderModels,
   partitionModels,
-  publishAgentLoopMutation,
-  subscribeAgentLoopMutations,
+  publishSessionAutomationMutation,
   parseBranchIssue,
   parseInline,
   parseMarkdownBlocks,
@@ -166,7 +164,13 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
 import { ConnectionDiscoveryHint } from '../../components/ConnectionDiscoveryHint';
-import { AgentLoopCockpit } from '../../components/AgentLoopCockpit';
+import {
+  AutomationBar,
+  AutomationProposalCard,
+  AutomationSheet,
+  SessionStarterCard,
+  type AutomationProposalState,
+} from '../../components/SessionAutomation';
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
 import { ImageLightbox } from '../../components/ImageLightbox';
@@ -186,6 +190,7 @@ import { useSessionKeyboardAvoidance } from '../../hooks/useSessionKeyboardAvoid
 import { useTranscriptNavigation } from '../../hooks/useTranscriptNavigation';
 import { TranscriptRow } from '../../components/TranscriptRow';
 import { isProjectSessionModel } from '../../lib/projectSessionModels';
+import { isSameAutomation } from '../../lib/automationText';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import { type AttachAnchor, attachMenuRows } from '../../lib/attachMenu';
@@ -515,14 +520,11 @@ interface SessionActions {
   focusInput: () => void;
   /** Put a failed optimistic message back into the input for editing. */
   recoverPending: (id: string) => void;
-  /** Persist, test, and enable a structured Agent Loop proposal after explicit approval. */
-  confirmAgentLoop: (message: AgentLoopProposalMessage) => Promise<void>;
-  enableAgentLoop: (loopId: string) => Promise<void>;
-  /** Server-persisted readiness survives navigation away from the proposal row. */
-  agentLoopStatus: AgentLoop['status'] | null;
-  agentLoopTested: boolean;
-  agentLoopId: string | null;
-  agentLoopConfigFingerprint: string | null;
+  /** Save a proposed automation after the operator confirms it. */
+  confirmAutomation: (proposal: AutomationProposalMessage['proposal']) => Promise<void>;
+  /** The automation this session has now, so a proposal card knows whether it
+   * is already active or would replace another one. */
+  automation: SessionAutomation | null;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
@@ -593,7 +595,6 @@ export function SessionChat({
     name,
     model: currentModel,
     projectId,
-    kind,
     switchingModel,
     modelSwitchPending,
     terminationUnconfirmed,
@@ -735,9 +736,9 @@ export function SessionChat({
   const { models, modelOrder, moreModels, refresh: refreshModels } = useModels(client, loaded);
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const effectiveModel = currentModel ?? session.model;
-  const [agentLoop, setAgentLoop] = useState<AgentLoop | null>(null);
-  const agentLoopGeneration = useRef(0);
-  const [loopCockpitOpen, setLoopCockpitOpen] = useState(false);
+  const [automation, setAutomation] = useState<SessionAutomation | null>(null);
+  const [automationSheetOpen, setAutomationSheetOpen] = useState(false);
+  const [automationUpdating, setAutomationUpdating] = useState(false);
   // Name of a header action shown under the title after a long-press — the icon-only
   // buttons explain themselves on demand without permanent labels.
   const [headerHint, setHeaderHint] = useState<string | null>(null);
@@ -753,36 +754,72 @@ export function SessionChat({
     },
     [],
   );
-  useEffect(() => {
-    if (kind !== 'agent_loop' || !projectId) {
-      setAgentLoop(null);
-      return;
-    }
-    let active = true;
-    const generation = agentLoopGeneration.current;
-    void client
-      .listAgentLoops(projectId)
-      .then((loops) => {
-        if (active && generation === agentLoopGeneration.current) {
-          setAgentLoop(loops.find((loop) => loop.sessionId === sessionId) ?? null);
-        }
-      })
-      .catch(() => {
-        if (active && generation === agentLoopGeneration.current) setAgentLoop(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [client, kind, projectId, sessionId]);
-  useEffect(
+  // The automation is read when the session opens and again whenever its sheet
+  // opens, so the "last run" sentence reflects runs that happened meanwhile.
+  const loadAutomation = useCallback(
     () =>
-      subscribeAgentLoopMutations((updated) => {
-        if (updated.sessionId !== sessionId) return;
-        agentLoopGeneration.current += 1;
-        setAgentLoop(updated);
-      }),
+      client
+        .getSessionAutomation(sessionId)
+        .then(setAutomation)
+        .catch(() => undefined),
+    [client, sessionId],
+  );
+  useEffect(() => {
+    if (loaded) void loadAutomation();
+  }, [loadAutomation, loaded]);
+  const applyAutomation = useCallback(
+    (next: SessionAutomation | null) => {
+      setAutomation(next);
+      publishSessionAutomationMutation(sessionId, next);
+    },
     [sessionId],
   );
+  const openAutomation = useCallback(() => {
+    setAutomationSheetOpen(true);
+    void loadAutomation();
+  }, [loadAutomation]);
+  const toggleAutomation = useCallback(() => {
+    if (!automation || automationUpdating) return;
+    setAutomationUpdating(true);
+    void client
+      .setSessionAutomationStatus(sessionId, automation.status === 'enabled' ? 'paused' : 'enabled')
+      .then(applyAutomation)
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not update automation',
+          error instanceof Error ? error.message : 'Please try again.',
+        ),
+      )
+      .finally(() => setAutomationUpdating(false));
+  }, [applyAutomation, automation, automationUpdating, client, sessionId]);
+  const deleteAutomation = useCallback(() => {
+    if (!automation) return;
+    Alert.alert(
+      'Delete this automation?',
+      `“${automation.name}” will stop running. The conversation stays as it is.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void client
+              .deleteSessionAutomation(sessionId)
+              .then(() => {
+                setAutomationSheetOpen(false);
+                applyAutomation(null);
+              })
+              .catch((error: unknown) =>
+                Alert.alert(
+                  'Could not delete automation',
+                  error instanceof Error ? error.message : 'Please try again.',
+                ),
+              );
+          },
+        },
+      ],
+    );
+  }, [applyAutomation, automation, client, sessionId]);
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
   const [previewServer, setPreviewServer] =
@@ -858,59 +895,18 @@ export function SessionChat({
     if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
   }, [session.devServers]);
 
-  const editAgentLoop = useCallback(() => {
-    if (!agentLoop || sending || busy) return;
-    sendTurn(
-      [
-        `Reconfigure the Agent Loop "${agentLoop.name}".`,
-        `Agent Loop ID: ${agentLoop.id}`,
-        'Ask me focused questions about the script and schedule, one decision at a time.',
-        `Current config:\n${JSON.stringify(
-          {
-            name: agentLoop.name,
-            schedule: agentLoop.schedule,
-            script: agentLoop.script,
-            reactionPrompt: agentLoop.reactionPrompt,
-            reactionModel: agentLoop.reactionModel,
-          },
-          null,
-          2,
-        )}`,
-        'Keep the script deterministic, read-only by default, bounded, and self-contained.',
-        'Propose the full replacement config for my explicit confirmation and test run. The final verity:agent-loop block must use the Agent Loop ID above. Do not enable it yourself.',
-      ].join('\n\n'),
-    );
-  }, [agentLoop, busy, sendTurn, sending]);
-
-  const confirmAgentLoop = useCallback(
-    async (message: AgentLoopProposalMessage): Promise<void> => {
-      const proposal = message.proposal;
-      if (agentLoop?.id !== proposal.loopId) {
-        throw new Error('This proposal does not belong to the open Agent Loop.');
-      }
-      await client.updateAgentLoop(proposal.loopId, {
+  const confirmAutomation = useCallback(
+    async (proposal: AutomationProposalMessage['proposal']): Promise<void> => {
+      const saved = await client.saveSessionAutomation(sessionId, {
         name: proposal.name,
-        script: proposal.script,
         schedule: proposal.schedule,
-        reactionPrompt: proposal.reactionPrompt ?? null,
-        reactionModel: proposal.reactionModel ?? null,
+        prompt: proposal.prompt,
+        ...(proposal.script !== undefined ? { script: proposal.script } : {}),
+        ...(proposal.model !== undefined ? { model: proposal.model } : {}),
       });
-      const tested = await client.testAgentLoop(proposal.loopId);
-      if (tested.result.outcome === 'error') {
-        throw new Error(tested.result.detail ?? 'The Agent Loop test run failed.');
-      }
-      setAgentLoop(tested.loop);
-      publishAgentLoopMutation(tested.loop);
+      applyAutomation(saved);
     },
-    [agentLoop?.id, client],
-  );
-  const enableAgentLoop = useCallback(
-    async (loopId: string): Promise<void> => {
-      const enabled = await client.updateAgentLoop(loopId, { status: 'enabled' });
-      setAgentLoop(enabled);
-      publishAgentLoopMutation(enabled);
-    },
-    [client],
+    [applyAutomation, client, sessionId],
   );
   // Keep configured OpenCode gateway models available in project sessions while
   // excluding provider IDs that the server cannot route.
@@ -3192,12 +3188,8 @@ export function SessionChat({
       dead,
       focusInput,
       recoverPending: onDismissPendingEcho,
-      confirmAgentLoop,
-      enableAgentLoop,
-      agentLoopStatus: agentLoop?.status ?? null,
-      agentLoopTested: agentLoop?.testedScriptFingerprint !== null && agentLoop !== null,
-      agentLoopId: agentLoop?.id ?? null,
-      agentLoopConfigFingerprint: agentLoop ? agentLoopConfigFingerprint(agentLoop) : null,
+      confirmAutomation,
+      automation,
     }),
     [
       sendQuickReply,
@@ -3205,16 +3197,8 @@ export function SessionChat({
       dead,
       focusInput,
       onDismissPendingEcho,
-      confirmAgentLoop,
-      enableAgentLoop,
-      agentLoop?.status,
-      agentLoop?.testedScriptFingerprint,
-      agentLoop?.id,
-      agentLoop?.name,
-      agentLoop?.script,
-      agentLoop?.schedule,
-      agentLoop?.reactionPrompt,
-      agentLoop?.reactionModel,
+      confirmAutomation,
+      automation,
     ],
   );
   // Local upload placeholders may sit after the transcript tail, but quick-action
@@ -3487,19 +3471,6 @@ export function SessionChat({
         {/* Actions sit on the title row as large round buttons, so the header needs a
             single row and the targets are big enough to hit and recognise. */}
         <View style={styles.headerActions}>
-          {kind === 'agent_loop' ? (
-            <Pressable
-              onPress={() => setLoopCockpitOpen(true)}
-              disabled={!agentLoop}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Open Loop cockpit"
-              accessibilityState={{ disabled: !agentLoop }}
-              style={styles.headerLoopButton}
-            >
-              <Text style={styles.headerLoopButtonText}>Loop</Text>
-            </Pressable>
-          ) : null}
           {projectId ? (
             <HeaderActionButton
               icon="monitor"
@@ -3653,6 +3624,13 @@ export function SessionChat({
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
         </View>
+      ) : null}
+      {automation ? (
+        <AutomationBar
+          automation={automation}
+          onOpen={openAutomation}
+          onDelete={deleteAutomation}
+        />
       ) : null}
       {gmailConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
@@ -3808,18 +3786,13 @@ export function SessionChat({
           onClose={() => setEnginePickerOpen(false)}
         />
       ) : null}
-      {agentLoop ? (
-        <AgentLoopCockpit
-          client={client}
-          loop={agentLoop}
-          visible={loopCockpitOpen}
-          onClose={() => setLoopCockpitOpen(false)}
-          onEdit={editAgentLoop}
-          onLoopChanged={(updated) => {
-            setAgentLoop(updated);
-            publishAgentLoopMutation(updated);
-          }}
-          sessionBusy={sending || busy}
+      {automation && automationSheetOpen ? (
+        <AutomationSheet
+          automation={automation}
+          updating={automationUpdating}
+          onToggle={toggleAutomation}
+          onDelete={deleteAutomation}
+          onClose={() => setAutomationSheetOpen(false)}
         />
       ) : null}
       {dead ? (
@@ -3879,12 +3852,42 @@ export function SessionChat({
         // Existing sessions wait for their backlog before claiming to be empty.
         // A locally-created session is already known to start empty, so show the
         // usable chat state immediately while provisioning continues behind it.
-        <View style={styles.centered}>
-          <Text style={styles.emptyTitle}>No messages yet</Text>
+        <ScrollView
+          contentContainerStyle={styles.starterScreen}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={styles.emptyTitle}>What should this session do?</Text>
           <Text style={styles.emptySubtitle}>
-            Send a prompt below to steer this agent — its reply streams in live.
+            Write below. The agent can work on your project, just talk things through, or take care
+            of something on a schedule.
           </Text>
-        </View>
+          <View style={styles.starterList}>
+            <SessionStarterCard
+              icon="code"
+              title="Build something"
+              text="Describe a change or a bug. The agent works on it in this session's own branch."
+              onPress={focusInput}
+            />
+            <SessionStarterCard
+              icon="message-circle"
+              title="Just chat"
+              text="Ask questions, plan, or think out loud. Nothing changes until you ask for it."
+              onPress={focusInput}
+            />
+            <SessionStarterCard
+              icon="repeat"
+              title="Recurring task"
+              badge="New"
+              text="Say what should happen and when, for example every Monday at 9:00. You confirm it before it starts."
+              onPress={() => {
+                setDraft((current) =>
+                  current.trim().length > 0 ? current : 'Every Monday at 9:00, ',
+                );
+                focusInput();
+              }}
+            />
+          </View>
+        </ScrollView>
       ) : (
         // Quick-Action chips (#97) reach the input/dispatch through the context. The
         // Rows stay chronological so FlashList's native chat anchoring can preserve the
@@ -5882,8 +5885,8 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
       // the chat list order. Once the operator answers, a newer row makes it no longer
       // latest and the chips freeze (#97: stale chips deactivate).
       return <ChoicesRow message={item.message} isLatest={isLatest} />;
-    case 'agent-loop-proposal':
-      return <AgentLoopProposalRow message={item.message} isLatest={isLatest} />;
+    case 'automation-proposal':
+      return <AutomationProposalRow message={item.message} />;
   }
   return null;
 }
@@ -7166,135 +7169,41 @@ function ChoicesRow({ message, isLatest }: { message: ChoicesMessage; isLatest: 
   );
 }
 
-function AgentLoopProposalRow({
-  message,
-  isLatest,
-}: {
-  message: AgentLoopProposalMessage;
-  isLatest: boolean;
-}) {
+function AutomationProposalRow({ message }: { message: AutomationProposalMessage }) {
   const actions = useContext(SessionActionsContext);
-  const [state, setState] = useState<'idle' | 'testing' | 'tested' | 'enabling' | 'enabled'>(
-    'idle',
-  );
+  const [state, setState] = useState<AutomationProposalState>('idle');
   const [error, setError] = useState<string | null>(null);
   const proposal = message.proposal;
-  const actionsAvailable = actions !== null && !actions.sending;
-  const currentProposal =
-    actions?.agentLoopId === proposal.loopId &&
-    actions.agentLoopConfigFingerprint === agentLoopConfigFingerprint(proposal);
-  const confirmActive = isLatest && actionsAvailable;
-  const enableActive = actionsAvailable && currentProposal;
-
-  useEffect(() => {
-    if (!actions || !currentProposal || state === 'testing' || state === 'enabling') return;
-    if (actions.agentLoopStatus === 'enabled') setState('enabled');
-    else if (actions.agentLoopTested) setState('tested');
-  }, [actions, currentProposal, state]);
-
+  const current = actions?.automation
+    ? isSameAutomation(actions.automation, proposal)
+      ? 'same'
+      : 'other'
+    : 'none';
+  // Once saved, the card follows the live automation: deleting or replacing it
+  // turns the button back on so this proposal can be confirmed again.
+  const shownState = state === 'saved' && current !== 'same' ? 'idle' : state;
   const confirm = useCallback(() => {
-    if (!confirmActive || !actions) return;
-    setState('testing');
+    if (!actions || shownState !== 'idle') return;
+    setState('saving');
     setError(null);
     void actions
-      .confirmAgentLoop(message)
-      .then(() => setState('tested'))
+      .confirmAutomation(proposal)
+      .then(() => setState('saved'))
       .catch((caught: unknown) => {
         setState('idle');
-        setError(caught instanceof Error ? caught.message : 'Could not test Agent Loop.');
+        setError(caught instanceof Error ? caught.message : 'Could not create the automation.');
       });
-  }, [actions, confirmActive, message]);
-
-  const enable = useCallback(() => {
-    if (!enableActive || !actions || state !== 'tested') return;
-    setState('enabling');
-    setError(null);
-    void actions
-      .enableAgentLoop(proposal.loopId)
-      .then(() => setState('enabled'))
-      .catch((caught: unknown) => {
-        setState('tested');
-        setError(caught instanceof Error ? caught.message : 'Could not enable Agent Loop.');
-      });
-  }, [actions, enableActive, proposal.loopId, state]);
-
+  }, [actions, proposal, shownState]);
   return (
-    <View style={styles.agentLoopProposal}>
-      <View style={styles.agentLoopProposalHeader}>
-        <Text style={styles.agentLoopProposalTitle}>{proposal.name}</Text>
-        <Text style={styles.agentLoopProposalState}>
-          {state === 'enabled'
-            ? 'Enabled'
-            : state === 'tested'
-              ? 'Test passed'
-              : state === 'testing'
-                ? 'Testing…'
-                : state === 'enabling'
-                  ? 'Enabling…'
-                  : 'Ready to test'}
-        </Text>
-      </View>
-      <Text style={styles.agentLoopProposalSchedule}>
-        {agentLoopProposalScheduleLabel(proposal.schedule)}
-      </Text>
-      <ScrollView style={styles.agentLoopProposalScript} nestedScrollEnabled>
-        <Text selectable style={styles.agentLoopProposalScriptText}>
-          {proposal.script}
-        </Text>
-      </ScrollView>
-      <Text style={styles.agentLoopProposalHint}>
-        Confirmation saves this configuration and runs it once in the project container. Enabling
-        stays a separate decision after the test passes.
-      </Text>
-      {error ? <Text style={styles.agentLoopProposalError}>{error}</Text> : null}
-      <Pressable
-        onPress={confirm}
-        disabled={!confirmActive || state !== 'idle'}
-        accessibilityRole="button"
-        accessibilityLabel="Confirm and test Agent Loop"
-        accessibilityState={{ disabled: !confirmActive || state !== 'idle' }}
-        style={[
-          styles.agentLoopProposalConfirm,
-          (!confirmActive || state !== 'idle') && styles.choicesSendDisabled,
-        ]}
-      >
-        {state === 'testing' ? <ActivityIndicator size="small" /> : null}
-        <Text style={styles.agentLoopProposalConfirmText}>
-          {state === 'tested' || state === 'enabling' || state === 'enabled'
-            ? 'Test passed'
-            : 'Confirm & test'}
-        </Text>
-      </Pressable>
-      {state === 'tested' || state === 'enabling' || state === 'enabled' ? (
-        <Pressable
-          onPress={enable}
-          disabled={!enableActive || state !== 'tested'}
-          accessibilityRole="button"
-          accessibilityLabel="Enable Agent Loop"
-          accessibilityState={{ disabled: !enableActive || state !== 'tested' }}
-          style={[
-            styles.agentLoopProposalConfirm,
-            (!enableActive || state !== 'tested') && styles.choicesSendDisabled,
-          ]}
-        >
-          {state === 'enabling' ? <ActivityIndicator size="small" /> : null}
-          <Text style={styles.agentLoopProposalConfirmText}>
-            {state === 'enabled' ? 'Agent Loop enabled' : 'Enable loop'}
-          </Text>
-        </Pressable>
-      ) : null}
-    </View>
+    <AutomationProposalCard
+      proposal={proposal}
+      state={shownState}
+      current={current}
+      error={error}
+      disabled={actions === null || actions.sending || actions.dead}
+      onConfirm={confirm}
+    />
   );
-}
-
-function agentLoopProposalScheduleLabel(
-  schedule: AgentLoopProposalMessage['proposal']['schedule'],
-): string {
-  if (schedule.kind === 'interval') return `Every ${String(schedule.everyMinutes)} minutes`;
-  const time = `${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`;
-  if (schedule.kind === 'daily') return `Daily at ${time}`;
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  return `${days[schedule.weekday] ?? 'Weekly'} at ${time}`;
 }
 
 // First non-empty line of a bookmarked message, lightly de-marked (drop a leading
@@ -9425,6 +9334,22 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.lg,
     fontWeight: '600',
   },
+  starterScreen: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl,
+  },
+  starterList: {
+    alignSelf: 'stretch',
+    maxWidth: 440,
+    width: '100%',
+    marginHorizontal: 'auto',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.md,
+  },
   emptySubtitle: {
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
@@ -9603,19 +9528,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   headerActionBadgeText: {
     color: '#ffffff',
-    fontSize: 11 * theme.fontScale,
-    fontWeight: '700',
-  },
-  headerLoopButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 5,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  headerLoopButtonText: {
-    color: theme.colors.text,
     fontSize: 11 * theme.fontScale,
     fontWeight: '700',
   },
@@ -10745,71 +10657,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     fontSize: theme.text.sm,
     fontWeight: '600',
-  },
-  agentLoopProposal: {
-    gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    marginVertical: theme.spacing.sm,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  agentLoopProposalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
-  agentLoopProposalTitle: {
-    flex: 1,
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
-  },
-  agentLoopProposalState: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-  },
-  agentLoopProposalSchedule: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-  },
-  agentLoopProposalScript: {
-    maxHeight: 220,
-    padding: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  agentLoopProposalScriptText: {
-    color: theme.colors.text,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-  },
-  agentLoopProposalHint: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
-  },
-  agentLoopProposalError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.xs,
-  },
-  agentLoopProposalConfirm: {
-    minHeight: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
-  },
-  agentLoopProposalConfirmText: {
-    color: theme.colors.background,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
   },
   choicesChips: {
     flexDirection: 'row',

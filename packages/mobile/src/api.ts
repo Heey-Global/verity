@@ -95,8 +95,6 @@ export const sessionSummarySchema = z.object({
   name: z.string().nullable(),
   /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
   projectId: z.string().nullable().optional(),
-  /** Agent Loop sessions are visually distinct and pinned below normal sessions. */
-  kind: z.enum(['normal', 'agent_loop']).optional(),
   status: sessionStatusSchema,
   /** Tool-use ids currently waiting for permission. Optional for compatibility
    * with older servers. */
@@ -134,6 +132,8 @@ export const sessionSummarySchema = z.object({
    * the server (`sandbox_disconnected`). Absent from a healthy session and from
    * any older server, both of which read as "nothing to report". */
   attention: z.array(attentionSignalSchema).optional(),
+  /** The session's recurring automation, if it has one. */
+  automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
 });
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
@@ -378,9 +378,9 @@ export type ProjectSettingsPatch = {
   dopplerConfig?: string | null | undefined;
 };
 
-// Agent Loops — recurring script-first automations (ADR 0008). Structured schedule
-// (never a raw cron string) so the mobile UI edits fields, not expressions.
-export const agentLoopScheduleSchema = z.discriminatedUnion('kind', [
+// Session automations (ADR 0008): one recurring prompt per session, created
+// from an agent's proposal after the operator confirms it.
+export const automationScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('interval'), everyMinutes: z.number() }),
   z.object({ kind: z.literal('daily'), hour: z.number(), minute: z.number() }),
   z.object({
@@ -390,72 +390,40 @@ export const agentLoopScheduleSchema = z.discriminatedUnion('kind', [
     minute: z.number(),
   }),
 ]);
-export type AgentLoopSchedule = z.infer<typeof agentLoopScheduleSchema>;
+export type AutomationSchedule = z.infer<typeof automationScheduleSchema>;
 
-export const agentLoopSchema = z.object({
+export const sessionAutomationSchema = z.object({
   id: z.string(),
-  projectId: z.string(),
+  sessionId: z.string(),
   name: z.string(),
-  status: z.enum(['draft', 'enabled', 'paused']),
-  schedule: agentLoopScheduleSchema.nullable(),
+  status: z.enum(['enabled', 'paused']),
+  schedule: automationScheduleSchema,
+  prompt: z.string(),
   script: z.string().nullable(),
-  reactionPrompt: z.string().nullable(),
-  reactionModel: z.string().nullable(),
-  sessionId: z.string().nullable(),
-  testedScriptFingerprint: z.string().nullable(),
+  model: z.string().nullable(),
   consecutiveErrorCount: z.number(),
   lastRunAt: z.string().nullable(),
   lastOutcome: z.enum(['ok', 'acted', 'error', 'skipped']).nullable(),
+  lastDetail: z.string().nullable(),
   nextRunAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
-export type AgentLoop = z.infer<typeof agentLoopSchema>;
+export type SessionAutomation = z.infer<typeof sessionAutomationSchema>;
 
-/** Stable identity for the complete user-confirmed Agent Loop config. */
-export function agentLoopConfigFingerprint(config: {
+/** What the operator confirms: the agent's proposal, verbatim. */
+export interface SessionAutomationRequest {
   name: string;
-  script: string | null;
-  schedule: AgentLoopSchedule | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
-}): string {
-  return JSON.stringify({
-    name: config.name,
-    script: config.script,
-    schedule: config.schedule,
-    reactionPrompt: config.reactionPrompt ?? null,
-    reactionModel: config.reactionModel ?? null,
-  });
+  schedule: AutomationSchedule;
+  prompt: string;
+  script?: string;
+  model?: string | null;
 }
 
-export const agentLoopRunSchema = z.object({
-  id: z.string(),
-  loopId: z.string(),
-  startedAt: z.string(),
-  finishedAt: z.string().nullable(),
-  outcome: z.enum(['ok', 'acted', 'error', 'skipped']),
-  exitCode: z.number().nullable(),
-  detail: z.string().nullable(),
-  sessionId: z.string().nullable(),
-  isTest: z.boolean(),
+const sessionAutomationResponseSchema = z.object({ automation: sessionAutomationSchema });
+const optionalSessionAutomationResponseSchema = z.object({
+  automation: sessionAutomationSchema.nullable(),
 });
-export type AgentLoopRun = z.infer<typeof agentLoopRunSchema>;
-
-export interface AgentLoopCreateRequest {
-  name: string;
-  schedule?: AgentLoopSchedule | null;
-  script?: string | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
-}
-
-export type AgentLoopPatchRequest = Partial<AgentLoopCreateRequest> & {
-  status?: 'draft' | 'enabled' | 'paused';
-};
-
-const agentLoopResponseSchema = z.object({ loop: agentLoopSchema });
-const agentLoopsResponseSchema = z.object({ loops: z.array(agentLoopSchema) });
 
 export interface DevServer {
   id: string;
@@ -572,28 +540,6 @@ export interface DevServerDetectionState {
   reviewedFingerprint: string | null;
   reviewedAt: string | null;
 }
-const agentLoopRunsResponseSchema = z.object({ runs: z.array(agentLoopRunSchema) });
-const agentLoopTestResponseSchema = z.object({
-  result: z.object({
-    outcome: z.enum(['ok', 'acted', 'error']),
-    exitCode: z.number().nullable(),
-    detail: z.string().nullable(),
-    sessionId: z.string().nullable(),
-  }),
-  loop: agentLoopSchema,
-});
-export type AgentLoopTestResult = z.infer<typeof agentLoopTestResponseSchema>;
-const agentLoopRunResponseSchema = z.object({
-  result: z.object({
-    outcome: z.enum(['ok', 'acted', 'error', 'skipped']),
-    exitCode: z.number().nullable(),
-    detail: z.string().nullable(),
-    sessionId: z.string().nullable(),
-  }),
-  run: agentLoopRunSchema,
-  loop: agentLoopSchema,
-});
-export type AgentLoopRunResult = z.infer<typeof agentLoopRunResponseSchema>;
 
 export const veritySettingsSchema = z.object({
   gitUserName: z.string().nullable(),
@@ -3338,64 +3284,45 @@ export class VerityClient {
     );
   }
 
-  // ─── Agent Loops (ADR 0008) ────────────────────────────────────────────────
+  // ─── Session automations (ADR 0008) ────────────────────────────────────────
 
-  async listAgentLoops(projectId: string): Promise<AgentLoop[]> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/agent-loops`, {
+  async getSessionAutomation(sessionId: string): Promise<SessionAutomation | null> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
       method: 'GET',
     });
-    return agentLoopsResponseSchema.parse(await res.json()).loops;
+    return optionalSessionAutomationResponseSchema.parse(await res.json()).automation;
   }
 
-  async getAgentLoop(loopId: string): Promise<AgentLoop> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}`, {
-      method: 'GET',
-    });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
-  }
-
-  async createAgentLoop(projectId: string, body: AgentLoopCreateRequest): Promise<AgentLoop> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/agent-loops`, {
-      method: 'POST',
+  /** Create or replace the session's automation. A proposal with a check script
+   * is run once first; a failing check is refused with its reason. */
+  async saveSessionAutomation(
+    sessionId: string,
+    body: SessionAutomationRequest,
+  ): Promise<SessionAutomation> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
+      method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
+    return sessionAutomationResponseSchema.parse(await res.json()).automation;
   }
 
-  async updateAgentLoop(loopId: string, patch: AgentLoopPatchRequest): Promise<AgentLoop> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}`, {
+  async setSessionAutomationStatus(
+    sessionId: string,
+    status: SessionAutomation['status'],
+  ): Promise<SessionAutomation> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ status }),
     });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
+    return sessionAutomationResponseSchema.parse(await res.json()).automation;
   }
 
-  async ensureAgentLoopSession(loopId: string): Promise<AgentLoop> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/session`, {
-      method: 'POST',
+  async deleteSessionAutomation(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
+      method: 'DELETE',
     });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
-  }
-
-  async testAgentLoop(loopId: string): Promise<AgentLoopTestResult> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/test`, {
-      method: 'POST',
-    });
-    return agentLoopTestResponseSchema.parse(await res.json());
-  }
-
-  async runAgentLoop(loopId: string): Promise<AgentLoopRunResult> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/run`, {
-      method: 'POST',
-    });
-    return agentLoopRunResponseSchema.parse(await res.json());
-  }
-
-  async deleteAgentLoop(loopId: string, opts: { deleteSession?: boolean } = {}): Promise<void> {
-    const query = opts.deleteSession ? '?deleteSession=true' : '';
-    await this.request(`/agent-loops/${encodeURIComponent(loopId)}${query}`, { method: 'DELETE' });
   }
 
   private resolveLocalPreview(share: LocalPreviewShare): LocalPreviewShare {
@@ -3540,13 +3467,6 @@ export class VerityClient {
       },
     );
     return publicPreviewShareResponseSchema.parse(await res.json()).share;
-  }
-
-  async listAgentLoopRuns(loopId: string): Promise<AgentLoopRun[]> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/runs`, {
-      method: 'GET',
-    });
-    return agentLoopRunsResponseSchema.parse(await res.json()).runs;
   }
 
   async repairProject(id: string, opts: ProjectProvisionOptions = {}): Promise<ProjectRecord> {

@@ -19,7 +19,7 @@ native resume or promise that the entire history fits into the next model prompt
 
 - Both projects must be local, visible, and outside the control plane.
 - The session must be idle, with no meeting job or queued work admitted during the move.
-- Agent Loop sessions are excluded because their automation belongs to a project.
+- A session's automation moves with it. A check script then runs in the target project's container.
 - Session identity, name, events, and durable transcripts remain intact.
 - Native backend bindings are reset and a durable move marker forces the next turn through the
   existing cold-start handoff, including sessions originally created with Claude.

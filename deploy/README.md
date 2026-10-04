@@ -742,9 +742,9 @@ VERITY_SANDBOX_CPUS=4
 VERITY_SANDBOX_CPU_SHARES=512
 ```
 
-Active project Sandboxes sleep after 30 minutes without a running turn, Agent
-Loop, dev server, or public preview. New turns and Agent Loops wake them
-automatically. This is a product lifecycle rule rather than a deployment setting.
+Active project Sandboxes sleep after 30 minutes without a running turn,
+automation check, dev server, or public preview. New turns and automations wake
+them automatically. This is a product lifecycle rule rather than a deployment setting.
 
 Sleep decides how many sandboxes are resident at all; the limits below govern the
 ones that are awake. The two are complementary, and neither replaces the other —

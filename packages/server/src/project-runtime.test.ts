@@ -147,14 +147,14 @@ describe('DockerProjectRuntime', () => {
     );
   });
 
-  it('runs an Agent Loop script inside its session worktree with hard bounds', async () => {
+  it('runs an automation check script inside its session worktree with hard bounds', async () => {
     const runner = vi.fn<RuntimeRunner>().mockResolvedValue({
       stdout: '{"spawn":true}\n',
       stderr: '',
       exitCode: 0,
     });
     const runtime = new DockerProjectRuntime({ runner });
-    const result = await runtime.runAgentLoopScript(
+    const result = await runtime.runAutomationScript(
       project,
       {
         defaultBranch: null,

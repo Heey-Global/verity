@@ -85,8 +85,6 @@ export interface SessionModelState {
    * `undefined` until the detail loads. The engine picker hides non-Claude/Codex
    * models for project sessions (the server enforces the same constraint). */
   projectId: string | null | undefined;
-  /** Whether this is an ordinary session or the durable home of an Agent Loop. */
-  kind: 'normal' | 'agent_loop' | undefined;
   /** A {@link SessionModel.switchModel} POST is in flight (the picker disables while
    * the switch resolves). */
   switchingModel: boolean;
@@ -245,7 +243,6 @@ export class SessionModel {
   private _model: string | undefined;
   private _modelSwitched = false;
   private _projectId: string | null | undefined;
-  private _kind: 'normal' | 'agent_loop' | undefined;
   private _switchingModel = false;
   private _modelSwitchPending = false;
   private _modelSwitchPendingAfterActivityRequest = 0;
@@ -394,7 +391,6 @@ export class SessionModel {
       name: this._name,
       model: this._model,
       projectId: this._projectId,
-      kind: this._kind,
       switchingModel: this._switchingModel,
       modelSwitchPending: this._modelSwitchPending,
       terminationUnconfirmed: this._terminationUnconfirmed,
@@ -926,7 +922,6 @@ export class SessionModel {
       }
       this._name = detail.name;
       this._projectId = detail.projectId ?? null;
-      this._kind = detail.kind ?? 'normal';
       // Seed the working indicator so the Stop button + activity line are correct on
       // mount, without waiting for the first activity poll. Mirror the poll's `busy`
       // (in-flight OR log-derived running): `detail.busy` is the conductor's `isBusy`

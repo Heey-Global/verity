@@ -613,8 +613,8 @@ function SessionList({ client }: { client: VerityClient }) {
   // stale banner.
   const onDeleteRenaming = useCallback(() => {
     if (!renaming) return;
-    void confirmDeleteSession(renaming, client, remove, refresh, () => setRenaming(null));
-  }, [client, refresh, renaming, remove]);
+    confirmDeleteSession(renaming, remove, () => setRenaming(null));
+  }, [renaming, remove]);
 
   if (loading && sessions.length === 0) {
     return (
@@ -741,7 +741,6 @@ function SessionList({ client }: { client: VerityClient }) {
             projects.find((project) => project.id === renaming.projectId)?.repo ?? 'No project'
           }
           canMove={
-            renaming.kind !== 'agent_loop' &&
             renaming.status !== 'running' &&
             projects.some(
               (project) => project.id === renaming.projectId && project.kind === 'local',
@@ -761,7 +760,6 @@ function SessionList({ client }: { client: VerityClient }) {
               (candidate) =>
                 candidate.projectId !== renaming.projectId &&
                 candidate.projectId !== null &&
-                candidate.kind !== 'agent_loop' &&
                 candidate.resumable !== false &&
                 projects.some(
                   (project) =>
@@ -1401,13 +1399,11 @@ function ProjectGroup({
 // Delete is destructive + irreversible (drops history, removes the worktree), so
 // confirm with a native alert before firing. Called from the rename modal (opened
 // by a row long-press); `onConfirmed` lets the modal close itself after the delete.
-async function confirmDeleteSession(
+function confirmDeleteSession(
   session: SessionSummary,
-  client: VerityClient,
   remove: (sessionId: string, opts?: { force?: boolean }) => Promise<void>,
-  refresh: () => Promise<void>,
   onConfirmed?: () => void,
-): Promise<void> {
+): void {
   const deleteSession = (force = false) => {
     void remove(session.sessionId, { force }).catch((error: unknown) => {
       if (error instanceof VerityApiError && error.status === 409 && !force) {
@@ -1433,53 +1429,9 @@ async function confirmDeleteSession(
     onConfirmed?.();
   };
 
-  if (session.kind === 'agent_loop' && session.projectId) {
-    try {
-      const loops = await client.listAgentLoops(session.projectId);
-      const loop = loops.find((candidate) => candidate.sessionId === session.sessionId);
-      if (loop) {
-        Alert.alert(
-          'Delete Agent Loop session?',
-          `Choose whether to remove only the chat for "${sessionLabel(session)}" or the Agent Loop and its schedule too.`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Session only',
-              onPress: () => {
-                deleteSession();
-              },
-            },
-            {
-              text: 'Session + loop',
-              style: 'destructive',
-              onPress: () => {
-                void client
-                  .deleteAgentLoop(loop.id, { deleteSession: true })
-                  .then(refresh)
-                  .catch((error: unknown) =>
-                    Alert.alert(
-                      'Could not delete Agent Loop',
-                      error instanceof Error ? error.message : 'Please try again.',
-                    ),
-                  );
-                onConfirmed?.();
-              },
-            },
-          ],
-        );
-        return;
-      }
-    } catch (error) {
-      Alert.alert(
-        'Could not load Agent Loop',
-        error instanceof Error ? error.message : 'Please try again.',
-      );
-      return;
-    }
-  }
   Alert.alert(
     'Delete session?',
-    `This permanently removes "${sessionLabel(session)}" — its history and worktree. This can't be undone.`,
+    `This permanently removes "${sessionLabel(session)}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
     [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -1797,6 +1749,11 @@ function SessionRow({
       <View style={styles.titleBlock}>
         <View style={styles.sessionTitleLine}>
           {previewActive ? <Icon name="monitor" size={14} color={theme.colors.primary} /> : null}
+          {session.automation?.status === 'enabled' ? (
+            <View accessible accessibilityLabel="Automation active">
+              <Icon name="repeat" size={14} color={theme.colors.primary} />
+            </View>
+          ) : null}
           <Text style={styles.sessionTitle} numberOfLines={1}>
             {label}
           </Text>

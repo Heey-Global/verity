@@ -212,7 +212,6 @@ describe('PreviewShareManager', () => {
       worktree: '/data/repo/sessions/s1',
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     store.listPublicPreviewShares.mockResolvedValueOnce([
@@ -242,7 +241,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -293,7 +291,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -334,7 +331,6 @@ describe('PreviewShareManager', () => {
       worktree: outside,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -1575,7 +1571,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -1790,7 +1785,6 @@ describe('session port previews', () => {
     worktree: '/data/repo/sessions/s1',
     model: 'test',
     name: null,
-    kind: 'normal' as const,
     lastSeenEventCount: null,
   };
   const listener = (port: number, bind: 'any' | 'loopback', cwd = '/work/sessions/s1/web') => ({
