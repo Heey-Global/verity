@@ -425,3 +425,17 @@ when its deps are absent. With no `enabled` loops, the timer idles. The
 - `packages/server/src/server.ts:1951` — `maybeDispatchCiFailureRepairTurn`, the
   idle-only, marker-deduped dispatch pattern.
 - ADR 0007 — withdrawn task-management proposal; Agent Loops add no GraphQL.
+
+
+## Update: user-local calendar schedules
+
+Daily and weekly schedules now carry an optional IANA `timeZone`. On confirmation,
+the client fills an omitted zone from the device, so a requested 22:33 means 22:33
+in that zone, including daylight-saving changes. The zone stays fixed when the
+device travels. Explicitly requested zones are preserved; intervals remain elapsed
+time. A skipped clock time advances by the daylight-saving gap, and a repeated
+clock time runs only at its first occurrence.
+
+Existing records and older clients without a zone retain the original server-local
+semantics. No database migration can infer their intended user zone safely; replacing
+an automation through the updated client saves the device zone.

@@ -60,6 +60,19 @@ describe('session automation routes', () => {
     expect(read.json().automation).toMatchObject({ name: 'Morning review' });
   });
 
+  it('preserves a confirmed device zone and rejects unknown zones', async () => {
+    const schedule = { ...proposal.schedule, timeZone: 'Europe/Berlin' };
+    const res = await put({ ...proposal, schedule });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().automation.schedule).toEqual(schedule);
+    const invalid = await put({
+      ...proposal,
+      schedule: { ...schedule, timeZone: 'Invalid/Zone' },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect((await store.getSessionAutomation('s1'))?.schedule).toEqual(schedule);
+  });
+
   it('reports no automation as null rather than 404 for an existing session', async () => {
     const read = await app.inject({ method: 'GET', url: '/sessions/s1/automation' });
     expect(read.statusCode).toBe(200);

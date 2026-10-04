@@ -16,7 +16,13 @@ const base: SessionAutomation = {
   sessionId: 's1',
   name: 'Morning review',
   status: 'enabled',
-  schedule: { kind: 'weekly', weekday: 1, hour: 9, minute: 0 },
+  schedule: {
+    kind: 'weekly',
+    weekday: 1,
+    hour: 9,
+    minute: 0,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  },
   prompt: 'Summarize the open pull requests.',
   script: null,
   model: null,
@@ -31,8 +37,8 @@ const base: SessionAutomation = {
 
 describe('automationScheduleLabel', () => {
   it.each([
-    [{ kind: 'daily', hour: 7, minute: 30 }, 'Every day at 07:30 server time'],
-    [{ kind: 'weekly', weekday: 1, hour: 9, minute: 0 }, 'Every Monday at 09:00 server time'],
+    [{ kind: 'daily', hour: 7, minute: 30 }, 'Every day at 07:30'],
+    [{ kind: 'weekly', weekday: 1, hour: 9, minute: 0 }, 'Every Monday at 09:00'],
     [{ kind: 'interval', everyMinutes: 15 }, 'Every 15 minutes'],
     [{ kind: 'interval', everyMinutes: 60 }, 'Every hour'],
     [{ kind: 'interval', everyMinutes: 180 }, 'Every 3 hours'],
@@ -43,7 +49,7 @@ describe('automationScheduleLabel', () => {
 });
 
 it('takes the time from the next run when the server is in another time zone', () => {
-  // The schedule says 09:00 server time; the next run lands at 11:00 on this device.
+  // The schedule says 09:00; the next run lands at 11:00 on this device.
   const nextRunAt = new Date(2026, 9, 6, 11, 0).toISOString();
   expect(automationScheduleLabel({ kind: 'daily', hour: 9, minute: 0 }, nextRunAt)).toBe(
     'Every day at 11:00',
@@ -108,7 +114,16 @@ describe('isSameAutomation', () => {
     // jsonb hands the saved schedule back with its keys reordered.
     expect(
       isSameAutomation(
-        { ...base, schedule: { hour: 9, kind: 'weekly', minute: 0, weekday: 1 } },
+        {
+          ...base,
+          schedule: {
+            hour: 9,
+            kind: 'weekly',
+            minute: 0,
+            weekday: 1,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          },
+        },
         proposal,
       ),
     ).toBe(true);
@@ -116,4 +131,33 @@ describe('isSameAutomation', () => {
       isSameAutomation(base, { ...proposal, schedule: { kind: 'daily', hour: 9, minute: 0 } }),
     ).toBe(false);
   });
+});
+
+it('labels a paused legacy schedule and an explicit foreign zone honestly', () => {
+  expect(automationScheduleLabel({ kind: 'daily', hour: 9, minute: 0 }, null)).toBe(
+    'Every day at 09:00 server time',
+  );
+  const zone =
+    Intl.DateTimeFormat().resolvedOptions().timeZone === 'Europe/Berlin'
+      ? 'Asia/Tokyo'
+      : 'Europe/Berlin';
+  expect(automationScheduleLabel({ kind: 'daily', hour: 9, minute: 0, timeZone: zone })).toBe(
+    `Every day at 09:00 (${zone})`,
+  );
+});
+it('compares the persisted zone with the proposal device default', () => {
+  const schedule = { kind: 'daily' as const, hour: 9, minute: 0 };
+  const saved = {
+    ...base,
+    schedule: { ...schedule, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+  };
+  const proposal = { name: saved.name, prompt: saved.prompt, schedule };
+  expect(isSameAutomation(saved, proposal)).toBe(true);
+  expect(isSameAutomation({ ...saved, schedule }, proposal)).toBe(false);
+  expect(
+    isSameAutomation(saved, {
+      ...proposal,
+      schedule: { ...schedule, timeZone: 'Pacific/Honolulu' },
+    }),
+  ).toBe(false);
 });

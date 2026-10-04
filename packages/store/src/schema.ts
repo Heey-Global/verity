@@ -943,11 +943,17 @@ export interface SessionAutomationsTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-/** Structured automation schedule. All times are server-local. */
+/** Structured automation schedule. Zone-less legacy schedules remain server-local. */
 export type ScheduleConfig =
   | { kind: 'interval'; everyMinutes: number }
-  | { kind: 'daily'; hour: number; minute: number }
-  | { kind: 'weekly'; weekday: number; hour: number; minute: number };
+  | { kind: 'daily'; hour: number; minute: number; timeZone?: string | undefined }
+  | {
+      kind: 'weekly';
+      weekday: number;
+      hour: number;
+      minute: number;
+      timeZone?: string | undefined;
+    };
 
 /** One-or-more dev servers per project (multi-dev-server data model, slice 1).
  *  The table is the source of truth; the legacy `project_settings.dev_server_*`

@@ -48,3 +48,10 @@ describe('parseAutomationProposal', () => {
     expect(parseAutomationProposal(`${invalid}\n${valid}`)).toEqual({ text: invalid, proposal });
   });
 });
+
+it.each(['Europe/Berlin', 'Invalid/Zone'])('validates the proposal time zone %s', (timeZone) => {
+  const input = `\`\`\`verity:automation\n${JSON.stringify({ ...proposal, schedule: { ...proposal.schedule, timeZone } })}\n\`\`\``;
+  expect(parseAutomationProposal(input).proposal?.schedule).toEqual(
+    timeZone === 'Europe/Berlin' ? { ...proposal.schedule, timeZone } : undefined,
+  );
+});

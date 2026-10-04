@@ -103,3 +103,66 @@ describe('validateSchedule', () => {
     expect(validateSchedule(schedule) === null).toBe(valid);
   });
 });
+
+describe('calendar schedules in the user time zone', () => {
+  it.each([
+    ['2026-10-04T20:00:00Z', '2026-10-04T20:33:00.000Z'],
+    ['2026-12-04T20:00:00Z', '2026-12-04T21:33:00.000Z'],
+    ['2026-10-04T20:33:00Z', '2026-10-05T20:33:00.000Z'],
+  ])('keeps 22:33 Berlin time after %s', (from, expected) => {
+    expect(
+      computeNextRun(
+        { kind: 'daily', hour: 22, minute: 33, timeZone: 'Europe/Berlin' },
+        new Date(from),
+      ).toISOString(),
+    ).toBe(expected);
+  });
+  it.each([
+    ['2026-03-28T09:00:00Z', '2026-03-29T07:00:00.000Z'],
+    ['2026-10-24T08:00:00Z', '2026-10-25T08:00:00.000Z'],
+  ])('keeps the clock hour across DST from %s', (from, expected) => {
+    expect(
+      computeNextRun(
+        { kind: 'daily', hour: 9, minute: 0, timeZone: 'Europe/Berlin' },
+        new Date(from),
+      ).toISOString(),
+    ).toBe(expected);
+  });
+  it('uses the local weekday even when UTC is still Sunday', () => {
+    const schedule = {
+      kind: 'weekly' as const,
+      weekday: 1,
+      hour: 0,
+      minute: 30,
+      timeZone: 'Europe/Berlin',
+    };
+    expect(computeNextRun(schedule, new Date('2026-10-04T20:00:00Z')).toISOString()).toBe(
+      '2026-10-04T22:30:00.000Z',
+    );
+    expect(computeNextRun(schedule, new Date('2026-10-04T22:30:00Z')).toISOString()).toBe(
+      '2026-10-11T22:30:00.000Z',
+    );
+  });
+  it('advances a nonexistent clock time by the DST gap', () => {
+    expect(
+      computeNextRun(
+        { kind: 'daily', hour: 2, minute: 30, timeZone: 'Europe/Berlin' },
+        new Date('2026-03-28T12:00:00Z'),
+      ).toISOString(),
+    ).toBe('2026-03-29T01:30:00.000Z');
+  });
+  it('runs only the first occurrence of a repeated clock time', () => {
+    const schedule = { kind: 'daily' as const, hour: 2, minute: 30, timeZone: 'Europe/Berlin' };
+    expect(computeNextRun(schedule, new Date('2026-10-24T12:00:00Z')).toISOString()).toBe(
+      '2026-10-25T00:30:00.000Z',
+    );
+    expect(computeNextRun(schedule, new Date('2026-10-25T00:30:00Z')).toISOString()).toBe(
+      '2026-10-26T01:30:00.000Z',
+    );
+  });
+  it('rejects unknown zones', () => {
+    expect(validateSchedule({ kind: 'daily', hour: 9, minute: 0, timeZone: 'Invalid/Zone' })).toBe(
+      'invalid time zone',
+    );
+  });
+});

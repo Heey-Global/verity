@@ -28,11 +28,8 @@ function clockTime(hour: number, minute: number): string {
 /**
  * "Every Monday at 09:00", "Every day at 07:30", "Every 2 hours".
  *
- * A schedule's hour and minute are the server's local time. When the next run
- * is known, the label takes its time and weekday from that instant instead, so
- * a phone in another time zone shows the time the run actually happens there.
- * Without one (a proposal, or a paused automation) the time is marked as the
- * server's.
+ * Proposals default to device time. Saved schedules retain their time zone;
+ * the next run, when available, is displayed in the current device's zone.
  */
 export function automationScheduleLabel(schedule: Schedule, nextRunAt?: string | null): string {
   if (schedule.kind === 'interval') {
@@ -48,11 +45,17 @@ export function automationScheduleLabel(schedule: Schedule, nextRunAt?: string |
     return `Every ${String(minutes)} minutes`;
   }
   const next = nextRunAt ? new Date(nextRunAt) : null;
-  // Without a next run the hour is the server's local time, which can differ
-  // from this device's; say so rather than present it as local.
+  const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zoneLabel = schedule.timeZone
+    ? schedule.timeZone === deviceZone
+      ? ''
+      : ` (${schedule.timeZone})`
+    : nextRunAt === null
+      ? ' server time'
+      : '';
   const time = next
     ? formatClockTime(next.getTime() / 1000)
-    : `${clockTime(schedule.hour, schedule.minute)} server time`;
+    : `${clockTime(schedule.hour, schedule.minute)}${zoneLabel}`;
   if (schedule.kind === 'daily') return `Every day at ${time}`;
   const weekday = next ? next.getDay() : schedule.weekday;
   return `Every ${WEEKDAYS[weekday] ?? 'week'} at ${time}`;
@@ -113,6 +116,12 @@ export function automationLastRunText(
 }
 
 function sameSchedule(a: Schedule, b: Schedule): boolean {
+  if (
+    a.kind !== 'interval' &&
+    b.kind !== 'interval' &&
+    a.timeZone !== (b.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
+  )
+    return false;
   switch (a.kind) {
     case 'interval':
       return b.kind === 'interval' && a.everyMinutes === b.everyMinutes;
