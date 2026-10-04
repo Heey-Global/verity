@@ -21,7 +21,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
-import { SettingsPanel } from './SettingsChrome';
+import { SettingsGroup, SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
 
 // Cadence for asking whether an unanswered install request started anything.
@@ -217,7 +217,66 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     'release' in status ? formatReleaseDate(status.release.publishedAt) : undefined;
 
   return (
-    <SettingsPanel>
+    <>
+      <SettingsGroup title="Version">
+        <SettingsPanel>
+          {channelNeedsRefresh ? (
+            <View style={styles.updateProgressRow}>
+              <ActivityIndicator size="small" color={theme.colors.setup.text} />
+              <Text style={styles.updateDetail}>
+                Checking the selected channel… Retrying if the server is unavailable.
+              </Text>
+            </View>
+          ) : (
+            <>
+              <View style={styles.updateHeader}>
+                <Text style={styles.updateTitle} accessibilityRole="header">
+                  {view.title}
+                </Text>
+                {publishedAt !== undefined ? (
+                  <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
+                ) : null}
+              </View>
+              <Text style={styles.updateDetail}>{view.detail}</Text>
+              {view.progress !== null ? (
+                <View style={styles.updateProgressRow}>
+                  <ActivityIndicator size="small" color={theme.colors.setup.text} />
+                  <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
+                    {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
+                  </Text>
+                </View>
+              ) : null}
+              {view.action !== null && target !== null && attempt !== null ? (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    styles.updateButton,
+                    starting || changingChannel ? styles.buttonDisabled : null,
+                    pressed ? styles.pressed : null,
+                  ]}
+                  onPress={() => install(target, attempt)}
+                  disabled={starting || changingChannel}
+                  accessibilityRole="button"
+                  accessibilityLabel={view.action}
+                >
+                  {starting ? (
+                    <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+                  ) : null}
+                  <Text style={styles.primaryButtonLabel}>
+                    {starting ? 'Starting…' : view.action}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {actionError !== undefined ? (
+                <Text style={styles.reproHint}>{actionError}</Text>
+              ) : null}
+              {status.state === 'available' ? (
+                <ServerReleaseNotes client={client} version={status.release.version} />
+              ) : null}
+            </>
+          )}
+        </SettingsPanel>
+      </SettingsGroup>
       <ServerUpdateChannel
         client={client}
         disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
@@ -225,56 +284,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         onSavingChange={channelSavingChanged}
         onChanging={invalidateChannel}
       />
-      {channelNeedsRefresh ? (
-        <View style={styles.updateProgressRow}>
-          <ActivityIndicator size="small" color={theme.colors.setup.text} />
-          <Text style={styles.updateDetail}>
-            Checking the selected channel… Retrying if the server is unavailable.
-          </Text>
-        </View>
-      ) : (
-        <>
-          <View style={styles.updateHeader}>
-            <Text style={styles.updateTitle} accessibilityRole="header">
-              {view.title}
-            </Text>
-            {publishedAt !== undefined ? (
-              <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
-            ) : null}
-          </View>
-          <Text style={styles.updateDetail}>{view.detail}</Text>
-          {view.progress !== null ? (
-            <View style={styles.updateProgressRow}>
-              <ActivityIndicator size="small" color={theme.colors.setup.text} />
-              <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
-                {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
-              </Text>
-            </View>
-          ) : null}
-          {view.action !== null && target !== null && attempt !== null ? (
-            <Pressable
-              style={({ pressed }) => [
-                styles.primaryButton,
-                styles.updateButton,
-                starting || changingChannel ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={() => install(target, attempt)}
-              disabled={starting || changingChannel}
-              accessibilityRole="button"
-              accessibilityLabel={view.action}
-            >
-              {starting ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-              <Text style={styles.primaryButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
-            </Pressable>
-          ) : null}
-          {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
-          {status.state === 'available' ? (
-            <ServerReleaseNotes client={client} version={status.release.version} />
-          ) : null}
-        </>
-      )}
-    </SettingsPanel>
+    </>
   );
 }
 

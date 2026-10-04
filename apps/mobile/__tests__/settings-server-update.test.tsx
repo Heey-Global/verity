@@ -699,7 +699,7 @@ describe('server update channel selection', () => {
       await act(async () => {
         jest.advanceTimersByTime(2_000);
       });
-      expect(await screen.findByText('Prereleases ✓')).toBeTruthy();
+      await waitFor(() => expect(screen.getByRole('radio', { name: 'Prereleases' })).toBeChecked());
       expect(await screen.findByText('Verity is up to date')).toBeTruthy();
     } finally {
       jest.useRealTimers();
@@ -805,7 +805,7 @@ describe('server update channel selection', () => {
         actions.find((action) => action.text === 'Change channel')!.onPress!();
       });
       expect(setServerUpdateChannel).toHaveBeenCalledWith('staging');
-      expect(await screen.findByText('Prereleases ✓')).toBeTruthy();
+      await waitFor(() => expect(screen.getByRole('radio', { name: 'Prereleases' })).toBeChecked());
       expect(screen.queryByText('Could not confirm the update channel. Try again.')).toBeNull();
       expect(getServerUpdates.mock.calls.length).toBeGreaterThan(1);
     },
