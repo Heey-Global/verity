@@ -44,6 +44,7 @@ import {
   gmailSendSummary,
   calendarChangeSummary,
   githubRefUrl,
+  isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   isSessionImageFilePath,
   groupRows,
@@ -8434,6 +8435,9 @@ function PullRequestBar({
   // authoritative signal, independent of the pipeline, so name the conflict instead.
   const conflicted = isPullRequestConflicted(pullRequest);
   const unavailable = pullRequest.pipeline === 'unknown' && !conflicted;
+  // Green checks but GitHub hasn't finished its merge test yet: the button stays off,
+  // and the dot pulses so the wait reads as progress rather than a dead button.
+  const checkingMergeability = isPullRequestCheckingMergeability(pullRequest);
   // Only a CONFIRMED conflict (mergeable === false) blocks. `null` means GitHub is
   // still computing mergeability just after a push — treat that as "checks green,
   // resolving", not blocked, so a just-fixed PR doesn't flash red before it settles.
@@ -8449,7 +8453,7 @@ function PullRequestBar({
   const checksText = pullRequestStatusText(pullRequest);
   const statusColor = mergeBlocked
     ? theme.colors.tone.danger
-    : pending || checks.total === 0
+    : pending || checks.total === 0 || checkingMergeability
       ? theme.colors.tone.attention
       : theme.colors.tone.done;
   const canMerge =
@@ -8466,7 +8470,10 @@ function PullRequestBar({
     !failed &&
     !unavailable &&
     !conflicted &&
-    (pending || (pullRequest.phase === 'open' && checks.total === 0) || merging);
+    (pending ||
+      (pullRequest.phase === 'open' && checks.total === 0) ||
+      checkingMergeability ||
+      merging);
   const pulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -8578,7 +8585,10 @@ function PullRequestBar({
             onPress={merge}
             disabled={!mergeButtonEnabled}
             accessibilityRole="button"
-            accessibilityState={{ disabled: !mergeButtonEnabled, busy: merging }}
+            accessibilityState={{
+              disabled: !mergeButtonEnabled,
+              busy: merging || checkingMergeability,
+            }}
             accessibilityLabel={
               mergeRejected
                 ? `Merge blocked because GitHub rejected pull request ${String(pullRequest.number)}`
@@ -8588,7 +8598,9 @@ function PullRequestBar({
                     ? `Merge blocked because CI failed for pull request ${String(pullRequest.number)}`
                     : mergeabilityBlocked
                       ? `Merge blocked for pull request ${String(pullRequest.number)}`
-                      : `Merge pull request ${String(pullRequest.number)}`
+                      : checkingMergeability
+                        ? `Merge unavailable while GitHub checks whether pull request ${String(pullRequest.number)} can merge`
+                        : `Merge pull request ${String(pullRequest.number)}`
             }
           >
             {merging ? (

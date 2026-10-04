@@ -18,6 +18,9 @@ function foregroundInterval(status: PullRequestStatus | null): number {
   if (status === null) return 5_000;
   if (status.pipeline === 'running' || status.pipeline === 'pending') return 15_000;
   if (status.phase === 'open' && status.checks.total === 0) return 15_000;
+  // Green but GitHub is still computing mergeability: the merge button waits on it.
+  if (status.phase === 'open' && status.pipeline === 'success' && status.mergeable === null)
+    return 5_000;
   if (status.phase === 'open') return 30_000;
   return 300_000;
 }

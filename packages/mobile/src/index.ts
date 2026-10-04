@@ -211,6 +211,7 @@ export {
   type AttentionKind,
 } from './ui/attention.js';
 export {
+  isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   pullRequestStatusText,
   type PullRequestStatusView,

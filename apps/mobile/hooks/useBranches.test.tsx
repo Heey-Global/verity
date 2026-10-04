@@ -209,6 +209,21 @@ describe('useBranches polling', () => {
     expect(getBranches).toHaveBeenCalledTimes(2);
   });
 
+  it('polls a green PR every 5s while GitHub is still computing mergeability', async () => {
+    // The merge button waits on this answer; the settled 30s cadence kept it dead
+    // long after github.com had finished its merge test.
+    const list = branches('open', 'success');
+    list.pullRequest = { ...list.pullRequest!, mergeable: null };
+    const getBranches = jest.fn().mockResolvedValue(list);
+    const client = { getBranches } as unknown as VerityClient;
+    renderHook(() => useBranches(client, 's'));
+    await advance(0);
+    await advance(4_999);
+    expect(getBranches).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(getBranches).toHaveBeenCalledTimes(2);
+  });
+
   it('ignores an in-flight background response and pauses until foreground', async () => {
     const slow = deferred<BranchList>();
     const getBranches = jest.fn().mockResolvedValue(branches()).mockReturnValueOnce(slow.promise);
