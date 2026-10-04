@@ -47,7 +47,7 @@ an import failure.
 
 The connector reports at most 20 failed imports per account update, together with
 the total failure count. Truncated reports are explicitly marked incomplete.
-The Matrix overview and project room display show safe reasons and retry details;
+The project room display shows safe reasons and retry details;
 Control can request the same project-scoped evidence through `verity_diagnostics`.
 Existing Knowledge access restrictions apply. A cleared notice alone is not proof
 that a specific event was projected into Knowledge; verify the affected event and

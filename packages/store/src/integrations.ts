@@ -304,9 +304,13 @@ export class IntegrationStore {
           status: projectId ? 'active' : 'pending',
           activated_at: projectId ? (current.activated_at ?? new Date()) : null,
           last_error: null,
-          import_diagnostics: '[]',
-          import_diagnostics_truncated: false,
-          import_diagnostics_reported_at: null,
+          ...(current.project_id !== projectId
+            ? {
+                import_diagnostics: '[]',
+                import_diagnostics_truncated: false,
+                import_diagnostics_reported_at: null,
+              }
+            : {}),
         })
         .where('account_id', '=', accountId)
         .where('source_id', '=', sourceId)

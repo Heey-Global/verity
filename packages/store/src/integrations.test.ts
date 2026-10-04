@@ -141,6 +141,13 @@ it('rejects delayed failure evidence after disconnecting and reconnecting a room
   };
   await store.replaceImportDiagnostics(accountId, [diagnostic]);
   expect((await store.listSources(projectId))[0]?.importDiagnostics).toEqual([diagnostic]);
+  const beforeRebind = (await store.listSources(projectId))[0]!;
+  // An idempotent bind must not hide an unresolved import failure.
+  await store.setSourceBinding(accountId, sourceId, projectId);
+  const afterRebind = (await store.listSources(projectId))[0]!;
+  expect(afterRebind.importDiagnostics).toEqual([diagnostic]);
+  expect(afterRebind.importDiagnosticsReportedAt).toEqual(beforeRebind.importDiagnosticsReportedAt);
+  expect(afterRebind.activatedAt).toEqual(beforeRebind.activatedAt);
   await store.setSourceBinding(accountId, sourceId, null);
   await store.replaceImportDiagnostics(accountId, [diagnostic]);
   expect((await store.listSources())[0]?.importDiagnostics).toEqual([]);
