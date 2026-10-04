@@ -6079,6 +6079,17 @@ function AgentMarkdown({
   // Measured after any keyboard dismissal settles (the Modal would dismiss it and
   // leave the menu at a stale position), same as the composer's attachment menu.
   const measureActions = useAttachmentMenuAnchor(moreRef, showActions);
+  // The measurement waits for any keyboard dismissal, so hold the action row (and
+  // the button being measured) for the whole press, then give the auto-hide a fresh
+  // window — a cancelled press hides it as usual, a completed one is cleared again
+  // by showActions.
+  const holdActionRow = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+  }, []);
+  const releaseActionRow = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setShowCopy(false), 4000);
+  }, []);
   return (
     <>
       <Pressable
@@ -6154,6 +6165,8 @@ function AgentMarkdown({
               {hasMoreActions ? (
                 <Pressable
                   ref={moreRef}
+                  onPressIn={holdActionRow}
+                  onPressOut={releaseActionRow}
                   onPress={measureActions}
                   hitSlop={6}
                   accessibilityRole="button"
@@ -6263,14 +6276,16 @@ function MessageActionsMenu({
   const minTop = insets.top + margin;
   const maxBottom = winH - insets.bottom - margin;
   const below = anchor.y + anchor.height + gap + estimatedHeight <= maxBottom;
+  const top = anchor.y + anchor.height + gap;
+  const bottom = Math.min(
+    Math.max(insets.bottom + margin, winH - anchor.y + gap),
+    winH - minTop - estimatedHeight,
+  );
+  // The estimate can undershoot (large text grows the rows), so the card is also
+  // capped to the room on its side and scrolls instead of running off screen.
   const position = below
-    ? { top: anchor.y + anchor.height + gap }
-    : {
-        bottom: Math.min(
-          Math.max(insets.bottom + margin, winH - anchor.y + gap),
-          winH - minTop - estimatedHeight,
-        ),
-      };
+    ? { top, maxHeight: maxBottom - top }
+    : { bottom, maxHeight: winH - bottom - minTop };
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessible={false} />
@@ -6281,30 +6296,32 @@ function MessageActionsMenu({
         accessibilityViewIsModal
         onAccessibilityEscape={onClose}
       >
-        <MessageActionRow
-          icon="copy"
-          title="Copy text"
-          subtitle="Copy the whole message"
-          onPress={onCopy}
-        />
-        {knowledge ? (
+        <ScrollView bounces={false}>
           <MessageActionRow
-            icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
-            title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
-            subtitle="Keep it as a project insight"
-            busy={saving}
-            disabled={knowledge.saved}
-            onPress={saveKnowledge}
+            icon="copy"
+            title="Copy text"
+            subtitle="Copy the whole message"
+            onPress={onCopy}
           />
-        ) : null}
-        {bookmark ? (
-          <MessageActionRow
-            icon="bookmark"
-            title={bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark'}
-            subtitle="Find it again via the header"
-            onPress={bookmark.toggle}
-          />
-        ) : null}
+          {knowledge ? (
+            <MessageActionRow
+              icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
+              title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
+              subtitle="Keep it as a project insight"
+              busy={saving}
+              disabled={knowledge.saved}
+              onPress={saveKnowledge}
+            />
+          ) : null}
+          {bookmark ? (
+            <MessageActionRow
+              icon="bookmark"
+              title={bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark'}
+              subtitle="Find it again via the header"
+              onPress={bookmark.toggle}
+            />
+          ) : null}
+        </ScrollView>
       </View>
     </Modal>
   );
