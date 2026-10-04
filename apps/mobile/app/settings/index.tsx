@@ -169,12 +169,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Security">
         <SettingsListPanel>
           <SettingsNavRow
-            icon="key"
-            title="Secret store"
-            subtitle="Master password and encrypted credentials"
-            onPress={() => router.push('/settings/secret-store')}
-          />
-          <SettingsNavRow
             icon="smartphone"
             title="Paired devices"
             onPress={() => router.push('/devices')}
