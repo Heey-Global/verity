@@ -102,6 +102,7 @@ function build(
       ? {
           extraToolsForProject: () =>
             [
+              'verity_diagnostics',
               'verity_list_sessions',
               'verity_session_handoff',
               'verity_session_progress',
@@ -1027,6 +1028,72 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
   // `buildServer` intercepts them because they need its conductor and its session
   // projection. That interception is a seam, and a seam with no test through it is how the
   // 401 above survived. This is that test.
+  it('serves diagnostics only for an authorized Control caller with an audited approval', async () => {
+    const harness = build({ sessionTools: true });
+    await harness.store.createSession({
+      sessionId: 'control-diag',
+      worktree: process.cwd(),
+      model: 'claude-opus-5',
+    });
+    const token = harness.tokens.issue({
+      projectId: VERITY_CONTROL_PROJECT_ID,
+      sessionId: 'control-diag',
+      turnId: 'diag-turn',
+    });
+    await withInternalTcpListener(harness, async (port) => {
+      const response = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'verity_diagnostics', arguments: {} },
+      });
+      const result = JSON.parse(response.body) as {
+        result: { isError?: boolean; content: Array<{ text: string }> };
+      };
+      expect(result.result.isError).toBeUndefined();
+      expect(JSON.parse(result.result.content[0]!.text)).toMatchObject({
+        schemaVersion: 1,
+        secretJobRuntime: { state: 'unknown' },
+        session: null,
+      });
+      expect(harness.invocations).toEqual([]);
+      expect(harness.approvals).toEqual([
+        expect.objectContaining({ toolName: 'verity_diagnostics', allowStandingGrant: false }),
+      ]);
+      expect(harness.records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'gateway_call_served', toolName: 'verity_diagnostics' }),
+        ]),
+      );
+      const forged = harness.tokens.issue({
+        projectId: 'ordinary-project',
+        sessionId: 'control-diag',
+        turnId: 'forged',
+      });
+      const denied = await postTcp(port, '/internal/mcp', `Bearer ${forged}`, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'verity_diagnostics', arguments: {} },
+      });
+      expect(denied.status).toBe(401);
+      expect(harness.approvals).toHaveLength(1);
+      const missing = harness.tokens.issue({
+        projectId: VERITY_CONTROL_PROJECT_ID,
+        sessionId: 'missing-session',
+        turnId: 'missing',
+      });
+      const refused = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${missing}`, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'verity_diagnostics', arguments: {} },
+      });
+      expect(refused.body).toContain('no longer exists');
+      expect(harness.approvals).toHaveLength(1);
+    });
+  });
+
   it('answers the session tools from the server seam rather than the shared executor', async () => {
     const harness = build({ sessionTools: true });
     // The caller's Control identity is proved against the store, so the session the bearer

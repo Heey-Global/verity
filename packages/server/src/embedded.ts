@@ -1990,6 +1990,7 @@ export async function buildEmbeddedServer(
     extraToolsForProject: (projectId) =>
       projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
         ? [
+            'verity_diagnostics',
             'verity_list_sessions',
             'verity_session_handoff',
             'verity_session_progress',

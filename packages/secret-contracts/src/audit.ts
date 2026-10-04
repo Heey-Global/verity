@@ -96,6 +96,7 @@ export type GatewayChannel = z.infer<typeof gatewayChannelSchema>;
 export const gatewayToolNameSchema = z.enum([
   'verity_http_request',
   'verity_secret_run',
+  'verity_diagnostics',
   'verity_list_sessions',
   'verity_session_handoff',
   'verity_send_session_message',
