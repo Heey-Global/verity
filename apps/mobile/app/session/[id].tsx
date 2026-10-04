@@ -6057,16 +6057,29 @@ function AgentMarkdown({
   const knowledgeSaved = messageId != null && knowledgeSavedFor === messageId;
   const bookmarked = messageId != null && bookmarks?.isBookmarked(messageId) === true;
   const hasMoreActions = messageId != null && (bookmarks !== null || knowledge !== null);
-  // Keyed by message (like knowledgeSavedFor) so a recycled list cell never opens
-  // the sheet for a different message.
-  const [actionsOpenFor, setActionsOpenFor] = useState<string>();
-  const actionsOpen = messageId != null && actionsOpenFor === messageId;
-  const closeActions = useCallback(() => setActionsOpenFor(undefined), []);
-  const openActions = useCallback(() => {
-    if (hideTimer.current) clearTimeout(hideTimer.current);
+  // The "…" menu opens at the button that was tapped, so it's obvious which message
+  // it acts on. Keyed by message (like knowledgeSavedFor) so a recycled list cell
+  // never opens it for a different message.
+  const moreRef = useRef<View>(null);
+  const [actionsMenu, setActionsMenu] = useState<{ messageId: string; anchor: MenuAnchor }>();
+  const actionsOpen = messageId != null && actionsMenu?.messageId === messageId;
+  const closeActions = useCallback(() => {
+    setActionsMenu(undefined);
     setShowCopy(false);
-    setActionsOpenFor(messageId);
-  }, [messageId]);
+  }, []);
+  const showActions = useCallback(
+    (anchor: MenuAnchor) => {
+      if (messageId != null) setActionsMenu({ messageId, anchor });
+    },
+    [messageId],
+  );
+  // Keep the message highlighted with its action row while the menu opens and is open.
+  const holdActionRow = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+  }, []);
+  // Measured after any keyboard dismissal settles (the Modal would dismiss it and
+  // leave the menu at a stale position), same as the composer's attachment menu.
+  const measureActions = useAttachmentMenuAnchor(moreRef, showActions);
   return (
     <>
       <Pressable
@@ -6077,7 +6090,7 @@ function AgentMarkdown({
         // convenience). VoiceOver users get per-block selection + the code badges.
         accessible={false}
       >
-        <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
+        <View style={[styles.agentBlock, (showCopy || actionsOpen) && styles.agentBlockActive]}>
           {blocks.map((block, i) =>
             block.type === 'code' ? (
               <View key={i} style={styles.codeBlock}>
@@ -6129,19 +6142,21 @@ function AgentMarkdown({
             reveal needed), so it's spottable while scrolling — the Kindle affordance.
             Non-interactive so it never fights the tap-to-reveal / long-press-select
             gestures; toggling off happens via the "…" sheet or the header sheet. */}
-          {bookmarked && !showCopy ? (
+          {bookmarked && !showCopy && !actionsOpen ? (
             <View style={styles.msgBookmarkFlag} pointerEvents="none">
               <Icon name="bookmark" size={13} color={theme.colors.primary} />
             </View>
           ) : null}
-          {showCopy ? (
+          {showCopy || actionsOpen ? (
             <View style={styles.msgActions}>
-              {/* Copy stays one tap away; everything else lives behind "…" in a sheet
+              {/* Copy stays one tap away; everything else lives behind "…" in a menu
                 that names each action, since bare icons (an open book for Project
                 Knowledge) didn't explain themselves. */}
               {hasMoreActions ? (
                 <Pressable
-                  onPress={openActions}
+                  ref={moreRef}
+                  onPressIn={holdActionRow}
+                  onPress={measureActions}
                   hitSlop={6}
                   accessibilityRole="button"
                   accessibilityLabel="More message actions"
@@ -6165,9 +6180,10 @@ function AgentMarkdown({
         </View>
       </Pressable>
       {/* Outside the message Pressable: the Modal's content stays in this React tree,
-        so taps on the sheet would otherwise bubble into the message's tap-to-reveal. */}
-      {actionsOpen && messageId != null ? (
-        <MessageActionsSheet
+        so taps on the menu would otherwise bubble into the message's tap-to-reveal. */}
+      {actionsOpen && actionsMenu && messageId != null ? (
+        <MessageActionsMenu
+          anchor={actionsMenu.anchor}
           onClose={closeActions}
           onCopy={() => {
             void Clipboard.setStringAsync(text);
@@ -6202,22 +6218,27 @@ function AgentMarkdown({
   );
 }
 
-// The "…" sheet on an agent message: each action as an icon tile plus a name and a
-// one-line explanation. Saving to Project Knowledge keeps the sheet open to show its
-// progress and result; the other actions close it.
-function MessageActionsSheet({
+type MenuAnchor = AttachAnchor;
+
+// The "…" menu on an agent message: a small card pinned to the button, right-aligned
+// with it, below when there's room and above otherwise — the message it belongs to
+// stays visible and highlighted. Each action has a name and a one-line explanation.
+// Saving to Project Knowledge keeps the menu open to show its progress and result;
+// the other actions close it.
+function MessageActionsMenu({
+  anchor,
   onClose,
   onCopy,
   knowledge,
   bookmark,
 }: {
+  anchor: MenuAnchor;
   onClose: () => void;
   onCopy: () => void;
   knowledge: { saved: boolean; save: () => Promise<void> } | null;
   bookmark: { bookmarked: boolean; toggle: () => void } | null;
 }) {
-  const { theme } = useUnistyles();
-  const insets = useSafeAreaInsets();
+  const { width: winW, height: winH } = useWindowDimensions();
   const [saving, setSaving] = useState(false);
   const saveKnowledge = (): void => {
     if (!knowledge || knowledge.saved || saving) return;
@@ -6232,28 +6253,38 @@ function MessageActionsSheet({
       )
       .finally(() => setSaving(false));
   };
+  const rows = 1 + (knowledge ? 1 : 0) + (bookmark ? 1 : 0);
+  const gap = 6;
+  const margin = 12;
+  const width = Math.min(300, winW - 2 * margin);
+  const right = Math.min(Math.max(margin, winW - (anchor.x + anchor.width)), winW - width - margin);
+  // Only used to pick a side; the card itself sizes to its content.
+  const estimatedHeight = rows * MESSAGE_MENU_ROW_HEIGHT + 2 * gap;
+  const below = anchor.y + anchor.height + gap + estimatedHeight <= winH - margin;
+  const position = below
+    ? { top: anchor.y + anchor.height + gap }
+    : { bottom: Math.max(margin, winH - anchor.y + gap) };
   return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable
-        style={styles.sheetBackdrop}
-        onPress={onClose}
-        accessibilityRole="button"
-        accessibilityLabel="Close message actions"
-      />
-      <View style={[styles.sheet, { paddingBottom: insets.bottom + theme.spacing.md }]}>
-        <View style={styles.sheetHandle} />
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessible={false} />
+      <View
+        style={[styles.msgMenu, { width, right }, position]}
+        accessibilityRole="menu"
+        accessibilityLabel="Message actions"
+        accessibilityViewIsModal
+        onAccessibilityEscape={onClose}
+      >
         <MessageActionRow
           icon="copy"
           title="Copy text"
-          subtitle="Copy the whole message to the clipboard"
+          subtitle="Copy the whole message"
           onPress={onCopy}
         />
         {knowledge ? (
           <MessageActionRow
             icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
             title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
-            subtitle="Keep it as a project insight for future sessions"
-            tint={theme.colors.primary}
+            subtitle="Keep it as a project insight"
             busy={saving}
             disabled={knowledge.saved}
             onPress={saveKnowledge}
@@ -6263,8 +6294,7 @@ function MessageActionsSheet({
           <MessageActionRow
             icon="bookmark"
             title={bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark'}
-            subtitle="Jump back to it from the bookmark button in the header"
-            tint={bookmark.bookmarked ? theme.colors.primary : undefined}
+            subtitle="Find it again via the header"
             onPress={bookmark.toggle}
           />
         ) : null}
@@ -6273,12 +6303,15 @@ function MessageActionsSheet({
   );
 }
 
+const MESSAGE_MENU_ROW_HEIGHT = 56;
+
+// One menu entry. Every icon shares the same muted tint — state shows in the icon
+// (a check once saved) and the title, never in a colour that singles one action out.
 function MessageActionRow({
   icon,
   title,
   subtitle,
   onPress,
-  tint,
   busy = false,
   disabled = false,
 }: {
@@ -6286,7 +6319,6 @@ function MessageActionRow({
   title: string;
   subtitle: string;
   onPress: () => void;
-  tint?: string;
   busy?: boolean;
   disabled?: boolean;
 }) {
@@ -6295,22 +6327,26 @@ function MessageActionRow({
     <Pressable
       onPress={onPress}
       disabled={disabled || busy}
-      accessibilityRole="button"
+      accessibilityRole="menuitem"
       accessibilityLabel={title}
       accessibilityHint={subtitle}
       accessibilityState={{ disabled: disabled || busy }}
-      style={({ pressed }) => [styles.msgActionRow, pressed ? styles.sheetRowPressed : null]}
+      style={({ pressed }) => [styles.msgMenuRow, pressed ? styles.sheetRowPressed : null]}
     >
-      <View style={styles.msgActionTile}>
+      <View style={styles.msgMenuIcon}>
         {busy ? (
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator size="small" color={theme.colors.accent} />
         ) : (
-          <Icon name={icon} size={22} color={tint ?? theme.colors.textMuted} />
+          <Icon name={icon} size={18} color={theme.colors.textMuted} />
         )}
       </View>
-      <View style={styles.msgActionText}>
-        <Text style={styles.msgActionTitle}>{title}</Text>
-        <Text style={styles.msgActionSubtitle}>{subtitle}</Text>
+      <View style={styles.msgMenuText}>
+        <Text style={styles.msgMenuTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        <Text style={styles.msgMenuSubtitle} numberOfLines={1}>
+          {subtitle}
+        </Text>
       </View>
     </Pressable>
   );
@@ -10216,32 +10252,43 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  msgActionRow: {
+  // The anchored "…" menu card: same surface + border language as the action chips,
+  // lifted off the transcript with a shadow.
+  msgMenu: {
+    position: 'absolute',
+    paddingVertical: 6,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    shadowColor: '#000000',
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  msgMenuRow: {
+    minHeight: 56,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.xs,
-    borderRadius: theme.radius.md,
   },
-  msgActionTile: {
-    width: 44,
-    height: 44,
+  msgMenuIcon: {
+    width: 22,
     alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
   },
-  msgActionText: {
+  msgMenuText: {
     flex: 1,
-    gap: 2,
+    gap: 1,
   },
-  msgActionTitle: {
+  msgMenuTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.text.sm,
     fontWeight: '600',
   },
-  msgActionSubtitle: {
+  msgMenuSubtitle: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
   },
