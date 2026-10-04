@@ -290,3 +290,16 @@ it('restores the committed text when a mid-word replay interim slips through aft
   act(() => handlers.end({}));
   expect(onChangeText).toHaveBeenLastCalledWith('Dictated words');
 });
+
+it('keeps new speech after stop that starts like the committed final', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Yes I agree' }], isFinal: true }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Yes' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Yes' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenLastCalledWith('Yes I agree Yes');
+});

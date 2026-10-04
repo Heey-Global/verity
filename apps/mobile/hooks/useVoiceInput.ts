@@ -219,7 +219,9 @@ export function useVoiceInput(
     if (
       stoppingRef.current &&
       !utteranceOpenAtStopRef.current &&
-      replaysUtterance(transcript, lastFinalTranscriptRef.current)
+      (event.isFinal
+        ? repeatsLastFinal
+        : replaysUtterance(transcript, lastFinalTranscriptRef.current))
     ) {
       // A replay interim the prefix check missed (e.g. a mid-word partial) may
       // be on screen; its final is the replay, so restore the committed text.
