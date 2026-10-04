@@ -70,17 +70,27 @@ async function resolveRecognitionLocale(): Promise<{ lang: string; onDevice: boo
   return { lang: preferred[0] ?? 'en-US', onDevice: false };
 }
 
-/** Compare recognizer transcripts by their words only. iOS 18 prefixes every
- * result after a pause-final with a space and may re-punctuate or re-case the
- * repeat it emits on stop, so a strict string match lets it through. */
+/** Reduce a recognizer transcript to its words. iOS 18 prefixes every result
+ * after a pause-final with a space and may re-punctuate or re-case the repeat it
+ * emits on stop, so a strict string match lets it through. */
+function utteranceWords(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[\s.,!?;:'"„“”‚‘’«»…()\-–—]+/g, ' ')
+    .trim();
+}
+
 function sameUtterance(a: string, b: string): boolean {
-  const words = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[\s.,!?;:'"„“”‚‘’«»…()\-–—]+/g, ' ')
-      .trim();
-  const wa = words(a);
-  return wa !== '' && wa === words(b);
+  const wa = utteranceWords(a);
+  return wa !== '' && wa === utteranceWords(b);
+}
+
+/** True when `partial` is the committed final or a word-aligned start of it —
+ * how a replay streams in after stop. */
+function replaysUtterance(partial: string, final: string): boolean {
+  const wp = utteranceWords(partial);
+  const wf = utteranceWords(final);
+  return wp !== '' && (wf === wp || wf.startsWith(`${wp} `));
 }
 
 /**
@@ -206,7 +216,12 @@ export function useVoiceInput(
     // sometimes as an interim first. A new interim result before stop
     // distinguishes an intentional repeated utterance.
     const repeatsLastFinal = sameUtterance(transcript, lastFinalTranscriptRef.current);
-    if (repeatsLastFinal && stoppingRef.current && !utteranceOpenAtStopRef.current) return;
+    if (
+      stoppingRef.current &&
+      !utteranceOpenAtStopRef.current &&
+      replaysUtterance(transcript, lastFinalTranscriptRef.current)
+    )
+      return;
     if (event.isFinal && !interimActiveRef.current && repeatsLastFinal) return;
     if (transcript.trim()) {
       cancelCountdown();

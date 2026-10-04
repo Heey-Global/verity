@@ -263,3 +263,17 @@ it('ignores a replay of the utterance committed after stop', async () => {
   act(() => handlers.end({}));
   expect(onChangeText).toHaveBeenLastCalledWith('Again');
 });
+
+it('ignores a replay that streams in word by word after stop', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Dictated words' }], isFinal: true }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Dictated' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Dictated words.' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenCalledTimes(1);
+  expect(onChangeText).toHaveBeenLastCalledWith('Dictated words');
+});
