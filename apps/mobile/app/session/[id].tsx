@@ -5559,7 +5559,7 @@ function SessionFilesSheet({
                           // Every row stays draggable while selecting: grabbing
                           // one outside the selection drags just that file, the
                           // same as Finder. `items` already encodes which.
-                          enabled
+                          enabled={!isDemoMode()}
                           items={dragItemsByPath.get(entry.path) ?? []}
                           authorization={authorization}
                           tlsPin={directTlsPin ?? ''}
