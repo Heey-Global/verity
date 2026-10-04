@@ -162,7 +162,9 @@ export function FileTextEditor({
         {versions ? (
           <FileActionMenu
             title={
-              versions.length ? 'Load a version, then Save to restore' : 'No previous versions yet'
+              versions.length
+                ? 'Last 10 saved versions + protected originals. Load, then Save to restore'
+                : 'No previous versions yet'
             }
             onDismiss={() => setVersions(null)}
             actions={versions.map((version) => ({

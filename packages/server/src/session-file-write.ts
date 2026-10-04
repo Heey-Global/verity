@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, lstat, mkdtemp, open, realpath, rename, rmdir, unlink } from 'node:fs/promises';
-import { openFileHistory, recoverFileHistory } from './session-file-history.js';
+import { openFileHistory, pruneFileHistory, recoverFileHistory } from './session-file-history.js';
 import { isProbablyText, type KnowledgeFileSlot } from './session-files.js';
 
 const MAX_EDIT_BYTES = 1_000_000;
@@ -166,6 +166,9 @@ export async function writeSessionText(
     // the retained original inode; report success so extraction follows it.
     await complete();
     preserve = captured;
+    // Cleanup must not turn a published save into an apparent failure. Retry
+    // on the next save or history listing if storage temporarily rejects it.
+    await pruneFileHistory(slot.directoryPath, slot.name).catch(() => undefined);
     return {
       path: slot.rel,
       content,

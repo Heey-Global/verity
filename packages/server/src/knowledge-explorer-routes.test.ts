@@ -18,12 +18,24 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 const observation = vi.hoisted(() => ({
   extractionFailure: false,
+  pruningFailure: false,
   attempts: 0,
   path: '',
   root: '',
   depths: [] as number[],
   held: new Map<string, number>(),
 }));
+vi.mock('./session-file-history.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./session-file-history.js')>();
+  return {
+    ...actual,
+    pruneFileHistory: async (...args: Parameters<typeof actual.pruneFileHistory>) => {
+      if (observation.pruningFailure)
+        throw Object.assign(new Error('read-only history'), { code: 'EROFS' });
+      return actual.pruneFileHistory(...args);
+    },
+  };
+});
 vi.mock('./knowledge-mutation-lock.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./knowledge-mutation-lock.js')>();
   return {
@@ -651,6 +663,34 @@ describe('session explorer knowledge roots', () => {
       }
     },
   );
+
+  it('keeps history readable when pruning fails', async () => {
+    await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    writeFileSync(join(dir, 'retained.md'), 'original');
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/sessions/s-knowledge/files/content',
+      payload: {
+        root: 'knowledge',
+        path: 'retained.md',
+        content: 'edited',
+        expectedVersion: fileVersion(Buffer.from('original')),
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    observation.pruningFailure = true;
+    try {
+      const listed = await app.inject({
+        method: 'GET',
+        url: '/sessions/s-knowledge/files/history?root=knowledge&path=retained.md',
+      });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json().versions).toHaveLength(2);
+    } finally {
+      observation.pruningFailure = false;
+    }
+  });
 
   it('opens a preview descriptor before releasing the pathname mutation lock', async () => {
     await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
