@@ -436,6 +436,10 @@ async function apple(
     data: Record<string, unknown> | Record<string, unknown>[];
   };
 }
+export function assertTestFlightReady(state: string): void {
+  if (state !== 'IN_BETA_TESTING')
+    throw new Error(`Approved build is not available for internal TestFlight testing (${state})`);
+}
 export async function promoteNative() {
   const path = 'releases/mobile-production.json';
   const candidate = validateNativePromotion(JSON.parse(readFileSync(path, 'utf8')));
@@ -464,105 +468,12 @@ export async function promoteNative() {
     runtime.attributes.platform !== 'IOS'
   )
     throw new Error('Approved build belongs to a different app or runtime');
-  const versions = (
-    await apple(
-      `apps/${candidate.appId}/appStoreVersions?filter[platform]=IOS&filter[versionString]=${candidate.version}`,
-    )
-  ).data as {
-    id: string;
-    attributes: { appStoreState: string; releaseType: string };
-    relationships: { build: { data: { id: string } | null } };
-  }[];
-  if (versions.length > 1) throw new Error('Multiple App Store versions');
-  let version = versions[0];
-  if (!version)
-    version = (
-      await apple('appStoreVersions', 'POST', {
-        data: {
-          type: 'appStoreVersions',
-          attributes: {
-            platform: 'IOS',
-            versionString: candidate.version,
-            releaseType: 'AFTER_APPROVAL',
-          },
-          relationships: {
-            app: { data: { type: 'apps', id: candidate.appId } },
-            build: { data: { type: 'builds', id: candidate.buildId } },
-          },
-        },
-      })
-    ).data as typeof version;
-  if (!version) throw new Error('App Store version was not created');
-  const selected = (await apple(`appStoreVersions/${version.id}/build`)).data as {
-    id: string;
-  } | null;
-  if (!selected) {
-    await apple(`appStoreVersions/${version.id}/relationships/build`, 'PATCH', {
-      data: { type: 'builds', id: candidate.buildId },
-    });
-  } else if (selected.id !== candidate.buildId)
-    throw new Error('App Store version selects a different build; resolve it explicitly');
-  if (version.attributes.releaseType !== 'AFTER_APPROVAL') {
-    if (
-      !['PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED'].includes(
-        version.attributes.appStoreState,
-      )
-    )
-      throw new Error('Existing Apple release policy differs and cannot be changed safely');
-    await apple(`appStoreVersions/${version.id}`, 'PATCH', {
-      data: {
-        type: 'appStoreVersions',
-        id: version.id,
-        attributes: { releaseType: 'AFTER_APPROVAL' },
-      },
-    });
-  }
-  const accepted = [
-    'WAITING_FOR_REVIEW',
-    'IN_REVIEW',
-    'PENDING_APPLE_RELEASE',
-    'PROCESSING_FOR_APP_STORE',
-    'READY_FOR_SALE',
-    'READY_FOR_DISTRIBUTION',
-  ];
-  if (!accepted.includes(version.attributes.appStoreState)) {
-    const submissions = (
-      await apple(
-        `apps/${candidate.appId}/reviewSubmissions?filter[platform]=IOS&filter[state]=READY_FOR_REVIEW`,
-      )
-    ).data as { id: string }[];
-    if (submissions.length > 1) throw new Error('Multiple pending Apple review submissions');
-    const submission =
-      submissions[0] ??
-      ((
-        await apple('reviewSubmissions', 'POST', {
-          data: {
-            type: 'reviewSubmissions',
-            attributes: { platform: 'IOS' },
-            relationships: { app: { data: { type: 'apps', id: candidate.appId } } },
-          },
-        })
-      ).data as { id: string });
-    const items = (await apple(`reviewSubmissions/${submission.id}/items?include=appStoreVersion`))
-      .data as {
-      relationships?: { appStoreVersion?: { data?: { id: string } | null } };
-    }[];
-    if (items.some((item) => item.relationships?.appStoreVersion?.data?.id !== version.id))
-      throw new Error('Apple review submission includes unrelated items');
-    if (!items.length)
-      await apple('reviewSubmissionItems', 'POST', {
-        data: {
-          type: 'reviewSubmissionItems',
-          relationships: {
-            reviewSubmission: { data: { type: 'reviewSubmissions', id: submission.id } },
-            appStoreVersion: { data: { type: 'appStoreVersions', id: version.id } },
-          },
-        },
-      });
-    await apple(`reviewSubmissions/${submission.id}`, 'PATCH', {
-      data: { type: 'reviewSubmissions', id: submission.id, attributes: { submitted: true } },
-    });
-  }
+  // Uploading to TestFlight already distributes builds according to Apple's group settings.
+  // Promotion must not create an App Store version or submit the app for review.
+  const details = (await apple(`builds/${candidate.buildId}/buildBetaDetail`)).data as {
+    attributes: { internalBuildState: string };
+  };
+  assertTestFlightReady(details.attributes.internalBuildState);
   gh('release', 'edit', `mobile-v${candidate.version}`, '--prerelease=false', '--latest=false');
 }
 function assertReviewed(path: string, expectedBranch: string, candidate: unknown) {
