@@ -15,7 +15,9 @@ const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
  * {@link createBrokeredHttpGrantStore.check}, where a foreign row would mean a permission
  * prompt auto-approved by something the operator never granted.
  */
-const GRANT_ISSUER = 'brokered-prompt';
+// Longer-lived consent requires a new approval; legacy grants must not revive on upgrade.
+const LEGACY_GRANT_ISSUER = 'brokered-prompt';
+const GRANT_ISSUER = 'brokered-prompt-v2';
 const TRUSTED_CLI_GRANT_TARGET = /^v[12]:\/[^#]+#[a-f0-9]{64}$/u;
 
 function validGrantTarget(toolName: BrokeredGrantToolName, target: string): boolean {
@@ -272,10 +274,11 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
           'binding_id',
           'expires_at',
           'created_at',
+          'issuer',
         ])
         .where('project_id', '=', projectId)
         .where('state', '=', 'active')
-        .where('issuer', '=', GRANT_ISSUER)
+        .where('issuer', 'in', [GRANT_ISSUER, LEGACY_GRANT_ISSUER])
         .where('scope', 'in', ['session', 'project', 'forever'] satisfies BrokeredGrantScope[])
         .orderBy('created_at', 'desc')
         .execute();
@@ -296,7 +299,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
             target: row.tool_id.slice(separator + 1),
             scope,
             sessionId: row.session_id,
-            appliesNow: row.binding_id === currentBindingId,
+            appliesNow: row.issuer === GRANT_ISSUER && row.binding_id === currentBindingId,
             expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
             createdAt: new Date(row.created_at).toISOString(),
           },
@@ -322,7 +325,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
         .where('project_id', '=', projectId)
         .where('id', '=', grantId)
         .where('state', '=', 'active')
-        .where('issuer', '=', GRANT_ISSUER)
+        .where('issuer', 'in', [GRANT_ISSUER, LEGACY_GRANT_ISSUER])
         .where('scope', 'in', ['session', 'project', 'forever'] satisfies BrokeredGrantScope[])
         .where((eb) =>
           eb.or([

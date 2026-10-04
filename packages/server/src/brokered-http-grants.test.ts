@@ -351,6 +351,25 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
     await expect(store.check(legacy)).resolves.toBe(false);
   });
 
+  it('keeps prior-policy grants inert and revocable until fresh consent', async () => {
+    const store = createBrokeredHttpGrantStore(ctx.db);
+    await store.grant({ ...target, scope: 'session' });
+    await ctx.db
+      .updateTable('secret_provider_permissions')
+      .set({ issuer: 'brokered-prompt' })
+      .execute();
+    await ageAcpApprovals(25 * 60 * 60 * 1_000);
+    // An upgrade must not revive consent that already aged out under the old policy.
+    await expect(store.check(target)).resolves.toBe(false);
+    const legacy = await store.list(target.projectId, target.bindingId);
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]?.appliesNow).toBe(false);
+    await store.grant({ ...target, scope: 'session' });
+    await expect(store.check(target)).resolves.toBe(true);
+    await expect(store.revoke(target.projectId, legacy[0]!.id)).resolves.toBe(true);
+    await expect(store.check(target)).resolves.toBe(true);
+  });
+
   it('ignores expired and non-active grants', async () => {
     const store = createBrokeredHttpGrantStore(ctx.db);
     await store.grant({ ...target, scope: 'project' });

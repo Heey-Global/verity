@@ -111,7 +111,8 @@ either form; nothing the model or the workspace does can.
 The current approval contract supersedes the restrictions in D3 and the reusable-script
 restriction below: both `verity_http_request` and `verity_secret_run` offer once,
 this session, and 30 days in the project. ACP approvals must still match their
-channel, but have no additional 24-hour ceiling. Permanent grants remain unavailable.
+channel, but have no additional 24-hour ceiling. Permanent grants remain unavailable. The updated policy uses a new grant issuer so
+prior-policy approvals remain inert until fresh consent; they stay visible and revocable.
 
 CLI grants bind the complete invocation and secret mappings in a versioned digest.
 Isolated scripts retain their content-bound descriptor; other CLI invocations use
