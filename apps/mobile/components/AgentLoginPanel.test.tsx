@@ -45,6 +45,24 @@ describe('AgentLoginPanel polling', () => {
     expect(screen.queryByLabelText('Logout Claude')).toBeNull();
   });
 
+  it.each(['claude', 'codex'] as const)('shows only the selected %s provider', (provider) => {
+    render(
+      <AgentLoginPanel
+        client={{} as VerityClient}
+        configured={{ claude: true, codex: true }}
+        selectedProvider={provider}
+        compact
+        allowDisconnect
+      />,
+    );
+    const title = provider === 'claude' ? 'Claude' : 'Codex';
+    const otherTitle = provider === 'claude' ? 'Codex' : 'Claude';
+    fireEvent.press(screen.getByLabelText(title));
+    expect(screen.getByLabelText('Logout ' + title)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(otherTitle)).toBeNull();
+    expect(screen.queryByLabelText('Logout ' + otherTitle)).toBeNull();
+  });
+
   it('does not overlap polls for the same login session', async () => {
     jest.useFakeTimers();
     let resolvePoll!: (login: AgentLogin) => void;

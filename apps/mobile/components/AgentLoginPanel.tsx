@@ -67,6 +67,7 @@ export function AgentLoginPanel({
   allowDisconnect = false,
   autoStartProvider,
   compact = false,
+  selectedProvider,
 }: {
   client: VerityClient;
   configured: AgentLoginConfiguredState;
@@ -79,6 +80,7 @@ export function AgentLoginPanel({
   autoStartProvider?: AgentLoginProvider;
   /** Settings collapse provider details; onboarding keeps the guided flow visible. */
   compact?: boolean;
+  selectedProvider?: AgentLoginProvider;
 }) {
   const [logins, setLogins] = useState<Record<AgentLoginProvider, LoginState>>({
     claude: emptyLoginState(),
@@ -306,36 +308,40 @@ export function AgentLoginPanel({
           </Text>
         </View>
       ) : null}
-      <ProviderCard
-        provider="claude"
-        title="Claude"
-        configured={configured.claude}
-        state={logins.claude}
-        compact={compact}
-        allowDisconnect={allowDisconnect}
-        onStart={() => start('claude')}
-        onDisconnect={() => disconnect('claude')}
-        onCopyCode={(code) => copyCode('claude', code)}
-        onPasteCode={() => pasteCode('claude')}
-        onChangeCode={(code) => patchProvider('claude', { code })}
-        onOpenLoginPage={() => patchProvider('claude', { openedLoginPage: true })}
-        onSubmitCode={() => submitCode('claude')}
-      />
-      <ProviderCard
-        provider="codex"
-        title="Codex"
-        configured={configured.codex}
-        state={logins.codex}
-        compact={compact}
-        allowDisconnect={allowDisconnect}
-        onStart={() => start('codex')}
-        onDisconnect={() => disconnect('codex')}
-        onCopyCode={(code) => copyCode('codex', code)}
-        onPasteCode={() => pasteCode('codex')}
-        onChangeCode={(code) => patchProvider('codex', { code })}
-        onOpenLoginPage={() => patchProvider('codex', { openedLoginPage: true })}
-        onSubmitCode={() => submitCode('codex')}
-      />
+      {selectedProvider === undefined || selectedProvider === 'claude' ? (
+        <ProviderCard
+          provider="claude"
+          title="Claude"
+          configured={configured.claude}
+          state={logins.claude}
+          compact={compact}
+          allowDisconnect={allowDisconnect}
+          onStart={() => start('claude')}
+          onDisconnect={() => disconnect('claude')}
+          onCopyCode={(code) => copyCode('claude', code)}
+          onPasteCode={() => pasteCode('claude')}
+          onChangeCode={(code) => patchProvider('claude', { code })}
+          onOpenLoginPage={() => patchProvider('claude', { openedLoginPage: true })}
+          onSubmitCode={() => submitCode('claude')}
+        />
+      ) : null}
+      {selectedProvider === undefined || selectedProvider === 'codex' ? (
+        <ProviderCard
+          provider="codex"
+          title="Codex"
+          configured={configured.codex}
+          state={logins.codex}
+          compact={compact}
+          allowDisconnect={allowDisconnect}
+          onStart={() => start('codex')}
+          onDisconnect={() => disconnect('codex')}
+          onCopyCode={(code) => copyCode('codex', code)}
+          onPasteCode={() => pasteCode('codex')}
+          onChangeCode={(code) => patchProvider('codex', { code })}
+          onOpenLoginPage={() => patchProvider('codex', { openedLoginPage: true })}
+          onSubmitCode={() => submitCode('codex')}
+        />
+      ) : null}
     </>
   );
 }

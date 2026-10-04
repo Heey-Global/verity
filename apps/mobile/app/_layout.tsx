@@ -241,7 +241,8 @@ function HydratedRoot() {
                 name="settings/transcription"
                 options={{ title: 'Meeting transcription' }}
               />
-              <Stack.Screen name="settings/services/ai" options={{ title: 'AI providers' }} />
+              <Stack.Screen name="settings/services/claude" options={{ title: 'Claude' }} />
+              <Stack.Screen name="settings/services/codex" options={{ title: 'Codex' }} />
               <Stack.Screen name="settings/services/doppler" options={{ title: 'Doppler' }} />
               <Stack.Screen name="settings/services/index" options={{ title: 'Connections' }} />
               <Stack.Screen
