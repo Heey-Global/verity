@@ -407,6 +407,7 @@ jobs:
                   server_image=true
                   ;;
                 packages/mobile/*)
+                  case $file in */src/api.ts) contract_test=true;; esac
                   lint=true
                   typecheck=true
                   mobile=true
