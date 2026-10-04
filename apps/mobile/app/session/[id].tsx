@@ -7213,7 +7213,7 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
       {descriptor.action === 'claude-login' ? (
         <Pressable
           style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
-          onPress={() => router.push('/settings/services?agentLogin=claude')}
+          onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
           accessibilityRole="button"
           accessibilityLabel="Sign in to Claude"
         >

@@ -2,7 +2,6 @@
 // project containers. Writes are gated on the secret store; connection diagnostics
 // remain reachable when Core cannot load settings.
 import {
-  selectedOpenCodeModels,
   secretStoreManaged,
   secretWritable,
   transcriptionBackendStatus,
@@ -66,7 +65,7 @@ export function ConnectionSettingsDetail({
 }: {
   client: VerityClient;
   agentLogin?: string | string[];
-  section: 'ai' | 'secret' | 'transcription' | 'doppler' | 'remote';
+  section: 'claude' | 'codex' | 'secret' | 'transcription' | 'doppler' | 'remote';
 }) {
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus } = useVeritySettings();
@@ -80,17 +79,16 @@ export function ConnectionSettingsDetail({
   // pre-fetch `undefined`) mean there is no secret store, so the paste fields and
   // the unlock hints hide — matching SecretStoreSection, which renders nothing.
   const managed = secretStoreManaged(secretStatus);
+  const loginProvider = autoStartLoginProvider(agentLogin);
+  const autoStartProvider = loginProvider === section ? loginProvider : undefined;
   const backendMode = settings?.transcribeBackendMode ?? null;
-  const opencodeReady =
-    (settings?.opencodeApiKeyConfigured ?? false) &&
-    (settings?.opencodeBaseUrl ?? '').trim() !== '' &&
-    selectedOpenCodeModels(settings).length > 0;
 
   return (
     <SettingsScaffold
       title={
         {
-          ai: 'AI providers',
+          claude: 'Claude',
+          codex: 'Codex',
           secret: 'Secret store',
           transcription: 'Meeting transcription',
           doppler: 'Doppler',
@@ -120,8 +118,11 @@ export function ConnectionSettingsDetail({
         </SettingsListPanel>
       ) : null}
 
-      {managed && section === 'ai' ? (
-        <SettingsGroup title="AI providers" description="Subscriptions and API providers.">
+      {managed && (section === 'claude' || section === 'codex') ? (
+        <SettingsGroup
+          title={section === 'claude' ? 'Claude' : 'Codex'}
+          description="Subscription connection."
+        >
           {writable ? (
             <View style={styles.panelStack}>
               <AgentLoginPanel
@@ -142,16 +143,17 @@ export function ConnectionSettingsDetail({
                   setVeritySettingsError('Unlock the secret store first.');
                   void refreshSecretStatus(client);
                 }}
+                selectedProvider={section}
                 compact
                 showGuidance={false}
                 allowDisconnect
-                autoStartProvider={autoStartLoginProvider(agentLogin)}
+                autoStartProvider={autoStartProvider}
               />
             </View>
           ) : (
             <SettingsPanel>
               <Text style={styles.reproHint}>
-                {autoStartLoginProvider(agentLogin) === undefined
+                {autoStartProvider === undefined
                   ? 'Unlock the secret store to change these.'
                   : // Arrived from the banner's "Sign in to Codex", into a store
                     // that cannot hold the new login yet. Saying only "unlock to
@@ -161,19 +163,6 @@ export function ConnectionSettingsDetail({
               </Text>
             </SettingsPanel>
           )}
-
-          <SettingsListPanel>
-            <SettingsNavRow
-              icon="terminal"
-              title="OpenCode"
-              subtitle="Provider connection and available models"
-              status={{
-                intent: opencodeReady ? 'ready' : 'needsSetup',
-                label: opencodeReady ? 'Configured' : 'Not configured',
-              }}
-              onPress={() => router.push('/settings/services/opencode')}
-            />
-          </SettingsListPanel>
         </SettingsGroup>
       ) : null}
 

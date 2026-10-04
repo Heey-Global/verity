@@ -8,7 +8,7 @@ export default function DetailScreen() {
   const { agentLogin } = useLocalSearchParams<{ agentLogin?: string | string[] }>();
   const client = useMemo(() => createVerityClient(), []);
   return client ? (
-    <ConnectionSettingsDetail client={client} section="ai" agentLogin={agentLogin} />
+    <ConnectionSettingsDetail client={client} section="claude" agentLogin={agentLogin} />
   ) : (
     <SettingsMessage title="Not connected" subtitle="Connect to your Verity server first." />
   );

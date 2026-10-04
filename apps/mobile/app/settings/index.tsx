@@ -11,8 +11,8 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import * as Application from 'expo-application';
-import { router, useLocalSearchParams, type Href } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { router, type Href } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
@@ -55,17 +55,7 @@ const CHECKLIST_ROUTES: Readonly<Record<SettingsChecklistItemId, Href>> = {
 };
 
 export default function SettingsIndexScreen() {
-  const { agentLogin } = useLocalSearchParams<{ agentLogin?: string | string[] }>();
   const client = useMemo(() => createVerityClient(), []);
-
-  // `/settings?agentLogin=…` used to open the AI-login panel on the one big
-  // screen. The panel now lives under Connected services; forward rather than
-  // break links held by an older notification or an un-updated client.
-  useEffect(() => {
-    if (agentLogin === 'claude' || agentLogin === 'codex') {
-      router.replace(`/settings/services?agentLogin=${agentLogin}` as Href);
-    }
-  }, [agentLogin]);
 
   if (!client) {
     return (

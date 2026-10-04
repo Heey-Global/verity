@@ -3,7 +3,7 @@ import {
   selectedOpenCodeModels,
   type VerityClient,
 } from '@verity/mobile';
-import { router, useFocusEffect, useLocalSearchParams, type Href } from 'expo-router';
+import { router, useFocusEffect, type Href } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Text } from 'react-native';
 import {
@@ -33,12 +33,7 @@ type Connection = {
 };
 
 export default function ConnectionsScreen() {
-  const { agentLogin } = useLocalSearchParams<{ agentLogin?: string | string[] }>();
   const client = useMemo(() => createVerityClient(), []);
-  useEffect(() => {
-    if (agentLogin === 'claude' || agentLogin === 'codex')
-      router.replace(`/settings/services/ai?agentLogin=${agentLogin}` as Href);
-  }, [agentLogin]);
   return client ? (
     <ConnectionsView client={client} />
   ) : (
@@ -113,7 +108,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       group: 'AI',
       icon: 'terminal',
       subtitle: 'Use your Claude subscription',
-      route: '/settings/services/ai?agentLogin=claude',
+      route: '/settings/services/claude',
       connected: settings?.claudeCodeOauthCredentialsConfigured === true,
     },
     {
@@ -122,7 +117,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       group: 'AI',
       icon: 'terminal',
       subtitle: 'Use your Codex subscription',
-      route: '/settings/services/ai?agentLogin=codex',
+      route: '/settings/services/codex',
       connected: settings?.codexAuthJsonConfigured === true,
     },
     {

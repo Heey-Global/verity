@@ -22,7 +22,8 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 import ConnectionsScreen from '../app/settings/services/index';
 import SecretScreen from '../app/settings/secret-store';
 import DopplerScreen from '../app/settings/services/doppler';
-import AiScreen from '../app/settings/services/ai';
+import ClaudeScreen from '../app/settings/services/claude';
+import CodexScreen from '../app/settings/services/codex';
 import TranscriptionScreen from '../app/settings/transcription';
 let ServicesSettingsScreen = ConnectionsScreen;
 import { ATTENTION_ACTION_ROUTES } from '../components/ServerAttentionBanner';
@@ -236,7 +237,7 @@ describe('settings/services — write-only credentials', () => {
 
 describe('settings/services — AI backends', () => {
   beforeEach(() => {
-    ServicesSettingsScreen = AiScreen;
+    ServicesSettingsScreen = ClaudeScreen;
   });
   const claudeSession = {
     sessionId: '22222222-2222-4222-8222-222222222222',
@@ -304,7 +305,8 @@ describe('settings/services — AI backends', () => {
     setSearchParams(Object.fromEntries(route.searchParams));
     // The banner must also point at the screen that now holds the login panel;
     // a correct parameter on the wrong route opens nothing.
-    expect(route.pathname).toBe('/settings/services');
+    expect(route.pathname).toBe('/settings/services/codex');
+    ServicesSettingsScreen = CodexScreen;
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
         startAgentLogin,
@@ -333,6 +335,7 @@ describe('settings/services — AI backends', () => {
   it('says what a sealed store is blocking when opened from the banner', async () => {
     const startAgentLogin = jest.fn();
     setSearchParams({ agentLogin: 'codex' });
+    ServicesSettingsScreen = CodexScreen;
     mockCreateVerityClient.mockReturnValue(makeClient('sealed', { startAgentLogin }));
     render(<ServicesSettingsScreen />);
 
@@ -353,13 +356,13 @@ describe('settings/services — AI backends', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { startAgentLogin }));
     render(<ServicesSettingsScreen />);
 
-    await screen.findByText('AI providers');
+    await screen.findByLabelText('Claude');
     expect(startAgentLogin).not.toHaveBeenCalled();
   });
 
   it('opens OpenCode connection and model settings on its own page', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-    render(<ServicesSettingsScreen />);
+    render(<ConnectionsScreen />);
     fireEvent.press(await screen.findByLabelText('OpenCode'));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/opencode');
   });
@@ -592,19 +595,17 @@ it('keeps OpenCode available when all discovered models are disabled', async () 
   expect(within(openCode).queryByLabelText('Connected')).toBeNull();
 });
 
-it('does not mark OpenCode configured on the AI detail when all models are disabled', async () => {
-  mockCreateVerityClient.mockReturnValue(
-    makeClient('unlocked', {
-      settings: makeSettings({
-        opencodeApiKeyConfigured: true,
-        opencodeBaseUrl: 'https://provider.example.test',
-        opencodeModels: 'first',
-        opencodeDisabledModels: 'first',
-      }),
-    }),
-  );
-  render(<AiScreen />);
-  expect(
-    within(await screen.findByLabelText('OpenCode')).getByText('Not configured'),
-  ).toBeOnTheScreen();
+it.each([
+  ['Claude', ClaudeScreen, 'Codex', '/settings/services/claude'],
+  ['Codex', CodexScreen, 'Claude', '/settings/services/codex'],
+] as const)('keeps %s settings separate', async (title, DetailScreen, otherTitle, route) => {
+  mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  const catalog = render(<ConnectionsScreen />);
+  fireEvent.press(await screen.findByLabelText(title));
+  expect(mockPush).toHaveBeenCalledWith(route);
+  catalog.unmount();
+  render(<DetailScreen />);
+  expect(await screen.findByLabelText(title)).toBeOnTheScreen();
+  expect(screen.queryByLabelText(otherTitle)).toBeNull();
+  expect(screen.queryByLabelText('OpenCode')).toBeNull();
 });

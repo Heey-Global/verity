@@ -294,21 +294,13 @@ describe('settings index — app-level controls', () => {
 });
 
 describe('settings index — legacy deep links', () => {
-  // `/settings?agentLogin=…` opened the AI-login panel back when Settings was one
-  // screen. An older notification or an un-updated client still sends it, and it
-  // has to arrive at the panel rather than at a screen that ignores it.
-  it.each(['claude', 'codex'])(
-    'forwards ?agentLogin=%s to Connected services',
-    async (provider) => {
-      setSearchParams({ agentLogin: provider });
-      mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-      render(<SettingsIndexScreen />);
-
-      await waitFor(() =>
-        expect(mockReplace).toHaveBeenCalledWith(`/settings/services?agentLogin=${provider}`),
-      );
-    },
-  );
+  it.each(['claude', 'codex'])('stays on Settings for ?agentLogin=%s', async (provider) => {
+    setSearchParams({ agentLogin: provider });
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<SettingsIndexScreen />);
+    await screen.findByLabelText('Connections');
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
 
   it('stays put for an agentLogin the app does not know', async () => {
     setSearchParams({ agentLogin: 'gemini' });
