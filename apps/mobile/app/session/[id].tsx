@@ -167,7 +167,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
-import { ConnectionDiscoveryHint } from '../../components/ConnectionDiscoveryHint';
 import {
   AutomationBar,
   AutomationProposalCard,
@@ -5565,17 +5564,11 @@ function SessionFilesSheet({
             {error ? <Text style={styles.sheetError}>{error}</Text> : null}
             {driveUnconfigured && projectId ? (
               <View style={styles.driveSetupNotice}>
-                <Text style={styles.sheetEmpty}>No Google Drive folder connected.</Text>
-                <ConnectionDiscoveryHint
-                  id={`drive.${projectId}`}
-                  onConnect={() => {
-                    onClose();
-                    router.push({
-                      pathname: '/project/[id]/settings/services',
-                      params: { id: projectId, section: 'drive' },
-                    });
-                  }}
-                />
+                <Icon name="hard-drive" size={28} color={theme.colors.textFaint} />
+                <Text style={styles.emptyTitle}>No Google Drive folder</Text>
+                <Text style={styles.emptySubtitle}>
+                  Connect a folder in the project settings to use its documents in this project.
+                </Text>
                 <Pressable
                   onPress={() => {
                     onClose();
@@ -5584,10 +5577,14 @@ function SessionFilesSheet({
                       params: { id: projectId, section: 'drive' },
                     });
                   }}
-                  accessibilityRole="link"
+                  accessibilityRole="button"
                   accessibilityLabel="Open project settings to connect Google Drive"
+                  style={({ pressed }) => [
+                    styles.driveSetupButton,
+                    pressed ? styles.driveSetupButtonPressed : null,
+                  ]}
                 >
-                  <Text style={styles.driveSetupLink}>Open project settings</Text>
+                  <Text style={styles.driveSetupButtonLabel}>Connect a folder</Text>
                 </Pressable>
               </View>
             ) : loading ? (
@@ -9852,11 +9849,24 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.md,
   },
   driveSetupNotice: {
-    alignItems: 'flex-start',
-    gap: theme.spacing.xs,
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl * 2,
   },
-  driveSetupLink: {
-    color: theme.colors.primary,
+  driveSetupButton: {
+    marginTop: theme.spacing.sm,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.primary,
+  },
+  driveSetupButtonPressed: {
+    opacity: 0.78,
+  },
+  driveSetupButtonLabel: {
+    color: theme.colors.onPrimary,
     fontSize: theme.text.sm,
     fontWeight: '700',
   },
