@@ -11,6 +11,8 @@ import {
   exportDriveFile,
   getDriveAccountEmail,
   getDriveFile,
+  getDriveFileSnapshot,
+  mutateDriveFile,
   listDriveFiles,
   listSharedDrives,
   planDriveImport,
@@ -635,5 +637,58 @@ describe('createCachedGoogleAccessToken', () => {
     );
     await expect(provider()).resolves.toBeUndefined();
     await expect(provider()).resolves.toBe('ok');
+  });
+});
+
+describe('Drive conditional writes', () => {
+  const metadata = {
+    id: 'file',
+    title: 'Note',
+    mimeType: 'text/plain',
+    parents: [{ id: 'root' }],
+    etag: '"v1"',
+    labels: { trashed: false },
+  };
+  it('reads the provider ETag and sends it in If-Match on a byte overwrite', async () => {
+    const calls: { url: string; init: Parameters<GoogleFetch>[1] }[] = [];
+    const fetch: GoogleFetch = async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify(metadata), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const file = await getDriveFileSnapshot('token', 'file', { fetch });
+    expect(file).toMatchObject({ name: 'Note', parents: ['root'], version: '"v1"' });
+    await mutateDriveFile(
+      'token',
+      'file',
+      { expectedVersion: file.version!, bytes: Buffer.from('new'), mimeType: 'text/plain' },
+      { fetch },
+    );
+    expect(calls[1]?.url).toContain('/upload/drive/v2/files/file?');
+    expect(calls[1]?.init?.headers?.['If-Match']).toBe('"v1"');
+    expect(calls[1]?.init?.body).toEqual(Buffer.from('new'));
+  });
+  it('surfaces a provider precondition failure without retrying or exposing its body', async () => {
+    let calls = 0;
+    const fetch: GoogleFetch = async () => {
+      calls++;
+      return new Response('private provider error', { status: 412 });
+    };
+    await expect(
+      mutateDriveFile('secret', 'file', { expectedVersion: '"old"', trashed: true }, { fetch }),
+    ).rejects.toMatchObject({ reason: 'conflict' });
+    expect(calls).toBe(1);
+  });
+  it('uses recoverable trash metadata instead of a DELETE request', async () => {
+    const calls: Parameters<GoogleFetch>[] = [];
+    const fetch: GoogleFetch = async (url, init) => {
+      calls.push([url, init]);
+      return new Response(JSON.stringify(metadata));
+    };
+    await mutateDriveFile('token', 'file', { expectedVersion: '"v1"', trashed: true }, { fetch });
+    expect(calls[0]?.[1]?.method).toBe('PATCH');
+    expect(JSON.parse(calls[0]?.[1]?.body as string)).toEqual({ labels: { trashed: true } });
+    expect(calls[0]?.[1]?.headers?.['If-Match']).toBe('"v1"');
   });
 });

@@ -7,6 +7,7 @@
 // that reports a stale result forever.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError } from '@verity/mobile';
+import { Alert } from 'react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('react-native/Libraries/Linking/Linking', () =>
@@ -663,4 +664,150 @@ describe('settings/server-update', () => {
       await screen.findByText('Set a master password before updating Verity.'),
     ).toBeOnTheScreen();
   });
+});
+
+describe('server update channel selection', () => {
+  it('keeps installation blocked until a lost write and failed recovery read are reconciled', async () => {
+    jest.useFakeTimers();
+    try {
+      const alert = jest.spyOn(Alert, 'alert');
+      const getServerUpdates = jest
+        .fn()
+        .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null })
+        .mockResolvedValue({ state: 'current', release: RELEASE, operation: null });
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', {
+          getServerUpdates,
+          getServerUpdateChannel: jest
+            .fn()
+            .mockResolvedValueOnce('stable')
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValue('staging'),
+          setServerUpdateChannel: jest.fn().mockRejectedValue(new Error('response lost')),
+        }),
+      );
+      render(<ServerUpdateScreen />);
+      fireEvent.press(await screen.findByText('Prereleases'));
+      await act(async () => {
+        alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+      });
+      expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+      expect(
+        await screen.findByText('The channel change is unconfirmed. Checking the server…'),
+      ).toBeTruthy();
+      expect(getServerUpdates).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(2_000);
+      });
+      expect(await screen.findByText('Prereleases ✓')).toBeTruthy();
+      expect(await screen.findByText('Verity is up to date')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('discards the previous release if the channel refresh fails and retries on focus', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    const getServerUpdates = jest
+      .fn()
+      .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null })
+      .mockRejectedValue(new Error('offline'));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates,
+        getServerUpdateChannel: jest
+          .fn()
+          .mockResolvedValueOnce('stable')
+          .mockResolvedValue('staging'),
+        setServerUpdateChannel: jest.fn().mockResolvedValue('staging'),
+      }),
+    );
+    render(<ServerUpdateScreen />);
+    expect(await screen.findByLabelText('Install 1.4.0')).toBeTruthy();
+    fireEvent.press(await screen.findByText('Prereleases'));
+    await act(async () => {
+      alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+    });
+    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(
+      await screen.findByText(
+        'Checking the selected channel… Retrying if the server is unavailable.',
+      ),
+    ).toBeTruthy();
+    getServerUpdates.mockResolvedValue({ state: 'current', release: RELEASE, operation: null });
+    await act(async () => {
+      refocus();
+    });
+    expect(await screen.findByText('Verity is up to date')).toBeTruthy();
+  });
+
+  it('blocks installation while the channel selection is being saved', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    let finish!: (value: 'staging') => void;
+    const saved = new Promise<'staging'>((resolve) => {
+      finish = resolve;
+    });
+    const requestServerUpdate = jest.fn();
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest
+          .fn()
+          .mockResolvedValue({ state: 'available', release: RELEASE, operation: null }),
+        getServerUpdateChannel: jest.fn().mockResolvedValue('stable'),
+        setServerUpdateChannel: jest.fn(() => saved),
+        requestServerUpdate,
+      }),
+    );
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByText('Prereleases'));
+    await act(async () => {
+      alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+    });
+    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(requestServerUpdate).not.toHaveBeenCalled();
+    await act(async () => {
+      finish('staging');
+    });
+    expect(await screen.findByLabelText('Install 1.4.0')).not.toBeDisabled();
+  });
+
+  it.each([false, true])(
+    'requires confirmation and refreshes availability (lost response: %s)',
+    async (lostResponse) => {
+      const alert = jest.spyOn(Alert, 'alert');
+      const getServerUpdates = jest
+        .fn()
+        .mockResolvedValue({ state: 'current', release: RELEASE, operation: null });
+      const setServerUpdateChannel = lostResponse
+        ? jest.fn().mockRejectedValue(new Error('response lost'))
+        : jest.fn().mockResolvedValue('staging');
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', {
+          getServerUpdates,
+          getServerUpdateChannel: jest
+            .fn()
+            .mockResolvedValueOnce('stable')
+            .mockResolvedValue('staging'),
+          setServerUpdateChannel,
+        }),
+      );
+      render(<ServerUpdateScreen />);
+      const prereleases = await screen.findByText('Prereleases');
+      fireEvent.press(prereleases);
+      expect(setServerUpdateChannel).not.toHaveBeenCalled();
+      expect(alert).toHaveBeenCalledWith(
+        'Use prereleases?',
+        expect.stringContaining('does not install an older version'),
+        expect.any(Array),
+      );
+      const actions = alert.mock.calls[0]![2]!;
+      await act(async () => {
+        actions.find((action) => action.text === 'Change channel')!.onPress!();
+      });
+      expect(setServerUpdateChannel).toHaveBeenCalledWith('staging');
+      expect(await screen.findByText('Prereleases ✓')).toBeTruthy();
+      expect(screen.queryByText('Could not confirm the update channel. Try again.')).toBeNull();
+      expect(getServerUpdates.mock.calls.length).toBeGreaterThan(1);
+    },
+  );
 });

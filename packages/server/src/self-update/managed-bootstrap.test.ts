@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,6 +32,38 @@ const environment = async (): Promise<ManagedBootstrapEnvironment> => ({
 });
 
 describe('runManagedBootstrap', () => {
+  it('forwards explicit Staging OAuth overrides without pinning the baked image default', async () => {
+    const compose = parseYaml(
+      readFileSync(
+        process.env.VERITY_TEST_COMPOSE_FILE ??
+          new URL('../../../../deploy/docker-compose.yml', import.meta.url),
+        'utf8',
+      ),
+      { merge: true },
+    ) as { services: Record<string, { environment: Record<string, string> }> };
+    // A host .env value otherwise disappears before the bootstrap ever sees it.
+    expect(compose.services['verity-updater']!.environment.STAGING_GOOGLE_AUTH_ID).toBe(
+      '${STAGING_GOOGLE_AUTH_ID:-}',
+    );
+    const env = {
+      ...(await environment()),
+      STAGING_GOOGLE_AUTH_ID: 'override',
+      GOOGLE_STAGING_CLIENT_ID_DEFAULT: 'baked',
+    };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    expect(state.managed).toBe(true);
+    if (!state.managed) throw new Error('bootstrap did not establish managed authority');
+    expect(state.spec.environment).toContainEqual({
+      name: 'STAGING_GOOGLE_AUTH_ID',
+      source: { kind: 'env', name: 'STAGING_GOOGLE_AUTH_ID' },
+    });
+    // Pinning an empty baked default would disable Staging OAuth after later image updates.
+    expect(
+      state.spec.environment.some((entry) => entry.name === 'GOOGLE_STAGING_CLIENT_ID_DEFAULT'),
+    ).toBe(false);
+  });
+
   it('writes the allowlisted deployment authority for an official digest', async () => {
     const env = await environment();
     await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);

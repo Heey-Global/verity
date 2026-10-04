@@ -1,3 +1,4 @@
+import { selectedOpenCodeModels } from '@verity/events';
 import {
   agentEventSchema,
   attachmentSchema,
@@ -362,12 +363,13 @@ export const projectSettingsSchema = z.object({
   memory: z.string().nullable().optional(),
   googleDriveFolderId: z.string().nullable().optional(),
   googleDriveFolderName: z.string().nullable().optional(),
+  googleDriveAccessMode: z.enum(['read-only', 'read-write']).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
 
-type ProjectSettingsKey = 'defaultBranch' | 'defaultModel' | 'memory';
+type ProjectSettingsKey = 'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -752,6 +754,8 @@ export type MeetingTranscriptionBackendStatus = z.infer<
 
 // ── Google Drive sources (ADR 0009) ──────────────────────────────────────────
 export const driveFileSchema = z.object({
+  version: z.string().optional(),
+  trashed: z.boolean().optional(),
   id: z.string(),
   name: z.string(),
   mimeType: z.string(),
@@ -961,7 +965,8 @@ export const onboardingStatusSchema = z.object({
   claudeConfigured: z.boolean(),
   codexConfigured: z.boolean(),
   complete: z.boolean(),
-  nextStep: z.enum(['master-password', 'github', 'first-project']).nullable(),
+  opencodeConfigured: z.boolean().optional(),
+  nextStep: z.enum(['master-password', 'github', 'first-project', 'ai-backends']).nullable(),
 });
 export type OnboardingStatus = z.infer<typeof onboardingStatusSchema>;
 
@@ -1346,6 +1351,9 @@ export const sessionDirectorySchema = z.object({
 export type SessionDirectory = z.infer<typeof sessionDirectorySchema>;
 
 export const sessionFileContentSchema = z.object({
+  warning: z.string().optional(),
+  version: z.string().optional(),
+  editable: z.boolean().optional(),
   path: z.string(),
   content: z.string(),
   size: z.number().int().nonnegative(),
@@ -1562,6 +1570,7 @@ export function isDevicePairingRequiredError(error: unknown): error is VerityApi
 }
 
 export interface VerityClientOptions {
+  appVariant?: 'production' | 'staging';
   /** Base URL of the control-plane server, no trailing slash (e.g. via Tailscale). */
   baseUrl: string;
   /** Saved direct endpoint used for LAN previews, even when API traffic uses Uplink. */
@@ -2051,6 +2060,7 @@ export class VerityClient {
       body: JSON.stringify({ accountId, sourceId }),
     });
   }
+  private readonly appVariant: 'production' | 'staging' | undefined;
   private readonly baseUrl: string;
   private readonly localPreviewBaseUrl: string | null;
   private readonly fetchImpl: typeof fetch;
@@ -2060,6 +2070,7 @@ export class VerityClient {
   private readonly onUnauthorized: (() => void) | undefined;
 
   constructor(opts: VerityClientOptions) {
+    this.appVariant = opts.appVariant;
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.localPreviewBaseUrl =
       opts.localPreviewBaseUrl === undefined ? this.baseUrl : opts.localPreviewBaseUrl;
@@ -2487,6 +2498,20 @@ export class VerityClient {
   }
 
   /** Availability of an official server release plus the live update operation. */
+  async getServerUpdateChannel(): Promise<'stable' | 'staging'> {
+    const res = await this.request('/server/update-channel', { method: 'GET' });
+    return z.object({ channel: z.enum(['stable', 'staging']) }).parse(await res.json()).channel;
+  }
+
+  async setServerUpdateChannel(channel: 'stable' | 'staging'): Promise<'stable' | 'staging'> {
+    const res = await this.request('/server/update-channel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel }),
+    });
+    return z.object({ channel: z.enum(['stable', 'staging']) }).parse(await res.json()).channel;
+  }
+
   async getServerUpdates(): Promise<ServerUpdateStatus> {
     const res = await this.request('/server/updates', { method: 'GET' });
     const body: unknown = await res.json();
@@ -2620,6 +2645,70 @@ export class VerityClient {
     await this.request('/google-drive/disconnect', { method: 'POST' });
   }
 
+  async getConnectionUsage(): Promise<
+    Record<
+      'github' | 'claude' | 'codex' | 'opencode' | 'google' | 'matrix' | 'doppler' | 'mcp',
+      number
+    >
+  > {
+    const response = await this.request('/connections/usage', { method: 'GET' });
+    return z
+      .object({
+        github: z.number().int().nonnegative(),
+        claude: z.number().int().nonnegative(),
+        codex: z.number().int().nonnegative(),
+        opencode: z.number().int().nonnegative(),
+        google: z.number().int().nonnegative(),
+        matrix: z.number().int().nonnegative(),
+        doppler: z.number().int().nonnegative(),
+        mcp: z.number().int().nonnegative(),
+      })
+      .parse(await response.json());
+  }
+
+  async getGoogleConnection() {
+    const res = await this.request('/google/connection', { method: 'GET' });
+    return z
+      .object({
+        connected: z.boolean(),
+        accountEmail: z.string().nullable(),
+        scopes: z.array(z.string()),
+        projects: z.array(z.object({ id: z.string(), name: z.string() })),
+      })
+      .parse(await res.json());
+  }
+
+  async getProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<GmailSessionConnection & { legacySessionCount: number }> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema
+      .extend({ legacySessionCount: z.number().int().nonnegative() })
+      .parse(await res.json());
+  }
+
+  async enableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<GmailSessionConnection> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getSessionGmailConnection(sessionId: string): Promise<GmailSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
       method: 'GET',
@@ -2719,13 +2808,14 @@ export class VerityClient {
   async connectProjectGoogleDriveFolder(
     projectId: string,
     fileId: string,
+    accessMode: 'read-only' | 'read-write' = 'read-only',
   ): Promise<{ id: string; name: string }> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/google-drive/folder`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId }),
+        body: JSON.stringify({ fileId, accessMode }),
       },
     );
     return z
@@ -2878,7 +2968,28 @@ export class VerityClient {
    *  launch before the operator has unlocked/created the master password. */
   async fetchOnboardingStatus(): Promise<OnboardingStatus> {
     const res = await this.request('/onboarding/status', { method: 'GET' });
-    return onboardingStatusSchema.parse(await res.json());
+    const status = onboardingStatusSchema.parse(await res.json());
+    // Older servers omit OpenCode from onboarding status. Preserve an already
+    // usable OpenCode-only installation when opening it with a newer app.
+    if (
+      status.opencodeConfigured === undefined &&
+      status.masterPasswordSet &&
+      !status.sealed &&
+      !status.claudeConfigured &&
+      !status.codexConfigured
+    ) {
+      try {
+        const settings = await this.getVeritySettings();
+        status.opencodeConfigured = Boolean(
+          settings?.opencodeApiKeyConfigured &&
+          settings.opencodeBaseUrl?.trim() &&
+          selectedOpenCodeModels(settings).length > 0,
+        );
+      } catch {
+        // A redacted or unauthorized status must continue through device unlock.
+      }
+    }
+    return status;
   }
 
   /** Challenge the stable server identity through the already pinned transport. */
@@ -3858,6 +3969,41 @@ export class VerityClient {
     return sessionFileContentSchema.parse(await res.json());
   }
 
+  async listSessionFileVersions(id: string, root: SessionFileRoot, path: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        versions: z.array(z.object({ id: z.string(), createdAt: z.string(), kind: z.string() })),
+      })
+      .parse(await res.json()).versions;
+  }
+
+  async readSessionFileVersion(id: string, root: SessionFileRoot, path: string, version: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}&version=${encodeURIComponent(version)}`,
+      { method: 'GET' },
+    );
+    return z.object({ content: z.string() }).parse(await res.json()).content;
+  }
+
+  async saveSessionFileContent(
+    id: string,
+    root: SessionFileRoot,
+    path: string,
+    content: string,
+    expectedVersion: string | null,
+  ): Promise<SessionFileContent> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/files/content`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ root, path, content, expectedVersion }),
+    });
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
   /** Direct URL for opening/downloading a session worktree file. */
   sessionFileDownloadUrl(id: string, path: string, root: SessionFileRoot = 'worktree'): string {
     const rootQuery = root === 'worktree' ? '' : `&root=${root}`;
@@ -4018,6 +4164,14 @@ export class VerityClient {
     // Attach the per-device bearer token (audit C1) when we have one. Callers
     // pass plain-object headers, so a record spread is safe; an explicit
     // Authorization in `init` (none today) would win by being spread last.
+    if (this.appVariant !== undefined)
+      init = {
+        ...init,
+        headers: {
+          ...(init.headers as Record<string, string>),
+          'x-verity-app-variant': this.appVariant,
+        },
+      };
     const token = this.getToken();
     const sentToken = token != null && token.length > 0;
     if (sentToken) {

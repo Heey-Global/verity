@@ -123,3 +123,7 @@ export {
   KNOWLEDGE_TOOL_DESCRIPTION,
   KNOWLEDGE_CONTEXT_INSTRUCTIONS,
 } from './knowledge-tool.js';
+
+export { selectedOpenCodeModels } from './opencode-model-selection.js';
+
+export { fileOperationRequestSchema } from './file-operations.js';

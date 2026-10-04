@@ -4,9 +4,14 @@
 //
 // Project-specific bindings are direct entries; account credentials and MCP
 // connection definitions live in Verity settings.
-import { modelDisplayName, projectBadge, type VerityClient } from '@verity/mobile';
-import { router, useLocalSearchParams } from 'expo-router';
-import { useMemo } from 'react';
+import {
+  githubRepositoryAccessReady,
+  modelDisplayName,
+  projectBadge,
+  type VerityClient,
+} from '@verity/mobile';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -48,6 +53,64 @@ function ProjectSettingsIndexView({
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
+  const [connectionRefresh, setConnectionRefresh] = useState(0);
+  const [usage, setUsage] = useState({ google: 0, mcp: 0, matrix: 0 });
+  const [available, setAvailable] = useState({
+    github: false,
+    doppler: false,
+    drive: false,
+    google: false,
+    mcp: false,
+    matrix: false,
+  });
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void Promise.allSettled([
+        Promise.resolve().then(() => client.getVeritySettings()),
+        Promise.resolve().then(() => client.getGoogleDriveConnection()),
+        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'gmail')),
+        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'calendar')),
+        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'contacts')),
+        Promise.resolve().then(() => client.listHttpMcpConnections()),
+        Promise.resolve().then(() => client.listIntegrations()),
+        Promise.resolve().then(() => client.listProjectMcpBindings(projectId)),
+      ]).then((results) => {
+        if (!active) return;
+        const [settings, drive, gmail, calendar, contacts, mcp, integrations, bindings] = results;
+        setUsage({
+          google: [gmail, calendar, contacts].filter(
+            (item) => item.status === 'fulfilled' && item.value.enabled,
+          ).length,
+          mcp:
+            bindings.status === 'fulfilled'
+              ? bindings.value.filter((binding) => binding.enabled).length
+              : 0,
+          matrix:
+            integrations.status === 'fulfilled'
+              ? integrations.value.sources.filter((source) => source.projectId === projectId).length
+              : 0,
+        });
+        setAvailable({
+          github: settings.status === 'fulfilled' && githubRepositoryAccessReady(settings.value),
+          doppler:
+            settings.status === 'fulfilled' &&
+            Boolean(settings.value?.dopplerServiceTokenConfigured),
+          drive: drive.status === 'fulfilled' && drive.value.connected,
+          google: [gmail, calendar, contacts].some(
+            (item) => item.status === 'fulfilled' && item.value.connected,
+          ),
+          mcp: mcp.status === 'fulfilled' && mcp.value.length > 0,
+          matrix:
+            integrations.status === 'fulfilled' &&
+            integrations.value.accounts.some((account) => account.provider === 'matrix'),
+        });
+      });
+      return () => {
+        active = false;
+      };
+    }, [client, connectionRefresh, projectId]),
+  );
   const [deleting, remove] = useDeleteProject(client, setError);
 
   if (loading && detail === undefined) {
@@ -63,7 +126,10 @@ function ProjectSettingsIndexView({
         title="Couldn't load project"
         subtitle={error ?? 'Unknown error'}
         screenTitle="Project settings"
-        onRetry={() => load()}
+        onRetry={() => {
+          load();
+          setConnectionRefresh((value) => value + 1);
+        }}
       />
     );
   }
@@ -85,7 +151,7 @@ function ProjectSettingsIndexView({
       | '/project/[id]/settings/model'
       | '/project/[id]/automations',
   ) => router.push({ pathname, params: { id: projectId } });
-  const toService = (section: 'doppler' | 'drive' | 'mcp') =>
+  const toService = (section: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google') =>
     router.push({
       pathname: '/project/[id]/settings/services',
       params: { id: projectId, section },
@@ -95,36 +161,102 @@ function ProjectSettingsIndexView({
     <SettingsScaffold
       title="Project settings"
       state={{ error, saving: false }}
-      onRetry={() => load()}
+      onRetry={() => {
+        load();
+        setConnectionRefresh((value) => value + 1);
+      }}
     >
-      <SettingsGroup title="Setup">
+      <SettingsGroup title="Connections">
         <SettingsListPanel>
-          {project.kind === 'local' ? (
+          {project.kind === 'local' && available.github ? (
             <SettingsNavRow
               icon="github"
               title="Connect GitHub"
               subtitle="Link this local project to a repository"
+              status={{ intent: 'optional', label: 'Not selected' }}
               onPress={() => to('/project/[id]/settings/github')}
             />
           ) : null}
+          {project.kind === 'github' ? (
+            <SettingsNavRow
+              icon="github"
+              title="GitHub repository"
+              subtitle={`${project.owner}/${project.repo}`}
+              status={{ intent: 'ready', label: 'Connected' }}
+              onPress={() => to('/project/[id]/settings/github')}
+            />
+          ) : null}
+          {available.doppler ? (
+            <SettingsNavRow
+              icon="key"
+              title="Doppler"
+              subtitle="Choose the environment for this project"
+              status={{
+                intent: detail.settings?.dopplerConfig ? 'ready' : 'optional',
+                label: detail.settings?.dopplerConfig ?? 'Not selected',
+              }}
+              onPress={() => toService('doppler')}
+            />
+          ) : null}
+          {available.drive ? (
+            <SettingsNavRow
+              icon="folder"
+              title="Google Drive"
+              subtitle="Choose the project folder"
+              status={{
+                intent: detail.settings?.googleDriveFolderId ? 'ready' : 'optional',
+                label: detail.settings?.googleDriveFolderName ?? 'Not selected',
+              }}
+              onPress={() => toService('drive')}
+            />
+          ) : null}
+          {available.google ? (
+            <SettingsNavRow
+              icon="link"
+              title="Google services"
+              subtitle="Gmail, Calendar, and Contacts access"
+              status={{
+                intent: usage.google > 0 ? 'ready' : 'optional',
+                label: `${usage.google} enabled`,
+              }}
+              onPress={() => toService('google')}
+            />
+          ) : null}
+          {available.mcp ? (
+            <SettingsNavRow
+              icon="tool"
+              title="MCP"
+              subtitle="Enable connections for this project"
+              status={{
+                intent: usage.mcp > 0 ? 'ready' : 'optional',
+                label: `${usage.mcp} enabled`,
+              }}
+              onPress={() => toService('mcp')}
+            />
+          ) : null}
+          {available.matrix ? (
+            <SettingsNavRow
+              icon="link"
+              title="Matrix rooms"
+              subtitle="Choose rooms for this project"
+              status={{
+                intent: usage.matrix > 0 ? 'ready' : 'optional',
+                label: `${usage.matrix} connected`,
+              }}
+              onPress={() => toService('matrix')}
+            />
+          ) : null}
           <SettingsNavRow
-            icon="key"
-            title="Doppler"
-            subtitle="Choose the environment for this project"
-            onPress={() => toService('doppler')}
+            icon="plus"
+            title="Add connection"
+            subtitle="Discover services in Connections"
+            onPress={() => router.push('/settings/services')}
           />
-          <SettingsNavRow
-            icon="folder"
-            title="Google Drive"
-            subtitle="Choose the project folder"
-            onPress={() => toService('drive')}
-          />
-          <SettingsNavRow
-            icon="tool"
-            title="MCP"
-            subtitle="Enable connections for this project"
-            onPress={() => toService('mcp')}
-          />
+        </SettingsListPanel>
+      </SettingsGroup>
+
+      <SettingsGroup title="Environment">
+        <SettingsListPanel>
           <SettingsNavRow
             icon="server"
             title="Environment"

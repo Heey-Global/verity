@@ -1,7 +1,7 @@
-import { Pressable, Text, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Pressable, ScrollView, Text, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
-import { Icon, type IconName } from '../Icon';
+import { FileIcon as Icon, type IconName } from './FileIcon';
 
 export interface FileAction {
   key: string;
@@ -25,7 +25,6 @@ export function FileActionMenu({
   actions: readonly FileAction[];
   onDismiss: () => void;
 }) {
-  const { theme } = useUnistyles();
   const safe = actions.filter((action) => !action.destructive);
   const destructive = actions.filter((action) => action.destructive);
   const row = (action: FileAction) => (
@@ -42,11 +41,7 @@ export function FileActionMenu({
       <Text style={[styles.itemLabel, action.destructive ? styles.destructive : null]}>
         {action.label}
       </Text>
-      <Icon
-        name={action.icon}
-        size={18}
-        color={action.destructive ? theme.colors.tone.danger : theme.colors.textMuted}
-      />
+      <Icon name={action.icon} size={18} color="#ffffff" />
     </Pressable>
   );
   return (
@@ -61,9 +56,11 @@ export function FileActionMenu({
         <Text style={styles.title} numberOfLines={2}>
           {title}
         </Text>
-        {safe.map(row)}
-        {destructive.length > 0 ? <View style={styles.divider} /> : null}
-        {destructive.map(row)}
+        <ScrollView style={{ flexShrink: 1 }}>
+          {safe.map(row)}
+          {destructive.length > 0 ? <View style={styles.divider} /> : null}
+          {destructive.map(row)}
+        </ScrollView>
         <View style={styles.divider} />
         <Pressable
           onPress={onDismiss}
@@ -93,6 +90,7 @@ const styles = StyleSheet.create((theme) => ({
   card: {
     width: '100%',
     maxWidth: 380,
+    maxHeight: '80%',
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,

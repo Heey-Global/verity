@@ -7,11 +7,6 @@
 import {
   settingsChecklist,
   settingsChecklistHeadline,
-  commitAuthorReady,
-  githubRepositoryAccessReady,
-  secretStoreManaged,
-  secretStoreReady,
-  verifiedCommitsReady,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
@@ -35,6 +30,7 @@ import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
+import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
 import {
   retryFailedVeritySettings,
   saveVeritySettings,
@@ -52,7 +48,7 @@ const APP_VERSION_LABEL = runningReleaseVersion(Application.nativeApplicationVer
 // without a destination — a row that explains a problem but goes nowhere is
 // worse than no row.
 const CHECKLIST_ROUTES: Readonly<Record<SettingsChecklistItemId, Href>> = {
-  secretStore: '/settings/services' as Href,
+  secretStore: '/settings/secret-store' as Href,
   githubAccess: '/settings/github' as Href,
   commitAuthor: '/settings/github' as Href,
   verifiedCommits: '/settings/github' as Href,
@@ -105,11 +101,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   }, [checkingForUpdate]);
 
   const checklist = settingsChecklist({ settings, secretStatus, failed });
-  const githubReady =
-    githubRepositoryAccessReady(settings) &&
-    commitAuthorReady(settings) &&
-    verifiedCommitsReady(settings);
-  const servicesNeedsUnlock = secretStoreManaged(secretStatus) && !secretStoreReady(secretStatus);
 
   return (
     <SettingsScaffold
@@ -153,33 +144,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Setup">
+      <SettingsGroup title="Connections">
         <SettingsListPanel>
           <SettingsNavRow
-            icon="github"
-            title="GitHub"
-            subtitle="Repository access, commit author, signing key"
-            status={
-              loading
-                ? undefined
-                : {
-                    intent: githubReady ? 'ready' : 'needsSetup',
-                    label: githubReady ? 'Ready' : 'Needs setup',
-                  }
-            }
-            onPress={() => router.push('/settings/github')}
-          />
-          <SettingsNavRow
-            icon="key"
-            title="Connected services"
-            subtitle="Secret store, AI logins, transcription, MCP, Matrix"
-            status={
-              !loading && servicesNeedsUnlock
-                ? { intent: 'needsSetup', label: 'Locked' }
-                : undefined
-            }
+            icon="link"
+            title="Connections"
+            subtitle="AI, code, documents and other services"
             onPress={() => router.push('/settings/services')}
           />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Server">
+        <SettingsListPanel>
           <SettingsNavRow
             icon="download"
             title="Server update"
@@ -187,20 +163,26 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
             onPress={() => router.push('/settings/server-update')}
           />
+          <SettingsNavRow
+            icon="globe"
+            title="Remote access"
+            subtitle="Verity Uplink"
+            onPress={() => router.push('/settings/remote-access')}
+          />
+          <SettingsNavRow
+            icon="mic"
+            title="Meeting transcription"
+            onPress={() => router.push('/settings/transcription')}
+          />
         </SettingsListPanel>
       </SettingsGroup>
-
-      {/* Server connection — the recovery path if the saved address is wrong or the
-          server moved (IP / Tailscale name change). Routes to the onboarding step in
-          reconfigure mode; the only way back to it once a non-null URL is persisted. */}
-      <SettingsGroup title="This app">
+      <SettingsGroup title="Security">
         <SettingsListPanel>
           <SettingsNavRow
-            icon="server"
-            title="Server"
-            value={getVerityBaseUrl() ?? 'Not set'}
-            onPress={() => router.push('/onboarding/server-url?reconfigure=1')}
-            accessibilityLabel="Change server address"
+            icon="key"
+            title="Secret store"
+            subtitle="Master password and encrypted credentials"
+            onPress={() => router.push('/settings/secret-store')}
           />
           <SettingsNavRow
             icon="smartphone"
@@ -211,15 +193,45 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </SettingsListPanel>
       </SettingsGroup>
 
-      <SettingsGroup title="Advanced">
+      {/* Server connection — the recovery path if the saved address is wrong or the
+          server moved (IP / Tailscale name change). Routes to the onboarding step in
+          reconfigure mode; the only way back to it once a non-null URL is persisted. */}
+      <SettingsGroup title="This app">
         <SettingsListPanel>
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="play"
+              title="Try demo"
+              subtitle="Local sample data and simulated AI; your server connection is preserved"
+              onPress={() => {
+                void enterDemoMode()
+                  .then(() => router.replace('/'))
+                  .catch((error: unknown) =>
+                    Alert.alert(
+                      'Could not start demo',
+                      error instanceof Error ? error.message : 'Please try again.',
+                    ),
+                  );
+              }}
+            />
+          ) : null}
           <SettingsNavRow
-            icon="mic"
-            title="Live STT test"
-            onPress={() => router.push('/settings/live-meeting-stt')}
-            accessibilityLabel="Test live meeting transcription engines"
+            icon="server"
+            title="Server address"
+            value={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            onPress={() => {
+              if (isDemoMode()) {
+                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
+              } else {
+                router.push('/onboarding/server-url?reconfigure=1');
+              }
+            }}
+            accessibilityLabel="Change server address"
           />
         </SettingsListPanel>
+      </SettingsGroup>
+
+      <SettingsGroup title="Advanced">
         <SettingsPanel>
           <Text style={styles.disclosureTitle}>Verity Control</Text>
           <Text style={styles.reproSubtitle}>

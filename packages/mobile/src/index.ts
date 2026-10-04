@@ -137,6 +137,10 @@ export {
 export { spellOutBidiControls } from './ui/bidi.js';
 export { permissionInputText } from './ui/permissionInput.js';
 export {
+  knowledgePublishSummary,
+  KNOWLEDGE_PUBLISH_EXPLANATION,
+} from './ui/knowledgePublishSummary.js';
+export {
   gmailPreviewHtml,
   gmailSendSummary,
   type GmailSendSummary,
@@ -506,3 +510,4 @@ export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendar
 export type { LocalPreviewShare } from './api.js';
 
 export { localPreviewReachable } from './localPreview.js';
+export { selectedOpenCodeModels } from '@verity/events';

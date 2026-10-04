@@ -3,6 +3,8 @@ import { lstat, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ServerUpdateController } from '../server.js';
 import {
+  updaterUpdateChannel,
+  UpdaterRequestError,
   acknowledgeUpdaterStandby,
   claimUpdaterHandoffEnvelope,
   publishUpdaterHandoff,
@@ -72,12 +74,34 @@ export async function createServerUpdateController(
   const channel = await openControlChannel(socketPath);
   if (channel === undefined) return undefined;
   return {
+    async readChannel() {
+      return updaterUpdateChannel(await channel());
+    },
+    async setChannel(value) {
+      return updaterUpdateChannel(await channel(), value);
+    },
     async readOperation() {
       return readUpdaterOperation(await channel());
     },
     async requestUpdate(input) {
       await verifyImage(input.targetDigest);
-      return requestUpdaterOperation({ ...(await channel()), ...input });
+      const control = await channel();
+      let expectedChannel = input.channel;
+      if (expectedChannel !== undefined) {
+        try {
+          await updaterUpdateChannel(control);
+        } catch (error) {
+          // Older Updaters have no mutable channel and require the original two-field body.
+          if (!(error instanceof UpdaterRequestError && error.status === 404)) throw error;
+          expectedChannel = undefined;
+        }
+      }
+      return requestUpdaterOperation({
+        ...control,
+        idempotencyKey: input.idempotencyKey,
+        targetDigest: input.targetDigest,
+        ...(expectedChannel === undefined ? {} : { channel: expectedChannel }),
+      });
     },
   };
 }

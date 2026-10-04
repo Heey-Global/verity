@@ -454,6 +454,7 @@ export interface ProjectSettingsRecord {
   memory: string | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
+  googleDriveAccessMode: 'read-only' | 'read-write';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -494,7 +495,8 @@ type ProjectSettingsKey =
   | 'defaultModel'
   | 'memory'
   | 'googleDriveFolderId'
-  | 'googleDriveFolderName';
+  | 'googleDriveFolderName'
+  | 'googleDriveAccessMode';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -1911,6 +1913,86 @@ export class EventStore implements EventSink {
       .execute();
   }
 
+  async countLegacyProjectGoogleSessions(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<number> {
+    const table =
+      service === 'gmail'
+        ? 'session_gmail_connections'
+        : service === 'calendar'
+          ? 'session_calendar_connections'
+          : 'session_contacts_connections';
+    const result = await this.db
+      .selectFrom(table)
+      .innerJoin('sessions', 'sessions.session_id', `${table}.session_id`)
+      .select((eb) => eb.fn.countAll().as('count'))
+      .where('sessions.project_id', '=', projectId)
+      .executeTakeFirstOrThrow();
+    return Number(result.count);
+  }
+
+  async getProjectGoogleConnection(projectId: string, service: 'gmail' | 'calendar' | 'contacts') {
+    const row = await this.db
+      .selectFrom('project_google_connections')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .where('service', '=', service)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : { accountEmail: row.account_email, enabledAt: row.enabled_at };
+  }
+
+  async enableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+    accountEmail: string,
+  ): Promise<void> {
+    await this.db
+      .insertInto('project_google_connections')
+      .values({ project_id: projectId, service, account_email: accountEmail })
+      .onConflict((conflict) =>
+        conflict.columns(['project_id', 'service']).doUpdateSet({ account_email: accountEmail }),
+      )
+      .execute();
+  }
+
+  async disableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<void> {
+    await this.db.transaction().execute(async (transaction) => {
+      await transaction
+        .deleteFrom('project_google_connections')
+        .where('project_id', '=', projectId)
+        .where('service', '=', service)
+        .execute();
+      // Disabling the project also revokes legacy grants in its sessions.
+      const sessionIds = transaction
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('project_id', '=', projectId);
+      const table =
+        service === 'gmail'
+          ? 'session_gmail_connections'
+          : service === 'calendar'
+            ? 'session_calendar_connections'
+            : 'session_contacts_connections';
+      await transaction.deleteFrom(table).where('session_id', 'in', sessionIds).execute();
+    });
+  }
+
+  private async getProjectGoogleConnectionForSession(
+    sessionId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ) {
+    const session = await this.getSession(sessionId);
+    if (!session?.projectId) return undefined;
+    const grant = await this.getProjectGoogleConnection(session.projectId, service);
+    return grant === undefined ? undefined : { sessionId, ...grant };
+  }
+
   async getSessionGmailConnection(sessionId: string): Promise<SessionGmailConnection | undefined> {
     const row = await this.db
       .selectFrom('session_gmail_connections')
@@ -1918,7 +2000,7 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return row === undefined
-      ? undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'gmail')
       : {
           sessionId: row.session_id,
           accountEmail: row.account_email,
@@ -1956,6 +2038,7 @@ export class EventStore implements EventSink {
 
   async clearSessionGmailConnections(): Promise<void> {
     await this.db.deleteFrom('session_gmail_connections').execute();
+    await this.db.deleteFrom('project_google_connections').where('service', '=', 'gmail').execute();
   }
 
   async getSessionCalendarConnection(
@@ -1967,7 +2050,7 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return row === undefined
-      ? undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'calendar')
       : {
           sessionId: row.session_id,
           accountEmail: row.account_email,
@@ -2005,6 +2088,10 @@ export class EventStore implements EventSink {
 
   async clearSessionCalendarConnections(): Promise<void> {
     await this.db.deleteFrom('session_calendar_connections').execute();
+    await this.db
+      .deleteFrom('project_google_connections')
+      .where('service', '=', 'calendar')
+      .execute();
   }
 
   async getSessionContactsConnection(
@@ -2016,7 +2103,7 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return row === undefined
-      ? undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'contacts')
       : {
           sessionId: row.session_id,
           accountEmail: row.account_email,
@@ -2054,6 +2141,10 @@ export class EventStore implements EventSink {
 
   async clearSessionContactsConnections(): Promise<void> {
     await this.db.deleteFrom('session_contacts_connections').execute();
+    await this.db
+      .deleteFrom('project_google_connections')
+      .where('service', '=', 'contacts')
+      .execute();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.
@@ -2209,6 +2300,24 @@ export class EventStore implements EventSink {
     input: Parameters<EventStore['claimGoogleSlideInvocation']>[0],
   ): ReturnType<EventStore['claimGoogleSlideInvocation']> {
     return this.claimGoogleSlideInvocation(input);
+  }
+
+  async getCompletedGoogleWorkspaceInvocation(input: {
+    invocationId: string;
+    sessionId: string;
+    turnId: string;
+  }): Promise<{ result: unknown } | undefined> {
+    const row = await this.db
+      .selectFrom('google_slide_invocations')
+      .select(['session_id', 'turn_id', 'result_json'])
+      .where('invocation_id', '=', input.invocationId)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    if (row.session_id !== input.sessionId || row.turn_id !== input.turnId)
+      throw new Error('Google Workspace invocation id was reused across turns');
+    return row.result_json === null
+      ? undefined
+      : { result: JSON.parse(row.result_json) as unknown };
   }
 
   async completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void> {
@@ -4953,6 +5062,7 @@ export class EventStore implements EventSink {
       select exists (
         select 1 from sessions where project_id = ${projectId}
         union all select 1 from project_settings where project_id = ${projectId}
+        union all select 1 from project_google_connections where project_id = ${projectId}
         union all select 1 from agent_loops where project_id = ${projectId}
         union all select 1 from dev_servers where project_id = ${projectId}
         union all select 1 from dev_server_detection_state where project_id = ${projectId}
@@ -5816,6 +5926,7 @@ export class EventStore implements EventSink {
       memory: string | null;
       google_drive_folder_id: string | null;
       google_drive_folder_name: string | null;
+      google_drive_access_mode: 'read-only' | 'read-write';
       created_at: Date;
       updated_at: Date;
       // See veritySettingsRowToRecord: false → no decrypt (sealed-safe public read).
@@ -5837,6 +5948,7 @@ export class EventStore implements EventSink {
       memory: row.memory,
       googleDriveFolderId: row.google_drive_folder_id,
       googleDriveFolderName: row.google_drive_folder_name,
+      googleDriveAccessMode: row.google_drive_access_mode,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5855,6 +5967,7 @@ export class EventStore implements EventSink {
     'memory',
     'google_drive_folder_id',
     'google_drive_folder_name',
+    'google_drive_access_mode',
     'created_at',
     'updated_at',
   ] as const;
@@ -6887,6 +7000,7 @@ export class EventStore implements EventSink {
       memory,
       google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
+      google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
     };
     return this.db.transaction().execute(async (tx) => {
       // Ensure and lock the per-project settings row before applying the patch.
@@ -6938,6 +7052,9 @@ export class EventStore implements EventSink {
             ...(patch.memory !== undefined ? { memory } : {}),
             ...(patch.googleDriveFolderId !== undefined
               ? { google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId) }
+              : {}),
+            ...(patch.googleDriveAccessMode !== undefined
+              ? { google_drive_access_mode: patch.googleDriveAccessMode }
               : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }

@@ -10,6 +10,7 @@ import {
 } from '../lib/pushNotifications';
 import { getAuthTokenId, getStoredAuthTokenId } from '../lib/authToken';
 import { createPushRegistrationAttempt } from '../lib/pushRegistrationAttempt';
+import { isDemoMode } from '../lib/demoMode';
 
 /**
  * Mount push notifications once from the root authenticated screen. Registers this
@@ -24,7 +25,7 @@ import { createPushRegistrationAttempt } from '../lib/pushRegistrationAttempt';
  */
 export function usePushNotifications(client: VerityClient | null, baseUrl: string | null): void {
   useEffect(() => {
-    if (client === null) return;
+    if (client === null || isDemoMode()) return;
     let active = true;
     // A cold-start response can also arrive through the live listener on some Expo
     // versions; dedup by notification id so a reply is never enqueued twice (the

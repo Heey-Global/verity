@@ -69,6 +69,7 @@ export interface ControlPlaneDeps {
   /** Google Drive OAuth iOS client id (ADR 0009), from `GOOGLE_AUTH_ID`. Forwarded
    *  to {@link buildServer}; non-secret, surfaced to the app via `/settings`. */
   googleDriveClientId?: string | undefined;
+  stagingGoogleClientId?: string | undefined;
   /** The sealable at-rest secret cipher — powers `/secret/status|init|unlock`.
    *  Omit → those routes report/act as an always-unlocked no-op deployment. */
   secretCipher?: SealableSecretCipher | undefined;
@@ -323,6 +324,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.serverUpdateNotifierStatePath !== undefined
       ? { serverUpdateNotifierStatePath: deps.serverUpdateNotifierStatePath }
+      : {}),
+    ...(deps.stagingGoogleClientId !== undefined
+      ? { stagingGoogleClientId: deps.stagingGoogleClientId }
       : {}),
     ...(deps.googleDriveClientId !== undefined
       ? { googleDriveClientId: deps.googleDriveClientId }

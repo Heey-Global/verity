@@ -1384,6 +1384,44 @@ describe('VerityClient.fetchOnboardingStatus (#320)', () => {
     expect(calls[0]?.init?.method).toBe('GET');
   });
 
+  it('recognizes an older server with an OpenCode-only setup', async () => {
+    const { fetch } = fakeFetch(
+      json({
+        ...complete,
+        githubAppConfigured: false,
+        signingKeyConfigured: false,
+        complete: false,
+        nextStep: 'github',
+      }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    vi.spyOn(client, 'getVeritySettings').mockResolvedValue({
+      opencodeApiKeyConfigured: true,
+      opencodeBaseUrl: 'https://models.example.test',
+      opencodeModels: '["test-model"]',
+    } as NonNullable<Awaited<ReturnType<VerityClient['getVeritySettings']>>>);
+    expect((await client.fetchOnboardingStatus()).opencodeConfigured).toBe(true);
+  });
+
+  it.each([
+    { catalog: 'one,two', disabled: 'one\ntwo', ready: false },
+    { catalog: 'one,two', disabled: 'one', ready: true },
+    { catalog: ' , \n ', disabled: null, ready: false },
+  ])(
+    'checks enabled OpenCode models on an older server ($ready)',
+    async ({ catalog, disabled, ready }) => {
+      const { fetch } = fakeFetch(json({ ...complete, complete: false, nextStep: 'github' }));
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      vi.spyOn(client, 'getVeritySettings').mockResolvedValue({
+        opencodeApiKeyConfigured: true,
+        opencodeBaseUrl: 'https://models.example.test',
+        opencodeModels: catalog,
+        opencodeDisabledModels: disabled,
+      } as NonNullable<Awaited<ReturnType<VerityClient['getVeritySettings']>>>);
+      expect((await client.fetchOnboardingStatus()).opencodeConfigured).toBe(ready);
+    },
+  );
+
   it('parses an incomplete status with a nextStep', async () => {
     const incomplete = {
       ...complete,
@@ -3331,4 +3369,149 @@ describe('Uplink diagnostics schema', () => {
     });
     expect(parsed).toEqual({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
   });
+});
+
+describe('connection catalog and project Google access contracts', () => {
+  it('loads account scopes and project usage without dropping account metadata', async () => {
+    const account = {
+      connected: true,
+      accountEmail: 'me@example.test',
+      scopes: ['scope'],
+      projects: [{ id: 'project/one', name: 'One' }],
+    };
+    const usage = {
+      github: 1,
+      claude: 0,
+      codex: 0,
+      opencode: 0,
+      google: 1,
+      matrix: 0,
+      doppler: 0,
+      mcp: 0,
+    };
+    const { fetch, calls } = fakeFetchSequence(json(account), json(usage));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getGoogleConnection()).toEqual(account);
+    expect(await client.getConnectionUsage()).toEqual(usage);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/google/connection',
+      '/connections/usage',
+    ]);
+  });
+  it.each(['gmail', 'calendar', 'contacts'] as const)(
+    'scopes %s grants to the selected project and preserves legacy access counts',
+    async (service) => {
+      const connection = {
+        enabled: false,
+        connected: true,
+        accountEmail: 'me@example.test',
+        clientId: 'client',
+      };
+      const { fetch, calls } = fakeFetchSequence(
+        json({ ...connection, legacySessionCount: 2 }),
+        json({ ...connection, enabled: true }),
+        new Response(null, { status: 204 }),
+      );
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      expect(await client.getProjectGoogleConnection('project/one', service)).toEqual({
+        ...connection,
+        legacySessionCount: 2,
+      });
+      expect(await client.enableProjectGoogleConnection('project/one', service)).toEqual({
+        ...connection,
+        enabled: true,
+      });
+      await client.disableProjectGoogleConnection('project/one', service);
+      expect(calls.map((call) => [new URL(call.url).pathname, call.init?.method])).toEqual(
+        ['GET', 'PUT', 'DELETE'].map((method) => [
+          `/projects/project%2Fone/google/${service}`,
+          method,
+        ]),
+      );
+    },
+  );
+  it('rejects invalid access counts rather than displaying unsafe account state', async () => {
+    const { fetch } = fakeFetch(
+      json({
+        enabled: false,
+        connected: true,
+        accountEmail: null,
+        clientId: null,
+        legacySessionCount: -1,
+      }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.getProjectGoogleConnection('one', 'gmail')).rejects.toThrow();
+  });
+});
+
+describe('text-file saving', () => {
+  it('sends conditional edits and create-only requests to the content route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ path: 'notes/a.md', content: 'edited', size: 6, version: 'saved', editable: true }),
+      json({ path: 'notes/new.md', content: '', size: 0, version: 'created', editable: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const saved = await client.saveSessionFileContent(
+      's/1',
+      'knowledge',
+      'notes/a.md',
+      'edited',
+      'original',
+    );
+    expect(saved).toMatchObject({ content: 'edited', version: 'saved', editable: true });
+    await client.saveSessionFileContent('s/1', 'knowledge', 'notes/new.md', '', null);
+    expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/files/content');
+    expect(calls[0]?.init?.method).toBe('PUT');
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      root: 'knowledge',
+      path: 'notes/a.md',
+      content: 'edited',
+      expectedVersion: 'original',
+    });
+    expect(JSON.parse(calls[1]?.init?.body as string)).toMatchObject({ expectedVersion: null });
+  });
+  it('lists and reads file versions with encoded paths and version identifiers', async () => {
+    const versions = [
+      { id: 'save-abc/snapshot', createdAt: '2026-10-03T10:00:00Z', kind: 'snapshot' },
+    ];
+    const { fetch, calls } = fakeFetchSequence(json({ versions }), json({ content: 'older text' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listSessionFileVersions('s1', 'shared', 'notes/a b.md')).toEqual(versions);
+    expect(
+      await client.readSessionFileVersion('s1', 'shared', 'notes/a b.md', versions[0]!.id),
+    ).toBe('older text');
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md',
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md&version=save-abc%2Fsnapshot',
+    ]);
+    expect(calls.every(({ init }) => init?.method === 'GET')).toBe(true);
+  });
+  it('preserves the committed-save warning for the editor', async () => {
+    const payload = {
+      path: 'note.md',
+      content: 'saved',
+      size: 5,
+      version: 'saved-version',
+      editable: true,
+      warning: 'Knowledge refresh failed',
+    };
+    const { fetch } = fakeFetch(json(payload));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.saveSessionFileContent('s1', 'knowledge', 'note.md', 'saved', null),
+    ).toEqual(payload);
+  });
+});
+
+it('links new Drive folders read-only and preserves explicit read/write choice', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ folder: { id: 'root', name: 'Root' } }),
+    json({ folder: { id: 'root', name: 'Root' } }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.connectProjectGoogleDriveFolder('p/1', 'root');
+  await client.connectProjectGoogleDriveFolder('p/1', 'root', 'read-write');
+  expect(jsonBody(calls[0])).toEqual({ fileId: 'root', accessMode: 'read-only' });
+  expect(jsonBody(calls[1])).toEqual({ fileId: 'root', accessMode: 'read-write' });
 });

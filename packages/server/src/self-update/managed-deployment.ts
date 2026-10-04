@@ -1,3 +1,4 @@
+import { releaseChannelFromEnv } from './release-channel.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, realpath, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -392,6 +393,7 @@ export async function initializeManagedDeployment(
 
 /** Explicit host maintenance, with the updater stopped to avoid competing spec writes. */
 export async function configureManagedUpdateChannel(rootPath: string): Promise<void> {
+  const channel = releaseChannelFromEnv(process.env);
   const root = await openUpdaterOwnedRoot(rootPath);
   try {
     const pinnedRoot = `/proc/self/fd/${root.fd}`;
@@ -409,6 +411,48 @@ export async function configureManagedUpdateChannel(rootPath: string): Promise<v
     const validated = parseServerDeploymentSpec(sealDeploymentSpec({ ...body, environment }));
     if (validated === null) throw new Error('update channel configuration is not allowlisted');
     await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);
+    await writeAtomic(pinnedRoot, 'update-channel.json', channel);
+  } finally {
+    await root.close();
+  }
+}
+
+/** The Updater owns this preference; Server image replacement must not reset it. */
+export async function readManagedUpdateChannel(rootPath: string): Promise<'stable' | 'staging'> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    const pinnedRoot = `/proc/self/fd/${root.fd}`;
+    const state = await readManagedDeploymentFiles(pinnedRoot);
+    if (!state.managed) throw new Error(state.reason);
+    try {
+      const value: unknown = JSON.parse(
+        await readFile(join(pinnedRoot, 'update-channel.json'), 'utf8'),
+      );
+      if (value !== 'stable' && value !== 'staging') throw new Error('invalid update channel');
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const channel = process.env.VERITY_UPDATE_CHANNEL ?? 'stable';
+      if (channel !== 'stable' && channel !== 'staging')
+        throw new Error('invalid update channel', { cause: error });
+      return channel;
+    }
+  } finally {
+    await root.close();
+  }
+}
+
+export async function writeManagedUpdateChannel(
+  rootPath: string,
+  channel: 'stable' | 'staging',
+): Promise<void> {
+  if (channel !== 'stable' && channel !== 'staging') throw new Error('invalid update channel');
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    const pinnedRoot = `/proc/self/fd/${root.fd}`;
+    const state = await readManagedDeploymentFiles(pinnedRoot);
+    if (!state.managed) throw new Error(state.reason);
+    await writeAtomic(pinnedRoot, 'update-channel.json', channel);
   } finally {
     await root.close();
   }

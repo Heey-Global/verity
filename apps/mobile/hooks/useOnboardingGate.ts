@@ -16,6 +16,7 @@ import { AppState } from 'react-native';
 
 import { getAuthToken, hasStoredAuthToken } from '../lib/authToken';
 import { createVerityClient, getVerityBaseUrl, hasConfiguredVerityBaseUrl } from '../lib/client';
+import { isDemoMode } from '../lib/demoMode';
 
 export type OnboardingGateState = { status: 'checking' } | { status: 'done'; redirectTo?: string };
 
@@ -74,6 +75,13 @@ export function useOnboardingGate(): OnboardingGateState {
       if (inFlight) return;
       inFlight = true;
       try {
+        if (isDemoMode()) {
+          setState({
+            status: 'done',
+            ...(inOnboarding || inUnlockDevice ? { redirectTo: '/' } : {}),
+          });
+          return;
+        }
         if (!hasConfiguredVerityBaseUrl()) {
           if (!inOnboarding) {
             setState({ status: 'done', redirectTo: '/onboarding/welcome' });

@@ -3550,6 +3550,32 @@ const migrations: Record<string, Migration> = {
       await sql`drop table public_preview_pin_locks`.execute(db);
     },
   },
+  '0128_project_google_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Session grants remain session-only; migration must not widen authorization.
+      await sql`create table project_google_connections (
+        project_id text not null references projects(id) on delete cascade,
+        service text not null check (service in ('gmail', 'calendar', 'contacts')),
+        account_email text not null,
+        enabled_at timestamptz not null default now(),
+        primary key (project_id, service)
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table project_google_connections`.execute(db);
+    },
+  },
+  '0129_drive_access_mode': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Existing linked folders already permit uploads; preserve that explicit setup.
+      await sql`alter table project_settings add column google_drive_access_mode text not null default 'read-write' check (google_drive_access_mode in ('read-only', 'read-write'))`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table project_settings drop column google_drive_access_mode`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

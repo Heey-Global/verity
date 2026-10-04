@@ -1,6 +1,7 @@
 import type { HttpMcpConnection } from '@verity/mobile';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
+import { isDemoMode } from './demoMode';
 
 void WebBrowser.maybeCompleteAuthSession();
 
@@ -28,6 +29,8 @@ export async function runMcpOAuth(
   | { kind: 'success'; code: string; codeVerifier: string; redirectUri: string }
   | { kind: 'cancelled' }
 > {
+  if (isDemoMode())
+    throw new Error('MCP sign-in requires your own Verity server. Exit the demo to connect.');
   if (
     connection.oauthClientId === null ||
     connection.oauthAuthorizationEndpoint === null ||

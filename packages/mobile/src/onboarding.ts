@@ -9,15 +9,13 @@ import type { OnboardingStatus } from './api.js';
  *  welcome and server connection screens are preflight: only after the app reaches
  *  a Verity server can it know whether to unlock an existing install or start this
  *  setup wizard. */
-export type StepId = 'master-password' | 'github' | 'doppler' | 'ai-backends';
+export type StepId = 'master-password' | 'ai-backends';
 
 export interface OnboardingStepDef {
   id: StepId;
   /** Human-facing title shown in the wizard header + progress ("Step N of M"). */
   title: string;
-  /** Whether the step gates completion. Optional steps (Doppler) never block
-   *  `complete` server-side and can be skipped in the wizard. The bookends
-   *  (`welcome`/`done`) are non-blocking scaffolding, so also non-required. */
+  /** Whether the step gates completion. Only the protected secret store and an AI provider gate completion. */
   required: boolean;
 }
 
@@ -28,9 +26,7 @@ export interface OnboardingStepDef {
  */
 export const ONBOARDING_STEPS: readonly OnboardingStepDef[] = [
   { id: 'master-password', title: 'Master password', required: true },
-  { id: 'github', title: 'GitHub', required: true },
-  { id: 'doppler', title: 'Doppler (optional)', required: false },
-  { id: 'ai-backends', title: 'Agent logins (optional)', required: false },
+  { id: 'ai-backends', title: 'AI providers', required: true },
 ] as const;
 
 /** The step ids in order — handy for navigation without re-mapping the defs. */
@@ -53,37 +49,18 @@ export function isPristineOnboardingStatus(status: OnboardingStatus): boolean {
   );
 }
 
-/**
- * Where to (re)enter the wizard for a given server status:
- *   - preflight routing handles missing server URLs before this helper runs.
- *   - `done` when setup is complete (nothing left to do),
- *   - the server's `nextStep` when some required step is still outstanding AND at
- *     least one step has been completed (resume mid-flow),
- *   - `welcome` on a pristine first run (nothing set yet) so the operator sees the
- *     intro before the first credential step.
- * Pure over its inputs — the gating hook and the wizard both call it.
- *
- */
+/** Resume required setup. Older servers may still report optional GitHub gates;
+ * those must not keep local-project users in the former credential wizard. */
 export function resumeStep(status: OnboardingStatus): StepId {
-  if (status.complete) return 'ai-backends';
-  // Pristine: nothing configured at all → start at the first setup gate. Welcome
-  // and server selection have already happened in preflight.
-  if (isPristineOnboardingStatus(status)) return 'master-password';
-  // Mid-flow: jump straight to the first incomplete required step. `nextStep` is
-  // non-null here (not complete), but fall back defensively to `master-password`.
-  // Older servers can still report the former project-creation gate. Projects
-  // now belong to the app's empty state, so never route back into that step.
-  return status.nextStep === 'first-project'
-    ? 'ai-backends'
-    : (status.nextStep ?? 'master-password');
+  if (!status.masterPasswordSet) return 'master-password';
+  return 'ai-backends';
 }
 
-/** Credential setup is complete even when an older server still includes the
- * removed first-project step in its `complete` calculation. */
+/** A usable installation needs a protected secret store and one AI provider. */
 export function isCoreOnboardingComplete(status: OnboardingStatus): boolean {
   return (
-    status.complete ||
-    (status.masterPasswordSet && status.githubAppConfigured && status.signingKeyConfigured)
+    status.masterPasswordSet &&
+    (status.claudeConfigured || status.codexConfigured || status.opencodeConfigured === true)
   );
 }
 

@@ -519,7 +519,14 @@ describe('EventStore — session Google Slides assignment', () => {
     await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
       status: 'pending',
     });
+    await expect(ctx.store.getCompletedGoogleWorkspaceInvocation(input)).resolves.toBeUndefined();
     await ctx.store.completeGoogleSlideInvocation(input.invocationId, { revisionId: 'rev-2' });
+    await expect(ctx.store.getCompletedGoogleWorkspaceInvocation(input)).resolves.toEqual({
+      result: { revisionId: 'rev-2' },
+    });
+    await expect(
+      ctx.store.getCompletedGoogleWorkspaceInvocation({ ...input, turnId: 'other' }),
+    ).rejects.toThrow('reused across turns');
     await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
       status: 'completed',
       result: { revisionId: 'rev-2' },

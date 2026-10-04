@@ -25,6 +25,9 @@ export const RECONNECT_CAPACITY_MS = 5 * 60_000;
 const ABANDONED_REQUEST_TTL_MS = 9 * 60 * 60_000;
 const MAX_ABANDONED_CREATES = 1_024;
 const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
+/** Includes queued and running handlers across reconnects. */
+export const MAX_CONTROL_PENDING_MESSAGES = 128;
+export const MAX_CONTROL_PENDING_BYTES = 1024 * 1024;
 const MAX_REMOTE_SESSION_FRAME_BYTES = 16 * 1024;
 const REMOTE_CAPABILITY = 'remote-control-v1';
 const REMOTE_CHANNEL = 'remote';
@@ -156,6 +159,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private welcomed = false;
   private controlReady = false;
   private messageTail: Promise<void> = Promise.resolve();
+  private pendingMessageCount = 0;
+  private pendingMessageBytes = 0;
   private cleanupTail: Promise<void> = Promise.resolve();
   private cleanupRequired = false;
   private processingMessage = false;
@@ -425,7 +430,23 @@ export class UplinkControlClient implements PreviewEdgeControl {
       );
     });
     socket.on('message', (data) => {
+      if (this.stopped || this.socket !== socket || generation !== this.generation) return;
       const raw = rawDataText(data);
+      const bytes = Buffer.byteLength(raw, 'utf8');
+      if (
+        this.pendingMessageCount >= MAX_CONTROL_PENDING_MESSAGES ||
+        this.pendingMessageBytes + bytes > MAX_CONTROL_PENDING_BYTES
+      ) {
+        this.clearAuthority('Uplink control message backlog exceeded');
+        this.closeAndReconnect(1013, 'control backlog exceeded');
+        return;
+      }
+      this.pendingMessageCount += 1;
+      this.pendingMessageBytes += bytes;
+      const releaseMessage = () => {
+        this.pendingMessageCount -= 1;
+        this.pendingMessageBytes -= bytes;
+      };
       const requestId = (() => {
         try {
           const parsed = JSON.parse(raw) as { requestId?: unknown };
@@ -435,21 +456,27 @@ export class UplinkControlClient implements PreviewEdgeControl {
         }
       })();
       if (requestId !== undefined && this.pending.get(requestId)?.inlineResponse === true) {
-        void this.onMessage(raw, key).catch((error: unknown) => {
-          this.options.log?.warn({ error }, 'invalid Uplink control response');
-          this.clearAuthority('invalid Uplink control message', !this.stopped);
-          socket.close(1002, 'invalid control message');
-        });
+        void this.onMessage(raw, key)
+          .catch((error: unknown) => {
+            this.options.log?.warn({ error }, 'invalid Uplink control response');
+            this.clearAuthority('invalid Uplink control message', !this.stopped);
+            socket.close(1002, 'invalid control message');
+          })
+          .finally(releaseMessage);
         return;
       }
       this.messageTail = this.messageTail
         .then(async () => {
-          if (this.socket !== socket || generation !== this.generation) return;
-          this.processingMessage = true;
           try {
-            await this.onMessage(raw, key);
+            if (this.socket !== socket || generation !== this.generation) return;
+            this.processingMessage = true;
+            try {
+              await this.onMessage(raw, key);
+            } finally {
+              this.processingMessage = false;
+            }
           } finally {
-            this.processingMessage = false;
+            releaseMessage();
           }
         })
         .catch((error: unknown) => {
@@ -543,6 +570,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
       }
     }
     if (frame.type === 'welcome') {
+      const welcomeSocket = this.socket;
+      const welcomeGeneration = this.generation;
+      const currentWelcome = () =>
+        !this.stopped && this.socket === welcomeSocket && this.generation === welcomeGeneration;
       const installationId = stringField(frame, 'installationId');
       const installationHandle = validInstallationHandle(frame.handle) ? frame.handle : undefined;
       const negotiation = remoteNegotiation(frame);
@@ -552,6 +583,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.controlReady = true;
       try {
         const settings = await this.options.store.getVeritySettings();
+        if (!currentWelcome()) return;
         // A first-ever admission, a re-admission under the same id, and an
         // admission that silently replaced the stored id look identical in the
         // logs otherwise, and they mean very different things when the service is
@@ -579,6 +611,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         );
         if (previousInstallationId !== installationId) {
           await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
+          if (!currentWelcome()) return;
         }
         // Persist the identity before local reconciliation. The Uplink has
         // already admitted this installation, so losing its assigned id when a
@@ -586,6 +619,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         // installation. With a one-installation entitlement that strands the
         // client behind the slot it just consumed until the lease expires.
         await this.awaitRequiredCleanup();
+        if (!currentWelcome()) return;
         this.applyLease(frame);
         this.remoteNegotiated =
           this.options.offerRemoteControl === true &&
@@ -598,10 +632,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
         if (!this.features.has('sharing')) {
           await this.disableFeaturesOnce('Uplink did not grant public preview entitlement');
         }
-        for (const shareId of await this.options.store.listPendingUplinkShareRemovals()) {
+        const pendingRemovals = await this.options.store.listPendingUplinkShareRemovals();
+        if (!currentWelcome()) return;
+        for (const shareId of pendingRemovals) {
           this.orphanShareIds.add(shareId);
         }
       } catch (error: unknown) {
+        if (!currentWelcome()) return;
         // The frame was valid and the Uplink admitted us. A store or cleanup
         // failure is local, so calling it an invalid control message sends the
         // service-side investigation down the wrong protocol path.

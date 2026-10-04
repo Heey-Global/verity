@@ -1,3 +1,16 @@
+import { googleAppClient } from './google-app-client.js';
+import {
+  googleDriveRequestSchema,
+  googleDriveIsMutation,
+  googleDriveHasStandingAuthorization,
+} from './google-drive-request.js';
+import {
+  excludeFileHistoryFromGit,
+  recoverFileHistory,
+  sessionFileHistory,
+  pruneFileHistory,
+} from './session-file-history.js';
+import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
@@ -122,6 +135,7 @@ import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
   KNOWLEDGE_MEETINGS_DIR,
+  KNOWLEDGE_INSIGHTS_DIR,
   KNOWLEDGE_MOUNT_TARGET,
 } from './knowledge-folder.js';
 import {
@@ -211,6 +225,8 @@ import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
+import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
@@ -601,6 +617,7 @@ export interface ProjectSettingsRecord {
   memory: string | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
+  googleDriveAccessMode: 'read-only' | 'read-write';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -616,7 +633,8 @@ type ProjectSettingsKey =
   | 'defaultModel'
   | 'memory'
   | 'googleDriveFolderId'
-  | 'googleDriveFolderName';
+  | 'googleDriveFolderName'
+  | 'googleDriveAccessMode';
 
 type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -787,6 +805,7 @@ function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
     memory: null,
     googleDriveFolderId: null,
     googleDriveFolderName: null,
+    googleDriveAccessMode: 'read-only',
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -843,7 +862,7 @@ function effectiveExternalTranscription(
 
 function publicVeritySettings(
   settings: VeritySettingsRecord,
-  googleDriveClientId?: string,
+  googleDriveClientId?: string | null,
 ): PublicVeritySettingsRecord {
   const {
     gitSshPrivateKey,
@@ -885,7 +904,8 @@ function publicVeritySettings(
     // The app reads this to build the OAuth request. Prefer the env-baked client
     // id (ADR 0009) so it is present even before the first connect; fall back to
     // whatever the connection persisted.
-    googleDriveClientId: googleDriveClientId ?? settings.googleDriveClientId,
+    googleDriveClientId:
+      googleDriveClientId === undefined ? settings.googleDriveClientId : googleDriveClientId,
   };
 }
 
@@ -995,6 +1015,7 @@ function publicProjectSettings(
     memory: settings.memory,
     googleDriveFolderId: settings.googleDriveFolderId,
     googleDriveFolderName: settings.googleDriveFolderName,
+    googleDriveAccessMode: settings.googleDriveAccessMode,
     createdAt: settings.createdAt,
     updatedAt: settings.updatedAt,
   };
@@ -1070,6 +1091,7 @@ export interface ServerDeps {
    *  uses it for the code exchange + refresh. Omit → the Drive feature reports
    *  "not configured". */
   googleDriveClientId?: string | undefined;
+  stagingGoogleClientId?: string | undefined;
   /** Invalidate access tokens minted from shared Google credentials after OAuth reconnects. */
   onGoogleCredentialsChanged?: (() => void) | undefined;
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
@@ -1559,7 +1581,10 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
     reply.code(400);
     return { error: error.message };
   }
-  if (error instanceof Error && error.message === 'invalid path') {
+  if (
+    (error instanceof Error && error.message === 'invalid path') ||
+    ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+  ) {
     reply.code(400);
     return { error: 'invalid path' };
   }
@@ -4841,7 +4866,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     storeAgentCredentials,
-    publicSettings: (settings) => publicVeritySettings(settings, deps.googleDriveClientId),
+    publicSettings: (settings, request) =>
+      publicVeritySettings(
+        settings,
+        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
+      ),
     effectiveTranscription: effectiveExternalTranscription,
     transcriptionConfigured: externalMeetingTranscriptionConfigured,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
@@ -4855,6 +4885,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerGoogleDriveRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.googleDriveClientId !== undefined
       ? { googleDriveClientId: deps.googleDriveClientId }
@@ -4864,8 +4895,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerConnectionUsageRoutes(
+    app,
+    deps.eventStore,
+    async () => (await availableModels()).default,
+  );
+  registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
@@ -4874,6 +4912,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerGoogleCalendarRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
@@ -4882,6 +4921,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerGoogleContactsRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
@@ -5495,6 +5535,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               'Google Drive requires a folder connected to the calling project',
             );
           }
+          if (
+            googleDriveIsMutation(googleDriveRequestSchema.parse(input.request)) &&
+            settings.googleDriveAccessMode === 'read-only'
+          )
+            throw new ControlPlaneSessionAuthorityError(
+              'This project has read-only Google Drive access',
+            );
           return;
         }
         if (
@@ -5565,6 +5612,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             }
             return;
           }
+          const projectSettings = await deps.eventStore.getProjectSettings(projectId);
+          const action = (input.request as { action?: string }).action;
+          const writing =
+            toolName === 'verity_google_docs'
+              ? action === 'edit'
+              : toolName === 'verity_google_slides'
+                ? action === 'edit' || action === 'insert_image'
+                : ['write_range', 'clear_range', 'structural_edit'].includes(action ?? '');
+          if (
+            writing &&
+            projectSettings?.googleDriveFolderId &&
+            projectSettings.googleDriveAccessMode === 'read-only'
+          )
+            throw new ControlPlaneSessionAuthorityError(
+              'This project has read-only Google Drive access',
+            );
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           const expectedKind = toolName.slice('verity_google_'.length);
           const globalSettings = await deps.eventStore.getVeritySettings();
@@ -5657,6 +5720,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           );
         }
         if (toolName === 'verity_google_drive') {
+          if (!googleDriveHasStandingAuthorization(request)) return false;
           const session = await deps.eventStore.getSession(sessionId);
           const settings = await deps.eventStore.getProjectSettings(projectId);
           const globalSettings = await deps.eventStore.getVeritySettings();
@@ -7702,6 +7766,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
 
       try {
+        const release = await acquireKnowledgeMutationLock(root.dir);
+        try {
+          await recoverFileHistory(`/proc/self/fd/${directoryHandle.fd}`);
+        } finally {
+          release();
+        }
         const descriptorPath = `/proc/self/fd/${String(directoryHandle.fd)}`;
         const dirents = await readdir(descriptorPath, { withFileTypes: true });
         const hidden = hiddenSessionFileNames(root.root, target.rel);
@@ -7822,8 +7892,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           await link(temporaryPath, destinationPath);
         } finally {
@@ -7863,7 +7932,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'invalid path' };
       }
       let fileHandle;
+      const editablePath = !isManagedKnowledgePath(root.root, target.rel);
+      const release = editablePath ? await acquireKnowledgeMutationLock(root.dir) : () => {};
       try {
+        if (editablePath) {
+          let slot;
+          try {
+            slot = await openKnowledgeFileSlot(root, path);
+            await recoverFileHistory(slot.directoryPath);
+          } finally {
+            await slot?.close();
+          }
+        }
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
           root.dir,
@@ -7871,12 +7951,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       } catch (error) {
         await fileHandle?.close().catch(() => undefined);
-        if (error instanceof Error && error.message === 'invalid path') {
+        if (
+          (error instanceof Error && error.message === 'invalid path') ||
+          ['ELOOP', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+        ) {
           reply.code(400);
           return { error: 'invalid path' };
         }
         reply.code(404);
         return { error: 'file not found' };
+      } finally {
+        release();
       }
       try {
         const stats = await fileHandle.stat();
@@ -7898,6 +7983,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(413);
@@ -7914,14 +8000,103 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               path: target.rel,
               content: extractedBytes.toString('utf8'),
               size: extractedBytes.length,
+              editable: false,
             };
           }
           reply.code(415);
           return { error: 'file is not a text file' };
         }
-        return { path: target.rel, content: bytes.toString('utf8'), size: stats.size };
+        return {
+          path: target.rel,
+          content: bytes.toString('utf8'),
+          size: stats.size,
+          version: fileVersion(bytes),
+          editable: !isManagedKnowledgePath(root.root, target.rel),
+        };
       } finally {
         await fileHandle.close();
+      }
+    },
+    history: async (reply, root, path, version) => {
+      let slot;
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        slot = await openKnowledgeFileSlot(root, path);
+        await recoverFileHistory(slot.directoryPath);
+        if (!version) {
+          await pruneFileHistory(slot.directoryPath, slot.name).catch((error: unknown) => {
+            app.log.warn(
+              { err: error },
+              'File history cleanup failed; retained versions remain available',
+            );
+          });
+        }
+        return await sessionFileHistory(slot.directoryPath, slot.name, version);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          reply.code(404);
+          return { error: 'version not found' };
+        }
+        return knowledgeSlotFailure(reply, error);
+      } finally {
+        await slot?.close();
+        release();
+      }
+    },
+    write: async (reply, root, body) => {
+      let slot;
+      try {
+        slot = await openKnowledgeFileSlot(root, body.path);
+      } catch (error) {
+        return knowledgeSlotFailure(reply, error);
+      }
+      const release = await acquireKnowledgeMutationLock(root.dir);
+      try {
+        if (
+          root.root === 'knowledge' &&
+          slot.rel === 'overview.md' &&
+          body.content.length > PROJECT_MEMORY_MAX_CHARS
+        ) {
+          reply.code(413);
+          return { error: 'overview.md exceeds the project overview limit' };
+        }
+        if (root.root === 'worktree') await excludeFileHistoryFromGit(root.dir);
+        const creationMode =
+          root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
+            ? 0o666
+            : 0o644;
+        const saved = await writeSessionText(
+          slot,
+          body.content,
+          body.expectedVersion,
+          creationMode,
+        );
+        let warning: string | undefined;
+        const updates: Array<() => Promise<unknown>> = [];
+        if (root.root === 'knowledge' && slot.rel === 'overview.md')
+          updates.push(() => markProjectOverviewAuthoritative(root.dir));
+        if (root.root !== 'worktree') updates.push(() => extractKnowledgeFile(root.dir, slot.rel));
+        for (const update of updates) {
+          try {
+            await update();
+          } catch (err) {
+            app.log.warn(
+              { err, path: slot.rel, root: root.root },
+              'saved file Knowledge refresh failed',
+            );
+            warning = 'The file was saved. Knowledge search and context may be out of date.';
+          }
+        }
+        return warning ? { ...saved, warning } : saved;
+      } catch (error) {
+        if (error instanceof FileWriteError) {
+          reply.code(error.status);
+          return { error: error.message };
+        }
+        throw error;
+      } finally {
+        release();
+        await slot.close();
       }
     },
     download: async (reply, root, path) => {
@@ -7979,8 +8154,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return knowledgeSlotFailure(reply, error);
       }
       try {
-        const releaseMutation =
-          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
         try {
           const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
           if (stats === undefined) {
@@ -8018,14 +8192,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const sourcePath = `${source.directoryPath}/${source.name}`;
       const destinationPath = `${destination.directoryPath}/${destination.name}`;
-      const sharedRoot =
-        fromRoot.root === 'shared'
-          ? fromRoot.dir
-          : toRoot.root === 'shared'
-            ? toRoot.dir
-            : undefined;
-      const releaseMutation =
-        sharedRoot === undefined ? undefined : await acquireKnowledgeMutationLock(sharedRoot);
+      const releases: Array<() => void> = [];
+      // Acquire both roots in a stable order so opposite moves cannot deadlock.
+      for (const dir of [...new Set([fromRoot.dir, toRoot.dir])].sort()) {
+        releases.push(await acquireKnowledgeMutationLock(dir));
+      }
       try {
         const stats = await lstat(sourcePath).catch(() => undefined);
         if (stats === undefined) {
@@ -8085,7 +8256,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         throw error;
       } finally {
-        releaseMutation?.();
+        for (const release of releases.reverse()) release();
         await source.close();
         await destination.close();
       }

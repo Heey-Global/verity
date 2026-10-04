@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.8.0](https://github.com/Heey-Global/verity/compare/v4.7.0...v4.8.0) (2026-10-03)
+
+
+### Features
+
+* **explorer:** clarify file actions and support renaming ([#1049](https://github.com/Heey-Global/verity/issues/1049)) ([6bd57ed](https://github.com/Heey-Global/verity/commit/6bd57eda6681c21b856ad86b8f945042a98f2d3e))
+* **server:** attribute backend latency and add optional CPU profiles ([#1041](https://github.com/Heey-Global/verity/issues/1041)) ([bfe1db4](https://github.com/Heey-Global/verity/commit/bfe1db450f6d120451d154443eccffd4adc730d4))
+
+
+### Bug Fixes
+
+* **broker:** accept larger bounded diagnostic argv policies ([#1048](https://github.com/Heey-Global/verity/issues/1048)) ([54bb9de](https://github.com/Heey-Global/verity/commit/54bb9de55017d51ba7f9dffe5e0b16b3e284b95f))
+* **preview:** contain WebSocket errors and reject blocking FIFOs ([#1052](https://github.com/Heey-Global/verity/issues/1052)) ([5de160c](https://github.com/Heey-Global/verity/commit/5de160c0a5c9ca169b2a13fcbc67eb10907b2b6d))
+* **uplink:** bound pending control message work ([#1056](https://github.com/Heey-Global/verity/issues/1056)) ([47847db](https://github.com/Heey-Global/verity/commit/47847dbedfcbd3e5ab4694726dfbcf3646defab6))
+
 ## [4.7.0](https://github.com/Heey-Global/verity/compare/v4.6.0...v4.7.0) (2026-10-03)
 
 

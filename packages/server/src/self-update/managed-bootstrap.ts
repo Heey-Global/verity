@@ -126,6 +126,7 @@ export async function runManagedBootstrap(
         name === 'DATABASE_URL' ||
         name === 'EXPO_ACCESS_TOKEN' ||
         name === 'GOOGLE_AUTH_ID' ||
+        name === 'STAGING_GOOGLE_AUTH_ID' ||
         (name.startsWith('VERITY_') &&
           // Bootstrap INPUTS, not Server runtime environment. Each of these shapes
           // the spec — the image, the uid/gid the container runs as, the groups it

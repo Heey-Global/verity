@@ -2,6 +2,7 @@ import { composeTranscript, pickRecognitionLocale, recognitionErrorMessage } fro
 import { getLocales } from 'expo-localization';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isDemoMode } from '../lib/demoMode';
 
 export type VoiceState = 'idle' | 'recording';
 
@@ -231,6 +232,12 @@ export function useVoiceInput(
   });
 
   const start = useCallback(() => {
+    if (isDemoMode()) {
+      setError(
+        'Voice input is unavailable in the local demo. Type a message to try the simulated agent.',
+      );
+      return;
+    }
     // Claim the session synchronously so a second tap during the async permission
     // request can't kick off a parallel start() (which would emit `busy`). Cleared
     // on a denied/failed start, and on end/error once a real session finishes.

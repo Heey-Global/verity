@@ -45,6 +45,17 @@ const sessionFileMoveBody = z.object({
   toFileName: fileName.optional(),
 });
 
+const sessionFileWriteBody = z.object({
+  root: sessionFileRoot,
+  path: z.string().min(1),
+  content: z.string().max(1_000_000),
+  expectedVersion: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable(),
+});
+type SessionFileWriteBody = z.infer<typeof sessionFileWriteBody>;
+
 type SessionFileUploadQuery = z.infer<typeof sessionFileUploadQuery>;
 type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
 
@@ -67,7 +78,18 @@ export interface SessionFileRouteDeps {
     target: SessionFileTarget,
     query: SessionFileUploadQuery,
   ) => Promise<unknown>;
+  history: (
+    reply: FastifyReply,
+    target: SessionFileTarget,
+    path: string,
+    version?: string,
+  ) => Promise<unknown>;
   content: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
+  write: (
+    reply: FastifyReply,
+    target: SessionFileTarget,
+    body: SessionFileWriteBody,
+  ) => Promise<unknown>;
   download: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   remove: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   move: (
@@ -133,6 +155,33 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     if (value === undefined) return reply;
     return deps.content(reply, value, path);
   });
+
+  app.get('/sessions/:id/files/history', async (request, reply): Promise<unknown> => {
+    const { id } = sessionParams.parse(request.params);
+    const { root, path, version } = sessionFileQuery
+      .extend({
+        version: z
+          .string()
+          .regex(/^save-[A-Za-z0-9]+\/(snapshot|original)$/)
+          .optional(),
+      })
+      .parse(request.query);
+    const value = await target(id, root, reply);
+    if (value === undefined) return reply;
+    return deps.history(reply, value, path, version);
+  });
+
+  app.put(
+    '/sessions/:id/files/content',
+    { bodyLimit: 6_100_000 },
+    async (request, reply): Promise<unknown> => {
+      const { id } = sessionParams.parse(request.params);
+      const body = sessionFileWriteBody.parse(request.body);
+      const value = await target(id, body.root, reply);
+      if (value === undefined) return reply;
+      return deps.write(reply, value, body);
+    },
+  );
 
   app.get('/sessions/:id/files/download', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);

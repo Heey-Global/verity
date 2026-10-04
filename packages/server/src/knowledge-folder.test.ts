@@ -1,3 +1,6 @@
+import { FILE_HISTORY_DIR } from './session-file-history.js';
+import { openKnowledgeFileSlot } from './session-files.js';
+import { fileVersion, writeSessionText } from './session-file-write.js';
 import {
   mkdirSync,
   mkdtempSync,
@@ -36,6 +39,29 @@ describe('knowledge folder layout (ADR 0022 D1/D2)', () => {
   beforeEach(() => {
     dataRoot = mkdtempSync(join(tmpdir(), 'verity-knowledge-'));
   });
+  it('keeps retained snapshots private across repeated knowledge provisioning', async () => {
+    const dir = await ensureProjectKnowledge(dataRoot, 'history-project');
+    const relativeFile = 'insights/wiki/note.md';
+    mkdirSync(join(dir, 'insights/wiki'), { recursive: true });
+    writeFileSync(join(dir, relativeFile), 'original');
+    const slot = await openKnowledgeFileSlot({ root: 'knowledge', dir }, relativeFile);
+    try {
+      await writeSessionText(slot, 'edited', fileVersion(Buffer.from('original')));
+    } finally {
+      await slot.close();
+    }
+    const history = join(dir, 'insights/wiki', FILE_HISTORY_DIR);
+    const transaction = join(history, readdirSync(history)[0]!);
+    const snapshot = join(transaction, 'snapshot');
+    const before = statSync(snapshot).mode & 0o777;
+    expect(before & 0o077).toBe(0);
+    await ensureProjectKnowledge(dataRoot, 'history-project');
+    expect(statSync(snapshot).mode & 0o777).toBe(before);
+    expect(statSync(history).mode & 0o077).toBe(0);
+    expect(statSync(transaction).mode & 0o077).toBe(0);
+    expect(readFileSync(snapshot, 'utf8')).toBe('original');
+  });
+
   afterEach(() => {
     rmSync(dataRoot, { recursive: true, force: true });
   });

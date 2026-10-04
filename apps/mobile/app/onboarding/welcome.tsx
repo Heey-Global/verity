@@ -1,12 +1,14 @@
 // Preflight welcome. No server is selected yet, so this is deliberately not
 // part of the numbered setup wizard.
 import * as Application from 'expo-application';
+import { useState } from 'react';
 import { type Href, router } from 'expo-router';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
+import { enterDemoMode } from '../../lib/demoMode';
 
 const NEXT = '/onboarding/server-url' as Href;
 
@@ -14,6 +16,7 @@ export default function OnboardingWelcome() {
   const insets = useSafeAreaInsets();
   const version = runningReleaseVersion(Application.nativeApplicationVersion);
   const build = describeBuild();
+  const [startingDemo, setStartingDemo] = useState(false);
   return (
     <View style={styles.root}>
       <ScrollView
@@ -30,6 +33,35 @@ export default function OnboardingWelcome() {
         <Text style={styles.title} accessibilityRole="header">
           Secure development. Your choice of AI.
         </Text>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Explore without a server</Text>
+          <Text style={styles.lead}>
+            Try projects, chats, files and code changes with local sample data and simulated AI
+            responses. External services require your own server. Do not enter real credentials in
+            the demo.
+          </Text>
+          <Pressable
+            style={({ pressed }) => [styles.nextButton, pressed ? styles.pressed : null]}
+            accessibilityRole="button"
+            accessibilityLabel="Try demo"
+            disabled={startingDemo}
+            onPress={() => {
+              setStartingDemo(true);
+              void enterDemoMode()
+                .then(() => router.replace('/'))
+                .catch((error: unknown) => {
+                  setStartingDemo(false);
+                  Alert.alert(
+                    'Could not start demo',
+                    error instanceof Error ? error.message : 'Please try again.',
+                  );
+                });
+            }}
+          >
+            <Text style={styles.nextLabel}>{startingDemo ? 'Starting…' : 'Try demo'}</Text>
+          </Pressable>
+        </View>
 
         <View style={styles.card}>
           <Text style={styles.lead}>

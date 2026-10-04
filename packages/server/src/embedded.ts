@@ -638,6 +638,7 @@ export interface EmbeddedServerConfig {
    *  into the server env at image build (no runtime Doppler). Non-secret; the app
    *  reads it via `/settings` to build the PKCE request. */
   googleDriveClientId?: string | undefined;
+  stagingGoogleClientId?: string | undefined;
   /** Host-visible root for runtime-materialized files that spawned sibling
    * Docker containers bind-mount (gateway config, Git signing metadata). When
    * Verity talks to the host Docker daemon from inside a container, this path
@@ -4018,6 +4019,9 @@ export async function buildEmbeddedServer(
       materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
       await refreshAgentGatewayCredential();
     },
+    ...(config.stagingGoogleClientId !== undefined
+      ? { stagingGoogleClientId: config.stagingGoogleClientId }
+      : {}),
     ...(config.googleDriveClientId !== undefined
       ? { googleDriveClientId: config.googleDriveClientId }
       : {}),

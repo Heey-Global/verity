@@ -101,6 +101,7 @@ services:
       # run a self-built image where that build arg is blank. Passing it at runtime
       # keeps both paths equivalent; runtime env overrides any image default.
       GOOGLE_AUTH_ID: ${GOOGLE_AUTH_ID:-}
+      STAGING_GOOGLE_AUTH_ID: ${STAGING_GOOGLE_AUTH_ID:-}
 
       # Sandbox runtime hardening (audit C1). Spawned project containers are ALWAYS
       # launched with all Linux capabilities dropped, privilege escalation blocked

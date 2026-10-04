@@ -905,20 +905,22 @@ jobs:
 
       - name: Require App Store Connect credentials
         env:
+          STAGING_ASC_APP_ID: ${{ secrets.STAGING_ASC_APP_ID }}
+          STAGING_GOOGLE_AUTH_ID: ${{ secrets.STAGING_GOOGLE_AUTH_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ matrix.variant == 'staging' && vars.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
+          ASC_APP_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$VERITY_APP_VARIANT" = staging ] && [ -z "${{ vars.STAGING_ASC_APP_ID }}" ]; then
+          if [ "$VERITY_APP_VARIANT" = staging ] && [ -z "${STAGING_ASC_APP_ID:-}" ]; then
             echo '::error::Register build.verity.app.staging and set STAGING_ASC_APP_ID before building.' >&2
             exit 1
           fi
-          if [ "$VERITY_APP_VARIANT" = staging ] && [ -z "${{ vars.STAGING_GOOGLE_AUTH_ID }}" ]; then
+          if [ "$VERITY_APP_VARIANT" = staging ] && [ -z "${STAGING_GOOGLE_AUTH_ID:-}" ]; then
             echo '::error::Register a Google iOS OAuth client for build.verity.app.staging and set STAGING_GOOGLE_AUTH_ID.' >&2
             exit 1
           fi
@@ -931,7 +933,7 @@ jobs:
 
       - name: Require Google Drive OAuth client
         env:
-          GOOGLE_AUTH_ID: ${{ matrix.variant == 'staging' && vars.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+          GOOGLE_AUTH_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -987,10 +989,10 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ matrix.variant == 'staging' && vars.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
+          ASC_APP_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          GOOGLE_AUTH_ID: ${{ matrix.variant == 'staging' && vars.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+          GOOGLE_AUTH_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1987,6 +1989,7 @@ jobs:
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.stage-bundled-images.outputs.project-relay-image }}
             VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.stage-bundled-images.outputs.matrix-connector-image }}
             VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
+            STAGING_GOOGLE_AUTH_ID=${{ secrets.STAGING_GOOGLE_AUTH_ID }}
             GOOGLE_AUTH_ID=${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

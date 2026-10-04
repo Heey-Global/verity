@@ -1,5 +1,7 @@
 import { liveMeetingSTT, type STTEvent, type STTEngineId } from './liveMeetingSTT';
 import { createVerityClient, getVerityBaseUrl } from './client';
+import { isDemoMode, isEnteringDemoMode } from './demoMode';
+import { registerMeetingCaptureStatus } from './meetingCaptureStatus';
 import { meetingRequestId, meetingRequestPrompt, researchPrompt } from './liveMeetingInsights';
 import { VoiceMeetingCommandDetector, type VoiceMeetingCommand } from './liveMeetingVoice';
 import {
@@ -355,6 +357,12 @@ export function currentMeeting(): MeetingRecord | null {
   return active;
 }
 
+export function hasActiveMeetingCapture(): boolean {
+  return startInFlight !== null || active?.state === 'active';
+}
+
+registerMeetingCaptureStatus(hasActiveMeetingCapture);
+
 export async function updateSpeakerEdits(
   meetingId: string,
   names: Record<string, string>,
@@ -386,6 +394,13 @@ export function startMeeting(
   engine: STTEngineId = 'fluid-nemotron',
   expectedParticipants: number | null = null,
 ): Promise<MeetingRecord> {
+  if (isDemoMode() || isEnteringDemoMode()) {
+    return Promise.reject(
+      new Error(
+        'Live recording requires your own Verity server. Exit the demo to record a meeting.',
+      ),
+    );
+  }
   if (startInFlight) {
     return startInFlight.then((meeting) => {
       if (meeting.sessionId !== sessionId)

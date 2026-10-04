@@ -25,8 +25,8 @@ export interface AttachMenuHandlers {
 
 /**
  * The menu groups actions by what they do. Content sources can feed the current
- * conversation and Project Knowledge, while connected services grant the
- * current session access to an external account.
+ * conversation and Project Knowledge, while connection shortcuts open project settings to grant access
+ * explicitly. Existing session-only access remains scoped to its session.
  *
  * `meetingAudioEnabled` defaults to the build-time flag; callers pass it only in
  * tests.

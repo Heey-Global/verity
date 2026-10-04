@@ -1,3 +1,5 @@
+import { FileIcon } from '../../components/files/FileIcon';
+import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
 // operator input bar. Binds @verity/mobile's headless SessionModel via useSession
@@ -26,6 +28,7 @@ import {
   type PermissionDecision,
   type RateLimitNotice,
   type SessionFileEntry,
+  type SessionFileContent,
   type SessionFileRoot,
   type SessionGoogleWorkspaceFile,
   type ToolCallMessage,
@@ -70,6 +73,8 @@ import {
   listSessionsSummary,
   listSessionsTitle,
   permissionInputText,
+  knowledgePublishSummary,
+  KNOWLEDGE_PUBLISH_EXPLANATION,
   printableFileHtml,
   sessionHandoffCaveats,
   sessionHandoffSummary,
@@ -159,7 +164,8 @@ import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '../../components/Icon';
+import { Icon, type IconName } from '../../components/Icon';
+import { ConnectionDiscoveryHint } from '../../components/ConnectionDiscoveryHint';
 import { AgentLoopCockpit } from '../../components/AgentLoopCockpit';
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
@@ -194,22 +200,24 @@ import {
 } from '../../lib/attachments';
 import { getAuthToken } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { isDemoMode } from '../../lib/demoMode';
 import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
+import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
-  runCalendarAuth,
-  runContactsAuth,
-  runGmailAuth,
-  ensureGoogleWorkspaceAccess,
-} from '../../lib/googleDrive';
+  connectSessionGoogleService,
+  disconnectSessionGoogleService,
+  type GoogleService,
+} from '../../lib/sessionGoogleAccess';
 import {
   type ClickModifiers,
   type DragFileItem,
   dragItemsForRow,
   fileNameFromPath,
   isSelectableFile,
+  isTextPreviewCandidate,
   mimeTypeForFile,
   retainVisibleSelection,
   selectionForModifierClick,
@@ -524,6 +532,16 @@ const SessionActionsContext = createContext<SessionActions | null>(null);
 // nothing rather than crashing (never happens in practice; the FlashList is always
 // wrapped).
 const BookmarksContext = createContext<Bookmarks | null>(null);
+// Knowledge — Project and Global alike — has one symbol across the app, so the
+// message "…" sheet, the Explorer tabs and its breadcrumb all read as the same
+// thing; the labels tell the two scopes apart.
+const KNOWLEDGE_ICON: IconName = 'book-open';
+const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
+  worktree: 'folder',
+  knowledge: KNOWLEDGE_ICON,
+  shared: KNOWLEDGE_ICON,
+};
+
 const KnowledgeSaveContext = createContext<{
   save(messageId: string, text: string): Promise<void>;
 } | null>(null);
@@ -719,6 +737,21 @@ export function SessionChat({
   const [agentLoop, setAgentLoop] = useState<AgentLoop | null>(null);
   const agentLoopGeneration = useRef(0);
   const [loopCockpitOpen, setLoopCockpitOpen] = useState(false);
+  // Name of a header action shown under the title after a long-press — the icon-only
+  // buttons explain themselves on demand without permanent labels.
+  const [headerHint, setHeaderHint] = useState<string | null>(null);
+  const headerHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHeaderHint = useCallback((label: string) => {
+    if (headerHintTimer.current) clearTimeout(headerHintTimer.current);
+    setHeaderHint(label);
+    headerHintTimer.current = setTimeout(() => setHeaderHint(null), 1500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (headerHintTimer.current) clearTimeout(headerHintTimer.current);
+    },
+    [],
+  );
   useEffect(() => {
     if (kind !== 'agent_loop' || !projectId) {
       setAgentLoop(null);
@@ -2643,7 +2676,7 @@ export function SessionChat({
               .updateMeetingTranscriptionBackendMode(mode)
               .then(() => {
                 if (mode === 'external' && !readiness.externalConfigured) {
-                  router.push('/settings/services');
+                  router.push('/settings/transcription');
                 } else {
                   uploadMeetingAudioRef.current();
                 }
@@ -2674,7 +2707,7 @@ export function SessionChat({
             'This saved backend is no longer available. Configure the OpenAI-compatible API in Settings.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2685,7 +2718,7 @@ export function SessionChat({
             'Add the API URL and model before uploading meeting audio. Add a token if your service requires one.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2844,7 +2877,7 @@ export function SessionChat({
                 'configure-external'
               ) {
                 defer();
-                router.push('/settings/services');
+                router.push('/settings/transcription');
                 return;
               }
               await resumePending();
@@ -2879,7 +2912,7 @@ export function SessionChat({
             : 'Add the external API URL and model before the pending recording can be uploaded.',
           [
             { text: 'Not now', style: 'cancel' },
-            { text: 'Open settings', onPress: () => router.push('/settings/services') },
+            { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
           ],
         );
       }
@@ -2928,158 +2961,85 @@ export function SessionChat({
     voice.abort();
     router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
   }, [sessionId, voice]);
-  const onConnectGmail = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionGmailConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Gmail not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
-            );
+  const onConnectGoogleService = useCallback(
+    (service: GoogleService) => {
+      setAttachMenuOpen(false);
+      void connectSessionGoogleService(client, sessionId, projectId, service)
+        .then((result) => {
+          if (result.kind === 'project' && projectId) {
+            router.push({
+              pathname: '/project/[id]/settings/services',
+              params: { id: projectId, section: 'google' },
+            });
+          } else if (result.kind === 'session') {
+            setGmailConnection(result.connections.gmail);
+            setCalendarConnection(result.connections.calendar);
+            setContactsConnection(result.connections.contacts);
+          }
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not connect Google service',
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
+    },
+    [client, projectId, sessionId],
+  );
+  const onConnectGmail = useCallback(
+    () => onConnectGoogleService('gmail'),
+    [onConnectGoogleService],
+  );
+  const onConnectCalendar = useCallback(
+    () => onConnectGoogleService('calendar'),
+    [onConnectGoogleService],
+  );
+  const onConnectContacts = useCallback(
+    () => onConnectGoogleService('contacts'),
+    [onConnectGoogleService],
+  );
+  const disableGoogleService = useCallback(
+    (service: GoogleService) => {
+      void disconnectSessionGoogleService(client, sessionId, projectId, service)
+        .then((result) => {
+          if (result === 'project' && projectId) {
+            router.push({
+              pathname: '/project/[id]/settings/services',
+              params: { id: projectId, section: 'google' },
+            });
             return;
           }
-          const auth = await runGmailAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectGmail({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
-        );
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionGmail(sessionId);
-        setGmailConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Gmail',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableGmail = useCallback(() => {
-    void client
-      .disableSessionGmail(sessionId)
-      .then(() =>
-        setGmailConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Gmail',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
-  const onConnectCalendar = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionCalendarConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Calendar not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+          if (service === 'gmail')
+            setGmailConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
             );
-            return;
-          }
-          const auth = await runCalendarAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectCalendar({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionCalendar(sessionId);
-        setCalendarConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Calendar',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableCalendar = useCallback(() => {
-    void client
-      .disableSessionCalendar(sessionId)
-      .then(() =>
-        setCalendarConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Calendar',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
-  const onConnectContacts = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionContactsConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Contacts not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+          else if (service === 'calendar')
+            setCalendarConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
             );
-            return;
-          }
-          const auth = await runContactsAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectContacts({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
+          else
+            setContactsConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
+            );
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not disconnect Google service',
+            error instanceof Error ? error.message : String(error),
+          ),
         );
-        connection = await client.enableSessionContacts(sessionId);
-        setContactsConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Contacts',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableContacts = useCallback(() => {
-    void client
-      .disableSessionContacts(sessionId)
-      .then(() =>
-        setContactsConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Contacts',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
+    },
+    [client, projectId, sessionId],
+  );
+  const disableGmail = useCallback(() => disableGoogleService('gmail'), [disableGoogleService]);
+  const disableCalendar = useCallback(
+    () => disableGoogleService('calendar'),
+    [disableGoogleService],
+  );
+  const disableContacts = useCallback(
+    () => disableGoogleService('contacts'),
+    [disableGoogleService],
+  );
   const clearWorkspaceFile = useCallback(() => {
     if (workspaceFile === null) return;
     Alert.alert(
@@ -3450,10 +3410,9 @@ export function SessionChat({
   // (incl. the back button) in a Liquid-Glass capsule, which made the branch label
   // read as a tappable Back-style button. Rendering our own header lets the branch be
   // plain inline text (no box) while keeping it tappable to open the switcher. Back
-  // chevron + centered title replace the native equivalents.
-  // Three-column row: equal-flex left/right slots keep the title truly centered
-  // regardless of branch-name length; the right slot is bounded so a long branch name
-  // truncates instead of shoving the title off-center.
+  // chevron + title replace the native equivalents.
+  // One row: back, a left-aligned title block (name over branch) that truncates, and
+  // the round action buttons pinned right.
   // When `embedded`, this renders inline in a two-pane layout (the embedding screen
   // owns the route header): no back button (no pane-local back nav) and `theme.spacing.sm`
   // top padding instead of the safe-area inset (the pane sits below the app header).
@@ -3476,9 +3435,7 @@ export function SessionChat({
           compactLandscape && styles.headerRowCompact,
         ]}
       >
-        {embedded ? (
-          <View style={styles.headerSide} />
-        ) : (
+        {embedded ? null : (
           <View style={styles.headerSide}>
             <Pressable
               onPress={() => router.back()}
@@ -3491,54 +3448,41 @@ export function SessionChat({
             </Pressable>
           </View>
         )}
-        <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
-          {sessionFallback}
-        </Text>
-        {/* Right spacer keeps the title centered now that the actions live on the
-            context row below — the title row gets the full width, so the session name
-            no longer truncates on a phone. */}
-        <View style={styles.headerSide} />
-      </View>
-      {/* Context row under the title: the branch switcher (#91) and the bookmarks
-          jump-list (#bookmarks), plus the Issue chip when present. Moved down off the
-          title row so the title reads full-width; the engine switcher lives on the
-          input bar's action row. */}
-      <View style={[styles.headerMetaRow, compactLandscape && styles.headerMetaRowCompact]}>
-        {/* Left slot: the Issue chip when present, left-aligned so it never nudges the
-            centered branch switcher. */}
-        <View style={[styles.headerMetaSide, compactLandscape && styles.headerMetaSideCompact]}>
-          {issueNumber !== null ? (
-            <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
-          ) : null}
-        </View>
-        {/* Center: the branch switcher (#91), anchored to the row's true center by the
-            two equal-flex side slots — so its position stays put whether or not there
-            are bookmarks. */}
-        <Pressable
-          onPress={() => setSwitcherOpen(true)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
-          style={styles.headerBranchBtn}
-        >
-          <Icon name="git-branch" size={12} color={theme.colors.textMuted} />
-          <Text style={styles.headerBranch} numberOfLines={1}>
-            {currentLabel}
+        {/* Title block: the session name with the branch underneath as quiet context.
+            The branch stays tappable (opens the switcher, #91) but no longer competes
+            with the actions — it is information first. A long-press on a header action
+            briefly swaps this line for the action's name. */}
+        <View style={styles.headerTitleBlock}>
+          <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
+            {sessionFallback}
           </Text>
-          {/* A quiet caret signals the branch is tappable (opens the switcher, #91)
-              without making it read as a Back-style button. */}
-          <Icon name="chevron-down" size={18} color={theme.colors.textFaint} />
-        </Pressable>
-        {/* Right slot: the bookmarks jump-list (#bookmarks), pinned to the right edge
-            when any exist — it appears without shifting the centered branch. */}
-        <View
-          style={[
-            styles.headerMetaSide,
-            styles.headerMetaSideRight,
-            compactLandscape && styles.headerMetaSideCompact,
-            compactLandscape && styles.headerMetaSideRightCompact,
-          ]}
-        >
+          {headerHint !== null ? (
+            <Text style={[styles.headerBranch, styles.headerHintText]} numberOfLines={1}>
+              {headerHint}
+            </Text>
+          ) : (
+            <View style={styles.headerSubtitle}>
+              <Pressable
+                onPress={() => setSwitcherOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
+                style={styles.headerBranchBtn}
+              >
+                <Icon name="git-branch" size={11} color={theme.colors.textFaint} />
+                <Text style={styles.headerBranch} numberOfLines={1}>
+                  {currentLabel}
+                </Text>
+              </Pressable>
+              {issueNumber !== null ? (
+                <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
+              ) : null}
+            </View>
+          )}
+        </View>
+        {/* Actions sit on the title row as large round buttons, so the header needs a
+            single row and the targets are big enough to hit and recognise. */}
+        <View style={styles.headerActions}>
           {kind === 'agent_loop' ? (
             <Pressable
               onPress={() => setLoopCockpitOpen(true)}
@@ -3552,63 +3496,43 @@ export function SessionChat({
               <Text style={styles.headerLoopButtonText}>Loop</Text>
             </Pressable>
           ) : null}
-          {bookmarks.ids.size > 0 ? (
-            <Pressable
-              onPress={() => setBookmarksOpen(true)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={`${String(bookmarks.ids.size)} bookmarks. Tap to view.`}
-              style={styles.headerBookmarkBtn}
-            >
-              <Icon name="bookmark" size={15} color={theme.colors.textMuted} />
-              <Text style={styles.headerBookmarkCount}>{bookmarks.ids.size}</Text>
-            </Pressable>
-          ) : null}
           {projectId ? (
-            <Pressable
+            <HeaderActionButton
+              icon="monitor"
+              label="Preview"
+              accessibilityLabel={
+                hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
+              }
+              active={hasActiveStaticPreview}
+              dot={hasRunningDevServer}
+              dotTestID="preview-server-dot"
+              onHint={showHeaderHint}
               onPress={() => {
                 refreshStaticPreview();
                 setStaticPreviewOpen(true);
               }}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={
-                hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
-              }
-              style={styles.headerBookmarkBtn}
-            >
-              <View>
-                <Icon
-                  name="monitor"
-                  size={15}
-                  color={hasActiveStaticPreview ? theme.colors.primary : theme.colors.textMuted}
-                />
-                {hasRunningDevServer ? (
-                  <View testID="preview-server-dot" style={styles.headerPreviewServerDot} />
-                ) : null}
-              </View>
-              <Text
-                style={[
-                  styles.headerBookmarkCount,
-                  hasActiveStaticPreview ? styles.headerPreviewActiveText : null,
-                ]}
-              >
-                Preview
-              </Text>
-            </Pressable>
+            />
           ) : null}
-          <Pressable
+          <HeaderActionButton
+            icon="folder"
+            label="Files"
+            accessibilityLabel="Browse session files"
+            onHint={showHeaderHint}
             onPress={() => {
               setFilesInitialPath(null);
               setFilesOpen(true);
             }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Browse session files"
-            style={styles.headerBookmarkBtn}
-          >
-            <Icon name="folder" size={15} color={theme.colors.textMuted} />
-          </Pressable>
+          />
+          {bookmarks.ids.size > 0 ? (
+            <HeaderActionButton
+              icon="bookmark"
+              label="Bookmarks"
+              accessibilityLabel={`${String(bookmarks.ids.size)} bookmarks. Tap to view.`}
+              badge={bookmarks.ids.size}
+              onHint={showHeaderHint}
+              onPress={() => setBookmarksOpen(true)}
+            />
+          ) : null}
         </View>
       </View>
       {linkedSessions.length > 0 ? (
@@ -4276,6 +4200,51 @@ export function SessionChat({
   );
 }
 
+// A round header action (Preview / Files / Bookmarks): an icon large enough to hit
+// and recognise, with an optional status dot (e.g. a running dev server) or count
+// badge. Long-press reports its name through `onHint`.
+function HeaderActionButton({
+  icon,
+  label,
+  accessibilityLabel,
+  onPress,
+  onHint,
+  active = false,
+  dot = false,
+  dotTestID,
+  badge,
+}: {
+  icon: IconName;
+  label: string;
+  accessibilityLabel: string;
+  onPress: () => void;
+  onHint: (label: string) => void;
+  active?: boolean;
+  dot?: boolean;
+  dotTestID?: string;
+  badge?: number;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={() => onHint(label)}
+      hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => [styles.headerActionBtn, pressed ? styles.copyBtnPressed : null]}
+    >
+      <Icon name={icon} size={20} color={active ? theme.colors.primary : theme.colors.textMuted} />
+      {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
+      {badge !== undefined ? (
+        <View style={styles.headerActionBadge}>
+          <Text style={styles.headerActionBadgeText}>{badge > 99 ? '99+' : String(badge)}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
 // A header Issue context chip (#125). Tappable when `url` is a string (opens the
 // GitHub issue via `Linking.openURL`, announced as a link); when `url` is null —
 // owner/repo unknown (no GitHub remote / older server) — it renders as the plain,
@@ -4462,13 +4431,14 @@ function SessionFilesSheet({
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
+  const compactRootLabels = Platform.OS === 'ios' && !Platform.isPad;
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
+  const [preview, setPreview] = useState<SessionFileContent | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [mutating, setMutating] = useState(false);
@@ -4477,6 +4447,7 @@ function SessionFilesSheet({
   const [selected, setSelected] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [driveActive, setDriveActive] = useState(false);
+  const [driveCanWrite, setDriveCanWrite] = useState(false);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
@@ -4485,6 +4456,9 @@ function SessionFilesSheet({
   // over the sheet (see FileActionMenu), so they live here rather than in a row.
   const [menuFor, setMenuFor] = useState<{ path: string; inPreview: boolean } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [editing, setEditing] = useState<SessionFileContent | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [adding, setAdding] = useState(false);
   // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
   // matches is a superseded tap and is dropped. See openFile.
   const previewRequest = useRef(0);
@@ -4528,7 +4502,7 @@ function SessionFilesSheet({
     void client
       .getSessionFileContent(sessionId, initialFilePath, initialRoot)
       .then((file) => {
-        if (active()) setPreview({ path: file.path, content: file.content });
+        if (active()) setPreview(file);
       })
       .catch((err) => {
         if (!active()) return;
@@ -4584,17 +4558,21 @@ function SessionFilesSheet({
       try {
         let folderId = driveFolderId;
         let nextPath = drivePath;
-        if (!folderId) {
-          const detail = await client.getProject(projectId);
-          folderId = detail.settings?.googleDriveFolderId ?? null;
-          const folderName = detail.settings?.googleDriveFolderName ?? null;
-          if (!folderId || !folderName) {
-            if (active) {
-              setDriveEntries([]);
-              setDriveUnconfigured(true);
-            }
-            return;
+        const detail = await client.getProject(projectId);
+        const configuredFolderId = detail.settings?.googleDriveFolderId ?? null;
+        const folderName = detail.settings?.googleDriveFolderName ?? null;
+        if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
+        if (!configuredFolderId || !folderName) {
+          if (active) {
+            setDriveEntries([]);
+            setDriveFolderId(null);
+            setDriveCanWrite(false);
+            setDriveUnconfigured(true);
           }
+          return;
+        }
+        if (!folderId || folderId !== configuredFolderId) {
+          folderId = configuredFolderId;
           nextPath = [{ id: folderId, name: folderName }];
           if (active) {
             setDriveFolderId(folderId);
@@ -4675,7 +4653,7 @@ function SessionFilesSheet({
   }, [client, path, root, sessionId]);
 
   const uploadDriveFiles = useCallback(() => {
-    if (!projectId || !driveFolderId || drivePath.length === 0) return;
+    if (!projectId || !driveFolderId || drivePath.length === 0 || !driveCanWrite) return;
     void (async () => {
       let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
       try {
@@ -4707,7 +4685,7 @@ function SessionFilesSheet({
         setUploading(false);
       }
     })();
-  }, [client, driveFolderId, drivePath, projectId]);
+  }, [client, driveFolderId, drivePath, projectId, driveCanWrite]);
 
   const openDriveFile = useCallback(
     (file: DriveFile) => {
@@ -4850,6 +4828,18 @@ function SessionFilesSheet({
           cacheDir.create({ idempotent: true, intermediates: true });
           const token = getAuthToken(baseUrl);
           const destination = new FsFile(cacheDir, fileNameFromPath(filePath));
+          if (isDemoMode()) {
+            const { content } = await client.getSessionFileContent(sessionId, filePath, root);
+            destination.write(content);
+            const sharing = await loadSharingModule();
+            if (sharing !== undefined && (await sharing.isAvailableAsync())) {
+              await sharing.shareAsync(destination.uri, {
+                mimeType: mimeTypeForFile(filePath),
+                dialogTitle: `Open ${fileNameFromPath(filePath)}`,
+              });
+            }
+            return;
+          }
           const headers =
             token !== null && token.length > 0 ? { authorization: `Bearer ${token}` } : undefined;
           const file = directTlsPin
@@ -4973,7 +4963,7 @@ function SessionFilesSheet({
         .getSessionFileContent(sessionId, entry.path, root)
         .then((file) => {
           if (previewRequest.current !== request) return;
-          setPreview({ path: file.path, content: file.content });
+          setPreview(file);
         })
         .catch((err) => {
           if (previewRequest.current !== request) return;
@@ -5021,7 +5011,7 @@ function SessionFilesSheet({
           root === 'worktree'
             ? 'This permanently removes them from the workspace.'
             : root === 'shared'
-              ? 'This removes them from Shared, for every project, with their extracted text.'
+              ? 'This removes them from Global Knowledge, for every project, with their extracted text.'
               : 'This removes them from the project with their extracted text.'
         }`,
         [
@@ -5184,6 +5174,21 @@ function SessionFilesSheet({
     [driveActive, entries],
   );
 
+  const editFile = async (filePath: string) => {
+    if (mutating) return;
+    setMutating(true);
+    try {
+      const file = await client.getSessionFileContent(sessionId, filePath, root);
+      if (file.editable === false) throw new Error('This preview is read-only.');
+      if (!file.version || !file.editable)
+        throw new Error('Update the Verity server to edit text files.');
+      setEditing(file);
+    } catch (error) {
+      Alert.alert('Could not edit file', error instanceof Error ? error.message : String(error));
+    } finally {
+      setMutating(false);
+    }
+  };
   const menuActions: FileAction[] =
     menuFor === null
       ? []
@@ -5217,6 +5222,18 @@ function SessionFilesSheet({
             icon: 'share' as const,
             onPress: () => openWith(menuFor.path),
           },
+          ...(isTextPreviewCandidate(menuFor.path) && (!menuFor.inPreview || preview?.editable)
+            ? [
+                {
+                  key: 'edit',
+                  label: 'Edit text',
+                  icon: 'edit' as const,
+                  onPress: () => {
+                    void editFile(menuFor.path);
+                  },
+                },
+              ]
+            : []),
           {
             key: 'rename',
             label: 'Rename…',
@@ -5252,7 +5269,19 @@ function SessionFilesSheet({
                   ? selected.length > 0
                     ? selectionSummary(selected.length)
                     : 'Select files'
-                  : 'Files'}
+                  : driveActive
+                    ? 'Google Drive'
+                    : root === 'worktree'
+                      ? compactRootLabels
+                        ? 'Repo'
+                        : 'Repository'
+                      : root === 'knowledge'
+                        ? compactRootLabels
+                          ? 'Project'
+                          : 'Project Knowledge'
+                        : compactRootLabels
+                          ? 'Global'
+                          : 'Global Knowledge'}
               </Text>
             </View>
             {selecting ? (
@@ -5286,15 +5315,23 @@ function SessionFilesSheet({
                   />
                 ) : null}
                 <FileToolbarButton
-                  label="Upload"
-                  icon="upload"
+                  label={driveActive ? 'Upload' : 'New'}
+                  icon={driveActive ? 'upload' : 'plus'}
                   tone="tinted"
                   busy={uploading}
-                  disabled={mutating || error !== null || (driveActive && driveUnconfigured)}
-                  accessibilityLabel={
-                    driveActive ? 'Upload files to Google Drive' : `Upload files to /${path}`
+                  disabled={
+                    mutating ||
+                    error !== null ||
+                    (driveActive && (driveUnconfigured || !driveCanWrite))
                   }
-                  onPress={driveActive ? uploadDriveFiles : uploadFiles}
+                  accessibilityLabel={
+                    driveActive
+                      ? driveCanWrite
+                        ? 'Upload files to Google Drive'
+                        : 'Google Drive is read-only'
+                      : 'New or upload files'
+                  }
+                  onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
                 />
               </>
             ) : null}
@@ -5305,7 +5342,7 @@ function SessionFilesSheet({
               accessibilityLabel="Close files"
               style={styles.bookmarkRemove}
             >
-              <Icon name="x" size={20} color={theme.colors.textMuted} />
+              <FileIcon name="x" size={20} color="#ffffff" />
             </Pressable>
           </View>
         ) : null}
@@ -5313,9 +5350,9 @@ function SessionFilesSheet({
           <View style={styles.filesRootBar}>
             {(
               [
-                ['worktree', 'Files'],
-                ['knowledge', '📚 Project'],
-                ['shared', '📚 Shared'],
+                ['worktree', compactRootLabels ? 'Repo' : 'Repository'],
+                ['knowledge', compactRootLabels ? 'Project' : 'Project Knowledge'],
+                ['shared', compactRootLabels ? 'Global' : 'Global Knowledge'],
               ] as const
             ).map(([candidate, label]) => (
               <Pressable
@@ -5343,6 +5380,7 @@ function SessionFilesSheet({
                   root === candidate ? styles.filesRootButtonActive : null,
                 ]}
               >
+                <FileIcon name={FILE_ROOT_ICON[candidate]} size={14} color="#ffffff" />
                 <Text
                   style={root === candidate ? styles.filesRootLabelActive : styles.filesRootLabel}
                 >
@@ -5367,6 +5405,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Google Drive"
                 style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
               >
+                <FileIcon name="hard-drive" size={14} color="#ffffff" />
                 <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
                   Google Drive
                 </Text>
@@ -5386,8 +5425,14 @@ function SessionFilesSheet({
           ) : null
         ) : (
           <FileBreadcrumb
-            rootIcon={root === 'worktree' ? 'folder' : 'book-open'}
-            rootLabel={root === 'worktree' ? 'Files' : root === 'knowledge' ? 'Project' : 'Shared'}
+            rootIcon={FILE_ROOT_ICON[root]}
+            rootLabel={
+              root === 'worktree'
+                ? 'Repository'
+                : root === 'knowledge'
+                  ? 'Project Knowledge'
+                  : 'Global Knowledge'
+            }
             segments={breadcrumbSegments(path).map((segment) => ({
               key: segment.path,
               name: segment.name,
@@ -5402,6 +5447,16 @@ function SessionFilesSheet({
             {driveUnconfigured && projectId ? (
               <View style={styles.driveSetupNotice}>
                 <Text style={styles.sheetEmpty}>No Google Drive folder connected.</Text>
+                <ConnectionDiscoveryHint
+                  id={`drive.${projectId}`}
+                  onConnect={() => {
+                    onClose();
+                    router.push({
+                      pathname: '/project/[id]/settings/services',
+                      params: { id: projectId, section: 'drive' },
+                    });
+                  }}
+                />
                 <Pressable
                   onPress={() => {
                     onClose();
@@ -5441,20 +5496,16 @@ function SessionFilesSheet({
                       pressed ? styles.sheetRowPressed : null,
                     ]}
                   >
-                    <Icon
-                      name={folder ? 'folder' : 'file'}
-                      size={18}
-                      color={theme.colors.textMuted}
-                    />
+                    <FileIcon name={folder ? 'folder' : 'file'} size={18} color="#ffffff" />
                     <View style={styles.fileMain}>
                       <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
                         {file.name}
                       </Text>
                     </View>
-                    <Icon
+                    <FileIcon
                       name={folder ? 'chevron-right' : 'more-horizontal'}
                       size={17}
-                      color={theme.colors.textFaint}
+                      color="#ffffff"
                     />
                   </Pressable>
                 );
@@ -5471,7 +5522,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Back to file list"
                 style={styles.bookmarkRemove}
               >
-                <Icon name="chevron-left" size={20} color={theme.colors.textMuted} />
+                <FileIcon name="chevron-left" size={20} color="#ffffff" />
               </Pressable>
               <View style={styles.filesTitleWrap}>
                 <Text style={styles.filesPreviewTitle} numberOfLines={1}>
@@ -5483,6 +5534,13 @@ function SessionFilesSheet({
                   </Text>
                 ) : null}
               </View>
+              {preview.editable && preview.version ? (
+                <FileToolbarButton
+                  label="Edit"
+                  disabled={mutating}
+                  onPress={() => setEditing(preview)}
+                />
+              ) : null}
               {/* Chunked rendering means native text selection stops at each block, so
                   drag-selecting the whole file no longer works — this copies the exact
                   content the server returned, which is what select-all was for anyway. */}
@@ -5499,7 +5557,7 @@ function SessionFilesSheet({
                 accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
                 style={styles.bookmarkRemove}
               >
-                <Icon name="more-horizontal" size={20} color={theme.colors.textMuted} />
+                <FileIcon name="more-horizontal" size={20} color="#ffffff" />
               </Pressable>
               <Pressable
                 onPress={onClose}
@@ -5508,7 +5566,7 @@ function SessionFilesSheet({
                 accessibilityLabel="Close files"
                 style={styles.bookmarkRemove}
               >
-                <Icon name="x" size={20} color={theme.colors.textMuted} />
+                <FileIcon name="x" size={20} color="#ffffff" />
               </Pressable>
             </View>
             <FileContentPreview
@@ -5584,7 +5642,7 @@ function SessionFilesSheet({
                           // Every row stays draggable while selecting: grabbing
                           // one outside the selection drags just that file, the
                           // same as Finder. `items` already encodes which.
-                          enabled
+                          enabled={!isDemoMode()}
                           items={dragItemsByPath.get(entry.path) ?? []}
                           authorization={authorization}
                           tlsPin={directTlsPin ?? ''}
@@ -5618,11 +5676,7 @@ function SessionFilesSheet({
                                 inert ? styles.sheetRowDisabled : null,
                               ]}
                             >
-                              <Icon
-                                name={fileIcon(entry)}
-                                size={18}
-                                color={theme.colors.textMuted}
-                              />
+                              <FileIcon name={fileIcon(entry)} size={18} color="#ffffff" />
                               <View style={styles.fileMain}>
                                 <Text
                                   style={[styles.sheetRowLabel, styles.fileName]}
@@ -5639,10 +5693,10 @@ function SessionFilesSheet({
                               </View>
                               {selecting ? (
                                 <View style={styles.fileDownload}>
-                                  <Icon
+                                  <FileIcon
                                     name={picked ? 'check-circle' : 'circle'}
                                     size={18}
-                                    color={picked ? theme.colors.primary : theme.colors.textFaint}
+                                    color="#ffffff"
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
@@ -5654,18 +5708,10 @@ function SessionFilesSheet({
                                   accessibilityLabel={`More actions for ${entry.name}`}
                                   style={styles.fileDownload}
                                 >
-                                  <Icon
-                                    name="more-horizontal"
-                                    size={18}
-                                    color={theme.colors.textMuted}
-                                  />
+                                  <FileIcon name="more-horizontal" size={18} color="#ffffff" />
                                 </Pressable>
                               ) : (
-                                <Icon
-                                  name="chevron-right"
-                                  size={17}
-                                  color={theme.colors.textFaint}
-                                />
+                                <FileIcon name="chevron-right" size={17} color="#ffffff" />
                               )}
                             </Pressable>
                           )}
@@ -5676,7 +5722,7 @@ function SessionFilesSheet({
                 </ScrollView>
                 {dropActive ? (
                   <View pointerEvents="none" style={styles.filesDropHint}>
-                    <Icon name="download" size={18} color={theme.colors.primary} />
+                    <FileIcon name="download" size={18} color="#ffffff" />
                     <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
                   </View>
                 ) : null}
@@ -5706,6 +5752,67 @@ function SessionFilesSheet({
             title={fileNameFromPath(menuFor.path)}
             actions={menuActions}
             onDismiss={() => setMenuFor(null)}
+          />
+        ) : null}
+        {adding ? (
+          <FileActionMenu
+            title="Add files"
+            onDismiss={() => setAdding(false)}
+            actions={[
+              {
+                key: 'create',
+                label: 'New Markdown file…',
+                icon: 'file-plus',
+                onPress: () => setCreating(true),
+              },
+              { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
+            ]}
+          />
+        ) : null}
+        {creating ? (
+          <FileNameDialog
+            title="New Markdown file"
+            initialName="note.md"
+            allowUnchanged
+            confirmLabel="Create"
+            validate={(name) =>
+              renameProblem(
+                name,
+                '',
+                entries.map((entry) => entry.name),
+              ) ?? (!/\.md$/i.test(name) ? 'Use a .md extension.' : null)
+            }
+            onCancel={() => setCreating(false)}
+            onSubmit={async (name) => {
+              setCreating(false);
+              setEditing({
+                path: [path, name].filter(Boolean).join('/'),
+                content: '',
+                size: 0,
+                editable: true,
+              });
+            }}
+          />
+        ) : null}
+        {editing ? (
+          <FileTextEditor
+            file={editing}
+            onCancel={() => setEditing(null)}
+            onRead={(filePath) => client.getSessionFileContent(sessionId, filePath, root)}
+            onHistory={() => client.listSessionFileVersions(sessionId, root, editing.path)}
+            onVersion={(version) =>
+              client.readSessionFileVersion(sessionId, root, editing.path, version)
+            }
+            onSave={(filePath, content, version) =>
+              client.saveSessionFileContent(sessionId, root, filePath, content, version)
+            }
+            onSaved={(file) => {
+              if (file.warning) Alert.alert('File saved', file.warning);
+              setEditing(null);
+              setPreview(file);
+              setPath(parentPath(file.path));
+              setReloadKey((key) => key + 1);
+            }}
           />
         ) : null}
         {renaming ? (
@@ -5951,11 +6058,13 @@ function CopyButton({
   label,
   style,
   accessibilityLabel,
+  iconSize = 15,
 }: {
   value: string;
   label?: string;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel: string;
+  iconSize?: number;
 }) {
   const { theme } = useUnistyles();
   const [copied, setCopied] = useState(false);
@@ -5975,7 +6084,7 @@ function CopyButton({
       accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => [styles.copyBtn, style, pressed ? styles.copyBtnPressed : null]}
     >
-      <Icon name={copied ? 'check' : 'copy'} size={15} color={tint} />
+      <Icon name={copied ? 'check' : 'copy'} size={iconSize} color={tint} />
       {label ? (
         <Text style={[styles.copyLabel, { color: tint }]}>{copied ? 'Copied' : label}</Text>
       ) : null}
@@ -5991,8 +6100,9 @@ function CopyButton({
 // gestures don't fight. (Text long-press selection is the per-block fallback until
 // contiguous-prose selection lands.)
 // `messageId` is present only for a bookmarkable top-level message (see renderRow /
-// AgentBlock); when set, the tap-reveal row gains a bookmark toggle beside Copy and a
-// persistent dog-ear marks the message while scrolling.
+// AgentBlock); when set, the tap-reveal row gains a "…" button beside Copy that opens
+// the bookmark / Project Knowledge actions, and a persistent dog-ear marks a
+// bookmarked message while scrolling.
 function AgentMarkdown({
   text,
   messageId,
@@ -6042,151 +6152,262 @@ function AgentMarkdown({
   const [knowledgeSavedFor, setKnowledgeSavedFor] = useState<string>();
   const knowledgeSaved = messageId != null && knowledgeSavedFor === messageId;
   const bookmarked = messageId != null && bookmarks?.isBookmarked(messageId) === true;
+  const hasMoreActions = messageId != null && (bookmarks !== null || knowledge !== null);
+  // Keyed by message (like knowledgeSavedFor) so a recycled list cell never opens
+  // the sheet for a different message.
+  const [actionsOpenFor, setActionsOpenFor] = useState<string>();
+  const actionsOpen = messageId != null && actionsOpenFor === messageId;
+  const closeActions = useCallback(() => setActionsOpenFor(undefined), []);
+  const openActions = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    setShowCopy(false);
+    setActionsOpenFor(messageId);
+  }, [messageId]);
   return (
-    <Pressable
-      onPress={toggleCopy}
-      // Not an a11y element itself: keep the prose readable as individual nodes
-      // rather than collapsing the whole message into one button. Copy is exposed
-      // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
-      // convenience). VoiceOver users get per-block selection + the code badges.
-      accessible={false}
-    >
-      <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
-        {blocks.map((block, i) =>
-          block.type === 'code' ? (
-            <View key={i} style={styles.codeBlock}>
-              {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-              {searchHighlightQuery ? (
-                <Text style={styles.codeText} selectable>
-                  <HighlightedSearchText text={block.content} />
-                </Text>
-              ) : (
-                <UITextView style={styles.codeText} selectable uiTextView>
-                  {block.content}
-                </UITextView>
-              )}
-              <CopyButton
-                value={block.content}
-                accessibilityLabel="Copy code block"
-                style={styles.codeCopyBtn}
+    <>
+      <Pressable
+        onPress={toggleCopy}
+        // Not an a11y element itself: keep the prose readable as individual nodes
+        // rather than collapsing the whole message into one button. Copy is exposed
+        // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
+        // convenience). VoiceOver users get per-block selection + the code badges.
+        accessible={false}
+      >
+        <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
+          {blocks.map((block, i) =>
+            block.type === 'code' ? (
+              <View key={i} style={styles.codeBlock}>
+                {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
+                {searchHighlightQuery ? (
+                  <Text style={styles.codeText} selectable>
+                    <HighlightedSearchText text={block.content} />
+                  </Text>
+                ) : (
+                  <UITextView style={styles.codeText} selectable uiTextView>
+                    {block.content}
+                  </UITextView>
+                )}
+                <CopyButton
+                  value={block.content}
+                  accessibilityLabel="Copy code block"
+                  style={styles.codeCopyBtn}
+                />
+              </View>
+            ) : (
+              <MarkdownText
+                key={i}
+                content={block.content}
+                onOpenLocalFile={openLocalFile}
+                sessionFileImageSource={sessionFileImageSource}
+                onOpenImage={(source, label) => setViewer({ source, label })}
               />
-            </View>
-          ) : (
-            <MarkdownText
-              key={i}
-              content={block.content}
-              onOpenLocalFile={openLocalFile}
-              sessionFileImageSource={sessionFileImageSource}
-              onOpenImage={(source, label) => setViewer({ source, label })}
+            ),
+          )}
+          {viewer !== null ? (
+            <ImageSourceViewer
+              source={viewer.source}
+              label={viewer.label}
+              onClose={() => setViewer(null)}
             />
-          ),
-        )}
-        {viewer !== null ? (
-          <ImageSourceViewer
-            source={viewer.source}
-            label={viewer.label}
-            onClose={() => setViewer(null)}
-          />
-        ) : null}
-        {imagePathViewer !== null && sessionFileImageSource !== null ? (
-          <SessionFileImageViewer
-            path={imagePathViewer}
-            sessionFileImageSource={sessionFileImageSource}
-            onClose={() => setImagePathViewer(null)}
-            onUnavailable={() => {
-              setImagePathViewer(null);
-              openSessionFile?.(imagePathViewer);
-            }}
-          />
-        ) : null}
-        {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
+          ) : null}
+          {imagePathViewer !== null && sessionFileImageSource !== null ? (
+            <SessionFileImageViewer
+              path={imagePathViewer}
+              sessionFileImageSource={sessionFileImageSource}
+              onClose={() => setImagePathViewer(null)}
+              onUnavailable={() => {
+                setImagePathViewer(null);
+                openSessionFile?.(imagePathViewer);
+              }}
+            />
+          ) : null}
+          {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
             reveal needed), so it's spottable while scrolling — the Kindle affordance.
             Non-interactive so it never fights the tap-to-reveal / long-press-select
-            gestures; toggling off happens via the reveal row or the header sheet. */}
-        {bookmarked && !showCopy ? (
-          <View style={styles.msgBookmarkFlag} pointerEvents="none">
-            <Icon name="bookmark" size={13} color={theme.colors.primary} />
-          </View>
-        ) : null}
-        {showCopy ? (
-          <View style={styles.msgActions}>
-            {messageId != null && bookmarks ? (
-              <BookmarkButton
-                bookmarked={bookmarked}
-                // Persist a short preview + timestamp so the jump-list can show this
-                // bookmark even when its message is scrolled out of the loaded window.
-                onToggle={() =>
-                  bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt })
-                }
+            gestures; toggling off happens via the "…" sheet or the header sheet. */}
+          {bookmarked && !showCopy ? (
+            <View style={styles.msgBookmarkFlag} pointerEvents="none">
+              <Icon name="bookmark" size={13} color={theme.colors.primary} />
+            </View>
+          ) : null}
+          {showCopy ? (
+            <View style={styles.msgActions}>
+              {/* Copy stays one tap away; everything else lives behind "…" in a sheet
+                that names each action, since bare icons (an open book for Project
+                Knowledge) didn't explain themselves. */}
+              {hasMoreActions ? (
+                <Pressable
+                  onPress={openActions}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="More message actions"
+                  style={({ pressed }) => [
+                    styles.copyBtn,
+                    styles.msgActionBtn,
+                    pressed ? styles.copyBtnPressed : null,
+                  ]}
+                >
+                  <Icon name="more-horizontal" size={18} color={theme.colors.text} />
+                </Pressable>
+              ) : null}
+              <CopyButton
+                value={text}
+                accessibilityLabel="Copy message"
+                iconSize={18}
+                style={styles.msgActionBtn}
               />
-            ) : null}
-            {messageId != null && knowledge ? (
-              <Pressable
-                onPress={() => {
-                  void knowledge
-                    .save(messageId, text)
-                    .then(() => setKnowledgeSavedFor(messageId))
-                    .catch((error: unknown) =>
-                      Alert.alert(
-                        'Could not add to Project Knowledge',
-                        error instanceof Error ? error.message : String(error),
-                      ),
-                    );
-                }}
-                disabled={knowledgeSaved}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  knowledgeSaved ? 'Added to Project Knowledge' : 'Add to Project Knowledge'
+            </View>
+          ) : null}
+        </View>
+      </Pressable>
+      {/* Outside the message Pressable: the Modal's content stays in this React tree,
+        so taps on the sheet would otherwise bubble into the message's tap-to-reveal. */}
+      {actionsOpen && messageId != null ? (
+        <MessageActionsSheet
+          onClose={closeActions}
+          onCopy={() => {
+            void Clipboard.setStringAsync(text);
+            closeActions();
+          }}
+          knowledge={
+            knowledge
+              ? {
+                  saved: knowledgeSaved,
+                  save: () =>
+                    knowledge.save(messageId, text).then(() => setKnowledgeSavedFor(messageId)),
                 }
-                style={({ pressed }) => [
-                  styles.copyBtn,
-                  styles.msgActionBtn,
-                  pressed ? styles.copyBtnPressed : null,
-                ]}
-              >
-                <Icon
-                  name={knowledgeSaved ? 'check' : 'book-open'}
-                  size={15}
-                  color={knowledgeSaved ? theme.colors.primary : theme.colors.textMuted}
-                />
-              </Pressable>
-            ) : null}
-            <CopyButton
-              value={text}
-              accessibilityLabel="Copy message"
-              style={styles.msgActionBtn}
-            />
-          </View>
-        ) : null}
-      </View>
-    </Pressable>
+              : null
+          }
+          bookmark={
+            bookmarks
+              ? {
+                  bookmarked,
+                  toggle: () => {
+                    // Persist a short preview + timestamp so the jump-list can show
+                    // this bookmark even when its message is scrolled out of the
+                    // loaded window.
+                    bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt });
+                    closeActions();
+                  },
+                }
+              : null
+          }
+        />
+      ) : null}
+    </>
   );
 }
 
-// The bookmark toggle in a message's tap-revealed action row — the same corner-chip
-// language as the Copy button next to it. Filled + tinted once bookmarked, so its
-// state reads at a glance; tapping toggles it (and updates the header count + the
-// dog-ear). Icon-only to match the Copy chip.
-function BookmarkButton({ bookmarked, onToggle }: { bookmarked: boolean; onToggle: () => void }) {
+// The "…" sheet on an agent message: each action as an icon tile plus a name and a
+// one-line explanation. Saving to Project Knowledge keeps the sheet open to show its
+// progress and result; the other actions close it.
+function MessageActionsSheet({
+  onClose,
+  onCopy,
+  knowledge,
+  bookmark,
+}: {
+  onClose: () => void;
+  onCopy: () => void;
+  knowledge: { saved: boolean; save: () => Promise<void> } | null;
+  bookmark: { bookmarked: boolean; toggle: () => void } | null;
+}) {
+  const { theme } = useUnistyles();
+  const insets = useSafeAreaInsets();
+  const [saving, setSaving] = useState(false);
+  const saveKnowledge = (): void => {
+    if (!knowledge || knowledge.saved || saving) return;
+    setSaving(true);
+    knowledge
+      .save()
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not add to Project Knowledge',
+          error instanceof Error ? error.message : String(error),
+        ),
+      )
+      .finally(() => setSaving(false));
+  };
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable
+        style={styles.sheetBackdrop}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Close message actions"
+      />
+      <View style={[styles.sheet, { paddingBottom: insets.bottom + theme.spacing.md }]}>
+        <View style={styles.sheetHandle} />
+        <MessageActionRow
+          icon="copy"
+          title="Copy text"
+          subtitle="Copy the whole message to the clipboard"
+          onPress={onCopy}
+        />
+        {knowledge ? (
+          <MessageActionRow
+            icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
+            title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
+            subtitle="Keep it as a project insight for future sessions"
+            tint={theme.colors.primary}
+            busy={saving}
+            disabled={knowledge.saved}
+            onPress={saveKnowledge}
+          />
+        ) : null}
+        {bookmark ? (
+          <MessageActionRow
+            icon="bookmark"
+            title={bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark'}
+            subtitle="Jump back to it from the bookmark button in the header"
+            tint={bookmark.bookmarked ? theme.colors.primary : undefined}
+            onPress={bookmark.toggle}
+          />
+        ) : null}
+      </View>
+    </Modal>
+  );
+}
+
+function MessageActionRow({
+  icon,
+  title,
+  subtitle,
+  onPress,
+  tint,
+  busy = false,
+  disabled = false,
+}: {
+  icon: IconName;
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+  tint?: string;
+  busy?: boolean;
+  disabled?: boolean;
+}) {
   const { theme } = useUnistyles();
   return (
     <Pressable
-      onPress={onToggle}
-      hitSlop={8}
+      onPress={onPress}
+      disabled={disabled || busy}
       accessibilityRole="button"
-      accessibilityLabel={bookmarked ? 'Remove bookmark' : 'Bookmark this message'}
-      style={({ pressed }) => [
-        styles.copyBtn,
-        styles.msgActionBtn,
-        pressed ? styles.copyBtnPressed : null,
-      ]}
+      accessibilityLabel={title}
+      accessibilityHint={subtitle}
+      accessibilityState={{ disabled: disabled || busy }}
+      style={({ pressed }) => [styles.msgActionRow, pressed ? styles.sheetRowPressed : null]}
     >
-      <Icon
-        name="bookmark"
-        size={15}
-        color={bookmarked ? theme.colors.primary : theme.colors.textMuted}
-      />
+      <View style={styles.msgActionTile}>
+        {busy ? (
+          <ActivityIndicator color={theme.colors.accent} />
+        ) : (
+          <Icon name={icon} size={22} color={tint ?? theme.colors.textMuted} />
+        )}
+      </View>
+      <View style={styles.msgActionText}>
+        <Text style={styles.msgActionTitle}>{title}</Text>
+        <Text style={styles.msgActionSubtitle}>{subtitle}</Text>
+      </View>
     </Pressable>
   );
 }
@@ -6553,7 +6774,7 @@ function ThinkingBlock({ text }: { text: string }) {
 // Images a tool returned (e.g. a Read of a PNG, #115) render inline — they ARE
 // the payload the operator wants to see, not hidden behind a tap. Shared by the
 // single-tool ToolCard and the collapsed ToolGroup so a Read that happens to sit
-// next to another tool call never buries its image behind the group's "·N" line.
+// next to another tool call never buries its image behind the group's "+N more" line.
 // The inline slot is only a preview though (a fixed-height, letterboxed strip), so
 // a tap opens the image in the zoomable full-screen lightbox — a floor plan or a
 // screenshot is unreadable at strip size. The Pressable also swallows the tap so it
@@ -6650,9 +6871,17 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   );
 }
 
+// The collapsed line already shows one call (the latest), so the count names the
+// hidden rest: "+9 more" for a run of ten.
+function ToolGroupCount({ count }: { count: number }) {
+  // A todo run can hold a single update — nothing is hidden then.
+  if (count < 2) return null;
+  return <Text style={styles.toolGroupCountText}>{`+${String(count - 1)} more`}</Text>;
+}
+
 // A run of consecutive tool calls. One tool → the plain line. Several → a single
 // collapsed line showing the LATEST tool (the "currently running" command as it
-// streams in) plus a quiet "·N" count; tap to expand the whole run as individual
+// streams in) plus a quiet "+N more" count; tap to expand the whole run as individual
 // lines.
 function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   const { theme } = useUnistyles();
@@ -6680,7 +6909,7 @@ function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
           <Text style={styles.toolHeadline} numberOfLines={1}>
             {view.headline}
           </Text>
-          <Text style={styles.toolGroupCountText}>{`·${String(tools.length)}`}</Text>
+          <ToolGroupCount count={tools.length} />
           <Icon
             name={expanded ? 'chevron-down' : 'chevron-right'}
             size={16}
@@ -6780,7 +7009,7 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
           <Text style={styles.toolHeadline} numberOfLines={1}>
             {view.headline}
           </Text>
-          <Text style={styles.toolGroupCountText}>{`·${String(tools.length)}`}</Text>
+          <ToolGroupCount count={tools.length} />
           <Icon
             name={expanded ? 'chevron-down' : 'chevron-right'}
             size={16}
@@ -7565,6 +7794,8 @@ function PermissionPrompt({
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
+  const isKnowledge = pending.tool === 'verity_knowledge';
+  const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
@@ -7607,7 +7838,8 @@ function PermissionPrompt({
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
     (isGmail && gmailSummary === null) ||
-    (isCalendar && calendarSummary === null)
+    (isCalendar && calendarSummary === null) ||
+    (isKnowledge && knowledgeSummary === null)
       ? permissionInputText(pending.input)
       : null;
   // The fallback path only — `brokeredRequestDetails` is non-null exactly when no summariser
@@ -7622,17 +7854,24 @@ function PermissionPrompt({
   const brokeredRequestCaveats =
     brokeredRequestDetails === null
       ? null
-      : isSessionHandoff
-        ? sessionHandoffCaveats(null)
-        : isListSessions
-          ? listSessionsSentence(null)
-          : null;
+      : isKnowledge
+        ? KNOWLEDGE_PUBLISH_EXPLANATION
+        : isSessionHandoff
+          ? sessionHandoffCaveats(null)
+          : isListSessions
+            ? listSessionsSentence(null)
+            : null;
   // One row per brokered card rather than a ternary chain in the header: each summariser
   // owns its own headline, first match wins in the order they are parsed above, and the next
   // tool adds a line here instead of another level of nesting. The fallback names the tool,
   // which is all that is known when no summariser recognised the input.
   const cardTitle =
     [
+      !isKnowledge
+        ? null
+        : knowledgeSummary?.replacesExisting
+          ? 'Save changes to Global Knowledge?'
+          : 'Publish insight to Global Knowledge?',
       httpSummary === null ? null : brokeredHttpTitle(httpSummary),
       cliSecretLabel === null ? null : `Run trusted command with ${cliSecretLabel}?`,
       handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
@@ -7666,7 +7905,11 @@ function PermissionPrompt({
       // Announce the whole prompt as one a11y unit so the intent ("approve this
       // tool") is read before the operator reaches the Allow/Deny buttons.
       accessibilityRole="alert"
-      accessibilityLabel={`The agent wants to run ${pending.tool}. Allow or deny.`}
+      accessibilityLabel={
+        isKnowledge
+          ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
+          : `The agent wants to run ${pending.tool}. Allow or deny.`
+      }
     >
       <View style={styles.permissionHeader}>
         <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
@@ -7685,7 +7928,23 @@ function PermissionPrompt({
               : pending.riskClass}
         </Text>
       </View>
-      {httpSummary !== null ? (
+      {knowledgeSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            Source: {spellOutBidiControls(knowledgeSummary.source)}
+          </Text>
+          <Text style={styles.permissionSubtitle} selectable>
+            Destination: {spellOutBidiControls(knowledgeSummary.destination)}
+          </Text>
+          <Text style={styles.permissionHttpMeta}>{KNOWLEDGE_PUBLISH_EXPLANATION}</Text>
+          {knowledgeSummary.replacesExisting ? (
+            <Text style={styles.permissionHttpMeta}>
+              Saves the project version as the updated global file. Agents in every project can use
+              the updated content.
+            </Text>
+          ) : null}
+        </View>
+      ) : httpSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable numberOfLines={2}>
             {httpSummary.method} {httpSummary.host}
@@ -7923,7 +8182,13 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`}
+          accessibilityLabel={
+            isKnowledge
+              ? knowledgeSummary?.replacesExisting
+                ? 'Save changes to Global Knowledge'
+                : 'Publish to Global Knowledge'
+              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`
+          }
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionAllow,
@@ -7935,7 +8200,15 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {approvedForDelivery ? 'Retry delivery' : isScopedSecretTool ? 'Allow once' : 'Allow'}
+              {isKnowledge
+                ? knowledgeSummary?.replacesExisting
+                  ? 'Save changes'
+                  : 'Publish to Global'
+                : approvedForDelivery
+                  ? 'Retry delivery'
+                  : isScopedSecretTool
+                    ? 'Allow once'
+                    : 'Allow'}
             </Text>
           )}
         </Pressable>
@@ -9170,17 +9443,19 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
   },
   headerRow: {
-    height: 44,
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: theme.spacing.sm,
     gap: theme.spacing.xs,
   },
   // In the two-pane (embedded) layout the right-pane header sits beside the left
-  // pane's compact usage meters; a shorter title row + reduced top padding line
-  // the two bars up on the same baseline. The phone header keeps the full 44px.
+  // pane's compact usage meters; a shorter title row + reduced top padding keep the
+  // two bars close, while still fitting the 40pt action buttons. The phone header
+  // uses the full 56px.
   headerRowEmbedded: {
-    height: 38,
+    height: 48,
+    paddingLeft: theme.spacing.md,
   },
   headerRowCompact: {
     flex: 1,
@@ -9234,50 +9509,47 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 2.5,
     backgroundColor: theme.colors.background,
   },
-  headerTitle: {
-    // flex: 1 so the title spans the full width BETWEEN the two fixed-width side slots
-    // (not just an equal third): now that the branch selector moved to the context row,
-    // the right slot is an empty spacer, and a narrow fixed width on both sides frees
-    // the middle for the session name — it truncates far later than the old 1/3 column.
+  // Name over branch, left-aligned next to the back chevron; shrinks (and the
+  // name truncates) before the action buttons do.
+  headerTitleBlock: {
     flex: 1,
-    textAlign: 'center',
-    marginHorizontal: theme.spacing.xs,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 1,
+  },
+  headerTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
-  // Fixed, equal-width side slots so the title stays screen-centered while spanning the
-  // middle: the back chevron sits in the left slot; an empty right slot of the same
-  // width balances it (the actions now live on the context row below). Width fits the
-  // 28px chevron + its padding.
+  headerSubtitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  headerHintText: {
+    color: theme.colors.primary,
+    fontWeight: '600',
+  },
+  // Fits the 28px back chevron + its padding.
   headerSide: {
-    width: 40,
+    width: 32,
     flexDirection: 'row',
     alignItems: 'center',
   },
-  // The branch affordance on the context row: a quiet git-branch icon + the branch
-  // name, both muted + caption-sized — no box/border/background, deliberately not the
-  // title/tint color — so it reads as a passive status hint, not a tappable Back-style
-  // button. Bounded narrow so a long name truncates instead of stretching the row.
+  // The branch under the title: muted and caption-sized so it reads as status, while
+  // staying tappable for the switcher.
   headerBranchBtn: {
+    flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    maxWidth: 120,
   },
   headerBranch: {
     flexShrink: 1,
-    color: theme.colors.textMuted,
-    fontSize: 11 * theme.fontScale,
+    color: theme.colors.textFaint,
+    fontSize: 12 * theme.fontScale,
     fontWeight: '400',
-  },
-  // The bookmarks jump-list opener: a quiet dog-ear + count on the context row. Same
-  // muted, box-less caption language so it reads as a passive affordance. Row spacing
-  // is handled by the context row's `gap`.
-  headerBookmarkBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
   },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
@@ -9285,16 +9557,50 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
   },
   headerPreviewActiveText: { color: theme.colors.primary },
-  headerPreviewServerDot: {
-    position: 'absolute',
-    top: -2,
-    right: -3,
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: theme.colors.tone.done,
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingRight: theme.spacing.xs,
+  },
+  // A 40pt round target with a 20pt icon — big enough to recognise at a glance.
+  headerActionBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: theme.colors.surface,
+    borderColor: theme.colors.border,
+  },
+  headerActionDot: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    width: 9,
+    height: 9,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.tone.done,
+    borderWidth: 1.5,
+    borderColor: theme.colors.surfaceAlt,
+  },
+  headerActionBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.accent,
+  },
+  headerActionBadgeText: {
+    color: '#ffffff',
+    fontSize: 11 * theme.fontScale,
+    fontWeight: '700',
   },
   headerLoopButton: {
     paddingHorizontal: theme.spacing.sm,
@@ -9308,47 +9614,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     fontSize: 11 * theme.fontScale,
     fontWeight: '700',
-  },
-  // The context row under the title: a three-slot layout that pins the branch switcher
-  // to the row's true center (stable position) with the Issue chip in the left slot and
-  // the bookmarks opener in the right slot. Keeps the title row itself free of controls
-  // so the session name reads full-width.
-  headerMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: theme.spacing.sm,
-    paddingBottom: theme.spacing.xs,
-  },
-  headerMetaRowCompact: {
-    flexShrink: 0,
-    height: 44,
-    paddingLeft: 0,
-    paddingBottom: 0,
-  },
-  // Equal-flex side slots flanking the centered branch switcher: the left holds the
-  // Issue chip (left-aligned), the right holds the bookmarks opener (right-aligned, see
-  // headerMetaSideRight). Equal flex keeps the branch centered regardless of what — if
-  // anything — sits in either slot.
-  headerMetaSide: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerMetaSideCompact: {
-    flex: 0,
-  },
-  headerMetaSideRight: {
-    justifyContent: 'flex-end',
-    gap: theme.spacing.md,
-    // A little extra inset so the bookmark count doesn't hug the screen edge. Padding
-    // on the slot (not a margin on the button) keeps both side slots equal-flex, so the
-    // centered branch switcher stays put.
-    paddingRight: theme.spacing.sm,
-  },
-  headerMetaSideRightCompact: {
-    paddingRight: 0,
-    paddingLeft: theme.spacing.sm,
-    gap: theme.spacing.sm,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
   // in a row, so the whole affordance reads as one button on the meta row.
@@ -9486,6 +9751,9 @@ const styles = StyleSheet.create((theme) => ({
     marginBottom: theme.spacing.sm,
   },
   filesRootButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
     borderRadius: theme.radius.sm,
@@ -10043,9 +10311,41 @@ const styles = StyleSheet.create((theme) => ({
   },
   // Each action chip: solid surface + border so it reads over the prose it overlaps.
   msgActionBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 9,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
+  },
+  msgActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+  },
+  msgActionTile: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  msgActionText: {
+    flex: 1,
+    gap: 2,
+  },
+  msgActionTitle: {
+    color: theme.colors.text,
+    fontSize: theme.text.md,
+    fontWeight: '600',
+  },
+  msgActionSubtitle: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
   },
   // The persistent dog-ear on a bookmarked message: pinned top-right, quiet, and
   // non-interactive — a scanning cue while scrolling, not a control.
@@ -10247,11 +10547,11 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
   },
-  // Collapsed multi-tool group count — a quiet "·N" suffix, not a filled badge.
+  // Collapsed multi-tool group count: quiet caption text, spelled out ("+9 more")
+  // so it explains itself instead of reading as a stray "·N".
   toolGroupCountText: {
-    color: theme.colors.textFaint,
+    color: theme.colors.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '600',
   },
   // The expanded run: individual tool lines, indented under the group line.
   toolGroupList: {

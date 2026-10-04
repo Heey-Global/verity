@@ -1,3 +1,4 @@
+import { googleAppClient } from './google-app-client.js';
 import type { EventStore, SealableSecretCipher, VeritySettingsRecord } from '@verity/store';
 import { chmod } from 'node:fs/promises';
 import { SealedError } from '@verity/store';
@@ -93,6 +94,7 @@ interface GoogleDriveRouteDeps {
       | 'listSessions'
     >;
   googleDriveClientId?: string;
+  stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
   dataRoot?: string;
   onCredentialsChanged?: () => void;
@@ -137,13 +139,22 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     getLinkedFolder: async (projectId, folderId) => {
       const settings = await deps.eventStore.getProjectSettings(projectId);
       return settings?.googleDriveFolderId === folderId && settings.googleDriveFolderName
-        ? { projectId, folderId, name: settings.googleDriveFolderName }
+        ? {
+            projectId,
+            folderId,
+            name: settings.googleDriveFolderName,
+            accessMode: settings.googleDriveAccessMode,
+          }
         : undefined;
     },
     googleAccessToken: accessToken,
+    googleAccountIdentity: async () => {
+      const credentials = await resolveCredentials();
+      return credentials ? JSON.stringify(credentials) : undefined;
+    },
     ...(deps.dataRoot === undefined ? {} : { dataRoot: deps.dataRoot }),
   });
-  app.get('/google-drive/connection', async () => {
+  app.get('/google-drive/connection', async (request) => {
     const settings =
       deps.secretCipher?.isSealed() === true
         ? undefined
@@ -153,7 +164,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       hasGoogleDriveScopes(settings?.googleGrantedScopes);
     return {
       connected,
-      clientId: deps.googleDriveClientId ?? settings?.googleDriveClientId ?? null,
+      clientId:
+        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
+        (request.headers['x-verity-app-variant'] === undefined
+          ? settings?.googleDriveClientId
+          : null) ??
+        null,
       accountEmail: connected ? (settings?.googleDriveAccountEmail ?? null) : null,
       scopes: settings?.googleGrantedScopes ?? [],
     };
@@ -164,7 +180,8 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     async (request, reply) => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
       const body = connectBody.parse(request.body);
-      const clientId = deps.googleDriveClientId ?? '';
+      const clientId =
+        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ?? '';
       if (!clientId) {
         reply.code(400);
         return { error: 'Google Drive is not configured on this server' };
@@ -341,7 +358,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
 
   app.put('/projects/:id/google-drive/folder', async (request, reply) => {
     const { id } = projectParams.parse(request.params);
-    const { fileId } = importBody.parse(request.body);
+    const { fileId, accessMode } = importBody
+      .extend({ accessMode: z.enum(['read-only', 'read-write']).default('read-only') })
+      .parse(request.body);
     if ((await deps.eventStore.getProject(id)) === undefined) {
       reply.code(404);
       return { error: `project ${id} not found` };
@@ -357,13 +376,14 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         reply.code(415);
         return { error: 'Choose a Google Drive folder' };
       }
-      if (folder.canEdit !== true) {
+      if (accessMode === 'read-write' && folder.canEdit !== true) {
         reply.code(403);
         return { error: 'You need edit access to connect this folder' };
       }
       await deps.eventStore.updateProjectSettings(id, {
         googleDriveFolderId: folder.id,
         googleDriveFolderName: folder.name,
+        googleDriveAccessMode: accessMode,
       });
       await clearProjectWorkspaceFiles(id);
       return { folder: { id: folder.id, name: folder.name } };

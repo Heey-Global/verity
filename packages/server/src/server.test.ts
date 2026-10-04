@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -1011,7 +1012,9 @@ describe('POST /server/updates', () => {
       const res = await request(server, updates.token);
       expect(res.statusCode).toBe(202);
       expect(res.json()).toEqual({ operation: preparingOperation });
-      expect(updates.requested).toEqual([{ idempotencyKey: 'k1', targetDigest: availableDigest }]);
+      expect(updates.requested).toEqual([
+        { idempotencyKey: 'k1', targetDigest: availableDigest, channel: availableRelease.channel },
+      ]);
     } finally {
       await server.close();
     }
@@ -2171,7 +2174,15 @@ describe('session worktree files', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ path: 'note.txt', content: 'hello\n', size: 6 });
+    expect(res.json()).toEqual({
+      path: 'note.txt',
+      content: 'hello\n',
+      size: 6,
+      editable: true,
+      version: createHash('sha256')
+        .update(readFileSync(join(worktree, 'note.txt')))
+        .digest('hex'),
+    });
   });
 
   it('downloads binary files with attachment headers', async () => {
