@@ -3627,6 +3627,27 @@ const migrations: Record<string, Migration> = {
       );
     },
   },
+  // Versioned issuers keep older approval semantics inert without losing the insert
+  // fence: concurrent approvals must still create only one live grant per key.
+  '0132_unique_brokered_prompt_v2_grants': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`
+        CREATE UNIQUE INDEX secret_provider_permissions_brokered_v2_active_unique
+        ON secret_provider_permissions (
+          project_id,
+          binding_id,
+          secret_name,
+          tool_id,
+          scope,
+          COALESCE(session_id, '')
+        )
+        WHERE state = 'active' AND issuer = 'brokered-prompt-v2'
+      `.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropIndex('secret_provider_permissions_brokered_v2_active_unique').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
