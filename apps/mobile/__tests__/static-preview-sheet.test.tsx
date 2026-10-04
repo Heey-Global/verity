@@ -692,3 +692,32 @@ it('checks the updated PIN lock when a delayed network-dialog action is selected
     jest.useRealTimers();
   }
 });
+
+it('directs a second folder to its existing public link and blocks fallback creation', async () => {
+  const createSessionStaticPreviewShare = jest.fn();
+  renderSheet(
+    makeClient({
+      listPublicPreviewShares: jest.fn(async () => [folderShare()]),
+      createSessionStaticPreviewShare,
+      createSessionLocalPreviewShare: jest.fn(async () => ({
+        ...localShare,
+        targetPort: null,
+        staticPath: 'docs',
+      })),
+    }),
+  );
+  await screen.findByText(/Public until/);
+  fireEvent.press(screen.getByRole('button', { name: 'Folder docs' }));
+  expect(await screen.findByRole('button', { name: 'Manage existing folder link' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Create public link' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+  await act(async () => jest.mocked(openLocalPreview).mock.calls[0]![2]());
+  expect(createSessionStaticPreviewShare).not.toHaveBeenCalled();
+  expect(
+    screen.getByText('Stop the existing public folder link before sharing another folder.'),
+  ).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Manage existing folder link' }));
+  expect(await screen.findByText('https://dist.example')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
+});

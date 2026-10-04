@@ -341,6 +341,16 @@ export function StaticPreviewSheet({
   const publicShareFor = (selection: PreviewTarget) =>
     currentShares.current.find((share) => publicShareMatches(share, selection));
 
+  const conflictingFolderShare = (selection: PreviewTarget) =>
+    selection.kind === 'folder'
+      ? currentShares.current.find(
+          (share) =>
+            share.targetKind === 'static-folder' &&
+            isLive(share) &&
+            !publicShareMatches(share, selection),
+        )
+      : undefined;
+
   const ensureLocalShare = async (selection: PreviewTarget): Promise<LocalPreviewShare> => {
     const existing = localShareFor(selection);
     if (existing) {
@@ -368,6 +378,10 @@ export function StaticPreviewSheet({
 
   const createPublic = async (selection: PreviewTarget) => {
     if (busy || publicSharing !== 'available') return;
+    if (conflictingFolderShare(selection)) {
+      setError('Stop the existing public folder link before sharing another folder.');
+      return;
+    }
     setBusy('public');
     setError(undefined);
     setJustStopped(false);
@@ -1001,6 +1015,28 @@ export function StaticPreviewSheet({
               <Text style={styles.inlineActionText}>Learn more ›</Text>
             </Pressable>
           ) : null}
+        </View>
+      );
+    }
+    const otherFolder = conflictingFolderShare(selection);
+    if (otherFolder) {
+      return (
+        <View style={styles.card} accessibilityLabel="Share publicly">
+          <Text style={styles.label}>SHARE PUBLICLY</Text>
+          <Text style={styles.body}>
+            Only one folder can be shared publicly per session. Stop the existing link before
+            sharing another folder.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Manage existing folder link"
+            style={styles.secondaryButton}
+            onPress={() => pick({ kind: 'folder', path: normalizeFolder(otherFolder.staticPath) })}
+          >
+            <Text style={styles.secondaryText}>
+              Manage {folderTitle(normalizeFolder(otherFolder.staticPath))}
+            </Text>
+          </Pressable>
         </View>
       );
     }
