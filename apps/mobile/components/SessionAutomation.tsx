@@ -180,6 +180,7 @@ export function AutomationProposalCard({
   error,
   disabled,
   superseded,
+  currentPaused = false,
   onConfirm,
 }: {
   proposal: AutomationProposalMessage['proposal'];
@@ -190,13 +191,17 @@ export function AutomationProposalCard({
   disabled: boolean;
   /** A newer proposal further down replaces this one. */
   superseded: boolean;
+  /** The matching automation exists but is paused. */
+  currentPaused?: boolean;
   onConfirm: () => void;
 }) {
   const { theme } = useUnistyles();
   const done = state === 'saved' || current === 'same';
   const inactive = disabled || superseded || done || state !== 'idle';
   const label = done
-    ? 'Automation active'
+    ? currentPaused && state !== 'saved'
+      ? 'Automation paused'
+      : 'Automation active'
     : state === 'saving'
       ? proposal.script
         ? 'Checking…'
@@ -212,9 +217,12 @@ export function AutomationProposalCard({
       </View>
       <Text style={styles.cardTitle}>{proposal.name}</Text>
       <Text style={styles.cardSchedule}>{automationScheduleLabel(proposal.schedule)}</Text>
-      <Text style={styles.cardPrompt} numberOfLines={8}>
-        {proposal.prompt}
-      </Text>
+      {/* The agent runs this unattended on every slot; show all of it. */}
+      <ScrollView style={styles.promptScroll} nestedScrollEnabled>
+        <Text selectable style={styles.cardPrompt}>
+          {proposal.prompt}
+        </Text>
+      </ScrollView>
       {proposal.script ? (
         // Confirming runs this agent-written check in the project container, now
         // and before every run, so the operator sees it before saying yes.
@@ -453,6 +461,9 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.primary,
     fontSize: theme.text.sm,
     fontWeight: '600',
+  },
+  promptScroll: {
+    maxHeight: 240,
   },
   cardPrompt: {
     color: theme.colors.text,

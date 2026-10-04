@@ -51,7 +51,7 @@ function card(overrides: Partial<Parameters<typeof AutomationProposalCard>[0]> =
 describe('AutomationProposalCard', () => {
   it('creates the automation on one tap and says when it runs', () => {
     const onConfirm = card();
-    expect(screen.getByText('Every Monday at 09:00')).toBeTruthy();
+    expect(screen.getByText('Every Monday at 09:00 server time')).toBeTruthy();
     fireEvent.press(screen.getByRole('button', { name: 'Create automation' }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
@@ -66,6 +66,11 @@ describe('AutomationProposalCard', () => {
     const onConfirm = card({ current: 'same' });
     fireEvent.press(screen.getByRole('button', { name: 'Automation active' }));
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('does not call a paused automation active', () => {
+    card({ current: 'same', currentPaused: true });
+    expect(screen.getByRole('button', { name: 'Automation paused' })).toBeTruthy();
   });
 
   it('warns before replacing a different automation', () => {

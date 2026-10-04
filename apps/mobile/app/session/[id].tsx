@@ -7220,6 +7220,7 @@ function AutomationProposalRow({ message }: { message: AutomationProposalMessage
       error={error}
       disabled={actions === null || actions.sending || actions.dead}
       superseded={actions !== null && actions.latestAutomationProposalId !== message.id}
+      currentPaused={actions?.automation?.status === 'paused'}
       onConfirm={confirm}
     />
   );

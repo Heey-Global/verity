@@ -31,8 +31,8 @@ const base: SessionAutomation = {
 
 describe('automationScheduleLabel', () => {
   it.each([
-    [{ kind: 'daily', hour: 7, minute: 30 }, 'Every day at 07:30'],
-    [{ kind: 'weekly', weekday: 1, hour: 9, minute: 0 }, 'Every Monday at 09:00'],
+    [{ kind: 'daily', hour: 7, minute: 30 }, 'Every day at 07:30 server time'],
+    [{ kind: 'weekly', weekday: 1, hour: 9, minute: 0 }, 'Every Monday at 09:00 server time'],
     [{ kind: 'interval', everyMinutes: 15 }, 'Every 15 minutes'],
     [{ kind: 'interval', everyMinutes: 60 }, 'Every hour'],
     [{ kind: 'interval', everyMinutes: 180 }, 'Every 3 hours'],
