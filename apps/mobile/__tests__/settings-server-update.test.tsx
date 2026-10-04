@@ -26,6 +26,7 @@ import {
   makeSettings,
   mockCreateVerityClient,
   mockOpenURL,
+  mockPush,
   refocus,
   resetSettingsHarness,
 } from './support/settingsHarness';
@@ -329,7 +330,7 @@ describe('release notes', () => {
 });
 
 describe('settings/server-update', () => {
-  it('keeps channel preferences off the installation screen', async () => {
+  it('opens channel preferences in a submenu', async () => {
     const client = makeClient('unlocked', {
       getServerUpdates: jest
         .fn()
@@ -339,7 +340,10 @@ describe('settings/server-update', () => {
     mockCreateVerityClient.mockReturnValue(client);
     render(<ServerUpdateScreen />);
     await screen.findByLabelText('Install 1.4.0');
-    expect(screen.queryByText('Update channel')).toBeNull();
+    expect(screen.queryByText('Stable')).toBeNull();
+    expect(screen.queryByText('Prereleases')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Update channel'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/server-update-channel');
     expect(client.getServerUpdateChannel).not.toHaveBeenCalled();
   });
 

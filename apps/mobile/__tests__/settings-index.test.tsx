@@ -67,7 +67,6 @@ describe('settings index — destinations', () => {
     ['Meeting transcription', '/settings/transcription'],
     ['Connections', '/settings/services'],
     ['Server update', '/settings/server-update'],
-    ['Update channel', '/settings/server-update-channel'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage paired devices', '/devices'],
   ])('routes %s to %s', async (label, href) => {
@@ -76,6 +75,13 @@ describe('settings index — destinations', () => {
 
     fireEvent.press(await screen.findByLabelText(label));
     expect(mockPush).toHaveBeenCalledWith(href);
+  });
+
+  it('keeps update channel preferences inside server update', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<SettingsIndexScreen />);
+    await screen.findByLabelText('Server update');
+    expect(screen.queryByLabelText('Update channel')).toBeNull();
   });
 
   it('shows the configured server address without tapping in', async () => {

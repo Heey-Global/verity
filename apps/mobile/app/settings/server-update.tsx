@@ -1,10 +1,16 @@
 // Server update: Verity replacing itself. Reached from the overview banner, the
 // update push, and the Settings index.
 import { type VerityClient } from '@verity/mobile';
+import { router, type Href } from 'expo-router';
 import { useMemo } from 'react';
 
 import { ServerUpdateSection } from '../../components/settings/ServerUpdateSection';
-import { SettingsMessage, SettingsScaffold } from '../../components/settings/SettingsChrome';
+import {
+  SettingsListPanel,
+  SettingsMessage,
+  SettingsNavRow,
+  SettingsScaffold,
+} from '../../components/settings/SettingsChrome';
 import { createVerityClient } from '../../lib/client';
 import { retryFailedVeritySettings, useLoadVeritySettings } from '../../lib/settingsStore';
 
@@ -35,6 +41,14 @@ function ServerUpdateView({ client }: { client: VerityClient }) {
       }
     >
       <ServerUpdateSection client={client} />
+      <SettingsListPanel>
+        <SettingsNavRow
+          icon="settings"
+          title="Update channel"
+          subtitle="Stable releases or prereleases"
+          onPress={() => router.push('/settings/server-update-channel' as Href)}
+        />
+      </SettingsListPanel>
     </SettingsScaffold>
   );
 }
