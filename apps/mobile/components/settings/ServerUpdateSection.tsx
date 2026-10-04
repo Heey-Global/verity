@@ -36,6 +36,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
   const [changingChannel, setChangingChannel] = useState(false);
+  const [channelNeedsRefresh, setChannelNeedsRefresh] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // Key of an install request whose outcome is still unknown: it was not
   // answered, and no status since has shown whether it started — which is what
@@ -80,6 +81,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
             return;
           }
           setStatus(next);
+          setChannelNeedsRefresh(false);
           publishServerUpdateStatusMutation(next);
         })
         // A poll that fails mid-cutover is expected: the old server is gone and
@@ -88,6 +90,20 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         .catch(() => undefined)
     );
   }, [client, settle]);
+
+  const channelChanged = useCallback(async () => {
+    // Never leave the previous channel's install target in the panel or overview cache.
+    const invalidated: ServerUpdateStatus = {
+      state: 'unreachable',
+      reason: 'Checking the selected update channel',
+      operation: null,
+    };
+    setChannelNeedsRefresh(true);
+    setStatus(invalidated);
+    setActionError(undefined);
+    publishServerUpdateStatusMutation(invalidated);
+    await refresh();
+  }, [refresh]);
 
   // Expo Router can keep this route mounted after navigating away. Refresh on
   // every focus so a transient `unreachable` result does not remain on screen
@@ -100,7 +116,8 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const operation = status?.operation ?? null;
   const pollMs =
-    serverUpdatePollMs(operation) ?? (unanswered !== undefined ? UNANSWERED_POLL_MS : null);
+    serverUpdatePollMs(operation) ??
+    (unanswered !== undefined || channelNeedsRefresh ? UNANSWERED_POLL_MS : null);
   useEffect(() => {
     if (pollMs === null) return;
     const timer = setInterval(() => void refresh(), pollMs);
@@ -109,7 +126,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const install = useCallback(
     (targetDigest: string, idempotencyKey: string) => {
-      if (starting || changingChannel) return;
+      if (starting || changingChannel || channelNeedsRefresh) return;
       setStarting(true);
       setActionError(undefined);
       // The key is derived by describeServerUpdate: stable for a retry after a
@@ -158,7 +175,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           setUnanswered(idempotencyKey);
         });
     },
-    [client, settle, starting, changingChannel],
+    [client, settle, starting, changingChannel, channelNeedsRefresh],
   );
 
   if (status === undefined) {
@@ -188,48 +205,59 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     <SettingsPanel>
       <ServerUpdateChannel
         client={client}
-        disabled={starting || unanswered !== undefined || view.busy}
-        onChanged={refresh}
+        disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
+        onChanged={channelChanged}
         onSavingChange={setChangingChannel}
       />
-      <View style={styles.updateHeader}>
-        <Text style={styles.updateTitle} accessibilityRole="header">
-          {view.title}
-        </Text>
-        {publishedAt !== undefined ? (
-          <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
-        ) : null}
-      </View>
-      <Text style={styles.updateDetail}>{view.detail}</Text>
-      {view.progress !== null ? (
+      {channelNeedsRefresh ? (
         <View style={styles.updateProgressRow}>
           <ActivityIndicator size="small" color={theme.colors.setup.text} />
-          <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
-            {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
+          <Text style={styles.updateDetail}>
+            Checking the selected channel… Retrying if the server is unavailable.
           </Text>
         </View>
-      ) : null}
-      {view.action !== null && target !== null && attempt !== null ? (
-        <Pressable
-          style={({ pressed }) => [
-            styles.primaryButton,
-            styles.updateButton,
-            starting || changingChannel ? styles.buttonDisabled : null,
-            pressed ? styles.pressed : null,
-          ]}
-          onPress={() => install(target, attempt)}
-          disabled={starting || changingChannel}
-          accessibilityRole="button"
-          accessibilityLabel={view.action}
-        >
-          {starting ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-          <Text style={styles.primaryButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
-        </Pressable>
-      ) : null}
-      {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
-      {status.state === 'available' ? (
-        <ServerReleaseNotes client={client} version={status.release.version} />
-      ) : null}
+      ) : (
+        <>
+          <View style={styles.updateHeader}>
+            <Text style={styles.updateTitle} accessibilityRole="header">
+              {view.title}
+            </Text>
+            {publishedAt !== undefined ? (
+              <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
+            ) : null}
+          </View>
+          <Text style={styles.updateDetail}>{view.detail}</Text>
+          {view.progress !== null ? (
+            <View style={styles.updateProgressRow}>
+              <ActivityIndicator size="small" color={theme.colors.setup.text} />
+              <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
+                {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
+              </Text>
+            </View>
+          ) : null}
+          {view.action !== null && target !== null && attempt !== null ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.primaryButton,
+                styles.updateButton,
+                starting || changingChannel ? styles.buttonDisabled : null,
+                pressed ? styles.pressed : null,
+              ]}
+              onPress={() => install(target, attempt)}
+              disabled={starting || changingChannel}
+              accessibilityRole="button"
+              accessibilityLabel={view.action}
+            >
+              {starting ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+              <Text style={styles.primaryButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
+            </Pressable>
+          ) : null}
+          {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
+          {status.state === 'available' ? (
+            <ServerReleaseNotes client={client} version={status.release.version} />
+          ) : null}
+        </>
+      )}
     </SettingsPanel>
   );
 }
