@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
 import { FileActionMenu } from './FileActionMenu';
 import { FileBreadcrumb } from './FileBreadcrumb';
 import { FileNameDialog } from './FileNameDialog';
+import { FileSheetHeader, HeaderIconButton, HeaderTextButton } from './FileSheetHeader';
 
 describe('FileActionMenu', () => {
   it('puts the destructive action last, after every safe one', () => {
@@ -124,5 +126,37 @@ describe('FileNameDialog', () => {
 
     expect(screen.getByText('"c.md" already exists')).toBeTruthy();
     expect(screen.getByLabelText('File name')).toHaveDisplayValue('c.md');
+  });
+});
+
+describe('explorer styling', () => {
+  it('takes every color from the theme', () => {
+    // A hard-coded white glyph once needed a grey box behind it to stay visible,
+    // and that box ended up on every icon in the explorer. Theme colors work in
+    // both themes without one.
+    const { readdirSync, readFileSync } = jest.requireActual<typeof import('node:fs')>('node:fs');
+    const { join } = jest.requireActual<typeof import('node:path')>('node:path');
+    const offenders = readdirSync(__dirname)
+      .filter((name) => name.endsWith('.tsx') && !name.endsWith('.test.tsx'))
+      .filter((name) =>
+        /['"]#[0-9a-f]{3,8}['"]/i.test(readFileSync(join(__dirname, name), 'utf8')),
+      );
+    expect(offenders).toEqual([]);
+  });
+
+  it('draws header actions without a fill or a frame', () => {
+    render(
+      <FileSheetHeader
+        title="Files"
+        leading={<HeaderTextButton label="Select All" onPress={() => {}} />}
+        trailing={<HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={() => {}} />}
+      />,
+    );
+
+    for (const label of ['Select All', 'Close files']) {
+      const style = StyleSheet.flatten(screen.getByLabelText(label).props.style);
+      expect(style.backgroundColor).toBeUndefined();
+      expect(style.borderWidth).toBeUndefined();
+    }
   });
 });
