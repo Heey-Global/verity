@@ -212,8 +212,10 @@ bounds the design:
   socket is addressed from the same generation. A retained container therefore
   keeps its generation. Minting a new relay generation during fast wake would
   leave the woken Sandbox addressing a relay that no longer exists.
-New sandboxes have no published dev-server ports. Local preview ports belong to
-the Verity ingress, independently of the Sandbox generation.
+
+Local preview ports belong to the Verity ingress, independently of the Sandbox
+generation. Services listen inside the Sandbox, and connectors forward requests
+from the allocated ingress ports.
 
 What remains rotatable is the capability material, because it is deliberately
 projected as read-only file mounts at per-project host paths rather than as
