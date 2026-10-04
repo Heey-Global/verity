@@ -667,6 +667,45 @@ describe('settings/server-update', () => {
 });
 
 describe('server update channel selection', () => {
+  it('keeps installation blocked until a lost write and failed recovery read are reconciled', async () => {
+    jest.useFakeTimers();
+    try {
+      const alert = jest.spyOn(Alert, 'alert');
+      const getServerUpdates = jest
+        .fn()
+        .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null })
+        .mockResolvedValue({ state: 'current', release: RELEASE, operation: null });
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', {
+          getServerUpdates,
+          getServerUpdateChannel: jest
+            .fn()
+            .mockResolvedValueOnce('stable')
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValue('staging'),
+          setServerUpdateChannel: jest.fn().mockRejectedValue(new Error('response lost')),
+        }),
+      );
+      render(<ServerUpdateScreen />);
+      fireEvent.press(await screen.findByText('Prereleases'));
+      await act(async () => {
+        alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+      });
+      expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+      expect(
+        await screen.findByText('The channel change is unconfirmed. Checking the server…'),
+      ).toBeTruthy();
+      expect(getServerUpdates).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(2_000);
+      });
+      expect(await screen.findByText('Prereleases ✓')).toBeTruthy();
+      expect(await screen.findByText('Verity is up to date')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('discards the previous release if the channel refresh fails and retries on focus', async () => {
     const alert = jest.spyOn(Alert, 'alert');
     const getServerUpdates = jest
@@ -724,14 +763,12 @@ describe('server update channel selection', () => {
     await act(async () => {
       alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
     });
-    const install = await screen.findByLabelText('Install 1.4.0');
-    expect(install).toBeDisabled();
-    fireEvent.press(install);
+    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
     expect(requestServerUpdate).not.toHaveBeenCalled();
     await act(async () => {
       finish('staging');
     });
-    expect(install).not.toBeDisabled();
+    expect(await screen.findByLabelText('Install 1.4.0')).not.toBeDisabled();
   });
 
   it.each([false, true])(

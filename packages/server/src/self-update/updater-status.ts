@@ -1,3 +1,4 @@
+import { releaseChannelFromEnv } from './release-channel.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, request, type Server } from 'node:http';
 import { chmod, chown, lstat, mkdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
@@ -82,6 +83,7 @@ const UPDATER_ERROR_CODES = [
   'unmanaged',
   'already-current',
   'operation-in-progress',
+  'channel-changed',
   'unavailable',
 ] as const;
 
@@ -392,6 +394,7 @@ function readBody(
 interface UpdateRequestBody {
   readonly idempotencyKey: string;
   readonly targetDigest: string;
+  readonly channel?: 'stable' | 'staging';
 }
 
 function parseUpdateRequest(raw: string | null): UpdateRequestBody | null {
@@ -411,14 +414,22 @@ function parseUpdateRequest(raw: string | null): UpdateRequestBody | null {
     return null;
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== 2 ||
+    (Object.keys(record).length !== 2 && Object.keys(record).length !== 3) ||
+    Object.keys(record).some(
+      (key) => !['idempotencyKey', 'targetDigest', 'channel'].includes(key),
+    ) ||
+    (record.channel !== undefined && record.channel !== 'stable' && record.channel !== 'staging') ||
     typeof record.idempotencyKey !== 'string' ||
     !IDEMPOTENCY_KEY.test(record.idempotencyKey) ||
     typeof record.targetDigest !== 'string' ||
     !OFFICIAL_DIGEST.test(record.targetDigest)
   )
     return null;
-  return { idempotencyKey: record.idempotencyKey, targetDigest: record.targetDigest };
+  return {
+    idempotencyKey: record.idempotencyKey,
+    targetDigest: record.targetDigest,
+    ...(record.channel === undefined ? {} : { channel: record.channel }),
+  };
 }
 
 /**
@@ -467,6 +478,10 @@ async function acceptUpdateRequest(
   }
 
   const begin = async (): Promise<UpdateJournal> => {
+    // Preference writes use this same lease: a resolved target cannot cross a channel switch.
+    const selected = await readManagedUpdateChannel(options.managedRoot);
+    const expected = body.channel ?? releaseChannelFromEnv(process.env);
+    if (selected !== expected) throw new UpdaterRequestError(409, 'channel-changed');
     const current = await readUpdateJournal(journalRoot);
     if (current !== null) {
       if (
@@ -1214,14 +1229,22 @@ export async function readUpdaterOperation(
 }
 
 export async function requestUpdaterOperation(
-  options: UpdaterCallOptions & { readonly idempotencyKey: string; readonly targetDigest: string },
+  options: UpdaterCallOptions & {
+    readonly idempotencyKey: string;
+    readonly targetDigest: string;
+    readonly channel?: 'stable' | 'staging';
+  },
 ): Promise<UpdateOperation> {
   const { status, value } = await call(
     { timeoutMs: UPDATER_UPDATE_REQUEST_TIMEOUT_MS, ...options },
     {
       method: 'POST',
       path: '/v1/update',
-      body: { idempotencyKey: options.idempotencyKey, targetDigest: options.targetDigest },
+      body: {
+        idempotencyKey: options.idempotencyKey,
+        targetDigest: options.targetDigest,
+        ...(options.channel === undefined ? {} : { channel: options.channel }),
+      },
     },
   );
   if (status !== 202) throw new UpdaterRequestError(status, errorCode(value));

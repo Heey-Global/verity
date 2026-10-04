@@ -36,6 +36,11 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
   const [changingChannel, setChangingChannel] = useState(false);
+  const channelWritePending = useRef(false);
+  const channelSavingChanged = useCallback((value: boolean) => {
+    channelWritePending.current = value;
+    setChangingChannel(value);
+  }, []);
   const [channelNeedsRefresh, setChannelNeedsRefresh] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // Key of an install request whose outcome is still unknown: it was not
@@ -62,36 +67,41 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     }
   }, []);
 
-  const refresh = useCallback(() => {
-    const generation = ++refreshGeneration.current;
-    return (
-      client
-        .getServerUpdates()
-        .then((next) => {
-          if (generation !== refreshGeneration.current) return;
-          const pending = unansweredRef.current;
-          // An unchanged status is not yet proof that nothing started: the
-          // request may still be on its way into the Updater's journal.
-          if (
-            pending !== undefined &&
-            (describeServerUpdate(next).idempotencyKey !== pending.key ||
-              Date.now() >= pending.deadline)
-          ) {
-            settle(next, pending.key);
-            return;
-          }
-          setStatus(next);
-          setChannelNeedsRefresh(false);
-          publishServerUpdateStatusMutation(next);
-        })
-        // A poll that fails mid-cutover is expected: the old server is gone and
-        // the new one is not serving yet. Keep the last known operation on
-        // screen rather than blanking the panel.
-        .catch(() => undefined)
-    );
-  }, [client, settle]);
+  const refresh = useCallback(
+    (force = false) => {
+      if (channelWritePending.current && !force) return Promise.resolve();
+      const generation = ++refreshGeneration.current;
+      return (
+        client
+          .getServerUpdates()
+          .then((next) => {
+            if (generation !== refreshGeneration.current) return;
+            const pending = unansweredRef.current;
+            // An unchanged status is not yet proof that nothing started: the
+            // request may still be on its way into the Updater's journal.
+            if (
+              pending !== undefined &&
+              (describeServerUpdate(next).idempotencyKey !== pending.key ||
+                Date.now() >= pending.deadline)
+            ) {
+              settle(next, pending.key);
+              return;
+            }
+            setStatus(next);
+            if (next.state !== 'unreachable') setChannelNeedsRefresh(false);
+            publishServerUpdateStatusMutation(next);
+          })
+          // A poll that fails mid-cutover is expected: the old server is gone and
+          // the new one is not serving yet. Keep the last known operation on
+          // screen rather than blanking the panel.
+          .catch(() => undefined)
+      );
+    },
+    [client, settle],
+  );
 
-  const channelChanged = useCallback(async () => {
+  const invalidateChannel = useCallback(() => {
+    refreshGeneration.current += 1;
     // Never leave the previous channel's install target in the panel or overview cache.
     const invalidated: ServerUpdateStatus = {
       state: 'unreachable',
@@ -102,8 +112,11 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     setStatus(invalidated);
     setActionError(undefined);
     publishServerUpdateStatusMutation(invalidated);
-    await refresh();
-  }, [refresh]);
+  }, []);
+  const channelChanged = useCallback(async () => {
+    invalidateChannel();
+    await refresh(true);
+  }, [invalidateChannel, refresh]);
 
   // Expo Router can keep this route mounted after navigating away. Refresh on
   // every focus so a transient `unreachable` result does not remain on screen
@@ -117,7 +130,9 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const operation = status?.operation ?? null;
   const pollMs =
     serverUpdatePollMs(operation) ??
-    (unanswered !== undefined || channelNeedsRefresh ? UNANSWERED_POLL_MS : null);
+    (unanswered !== undefined || (channelNeedsRefresh && !changingChannel)
+      ? UNANSWERED_POLL_MS
+      : null);
   useEffect(() => {
     if (pollMs === null) return;
     const timer = setInterval(() => void refresh(), pollMs);
@@ -207,7 +222,8 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         client={client}
         disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
         onChanged={channelChanged}
-        onSavingChange={setChangingChannel}
+        onSavingChange={channelSavingChanged}
+        onChanging={invalidateChannel}
       />
       {channelNeedsRefresh ? (
         <View style={styles.updateProgressRow}>

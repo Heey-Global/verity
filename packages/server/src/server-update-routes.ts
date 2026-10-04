@@ -18,6 +18,7 @@ export interface ServerUpdateController {
   requestUpdate(input: {
     readonly idempotencyKey: string;
     readonly targetDigest: string;
+    readonly channel?: 'stable' | 'staging';
   }): Promise<UpdateOperation>;
 }
 
@@ -114,6 +115,7 @@ export function registerServerUpdateRoutes(
       const operation = await controller.requestUpdate({
         idempotencyKey: body.idempotencyKey,
         targetDigest: body.targetDigest,
+        channel: availability.release.channel,
       });
       return reply.code(202).send({ operation });
     } catch (error) {

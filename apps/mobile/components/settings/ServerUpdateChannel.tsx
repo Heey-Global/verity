@@ -1,6 +1,6 @@
 import type { VerityClient } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 import { settingsStyles as styles } from './settingsStyles';
 
@@ -12,14 +12,17 @@ export function ServerUpdateChannel({
   disabled,
   onChanged,
   onSavingChange,
+  onChanging,
 }: {
   client: VerityClient;
   disabled: boolean;
   onChanged: () => Promise<unknown>;
   onSavingChange: (value: boolean) => void;
+  onChanging: () => void;
 }) {
   const [channel, setChannel] = useState<Channel>();
   const [saving, setSaving] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState<string>();
   useFocusEffect(
     useCallback(() => {
@@ -38,7 +41,39 @@ export function ServerUpdateChannel({
     }, [client]),
   );
 
+  useEffect(() => {
+    if (!reconciling) return;
+    let active = true;
+    let reading = false;
+    const timer = setInterval(() => {
+      if (reading) return;
+      reading = true;
+      void client
+        .getServerUpdateChannel()
+        .then(async (current) => {
+          if (!active) return;
+          setChannel(current);
+          setError(undefined);
+          await onChanged();
+          if (!active) return;
+          setReconciling(false);
+          setSaving(false);
+          onSavingChange(false);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          reading = false;
+        });
+    }, 2_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [client, onChanged, onSavingChange, reconciling]);
+
   const save = (next: Channel) => {
+    let unknown = false;
+    onChanging();
     setSaving(true);
     onSavingChange(true);
     setError(undefined);
@@ -52,15 +87,20 @@ export function ServerUpdateChannel({
         // A lost response can follow a successful durable write. Re-read before offering another change.
         const current = await client.getServerUpdateChannel().catch(() => undefined);
         if (current !== undefined) setChannel(current);
-        if (current === next) {
-          await onChanged();
+        if (current === undefined) {
+          unknown = true;
+          setReconciling(true);
+          setError('The channel change is unconfirmed. Checking the server…');
           return;
         }
-        setError('Could not confirm the update channel. Try again.');
+        await onChanged();
+        if (current !== next) setError('The channel was not changed. Try again.');
       })
       .finally(() => {
-        setSaving(false);
-        onSavingChange(false);
+        if (!unknown) {
+          setSaving(false);
+          onSavingChange(false);
+        }
       });
   };
   const select = (next: Channel) => {

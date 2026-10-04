@@ -1380,3 +1380,33 @@ describe('durable update channel preference', () => {
     await expect(updaterUpdateChannel(unmanaged, 'staging')).rejects.toMatchObject({ status: 503 });
   });
 });
+
+it('fences update admission against a channel switch after target resolution', async () => {
+  const { updaterUpdateChannel } = await import('./updater-status.js');
+  const managed = await fixture({ managed: true });
+  await updaterUpdateChannel(managed, 'staging');
+  const resolvedChannel = await updaterUpdateChannel(managed);
+  await updaterUpdateChannel(managed, 'stable');
+  await expect(
+    requestUpdaterOperation({
+      ...managed,
+      channel: resolvedChannel,
+      idempotencyKey: 'paused-request',
+      targetDigest: image('b'),
+    }),
+  ).rejects.toMatchObject({ status: 409, code: 'channel-changed' });
+  expect(await readUpdaterOperation(managed)).toBeNull();
+  await updaterUpdateChannel(managed, 'staging');
+  // Legacy Servers resolve only their environment channel, not the stored preference.
+  await expect(
+    requestUpdaterOperation({ ...managed, idempotencyKey: 'legacy', targetDigest: image('b') }),
+  ).rejects.toMatchObject({ status: 409, code: 'channel-changed' });
+  expect(
+    await requestUpdaterOperation({
+      ...managed,
+      channel: 'staging',
+      idempotencyKey: 'matching-request',
+      targetDigest: image('b'),
+    }),
+  ).toMatchObject({ state: 'preparing' });
+});

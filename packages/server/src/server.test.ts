@@ -1011,7 +1011,9 @@ describe('POST /server/updates', () => {
       const res = await request(server, updates.token);
       expect(res.statusCode).toBe(202);
       expect(res.json()).toEqual({ operation: preparingOperation });
-      expect(updates.requested).toEqual([{ idempotencyKey: 'k1', targetDigest: availableDigest }]);
+      expect(updates.requested).toEqual([
+        { idempotencyKey: 'k1', targetDigest: availableDigest, channel: availableRelease.channel },
+      ]);
     } finally {
       await server.close();
     }
