@@ -2,6 +2,8 @@ import { constants as fsConstants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 
+import { WORKTREE_SIDECAR } from './worktree.js';
+
 import { FILE_HISTORY_DIR } from './session-file-history.js';
 import { EXTRACTED_TEXT_DIR, SHARED_KNOWLEDGE_DIR } from './knowledge-folder.js';
 
@@ -30,7 +32,12 @@ export function isKnowledgeRoot(root: SessionFileRootName): boolean {
  * PDF's extracted text from `.text/`.
  */
 export function hiddenSessionFileNames(root: SessionFileRootName, rel: string): readonly string[] {
-  if (root === 'worktree') return ['.git', FILE_HISTORY_DIR];
+  if (root === 'worktree')
+    return [
+      '.git',
+      FILE_HISTORY_DIR,
+      ...(rel === '' ? [WORKTREE_SIDECAR, `${WORKTREE_SIDECAR}.tmp`] : []),
+    ];
   // `.text/` mirrors every file, and a project folder carries an empty `shared/`
   // as the mount point for the shared folder (which has an explorer root of its
   // own). Listing either would show the same material twice.

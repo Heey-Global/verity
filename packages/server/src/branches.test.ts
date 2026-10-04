@@ -223,9 +223,13 @@ describe('createGitBranchService', () => {
       git('switch', '-qc', 'session');
       const svc = createGitBranchService({ repoDir: repo });
       expect(await svc.hasProjectChanges(repo, 'main')).toBe(false);
-      writeFileSync(join(repo, '.git', 'info', 'exclude'), '/.verity-worktree.json\n');
       writeFileSync(join(repo, '.verity-worktree.json'), '{}');
+      writeFileSync(join(repo, '.verity-worktree.json.tmp'), 'partial');
       expect(await svc.hasProjectChanges(repo, 'main')).toBe(false);
+      writeFileSync(
+        join(repo, '.git', 'info', 'exclude'),
+        '/.verity-worktree.json\n/.verity-worktree.json.tmp\n',
+      );
       writeFileSync(join(repo, 'new.txt'), 'new');
       expect(await svc.hasProjectChanges(repo, 'main')).toBe(true);
       rmSync(join(repo, 'new.txt'));
