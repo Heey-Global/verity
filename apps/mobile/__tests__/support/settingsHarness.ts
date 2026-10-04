@@ -210,6 +210,8 @@ export type ClientOverrides = {
   startAgentLogin?: jest.Mock;
   getAgentLogin?: jest.Mock;
   getServerUpdates?: jest.Mock;
+  getServerUpdateChannel?: jest.Mock;
+  setServerUpdateChannel?: jest.Mock;
   requestServerUpdate?: jest.Mock;
   listProjects?: jest.Mock;
   recreateProjectContainer?: jest.Mock;
@@ -253,6 +255,11 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
       opts.recreateProjectContainer ?? jest.fn(notImplemented('recreateProjectContainer')),
     // Most deployments are not Verity-managed, so the self-update panel stays
     // hidden unless a test says otherwise.
+    getServerUpdateChannel:
+      opts.getServerUpdateChannel ??
+      jest.fn().mockRejectedValue(new Error('channel selection unavailable')),
+    setServerUpdateChannel:
+      opts.setServerUpdateChannel ?? jest.fn(notImplemented('setServerUpdateChannel')),
     getServerUpdates:
       opts.getServerUpdates ??
       jest.fn().mockResolvedValue({ state: 'unsupported', reason: 'not managed', operation: null }),

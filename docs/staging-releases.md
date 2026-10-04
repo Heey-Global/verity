@@ -31,9 +31,33 @@ credentials are reused; the Apple API key must have access to both apps. EAS mus
 also have signing credentials for the additional bundle ID.
 
 The apps use different URL schemes and can be installed side by side. Pair each
-app with the intended Server. Set `GOOGLE_AUTH_ID` on the Staging Server to the
-Staging app’s OAuth client ID when using Google Drive. The app variant does not replace pairing with a
-hard-coded Server URL.
+app with the intended Server. Servers support both app identities independently of their release channel.
+`GOOGLE_AUTH_ID` configures the production iOS client; `STAGING_GOOGLE_AUTH_ID`
+configures the Staging client. Official Server images bake in both repository
+variables at release time. A missing Staging client disables Staging Google
+connection attempts rather than substituting the production client. The app sends
+its native variant with API requests; the Server selects only its configured client.
+Existing refresh tokens retain their stored client ID. Google services still use
+one shared account per Server, so reconnecting from either app replaces that
+shared connection. The app variant does not replace pairing with a hard-coded
+Server URL.
+
+## Select the Server channel in the app
+
+On a managed installation running a Server and Updater with channel-selection
+support, open Settings → Server update → Server update channel. Choose **Stable**
+or **Prereleases** and confirm the change. Prereleases selects the internal
+`staging` channel. The preference is persisted by the Updater and survives restarts
+and image updates; no Server restart is needed. A running installation blocks
+channel changes. Updates remain manually installed using the existing action.
+
+This setting affects the paired Server, not the app's own OTA channel. Both app
+variants can pair with either Server channel. Returning to Stable never downgrades
+an already installed prerelease; it waits for an eligible newer stable release.
+Older or unmanaged deployments do not expose the selection. Upgrade the Server,
+Updater, and app first; the host maintenance procedure below remains available.
+The persisted selection takes precedence over `VERITY_UPDATE_CHANNEL` until it
+is changed in Settings or through the maintenance command.
 
 ## Change an existing managed Server to Staging
 

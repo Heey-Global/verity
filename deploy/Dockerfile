@@ -376,6 +376,9 @@ LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{
 # back to the same official client ID compiled into the mobile app.
 ARG GOOGLE_AUTH_ID=
 ENV GOOGLE_AUTH_ID=${GOOGLE_AUTH_ID}
+ARG STAGING_GOOGLE_AUTH_ID=
+# Keep the baked default out of sealed deployment environment sources.
+ENV GOOGLE_STAGING_CLIENT_ID_DEFAULT=${STAGING_GOOGLE_AUTH_ID}
 
 # API port. PORT is read by the server (packages/server/src/main.ts). 8082 is the
 # deployment default per ADR 0003 R2.

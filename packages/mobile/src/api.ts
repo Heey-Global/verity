@@ -1568,6 +1568,7 @@ export function isDevicePairingRequiredError(error: unknown): error is VerityApi
 }
 
 export interface VerityClientOptions {
+  appVariant?: 'production' | 'staging';
   /** Base URL of the control-plane server, no trailing slash (e.g. via Tailscale). */
   baseUrl: string;
   /** Fetch implementation; defaults to the global `fetch` (tests inject a fake). */
@@ -2055,6 +2056,7 @@ export class VerityClient {
       body: JSON.stringify({ accountId, sourceId }),
     });
   }
+  private readonly appVariant: 'production' | 'staging' | undefined;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly uploadFetchImpl: typeof fetch;
@@ -2063,6 +2065,7 @@ export class VerityClient {
   private readonly onUnauthorized: (() => void) | undefined;
 
   constructor(opts: VerityClientOptions) {
+    this.appVariant = opts.appVariant;
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.fetchImpl = opts.fetch ?? fetch;
     this.uploadFetchImpl = opts.uploadFetch ?? this.fetchImpl;
@@ -2488,6 +2491,20 @@ export class VerityClient {
   }
 
   /** Availability of an official server release plus the live update operation. */
+  async getServerUpdateChannel(): Promise<'stable' | 'staging'> {
+    const res = await this.request('/server/update-channel', { method: 'GET' });
+    return z.object({ channel: z.enum(['stable', 'staging']) }).parse(await res.json()).channel;
+  }
+
+  async setServerUpdateChannel(channel: 'stable' | 'staging'): Promise<'stable' | 'staging'> {
+    const res = await this.request('/server/update-channel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel }),
+    });
+    return z.object({ channel: z.enum(['stable', 'staging']) }).parse(await res.json()).channel;
+  }
+
   async getServerUpdates(): Promise<ServerUpdateStatus> {
     const res = await this.request('/server/updates', { method: 'GET' });
     const body: unknown = await res.json();
@@ -4242,6 +4259,14 @@ export class VerityClient {
     // Attach the per-device bearer token (audit C1) when we have one. Callers
     // pass plain-object headers, so a record spread is safe; an explicit
     // Authorization in `init` (none today) would win by being spread last.
+    if (this.appVariant !== undefined)
+      init = {
+        ...init,
+        headers: {
+          ...(init.headers as Record<string, string>),
+          'x-verity-app-variant': this.appVariant,
+        },
+      };
     const token = this.getToken();
     const sentToken = token != null && token.length > 0;
     if (sentToken) {

@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
 import { SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
@@ -34,6 +35,13 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
+  const [changingChannel, setChangingChannel] = useState(false);
+  const channelWritePending = useRef(false);
+  const channelSavingChanged = useCallback((value: boolean) => {
+    channelWritePending.current = value;
+    setChangingChannel(value);
+  }, []);
+  const [channelNeedsRefresh, setChannelNeedsRefresh] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // Key of an install request whose outcome is still unknown: it was not
   // answered, and no status since has shown whether it started — which is what
@@ -59,33 +67,56 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
     }
   }, []);
 
-  const refresh = useCallback(() => {
-    const generation = ++refreshGeneration.current;
-    return (
-      client
-        .getServerUpdates()
-        .then((next) => {
-          if (generation !== refreshGeneration.current) return;
-          const pending = unansweredRef.current;
-          // An unchanged status is not yet proof that nothing started: the
-          // request may still be on its way into the Updater's journal.
-          if (
-            pending !== undefined &&
-            (describeServerUpdate(next).idempotencyKey !== pending.key ||
-              Date.now() >= pending.deadline)
-          ) {
-            settle(next, pending.key);
-            return;
-          }
-          setStatus(next);
-          publishServerUpdateStatusMutation(next);
-        })
-        // A poll that fails mid-cutover is expected: the old server is gone and
-        // the new one is not serving yet. Keep the last known operation on
-        // screen rather than blanking the panel.
-        .catch(() => undefined)
-    );
-  }, [client, settle]);
+  const refresh = useCallback(
+    (force = false) => {
+      if (channelWritePending.current && !force) return Promise.resolve();
+      const generation = ++refreshGeneration.current;
+      return (
+        client
+          .getServerUpdates()
+          .then((next) => {
+            if (generation !== refreshGeneration.current) return;
+            const pending = unansweredRef.current;
+            // An unchanged status is not yet proof that nothing started: the
+            // request may still be on its way into the Updater's journal.
+            if (
+              pending !== undefined &&
+              (describeServerUpdate(next).idempotencyKey !== pending.key ||
+                Date.now() >= pending.deadline)
+            ) {
+              settle(next, pending.key);
+              return;
+            }
+            setStatus(next);
+            if (next.state !== 'unreachable') setChannelNeedsRefresh(false);
+            publishServerUpdateStatusMutation(next);
+          })
+          // A poll that fails mid-cutover is expected: the old server is gone and
+          // the new one is not serving yet. Keep the last known operation on
+          // screen rather than blanking the panel.
+          .catch(() => undefined)
+      );
+    },
+    [client, settle],
+  );
+
+  const invalidateChannel = useCallback(() => {
+    refreshGeneration.current += 1;
+    // Never leave the previous channel's install target in the panel or overview cache.
+    const invalidated: ServerUpdateStatus = {
+      state: 'unreachable',
+      reason: 'Checking the selected update channel',
+      operation: null,
+    };
+    setChannelNeedsRefresh(true);
+    setStatus(invalidated);
+    setActionError(undefined);
+    publishServerUpdateStatusMutation(invalidated);
+  }, []);
+  const channelChanged = useCallback(async () => {
+    invalidateChannel();
+    await refresh(true);
+  }, [invalidateChannel, refresh]);
 
   // Expo Router can keep this route mounted after navigating away. Refresh on
   // every focus so a transient `unreachable` result does not remain on screen
@@ -98,7 +129,10 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const operation = status?.operation ?? null;
   const pollMs =
-    serverUpdatePollMs(operation) ?? (unanswered !== undefined ? UNANSWERED_POLL_MS : null);
+    serverUpdatePollMs(operation) ??
+    (unanswered !== undefined || (channelNeedsRefresh && !changingChannel)
+      ? UNANSWERED_POLL_MS
+      : null);
   useEffect(() => {
     if (pollMs === null) return;
     const timer = setInterval(() => void refresh(), pollMs);
@@ -107,7 +141,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   const install = useCallback(
     (targetDigest: string, idempotencyKey: string) => {
-      if (starting) return;
+      if (starting || changingChannel || channelNeedsRefresh) return;
       setStarting(true);
       setActionError(undefined);
       // The key is derived by describeServerUpdate: stable for a retry after a
@@ -156,7 +190,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           setUnanswered(idempotencyKey);
         });
     },
-    [client, settle, starting],
+    [client, settle, starting, changingChannel, channelNeedsRefresh],
   );
 
   if (status === undefined) {
@@ -184,44 +218,62 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
 
   return (
     <SettingsPanel>
-      <View style={styles.updateHeader}>
-        <Text style={styles.updateTitle} accessibilityRole="header">
-          {view.title}
-        </Text>
-        {publishedAt !== undefined ? (
-          <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
-        ) : null}
-      </View>
-      <Text style={styles.updateDetail}>{view.detail}</Text>
-      {view.progress !== null ? (
+      <ServerUpdateChannel
+        client={client}
+        disabled={starting || unanswered !== undefined || view.busy || channelNeedsRefresh}
+        onChanged={channelChanged}
+        onSavingChange={channelSavingChanged}
+        onChanging={invalidateChannel}
+      />
+      {channelNeedsRefresh ? (
         <View style={styles.updateProgressRow}>
           <ActivityIndicator size="small" color={theme.colors.setup.text} />
-          <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
-            {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
+          <Text style={styles.updateDetail}>
+            Checking the selected channel… Retrying if the server is unavailable.
           </Text>
         </View>
-      ) : null}
-      {view.action !== null && target !== null && attempt !== null ? (
-        <Pressable
-          style={({ pressed }) => [
-            styles.primaryButton,
-            styles.updateButton,
-            starting ? styles.buttonDisabled : null,
-            pressed ? styles.pressed : null,
-          ]}
-          onPress={() => install(target, attempt)}
-          disabled={starting}
-          accessibilityRole="button"
-          accessibilityLabel={view.action}
-        >
-          {starting ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-          <Text style={styles.primaryButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
-        </Pressable>
-      ) : null}
-      {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
-      {status.state === 'available' ? (
-        <ServerReleaseNotes client={client} version={status.release.version} />
-      ) : null}
+      ) : (
+        <>
+          <View style={styles.updateHeader}>
+            <Text style={styles.updateTitle} accessibilityRole="header">
+              {view.title}
+            </Text>
+            {publishedAt !== undefined ? (
+              <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
+            ) : null}
+          </View>
+          <Text style={styles.updateDetail}>{view.detail}</Text>
+          {view.progress !== null ? (
+            <View style={styles.updateProgressRow}>
+              <ActivityIndicator size="small" color={theme.colors.setup.text} />
+              <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
+                {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
+              </Text>
+            </View>
+          ) : null}
+          {view.action !== null && target !== null && attempt !== null ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.primaryButton,
+                styles.updateButton,
+                starting || changingChannel ? styles.buttonDisabled : null,
+                pressed ? styles.pressed : null,
+              ]}
+              onPress={() => install(target, attempt)}
+              disabled={starting || changingChannel}
+              accessibilityRole="button"
+              accessibilityLabel={view.action}
+            >
+              {starting ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+              <Text style={styles.primaryButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
+            </Pressable>
+          ) : null}
+          {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
+          {status.state === 'available' ? (
+            <ServerReleaseNotes client={client} version={status.release.version} />
+          ) : null}
+        </>
+      )}
     </SettingsPanel>
   );
 }

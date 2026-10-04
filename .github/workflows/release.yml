@@ -1987,6 +1987,7 @@ jobs:
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.stage-bundled-images.outputs.project-relay-image }}
             VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.stage-bundled-images.outputs.matrix-connector-image }}
             VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
+            STAGING_GOOGLE_AUTH_ID=${{ vars.STAGING_GOOGLE_AUTH_ID }}
             GOOGLE_AUTH_ID=${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
