@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "product": "mobile-native",
-  "version": "1.51.0",
-  "source": "2427ccd18fe405e913c86e9092b9cac061dd3247",
+  "version": "1.52.0",
+  "source": "390cb9329fb1c7dea2c979aa723567369a0d4ecd",
   "appId": "6807746931",
-  "buildId": "6c132dba-be83-4025-8fd0-e76580486288",
-  "buildNumber": "41",
-  "releasePr": 1038
+  "buildId": "1e025479-5e8d-44ef-a773-84a8011153ed",
+  "buildNumber": "42",
+  "releasePr": 1082
 }
