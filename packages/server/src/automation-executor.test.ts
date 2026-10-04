@@ -107,8 +107,28 @@ describe('automation executor', () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  it('does not run a script when its automation changes while waking the project', async () => {
+    let current = true;
+    const { executor, runScript, dispatch } = harness({
+      isCurrent: async () => current,
+      prepareProject: async (project) => {
+        current = false;
+        return project;
+      },
+    });
+    await expect(executor.run({ ...automation, script: 'exit 10' })).resolves.toMatchObject({
+      outcome: 'skipped',
+    });
+    expect(runScript).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('does not dispatch a check result into a workspace that moved during the check', async () => {
-    const isCurrent = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const isCurrent = vi
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
     const { executor, runScript, dispatch } = harness({
       isCurrent,
       script: { exitCode: 10, stdout: '', stderr: '', timedOut: false },

@@ -72,6 +72,7 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
   const scriptVerdict = async (
     script: string,
     session: SessionRecord,
+    automation: AutomationRunInput,
   ): Promise<AutomationRunResult | 'run'> => {
     if (!deps.runScript) {
       return { outcome: 'error', detail: 'Check scripts are not available on this server.' };
@@ -87,6 +88,9 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
       return { outcome: 'skipped', detail: 'The project workspace was busy.' };
     }
     try {
+      if ((await deps.isCurrent?.(automation, session)) === false) {
+        return { outcome: 'skipped', detail: 'The automation or its workspace changed.' };
+      }
       // stdout/stderr may contain repository data or credentials; only the exit
       // code crosses into history, notices, or the agent's turn.
       const result = await deps.runScript({ script, project, session });
@@ -136,7 +140,7 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
           return { outcome: 'skipped', detail: 'The automation or its workspace changed.' };
         }
         if (automation.script !== null) {
-          const verdict = await scriptVerdict(automation.script, session);
+          const verdict = await scriptVerdict(automation.script, session, automation);
           if (verdict !== 'run') return verdict;
         }
         if (
@@ -171,7 +175,7 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
       return guarded(automation, async () => {
         if (automation.script === null) return { outcome: 'ok', detail: null };
         const session = await loadSession(automation.sessionId);
-        const verdict = await scriptVerdict(automation.script, session);
+        const verdict = await scriptVerdict(automation.script, session, automation);
         return verdict === 'run' ? { outcome: 'acted', detail: null } : verdict;
       });
     },

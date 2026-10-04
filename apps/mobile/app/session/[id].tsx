@@ -761,6 +761,7 @@ export function SessionChat({
   // Bumped by every local change, so a read that started earlier cannot bring
   // back an automation the operator just paused, replaced, or deleted.
   const automationGeneration = useRef(0);
+  const automationMutationPending = useRef(false);
   useEffect(
     () => () => {
       // A closed chat must not publish an old read over mutations from its replacement.
@@ -769,7 +770,8 @@ export function SessionChat({
     [sessionId],
   );
   const loadAutomation = useCallback(() => {
-    const generation = automationGeneration.current;
+    if (automationMutationPending.current) return Promise.resolve();
+    const generation = ++automationGeneration.current;
     return client
       .getSessionAutomation(sessionId)
       .then((loaded) => {
@@ -795,7 +797,9 @@ export function SessionChat({
     void loadAutomation();
   }, [loadAutomation]);
   const toggleAutomation = useCallback(() => {
-    if (!automation || automationUpdating) return;
+    if (!automation || automationMutationPending.current) return;
+    automationMutationPending.current = true;
+    automationGeneration.current += 1;
     setAutomationUpdating(true);
     void client
       .setSessionAutomationStatus(sessionId, automation.status === 'enabled' ? 'paused' : 'enabled')
@@ -806,7 +810,10 @@ export function SessionChat({
           error instanceof Error ? error.message : 'Please try again.',
         ),
       )
-      .finally(() => setAutomationUpdating(false));
+      .finally(() => {
+        automationMutationPending.current = false;
+        setAutomationUpdating(false);
+      });
   }, [applyAutomation, automation, automationUpdating, client, sessionId]);
   const deleteAutomation = useCallback(() => {
     if (!automation) return;
@@ -819,6 +826,10 @@ export function SessionChat({
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
+            if (automationMutationPending.current) return;
+            automationMutationPending.current = true;
+            automationGeneration.current += 1;
+            setAutomationUpdating(true);
             void client
               .deleteSessionAutomation(sessionId)
               .then(() => {
@@ -830,7 +841,11 @@ export function SessionChat({
                   'Could not delete automation',
                   error instanceof Error ? error.message : 'Please try again.',
                 ),
-              );
+              )
+              .finally(() => {
+                automationMutationPending.current = false;
+                setAutomationUpdating(false);
+              });
           },
         },
       ],
@@ -913,14 +928,24 @@ export function SessionChat({
 
   const confirmAutomation = useCallback(
     async (proposal: AutomationProposalMessage['proposal']): Promise<void> => {
-      const saved = await client.saveSessionAutomation(sessionId, {
-        name: proposal.name,
-        schedule: proposal.schedule,
-        prompt: proposal.prompt,
-        ...(proposal.script !== undefined ? { script: proposal.script } : {}),
-        ...(proposal.model !== undefined ? { model: proposal.model } : {}),
-      });
-      applyAutomation(saved);
+      if (automationMutationPending.current)
+        throw new Error('An automation update is in progress.');
+      automationMutationPending.current = true;
+      automationGeneration.current += 1;
+      setAutomationUpdating(true);
+      try {
+        const saved = await client.saveSessionAutomation(sessionId, {
+          name: proposal.name,
+          schedule: proposal.schedule,
+          prompt: proposal.prompt,
+          ...(proposal.script !== undefined ? { script: proposal.script } : {}),
+          ...(proposal.model !== undefined ? { model: proposal.model } : {}),
+        });
+        applyAutomation(saved);
+      } finally {
+        automationMutationPending.current = false;
+        setAutomationUpdating(false);
+      }
     },
     [applyAutomation, client, sessionId],
   );

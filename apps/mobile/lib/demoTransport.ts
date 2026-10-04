@@ -10,6 +10,22 @@ export const DEMO_BASE_URL = 'https://demo.verity.invalid';
 export function isDemoUrl(url: string | null | undefined): boolean {
   return url?.replace(/^ws/, 'http').split('/').slice(0, 3).join('/') === DEMO_BASE_URL;
 }
+function nextAutomationRun(schedule: SessionAutomation['schedule']): string {
+  const now = new Date();
+  if (schedule.kind === 'interval') {
+    return new Date(now.getTime() + schedule.everyMinutes * 60_000).toISOString();
+  }
+  const next = new Date(now);
+  next.setHours(schedule.hour, schedule.minute, 0, 0);
+  if (schedule.kind === 'daily') {
+    if (next <= now) next.setDate(next.getDate() + 1);
+  } else {
+    let days = (schedule.weekday - next.getDay() + 7) % 7;
+    if (days === 0 && next <= now) days = 7;
+    next.setDate(next.getDate() + days);
+  }
+  return next.toISOString();
+}
 const MODEL = 'codex/gpt-5.4';
 let generation = 0;
 const instanceId = randomUUID();
@@ -638,7 +654,7 @@ export const demoFetch: typeof fetch = async (input, init) => {
           lastRunAt: null,
           lastOutcome: null,
           lastDetail: null,
-          nextRunAt: new Date(Date.now() + 86_400_000).toISOString(),
+          nextRunAt: nextAutomationRun(body.schedule as SessionAutomation['schedule']),
           createdAt: now,
           updatedAt: now,
         };
@@ -651,7 +667,7 @@ export const demoFetch: typeof fetch = async (input, init) => {
         session.automation = {
           ...session.automation,
           status,
-          nextRunAt: status === 'paused' ? null : new Date(Date.now() + 86_400_000).toISOString(),
+          nextRunAt: status === 'paused' ? null : nextAutomationRun(session.automation.schedule),
         };
         session.detail.automation = { status };
         return json({ automation: session.automation });
