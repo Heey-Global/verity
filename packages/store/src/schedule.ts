@@ -1,7 +1,7 @@
 import type { ScheduleConfig } from './schema.js';
 
 /**
- * Pure schedule arithmetic for the Agent Loop scheduler (ADR 0008 §3). Kept free of
+ * Pure schedule arithmetic for the session automation scheduler (ADR 0008 §3). Kept free of
  * any DB/timer dependency so it is unit-tested in isolation. All times are
  * server-local (no per-operator timezone in v1 — see the ADR's accepted
  * negatives).

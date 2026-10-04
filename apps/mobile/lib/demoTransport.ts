@@ -1,9 +1,30 @@
-import type { SessionDetail, StreamEventFrame, StreamSocket } from '@verity/mobile';
+import type {
+  SessionAutomation,
+  SessionDetail,
+  StreamEventFrame,
+  StreamSocket,
+} from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 
 export const DEMO_BASE_URL = 'https://demo.verity.invalid';
 export function isDemoUrl(url: string | null | undefined): boolean {
   return url?.replace(/^ws/, 'http').split('/').slice(0, 3).join('/') === DEMO_BASE_URL;
+}
+function nextAutomationRun(schedule: SessionAutomation['schedule']): string {
+  const now = new Date();
+  if (schedule.kind === 'interval') {
+    return new Date(now.getTime() + schedule.everyMinutes * 60_000).toISOString();
+  }
+  const next = new Date(now);
+  next.setHours(schedule.hour, schedule.minute, 0, 0);
+  if (schedule.kind === 'daily') {
+    if (next <= now) next.setDate(next.getDate() + 1);
+  } else {
+    let days = (schedule.weekday - next.getDay() + 7) % 7;
+    if (days === 0 && next <= now) days = 7;
+    next.setDate(next.getDate() + days);
+  }
+  return next.toISOString();
 }
 const MODEL = 'codex/gpt-5.4';
 let generation = 0;
@@ -28,6 +49,7 @@ const project = {
 };
 interface DemoSession {
   detail: SessionDetail;
+  automation?: SessionAutomation;
   events: StreamEventFrame[];
   timers: Set<ReturnType<typeof setTimeout>>;
   files: Record<string, string>;
@@ -229,6 +251,31 @@ function simulateTurn(session: DemoSession, prompt: string): void {
       riskClass: 'ask',
     });
     append(session, { t: 'status', state: 'awaiting_input' });
+    return;
+  }
+  if (
+    /automation|recurring|regularly|every (day|morning|evening|week|hour|monday|tuesday|wednesday|thursday|friday)|daily|weekly|hourly|regelmäßig|täglich|wöchentlich|jeden (tag|morgen|abend|montag|dienstag|mittwoch|donnerstag|freitag)/i.test(
+      prompt,
+    )
+  ) {
+    schedule(session, 350, () => {
+      append(session, {
+        t: 'text',
+        delta:
+          'This is how a recurring task looks. Confirm it below and this session runs it on schedule. In the demo nothing actually runs.',
+      });
+      append(session, {
+        t: 'automation_proposal',
+        proposal: {
+          name: 'Morning summary',
+          schedule: { kind: 'weekly', weekday: 1, hour: 9, minute: 0 },
+          prompt: 'Summarize what changed in the example project since last week.',
+        },
+      });
+      append(session, { t: 'result', usage, stopReason: 'end_turn' });
+      session.detail.busy = false;
+      session.detail.status = 'idle';
+    });
     return;
   }
   const change = /color|colour|button|farbe/i.test(prompt);
@@ -453,7 +500,6 @@ export const demoFetch: typeof fetch = async (input, init) => {
         '/dev-servers': { devServers: [] },
         '/dev-server-suggestions': { suggestions: [] },
         '/public-shares': { shares: [] },
-        '/agent-loops': { loops: [] },
         '/secret-grants': { grants: [] },
         '/mcp-bindings': { bindings: [] },
         '/integrations': { sources: [] },
@@ -590,6 +636,47 @@ export const demoFetch: typeof fetch = async (input, init) => {
         Number(body.eventCount) || 0,
       );
       return json({ sessionId: id, lastSeenEventCount: session.detail.lastSeenEventCount });
+    }
+    if (rest === '/automation') {
+      if (method === 'GET') return json({ automation: session.automation ?? null });
+      if (method === 'PUT') {
+        const now = new Date().toISOString();
+        session.automation = {
+          id: `demo-automation-${id}`,
+          sessionId: id,
+          name: typeof body.name === 'string' ? body.name : 'Automation',
+          status: 'enabled',
+          schedule: body.schedule as SessionAutomation['schedule'],
+          prompt: typeof body.prompt === 'string' ? body.prompt : '',
+          script: typeof body.script === 'string' ? body.script : null,
+          model: null,
+          consecutiveErrorCount: 0,
+          lastRunAt: null,
+          lastOutcome: null,
+          lastDetail: null,
+          nextRunAt: nextAutomationRun(body.schedule as SessionAutomation['schedule']),
+          createdAt: now,
+          updatedAt: now,
+        };
+        session.detail.automation = { status: 'enabled' };
+        return json({ automation: session.automation });
+      }
+      if (!session.automation) return json({ error: 'automation not found' }, 404);
+      if (method === 'PATCH') {
+        const status = body.status === 'paused' ? 'paused' : 'enabled';
+        session.automation = {
+          ...session.automation,
+          status,
+          nextRunAt: status === 'paused' ? null : nextAutomationRun(session.automation.schedule),
+        };
+        session.detail.automation = { status };
+        return json({ automation: session.automation });
+      }
+      if (method === 'DELETE') {
+        delete session.automation;
+        delete session.detail.automation;
+        return json({ ok: true });
+      }
     }
     if (rest === '/branches' && method === 'GET')
       return json({

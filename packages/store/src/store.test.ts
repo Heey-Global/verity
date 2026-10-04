@@ -919,7 +919,6 @@ describe('EventStore — sessions', () => {
       ...session,
       name: null,
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
   });
@@ -930,7 +929,6 @@ describe('EventStore — sessions', () => {
       ...session,
       name: 'Add settings',
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
   });

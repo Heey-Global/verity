@@ -62,13 +62,12 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
     options: [{ label: 'Build it now', recommended: true }, { label: 'Formalize first' }],
     multiSelect: false,
   },
-  agent_loop_proposal: {
-    t: 'agent_loop_proposal',
+  automation_proposal: {
+    t: 'automation_proposal',
     proposal: {
-      loopId: '11111111-1111-4111-8111-111111111111',
-      name: 'Dependency audit',
-      script: '#!/bin/sh\nexit 0',
-      schedule: { kind: 'daily', hour: 3, minute: 0 },
+      name: 'Morning review',
+      schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Summarize the open pull requests.',
     },
   },
   interrupted: { t: 'interrupted' },

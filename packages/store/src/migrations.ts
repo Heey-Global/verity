@@ -985,9 +985,10 @@ const migrations: Record<string, Migration> = {
         .execute();
     },
     async down(db: Kysely<unknown>): Promise<void> {
-      await db.schema.dropTable('agent_loop_runs').execute();
-      await db.schema.dropTable('agent_loops').execute();
-      await db.schema.alterTable('sessions').dropColumn('kind').execute();
+      // 0130 retires both tables, so a full rollback reaches here without them.
+      await db.schema.dropTable('agent_loop_runs').ifExists().execute();
+      await db.schema.dropTable('agent_loops').ifExists().execute();
+      await sql`alter table sessions drop column if exists kind`.execute(db);
     },
   },
 
@@ -3574,6 +3575,44 @@ const migrations: Record<string, Migration> = {
     },
     async down(db: Kysely<unknown>): Promise<void> {
       await sql`alter table project_settings drop column google_drive_access_mode`.execute(db);
+    },
+  },
+  '0130_session_automations': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Automations now belong to an ordinary session instead of a dedicated
+      // project-level loop with its own setup session. The retired loop tables
+      // never carried production data, so they are dropped rather than converted,
+      // and the setup sessions' proposal events go with them: the event schema no
+      // longer accepts that type, and the store refuses to read a log holding one.
+      await sql`delete from events where type = 'agent_loop_proposal'`.execute(db);
+      // Replaying forward after a migration rollback must not resurrect the removed column.
+      await sql`alter table sessions drop column if exists kind`.execute(db);
+      await sql`drop table if exists agent_loop_runs`.execute(db);
+      await sql`drop table if exists agent_loops`.execute(db);
+      await sql`create table session_automations (
+        id text primary key,
+        session_id text not null unique references sessions(session_id) on delete cascade,
+        name text not null,
+        status text not null check (status in ('enabled', 'paused')),
+        schedule jsonb not null,
+        prompt text not null,
+        script text,
+        model text,
+        consecutive_error_count integer not null default 0,
+        last_run_at timestamptz,
+        last_outcome text check (last_outcome in ('ok', 'acted', 'error', 'skipped')),
+        last_detail text,
+        next_run_at timestamptz,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )`.execute(db);
+      await sql`create index session_automations_due_idx on session_automations (next_run_at) where status = 'enabled'`.execute(
+        db,
+      );
+    },
+    // Removal is permanent; rolling back must not recreate the retired loops.
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_automations`.execute(db);
     },
   },
 };

@@ -1,4 +1,4 @@
-// Default model, per project: the model a new session or Agent Loop in this
+// Default model, per project: the model a new session in this
 // project starts with when nothing else picks one. The list is the same one the
 // new-session picker offers (`GET /models`), so a model that can be chosen here
 // can actually be spawned; "Server default" clears the override.
@@ -128,7 +128,7 @@ function ProjectModelView({ client, projectId }: { client: VerityClient; project
     <SettingsScaffold title="Default model" detail state={{ error, saving }} onRetry={() => load()}>
       <SettingsGroup
         title="Model"
-        description="New sessions and Agent Loops in this project start with this model. A session can still switch to another one."
+        description="New sessions in this project start with this model. A session can still switch to another one."
       >
         <SettingsListPanel>
           <SettingsChoiceRow

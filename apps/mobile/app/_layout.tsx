@@ -208,7 +208,6 @@ function HydratedRoot() {
               <Stack.Screen name="session/[id]" options={{ title: 'Session' }} />
               <Stack.Screen name="meeting/[sessionId]" options={{ title: 'Live Meeting' }} />
               <Stack.Screen name="project/[id]/index" options={{ title: 'Project' }} />
-              <Stack.Screen name="project/[id]/automations" options={{ title: 'Automations' }} />
               {/* Project settings mirror the Verity settings stack below: sibling
                 routes under one prefix, each with the shared settings scaffold. */}
               <Stack.Screen

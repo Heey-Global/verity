@@ -732,6 +732,26 @@ describe('SessionListModel.applyPullRequestStatus', () => {
   });
 });
 
+describe('SessionListModel.applySessionAutomation', () => {
+  it('marks and unmarks a session without waiting for the next poll', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValueOnce([session('s1', 'completed'), session('s2', 'completed')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+
+    model.applySessionAutomation('s1', { status: 'enabled' });
+    expect(model.state.sessions.find((s) => s.sessionId === 's1')?.automation).toEqual({
+      status: 'enabled',
+    });
+    expect(model.state.sessions.find((s) => s.sessionId === 's2')?.automation).toBeUndefined();
+
+    model.applySessionAutomation('s1', undefined);
+    expect('automation' in (model.state.sessions.find((s) => s.sessionId === 's1') ?? {})).toBe(
+      false,
+    );
+  });
+});
+
 describe('SessionListModel.applySessionStatus', () => {
   it('removes a stale needs-input status immediately after an accepted action', async () => {
     const { client, listSessions } = makeClient();
@@ -1125,3 +1145,29 @@ describe('SessionListModel polling', () => {
     }
   });
 });
+
+it.each([{ status: 'paused' as const }, undefined])(
+  'preserves automation mutation %j across an older overview response',
+  async (automation) => {
+    const { client, listSessions } = makeClient();
+    const previous = { ...session('a', 'idle'), automation: { status: 'enabled' as const } };
+    listSessions.mockResolvedValueOnce([previous]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const loading = model.refresh();
+    model.applySessionAutomation('a', automation);
+    resolve([previous]);
+    await loading;
+    expect(model.state.sessions[0]?.automation).toEqual(automation);
+    listSessions.mockResolvedValueOnce([previous]);
+    await model.refresh();
+    expect(model.state.sessions[0]?.automation).toEqual(previous.automation);
+  },
+);

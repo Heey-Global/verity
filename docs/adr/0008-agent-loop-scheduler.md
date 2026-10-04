@@ -1,6 +1,37 @@
 # ADR 0008 — Agent Loop Scheduler (recurring, script-first automations)
 
-**Status:** Accepted · **Date:** 2026-07-13
+**Status:** Accepted, amended 2026-10-04 · **Date:** 2026-07-13
+
+## Amendment (2026-10-04): automations belong to ordinary sessions
+
+The dedicated loop with its own setup session, project-settings screen, test gate,
+and run cockpit was never used in practice and is retired. What replaces it:
+
+- **Any session can carry one automation.** The user asks the session's agent for
+  something recurring; the agent appends a `verity:automation` proposal
+  (`name`, `schedule`, `prompt`, optional `script` and `model`). The contract is part
+  of every fresh agent context, so no special session kind exists any more.
+- **The confirmation card is still the gate.** The app renders the proposal as a
+  card; one tap saves and enables it (`PUT /sessions/:id/automation`). The agent never
+  writes persistence. A newly confirmed proposal replaces the session's current one.
+- **Script optional.** Without a script, every slot sends `prompt` to the session as an
+  idle-only turn. With one, the script runs in the project container first: exit 0 ends
+  the run, exit 10 sends the prompt, anything else is an error. The script runs once
+  when the user confirms, and a failing check refuses the save. The stdout spawn-JSON
+  contract is gone; only exit codes cross into history or the turn.
+- **Storage.** One `session_automations` row per session, `on delete cascade` with the
+  session (migration `0130`). Run history is reduced to the last outcome and a short
+  operator-facing sentence; five consecutive errors pause the automation. The old
+  `agent_loops` / `agent_loop_runs` tables and their proposal events are dropped.
+  The unused `sessions.kind` column is dropped as well; no legacy compatibility layer remains.
+- **UI.** The session header shows a bar for the automation (tap for plain-language
+  details, pause/resume, delete; the x asks before deleting). The session list marks
+  sessions with an active automation. The project-settings Automations screen is gone.
+  New sessions offer "Recurring task" next to building and chatting.
+
+Sections 1, 4, 6, 7A and 8 below describe the retired design and are kept for history.
+The scheduler (§2), schedule representation (§3), idle-only dispatch (§5), and runtime
+guardrails (§7B/C) still apply.
 
 ## Naming
 

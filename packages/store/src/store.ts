@@ -50,8 +50,6 @@ export interface SessionRecord {
   /** Project the session runs in (concept §19); `null` for project-less
    *  (or pre-projects-slice) sessions. */
   projectId: string | null;
-  /** Ordinary chat session or the durable home of an Agent Loop. */
-  kind: 'normal' | 'agent_loop';
   /** Operator's "last seen" mark for the overview unread dot (#387): the session's
    *  `eventCount` at the last open. `null` = never opened → not unread. Global, so
    *  it syncs across devices; advanced monotonically by {@link EventStore.setSessionSeen}. */
@@ -110,13 +108,9 @@ export interface GoogleSlideImageCleanupRecord {
 /** Input to {@link EventStore.createSession}: a {@link SessionRecord} whose
  * `name` is optional (a fresh session starts nameless unless the operator named
  * it at spawn). */
-export type SessionInput = Omit<
-  SessionRecord,
-  'name' | 'projectId' | 'kind' | 'lastSeenEventCount'
-> & {
+export type SessionInput = Omit<SessionRecord, 'name' | 'projectId' | 'lastSeenEventCount'> & {
   name?: string | null;
   projectId?: string | null;
-  kind?: 'normal' | 'agent_loop';
 };
 
 /**
@@ -337,100 +331,55 @@ export interface SessionBackendStateRecord {
   updatedAt: Date;
 }
 
-/** The terminal states an Agent Loop run can settle in (ADR 0008). */
-export type AgentLoopRunOutcome = 'ok' | 'acted' | 'error' | 'skipped';
+/** How one scheduled automation run settled: `ok` (its check script found
+ * nothing to do), `acted` (a turn was dispatched), `skipped` (the session was
+ * busy or the project unavailable), or `error`. */
+export type SessionAutomationOutcome = 'ok' | 'acted' | 'error' | 'skipped';
 
-/** The lifecycle status of an Agent Loop (ADR 0008 §7). Only `enabled` fires. */
-export type AgentLoopStatus = 'draft' | 'enabled' | 'paused';
+/** Only an `enabled` automation fires. */
+export type SessionAutomationStatus = 'enabled' | 'paused';
 
-/** Raised when a caller tries to arm a loop that has not proven its current
- * script in a successful test run. Routes translate this to a 409 response. */
-export class AgentLoopNotReadyError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AgentLoopNotReadyError';
-  }
-}
+/** Consecutive failed runs after which an automation pauses itself. */
+export const SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS = 5;
 
-/** Stable fingerprint used to bind a green test to the complete executable
- * Agent Loop configuration that ran. Any config edit must require a new test. */
-export function agentLoopConfigFingerprint(config: {
-  script: string | null;
-  schedule: ScheduleConfig | null;
-  reactionPrompt: string | null;
-  reactionModel: string | null;
-}): string {
-  const canonical = JSON.stringify({
-    script: config.script,
-    schedule: config.schedule,
-    reactionPrompt: config.reactionPrompt,
-    reactionModel: config.reactionModel,
-  });
-  return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
-}
-
-/** App-facing Agent Loop record (camelCase), decoupled from the snake_case row.
- *  See {@link AgentLoopsTable} for column semantics. */
-export interface AgentLoopRecord {
+/** A recurring prompt bound to one session (see {@link SessionAutomationsTable}). */
+export interface SessionAutomationRecord {
   id: string;
-  projectId: string;
+  sessionId: string;
   name: string;
-  status: AgentLoopStatus;
-  /** Structured schedule; null on a draft with no schedule yet. */
-  schedule: ScheduleConfig | null;
-  /** The loop's script; null on a draft with none authored yet. */
+  status: SessionAutomationStatus;
+  schedule: ScheduleConfig;
+  /** The task the session's agent receives on every run. */
+  prompt: string;
+  /** Optional check script; when present the agent is only woken on its signal. */
   script: string | null;
-  /** Fallback turn prompt; null until authored. */
-  reactionPrompt: string | null;
-  reactionModel: string | null;
-  /** The loop's durable session, if any. */
-  sessionId: string | null;
-  /** Fingerprint of the complete config last proven by a green test run. */
-  testedScriptFingerprint: string | null;
+  /** Model for the dispatched turn; null keeps the session's model. */
+  model: string | null;
   consecutiveErrorCount: number;
   lastRunAt: Date | null;
-  lastOutcome: AgentLoopRunOutcome | null;
+  lastOutcome: SessionAutomationOutcome | null;
+  /** Short operator-facing explanation of the last outcome, if any. */
+  lastDetail: string | null;
   nextRunAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-/** Input to {@link EventStore.createAgentLoop}. Only `projectId`/`name` are
- *  required; a loop is born a `draft` with no schedule/script yet. `id`/
- *  timestamps are store-managed. */
-export interface AgentLoopCreateInput {
-  projectId: string;
+/** Input to {@link EventStore.setSessionAutomation}. */
+export class SessionAutomationWorkspaceChangedError extends Error {
+  constructor() {
+    super('The session workspace changed. Confirm the automation again in its current project.');
+    this.name = 'SessionAutomationWorkspaceChangedError';
+  }
+}
+
+export interface SessionAutomationInput {
+  sessionId: string;
   name: string;
-  schedule?: ScheduleConfig | null;
+  schedule: ScheduleConfig;
+  prompt: string;
   script?: string | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
-}
-
-/** Partial update for {@link EventStore.updateAgentLoop}. Only the operator-owned
- *  fields; `next_run_at` is recomputed by the store when `schedule`/`status`
- *  change. Every field optional — an absent key leaves the column untouched. */
-export interface AgentLoopPatch {
-  name?: string;
-  status?: AgentLoopStatus;
-  schedule?: ScheduleConfig | null;
-  script?: string | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
-  sessionId?: string | null;
-}
-
-/** One Agent Loop run-history entry (ADR 0008). */
-export interface AgentLoopRunRecord {
-  id: string;
-  loopId: string;
-  startedAt: Date;
-  finishedAt: Date | null;
-  outcome: AgentLoopRunOutcome;
-  exitCode: number | null;
-  detail: string | null;
-  sessionId: string | null;
-  isTest: boolean;
+  model?: string | null;
 }
 
 export interface ProjectSettingsRecord {
@@ -1744,7 +1693,6 @@ export class EventStore implements EventSink {
       initial_model: session.model,
       name: session.name ?? null,
       project_id: session.projectId ?? null,
-      kind: session.kind ?? 'normal',
     };
     const projectId = session.projectId;
     if (projectId === undefined || projectId === null) {
@@ -1772,10 +1720,7 @@ export class EventStore implements EventSink {
    * model. Used only to seed a subsequent session; runtime model switches never
    * rewrite the remembered creation choice. */
   async getLastCreatedSessionModel(projectId: string | null): Promise<string | undefined> {
-    let query = this.db
-      .selectFrom('sessions')
-      .select(['initial_model', 'model'])
-      .where('kind', '=', 'normal');
+    let query = this.db.selectFrom('sessions').select(['initial_model', 'model']);
     query =
       projectId === null
         ? query.where('project_id', 'is', null)
@@ -1790,15 +1735,7 @@ export class EventStore implements EventSink {
   async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     const row = await this.db
       .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'kind',
-        'last_seen_event_count',
-      ])
+      .select(['session_id', 'worktree', 'model', 'name', 'project_id', 'last_seen_event_count'])
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     if (!row) return undefined;
@@ -1808,7 +1745,6 @@ export class EventStore implements EventSink {
       model: row.model,
       name: row.name,
       projectId: row.project_id,
-      kind: row.kind as 'normal' | 'agent_loop',
       lastSeenEventCount: row.last_seen_event_count,
     };
   }
@@ -2343,15 +2279,7 @@ export class EventStore implements EventSink {
   async listSessions(): Promise<SessionRecord[]> {
     const rows = await this.db
       .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'kind',
-        'last_seen_event_count',
-      ])
+      .select(['session_id', 'worktree', 'model', 'name', 'project_id', 'last_seen_event_count'])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
       .orderBy('created_at', 'asc')
@@ -2363,7 +2291,6 @@ export class EventStore implements EventSink {
       model: r.model,
       name: r.name,
       projectId: r.project_id,
-      kind: r.kind as 'normal' | 'agent_loop',
       lastSeenEventCount: r.last_seen_event_count,
     }));
   }
@@ -2495,6 +2422,15 @@ export class EventStore implements EventSink {
         .updateTable('sessions')
         .set({ project_id: move.target_project_id, worktree: move.target_worktree })
         .where('session_id', '=', sessionId)
+        .execute();
+      // The operator confirmed a check script against the source project. In the
+      // target it would run against another repository and other secrets without
+      // anyone having seen it there, so it waits until they resume it.
+      await tx
+        .updateTable('session_automations')
+        .set({ status: 'paused', next_run_at: null, updated_at: sql`now()` })
+        .where('session_id', '=', sessionId)
+        .where('script', 'is not', null)
         .execute();
       await tx
         .updateTable('dev_servers')
@@ -5063,7 +4999,6 @@ export class EventStore implements EventSink {
         select 1 from sessions where project_id = ${projectId}
         union all select 1 from project_settings where project_id = ${projectId}
         union all select 1 from project_google_connections where project_id = ${projectId}
-        union all select 1 from agent_loops where project_id = ${projectId}
         union all select 1 from dev_servers where project_id = ${projectId}
         union all select 1 from dev_server_detection_state where project_id = ${projectId}
         union all select 1 from claude_egress_client_certs where project_id = ${projectId}
@@ -5505,265 +5440,190 @@ export class EventStore implements EventSink {
       .execute();
   }
 
-  // ─── Agent Loops: recurring automations ("der Loop", ADR 0008) ─────────────
+  // ─── Session automations: recurring prompts bound to one session ──────────
 
-  private agentLoopRowToRecord(row: {
+  private sessionAutomationRowToRecord(row: {
     id: string;
-    project_id: string;
+    session_id: string;
     name: string;
     status: string;
-    schedule_kind: string | null;
-    schedule_config: ScheduleConfig | null;
+    schedule: ScheduleConfig;
+    prompt: string;
     script: string | null;
-    reaction_prompt: string | null;
-    reaction_model: string | null;
-    session_id: string | null;
-    tested_script_fingerprint: string | null;
+    model: string | null;
     consecutive_error_count: number;
     last_run_at: Date | null;
     last_outcome: string | null;
+    last_detail: string | null;
     next_run_at: Date | null;
     created_at: Date;
     updated_at: Date;
-  }): AgentLoopRecord {
+  }): SessionAutomationRecord {
     return {
       id: row.id,
-      projectId: row.project_id,
-      name: row.name,
-      status: row.status as AgentLoopStatus,
-      schedule: row.schedule_config,
-      script: row.script,
-      reactionPrompt: row.reaction_prompt,
-      reactionModel: row.reaction_model,
       sessionId: row.session_id,
-      testedScriptFingerprint: row.tested_script_fingerprint,
+      name: row.name,
+      status: row.status as SessionAutomationStatus,
+      schedule: row.schedule,
+      prompt: row.prompt,
+      script: row.script,
+      model: row.model,
       consecutiveErrorCount: row.consecutive_error_count,
       lastRunAt: row.last_run_at,
-      lastOutcome: row.last_outcome as AgentLoopRunOutcome | null,
+      lastOutcome: row.last_outcome as SessionAutomationOutcome | null,
+      lastDetail: row.last_detail,
       nextRunAt: row.next_run_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
   }
 
-  private readonly agentLoopColumns = [
-    'id',
-    'project_id',
-    'name',
-    'status',
-    'schedule_kind',
-    'schedule_config',
-    'script',
-    'reaction_prompt',
-    'reaction_model',
-    'session_id',
-    'tested_script_fingerprint',
-    'consecutive_error_count',
-    'last_run_at',
-    'last_outcome',
-    'next_run_at',
-    'created_at',
-    'updated_at',
-  ] as const;
-
   /**
-   * Create an Agent Loop. Every loop is born a `draft`; no caller can bypass the
-   * creation-time test gate by smuggling an enabled status into the insert.
+   * Create or replace the automation of one session. A session owns at most one
+   * automation, so confirming a new proposal replaces the previous one in place.
+   * The result is enabled immediately and armed for its next slot: the operator's
+   * confirmation is the gate, not a separate enable step.
    */
-  async createAgentLoop(input: AgentLoopCreateInput): Promise<AgentLoopRecord> {
-    const schedule = input.schedule ?? null;
-    const row = await this.db
-      .insertInto('agent_loops')
-      .values({
-        id: randomUUID(),
-        project_id: input.projectId,
-        name: input.name,
-        status: 'draft',
-        schedule_kind: schedule ? schedule.kind : null,
-        schedule_config: schedule ? JSON.stringify(schedule) : null,
-        script: input.script ?? null,
-        reaction_prompt: input.reactionPrompt ?? null,
-        reaction_model: input.reactionModel ?? null,
-        next_run_at: null,
-      })
-      .returningAll()
-      .executeTakeFirst();
-    if (!row) throw new Error('verity: createAgentLoop RETURNING yielded no row — dialect bug');
-    return this.agentLoopRowToRecord(row);
-  }
-
-  async getAgentLoop(id: string): Promise<AgentLoopRecord | undefined> {
-    const row = await this.db
-      .selectFrom('agent_loops')
-      .select(this.agentLoopColumns)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? this.agentLoopRowToRecord(row) : undefined;
-  }
-
-  /** Agent Loops for one project, newest first. */
-  async listAgentLoops(projectId: string): Promise<AgentLoopRecord[]> {
-    const rows = await this.db
-      .selectFrom('agent_loops')
-      .select(this.agentLoopColumns)
-      .where('project_id', '=', projectId)
-      .orderBy('created_at', 'desc')
-      .orderBy('id', 'desc')
-      .execute();
-    return rows.map((r) => this.agentLoopRowToRecord(r));
-  }
-
-  /**
-   * Partial update. When `schedule` or `status` changes, `next_run_at` is
-   * recomputed here so the scheduler stays consistent: moving to `enabled`
-   * (or rescheduling an enabled loop) arms it from now; moving to `draft`/`paused`
-   * clears its due time. Returns the updated record, or `undefined` for an
-   * unknown id.
-   */
-  async updateAgentLoop(id: string, patch: AgentLoopPatch): Promise<AgentLoopRecord | undefined> {
-    const set: Record<string, unknown> = { updated_at: sql`now()` };
-    let enableGuard: { fingerprint: string } | undefined;
-    const configChanged =
-      patch.script !== undefined ||
-      patch.schedule !== undefined ||
-      patch.reactionPrompt !== undefined ||
-      patch.reactionModel !== undefined;
-    if (patch.name !== undefined) set.name = patch.name;
-    if (patch.script !== undefined) {
-      set.script = patch.script;
-    }
-    if (patch.reactionPrompt !== undefined) set.reaction_prompt = patch.reactionPrompt;
-    if (patch.reactionModel !== undefined) set.reaction_model = patch.reactionModel;
-    if (patch.sessionId !== undefined) set.session_id = patch.sessionId;
-    // A green test belongs to the complete executable config. Any edit wins over
-    // a simultaneous enable request and immediately disarms the loop.
-    if (configChanged) {
-      set.tested_script_fingerprint = null;
-      set.status = 'draft';
-      set.next_run_at = null;
-    } else if (patch.status !== undefined) set.status = patch.status;
-    if (patch.schedule !== undefined) {
-      set.schedule_kind = patch.schedule ? patch.schedule.kind : null;
-      set.schedule_config = patch.schedule ? JSON.stringify(patch.schedule) : null;
-    }
-
-    // Recompute the due time whenever the schedule or the status moves. Uses the
-    // incoming schedule if given, else the stored one — so a bare enable arms
-    // against the existing schedule. Only an `enabled` loop is armed.
-    const scheduleChanged = patch.schedule !== undefined;
-    const statusChanged = patch.status !== undefined;
-    if (configChanged || statusChanged) {
-      const existing = await this.getAgentLoop(id);
-      if (existing) {
-        const schedule = scheduleChanged ? (patch.schedule ?? null) : existing.schedule;
-        const status = configChanged ? 'draft' : (patch.status ?? existing.status);
-        if (status === 'enabled') {
-          if (!schedule) throw new AgentLoopNotReadyError('Agent Loop needs a schedule');
-          if (!existing.script?.trim())
-            throw new AgentLoopNotReadyError('Agent Loop needs a script');
-          const fingerprint = agentLoopConfigFingerprint(existing);
-          if (existing.testedScriptFingerprint !== fingerprint) {
-            throw new AgentLoopNotReadyError('Test the current Agent Loop config before enabling');
-          }
-          enableGuard = { fingerprint };
-        }
-        set.next_run_at =
-          status === 'enabled' && schedule
-            ? computeNextRun(schedule, new Date()).toISOString()
-            : null;
+  async setSessionAutomation(
+    input: SessionAutomationInput,
+    now: Date = new Date(),
+    checkedWorkspace?: Pick<SessionRecord, 'projectId' | 'worktree'>,
+  ): Promise<SessionAutomationRecord> {
+    const values = {
+      name: input.name,
+      status: 'enabled',
+      schedule: JSON.stringify(input.schedule),
+      prompt: input.prompt,
+      script: input.script ?? null,
+      model: input.model ?? null,
+      consecutive_error_count: 0,
+      last_run_at: null,
+      last_outcome: null,
+      last_detail: null,
+      next_run_at: computeNextRun(input.schedule, now).toISOString(),
+    };
+    return this.db.transaction().execute(async (tx) => {
+      // Serialize with commitSessionMove: a script checked in the old workspace
+      // must not overwrite the move's pause or become enabled in the new one.
+      const session = await tx
+        .selectFrom('sessions')
+        .select(['project_id', 'worktree'])
+        .where('session_id', '=', input.sessionId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (
+        checkedWorkspace !== undefined &&
+        (session.project_id !== checkedWorkspace.projectId ||
+          session.worktree !== checkedWorkspace.worktree)
+      ) {
+        throw new SessionAutomationWorkspaceChangedError();
       }
-    }
-
-    let update = this.db.updateTable('agent_loops').set(set).where('id', '=', id);
-    // Close enable-vs-edit races: any config edit clears the stored fingerprint,
-    // so the exact tested config must still be current when this UPDATE lands.
-    if (enableGuard) {
-      update = update.where('tested_script_fingerprint', '=', enableGuard.fingerprint);
-    }
-    const row = await update.returningAll().executeTakeFirst();
-    if (!row && enableGuard && (await this.getAgentLoop(id))) {
-      throw new AgentLoopNotReadyError('Agent Loop changed while it was being enabled');
-    }
-    return row ? this.agentLoopRowToRecord(row) : undefined;
+      const row = await tx
+        .insertInto('session_automations')
+        .values({ id: randomUUID(), session_id: input.sessionId, ...values })
+        // A replacement gets a fresh id. Claims and outcomes are keyed by id, so a
+        // run of the previous configuration still in flight cannot record its result
+        // (or its errors) against the one the operator just confirmed.
+        .onConflict((oc) =>
+          oc
+            .column('session_id')
+            .doUpdateSet({ ...values, id: randomUUID(), updated_at: sql`now()` }),
+        )
+        .returningAll()
+        .executeTakeFirst();
+      if (!row)
+        throw new Error('verity: setSessionAutomation RETURNING yielded no row — dialect bug');
+      return this.sessionAutomationRowToRecord(row);
+    });
   }
 
-  /** Atomically bind a replacement session only while the loop is still
-   * unbound. This closes route-vs-scheduler recovery races: exactly one created
-   * session wins and callers can clean up any losing candidate. */
-  async linkAgentLoopSessionIfMissing(
-    id: string,
-    sessionId: string,
-  ): Promise<AgentLoopRecord | undefined> {
+  async getSessionAutomation(sessionId: string): Promise<SessionAutomationRecord | undefined> {
     const row = await this.db
-      .updateTable('agent_loops')
-      .set({ session_id: sessionId, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .where('session_id', 'is', null)
-      .returningAll()
+      .selectFrom('session_automations')
+      .selectAll()
+      .where('session_id', '=', sessionId)
       .executeTakeFirst();
-    return row ? this.agentLoopRowToRecord(row) : undefined;
+    return row ? this.sessionAutomationRowToRecord(row) : undefined;
   }
 
-  /** Mark exactly the config snapshot used by a successful test run as proven.
-   * Conditional predicates close the test-vs-edit race for every config field. */
-  async markAgentLoopTestPassed(
-    id: string,
-    testedConfig: AgentLoopRecord,
-  ): Promise<AgentLoopRecord | undefined> {
-    if (!testedConfig.script?.trim()) throw new AgentLoopNotReadyError('Agent Loop needs a script');
-    let update = this.db
-      .updateTable('agent_loops')
-      .set({
-        tested_script_fingerprint: agentLoopConfigFingerprint(testedConfig),
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .where('script', '=', testedConfig.script);
-    update = testedConfig.schedule
-      ? update
-          .where('schedule_kind', '=', testedConfig.schedule.kind)
-          .where('schedule_config', '=', testedConfig.schedule)
-      : update.where('schedule_kind', 'is', null).where('schedule_config', 'is', null);
-    update =
-      testedConfig.reactionPrompt === null
-        ? update.where('reaction_prompt', 'is', null)
-        : update.where('reaction_prompt', '=', testedConfig.reactionPrompt);
-    update =
-      testedConfig.reactionModel === null
-        ? update.where('reaction_model', 'is', null)
-        : update.where('reaction_model', '=', testedConfig.reactionModel);
-    const row = await update.returningAll().executeTakeFirst();
-    return row ? this.agentLoopRowToRecord(row) : undefined;
+  /**
+   * Pause or resume a session's automation. Resuming re-arms it from `now` and
+   * closes the error circuit, so an automation paused after repeated failures
+   * gets a fresh run of attempts once the operator turns it back on.
+   */
+  async setSessionAutomationStatus(
+    sessionId: string,
+    status: SessionAutomationStatus,
+    now: Date = new Date(),
+  ): Promise<SessionAutomationRecord | undefined> {
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('session_automations')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return undefined;
+      // Re-sending the current status must neither reset the error budget nor
+      // push an already armed slot further out.
+      if (row.status === status) return this.sessionAutomationRowToRecord(row);
+      const updated = await tx
+        .updateTable('session_automations')
+        .set({
+          status,
+          next_run_at:
+            status === 'enabled' ? computeNextRun(row.schedule, now).toISOString() : null,
+          ...(status === 'enabled' ? { consecutive_error_count: 0 } : {}),
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return this.sessionAutomationRowToRecord(updated);
+    });
   }
 
-  async deleteAgentLoop(id: string): Promise<boolean> {
-    const result = await this.db.deleteFrom('agent_loops').where('id', '=', id).executeTakeFirst();
+  async deleteSessionAutomation(sessionId: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('session_automations')
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
     return result.numDeletedRows > 0n;
   }
 
-  /**
-   * Enabled loops whose `next_run_at` is at or before `now` — the scheduler's due
-   * set for one pass. Ordered by due time so the earliest-overdue runs first.
-   */
-  async listDueAgentLoops(now: Date): Promise<AgentLoopRecord[]> {
+  /** Automation status per session, for the session list's automation marker.
+   *  Sessions without an automation are absent from the map. */
+  async listSessionAutomationStatuses(
+    sessionIds: readonly string[],
+  ): Promise<Map<string, SessionAutomationStatus>> {
+    const statuses = new Map<string, SessionAutomationStatus>();
+    if (sessionIds.length === 0) return statuses;
     const rows = await this.db
-      .selectFrom('agent_loops')
-      .select(this.agentLoopColumns)
+      .selectFrom('session_automations')
+      .select(['session_id', 'status'])
+      .where('session_id', 'in', sessionIds)
+      .execute();
+    for (const row of rows) statuses.set(row.session_id, row.status as SessionAutomationStatus);
+    return statuses;
+  }
+
+  /** Enabled automations due at or before `now`, earliest-overdue first. */
+  async listDueSessionAutomations(now: Date): Promise<SessionAutomationRecord[]> {
+    const rows = await this.db
+      .selectFrom('session_automations')
+      .selectAll()
       .where('status', '=', 'enabled')
       .where('next_run_at', 'is not', null)
       .where('next_run_at', '<=', now)
       .orderBy('next_run_at', 'asc')
       .execute();
-    return rows.map((r) => this.agentLoopRowToRecord(r));
+    return rows.map((r) => this.sessionAutomationRowToRecord(r));
   }
 
-  /**
-   * The earliest `next_run_at` across enabled loops, or `null` if none is
-   * scheduled — the scheduler sleeps until this instant instead of polling.
-   */
-  async nextAgentLoopDueAt(): Promise<Date | null> {
+  /** The earliest armed due time, or `null` — the scheduler sleeps until then. */
+  async nextSessionAutomationDueAt(): Promise<Date | null> {
     const row = await this.db
-      .selectFrom('agent_loops')
+      .selectFrom('session_automations')
       .select((eb) => eb.fn.min('next_run_at').as('next'))
       .where('status', '=', 'enabled')
       .where('next_run_at', 'is not', null)
@@ -5772,17 +5632,17 @@ export class EventStore implements EventSink {
   }
 
   /**
-   * Record that a loop ran: stamp `last_run_at` and advance `next_run_at` to the
-   * next scheduled slot (or clear it if no longer enabled). The scheduler computes
-   * the next slot from the loop's own schedule via {@link computeNextRun} and
-   * passes it in, so the store never re-derives scheduling policy.
+   * Claim one due tick: advance `next_run_at` before any work starts, so a crash
+   * mid-run cannot re-fire the same slot after a restart, and two server
+   * generations cannot both run it. Returns false when another claimer won or the
+   * automation was paused, replaced, or deleted in the meantime.
    */
-  async claimAgentLoopRun(id: string, ranAt: Date, nextRunAt: Date | null): Promise<boolean> {
+  async claimSessionAutomationRun(id: string, ranAt: Date, nextRunAt: Date): Promise<boolean> {
     const result = await this.db
-      .updateTable('agent_loops')
+      .updateTable('session_automations')
       .set({
         last_run_at: ranAt.toISOString(),
-        next_run_at: nextRunAt ? nextRunAt.toISOString() : null,
+        next_run_at: nextRunAt.toISOString(),
         updated_at: sql`now()`,
       })
       .where('id', '=', id)
@@ -5793,123 +5653,41 @@ export class EventStore implements EventSink {
     return result.numUpdatedRows > 0n;
   }
 
-  /** Open a run-history row for a loop pass. Returns its id so the scheduler can
-   *  close it with {@link finishAgentLoopRun} once the pass settles. */
-  async startAgentLoopRun(loopId: string): Promise<AgentLoopRunRecord> {
-    const row = await this.db
-      .insertInto('agent_loop_runs')
-      .values({ id: randomUUID(), loop_id: loopId, outcome: 'ok' })
-      .returningAll()
-      .executeTakeFirst();
-    if (!row) throw new Error('verity: startAgentLoopRun RETURNING yielded no row — dialect bug');
-    return this.agentLoopRunRowToRecord(row);
-  }
-
-  /** Close a run-history row with its terminal outcome, optional detail, exit
-   *  code, and the session it used (if any). */
-  async finishAgentLoopRun(
-    runId: string,
-    result: {
-      outcome: AgentLoopRunOutcome;
-      detail?: string | null;
-      sessionId?: string | null;
-      exitCode?: number | null;
-      isTest?: boolean;
-    },
+  /**
+   * Record how a claimed run settled. Five consecutive errors pause the
+   * automation so a broken one stops spending turns until the operator resumes it.
+   */
+  async recordSessionAutomationOutcome(
+    id: string,
+    result: { outcome: SessionAutomationOutcome; detail: string | null },
   ): Promise<void> {
     await this.db.transaction().execute(async (tx) => {
-      const run = await tx
-        .selectFrom('agent_loop_runs')
-        .select('loop_id')
-        .where('id', '=', runId)
-        .executeTakeFirst();
-      if (!run) return;
-      await tx
-        .updateTable('agent_loop_runs')
-        .set({
-          finished_at: sql`now()`,
-          outcome: result.outcome,
-          detail: result.detail ?? null,
-          session_id: result.sessionId ?? null,
-          exit_code: result.exitCode ?? null,
-          ...(result.isTest !== undefined ? { is_test: result.isTest } : {}),
-        })
-        .where('id', '=', runId)
-        .execute();
-
-      // Test runs prove config but must not trip or reset the production circuit.
-      if (result.isTest === true) return;
-      const loop = await tx
-        .selectFrom('agent_loops')
+      const automation = await tx
+        .selectFrom('session_automations')
         .select('consecutive_error_count')
-        .where('id', '=', run.loop_id)
+        .where('id', '=', id)
         .forUpdate()
         .executeTakeFirst();
-      if (!loop) return;
+      if (!automation) return;
       const errorCount =
         result.outcome === 'error'
-          ? loop.consecutive_error_count + 1
-          : result.outcome === 'ok' || result.outcome === 'acted'
-            ? 0
-            : loop.consecutive_error_count;
-      const circuitOpen = errorCount >= 5;
+          ? automation.consecutive_error_count + 1
+          : result.outcome === 'skipped'
+            ? automation.consecutive_error_count
+            : 0;
+      const circuitOpen = errorCount >= SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS;
       await tx
-        .updateTable('agent_loops')
+        .updateTable('session_automations')
         .set({
-          last_run_at: sql`now()`,
           last_outcome: result.outcome,
+          last_detail: result.detail,
           consecutive_error_count: errorCount,
           ...(circuitOpen ? { status: 'paused', next_run_at: null } : {}),
           updated_at: sql`now()`,
         })
-        .where('id', '=', run.loop_id)
+        .where('id', '=', id)
         .execute();
     });
-  }
-
-  /** Run history for a loop, newest first, capped at `limit` (default 50). */
-  async listAgentLoopRuns(loopId: string, limit = 50): Promise<AgentLoopRunRecord[]> {
-    const rows = await this.db
-      .selectFrom('agent_loop_runs')
-      .selectAll()
-      .where('loop_id', '=', loopId)
-      .orderBy('seq', 'desc')
-      .limit(limit)
-      .execute();
-    return rows.map((r) => this.agentLoopRunRowToRecord(r));
-  }
-
-  async getAgentLoopRun(id: string): Promise<AgentLoopRunRecord | undefined> {
-    const row = await this.db
-      .selectFrom('agent_loop_runs')
-      .selectAll()
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? this.agentLoopRunRowToRecord(row) : undefined;
-  }
-
-  private agentLoopRunRowToRecord(row: {
-    id: string;
-    loop_id: string;
-    started_at: Date;
-    finished_at: Date | null;
-    outcome: string;
-    exit_code: number | null;
-    detail: string | null;
-    session_id: string | null;
-    is_test: boolean;
-  }): AgentLoopRunRecord {
-    return {
-      id: row.id,
-      loopId: row.loop_id,
-      startedAt: row.started_at,
-      finishedAt: row.finished_at,
-      outcome: row.outcome as AgentLoopRunOutcome,
-      exitCode: row.exit_code,
-      detail: row.detail,
-      sessionId: row.session_id,
-      isTest: row.is_test,
-    };
   }
 
   private projectSettingsRowToRecord(

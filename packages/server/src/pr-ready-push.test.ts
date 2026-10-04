@@ -15,7 +15,6 @@ const SESSION: SessionRecord = {
   model: 'm',
   name: 'Push polish',
   projectId: 'p1',
-  kind: 'normal',
   lastSeenEventCount: null,
 };
 

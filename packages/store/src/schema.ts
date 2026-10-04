@@ -42,12 +42,6 @@ export interface SessionsTable {
    */
   project_id: ColumnType<string | null, string | null | undefined, string | null>;
   /**
-   * Session discriminator (ADR 0008): `'normal'` for an ordinary agent run,
-   * `'agent_loop'` for a session that is the durable runtime of an Agent Loop.
-   * notNull default `'normal'`, so pre-existing sessions read back as normal.
-   */
-  kind: ColumnType<string, string | undefined, string>;
-  /**
    * Operator's "last seen" mark for the overview unread dot (#387): the session's
    * `eventCount` at the last open. NULL = never opened → not unread. Global (no
    * per-device scoping), so the mark syncs across every device hitting this server.
@@ -910,83 +904,43 @@ interface SecretJobFramesTable {
 }
 
 /**
- * Recurring automation ("der Loop", ADR 0008). One row per configured Agent
- * Loop: a project-scoped `{ script, schedule }` bound to one durable agent
- * session. Project-scoped, `onDelete cascade` — dropping a project removes its
- * loops. No column holds a credential, so nothing here is encrypted; loop config
- * reads work while the secret store is sealed.
+ * A recurring prompt bound to one session (ADR 0008). The operator confirms an
+ * agent's proposal in the session; from then on the scheduler sends `prompt` to
+ * that session's agent on `schedule`, or, when `script` is set, runs the script
+ * in the project container first and wakes the agent only on its signal.
  *
- * A loop is created as `status:'draft'` (no schedule/script yet); only an
- * `'enabled'` loop fires. `schedule_config` is stored as jsonb (structured, not a
- * raw cron string) — see {@link ScheduleConfig}.
+ * At most one per session (`session_id` is unique) and `onDelete cascade` with
+ * the session, so deleting the session removes its automation. No column holds a
+ * credential.
  */
-export interface AgentLoopsTable {
+export interface SessionAutomationsTable {
   id: string;
-  project_id: string;
+  session_id: string;
   name: string;
-  /** `'draft' | 'enabled' | 'paused'` — only `enabled` loops fire (ADR 0008 §7). */
-  status: ColumnType<string, string | undefined, string>;
-  /** `'interval' | 'daily' | 'weekly'` — the discriminant for `schedule_config`.
-   *  NULL on a draft that has no schedule yet. */
-  schedule_kind: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Structured schedule params for `schedule_kind` (never a raw cron string).
-   *  Read as a parsed object; written as a `JSON.stringify`'d string (jsonb).
-   *  NULL on a draft with no schedule yet. */
-  schedule_config: ColumnType<ScheduleConfig | null, string | null, string | null>;
-  /** The loop's script; owns the condition + spawn signal. NULL on a draft. */
+  /** `'enabled' | 'paused'` — only `enabled` fires. */
+  status: string;
+  /** Structured schedule (never a raw cron string). Read parsed; written as JSON text. */
+  schedule: ColumnType<ScheduleConfig, string, string>;
+  prompt: string;
   script: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Fallback turn prompt when the script signals without supplying one. */
-  reaction_prompt: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Model for the dispatched turn; NULL → project/server default. */
-  reaction_model: ColumnType<string | null, string | null | undefined, string | null>;
-  /** The loop's durable session; FK `sessions.session_id` `onDelete set null`. */
-  session_id: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Fingerprint of the script last proven by a green test run (draft-until-tested). */
-  tested_script_fingerprint: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Consecutive error runs — the circuit-breaker counter (deferred logic). */
+  model: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Consecutive error runs; five pause the automation. */
   consecutive_error_count: ColumnType<number, number | undefined, number>;
-  /** Denormalized last-run time for the list UI. NULL until first run. */
   last_run_at: ColumnType<Date | null, string | null | undefined, string | null>;
-  /** Denormalized last result: `'ok' | 'acted' | 'error' | 'skipped'`. */
+  /** `'ok' | 'acted' | 'error' | 'skipped'`. */
   last_outcome: ColumnType<string | null, string | null | undefined, string | null>;
-  /** The scheduler's due-time index: when this loop next fires. NULL = draft or
-   *  paused. The DB is the source of truth; the timer is stateless. */
+  last_detail: ColumnType<string | null, string | null | undefined, string | null>;
+  /** The scheduler's due-time index. NULL while paused. */
   next_run_at: ColumnType<Date | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-/** Structured Agent Loop schedule (ADR 0008 §3). A discriminated union stored as
- *  jsonb so the mobile UI never handles raw cron. All times are server-local. */
+/** Structured automation schedule. All times are server-local. */
 export type ScheduleConfig =
   | { kind: 'interval'; everyMinutes: number }
   | { kind: 'daily'; hour: number; minute: number }
   | { kind: 'weekly'; weekday: number; hour: number; minute: number };
-
-/**
- * Append-only run history for an Agent Loop (ADR 0008). One row per scheduler
- * pass that touched the loop. `onDelete cascade` with the loop.
- */
-export interface AgentLoopRunsTable {
-  id: string;
-  /** Monotonic insert order — the reliable newest-first tiebreak (`started_at`
-   *  can tie to the millisecond when a pass fires several runs; the random UUID
-   *  `id` does not reflect insertion order). */
-  seq: Generated<number>;
-  loop_id: string;
-  started_at: ColumnType<Date, string | undefined, never>;
-  finished_at: ColumnType<Date | null, string | null | undefined, string | null>;
-  /** `'ok' | 'acted' | 'error' | 'skipped'`. */
-  outcome: string;
-  /** The script's exit code, if it ran. */
-  exit_code: ColumnType<number | null, number | null | undefined, number | null>;
-  /** Short human summary (stdout tail, error message). */
-  detail: ColumnType<string | null, string | null | undefined, string | null>;
-  /** The session this run used, if any. */
-  session_id: ColumnType<string | null, string | null | undefined, string | null>;
-  /** True for the creation-time validation run (ADR 0008 §7A). */
-  is_test: ColumnType<boolean, boolean | undefined, boolean>;
-}
 
 /** One-or-more dev servers per project (multi-dev-server data model, slice 1).
  *  The table is the source of truth; the legacy `project_settings.dev_server_*`
@@ -1338,8 +1292,7 @@ export interface Database {
   secret_provider_permissions: SecretProviderPermissionsTable;
   brokered_grant_approvals: BrokeredGrantApprovalsTable;
   brokered_http_consumptions: BrokeredHttpConsumptionsTable;
-  agent_loops: AgentLoopsTable;
-  agent_loop_runs: AgentLoopRunsTable;
+  session_automations: SessionAutomationsTable;
   runner_frames: RunnerFramesTable;
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;

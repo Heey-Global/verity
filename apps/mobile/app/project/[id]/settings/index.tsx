@@ -148,8 +148,7 @@ function ProjectSettingsIndexView({
     pathname:
       | '/project/[id]/settings/github'
       | '/project/[id]/settings/environment'
-      | '/project/[id]/settings/model'
-      | '/project/[id]/automations',
+      | '/project/[id]/settings/model',
   ) => router.push({ pathname, params: { id: projectId } });
   const toService = (section: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google') =>
     router.push({
@@ -267,23 +266,12 @@ function ProjectSettingsIndexView({
         </SettingsListPanel>
       </SettingsGroup>
 
-      <SettingsGroup title="Project tools">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="repeat"
-            title="Automations"
-            subtitle="Agent Loops and schedules"
-            onPress={() => to('/project/[id]/automations')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-
       <SettingsGroup title="Defaults">
         <SettingsListPanel>
           <SettingsNavRow
             icon="cpu"
             title="Default model"
-            subtitle="New sessions and Agent Loops start with it"
+            subtitle="New sessions start with it"
             value={defaultModel !== null ? modelDisplayName(defaultModel) : 'Server default'}
             onPress={() => to('/project/[id]/settings/model')}
           />

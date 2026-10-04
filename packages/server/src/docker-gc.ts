@@ -67,7 +67,7 @@
  *    pass still reclaims space, and the next pass retries.
  *
  * Scheduling follows the house pattern for daily server work (see
- * `agent-loop-scheduler.ts`) — a single self-rescheduling unref'd timer, an
+ * `automation-scheduler.ts`) — a single self-rescheduling unref'd timer, an
  * overlap guard, and a disposer.
  */
 import { statfs } from 'node:fs/promises';

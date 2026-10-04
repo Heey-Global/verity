@@ -123,3 +123,49 @@ it('retains backend bindings acquired after preparation when retrying a move', a
     expect.arrayContaining(['old', 'after-failure']),
   );
 });
+it('pauses an automation whose check script was confirmed against the source project', async () => {
+  await ctx.store.setSessionAutomation({
+    sessionId: 's',
+    name: 'Nightly check',
+    schedule: { kind: 'daily', hour: 3, minute: 0 },
+    prompt: 'Fix what the check found.',
+    script: 'exit 10',
+  });
+  await ctx.store.commitSessionMove('s', 'move', 'Moved to b', '{}');
+  expect(await ctx.store.getSessionAutomation('s')).toMatchObject({
+    status: 'paused',
+    nextRunAt: null,
+  });
+});
+it('keeps a prompt-only automation running after a move', async () => {
+  await ctx.store.setSessionAutomation({
+    sessionId: 's',
+    name: 'Weekly summary',
+    schedule: { kind: 'weekly', weekday: 1, hour: 9, minute: 0 },
+    prompt: 'Summarize the week.',
+  });
+  await ctx.store.commitSessionMove('s', 'move', 'Moved to b', '{}');
+  expect(await ctx.store.getSessionAutomation('s')).toMatchObject({ status: 'enabled' });
+});
+
+it.each([false, true])(
+  'rejects source-approved saves after a move (existing automation: %s)',
+  async (existing) => {
+    const input = {
+      sessionId: 's',
+      name: 'Check',
+      schedule: { kind: 'daily' as const, hour: 9, minute: 0 },
+      prompt: 'Review changes.',
+      script: 'exit 10',
+    };
+    const source = (await ctx.store.getSession('s'))!;
+    if (existing) await ctx.store.setSessionAutomation(input);
+    await ctx.store.commitSessionMove('s', 'move', 'Moved', '{}');
+    await expect(ctx.store.setSessionAutomation(input, new Date(), source)).rejects.toThrow(
+      'workspace changed',
+    );
+    const saved = await ctx.store.getSessionAutomation('s');
+    if (existing) expect(saved).toMatchObject({ status: 'paused', nextRunAt: null });
+    else expect(saved).toBeUndefined();
+  },
+);

@@ -23428,7 +23428,7 @@ var choicesPayloadSchema = import_zod.z.object({
   options: import_zod.z.array(choicesOptionSchema).min(1).max(20),
   multiSelect: import_zod.z.boolean().optional()
 }).refine((payload) => payload.options.filter((option) => option.recommended === true).length <= 1, { message: "at most one choice option may be recommended", path: ["options"] });
-var agentLoopScheduleSchema = import_zod.z.discriminatedUnion("kind", [
+var automationScheduleSchema = import_zod.z.discriminatedUnion("kind", [
   import_zod.z.object({ kind: import_zod.z.literal("interval"), everyMinutes: import_zod.z.number().int().min(15) }),
   import_zod.z.object({
     kind: import_zod.z.literal("daily"),
@@ -23442,13 +23442,12 @@ var agentLoopScheduleSchema = import_zod.z.discriminatedUnion("kind", [
     minute: import_zod.z.number().int().min(0).max(59)
   })
 ]);
-var agentLoopProposalSchema = import_zod.z.object({
-  loopId: import_zod.z.string().uuid(),
+var automationProposalSchema = import_zod.z.object({
   name: import_zod.z.string().trim().min(1).max(80),
-  script: import_zod.z.string().min(1),
-  schedule: agentLoopScheduleSchema,
-  reactionPrompt: import_zod.z.string().trim().min(1).optional(),
-  reactionModel: import_zod.z.string().trim().min(1).nullable().optional()
+  schedule: automationScheduleSchema,
+  prompt: import_zod.z.string().trim().min(1).max(8e3),
+  script: import_zod.z.string().trim().min(1).max(16e3).optional(),
+  model: import_zod.z.string().trim().min(1).nullable().optional()
 });
 var usageSchema = import_zod.z.object({
   inputTokens: import_zod.z.number().int().nonnegative(),
@@ -23659,8 +23658,8 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     path: ["options"]
   }),
   import_zod.z.object({
-    t: import_zod.z.literal("agent_loop_proposal"),
-    proposal: agentLoopProposalSchema
+    t: import_zod.z.literal("automation_proposal"),
+    proposal: automationProposalSchema
   }),
   import_zod.z.object({
     // A turn ended without normal completion. Emitted for an explicit cancel, an
@@ -24550,30 +24549,36 @@ Do not use a Quick Action to defer work already authorized by the user's request
 
 Mark at most one option recommended. Set \`multiSelect:false\` (the default) for almost every prompt: a single tap then sends the option immediately. Set \`multiSelect:true\` ONLY when the options are additive and the operator would genuinely pick several at once (e.g. "which files to include") \u2014 this adds a two-step confirm (tap to select, then a separate Send button), so never use it for mutually exclusive choices, go-aheads, or "pick one to start" prompts. Skip pure status updates, open-ended brainstorming, and the final merge decision on an open PR (the PR status/merge bar handles that). When not already authorized, a go-ahead to commit, review, push, or open a PR is still a decision, so emit the block for those; when the user already requested the action, execute it without another choice. Do not write check-only status prose or poll/monitor PR checks/CI with tools such as \`gh pr checks\` unless explicitly asked; Verity refreshes that status. Valid JSON only: double-quoted keys/strings, no trailing commas, and escape inner double-quotes as \\".`;
 
-// node_modules/@verity/events/dist/agent-loop.js
-var AGENT_LOOP_FENCE_RE = /```verity:agent-loop[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
-function parseAgentLoopProposal(input) {
-  const matches = [...input.matchAll(AGENT_LOOP_FENCE_RE)];
+// node_modules/@verity/events/dist/automation.js
+var AUTOMATION_FENCE_RE = /```verity:automation[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+function validProposal(body) {
+  try {
+    const parsed = automationProposalSchema.safeParse(JSON.parse(body ?? ""));
+    return parsed.success ? parsed.data : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function parseAutomationProposal(input) {
+  const matches = [...input.matchAll(AUTOMATION_FENCE_RE)];
   let proposal;
   for (let i = matches.length - 1; i >= 0 && proposal === void 0; i -= 1) {
-    try {
-      const parsed = agentLoopProposalSchema.safeParse(JSON.parse(matches[i]?.[1] ?? ""));
-      if (parsed.success)
-        proposal = parsed.data;
-    } catch {
-    }
+    proposal = validProposal(matches[i]?.[1]);
   }
   if (!proposal)
     return { text: input };
-  const text = input.replace(AGENT_LOOP_FENCE_RE, (fence, body) => {
-    try {
-      return agentLoopProposalSchema.safeParse(JSON.parse(body)).success ? "" : fence;
-    } catch {
-      return fence;
-    }
-  }).trimEnd();
+  const text = input.replace(AUTOMATION_FENCE_RE, (fence, body) => validProposal(body) === void 0 ? fence : "").trimEnd();
   return { text, proposal };
 }
+var SCHEDULE_HELP = '`schedule` is `{"kind":"daily","hour":9,"minute":0}`, `{"kind":"weekly","weekday":1,"hour":9,"minute":0}` (weekday 0 is Sunday), or `{"kind":"interval","everyMinutes":60}` (at least 15). Times are in the Verity server\'s local time.';
+var PROPOSAL_RULES = "The app turns the block into a confirmation card. The automation exists only after the user confirms it there, so never claim it is active before that. A session has at most one automation; a newly confirmed proposal replaces the current one. The user pauses or deletes it from the session header.";
+var AUTOMATION_SYSTEM_PROMPT = `# Recurring automations (Verity)
+
+When the user wants something done regularly in this session, set it up as an automation. Ask only for what is missing: what to do and when. Then append exactly one final \`verity:automation\` block containing valid JSON with \`name\` (short, user-facing), \`schedule\`, \`prompt\`, and optional \`script\` / \`model\`.
+
+${SCHEDULE_HELP} \`prompt\` is the instruction you receive on every run; make it self-contained, because it must make sense without this conversation. Add \`script\` only when a cheap read-only shell check can settle most runs: it runs in the project container before each run, exit 0 ends the run without waking you, exit 10 runs the prompt, and any other exit is an error. Otherwise omit it.
+
+${PROPOSAL_RULES}`;
 
 // node_modules/@verity/events/dist/session-handoff-tool.js
 var import_zod2 = __toESM(require_zod(), 1);
@@ -28953,12 +28958,12 @@ var AcpEventAdapter = class {
   }
 };
 function finalAcpTextEvents(text) {
-  const parsedLoop = parseAgentLoopProposal(text);
-  const { text: prose, choices } = parseChoicesBlock(parsedLoop.text);
-  if (parsedLoop.proposal !== void 0) {
+  const parsedAutomation = parseAutomationProposal(text);
+  const { text: prose, choices } = parseChoicesBlock(parsedAutomation.text);
+  if (parsedAutomation.proposal !== void 0) {
     return [
       ...prose.length > 0 ? [{ t: "text", delta: prose }] : [],
-      { t: "agent_loop_proposal", proposal: parsedLoop.proposal }
+      { t: "automation_proposal", proposal: parsedAutomation.proposal }
     ];
   }
   if (choices !== void 0) {
@@ -28972,7 +28977,7 @@ function finalAcpTextEvents(text) {
 var AcpTextStream = class _AcpTextStream {
   static fences = [
     "```verity:choices",
-    "```verity:agent-loop",
+    "```verity:automation",
     "<quick-actions>"
   ];
   static maxContractLength = 64 * 1024;
@@ -31202,7 +31207,6 @@ var FileEventSink = class {
       model: session.model,
       name: session.name ?? null,
       projectId: session.projectId ?? null,
-      kind: session.kind ?? "normal",
       lastSeenEventCount: null
     });
     return Promise.resolve();

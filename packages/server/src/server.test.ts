@@ -3200,6 +3200,39 @@ describe('GET /sessions', () => {
     expect(byId).toEqual({ s1: true, s2: false });
   });
 
+  it('marks sessions that carry an automation and checks its model on confirm', async () => {
+    await ctx.store.updateVeritySettings({
+      claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+    });
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.createSession({ sessionId: 's2', worktree: '/wt/s2', model: 'm' });
+    const proposal = {
+      name: 'Morning review',
+      schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Review the open pull requests.',
+    };
+    // A project-less session has no project allowlist, but an agent-proposed model
+    // still has to be one this server can actually run unattended.
+    const refused = await app.inject({
+      method: 'PUT',
+      url: '/sessions/s1/automation',
+      payload: { ...proposal, model: 'nowhere/unknown' },
+    });
+    expect(refused.statusCode).toBe(400);
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/sessions/s1/automation',
+      payload: { ...proposal, model: CLAUDE_SORTED[0] },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const list = (await app.inject({ method: 'GET', url: '/sessions' })).json<
+      Array<{ sessionId: string; automation?: unknown }>
+    >();
+    expect(list.find((s) => s.sessionId === 's1')?.automation).toEqual({ status: 'enabled' });
+    expect(list.find((s) => s.sessionId === 's2')).not.toHaveProperty('automation');
+  });
+
   it('lists sessions with a derived status badge', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'status', state: 'awaiting_input' });
@@ -3214,7 +3247,6 @@ describe('GET /sessions', () => {
         model: 'm',
         name: null,
         projectId: null,
-        kind: 'normal',
         status: 'awaiting_input',
         pendingPermissions: [],
         usage: ZERO_USAGE,
@@ -3229,7 +3261,6 @@ describe('GET /sessions', () => {
         model: 'm',
         name: null,
         projectId: null,
-        kind: 'normal',
         status: 'idle',
         pendingPermissions: [],
         usage: ZERO_USAGE,
@@ -3393,7 +3424,6 @@ describe('GET /sessions', () => {
         model: 'm',
         name: null,
         projectId: null,
-        kind: 'normal',
         status: 'completed',
         pendingPermissions: [],
         usage: {
@@ -6137,7 +6167,6 @@ describe('GET /sessions/:id', () => {
       model: 'm',
       name: null,
       projectId: null,
-      kind: 'normal',
       status: 'running',
       pendingPermissions: [],
       usage: ZERO_USAGE,

@@ -1,5 +1,5 @@
 import type { SessionUpdate, ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
-import { parseAgentLoopProposal, parseChoicesBlock, type AgentEvent } from '@verity/events';
+import { parseAutomationProposal, parseChoicesBlock, type AgentEvent } from '@verity/events';
 import {
   lifecycleSignalsFromMeta,
   StructuredLifecycleMapper,
@@ -368,12 +368,12 @@ export class AcpEventAdapter {
 
 /** Lift Verity's end-of-turn contracts after ACP streaming has completed. */
 export function finalAcpTextEvents(text: string): AgentEvent[] {
-  const parsedLoop = parseAgentLoopProposal(text);
-  const { text: prose, choices } = parseChoicesBlock(parsedLoop.text);
-  if (parsedLoop.proposal !== undefined) {
+  const parsedAutomation = parseAutomationProposal(text);
+  const { text: prose, choices } = parseChoicesBlock(parsedAutomation.text);
+  if (parsedAutomation.proposal !== undefined) {
     return [
       ...(prose.length > 0 ? ([{ t: 'text', delta: prose }] satisfies AgentEvent[]) : []),
-      { t: 'agent_loop_proposal', proposal: parsedLoop.proposal },
+      { t: 'automation_proposal', proposal: parsedAutomation.proposal },
     ];
   }
   if (choices !== undefined) {
@@ -391,7 +391,7 @@ export function finalAcpTextEvents(text: string): AgentEvent[] {
 export class AcpTextStream {
   private static readonly fences = [
     '```verity:choices',
-    '```verity:agent-loop',
+    '```verity:automation',
     '<quick-actions>',
   ] as const;
   private static readonly maxContractLength = 64 * 1024;

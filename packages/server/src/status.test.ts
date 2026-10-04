@@ -260,13 +260,12 @@ const SAMPLES: Record<AgentEventType, AgentEvent> = {
   },
   task: taskStarted,
   choices: { t: 'choices', options: [{ label: 'yes' }] },
-  agent_loop_proposal: {
-    t: 'agent_loop_proposal',
+  automation_proposal: {
+    t: 'automation_proposal',
     proposal: {
-      loopId: '8d2b7f16-3a2e-4a29-9f0c-7b6b1c5a0d11',
-      name: 'nightly sweep',
-      script: 'run the sweep',
+      name: 'Nightly sweep',
       schedule: { kind: 'interval', everyMinutes: 60 },
+      prompt: 'Run the sweep.',
     },
   },
   interrupted: { t: 'interrupted' },

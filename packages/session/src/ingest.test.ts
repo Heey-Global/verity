@@ -70,7 +70,6 @@ describe('SessionWriter (turn ingestion)', () => {
       model: 'claude-opus-4-8',
       name: null,
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const events = await ctx.store.getEvents('s1');

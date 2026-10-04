@@ -529,18 +529,17 @@ describe('AcpEventAdapter', () => {
     expect(stream.flush()).toEqual([{ t: 'choices', options: [{ label: 'Continue' }] }]);
   });
 
-  it('hides and lifts an agent-loop contract split across ACP chunks', () => {
+  it('hides and lifts an automation contract split across ACP chunks', () => {
     const stream = new AcpTextStream();
     const proposal = {
-      loopId: '11111111-1111-4111-8111-111111111111',
       name: 'Daily check',
-      script: 'npm test',
       schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Run the test suite and report failures.',
     };
-    expect(stream.push('Configured.\n```verity:agent-')).toEqual([
+    expect(stream.push('Configured.\n```verity:autom')).toEqual([
       { t: 'text', delta: 'Configured.' },
     ]);
-    expect(stream.push(`loop\n${JSON.stringify(proposal)}\n\`\`\``)).toEqual([]);
-    expect(stream.flush()).toEqual([{ t: 'agent_loop_proposal', proposal }]);
+    expect(stream.push(`ation\n${JSON.stringify(proposal)}\n\`\`\``)).toEqual([]);
+    expect(stream.flush()).toEqual([{ t: 'automation_proposal', proposal }]);
   });
 });

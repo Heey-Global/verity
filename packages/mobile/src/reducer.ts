@@ -10,7 +10,7 @@ import type {
   AgentTextMessage,
   ChoicesMessage,
   DependencyStatusMessage,
-  AgentLoopProposalMessage,
+  AutomationProposalMessage,
   Message,
   PendingPermission,
   ToolCallMessage,
@@ -428,11 +428,11 @@ export class SessionReducer {
         this.appendMessage(msg);
         break;
       }
-      case 'agent_loop_proposal': {
+      case 'automation_proposal': {
         this.active = null;
-        const msg: AgentLoopProposalMessage = {
-          kind: 'agent-loop-proposal',
-          id: `agent-loop-proposal-${String(seq)}`,
+        const msg: AutomationProposalMessage = {
+          kind: 'automation-proposal',
+          id: `automation-proposal-${String(seq)}`,
           createdAt: ts,
           proposal: event.proposal,
         };

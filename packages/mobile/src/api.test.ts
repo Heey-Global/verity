@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import {
-  agentLoopConfigFingerprint,
-  VerityApiError,
-  VerityClient,
-  projectRecordSchema,
-  type TurnRequest,
-} from './api.js';
+import { VerityApiError, VerityClient, projectRecordSchema, type TurnRequest } from './api.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -2868,101 +2862,52 @@ describe('VerityClient agent login flows', () => {
   });
 });
 
-describe('VerityClient Agent Loops', () => {
-  it('fingerprints the complete confirmed config, not only the script', () => {
-    const base = {
-      name: 'Audit',
-      script: 'exit 0',
-      schedule: { kind: 'daily' as const, hour: 3, minute: 0 },
-      reactionPrompt: 'Investigate',
-      reactionModel: null,
-    };
-    expect(agentLoopConfigFingerprint(base)).not.toBe(
-      agentLoopConfigFingerprint({
-        ...base,
-        schedule: { kind: 'daily', hour: 4, minute: 0 },
-      }),
-    );
-    expect(agentLoopConfigFingerprint(base)).not.toBe(
-      agentLoopConfigFingerprint({ ...base, reactionModel: 'codex/default' }),
-    );
-  });
-  const loop = {
-    id: 'loop-1',
-    projectId: 'project one',
-    name: 'Dependency audit',
-    status: 'draft',
-    schedule: { kind: 'interval', everyMinutes: 30 },
-    script: 'exit 0',
-    reactionPrompt: null,
-    reactionModel: null,
-    sessionId: 'session-1',
-    testedScriptFingerprint: null,
+describe('VerityClient session automations', () => {
+  const automation = {
+    id: 'a1',
+    sessionId: 's 1',
+    name: 'Morning review',
+    status: 'enabled',
+    schedule: { kind: 'daily', hour: 9, minute: 0 },
+    prompt: 'Summarize the open pull requests.',
+    script: null,
+    model: null,
     consecutiveErrorCount: 0,
     lastRunAt: null,
     lastOutcome: null,
-    nextRunAt: null,
-    createdAt: '2026-07-13T18:00:00.000Z',
-    updatedAt: '2026-07-13T18:00:00.000Z',
+    lastDetail: null,
+    nextRunAt: '2026-10-05T09:00:00.000Z',
+    createdAt: '2026-10-04T18:00:00.000Z',
+    updatedAt: '2026-10-04T18:00:00.000Z',
   };
 
-  it('uses the Agent Loop CRUD, test, and run-history endpoints', async () => {
-    const enabled = { ...loop, status: 'enabled' };
+  it('reads, saves, pauses, and deletes the automation of one session', async () => {
     const { fetch, calls } = fakeFetchSequence(
-      json({ loops: [loop] }),
-      json({ loop }),
-      json({ loop }),
-      json({ loop: enabled }),
-      json({ loop }),
-      json({
-        result: { outcome: 'ok', exitCode: 0, detail: 'clean', sessionId: 'session-1' },
-        loop,
-      }),
-      json({
-        result: { outcome: 'acted', exitCode: 10, detail: 'acted', sessionId: 'session-1' },
-        run: {
-          id: 'run-1',
-          loopId: 'loop-1',
-          startedAt: '2026-07-13T18:30:00.000Z',
-          finishedAt: '2026-07-13T18:30:01.000Z',
-          outcome: 'acted',
-          exitCode: 10,
-          detail: 'acted',
-          sessionId: 'session-1',
-          isTest: false,
-        },
-        loop: enabled,
-      }),
+      json({ automation: null }),
+      json({ automation }),
+      json({ automation: { ...automation, status: 'paused', nextRunAt: null } }),
       json({ ok: true }),
-      json({ runs: [] }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    expect(await client.listAgentLoops('project one')).toHaveLength(1);
-    expect((await client.getAgentLoop('loop-1')).id).toBe('loop-1');
-    await client.createAgentLoop('project one', { name: 'Dependency audit' });
-    await client.updateAgentLoop('loop-1', { status: 'enabled' });
-    await client.ensureAgentLoopSession('loop-1');
-    expect((await client.testAgentLoop('loop-1')).result.outcome).toBe('ok');
-    expect((await client.runAgentLoop('loop-1')).run.outcome).toBe('acted');
-    await client.deleteAgentLoop('loop-1', { deleteSession: true });
-    expect(await client.listAgentLoopRuns('loop-1')).toEqual([]);
+    expect(await client.getSessionAutomation('s 1')).toBeNull();
+    const request = {
+      name: 'Morning review',
+      schedule: { kind: 'daily' as const, hour: 9, minute: 0 },
+      prompt: 'Summarize the open pull requests.',
+    };
+    expect((await client.saveSessionAutomation('s 1', request)).status).toBe('enabled');
+    expect((await client.setSessionAutomationStatus('s 1', 'paused')).status).toBe('paused');
+    await client.deleteSessionAutomation('s 1');
 
     expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['GET', 'http://host/projects/project%20one/agent-loops'],
-      ['GET', 'http://host/agent-loops/loop-1'],
-      ['POST', 'http://host/projects/project%20one/agent-loops'],
-      ['PATCH', 'http://host/agent-loops/loop-1'],
-      ['POST', 'http://host/agent-loops/loop-1/session'],
-      ['POST', 'http://host/agent-loops/loop-1/test'],
-      ['POST', 'http://host/agent-loops/loop-1/run'],
-      ['DELETE', 'http://host/agent-loops/loop-1?deleteSession=true'],
-      ['GET', 'http://host/agent-loops/loop-1/runs'],
+      ['GET', 'http://host/sessions/s%201/automation'],
+      ['PUT', 'http://host/sessions/s%201/automation'],
+      ['PATCH', 'http://host/sessions/s%201/automation'],
+      ['DELETE', 'http://host/sessions/s%201/automation'],
     ]);
-    expect(JSON.parse((calls[2]?.init?.body as string) ?? '')).toEqual({
-      name: 'Dependency audit',
-    });
-    expect(JSON.parse((calls[3]?.init?.body as string) ?? '')).toEqual({ status: 'enabled' });
+    expect(JSON.parse((calls[1]?.init?.body as string) ?? '')).toEqual(request);
+    expect(JSON.parse((calls[2]?.init?.body as string) ?? '')).toEqual({ status: 'paused' });
   });
 });
 

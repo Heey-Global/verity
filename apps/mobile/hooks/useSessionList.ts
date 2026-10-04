@@ -3,6 +3,7 @@ import {
   SessionListModel,
   type SessionListState,
   subscribePullRequestStatusMutations,
+  subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeSettledPermissions,
 } from '@verity/mobile';
@@ -80,6 +81,17 @@ export function useSessionList(client: VerityClient): UseSessionList {
         model.applySessionStatus(sessionId, status);
       }),
     [model, focused],
+  );
+
+  useEffect(
+    () =>
+      subscribeSessionAutomationMutations((sessionId, automation) => {
+        model.applySessionAutomation(
+          sessionId,
+          automation === null ? undefined : { status: automation.status },
+        );
+      }),
+    [model],
   );
 
   useEffect(

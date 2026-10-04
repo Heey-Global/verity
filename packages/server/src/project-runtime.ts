@@ -62,7 +62,7 @@ export interface ProjectRuntimeHealth {
 }
 
 export interface ProjectRuntime {
-  runAgentLoopScript?(
+  runAutomationScript?(
     project: ProjectRecord,
     settings: ProjectEnvironmentSettings,
     input: { workdir: string; script: string; timeoutMs: number; maxOutputBytes: number },
@@ -180,17 +180,17 @@ export class DockerProjectRuntime implements ProjectRuntime {
     this.healthFetch = opts.healthFetch ?? fetch;
   }
 
-  async runAgentLoopScript(
+  async runAutomationScript(
     project: ProjectRecord,
     settings: ProjectEnvironmentSettings,
     input: { workdir: string; script: string; timeoutMs: number; maxOutputBytes: number },
   ): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-    // Loop output is persisted in run history and may be sent to an agent. Do not
-    // expose Verity-managed credentials to the script: explicitly blank both the
-    // token and its ref, including values inherited from the container itself.
-    const loopSettings = projectSettingsEnv({ ...settings });
+    // An automation's check script is agent-authored and runs unattended. Do not
+    // expose Verity-managed credentials to it: explicitly blank both the token
+    // and its ref, including values inherited from the container itself.
+    const scriptSettings = projectSettingsEnv({ ...settings });
     const passthrough = dockerEnvPassthrough({
-      ...loopSettings,
+      ...scriptSettings,
       DOPPLER_TOKEN: '',
       VERITY_DOPPLER_TOKEN_REF: '',
     });

@@ -805,8 +805,6 @@ function buildConversationDigest(events: readonly AgentEvent[], maxPrompts: numb
 export interface StartOptions {
   /** Optional Verity-owned session id to persist the new run under. */
   sessionId?: string | undefined;
-  /** Known kind for a pre-created Verity session; selects kind-specific directives. */
-  sessionKind?: SessionRecord['kind'] | undefined;
   /**
    * The worktree the new agent runs in (its `cwd`). Must be an existing,
    * unused directory — §5a requires worktree↔session 1:1, enforced at the DB by
@@ -3169,13 +3167,27 @@ export class Conductor {
     sessionId: string,
     prompt: string,
     opts: TurnOptions = {},
-    dispatchOpts: DispatchTurnOptions = {},
+    dispatchOpts: DispatchTurnOptions & {
+      /** Validate background work while the session admission lock is held. */
+      validateSession?: (session: SessionRecord) => Promise<boolean>;
+    } = {},
   ): Promise<{ accepted: boolean }> {
     let session: SessionRecord;
     try {
       session = await this.accept(sessionId, prompt, opts); // lock held on success
     } catch (error) {
       if (error instanceof SessionBusyError) return { accepted: false };
+      throw error;
+    }
+    try {
+      if (dispatchOpts.validateSession && !(await dispatchOpts.validateSession(session))) {
+        this.releaseInFlight(sessionId);
+        this.drainNext(sessionId);
+        return { accepted: false };
+      }
+    } catch (error) {
+      this.releaseInFlight(sessionId);
+      this.drainNext(sessionId);
       throw error;
     }
     this.launchAcceptedTurn(
@@ -4593,11 +4605,11 @@ export class Conductor {
       // the session binds has no id to park under — deny it safe immediately (matching
       // the old buildStartOpts behavior); otherwise track it under the bound id.
       void (async () => {
-        // A project/Agent Loop caller may pre-create the Verity session so its
+        // A project caller may pre-create the Verity session so its
         // project and kind are known before the backend context starts. Include
         // that project's memory on this initial turn; later resume turns already
         // carry it in their persisted backend context.
-        // A pre-created session (project/Agent Loop) carries its project id before
+        // A pre-created session (project) carries its project id before
         // the backend context starts; a truly fresh, project-less control-plane
         // spawn (e.g. Verity Control) has none. Capture it here so the runner
         // context reflects the real project (or `null`).
@@ -5348,9 +5360,8 @@ export class Conductor {
       // Resumed contexts already carry the heavy runtime policy, but still receive
       // compact convergence directives that must affect existing long-lived
       // sessions: user-facing terminology and visible-media output contracts.
-      // Fresh Agent Loop contexts additionally receive their proposal contract.
       appendSystemPrompt: includeRuntimePrompt
-        ? turnSystemPrompt(session.kind, localProject)
+        ? turnSystemPrompt(localProject)
         : RESUME_SYSTEM_PROMPT,
       model: opts.model ?? session.model,
       storeSessionId: sessionId,
@@ -5400,8 +5411,8 @@ export class Conductor {
       // Same per-turn directives (choices #97 + delegation #138) on a fresh session.
       appendSystemPrompt:
         opts.appendSystemPrompt === undefined
-          ? turnSystemPrompt(opts.sessionKind, localProject)
-          : `${turnSystemPrompt(opts.sessionKind, localProject)}\n\n${opts.appendSystemPrompt}`,
+          ? turnSystemPrompt(localProject)
+          : `${turnSystemPrompt(localProject)}\n\n${opts.appendSystemPrompt}`,
       onSession,
       // Mid-turn permission control loop (#27) for the first turn of a fresh session.
       // The runner's `onPermissionRequest` is wired by the RunnerClient; startSession's

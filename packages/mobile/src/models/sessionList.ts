@@ -93,6 +93,10 @@ export class SessionListModel {
   private cancelTimeTick: CancelPoll | undefined;
   // Monotonic request id: a slower earlier load must not overwrite a newer one.
   private reqSeq = 0;
+  private pendingAutomations = new Map<
+    string,
+    { automation: SessionSummary['automation']; maxRequest: number }
+  >();
   private pendingSessionStatuses = new Map<
     string,
     { status: SessionSummary['status']; maxRequest: number }
@@ -146,6 +150,15 @@ export class SessionListModel {
       this._sessions = sessions
         .filter((session) => !this.pendingDeletes.has(session.sessionId))
         .map((session) => {
+          const automation = this.pendingAutomations.get(session.sessionId);
+          if (automation !== undefined) {
+            this.pendingAutomations.delete(session.sessionId);
+            if (req <= automation.maxRequest) {
+              session = { ...session };
+              if (automation.automation === undefined) delete session.automation;
+              else session.automation = automation.automation;
+            }
+          }
           const pending = this.pendingSessionStatuses.get(session.sessionId);
           if (pending === undefined) return session;
           this.pendingSessionStatuses.delete(session.sessionId);
@@ -223,6 +236,20 @@ export class SessionListModel {
     this._sessions = this._sessions.map((session) =>
       session.sessionId === sessionId ? { ...session, pr } : session,
     );
+    this.emit();
+  }
+
+  /** Reflect a confirmed, paused, resumed, or deleted automation before polling. */
+  applySessionAutomation(sessionId: string, automation: SessionSummary['automation']): void {
+    // Responses already in flight predate the confirmed mutation.
+    this.pendingAutomations.set(sessionId, { automation, maxRequest: this.reqSeq });
+    this._sessions = this._sessions.map((session) => {
+      if (session.sessionId !== sessionId) return session;
+      const next = { ...session };
+      if (automation === undefined) delete next.automation;
+      else next.automation = automation;
+      return next;
+    });
     this.emit();
   }
 

@@ -8,6 +8,7 @@ export type LatencyPhase =
   | 'session_list'
   | 'session_projection'
   | 'session_links'
+  | 'session_automations'
   | 'session_summaries'
   | 'session_attention'
   | 'project_list'

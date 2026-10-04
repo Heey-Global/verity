@@ -178,6 +178,7 @@ describe('overview latency diagnostic wiring', () => {
             session_list: expect.objectContaining({ calls: 1, totalMs: 4_000 }),
             session_projection: expect.objectContaining({ calls: 1 }),
             session_links: expect.objectContaining({ calls: 1 }),
+            session_automations: expect.objectContaining({ calls: 1 }),
             session_summaries: expect.objectContaining({ calls: 1 }),
             session_attention: expect.objectContaining({ calls: 1 }),
           }),

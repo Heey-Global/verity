@@ -163,7 +163,7 @@ import type {
   SessionProjectionFacts,
   SessionRecord,
 } from '@verity/store';
-import { PROJECT_MEMORY_MAX_CHARS, DeletedProjectError, SealedError } from '@verity/store';
+import { PROJECT_MEMORY_MAX_CHARS, SealedError } from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import rateLimitPlugin from '@fastify/rate-limit';
 import compressPlugin from '@fastify/compress';
@@ -312,18 +312,18 @@ import {
   LOCAL_PROJECT_OWNER,
   isInstallationPlaceholder,
   isLocalProject,
-  type AgentLoopRecord,
   type ProjectRecord,
+  type SessionAutomationStatus,
 } from '@verity/store';
 import { parseOwnerRepo } from './canonical.js';
-import { startAgentLoopScheduler, type AgentLoopScheduler } from './agent-loop-scheduler.js';
-import { registerAgentLoopRoutes } from './agent-loop-routes.js';
+import { startAutomationScheduler } from './automation-scheduler.js';
+import { registerAutomationRoutes } from './automation-routes.js';
 import type { ListenerDiscovery } from './listener-discovery.js';
 import { registerLocalPreviewRoutes } from './local-preview-routes.js';
 import type { LocalPreviewManager } from './local-preview-manager.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import type { PreviewShareManager } from './preview-share-manager.js';
-import { createAgentLoopExecutor } from './agent-loop-executor.js';
+import { createAutomationExecutor } from './automation-executor.js';
 import {
   PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
   projectHasPersistentSandboxActivity,
@@ -357,6 +357,15 @@ declare module 'fastify' {
   interface FastifyRequest {
     /** Set only after the paired-device bearer has been verified. */
     localUserId: string | null;
+  }
+}
+
+/** A check script's project cannot run right now (setting up, failed, or gone
+ * to sleep in a state that cannot be woken). */
+class ProjectNotReadyError extends Error {
+  constructor() {
+    super('The project workspace is not ready.');
+    this.name = 'ProjectNotReadyError';
   }
 }
 
@@ -2722,44 +2731,6 @@ function makeBranch(name: string | undefined, issue?: number): string {
   return slug ? `agent/${slug}-${shortId}` : `agent/${shortId}`;
 }
 
-function agentLoopSetupPrompt(project: ProjectRecord, loop: AgentLoopRecord): string {
-  return [
-    `Set up the Agent Loop “${loop.name}” for ${project.owner}/${project.repo}.`,
-    '',
-    'Guide the user through this interactively. Ask focused questions before proposing config.',
-    'The final loop consists of a shell script and a structured schedule.',
-    ...(loop.script && loop.schedule
-      ? [
-          '',
-          'A persisted draft already exists. Treat it as the starting point and improve it with the user:',
-          JSON.stringify({
-            name: loop.name,
-            script: loop.script,
-            schedule: loop.schedule,
-            reactionPrompt: loop.reactionPrompt,
-            reactionModel: loop.reactionModel,
-          }),
-        ]
-      : []),
-    '',
-    'Guardrails the proposal must satisfy:',
-    '- the script runs inside this project container and is read-only by default',
-    '- use only tools verified to exist in the container',
-    '- exit 0 means no action; exit 10 means trigger the agent',
-    '- alternatively print one JSON line: {"spawn":true,"prompt":"...","model":"..."}',
-    '- every other non-zero exit is an execution error and never triggers the agent',
-    '- finish within 120 seconds and keep output concise',
-    '- never commit, push, delete data, or mutate infrastructure in the check script',
-    '- interval schedules must be at least 15 minutes',
-    '',
-    'Do not claim the loop is enabled and do not persist it yourself. Present the final script and',
-    'schedule clearly, then append exactly one fenced `verity:agent-loop` JSON block with this shape:',
-    `{"loopId":"${loop.id}","name":"...","script":"...","schedule":{"kind":"interval","everyMinutes":30},"reactionPrompt":"...","reactionModel":null}`,
-    'Use valid JSON with escaped newlines in `script`. Verity turns this block into the confirmation',
-    'widget, runs a real test after approval, and only then enables the loop.',
-  ].join('\n');
-}
-
 /** Compact PR status for a session's current branch, carried on the list so the
  * overview can mark merge-ready / merge-blocked / CI-failed sessions (#387). A projection of the
  * richer {@link PullRequestStatus} (drops title/url/checks the list doesn't need). */
@@ -2814,6 +2785,9 @@ export interface SessionSummary extends SessionRecord {
    * old build ignores this field rather than failing on it.
    */
   attention?: AttentionSignal[];
+  /** The session's recurring automation, so the overview can mark sessions with
+   * scheduled work. Absent when the session has none. */
+  automation?: { status: SessionAutomationStatus };
 }
 
 /**
@@ -3416,140 +3390,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     (conductor as { drainOnShutdown?: () => Promise<void> }).drainOnShutdown?.(),
   );
 
-  // Agent Loops own one durable, visibly distinct project session. Creation
-  // seeds the guided setup chat; runtime recovery recreates only the session and
-  // keeps the persisted script/schedule as the source of truth.
-  const createAgentLoopSession = async (
-    loop: AgentLoopRecord,
-    project: ProjectRecord,
-    seedSetup: boolean,
-  ): Promise<SessionRecord> => {
-    if (!deps.provisioner || !deps.projectCloneRoot || !deps.projectBackend) {
-      throw new Error('multi-repo provisioning is not configured');
-    }
-    // Same window the `/sessions` spawn path guards: this creates a worktree
-    // inside the project's clone root, which a delete's purge removes. Refuse
-    // once the teardown has started, and hold it off until this one lands.
-    if (projectsBeingDeleted.has(project.id)) {
-      throw new DeletedProjectError(project.id);
-    }
-    const releaseSpawn = beginProjectSpawn(project.id);
-    try {
-      return await createAgentLoopSessionAdmitted(loop, project, seedSetup, deps.projectCloneRoot);
-    } finally {
-      releaseSpawn();
-    }
-  };
-
-  const createAgentLoopSessionAdmitted = async (
-    loop: AgentLoopRecord,
-    project: ProjectRecord,
-    seedSetup: boolean,
-    cloneRoot: string,
-  ): Promise<SessionRecord> => {
-    const projectSettings = await projectSettingsStore(deps.eventStore).getProjectSettings(
-      project.id,
-    );
-    const projectClone = projectClonePath(cloneRoot, project);
-    const worktreeOpts = {
-      refreshBase: true,
-      ...(projectSettings?.defaultBranch !== undefined && projectSettings.defaultBranch !== null
-        ? { baseBranch: projectSettings.defaultBranch }
-        : {}),
-    };
-    const projectWorktrees =
-      deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-      createGitWorktreeProvisioner({
-        repoDir: projectClone,
-        worktreeRoot: join(projectClone, '.verity-sessions'),
-        ...worktreeOpts,
-      });
-    await deps.refreshProjectToken?.(project);
-    const worktree = await projectWorktrees.add(makeBranch(loop.name));
-    const sessionId = randomUUID();
-    const requestedModel = loop.reactionModel ?? projectSettings?.defaultModel ?? undefined;
-    // Project Agent Loop sessions currently route only through Claude/Codex.
-    // An OpenCode project default must not bypass that guard during the setup
-    // session's initial spawn; fall back to Verity's supported default instead.
-    const model = isProjectSessionModel(requestedModel) ? requestedModel : undefined;
-    try {
-      await deps.eventStore.createSession({
-        sessionId,
-        worktree,
-        model: model ?? DEFAULT_MODEL,
-        name: `Agent Loop: ${loop.name}`,
-        projectId: project.id,
-        kind: 'agent_loop',
-      });
-      if (seedSetup) {
-        await conductor.startSession({
-          sessionId,
-          sessionKind: 'agent_loop',
-          worktree,
-          prompt: agentLoopSetupPrompt(project, loop),
-          ...(model !== undefined ? { model } : {}),
-        });
-      }
-      const session = await deps.eventStore.getSession(sessionId);
-      if (!session) throw new Error('Agent Loop session was not persisted');
-      return session;
-    } catch (error) {
-      conductor.closeSession?.(sessionId);
-      await deleteSessionEverywhere(sessionId).catch(() => false);
-      await projectWorktrees.remove(worktree).catch(() => undefined);
-      throw error;
-    }
-  };
-
-  const discardAgentLoopSession = async (
-    session: SessionRecord,
-    project: ProjectRecord,
-  ): Promise<void> => {
-    // A losing Agent Loop session may still be mid-turn when it's discarded. Reap
-    // the in-flight turn (SIGTERM the agent) before removing its worktree below —
-    // `closeSession` only closes idle handles, so otherwise the loser's agent is
-    // orphaned against a deleted worktree. No-op when the session is already idle.
-    if (conductor.isBusy(session.sessionId)) await conductor.cancelTurn(session.sessionId);
-    conductor.closeSession?.(session.sessionId);
-    await deleteSessionEverywhere(session.sessionId).catch(() => false);
-    if (session.worktree === deps.workspaceDir || !deps.projectCloneRoot) return;
-    const projectClone = projectClonePath(deps.projectCloneRoot, project);
-    const projectWorktrees =
-      deps.projectWorktrees?.(project, projectClone) ??
-      createGitWorktreeProvisioner({
-        repoDir: projectClone,
-        worktreeRoot: join(projectClone, '.verity-sessions'),
-      });
-    await projectWorktrees.remove(session.worktree).catch((error) => {
-      app.log.error(
-        { err: error, sessionId: session.sessionId },
-        'failed to remove losing Agent Loop session worktree',
+  // Session automations (ADR 0008): a recurring prompt bound to one ordinary
+  // session. Prompt-only runs need nothing but the conductor, which wakes a
+  // sleeping project for the turn itself; only a check script needs the
+  // project container directly.
+  const automationExecutor = createAutomationExecutor({
+    isCurrent: async (automation, snapshot) => {
+      const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
+      const session = await deps.eventStore.getSession(automation.sessionId);
+      return (
+        current?.id === automation.id &&
+        current.status === 'enabled' &&
+        session?.projectId === snapshot.projectId &&
+        session.worktree === snapshot.worktree
       );
-    });
-  };
-
-  const ensureAgentLoopSession = async (
-    loop: AgentLoopRecord,
-    project: ProjectRecord,
-  ): Promise<SessionRecord> => {
-    if (loop.sessionId) {
-      const existing = await deps.eventStore.getSession(loop.sessionId);
-      if (existing) return existing;
-    }
-    const session = await createAgentLoopSession(loop, project, false);
-    const linked = await deps.eventStore.linkAgentLoopSessionIfMissing(loop.id, session.sessionId);
-    if (linked?.sessionId === session.sessionId) return session;
-
-    await discardAgentLoopSession(session, project);
-    const winner = linked ?? (await deps.eventStore.getAgentLoop(loop.id));
-    if (winner?.sessionId) {
-      const existing = await deps.eventStore.getSession(winner.sessionId);
-      if (existing) return existing;
-    }
-    throw new Error('Agent Loop changed while its session was being recreated');
-  };
-
-  const agentLoopExecutor = createAgentLoopExecutor({
+    },
+    getSession: (sessionId) => deps.eventStore.getSession(sessionId),
+    getProject: (projectId) => deps.eventStore.getProject(projectId),
     prepareProject: async (project) => {
       if (project.state === 'active') return project;
       if (
@@ -3558,64 +3415,67 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) {
         return deps.provisioner.ensureProjectSandboxAwake(project.id);
       }
-      throw new Error(`project is not ready (state=${project.state})`);
+      throw new ProjectNotReadyError();
     },
     beginProjectActivity: (projectId) => {
       if (deps.provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) return undefined;
       return () => deps.provisioner?.endProjectSandboxActivity?.(projectId);
     },
-    ensureSession: ensureAgentLoopSession,
-    runScript: async ({ loop, project, session }) => {
-      if (!deps.projectRuntime?.runAgentLoopScript || !deps.projectCloneRoot) {
-        throw new Error('Agent Loop container execution is not configured');
-      }
-      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(project.id);
-      const projectClone = projectClonePath(deps.projectCloneRoot, project);
-      return deps.projectRuntime.runAgentLoopScript(
-        project,
-        settings ?? emptyProjectSettings(project.id),
-        {
-          workdir: containerPathFor(session.worktree, projectClone),
-          script: loop.script ?? '',
-          timeoutMs: 120_000,
-          maxOutputBytes: 64 * 1024,
-        },
-      );
-    },
+    ...(deps.projectRuntime?.runAutomationScript && deps.projectCloneRoot
+      ? {
+          runScript: async ({ script, project, session }) => {
+            const runtime = deps.projectRuntime;
+            const cloneRoot = deps.projectCloneRoot;
+            if (!runtime?.runAutomationScript || !cloneRoot) {
+              throw new Error('Check scripts are not available on this server.');
+            }
+            const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
+              project.id,
+            );
+            return runtime.runAutomationScript(
+              project,
+              settings ?? emptyProjectSettings(project.id),
+              {
+                workdir: containerPathFor(session.worktree, projectClonePath(cloneRoot, project)),
+                script,
+                timeoutMs: 120_000,
+                maxOutputBytes: 64 * 1024,
+              },
+            );
+          },
+        }
+      : {}),
     appendNotice: async (sessionId, text) => {
       await deps.eventStore.appendEvent(sessionId, { t: 'notice', text, role: 'agent' });
     },
-    dispatchTurnWhenIdle: async (sessionId, prompt, model) =>
-      // A loop that fires while the session's project is being torn down would
+    dispatchTurnWhenIdle: async (sessionId, prompt, { model, displayPrompt, validateSession }) =>
+      // A run that fires while the session's project is being torn down would
       // start a turn against a worktree the purge is removing. Report it as not
-      // accepted; the scheduler treats that as "try again later", and by then
-      // the session is either gone with its project or usable again.
+      // accepted; by the next slot the session is gone or usable again.
       sessionsBeingReaped.has(sessionId)
         ? { accepted: false }
         : conductor.dispatchTurnWhenIdle(sessionId, prompt, model ? { model } : {}, {
-            displayPrompt: `Agent Loop triggered\n\n${prompt}`,
+            displayPrompt,
+            validateSession,
           }),
-    isModelAllowed: (model) => isProjectSessionModel(model),
-    isSkippableError: (error) => error instanceof SealedError,
+    isModelAllowed: async (model, session) =>
+      session.projectId === null
+        ? (await availableModels()).models.includes(model)
+        : isConfiguredProjectSessionModel(model),
+    // A sealed secret store or a project that is still being set up is not the
+    // automation's fault; those slots are skipped rather than counted toward the
+    // pause after repeated failures.
+    isSkippableError: (error) =>
+      error instanceof SealedError || error instanceof ProjectNotReadyError,
   });
 
-  const agentLoopScheduler: AgentLoopScheduler =
-    deps.provisioner &&
-    deps.projectCloneRoot &&
-    deps.projectBackend &&
-    deps.projectRuntime?.runAgentLoopScript
-      ? startAgentLoopScheduler({
-          store: deps.eventStore,
-          executeAgentLoop: ({ loop, project }) => agentLoopExecutor.execute(loop, project),
-          log: app.log,
-        })
-      : {
-          stop: () => undefined,
-          wake: () => undefined,
-          runOnce: () => Promise.resolve(),
-        };
+  const automationScheduler = startAutomationScheduler({
+    store: deps.eventStore,
+    run: (automation) => automationExecutor.run(automation),
+    log: app.log,
+  });
   app.addHook('onClose', () => {
-    agentLoopScheduler.stop();
+    automationScheduler.stop();
   });
 
   // SBX-1 helper: is any session bound to this project running a turn right now?
@@ -4442,11 +4302,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       pruneBranchCache(live);
       for (const session of sessions) {
         if (prRepairStopped) break;
-        if (
-          session.kind !== 'normal' ||
-          sessionsBeingReaped.has(session.sessionId) ||
-          !sessionPrCache.isDue(session, true)
-        )
+        if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
         try {
           if (!(await worktreeExists(session.worktree))) continue;
@@ -4704,11 +4560,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessions: readonly SessionRecord[],
   ): Promise<SessionSummary[]> => {
     const ids = sessions.map((session) => session.sessionId);
-    const [facts, pendingLinks] = await Promise.all([
+    const [facts, pendingLinks, automations] = await Promise.all([
       measureLatencyPhase('session_projection', () =>
         deps.eventStore.listSessionProjectionFacts(ids, PROJECTION_TAIL),
       ),
       measureLatencyPhase('session_links', () => deps.eventStore.pendingSessionLinkMessageIds(ids)),
+      measureLatencyPhase('session_automations', () =>
+        deps.eventStore.listSessionAutomationStatuses(ids),
+      ),
     ]);
     return Promise.all(
       sessions.map((session) =>
@@ -4716,6 +4575,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           session,
           facts.get(session.sessionId) ?? emptyProjectionFacts(),
           pendingLinks.get(session.sessionId) ?? [],
+          automations.get(session.sessionId),
         ),
       ),
     );
@@ -4805,14 +4665,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   const summarizeSession = async (session: SessionRecord): Promise<SessionSummary> => {
-    const [facts, pendingLinks] = await Promise.all([
+    const [facts, pendingLinks, automations] = await Promise.all([
       deps.eventStore.listSessionProjectionFacts([session.sessionId], PROJECTION_TAIL),
       deps.eventStore.pendingSessionLinkMessageIds([session.sessionId]),
+      deps.eventStore.listSessionAutomationStatuses([session.sessionId]),
     ]);
     return summarizeSessionWithFacts(
       session,
       facts.get(session.sessionId) ?? emptyProjectionFacts(),
       pendingLinks.get(session.sessionId) ?? [],
+      automations.get(session.sessionId),
     );
   };
 
@@ -4820,6 +4682,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     session: SessionRecord,
     facts: SessionProjectionFacts,
     pendingLinks: readonly string[] = [],
+    automationStatus?: SessionAutomationStatus,
   ): Promise<SessionSummary> => {
     const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
@@ -4876,6 +4739,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // Absent when healthy, so a healthy session's summary is byte-identical to
       // what it was before this existed.
       ...(attention.length > 0 ? { attention } : {}),
+      ...(automationStatus !== undefined ? { automation: { status: automationStatus } } : {}),
     };
   };
 
@@ -6106,94 +5970,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.authRegistry === undefined ||
       deps.authRegistry.verify(bearerToken(request.headers.authorization)) === true,
   });
-  registerAgentLoopRoutes(app, {
+  registerAutomationRoutes(app, {
     eventStore: deps.eventStore,
-    ...(deps.provisioner && deps.projectCloneRoot && deps.projectBackend
-      ? {
-          createLoopSession: async (loop: AgentLoopRecord, project: ProjectRecord) => {
-            const session = await createAgentLoopSession(loop, project, true);
-            return { sessionId: session.sessionId };
-          },
-        }
-      : {}),
-    discardLoopSession: async (sessionId: string, project: ProjectRecord) => {
-      const session = await deps.eventStore.getSession(sessionId);
-      if (session) await discardAgentLoopSession(session, project);
-    },
-    ...(deps.projectRuntime?.runAgentLoopScript && deps.projectCloneRoot
-      ? {
-          testAgentLoop: async (loop: AgentLoopRecord) => {
-            const project = await deps.eventStore.getProject(loop.projectId);
-            if (!project) {
-              return {
-                outcome: 'error' as const,
-                exitCode: null,
-                detail: 'project not found',
-                sessionId: loop.sessionId,
-              };
-            }
-            const result = await agentLoopExecutor.execute(loop, project, { test: true });
-            return {
-              outcome: result.outcome === 'skipped' ? ('error' as const) : result.outcome,
-              exitCode: result.exitCode,
-              detail: result.detail,
-              sessionId: result.sessionId,
-            };
-          },
-          runAgentLoop: async (loop: AgentLoopRecord) => {
-            const project = await deps.eventStore.getProject(loop.projectId);
-            if (!project) {
-              return {
-                outcome: 'error' as const,
-                exitCode: null,
-                detail: 'project not found',
-                sessionId: loop.sessionId,
-              };
-            }
-            if (
-              project.state !== 'active' &&
-              project.state !== 'sleeping' &&
-              project.state !== 'waking'
-            ) {
-              return {
-                outcome: 'skipped' as const,
-                exitCode: null,
-                detail: 'project is not active',
-                sessionId: loop.sessionId,
-              };
-            }
-            return agentLoopExecutor.execute(loop, project);
-          },
-        }
-      : {}),
-    deleteLoopSession: async (sessionId: string) => {
-      const session = await deps.eventStore.getSession(sessionId);
-      if (!session) return 'missing' as const;
-      if (conductor.isBusy(sessionId)) return 'busy' as const;
-      conductor.closeSession?.(sessionId);
-      const deleted = await deleteSessionEverywhere(sessionId);
-      if (!deleted) return 'missing' as const;
-      if (session.worktree !== deps.workspaceDir) {
-        let cleanupWorktrees = worktrees;
-        if (session.projectId && deps.projectCloneRoot) {
-          const project = await deps.eventStore.getProject(session.projectId);
-          if (project) {
-            const projectClone = projectClonePath(deps.projectCloneRoot, project);
-            cleanupWorktrees =
-              deps.projectWorktrees?.(project, projectClone) ??
-              createGitWorktreeProvisioner({
-                repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
-              });
-          }
-        }
-        await cleanupWorktrees.remove(session.worktree).catch((error) => {
-          app.log.error({ err: error, sessionId }, 'failed to remove Agent Loop worktree');
-        });
+    checkScript: (automation) => automationExecutor.checkScript(automation),
+    // The same rules a turn's model must pass, checked once when the operator
+    // confirms rather than on every unattended run.
+    validateModel: async (model, session) => {
+      if (session.projectId !== null) {
+        return (await isConfiguredProjectSessionModel(model)) ? null : PROJECT_MODEL_ERROR;
       }
-      return 'deleted' as const;
+      return (await availableModels()).models.includes(model)
+        ? null
+        : 'That model is not available on this server.';
     },
-    onAgentLoopsChanged: () => agentLoopScheduler.wake(),
+    onAutomationsChanged: () => automationScheduler.wake(),
   });
 
   registerLocalPreviewRoutes(app, {
@@ -9166,11 +8956,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return JSON.parse(prior.result_json) as unknown;
       }
 
-      if (
-        session.projectId === null ||
-        session.kind !== 'normal' ||
-        session.projectId === body.project
-      )
+      if (session.projectId === null || session.projectId === body.project)
         throw new SessionMoveError(
           'unsupported_session',
           'Choose a different local project for a normal project session.',

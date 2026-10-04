@@ -862,13 +862,68 @@ describe('migrateToLatest', () => {
       const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
       const rollback = await migrator.migrateTo('0037_push_receipts');
       expect(rollback.error).toBeUndefined();
-      await expect(ctx.db.selectFrom('agent_loops').select('id').execute()).rejects.toThrow();
-      await expect(ctx.db.selectFrom('sessions').select('kind').execute()).rejects.toThrow();
+      await expect(sql`select id from agent_loops`.execute(ctx.db)).rejects.toThrow();
+      await expect(sql`select kind from sessions`.execute(ctx.db)).rejects.toThrow();
 
       const upgrade = await migrator.migrateTo('0038_agent_loops');
       expect(upgrade.error).toBeUndefined();
-      await expect(ctx.db.selectFrom('agent_loops').select('id').execute()).resolves.toEqual([]);
-      await expect(ctx.db.selectFrom('sessions').select('kind').execute()).resolves.toEqual([]);
+      await expect(sql`select id from agent_loops`.execute(ctx.db)).resolves.toMatchObject({
+        rows: [],
+      });
+      await expect(sql`select kind from sessions`.execute(ctx.db)).resolves.toMatchObject({
+        rows: [],
+      });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('retires Agent Loops in 0130 without leaving an unreadable session log behind', async () => {
+    const ctx = await createIsolatedTestDb();
+    try {
+      await ctx.store.upsertProject({
+        id: 'p1',
+        owner: 'heey-global',
+        repo: 'verity',
+        containerName: 'verity-heey-global--verity',
+        state: 'active',
+      });
+      const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
+      // 0130's rollback does not resurrect the retired tables, so rebuild the
+      // pre-0130 schema by replaying forward from before Agent Loops existed.
+      expect((await migrator.migrateTo('0037_push_receipts')).error).toBeUndefined();
+      expect((await migrator.migrateTo('0129_drive_access_mode')).error).toBeUndefined();
+      await sql`insert into sessions (session_id, worktree, model, kind)
+        values ('loop-setup', '/wt/loop', 'm', 'agent_loop')`.execute(ctx.db);
+      await sql`insert into agent_loops (id, project_id, name, session_id)
+        values ('loop-1', 'p1', 'Audit', 'loop-setup')`.execute(ctx.db);
+      const retired = {
+        t: 'agent_loop_proposal',
+        proposal: {
+          loopId: '11111111-1111-4111-8111-111111111111',
+          name: 'Audit',
+          script: 'exit 0',
+          schedule: { kind: 'daily', hour: 3, minute: 0 },
+        },
+      };
+      await sql`insert into events (session_id, type, payload) values
+        ('loop-setup', 'text', ${JSON.stringify({ t: 'text', delta: 'Set up.' })}::jsonb),
+        ('loop-setup', 'agent_loop_proposal', ${JSON.stringify(retired)}::jsonb)`.execute(ctx.db);
+
+      const upgrade = await migrator.migrateTo('0130_session_automations');
+      expect(upgrade.error).toBeUndefined();
+      // The store throws on any event its schema no longer accepts, and one such
+      // event fails the whole session list. The setup chat itself must survive.
+      await expect(ctx.store.getEvents('loop-setup')).resolves.toEqual([
+        { t: 'text', delta: 'Set up.' },
+      ]);
+      await expect(sql`select id from agent_loops`.execute(ctx.db)).rejects.toThrow();
+      expect(
+        (await ctx.db.introspection.getTables())
+          .find((table) => table.name === 'sessions')
+          ?.columns.map((column) => column.name),
+      ).not.toContain('kind');
+      await expect(ctx.store.getSessionAutomation('loop-setup')).resolves.toBeUndefined();
     } finally {
       await ctx.close();
     }

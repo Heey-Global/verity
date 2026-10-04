@@ -304,3 +304,25 @@ it('preserves saved edits when applying the simulated color change', async () =>
   );
   expect(result?.event).toMatchObject({ t: 'tool_result', isError: true });
 });
+
+it('walks through proposing, confirming, pausing, and deleting an automation', async () => {
+  const api = client();
+  const id = (await api.listSessionOverview()).sessions[0]!.sessionId;
+  await api.sendTurn(id, { prompt: 'Every Monday morning, summarize what changed' });
+  jest.advanceTimersByTime(1000);
+  const proposal = (await api.getHistory(id)).events
+    .map((frame) => frame.event)
+    .find((event) => event.t === 'automation_proposal');
+  if (proposal?.t !== 'automation_proposal') throw new Error('expected a demo proposal');
+
+  expect(await api.getSessionAutomation(id)).toBeNull();
+  const saved = await api.saveSessionAutomation(id, proposal.proposal);
+  expect(saved).toMatchObject({ name: 'Morning summary', status: 'enabled' });
+  expect((await api.listSessionOverview()).sessions[0]?.automation).toEqual({
+    status: 'enabled',
+  });
+  expect((await api.setSessionAutomationStatus(id, 'paused')).nextRunAt).toBeNull();
+  await api.deleteSessionAutomation(id);
+  expect(await api.getSessionAutomation(id)).toBeNull();
+  expect((await api.listSessionOverview()).sessions[0]?.automation).toBeUndefined();
+});

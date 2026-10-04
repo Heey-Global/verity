@@ -1,6 +1,6 @@
 import type { PermissionDecision } from '@verity/adapter-claude';
 import {
-  AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT,
+  AUTOMATION_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
   BREVITY_SYSTEM_PROMPT,
@@ -16,7 +16,6 @@ import {
   TERMINOLOGY_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
 } from '@verity/events';
-import type { SessionRecord } from '@verity/store';
 
 import type { Backend } from './backend.js';
 
@@ -76,6 +75,8 @@ ${LANGUAGE_SYSTEM_PROMPT}
 
 ${SANDBOX_RESOURCES_SYSTEM_PROMPT}
 
+${AUTOMATION_SYSTEM_PROMPT}
+
 # Development servers (Verity)
 
 When starting a development HTTP or WebSocket server, bind it to 0.0.0.0 when the framework supports it. After it is listening, run \`verity-dev-server announce --port <port> --name <name>\` to label it in Verity. Verity verifies the listener and offers local access or public sharing in the app; announcing never publishes it. Local access is unauthenticated HTTP on your trusted network. For Expo, configure EXPO_PACKAGER_PROXY_URL to the local share URL before restarting the packager; a discovered port alone does not fix addresses embedded in manifests.
@@ -98,7 +99,8 @@ const LOCAL_PROJECT_TURN_SYSTEM_PROMPT = assembleTurnSystemPrompt(true);
  * whose violation ends another session has to keep reaching the contexts that
  * are already running. The compact autonomy directive also converges existing
  * contexts onto the current outcome and Quick-Action semantics without paying
- * the full fresh-context contracts on every turn.
+ * the full fresh-context contracts on every turn. The automation contract also
+ * reaches existing sessions so they can propose the current confirmation fence.
  */
 export const RESUME_SYSTEM_PROMPT = `${TERMINOLOGY_SYSTEM_PROMPT}
 
@@ -106,14 +108,12 @@ ${AUTONOMY_RESUME_SYSTEM_PROMPT}
 
 ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
-${SANDBOX_RESOURCES_SYSTEM_PROMPT}`;
+${SANDBOX_RESOURCES_SYSTEM_PROMPT}
 
-export function turnSystemPrompt(
-  kind: SessionRecord['kind'] | undefined,
-  localProject = false,
-): string {
-  const base = localProject ? LOCAL_PROJECT_TURN_SYSTEM_PROMPT : TURN_SYSTEM_PROMPT;
-  return kind === 'agent_loop' ? `${base}\n\n${AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT}` : base;
+${AUTOMATION_SYSTEM_PROMPT}`;
+
+export function turnSystemPrompt(localProject = false): string {
+  return localProject ? LOCAL_PROJECT_TURN_SYSTEM_PROMPT : TURN_SYSTEM_PROMPT;
 }
 
 const MAX_PROMPT_SECRET_ALIASES = 100;

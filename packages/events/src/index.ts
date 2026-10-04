@@ -7,8 +7,8 @@ export {
   brokeredGrantChannelSchema,
   choicesOptionSchema,
   choicesPayloadSchema,
-  agentLoopProposalSchema,
-  agentLoopScheduleSchema,
+  automationProposalSchema,
+  automationScheduleSchema,
   fileMediaTypeSchema,
   imageMediaTypeSchema,
   isAgentEvent,
@@ -22,7 +22,8 @@ export {
 } from './events.js';
 export type {
   AgentEvent,
-  AgentLoopProposal,
+  AutomationProposal,
+  AutomationSchedule,
   AgentEventType,
   AgentStatus,
   Attachment,
@@ -48,10 +49,10 @@ export {
   type ParsedChoices,
 } from './choices.js';
 export {
-  AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT,
-  parseAgentLoopProposal,
-  type ParsedAgentLoopProposal,
-} from './agent-loop.js';
+  AUTOMATION_SYSTEM_PROMPT,
+  parseAutomationProposal,
+  type ParsedAutomationProposal,
+} from './automation.js';
 export { DELEGATION_SYSTEM_PROMPT } from './delegation.js';
 export { AUTONOMY_RESUME_SYSTEM_PROMPT, AUTONOMY_SYSTEM_PROMPT } from './autonomy.js';
 export { BREVITY_SYSTEM_PROMPT } from './brevity.js';

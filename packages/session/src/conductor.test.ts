@@ -1,7 +1,7 @@
 import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
-  AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT,
+  AUTOMATION_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
@@ -92,11 +92,12 @@ const RESUME_SET = [
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
+  AUTOMATION_SYSTEM_PROMPT,
 ];
 
 /**
- * Ceiling for the assembled set, which remains under 4.2 KB with the compact
- * autonomy convergence fragment. A tripwire on the whole re-sent payload rather
+ * Ceiling for the assembled set, which includes the automation contract for existing sessions
+ * alongside the compact autonomy convergence fragment. A tripwire on the whole re-sent payload rather
  * than a target: the cost here is per operator message, not per context, so growth that
  * is cheap in a fresh turn is not cheap in this one. Membership is checked
  * exactly by {@link expectResumeSet}; this is the only instrument that notices
@@ -106,12 +107,12 @@ const RESUME_SET = [
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
  * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 5000 - 3100 = 1900 characters. If they grow past that,
+ * members sum to under 6500 - 3100 = 3400 characters. If they grow past that,
  * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
  * the fix is to raise this one after reading what actually grew, not to derive
  * either number from the other.
  */
-const RESUME_SET_BUDGET = 5000;
+const RESUME_SET_BUDGET = 6500;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -454,7 +455,7 @@ describe('Conductor.sendTurn', () => {
     expect(conductor.isBusy('s1')).toBe(false);
   });
 
-  it('sends compact convergence directives on resumed turns', async () => {
+  it('sends current automation and convergence directives on resumed turns', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
     const fake = scriptedBackend({ text: 'hi' });
@@ -464,7 +465,7 @@ describe('Conductor.sendTurn', () => {
       worktreeExists: async () => true,
     });
 
-    await conductor.sendTurn('s1', 'go');
+    await conductor.sendTurn('s1', 'Review my pull requests every morning');
 
     expect(fake.last().resumeSessionId).toBe('s1');
     // Membership is checked exhaustively below; only the exclusion needs its own
@@ -481,45 +482,8 @@ describe('Conductor.sendTurn', () => {
     // is checked exactly, not sampled: a `toContain` per fragment cannot see a
     // fourth one joining, which is the growth that costs here. It also pins the
     // composition claim the turn prompt does not share: the resume branch returns
-    // this set verbatim while only the fresh-turn branch composes on kind.
+    // this set verbatim.
     expectResumeSet(fake.last().appendSystemPrompt);
-  });
-
-  it('sends the same resume set for an unattended Agent Loop session', async () => {
-    // The kind-independence above is the load-bearing half of that assertion and
-    // was the half nothing exercised: the fresh-turn branch demonstrably composes
-    // on kind, so "the resume branch does not" is a claim, not a given. The kind
-    // to pin it with is this one — an Agent Loop resumes on a schedule with nobody
-    // watching, which is the case the sandbox rule is justified by.
-    await ctx.store.createSession({
-      sessionId: 'loop-resume',
-      worktree: '/wt/loop',
-      model: 'm',
-      kind: 'agent_loop',
-    });
-    // The `session` event is what marks the session Claude-origin, via its
-    // `model`; its `id` is not a backend session id — that only exists once
-    // `upsertSessionBackendState` has run, which nothing here does. So the resume
-    // handle is the STORE key, and the id here is deliberately unlike it so the
-    // assertion below cannot pass while reading the wrong one.
-    await ctx.store.appendEvent('loop-resume', {
-      t: 'session',
-      id: 'claude-loop-1',
-      model: 'm',
-      worktree: '/wt/loop',
-    });
-    const fake = scriptedBackend({ text: 'hi' });
-    const conductor = new Conductor({
-      store: ctx.store,
-      backend: fake.backend,
-      worktreeExists: async () => true,
-    });
-
-    await conductor.sendTurn('loop-resume', 'go');
-
-    expect(fake.last().resumeSessionId).toBe('loop-resume');
-    expectResumeSet(fake.last().appendSystemPrompt);
-    expect(fake.last().appendSystemPrompt).not.toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
   });
 
   it('starts the first turn of an empty precreated session without resuming a backend id', async () => {
@@ -544,7 +508,7 @@ describe('Conductor.sendTurn', () => {
     expect(captured?.resumeSessionId).toBeUndefined();
     expect(captured?.appendSystemPrompt).toContain(CHOICES_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(AUTONOMY_SYSTEM_PROMPT);
-    expect(captured?.appendSystemPrompt).not.toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
+    expect(captured?.appendSystemPrompt).toContain(AUTOMATION_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(MEMORY_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(VISIBLE_MEDIA_SYSTEM_PROMPT);
     expect(await ctx.store.getSessionBackendState('s-empty', 'claude')).toMatchObject({
@@ -598,18 +562,17 @@ describe('Conductor.sendTurn', () => {
     expect(captured?.transcript).toBeUndefined();
   });
 
-  it('adds Agent Loop proposal guidance only to Agent Loop sessions', async () => {
+  it('offers every fresh context the automation contract exactly once', async () => {
     await ctx.store.createSession({
-      sessionId: 'loop-session',
-      worktree: '/wt/loop',
+      sessionId: 'automation-session',
+      worktree: '/wt/a',
       model: 'm',
-      kind: 'agent_loop',
     });
     let captured: RunTurnOptions | undefined;
     const backend: Backend = {
       run: async (opts) => {
         captured = opts;
-        await opts.onSession?.('backend-loop');
+        await opts.onSession?.('backend-automation');
         return { sessionId: opts.storeSessionId, exitCode: 0, stderr: '', aborted: false };
       },
     };
@@ -619,17 +582,13 @@ describe('Conductor.sendTurn', () => {
       worktreeExists: async () => true,
     });
 
-    await conductor.sendTurn('loop-session', 'configure');
+    await conductor.sendTurn('automation-session', 'every morning, check the build');
 
-    expect(captured?.appendSystemPrompt).toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
-    // The kind-specific branch adds to the base rather than replacing it, and an
-    // Agent Loop runs turns unattended — exactly the kind that can spend a
-    // container's memory with nobody watching. This is also the only path that
-    // composes prompts, so it is where a duplicate would appear first.
-    expect(captured?.appendSystemPrompt).toContain(SANDBOX_RESOURCES_SYSTEM_PROMPT);
-    expect(
-      (captured?.appendSystemPrompt ?? '').split(SANDBOX_RESOURCES_SYSTEM_PROMPT),
-    ).toHaveLength(2);
+    // Without it the agent answers a recurring request in prose and nothing can
+    // ever be confirmed: the app only renders a proposal it can parse.
+    const appended = captured?.appendSystemPrompt ?? '';
+    expect(appended.split(AUTOMATION_SYSTEM_PROMPT)).toHaveLength(2);
+    expect(appended.split(SANDBOX_RESOURCES_SYSTEM_PROMPT)).toHaveLength(2);
   });
 
   it('settles a silent non-zero exit with a synthetic crashed marker (P0a)', async () => {
@@ -1765,6 +1724,79 @@ describe('Conductor.dispatchTurn', () => {
       expect(conductor.isBusy('s1')).toBe(false);
     });
     expect(fake.calls).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    'drains messages queued during rejected admission (throws: %s)',
+    async (throws) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const fake = scriptedBackend();
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+      });
+      let release!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const admission = conductor.dispatchTurnWhenIdle(
+        's1',
+        'stale automation',
+        {},
+        {
+          validateSession: async () => {
+            entered();
+            await gate;
+            if (throws) throw new Error('validation failed');
+            return false;
+          },
+        },
+      );
+      const settled = admission.catch(() => ({ accepted: false }));
+      await started;
+      expect(await conductor.dispatchTurn('s1', 'queued message')).toEqual({ queued: true });
+      expect(conductor.queuedCount('s1')).toBe(1);
+      release();
+      await settled;
+      // An admission rejected before launch has no turn completion to drain its queue.
+      await vi.waitFor(() => {
+        expect(fake.calls).toHaveLength(1);
+      });
+      await vi.waitFor(() => {
+        expect(conductor.isBusy('s1')).toBe(false);
+      });
+      expect(conductor.queuedCount('s1')).toBe(0);
+    },
+  );
+
+  it('validates idle dispatch under its lock and releases rejected admissions', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      bus: new InMemoryEventBus(),
+      backend: unreachableBackend().backend,
+      worktreeExists: async () => true,
+    });
+    await expect(
+      conductor.dispatchTurnWhenIdle(
+        's1',
+        'stale automation',
+        {},
+        {
+          validateSession: async () => {
+            expect(conductor.isBusy('s1')).toBe(true);
+            return false;
+          },
+        },
+      ),
+    ).resolves.toEqual({ accepted: false });
+    expect(conductor.isBusy('s1')).toBe(false);
+    expect(await ctx.store.getEvents('s1')).toEqual([]);
   });
 
   it('dispatchTurnWhenIdle refuses busy sessions without steering or queueing', async () => {
@@ -8425,7 +8457,7 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
     };
   }
 
-  it('injects project memory into a pre-created Agent Loop session', async () => {
+  it('injects project memory into a pre-created project session', async () => {
     await ctx.store.upsertProject({
       id: 'p-loop',
       owner: 'example-org',
@@ -8438,7 +8470,6 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
       worktree: '/wt/loop-memory',
       model: 'codex/default',
       projectId: 'p-loop',
-      kind: 'agent_loop',
     });
     await ctx.store.appendProjectMemory('p-loop', 'keep the loop deterministic');
 
@@ -8451,14 +8482,13 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
 
     await conductor.startSession({
       sessionId: 'loop-memory',
-      sessionKind: 'agent_loop',
       worktree: '/wt/loop-memory',
-      prompt: 'Configure this Agent Loop',
+      prompt: 'Set up a recurring check',
       model: 'codex/default',
     });
     await waitFor(() => !conductor.isBusy('loop-memory'));
 
-    expect(seen[0]?.appendSystemPrompt).toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
+    expect(seen[0]?.appendSystemPrompt).toContain(AUTOMATION_SYSTEM_PROMPT);
     expect(seen[0]?.appendSystemPrompt).toContain(MEMORY_HEADER);
     expect(seen[0]?.appendSystemPrompt).toContain('keep the loop deterministic');
   });
