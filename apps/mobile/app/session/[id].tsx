@@ -3935,34 +3935,22 @@ export function SessionChat({
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.emptyTitle}>What should this session do?</Text>
-          <Text style={styles.emptySubtitle}>
-            Write below. The agent can work on your project, just talk things through, or take care
-            of something on a schedule.
-          </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"
               title="Build something"
               text="Describe a change or a bug. The agent works on it in this session's own branch."
-              onPress={focusInput}
             />
             <SessionStarterCard
               icon="message-circle"
               title="Just chat"
               text="Ask questions, plan, or think out loud. Nothing changes until you ask for it."
-              onPress={focusInput}
             />
             <SessionStarterCard
               icon="repeat"
               title="Recurring task"
               badge="New"
               text="Say what should happen and when, for example every Monday at 9:00. You confirm it before it starts."
-              onPress={() => {
-                setDraft((current) =>
-                  current.trim().length > 0 ? current : 'Every Monday at 9:00, ',
-                );
-                focusInput();
-              }}
             />
           </View>
         </ScrollView>
