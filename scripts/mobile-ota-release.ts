@@ -350,9 +350,22 @@ export function stageArtifact(
  * the earlier, authoritative boundary; read it from main, not from a checkout
  * that predates the merge.
  */
+function compatibleBaseline(candidate: Candidate, delivered: string): boolean {
+  if (delivered === candidate.baseline || delivered === candidate.tag) return true;
+  const prefix = `mobile-v${candidate.runtime.split('.').slice(0, 2).join('.')}.`;
+  if (!delivered.startsWith(prefix)) return false;
+  const patch = Number(delivered.slice(prefix.length));
+  return (
+    Number.isInteger(patch) &&
+    patch > Number(candidate.baseline.split('.').at(-1)) &&
+    patch < Number(candidate.version.split('.').at(-1))
+  );
+}
+
 function assertBaseline(candidate: Candidate) {
   const delivered = published(candidate.runtime);
-  if (delivered !== candidate.baseline) throw new Error('Published baseline changed; stage again');
+  if (!compatibleBaseline(candidate, delivered))
+    throw new Error('Published baseline changed; stage again');
   const approved = api<{ content: string }>(
     `repos/${repository()}/contents/${manifestPath}?ref=main`,
   );
@@ -370,7 +383,25 @@ function stage(runtime: string, version: string) {
   if (git('rev-parse', 'HEAD') !== commit)
     throw new Error('Checkout differs from candidate source');
   const delivered = published(runtime);
-  const candidate = fixedCandidate(runtime, delivered.replace(/^mobile-v/, ''), commit, version);
+  let candidate = fixedCandidate(runtime, delivered.replace(/^mobile-v/, ''), commit, version);
+  const reservation = `ota-candidate/${candidate.tag}/${commit}`;
+  if (git('ls-remote', '--tags', 'origin', `refs/tags/${reservation}`)) {
+    git('fetch', 'origin', `refs/tags/${reservation}:refs/tags/${reservation}`);
+    const saved = JSON.parse(
+      git('for-each-ref', '--format=%(contents)', `refs/tags/${reservation}`),
+    ) as Candidate;
+    const planned = fixedCandidate(
+      runtime,
+      saved.baseline.replace(/^mobile-v/, ''),
+      commit,
+      version,
+    );
+    if (JSON.stringify(saved) !== JSON.stringify(planned))
+      throw new Error('Immutable candidate reservation changed');
+    // Production can advance while a staging upload is interrupted. Keep its
+    // original reservation so a retry reconciles the same bundle and evidence.
+    candidate = planned;
+  }
   assertBaseline(candidate);
   git('merge-base', '--is-ancestor', candidate.baseline, commit);
   const group = stageArtifact(candidate, {
@@ -737,7 +768,7 @@ function promote() {
   if (!native || native.prerelease)
     throw new Error('Approve the native production runtime before promoting its OTA');
   const latest = published(candidate.runtime);
-  if (latest !== candidate.baseline && latest !== candidate.tag)
+  if (!compatibleBaseline(candidate, latest))
     throw new Error('Candidate is stale; stage against the delivered release');
   if (readGroup(candidate) !== candidate.group)
     throw new Error('Candidate branch no longer holds the approved group');

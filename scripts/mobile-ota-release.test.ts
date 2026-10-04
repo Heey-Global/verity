@@ -344,6 +344,11 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
         },
       ),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
+    update: (changes: Partial<ServiceState>) =>
+      writeFileSync(
+        statePath,
+        JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), ...changes }),
+      ),
   };
 }
 
@@ -406,6 +411,26 @@ describe('OTA CLI interrupted external operations', () => {
         ),
     ).toHaveLength(1);
     expect(service.state().calls.some((call) => call.startsWith('gh pr create'))).toBe(true);
+  });
+
+  it('resumes the same staging bundle when production advances between attempts', () => {
+    const service = serviceFixture({ released: 'mobile-v1.33.1', loseUpload: true });
+    expect(service.run('stage').status).not.toBe(0);
+    service.update({ released: 'mobile-v1.33.2' });
+    const retry = service.run('stage');
+    expect(retry.status, retry.stderr).toBe(0);
+    expect(
+      service
+        .state()
+        .calls.filter(
+          (call) =>
+            call.startsWith('npx --yes eas-cli@21.0.1 update ') &&
+            !call.includes('--branch staging-staging-'),
+        ),
+    ).toHaveLength(1);
+    expect(service.state().tags['ota-artifact/mobile-v1.33.3/' + sha].message).toContain(
+      'mobile-v1.33.1',
+    );
   });
 
   it('stops before changing the rolling PR when the delivered baseline changed', () => {
