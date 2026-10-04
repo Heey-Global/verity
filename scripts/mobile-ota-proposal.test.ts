@@ -41,7 +41,7 @@ it('starts a fresh runtime at patch one and refuses an unpublished native runtim
 
 it('includes shared application sources while excluding promotion and version metadata', () => {
   for (const path of [
-    'apps/mobile/app/index.tsx',
+    'apps/mobile/app/example-screen.tsx',
     'packages/mobile/src/index.ts',
     'packages/events/src/index.ts',
     'package-lock.json',
@@ -79,12 +79,12 @@ it.each(['1.52.4', '1.53.1'])(
       {
         sha: baseline,
         message: 'fix(mobile): already staged change',
-        files: ['apps/mobile/app/index.tsx'],
+        files: ['apps/mobile/app/example-screen.tsx'],
       },
       {
         sha: 'e'.repeat(40),
         message: 'fix(mobile): historical change',
-        files: ['apps/mobile/app/index.tsx'],
+        files: ['apps/mobile/app/example-screen.tsx'],
       },
     ];
     const updates: Update[] = [];

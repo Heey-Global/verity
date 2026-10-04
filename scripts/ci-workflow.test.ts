@@ -67,7 +67,7 @@ describe('workflow token least privilege', () => {
         promote: { actions: 'write', contents: 'write', 'pull-requests': 'read', checks: 'read' },
       },
       'mobile-ota.yml': {
-        update: { actions: 'write', contents: 'write', 'pull-requests': 'write' },
+        update: { actions: 'write', contents: 'write', issues: 'write', 'pull-requests': 'write' },
       },
       'release-reconcile.yml': {
         // contents: write reads draft releases, which GitHub hides from read
@@ -4667,9 +4667,9 @@ describe('changed-area detector', () => {
         .replace(shell ? /^[ \t]*#.*$/gm : /(?!)/g, '');
       for (const managed of releaseManaged) {
         // Delimited, so `version` does not answer for `version.txt`: a quote on
-        // both sides, or a `/` on the left for a path built from a root.
+        // both sides. A basename inside another path is a different input.
         const read = new RegExp(
-          `['"\`/]${managed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`,
+          `['"\`]${managed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`,
         ).test(code);
         expect(
           read,

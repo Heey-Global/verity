@@ -179,23 +179,16 @@ jobs:
               full)
                 ;;
               backend)
-                # A generated backend release PR changes only version metadata.
-                # Let the release-only verifier below inherit the green base. If
-                # that proof fails, leave it unscoped so normal path routing runs.
                 release_scoped=false
                 ;;
               mobile)
-                # mobile-app builds @verity/mobile before checking the Expo app.
                 mobile_app=true
                 release_scoped=true
                 ;;
               website)
-                # The website has no gated CI job. public-snapshot and ci-checks
-                # are unconditional, and release.yml owns its image build.
                 release_scoped=true
                 ;;
               mobile-ota)
-                # OTA release and promotion PRs contain metadata only.
                 release_scoped=true
                 ;;
               *)
@@ -381,9 +374,7 @@ jobs:
                   typecheck=true
                   test=true
                   ;;
-                # Swift sources and their native TLS harness are compiled by
-                # verity-mobile-native-verify on macOS. Root TypeScript, backend,
-                # image and Jest jobs cannot exercise them.
+                # Native Swift inputs are verified separately on macOS.
                 apps/mobile/native/*|scripts/ios-pinned-tls-smoke.sh|scripts/ios-pinned-tls-smoke.swift)
                   :
                   ;;
@@ -440,7 +431,7 @@ jobs:
                   ;;
                 # The workflow contract suite validates this approval boundary.
                 # Its merge is intentionally also routed to the normal app checks.
-                apps/mobile/ota-promotion.json)
+                apps/mobile/ota-promotion.json|apps/mobile/ota/*|apps/mobile/version.txt)
                   lint=true
                   typecheck=true
                   contract_test=true
