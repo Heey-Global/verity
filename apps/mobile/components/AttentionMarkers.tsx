@@ -2,6 +2,8 @@
 // glyph (the "PR" anchor), colored by verdict, so a row's PR reads as one thing:
 //   • CI running  → green git-merge, PULSING, no badge (on track, checks in flight)
 //   • merge-ready → green git-merge + green ✓ badge (checks passed, ready)
+//   • merge checking → green git-merge + green ✓ badge, PULSING (checks passed,
+//     GitHub still computing mergeability)
 //   • merge blocked → raspberry git-merge + raspberry ✕ badge
 //   • CI failed   → raspberry git-merge + raspberry ✕ badge
 // (Unread is NOT here — it's the left dot in the row, see UnreadDot.) The marker sits
@@ -52,7 +54,7 @@ function PrMarker({
 export function AttentionMarkers({ flags, size = 15 }: { flags: AttentionFlag[]; size?: number }) {
   const { theme } = useUnistyles();
   // Show only the SINGLE highest-priority marker (flags are priority-ordered:
-  // merge_conflict > ci_failed > merge_blocked > merge_ready > ci_running > unread). One icon per row keeps the
+  // merge_conflict > ci_failed > merge_blocked > merge_ready > merge_checking > ci_running > unread). One icon per row keeps the
   // trailing column clean and aligned under the project ⋯ — two side-by-side icons
   // read as clutter.
   const flag = flags[0];
@@ -61,11 +63,11 @@ export function AttentionMarkers({ flags, size = 15 }: { flags: AttentionFlag[];
     <View style={styles.slot} accessibilityRole="image" accessibilityLabel={flag.label}>
       {flag.kind === 'ci_running' ? (
         <PrMarker size={size} color={theme.colors.tone.done} pulsing />
-      ) : flag.kind === 'merge_ready' ? (
+      ) : flag.kind === 'merge_ready' || flag.kind === 'merge_checking' ? (
         <PrMarker
           size={size}
           color={theme.colors.tone.done}
-          pulsing={false}
+          pulsing={flag.kind === 'merge_checking'}
           badge={{ icon: 'check', color: theme.colors.tone.done }}
         />
       ) : flag.kind === 'ci_failed' ||

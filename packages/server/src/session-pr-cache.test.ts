@@ -94,7 +94,7 @@ describe('shared session PR cache', () => {
     await cache.get(session);
     expect(load).toHaveBeenCalledTimes(1);
     now = 15_000;
-    status = { ...pr, pipeline: 'success' };
+    status = { ...pr, pipeline: 'success', mergeable: true };
     await cache.get(session);
     now = 35_000;
     await cache.get(session);
@@ -111,6 +111,26 @@ describe('shared session PR cache', () => {
     now = 300_000;
     await cache.get(session);
     expect(load).toHaveBeenCalledTimes(4);
+  });
+
+  it('re-reads a green PR quickly while GitHub is still computing mergeability', async () => {
+    // The merge button waits on this answer; a 30s settled cadence left it dead for
+    // up to half a minute after GitHub had already finished its merge test.
+    let now = 0;
+    let status: PullRequestStatus = { ...pr, pipeline: 'success', mergeable: null };
+    const load = vi.fn(async () => status);
+    const cache = createSessionPrCache({ load, now: () => now });
+    await cache.get(session);
+    now = 14_999;
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(1);
+    now = 15_000;
+    status = { ...status, mergeable: true };
+    expect(await cache.get(session)).toMatchObject({ mergeable: true });
+    expect(load).toHaveBeenCalledTimes(2);
+    now = 40_000;
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it('backs off absent PRs in the background but discovers them quickly when viewed', async () => {

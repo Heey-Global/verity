@@ -20,6 +20,7 @@ export type AttentionKind =
   | 'ci_failed'
   | 'merge_blocked'
   | 'merge_ready'
+  | 'merge_checking'
   | 'ci_running'
   | 'unread';
 
@@ -45,6 +46,7 @@ const FLAGS: Record<AttentionKind, Omit<AttentionFlag, 'kind'>> = {
   ci_failed: { tone: 'danger', label: 'CI failed', blocking: true },
   merge_blocked: { tone: 'danger', label: 'Merge blocked', blocking: true },
   merge_ready: { tone: 'done', label: 'Ready to merge', blocking: false },
+  merge_checking: { tone: 'done', label: 'Checking mergeability', blocking: false },
   ci_running: { tone: 'attention', label: 'CI running', blocking: false },
   unread: { tone: 'active', label: 'New messages', blocking: false },
 };
@@ -63,6 +65,7 @@ const ORDER: readonly AttentionKind[] = [
   'ci_failed',
   'merge_blocked',
   'merge_ready',
+  'merge_checking',
   'ci_running',
   'unread',
 ];
@@ -113,8 +116,10 @@ export function sessionAttention(input: AttentionInput): AttentionFlag[] {
       if (pr.mergeable === true) kinds.add('merge_ready');
       // A confirmed conflict already says this, more precisely — don't mark twice.
       else if (pr.mergeable === false && !kinds.has('merge_conflict')) kinds.add('merge_blocked');
-      // mergeable === null: mergeability still being computed — no flag yet; the next
-      // poll resolves it to merge_ready (green) or merge_blocked (a real conflict).
+      // mergeable === null: GitHub is still computing mergeability. Not blocked, but
+      // not ready either — a non-blocking "settling" flag so the row keeps its PR
+      // marker instead of losing it until the next poll resolves ready/blocked.
+      else if (pr.mergeable === null && !kinds.has('merge_conflict')) kinds.add('merge_checking');
     }
   }
   if (input.unread) kinds.add('unread');
