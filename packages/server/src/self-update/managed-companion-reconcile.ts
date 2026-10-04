@@ -312,6 +312,7 @@ export async function reconcileManagedCompanions(
   const previewMigration = localPreviewIngressMigration(
     gatewayInspect,
     [...serverRanges][0] ?? options.environment?.VERITY_LOCAL_PREVIEW_PORT_RANGE,
+    options.environment?.VERITY_LOCAL_PREVIEW_BIND_ADDRESS,
   );
   if (gatewayInspect.image !== options.journal.targetDigest || previewMigration !== undefined) {
     const replacement = await options.docker.replaceContainerImage(

@@ -206,7 +206,7 @@ describe('managed companion reconciliation', () => {
       expect.objectContaining({
         env: { VERITY_LOCAL_PREVIEW_PORT_RANGE: '8100-8119' },
         portBindings: expect.objectContaining({
-          '8100/tcp': [{ HostIp: '100.85.209.118', HostPort: '8100' }],
+          '8100/tcp': [{ HostIp: '127.0.0.1', HostPort: '8100' }],
         }),
       }),
     );
