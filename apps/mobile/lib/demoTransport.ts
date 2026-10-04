@@ -1,4 +1,5 @@
 import type { SessionDetail, StreamEventFrame, StreamSocket } from '@verity/mobile';
+import { randomUUID } from 'expo-crypto';
 
 export const DEMO_BASE_URL = 'https://demo.verity.invalid';
 export function isDemoUrl(url: string | null | undefined): boolean {
@@ -6,7 +7,7 @@ export function isDemoUrl(url: string | null | undefined): boolean {
 }
 const MODEL = 'codex/gpt-5.4';
 let generation = 0;
-const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+const instanceId = randomUUID();
 const PROJECT_ID = 'demo-project';
 const DATE = '2026-01-01T12:00:00.000Z';
 const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };

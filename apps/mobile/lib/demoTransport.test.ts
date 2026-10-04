@@ -1,6 +1,11 @@
 import { VerityClient, decodeStreamMessage, SessionStream, SessionModel } from '@verity/mobile';
 import { DEMO_BASE_URL, demoFetch, createDemoSocket, resetDemoData } from './demoTransport';
 
+function requiredVersion(file: { version?: string }): string {
+  if (file.version === undefined) throw new Error('Demo file responses must include a version.');
+  return file.version;
+}
+
 const client = () =>
   new VerityClient({
     baseUrl: DEMO_BASE_URL,
@@ -237,7 +242,7 @@ it('rejects stale saves after a simulated edit even when the file length stays t
   expect(changed.content.length).toBe(opened.content.length);
   expect(changed.version).not.toBe(opened.version);
   await expect(
-    api.saveSessionFileContent(id, 'worktree', path, opened.content, opened.version),
+    api.saveSessionFileContent(id, 'worktree', path, opened.content, requiredVersion(opened)),
   ).rejects.toMatchObject({ status: 409 });
   expect((await api.getSessionFileContent(id, path)).content).toBe(changed.content);
   const saved = await api.saveSessionFileContent(
@@ -245,7 +250,7 @@ it('rejects stale saves after a simulated edit even when the file length stays t
     'worktree',
     path,
     opened.content,
-    changed.version,
+    requiredVersion(changed),
   );
   expect(saved.content).toBe(opened.content);
   expect(saved.version).not.toBe(changed.version);
@@ -284,7 +289,7 @@ it('preserves saved edits when applying the simulated color change', async () =>
   const id = (await api.listSessions())[0]!.sessionId;
   const file = await api.getSessionFileContent(id, 'src/Button.tsx');
   const edited = `${file.content}\n// Keep this local edit.\n`;
-  await api.saveSessionFileContent(id, 'worktree', 'src/Button.tsx', edited, file.version);
+  await api.saveSessionFileContent(id, 'worktree', 'src/Button.tsx', edited, requiredVersion(file));
   await api.sendTurn(id, { prompt: 'Change the button color' });
   jest.advanceTimersByTime(2000);
   expect((await api.getSessionFileContent(id, 'src/Button.tsx')).content).toBe(
