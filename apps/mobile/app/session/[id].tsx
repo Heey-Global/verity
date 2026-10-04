@@ -4129,10 +4129,6 @@ export function SessionChat({
   );
 }
 
-// A header Issue context chip (#125). Tappable when `url` is a string (opens the
-// GitHub issue via `Linking.openURL`, announced as a link); when `url` is null —
-// owner/repo unknown (no GitHub remote / older server) — it renders as the plain,
-// non-tappable chip it always was, never linking to a broken URL (#161).
 // A round header action (Preview / Files / Bookmarks): an icon large enough to hit
 // and recognise, with an optional status dot (e.g. a running dev server) or count
 // badge. Long-press reports its name through `onHint`.
@@ -4178,6 +4174,10 @@ function HeaderActionButton({
   );
 }
 
+// A header Issue context chip (#125). Tappable when `url` is a string (opens the
+// GitHub issue via `Linking.openURL`, announced as a link); when `url` is null —
+// owner/repo unknown (no GitHub remote / older server) — it renders as the plain,
+// non-tappable chip it always was, never linking to a broken URL (#161).
 function MetaChip({ label, url }: { label: string; url: string | null }) {
   if (url === null) {
     return <Text style={styles.headerMetaChip}>{label}</Text>;
@@ -6057,140 +6057,148 @@ function AgentMarkdown({
   const knowledgeSaved = messageId != null && knowledgeSavedFor === messageId;
   const bookmarked = messageId != null && bookmarks?.isBookmarked(messageId) === true;
   const hasMoreActions = messageId != null && (bookmarks !== null || knowledge !== null);
-  const [actionsOpen, setActionsOpen] = useState(false);
+  // Keyed by message (like knowledgeSavedFor) so a recycled list cell never opens
+  // the sheet for a different message.
+  const [actionsOpenFor, setActionsOpenFor] = useState<string>();
+  const actionsOpen = messageId != null && actionsOpenFor === messageId;
+  const closeActions = useCallback(() => setActionsOpenFor(undefined), []);
   const openActions = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
     setShowCopy(false);
-    setActionsOpen(true);
-  }, []);
+    setActionsOpenFor(messageId);
+  }, [messageId]);
   return (
-    <Pressable
-      onPress={toggleCopy}
-      // Not an a11y element itself: keep the prose readable as individual nodes
-      // rather than collapsing the whole message into one button. Copy is exposed
-      // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
-      // convenience). VoiceOver users get per-block selection + the code badges.
-      accessible={false}
-    >
-      <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
-        {blocks.map((block, i) =>
-          block.type === 'code' ? (
-            <View key={i} style={styles.codeBlock}>
-              {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-              {searchHighlightQuery ? (
-                <Text style={styles.codeText} selectable>
-                  <HighlightedSearchText text={block.content} />
-                </Text>
-              ) : (
-                <UITextView style={styles.codeText} selectable uiTextView>
-                  {block.content}
-                </UITextView>
-              )}
-              <CopyButton
-                value={block.content}
-                accessibilityLabel="Copy code block"
-                style={styles.codeCopyBtn}
+    <>
+      <Pressable
+        onPress={toggleCopy}
+        // Not an a11y element itself: keep the prose readable as individual nodes
+        // rather than collapsing the whole message into one button. Copy is exposed
+        // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
+        // convenience). VoiceOver users get per-block selection + the code badges.
+        accessible={false}
+      >
+        <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
+          {blocks.map((block, i) =>
+            block.type === 'code' ? (
+              <View key={i} style={styles.codeBlock}>
+                {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
+                {searchHighlightQuery ? (
+                  <Text style={styles.codeText} selectable>
+                    <HighlightedSearchText text={block.content} />
+                  </Text>
+                ) : (
+                  <UITextView style={styles.codeText} selectable uiTextView>
+                    {block.content}
+                  </UITextView>
+                )}
+                <CopyButton
+                  value={block.content}
+                  accessibilityLabel="Copy code block"
+                  style={styles.codeCopyBtn}
+                />
+              </View>
+            ) : (
+              <MarkdownText
+                key={i}
+                content={block.content}
+                onOpenLocalFile={openLocalFile}
+                sessionFileImageSource={sessionFileImageSource}
+                onOpenImage={(source, label) => setViewer({ source, label })}
               />
-            </View>
-          ) : (
-            <MarkdownText
-              key={i}
-              content={block.content}
-              onOpenLocalFile={openLocalFile}
-              sessionFileImageSource={sessionFileImageSource}
-              onOpenImage={(source, label) => setViewer({ source, label })}
+            ),
+          )}
+          {viewer !== null ? (
+            <ImageSourceViewer
+              source={viewer.source}
+              label={viewer.label}
+              onClose={() => setViewer(null)}
             />
-          ),
-        )}
-        {viewer !== null ? (
-          <ImageSourceViewer
-            source={viewer.source}
-            label={viewer.label}
-            onClose={() => setViewer(null)}
-          />
-        ) : null}
-        {imagePathViewer !== null && sessionFileImageSource !== null ? (
-          <SessionFileImageViewer
-            path={imagePathViewer}
-            sessionFileImageSource={sessionFileImageSource}
-            onClose={() => setImagePathViewer(null)}
-            onUnavailable={() => {
-              setImagePathViewer(null);
-              openSessionFile?.(imagePathViewer);
-            }}
-          />
-        ) : null}
-        {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
+          ) : null}
+          {imagePathViewer !== null && sessionFileImageSource !== null ? (
+            <SessionFileImageViewer
+              path={imagePathViewer}
+              sessionFileImageSource={sessionFileImageSource}
+              onClose={() => setImagePathViewer(null)}
+              onUnavailable={() => {
+                setImagePathViewer(null);
+                openSessionFile?.(imagePathViewer);
+              }}
+            />
+          ) : null}
+          {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
             reveal needed), so it's spottable while scrolling — the Kindle affordance.
             Non-interactive so it never fights the tap-to-reveal / long-press-select
             gestures; toggling off happens via the "…" sheet or the header sheet. */}
-        {bookmarked && !showCopy ? (
-          <View style={styles.msgBookmarkFlag} pointerEvents="none">
-            <Icon name="bookmark" size={13} color={theme.colors.primary} />
-          </View>
-        ) : null}
-        {showCopy ? (
-          <View style={styles.msgActions}>
-            {/* Copy stays one tap away; everything else lives behind "…" in a sheet
+          {bookmarked && !showCopy ? (
+            <View style={styles.msgBookmarkFlag} pointerEvents="none">
+              <Icon name="bookmark" size={13} color={theme.colors.primary} />
+            </View>
+          ) : null}
+          {showCopy ? (
+            <View style={styles.msgActions}>
+              {/* Copy stays one tap away; everything else lives behind "…" in a sheet
                 that names each action, since bare icons (an open book for Project
                 Knowledge) didn't explain themselves. */}
-            {hasMoreActions ? (
-              <Pressable
-                onPress={openActions}
-                hitSlop={6}
-                accessibilityRole="button"
-                accessibilityLabel="More message actions"
-                style={({ pressed }) => [
-                  styles.copyBtn,
-                  styles.msgActionBtn,
-                  pressed ? styles.copyBtnPressed : null,
-                ]}
-              >
-                <Icon name="more-horizontal" size={18} color={theme.colors.text} />
-              </Pressable>
-            ) : null}
-            <CopyButton
-              value={text}
-              accessibilityLabel="Copy message"
-              iconSize={18}
-              style={styles.msgActionBtn}
-            />
-          </View>
-        ) : null}
-        {actionsOpen && messageId != null ? (
-          <MessageActionsSheet
-            onClose={() => setActionsOpen(false)}
-            onCopy={() => {
-              void Clipboard.setStringAsync(text);
-              setActionsOpen(false);
-            }}
-            knowledge={
-              knowledge
-                ? {
-                    saved: knowledgeSaved,
-                    save: () =>
-                      knowledge.save(messageId, text).then(() => setKnowledgeSavedFor(messageId)),
-                  }
-                : null
-            }
-            bookmark={
-              bookmarks
-                ? {
-                    bookmarked,
-                    toggle: () => {
-                      // Persist a short preview + timestamp so the jump-list can show
-                      // this bookmark even when its message is scrolled out of the
-                      // loaded window.
-                      bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt });
-                      setActionsOpen(false);
-                    },
-                  }
-                : null
-            }
-          />
-        ) : null}
-      </View>
-    </Pressable>
+              {hasMoreActions ? (
+                <Pressable
+                  onPress={openActions}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="More message actions"
+                  style={({ pressed }) => [
+                    styles.copyBtn,
+                    styles.msgActionBtn,
+                    pressed ? styles.copyBtnPressed : null,
+                  ]}
+                >
+                  <Icon name="more-horizontal" size={18} color={theme.colors.text} />
+                </Pressable>
+              ) : null}
+              <CopyButton
+                value={text}
+                accessibilityLabel="Copy message"
+                iconSize={18}
+                style={styles.msgActionBtn}
+              />
+            </View>
+          ) : null}
+        </View>
+      </Pressable>
+      {/* Outside the message Pressable: the Modal's content stays in this React tree,
+        so taps on the sheet would otherwise bubble into the message's tap-to-reveal. */}
+      {actionsOpen && messageId != null ? (
+        <MessageActionsSheet
+          onClose={closeActions}
+          onCopy={() => {
+            void Clipboard.setStringAsync(text);
+            closeActions();
+          }}
+          knowledge={
+            knowledge
+              ? {
+                  saved: knowledgeSaved,
+                  save: () =>
+                    knowledge.save(messageId, text).then(() => setKnowledgeSavedFor(messageId)),
+                }
+              : null
+          }
+          bookmark={
+            bookmarks
+              ? {
+                  bookmarked,
+                  toggle: () => {
+                    // Persist a short preview + timestamp so the jump-list can show
+                    // this bookmark even when its message is scrolled out of the
+                    // loaded window.
+                    bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt });
+                    closeActions();
+                  },
+                }
+              : null
+          }
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -6770,6 +6778,8 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
 // The collapsed line already shows one call (the latest), so the count names the
 // hidden rest: "+9 more" for a run of ten.
 function ToolGroupCount({ count }: { count: number }) {
+  // A todo run can hold a single update — nothing is hidden then.
+  if (count < 2) return null;
   return <Text style={styles.toolGroupCountText}>{`+${String(count - 1)} more`}</Text>;
 }
 
@@ -9344,8 +9354,9 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.xs,
   },
   // In the two-pane (embedded) layout the right-pane header sits beside the left
-  // pane's compact usage meters; a shorter title row + reduced top padding line
-  // the two bars up on the same baseline. The phone header keeps the full 44px.
+  // pane's compact usage meters; a shorter title row + reduced top padding keep the
+  // two bars close, while still fitting the 40pt action buttons. The phone header
+  // uses the full 56px.
   headerRowEmbedded: {
     height: 48,
     paddingLeft: theme.spacing.md,
