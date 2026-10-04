@@ -1145,3 +1145,29 @@ describe('SessionListModel polling', () => {
     }
   });
 });
+
+it.each([{ status: 'paused' as const }, undefined])(
+  'preserves automation mutation %j across an older overview response',
+  async (automation) => {
+    const { client, listSessions } = makeClient();
+    const previous = { ...session('a', 'idle'), automation: { status: 'enabled' as const } };
+    listSessions.mockResolvedValueOnce([previous]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const loading = model.refresh();
+    model.applySessionAutomation('a', automation);
+    resolve([previous]);
+    await loading;
+    expect(model.state.sessions[0]?.automation).toEqual(automation);
+    listSessions.mockResolvedValueOnce([previous]);
+    await model.refresh();
+    expect(model.state.sessions[0]?.automation).toEqual(previous.automation);
+  },
+);
