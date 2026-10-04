@@ -5011,13 +5011,16 @@ function SessionFilesSheet({
 
   // Selection starts from a row, never from the header: the file you held or
   // chose "Select" for is the first one picked, so the mode never opens empty.
-  const startSelection = useCallback((entry: SessionFileEntry) => {
-    if (!isSelectableFile(entry)) return;
-    modifierClick.current = { anchor: entry.path, range: [] };
-    setSelected([entry.path]);
-    setSelecting(true);
-    void Haptics.selectionAsync();
-  }, []);
+  const startSelection = useCallback(
+    (entry: SessionFileEntry) => {
+      if (mutating || driveActive || !isSelectableFile(entry)) return;
+      modifierClick.current = { anchor: entry.path, range: [] };
+      setSelected([entry.path]);
+      setSelecting(true);
+      void Haptics.selectionAsync();
+    },
+    [driveActive, mutating],
+  );
 
   const endSelection = useCallback(() => {
     setSelecting(false);
@@ -5252,9 +5255,16 @@ function SessionFilesSheet({
                   label: 'Copy contents',
                   icon: 'copy' as const,
                   onPress: () => {
-                    void Clipboard.setStringAsync(preview.content).then(() =>
-                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success),
-                    );
+                    void Clipboard.setStringAsync(preview.content)
+                      .then(() =>
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success),
+                      )
+                      .catch((err: unknown) =>
+                        Alert.alert(
+                          'Could not copy',
+                          err instanceof Error ? err.message : String(err),
+                        ),
+                      );
                   },
                 },
               ]
