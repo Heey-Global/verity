@@ -686,6 +686,36 @@ describe('settings/server-update', () => {
 });
 
 describe('server update channel selection', () => {
+  it('blocks stale installs after leaving a submenu with an unanswered channel write', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    let finishWrite!: (value: 'staging') => void;
+    const client = makeClient('unlocked', {
+      getServerUpdates: jest
+        .fn()
+        .mockResolvedValue({ state: 'available', release: RELEASE, operation: null }),
+      getServerUpdateChannel: jest.fn().mockResolvedValue('stable'),
+      setServerUpdateChannel: jest.fn().mockReturnValue(
+        new Promise<'staging'>((resolve) => {
+          finishWrite = resolve;
+        }),
+      ),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    const submenu = render(<ServerUpdateChannelScreen />);
+    fireEvent.press(await screen.findByText('Prereleases'));
+    await act(async () => {
+      alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+    });
+    submenu.unmount();
+    jest.mocked(client.getServerUpdates).mockClear();
+    render(<ServerUpdateScreen />);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(client.getServerUpdates).not.toHaveBeenCalled();
+    await act(async () => finishWrite('staging'));
+    expect(await screen.findByLabelText('Install 1.4.0')).toBeEnabled();
+  });
+
   it('shows preferences without version, installation or release notes', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {

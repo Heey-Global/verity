@@ -19,6 +19,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import {
+  isServerUpdateChannelWritePending,
+  setServerUpdateChannelWritePending,
+  useServerUpdateChannelWritePending,
+} from '../../lib/serverUpdateChannelWrite';
 import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
 import { SettingsGroup, SettingsPanel } from './SettingsChrome';
@@ -41,12 +46,8 @@ export function ServerUpdateSection({
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
-  const [changingChannel, setChangingChannel] = useState(false);
-  const channelWritePending = useRef(false);
-  const channelSavingChanged = useCallback((value: boolean) => {
-    channelWritePending.current = value;
-    setChangingChannel(value);
-  }, []);
+  const changingChannel = useServerUpdateChannelWritePending();
+  const channelSavingChanged = setServerUpdateChannelWritePending;
   const [channelNeedsRefresh, setChannelNeedsRefresh] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   // Key of an install request whose outcome is still unknown: it was not
@@ -75,13 +76,17 @@ export function ServerUpdateSection({
 
   const refresh = useCallback(
     (force = false) => {
-      if (channelWritePending.current && !force) return Promise.resolve();
+      if (isServerUpdateChannelWritePending() && !force) return Promise.resolve();
       const generation = ++refreshGeneration.current;
       return (
         client
           .getServerUpdates()
           .then((next) => {
-            if (generation !== refreshGeneration.current) return;
+            if (
+              generation !== refreshGeneration.current ||
+              (isServerUpdateChannelWritePending() && !force)
+            )
+              return;
             const pending = unansweredRef.current;
             // An unchanged status is not yet proof that nothing started: the
             // request may still be on its way into the Updater's journal.
@@ -119,6 +124,13 @@ export function ServerUpdateSection({
     setActionError(undefined);
     publishServerUpdateStatusMutation(invalidated);
   }, []);
+  const previousChannelWrite = useRef(false);
+  useEffect(() => {
+    if (changingChannel) invalidateChannel();
+    else if (previousChannelWrite.current) void refresh();
+    previousChannelWrite.current = changingChannel;
+  }, [changingChannel, invalidateChannel, refresh]);
+
   const channelChanged = useCallback(async () => {
     invalidateChannel();
     await refresh(true);
@@ -147,7 +159,7 @@ export function ServerUpdateSection({
 
   const install = useCallback(
     (targetDigest: string, idempotencyKey: string) => {
-      if (starting || changingChannel || channelNeedsRefresh) return;
+      if (starting || isServerUpdateChannelWritePending() || channelNeedsRefresh) return;
       setStarting(true);
       setActionError(undefined);
       // The key is derived by describeServerUpdate: stable for a retry after a
