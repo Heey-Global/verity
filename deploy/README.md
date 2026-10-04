@@ -955,6 +955,19 @@ Server. Changing it requires restarting the ingress container; creating or
 revoking a share never recreates the project sandbox. Ports are assigned only
 while shares are active. A full range produces an explicit capacity error.
 
+Managed self-updates reconcile the Gateway's local preview listener range and
+publish missing host ports even when the Gateway image already matches the target.
+The migration uses the running managed Server's range and preserves existing port
+bindings. Missing bindings default to loopback, independently of the TLS API
+interfaces. To allow LAN/VPN access, explicitly set `VERITY_LOCAL_PREVIEW_BIND_ADDRESS`
+to the trusted host IP in the Gateway environment before reconciliation.
+A wildcard TLS API binding never authorizes public preview exposure. A failed replacement restarts the previous Gateway.
+This requires an Updater with companion reconciliation; deployments predating
+that mechanism still require the documented managed-bootstrap migration.
+Self-update changes the runtime container configuration, not the host's installed
+Compose files. Before manually recreating the Gateway with Compose, update those
+files to the current release so the recreation retains the preview configuration.
+
 Local previews are open HTTP, including REST APIs and WebSockets. Restrict the
 range to trusted clients or VPN addresses; it must never be exposed directly to
 the public internet. A network firewall may also need updating when the range
