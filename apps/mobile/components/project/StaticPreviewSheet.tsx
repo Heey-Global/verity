@@ -340,7 +340,12 @@ export function StaticPreviewSheet({
 
   const ensureLocalShare = async (selection: PreviewTarget): Promise<LocalPreviewShare> => {
     const existing = localShareFor(selection);
-    if (existing) return existing;
+    if (existing) {
+      const latest = await client.listSessionLocalPreviewShares(sessionId);
+      setLocalShares(latest);
+      const live = latest.find((share) => localShareMatches(share, selection));
+      if (live) return live;
+    }
     const share = await client.createSessionLocalPreviewShare(
       sessionId,
       selection.kind === 'port'
@@ -397,7 +402,11 @@ export function StaticPreviewSheet({
         publicSharing,
         () => {
           const existing = publicShareFor(selection);
-          if (existing) {
+          if (existing?.pinLocked) {
+            setError(
+              'This PIN is locked. Stop sharing and create a new link before sharing it again.',
+            );
+          } else if (existing) {
             void Share.share({ message: shareMessage(existing) }).catch((caught: unknown) =>
               setError(previewError(caught)),
             );

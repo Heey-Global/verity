@@ -214,7 +214,15 @@ it('creates the public link when the unreachable dialog asks to share instead', 
 
 it('copies the local link, creating the local share on first use', async () => {
   const createSessionLocalPreviewShare = jest.fn(async () => localShare);
-  renderSheet(makeClient({ createSessionLocalPreviewShare }));
+  renderSheet(
+    makeClient({
+      createSessionLocalPreviewShare,
+      listSessionLocalPreviewShares: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([localShare]),
+    }),
+  );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   fireEvent.press(await screen.findByRole('button', { name: 'Copy local link' }));
   await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('http://server:8100/'));
@@ -600,4 +608,50 @@ it('reuses the public link when local access is unreachable and both accesses ex
   await act(async () => fallback());
   expect(share).toHaveBeenCalledWith({ message: expect.stringContaining('https://vite.example') });
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+});
+
+it('replaces a cached local access revoked by Core before opening', async () => {
+  const replacement = { ...localShare, id: 'local-new', url: 'http://server:8101/' };
+  const createSessionLocalPreviewShare = jest.fn(async () => replacement);
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest
+        .fn()
+        .mockResolvedValueOnce([localShare])
+        .mockResolvedValue([]),
+      createSessionLocalPreviewShare,
+    }),
+  );
+  await screen.findByText('Local open');
+  fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  await waitFor(() =>
+    expect(openLocalPreview).toHaveBeenCalledWith(
+      replacement,
+      'available',
+      expect.any(Function),
+      undefined,
+    ),
+  );
+});
+
+it('does not share a locked PIN from the unreachable-local fallback', async () => {
+  const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      listPublicPreviewShares: jest.fn(async () => [portShare({ pinLocked: true })]),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  await screen.findByText('https://vite.example');
+  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+  await act(async () => jest.mocked(openLocalPreview).mock.calls[0]![2]());
+  expect(share).not.toHaveBeenCalled();
+  expect(
+    screen.getByText(
+      'This PIN is locked. Stop sharing and create a new link before sharing it again.',
+    ),
+  ).toBeTruthy();
 });
