@@ -207,3 +207,99 @@ it('keeps demo dictation away from microphone permissions and native recognition
   expect(ExpoSpeechRecognitionModule.requestPermissionsAsync).not.toHaveBeenCalled();
   expect(ExpoSpeechRecognitionModule.start).not.toHaveBeenCalled();
 });
+
+// iOS 18 prefixes results after a pause-final with a space, so the repeat it
+// emits on stop never matched the committed final byte for byte.
+it('keeps the draft once when stopping repeats the final with a leading space', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Dictated words' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: 'Dictated words' }], isFinal: true }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Dictated words.' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenLastCalledWith('Dictated words');
+  expect(onChangeText).not.toHaveBeenCalledWith('Dictated words Dictated words.');
+});
+
+it('ignores a replayed interim of the committed final after stop', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Dictated words' }], isFinal: true }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Dictated words' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Dictated words' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenCalledTimes(1);
+  expect(onChangeText).toHaveBeenLastCalledWith('Dictated words');
+});
+
+it('commits an utterance still open when stop is tapped', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: true }));
+  act(() => handlers.result({ results: [{ transcript: ' Again' }], isFinal: false }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Again' }], isFinal: true }));
+  expect(onChangeText).toHaveBeenLastCalledWith('Again Again');
+});
+
+it('ignores a replay of the utterance committed after stop', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: false }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: 'Again' }], isFinal: true }));
+  act(() => handlers.result({ results: [{ transcript: ' Again' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Again.' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenLastCalledWith('Again');
+});
+
+it('ignores a replay that streams in word by word after stop', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Dictated words' }], isFinal: true }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Dictated' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Dictated words.' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenCalledTimes(1);
+  expect(onChangeText).toHaveBeenLastCalledWith('Dictated words');
+});
+
+it('restores the committed text when a mid-word replay interim slips through after stop', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Dictated words' }], isFinal: true }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Dictat' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Dictated words.' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenLastCalledWith('Dictated words');
+});
+
+it('keeps new speech after stop that starts like the committed final', async () => {
+  const onChangeText = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', onChangeText));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Yes I agree' }], isFinal: true }));
+  act(() => result.current.toggle());
+  act(() => handlers.result({ results: [{ transcript: ' Yes' }], isFinal: false }));
+  act(() => handlers.result({ results: [{ transcript: ' Yes' }], isFinal: true }));
+  act(() => handlers.end({}));
+  expect(onChangeText).toHaveBeenLastCalledWith('Yes I agree Yes');
+});

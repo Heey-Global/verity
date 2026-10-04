@@ -70,6 +70,29 @@ async function resolveRecognitionLocale(): Promise<{ lang: string; onDevice: boo
   return { lang: preferred[0] ?? 'en-US', onDevice: false };
 }
 
+/** Reduce a recognizer transcript to its words. iOS 18 prefixes every result
+ * after a pause-final with a space and may re-punctuate or re-case the repeat it
+ * emits on stop, so a strict string match lets it through. */
+function utteranceWords(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[\s.,!?;:'"„“”‚‘’«»¿¡…()\-–—。、，！？：；]+/g, ' ')
+    .trim();
+}
+
+function sameUtterance(a: string, b: string): boolean {
+  const wa = utteranceWords(a);
+  return wa !== '' && wa === utteranceWords(b);
+}
+
+/** True when `partial` is the committed final or a word-aligned start of it —
+ * how a replay streams in after stop. */
+function replaysUtterance(partial: string, final: string): boolean {
+  const wp = utteranceWords(partial);
+  const wf = utteranceWords(final);
+  return wp !== '' && (wf === wp || wf.startsWith(`${wp} `));
+}
+
 /**
  * Live voice dictation via the OS speech recognizer (`expo-speech-recognition`:
  * iOS `SFSpeechRecognizer`, Android `SpeechRecognizer`). Unlike the previous
@@ -101,6 +124,11 @@ export function useVoiceInput(
   const interimActiveRef = useRef(false);
   const ignoreCurrentUtteranceRef = useRef(false);
   const lastFinalTranscriptRef = useRef('');
+  // Set when the operator taps stop. If no utterance was open at that moment,
+  // anything the recognizer replays of the last final (interim or final) is a
+  // repeat of committed text, not new speech.
+  const stoppingRef = useRef(false);
+  const utteranceOpenAtStopRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoSendRef = useRef(onAutoSend);
   autoSendRef.current = onAutoSend;
@@ -184,13 +212,29 @@ export function useVoiceInput(
       }
       return;
     }
-    // Native stop can repeat an already committed final result before `end`.
-    // A new interim result distinguishes an intentional repeated utterance.
-    if (event.isFinal && !interimActiveRef.current && transcript === lastFinalTranscriptRef.current)
+    // Native stop can repeat an already committed final result before `end`,
+    // sometimes as an interim first. A new interim result before stop
+    // distinguishes an intentional repeated utterance.
+    const repeatsLastFinal = sameUtterance(transcript, lastFinalTranscriptRef.current);
+    if (
+      stoppingRef.current &&
+      !utteranceOpenAtStopRef.current &&
+      (event.isFinal
+        ? repeatsLastFinal
+        : replaysUtterance(transcript, lastFinalTranscriptRef.current))
+    ) {
+      // A replay interim the prefix check missed (e.g. a mid-word partial) may
+      // be on screen; its final is the replay, so restore the committed text.
+      if (event.isFinal && interimActiveRef.current) {
+        interimActiveRef.current = false;
+        onChangeRef.current(baseRef.current);
+      }
       return;
+    }
+    if (event.isFinal && !interimActiveRef.current && repeatsLastFinal) return;
     if (transcript.trim()) {
       cancelCountdown();
-      if (!event.isFinal || transcript !== lastFinalTranscriptRef.current) {
+      if (!event.isFinal || !repeatsLastFinal) {
         pausedRef.current = false;
       }
     }
@@ -206,6 +250,8 @@ export function useVoiceInput(
       interimActiveRef.current = false;
       lastFinalTranscriptRef.current = transcript;
       baseRef.current = next;
+      // The utterance open at stop is now committed; further replays of it are repeats.
+      if (stoppingRef.current) utteranceOpenAtStopRef.current = false;
       finalReadyRef.current = true;
       startCountdown();
     }
@@ -260,6 +306,8 @@ export function useVoiceInput(
         interimActiveRef.current = false;
         ignoreCurrentUtteranceRef.current = false;
         lastFinalTranscriptRef.current = '';
+        stoppingRef.current = false;
+        utteranceOpenAtStopRef.current = false;
         // Resolve a locale that has an on-device model INSTALLED, matched to the
         // operator's preferred languages — so recognition stays on-device (private,
         // offline) AND we never request an invalid locale (the `en-DE` failure). If
@@ -291,6 +339,8 @@ export function useVoiceInput(
       autoModeRef.current = false;
       setAutoMode(false);
       cancelCountdown();
+      stoppingRef.current = true;
+      utteranceOpenAtStopRef.current = interimActiveRef.current;
       // Resolves to a final `result` then `end` → state flips to idle there.
       ExpoSpeechRecognitionModule.stop();
     } else {
