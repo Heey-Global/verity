@@ -1885,9 +1885,12 @@ function filteredResponseHeaders(
     )
       result[name] = value;
   });
-  delete result['x-verity-local-cookies'];
-  if (mode === 'local-open' && headers.getSetCookie().length)
-    result['x-verity-local-cookies'] = JSON.stringify(headers.getSetCookie());
+  for (const name of Object.keys(result))
+    if (name.startsWith('x-verity-local-set-cookie-')) delete result[name];
+  if (mode === 'local-open')
+    headers.getSetCookie().forEach((cookie, index) => {
+      result[`x-verity-local-set-cookie-${index}`] = cookie;
+    });
   const location = result.location;
   if (location) {
     try {
@@ -1914,18 +1917,15 @@ function sanitizeResponseHeaders(
     if (!HOP_BY_HOP.has(name) && name !== 'set-cookie' && name !== 'content-length')
       result[name] = value;
   }
-  const cookies = result['x-verity-local-cookies'];
-  delete result['x-verity-local-cookies'];
-  const output: Record<string, string | string[]> = result;
-  if (mode === 'local-open' && cookies) {
-    try {
-      const values: unknown = JSON.parse(cookies);
-      if (Array.isArray(values) && values.every((v) => typeof v === 'string'))
-        output['set-cookie'] = values;
-    } catch {
-      /* Invalid metadata is discarded. */
+  const cookies: string[] = [];
+  for (const name of Object.keys(result)) {
+    if (name.startsWith('x-verity-local-set-cookie-')) {
+      if (mode === 'local-open') cookies.push(result[name]!);
+      delete result[name];
     }
   }
+  const output: Record<string, string | string[]> = result;
+  if (cookies.length) output['set-cookie'] = cookies;
   output['cache-control'] ??= 'no-store';
   return output;
 }
@@ -2016,9 +2016,16 @@ function localRequestCookies(
   request: IncomingMessage,
   mode: 'pin' | 'local-open',
 ): void {
-  delete headers['x-verity-local-cookie'];
-  if (mode === 'local-open' && request.headers.cookie)
-    headers['x-verity-local-cookie'] = request.headers.cookie;
+  for (const name of Object.keys(headers))
+    if (name.startsWith('x-verity-local-request-cookie-')) delete headers[name];
+  if (mode === 'local-open' && request.headers.cookie) {
+    const value = request.headers.cookie;
+    for (let offset = 0; offset < value.length; offset += 4096)
+      headers[`x-verity-local-request-cookie-${offset / 4096}`] = value.slice(
+        offset,
+        offset + 4096,
+      );
+  }
 }
 
 function targetRequestHeaders(
@@ -2026,8 +2033,18 @@ function targetRequestHeaders(
   mode: 'pin' | 'local-open',
 ): Record<string, string> {
   const result = { ...headers };
-  delete result['x-verity-local-cookie'];
-  if (mode === 'local-open' && headers['x-verity-local-cookie'])
-    result.cookie = headers['x-verity-local-cookie'];
+  const chunks: Array<[number, string]> = [];
+  for (const name of Object.keys(result)) {
+    if (name.startsWith('x-verity-local-request-cookie-')) {
+      const index = Number(name.slice('x-verity-local-request-cookie-'.length));
+      if (Number.isSafeInteger(index) && index >= 0) chunks.push([index, result[name]!]);
+      delete result[name];
+    }
+  }
+  if (mode === 'local-open' && chunks.length)
+    result.cookie = chunks
+      .sort((a, b) => a[0] - b[0])
+      .map((chunk) => chunk[1])
+      .join('');
   return result;
 }

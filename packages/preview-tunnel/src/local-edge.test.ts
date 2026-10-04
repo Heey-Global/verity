@@ -40,11 +40,24 @@ it('does not redirect local API requests to the public PIN page', async () => {
 
 it('preserves target cookies and makes absolute target redirects relative for LAN clients', async () => {
   let targetOrigin = '';
+  const cookies = [
+    'app=new; Path=/; HttpOnly',
+    'other=value; Path=/',
+    ...Array.from(
+      { length: 3 },
+      (_, index) => `chunk${index}=${'a'.repeat(3500)}; Path=/; HttpOnly`,
+    ),
+  ];
   const target = createServer((request, response) => {
+    if (request.url === '/chunked') {
+      expect(request.headers.cookie).toBe(cookies.map((cookie) => cookie.split(';')[0]).join('; '));
+      response.end('ok');
+      return;
+    }
     expect(request.headers.cookie).toBe('app=session');
     response.writeHead(302, {
       location: `${targetOrigin}/next`,
-      'set-cookie': ['app=new; Path=/; HttpOnly', 'other=value; Path=/'],
+      'set-cookie': cookies,
     });
     response.end();
   });
@@ -65,10 +78,11 @@ it('preserves target cookies and makes absolute target redirects relative for LA
     });
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('/next');
-    expect(response.headers.getSetCookie()).toEqual([
-      'app=new; Path=/; HttpOnly',
-      'other=value; Path=/',
-    ]);
+    expect(response.headers.getSetCookie()).toEqual(cookies);
+    const next = await fetch(`http://127.0.0.1:${port}/chunked`, {
+      headers: { cookie: cookies.map((cookie) => cookie.split(';')[0]).join('; ') },
+    });
+    expect(await next.text()).toBe('ok');
   } finally {
     connector.close();
     await new Promise<void>((resolve, reject) =>

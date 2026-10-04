@@ -94,6 +94,15 @@ describe('DockerProjectRuntime', () => {
         const restarted = JSON.parse(await readFile(join(root, `${port}.json`), 'utf8'));
         pid = restarted.pid;
         expect(restarted.pid).not.toBe(process.pid);
+        const otherAddress = address === '127.0.0.2' ? '127.0.0.1' : '127.0.0.2';
+        await promisify(execFile)(
+          process.execPath,
+          ['-e', PREVIEW_FORWARDER_SCRIPT, String(port), otherAddress],
+          { env: { ...process.env, VERITY_PREVIEW_FORWARDER_STATE_DIR: root } },
+        );
+        const changed = JSON.parse(await readFile(join(root, `${port}.json`), 'utf8'));
+        expect(changed.pid).not.toBe(pid);
+        pid = changed.pid;
       } finally {
         if (pid) {
           try {

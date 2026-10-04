@@ -28,6 +28,8 @@ interface ActiveShare {
   generation: string;
   missingSince?: number;
   edgeClosed?: boolean;
+  edgeStarted?: boolean;
+  ready?: boolean;
   preparedPort?: number;
 }
 export interface LocalPreviewManagerOptions extends Omit<PreviewShareManagerOptions, 'edge'> {
@@ -82,7 +84,7 @@ export class LocalPreviewManager {
   }
   list(sessionId: string): LocalPreviewShare[] {
     return [...this.active.values()]
-      .filter((v) => v.share.sessionId === sessionId)
+      .filter((v) => v.ready && v.share.sessionId === sessionId)
       .map((v) => v.share);
   }
   ownsConnector(id: string, shareId?: string): boolean {
@@ -179,6 +181,7 @@ export class LocalPreviewManager {
     this.active.set(id, state);
     try {
       await edge.listen(port, '0.0.0.0');
+      state.edgeStarted = true;
       const image = await this.options.resolveConnectorImage();
       if (!image || !/@sha256:[a-f0-9]{64}$/i.test(image))
         throw new PreviewShareConflictError('preview connector image is unavailable');
@@ -261,6 +264,7 @@ export class LocalPreviewManager {
         this.blockedSessions.has(sessionId)
       )
         throw new PreviewShareConflictError('project changed during preview creation');
+      state.ready = true;
       return state.share;
     } catch (error) {
       await this.stop(id);
@@ -271,7 +275,7 @@ export class LocalPreviewManager {
     const state = this.active.get(id);
     if (!state) return false;
     // Keep the lease until both resources are closed; a failed Docker removal is retried.
-    if (!state.edgeClosed) {
+    if (!state.edgeClosed && state.edgeStarted) {
       await state.edge.close();
       state.edgeClosed = true;
     }
@@ -324,6 +328,7 @@ export class LocalPreviewManager {
   }
   async reconcile(): Promise<void> {
     for (const state of this.active.values()) {
+      if (!state.ready) continue;
       if (state.share.expiresAt.getTime() <= Date.now()) {
         await this.stop(state.share.id);
         continue;

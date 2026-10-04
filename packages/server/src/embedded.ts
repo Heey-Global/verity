@@ -4890,8 +4890,8 @@ export async function buildEmbeddedServer(
   }
   if (localPreviewManager && projectDocker) {
     const sweepLocalConnectors = () =>
-      sweepOrphanedLocalPreviews(projectDocker, hostname(), (id) =>
-        localPreviewManager.ownsConnector(id),
+      sweepOrphanedLocalPreviews(projectDocker, hostname(), (id, shareId) =>
+        localPreviewManager.ownsConnector(id, shareId),
       );
     await sweepLocalConnectors().catch((error) =>
       app.log.warn({ err: error }, 'local connector cleanup deferred until Docker recovers'),

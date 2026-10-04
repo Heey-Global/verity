@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { PreviewEdge } from '@verity/preview-tunnel';
 import { LocalPreviewManager, type LocalPreviewManagerOptions } from './local-preview-manager.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import { PreviewShareManager } from './preview-share-manager.js';
@@ -146,4 +147,41 @@ it('revokes a link when the prepared connector port changes', async () => {
   prepare.mockResolvedValueOnce(43000);
   await manager.reconcile();
   expect(manager.list('s1')).toEqual([]);
+});
+
+it('does not reconcile or collect a connector that is still being provisioned', async () => {
+  const { manager, docker } = fixture();
+  let finish!: (value: { id: string }) => void;
+  let entered!: () => void;
+  let shareId = '';
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  docker.createContainer.mockImplementationOnce((...args: unknown[]) => {
+    shareId = (args[0] as { labels: Record<string, string> }).labels[
+      'verity.local-preview-share-id'
+    ]!;
+    entered();
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
+  const pending = manager.create('s1', { targetPort: 3000 });
+  await started;
+  try {
+    expect(manager.ownsConnector('not-yet-returned', shareId)).toBe(true);
+    await manager.reconcile();
+    expect(docker.removeContainer).not.toHaveBeenCalled();
+  } finally {
+    finish({ id: 'c1' });
+  }
+  const share = await pending;
+  expect(manager.list('s1')).toContainEqual(share);
+});
+
+it('releases a slot when its HTTP edge cannot bind', async () => {
+  const { manager } = fixture();
+  vi.spyOn(PreviewEdge.prototype, 'listen').mockRejectedValueOnce(new Error('port occupied'));
+  await expect(manager.create('s1', { targetPort: 3000 })).rejects.toThrow('port occupied');
+  expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
 });

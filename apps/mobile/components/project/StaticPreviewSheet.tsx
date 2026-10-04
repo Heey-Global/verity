@@ -314,22 +314,20 @@ export function StaticPreviewSheet({
     setBusy(true);
     setError(undefined);
     try {
-      const existing = localShares.find(
-        (share) =>
-          new Date(share.expiresAt).getTime() > Date.now() &&
-          (selection.kind === 'port'
-            ? share.targetPort === selection.server.port
-            : share.staticPath === (selection.path || '.')),
+      const share = await client.createSessionLocalPreviewShare(
+        sessionId,
+        selection.kind === 'port'
+          ? { targetPort: selection.server.port }
+          : { staticPath: selection.path || '.' },
       );
-      const share =
-        existing ??
-        (await client.createSessionLocalPreviewShare(
-          sessionId,
-          selection.kind === 'port'
-            ? { targetPort: selection.server.port }
-            : { staticPath: selection.path || '.' },
-        ));
-      if (!existing) setLocalShares((current) => [...current, share]);
+      setLocalShares((current) => [
+        ...current.filter(
+          (value) =>
+            value.id !== share.id &&
+            !(value.targetPort === share.targetPort && value.staticPath === share.staticPath),
+        ),
+        share,
+      ]);
       await openLocalPreview(share, publicSharing, () => pick(selection), onOpenSettings);
     } catch (caught) {
       setError(previewError(caught));
