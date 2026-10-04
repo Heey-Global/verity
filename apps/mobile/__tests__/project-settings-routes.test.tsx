@@ -45,7 +45,6 @@ describe('project settings index — destinations', () => {
   it.each([
     ['Environment', '/project/[id]/settings/environment'],
     ['Default model', '/project/[id]/settings/model'],
-    ['Dev Server', '/project/[id]/dev-server'],
     ['Automations', '/project/[id]/automations'],
   ])('routes %s to %s', async (label, pathname) => {
     mockCreateVerityClient.mockReturnValue(makeClient());
@@ -78,6 +77,7 @@ describe('project settings index — destinations', () => {
 
     expect(await screen.findByLabelText('Environment')).toBeOnTheScreen();
     expect(screen.queryByLabelText('GitHub')).toBeNull();
+    expect(screen.queryByLabelText('Dev Server')).toBeNull();
     // The same badge label the overview dot uses for an `absent` project.
     expect(screen.getByLabelText('Paused')).toBeOnTheScreen();
     expect(screen.getByText('Codex')).toBeOnTheScreen();
