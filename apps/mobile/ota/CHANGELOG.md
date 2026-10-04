@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.4](https://github.com/Heey-Global/verity/compare/mobile-v1.52.3...mobile-v1.52.4) (2026-10-04)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @napi-rs/canvas to v1.0.10 ([#1135](https://github.com/Heey-Global/verity/issues/1135)) ([58a7580](https://github.com/Heey-Global/verity/commit/58a758028357f1a4d05029907bb432425d0d578a))
+
 ## [1.52.3](https://github.com/Heey-Global/verity/compare/mobile-v1.52.2...mobile-v1.52.3) (2026-10-04)
 
 
