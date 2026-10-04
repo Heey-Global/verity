@@ -128,3 +128,17 @@ it('persists an override even when bindings already match it', () => {
     )?.env.VERITY_LOCAL_PREVIEW_BIND_ADDRESS,
   ).toBe('100.85.209.118');
 });
+
+it('repairs host-port mappings that would make the advertised URL unreachable', () => {
+  const migration = localPreviewIngressMigration({
+    ...gateway,
+    env: [
+      'VERITY_LOCAL_PREVIEW_PORT_RANGE=9200-9200',
+      'VERITY_LOCAL_PREVIEW_BIND_ADDRESS=100.85.209.118',
+    ],
+    portBindings: { '9200/tcp': [{ HostIp: '100.85.209.118', HostPort: '19200' }] },
+  })!;
+  expect(migration.portBindings['9200/tcp']).toEqual([
+    { HostIp: '100.85.209.118', HostPort: '9200' },
+  ]);
+});

@@ -23,7 +23,12 @@ export function localPreviewIngressMigration(
   const portBindings: ContainerReplacementConfig['portBindings'] = {};
   for (const port of ports) {
     const existing = gateway.portBindings?.[`${port}/tcp`];
-    if (existing?.length && existing.every((binding) => (binding.HostIp || '0.0.0.0') === address))
+    if (
+      existing?.length &&
+      existing.every(
+        (binding) => (binding.HostIp || '0.0.0.0') === address && binding.HostPort === String(port),
+      )
+    )
       continue;
     portBindings[`${port}/tcp`] = [{ HostIp: address, HostPort: String(port) }];
   }
