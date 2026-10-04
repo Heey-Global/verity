@@ -51,7 +51,6 @@ export async function connectSessionGoogleService(
   projectId: string | null | undefined,
   service: GoogleService,
 ): Promise<
-  | { kind: 'project' }
   | { kind: 'cancelled' }
   | {
       kind: 'session';
@@ -59,9 +58,9 @@ export async function connectSessionGoogleService(
       connections: Record<GoogleService, GmailSessionConnection | null>;
     }
 > {
-  if (await projectGrant(client, projectId, service)) return { kind: 'project' };
+  const grant = await projectGrant(client, projectId, service);
   const methods = sessionMethods(client, service);
-  const connection = await methods.get(sessionId);
+  const connection = grant ?? (await methods.get(sessionId));
   if (!connection.connected) {
     if (!connection.clientId) throw new Error('Google sign-in is not configured on this server.');
     const auth = await methods.auth(connection.clientId);
@@ -72,7 +71,10 @@ export async function connectSessionGoogleService(
       redirectUri: auth.redirectUri,
     });
   }
-  const enabled = await methods.enable(sessionId);
+  const enabled =
+    grant && projectId
+      ? await client.enableProjectGoogleConnection(projectId, service)
+      : await methods.enable(sessionId);
   // Consent can switch accounts or remove scopes, revoking sibling grants.
   const services = ['gmail', 'calendar', 'contacts'] as const;
   const snapshots = await Promise.all(
@@ -99,7 +101,10 @@ export async function disconnectSessionGoogleService(
   projectId: string | null | undefined,
   service: GoogleService,
 ): Promise<'project' | 'session'> {
-  if ((await projectGrant(client, projectId, service))?.enabled) return 'project';
+  if (await projectGrant(client, projectId, service)) {
+    await client.disableProjectGoogleConnection(projectId!, service);
+    return 'project';
+  }
   await sessionMethods(client, service).disable(sessionId);
   return 'session';
 }
