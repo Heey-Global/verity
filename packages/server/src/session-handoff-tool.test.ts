@@ -73,6 +73,7 @@ const SESSIONS: ControlPlaneSessionFacts[] = [
 
 function harness(
   overrides: {
+    allowKnowledgeControlOperations?: boolean;
     sessions?: ControlPlaneSessionFacts[];
     omitted?: number;
     projects?: ProjectRecord[];
@@ -98,6 +99,7 @@ function harness(
   const limits: (number | undefined)[] = [];
   const tools = createControlPlaneSessionTools({
     controlProjectId: CONTROL_PROJECT_ID,
+    allowKnowledgeControlOperations: overrides.allowKnowledgeControlOperations,
     authorizeKnowledgeCaller: overrides.authorizeKnowledgeCaller,
     canAccessKnowledgeTarget: overrides.canAccessKnowledgeTarget,
     getSession: async (sessionId) => {
@@ -722,4 +724,51 @@ it('limits diagnostic projects to existing non-Control projects without Knowledg
     'target project unavailable',
   );
   await expect(harness().tools.authorizeDiagnosticProject('k8s')).resolves.toBeUndefined();
+});
+
+it('allows verified Control metadata and handoffs without exposing knowledge text', async () => {
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    authorizeKnowledgeCaller: async () => {
+      throw new ControlPlaneSessionAuthorityError('knowledge transfer blocked');
+    },
+    canAccessKnowledgeTarget: async () => false,
+    readProgress: async () => ({
+      lifecycle: 'completed',
+      outcomeDelivered: true,
+      publishedSummary: { summary: 'private knowledge' },
+      requiredDecision: 'private knowledge',
+    }),
+  });
+  expect((await h.tools.listSessions(h.call({}))).sessions.length).toBeGreaterThan(0);
+  await expect(h.tools.progress(h.call({ sessionId: 'sess-web' }))).resolves.toMatchObject({
+    lifecycle: 'completed',
+    outcomeDelivered: true,
+  });
+  expect(JSON.stringify(await h.tools.progress(h.call({ sessionId: 'sess-web' })))).not.toContain(
+    'private knowledge',
+  );
+  await h.tools.handoff(
+    h.call({ target: { sessionId: 'sess-web' }, title: 'Repair', briefing: 'Check preview' }),
+  );
+  expect(h.dispatchTurn).toHaveBeenCalledOnce();
+  await expect(
+    h.tools.recentMessages(h.call({ sessionId: 'sess-web', purpose: 'Read' })),
+  ).rejects.toThrow();
+  await expect(
+    h.tools.listSessions({ ...h.call({}), sessionId: 'moved-session' }),
+  ).rejects.toThrow();
+});
+
+it('keeps protected target transcripts blocked for a knowledge-free Control caller', async () => {
+  const readRecentMessages = vi.fn(async () => ({ messages: [], hasMore: false }));
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    canAccessKnowledgeTarget: async () => false,
+    readRecentMessages,
+  });
+  await expect(
+    h.tools.recentMessages(h.call({ sessionId: 'sess-web', purpose: 'Check result' })),
+  ).rejects.toThrow('target is unavailable');
+  expect(readRecentMessages).not.toHaveBeenCalled();
 });
