@@ -457,27 +457,23 @@ export type AgentLoopPatchRequest = Partial<AgentLoopCreateRequest> & {
 const agentLoopResponseSchema = z.object({ loop: agentLoopSchema });
 const agentLoopsResponseSchema = z.object({ loops: z.array(agentLoopSchema) });
 
-// Dev servers — one-or-more named preview processes per project.
-const devServerSchema = z.object({
-  id: z.string(),
-  projectId: z.string(),
-  sourceKey: z.string().nullable().default(null),
-  name: z.string(),
-  command: z.string().nullable(),
-  url: z.string().nullable(),
-  workdir: z.string().nullable(),
-  hostPort: z.string().nullable(),
-  containerPort: z.string().nullable(),
-  /** Session whose worktree this server previews; null = the main checkout.
-   *  Defaulted for servers predating the preview feature. */
-  previewSessionId: z.string().nullable().default(null),
-  autoStart: z.boolean().default(false),
-  running: z.boolean().default(false),
-  sortOrder: z.number(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
-export type DevServer = z.infer<typeof devServerSchema>;
+export interface DevServer {
+  id: string;
+  projectId: string;
+  sourceKey: string | null;
+  name: string;
+  command: string | null;
+  url: string | null;
+  workdir: string | null;
+  hostPort: string | null;
+  containerPort: string | null;
+  previewSessionId: string | null;
+  autoStart: boolean;
+  running: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface DevServerCreateRequest {
   sourceKey?: string | null;
@@ -544,28 +540,24 @@ const publicPreviewSharesResponseSchema = z.object({
   shares: z.array(publicPreviewShareSchema),
 });
 
-const devServerSuggestionSchema = z.object({
-  key: z.string(),
-  name: z.string(),
-  command: z.string(),
-  workdir: z.string().nullable(),
-  containerPort: z.string().nullable(),
-  confidence: z.enum(['high', 'medium', 'low']),
-  evidence: z.string(),
-  status: z.enum(['new', 'changed', 'configured', 'missing']).default('new'),
-  alreadyConfigured: z.boolean(),
-  existingDevServerId: z.string().nullable(),
-  existingConfig: z
-    .object({
-      name: z.string(),
-      command: z.string().nullable(),
-      workdir: z.string().nullable(),
-      containerPort: z.string().nullable(),
-    })
-    .nullable()
-    .default(null),
-});
-export type DevServerSuggestion = z.infer<typeof devServerSuggestionSchema>;
+export interface DevServerSuggestion {
+  key: string;
+  name: string;
+  command: string;
+  workdir: string | null;
+  containerPort: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  evidence: string;
+  status: 'new' | 'changed' | 'configured' | 'missing';
+  alreadyConfigured: boolean;
+  existingDevServerId: string | null;
+  existingConfig: {
+    name: string;
+    command: string | null;
+    workdir: string | null;
+    containerPort: string | null;
+  } | null;
+}
 
 export interface DevServerDetection {
   fingerprint: string | null;
@@ -574,13 +566,12 @@ export interface DevServerDetection {
   reviewedAt: string | null;
   suggestions: DevServerSuggestion[];
 }
-const devServerDetectionStateSchema = z.object({
-  fingerprint: z.string(),
-  detectedAt: z.string(),
-  reviewedFingerprint: z.string().nullable(),
-  reviewedAt: z.string().nullable(),
-});
-export type DevServerDetectionState = z.infer<typeof devServerDetectionStateSchema>;
+export interface DevServerDetectionState {
+  fingerprint: string;
+  detectedAt: string;
+  reviewedFingerprint: string | null;
+  reviewedAt: string | null;
+}
 const agentLoopRunsResponseSchema = z.object({ runs: z.array(agentLoopRunSchema) });
 const agentLoopTestResponseSchema = z.object({
   result: z.object({

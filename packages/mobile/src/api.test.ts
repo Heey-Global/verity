@@ -3554,6 +3554,8 @@ describe('local preview shares', () => {
       ['https://remote.example/sessions/session%2Fone/local-shares', 'GET'],
       ['https://remote.example/local-shares/share%2Fone', 'DELETE'],
     ]);
-    expect(JSON.parse(String(transport.calls[1]?.init?.body))).toEqual({ targetPort: 5173 });
+    const body = transport.calls[1]?.init?.body;
+    expect(typeof body).toBe('string');
+    expect(JSON.parse(typeof body === 'string' ? body : '')).toEqual({ targetPort: 5173 });
   });
 });

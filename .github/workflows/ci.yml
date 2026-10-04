@@ -1737,7 +1737,7 @@ jobs:
           set -euo pipefail
           feature=features/verity-sandbox-toolkit/agent-seed
           status=0
-          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-secret-scan bin/verity-git-sign code-review-prompt.md; do
+          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server code-review-prompt.md; do
             if cmp -s "agent-seed/$rel" "$feature/$rel"; then
               echo "OK: $rel matches agent-seed/ source"
             else

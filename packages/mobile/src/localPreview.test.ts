@@ -10,7 +10,10 @@ describe('local preview reachability', () => {
     expect(await localPreviewReachable(share, fetcher)).toBe(false);
     fetcher.mockResolvedValue(new Response(JSON.stringify({ shareId: share.id })));
     expect(await localPreviewReachable(share, fetcher)).toBe(true);
-    expect(String(fetcher.mock.calls[0]?.[0])).toBe('http://192.168.1.10:8100/__verity/health');
+    const requestedUrl = fetcher.mock.calls[0]?.[0];
+    expect(requestedUrl instanceof URL ? requestedUrl.href : requestedUrl).toBe(
+      'http://192.168.1.10:8100/__verity/health',
+    );
   });
   it('treats malformed responses and connection failures as unreachable', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('not json'));
