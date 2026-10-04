@@ -9,7 +9,6 @@ const session: SessionRecord = {
   model: 'm',
   name: null,
   projectId: null,
-  kind: 'normal',
   lastSeenEventCount: null,
 };
 const pr: PullRequestStatus = {

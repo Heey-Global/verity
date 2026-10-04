@@ -4291,11 +4291,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       pruneBranchCache(live);
       for (const session of sessions) {
         if (prRepairStopped) break;
-        if (
-          session.kind !== 'normal' ||
-          sessionsBeingReaped.has(session.sessionId) ||
-          !sessionPrCache.isDue(session, true)
-        )
+        if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
         try {
           if (!(await worktreeExists(session.worktree))) continue;
