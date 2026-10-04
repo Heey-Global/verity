@@ -3,7 +3,7 @@
 import * as Application from 'expo-application';
 import { useState } from 'react';
 import { type Href, router } from 'expo-router';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -11,6 +11,8 @@ import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
 import { enterDemoMode } from '../../lib/demoMode';
 
 const NEXT = '/onboarding/server-url' as Href;
+// The splash mark trimmed to its bounds, so it lines up with the text below.
+const LOGO = require('../../assets/brand/verity-v-mark.png') as number;
 
 export default function OnboardingWelcome() {
   const insets = useSafeAreaInsets();
@@ -23,6 +25,13 @@ export default function OnboardingWelcome() {
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 24 }]}
         keyboardShouldPersistTaps="handled"
       >
+        <Image
+          source={LOGO}
+          style={styles.logo}
+          resizeMode="contain"
+          accessibilityIgnoresInvertColors
+          accessible={false}
+        />
         <Text style={styles.eyebrow}>Verity</Text>
         <Text
           style={styles.version}
@@ -33,35 +42,6 @@ export default function OnboardingWelcome() {
         <Text style={styles.title} accessibilityRole="header">
           Secure development. Your choice of AI.
         </Text>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Explore without a server</Text>
-          <Text style={styles.lead}>
-            Try projects, chats, files and code changes with local sample data and simulated AI
-            responses. External services require your own server. Do not enter real credentials in
-            the demo.
-          </Text>
-          <Pressable
-            style={({ pressed }) => [styles.nextButton, pressed ? styles.pressed : null]}
-            accessibilityRole="button"
-            accessibilityLabel="Try demo"
-            disabled={startingDemo}
-            onPress={() => {
-              setStartingDemo(true);
-              void enterDemoMode()
-                .then(() => router.replace('/'))
-                .catch((error: unknown) => {
-                  setStartingDemo(false);
-                  Alert.alert(
-                    'Could not start demo',
-                    error instanceof Error ? error.message : 'Please try again.',
-                  );
-                });
-            }}
-          >
-            <Text style={styles.nextLabel}>{startingDemo ? 'Starting…' : 'Try demo'}</Text>
-          </Pressable>
-        </View>
 
         <View style={styles.card}>
           <Text style={styles.lead}>
@@ -87,9 +67,31 @@ export default function OnboardingWelcome() {
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.footerInner}>
-          <View style={styles.footerSpacer} />
+          <Pressable
+            style={({ pressed }) => [styles.demoLink, pressed ? styles.pressed : null]}
+            accessibilityRole="button"
+            accessibilityLabel="Try demo"
+            accessibilityHint="Explore Verity with local sample data, without a server"
+            disabled={startingDemo}
+            hitSlop={8}
+            onPress={() => {
+              setStartingDemo(true);
+              void enterDemoMode()
+                .then(() => router.replace('/'))
+                .catch((error: unknown) => {
+                  setStartingDemo(false);
+                  Alert.alert(
+                    'Could not start demo',
+                    error instanceof Error ? error.message : 'Please try again.',
+                  );
+                });
+            }}
+          >
+            <Text style={styles.demoLabel}>{startingDemo ? 'Starting demo…' : 'Try demo'}</Text>
+          </Pressable>
           <Pressable
             style={({ pressed }) => [styles.nextButton, pressed ? styles.pressed : null]}
+            disabled={startingDemo}
             onPress={() => router.push(NEXT)}
             accessibilityRole="button"
             accessibilityLabel="Continue"
@@ -116,6 +118,11 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
+  },
+  logo: {
+    width: 64,
+    height: 45,
+    marginBottom: theme.spacing.sm,
   },
   eyebrow: {
     color: theme.colors.setup.text,
@@ -169,8 +176,14 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'space-between',
     gap: theme.spacing.md,
   },
-  footerSpacer: {
-    minWidth: 88,
+  demoLink: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  demoLabel: {
+    color: theme.colors.setup.textMuted,
+    fontSize: theme.text.sm,
+    textDecorationLine: 'underline',
   },
   nextButton: {
     minHeight: 44,

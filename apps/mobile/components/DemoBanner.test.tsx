@@ -18,6 +18,9 @@ beforeEach(() => jest.clearAllMocks());
 it('labels the simulated experience and returns home before discarding demo data', () => {
   render(<DemoBanner />);
   expect(screen.getByText(/Local sample data and simulated AI/)).toBeOnTheScreen();
+  // The welcome screen only links to the demo, so this banner is the one place
+  // that warns against typing real secrets into simulated flows.
+  expect(screen.getByText(/Do not enter real credentials/)).toBeOnTheScreen();
   fireEvent.press(screen.getByLabelText('Reset demo'));
   expect(router.replace).toHaveBeenCalledWith('/');
   expect(restartDemoMode).toHaveBeenCalledTimes(1);
