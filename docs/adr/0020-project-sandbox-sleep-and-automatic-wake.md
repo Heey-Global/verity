@@ -213,9 +213,7 @@ bounds the design:
   keeps its generation. Minting a new relay generation during fast wake would
   leave the woken Sandbox addressing a relay that no longer exists.
 New sandboxes have no published dev-server ports. Local preview ports belong to
-the Verity ingress, independently of the Sandbox generation. Retained legacy
-containers may still have old Docker bindings until an explicit recreation;
-those bindings do not define the new preview allocation.
+the Verity ingress, independently of the Sandbox generation.
 
 What remains rotatable is the capability material, because it is deliberately
 projected as read-only file mounts at per-project host paths rather than as
@@ -237,9 +235,7 @@ capability epoch:
    image identity, runtime, mounts, network contract, toolkit identity, and the
    stored compatibility fingerprint.
 2. Reconcile the per-project Docker network. Local preview ports are allocated
-   on the Verity ingress and are not reallocated during Sandbox wake. Existing
-   legacy Docker bindings remain immutable; a conflict that prevents Docker
-   from starting a retained container selects cold fallback.
+   on the Verity ingress and are not reallocated during Sandbox wake.
 3. Resume the relay for the retained generation and issue a new capability epoch
    bound to it. No new relay generation is created.
 4. Replace the bind-mounted capability material while the container is stopped.

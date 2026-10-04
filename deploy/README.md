@@ -962,12 +962,9 @@ changes. Docker's optional `userland-proxy: false` setting can reduce the proces
 overhead of published ports; its actual memory cost depends on the Docker
 configuration and should be measured on the host.
 
-The old configured project Dev Servers, fixed sandbox host ports, autostart, and
-session retargeting are removed. Start a server yourself or ask the agent to start
-it, then open the detected listener in the session Preview sheet. Existing
-sandbox containers may still carry old Docker bindings until their next explicit
-recreate; remove old firewall allowances now. Server updates do not silently
-restart a sandbox to remove those bindings.
+Start an HTTP/WebSocket service yourself or ask the agent to start it, then open
+the detected listener in the session Preview sheet. Local access uses the Verity
+ingress range; the sandbox does not publish the service's listening port to the host.
 
 | Variable                              | Default                                                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
