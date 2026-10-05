@@ -188,6 +188,9 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
       }),
     );
     expect(blocked.ran && blocked.value.statusCode).toBe(409);
+    // Private clones do not inherit the project clone's local author identity.
+    await moveGit(moved.worktree, 'config', 'user.name', 'Test');
+    await moveGit(moved.worktree, 'config', 'user.email', 'test@example.test');
     await moveGit(moved.worktree, 'add', 'new.txt');
     await moveGit(moved.worktree, 'commit', '-m', 'session work');
     const commitGate = await app.inject({

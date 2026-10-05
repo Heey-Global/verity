@@ -8,7 +8,7 @@ import {
   type DockerClient,
 } from './docker.js';
 
-export const SESSION_SANDBOX_LABEL = 'verity.session-id';
+const SESSION_SANDBOX_LABEL = 'verity.session-id';
 export function sessionContainerName(sessionId: string): string {
   return `verity-session-${createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`;
 }
