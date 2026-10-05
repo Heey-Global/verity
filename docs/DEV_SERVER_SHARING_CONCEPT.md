@@ -142,6 +142,26 @@ agent-seed guidance tells the agent to start servers only through an entry, neve
 detected and listed as not managed, with an offer to save them as an entry. The existing
 `announce` command stays for that case.
 
+**Edge cases.**
+
+- _Command visibility._ An entry outlives the agent turn that created it and runs again
+  whenever the operator switches it on, in any session, and after sandbox recreation. The
+  command is therefore always shown: on the chat card for `add` and `update`, and in the
+  detail view, so the operator never starts something they cannot read.
+- _Starting publishes locally._ Starting an entry also creates its "On your network" share,
+  because local shares are open on the operator's network by decision (2.2) and the network
+  address is the only address anyone sees. The public share stays an explicit operator step
+  with its PIN and entitlement check.
+- _Startup deadline._ An entry that does not answer on its port within 60 seconds moves to
+  crashed with "Did not answer on its port", typically a command that ignores `PORT`. It no
+  longer keeps the sandbox awake.
+- _Port collisions._ A stopped pair keeps its network reservation; eviction when the range is
+  full is the only exception. If its sandbox port is taken by another process at start, Verity
+  picks a new sandbox port silently. The network address does not change.
+- _Lifecycle._ Deleting a session stops its instances and releases both ports. Removing an
+  entry, by the agent or the operator, first stops every running instance of it. `update`
+  applies on the next start; a running instance shows "Restart to apply changes".
+
 **Operator.** The operator switches entries on and off and deletes them in the app. Editing
 stays with the agent, because typing a command on a phone is impractical.
 
