@@ -629,7 +629,7 @@ function stage(runtime: string, version: string) {
     '-f',
     `expected=${commit}`,
     '-f',
-    `message=chore(mobile): promote OTA ${candidate.version}`,
+    `message=chore(release): production mobile OTA ${candidate.version}`,
     '-f',
     `path=${manifestPath}`,
     '-f',
@@ -637,7 +637,7 @@ function stage(runtime: string, version: string) {
   );
   if (!result.data.createCommitOnBranch.commit.signature.isValid)
     throw new Error('Promotion commit is not verified');
-  const title = `chore(mobile): promote OTA ${candidate.version}`;
+  const title = `chore(release): production mobile OTA ${candidate.version}`;
   const body = `Promotes immutable EAS update group \`${group}\` for runtime \`${runtime}\`.\n\nSource: \`${commit}\`\nPublished baseline: \`${candidate.baseline}\`\n\nChanges since the delivered release:\n${candidate.notes.map((note) => `- ${note}`).join('\n') || '- Mobile application updates.'}\n\nMerging approves this exact candidate. CI validates the current PR head; an older approval cannot select an older bundle.\n`;
   const bodyFile = `${process.env.RUNNER_TEMP}/mobile-ota-pr.md`;
   writeFileSync(bodyFile, body);

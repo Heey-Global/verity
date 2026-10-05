@@ -667,7 +667,7 @@ describe('Verity website publication smoke', () => {
     expect(backend?.['changelog-path']).toBe(`/${['CHANGE', 'LOG.md'].join('')}`);
     expect(backend?.['package-name']).toBe('server');
     expect(backend?.['pull-request-title-pattern']).toBe(
-      'chore${scope}: release server ${version}',
+      'chore(release): staging server ${version}',
     );
     expect(backend?.['include-component-in-tag']).toBe(false);
     // A fixed history boundary makes every future release replay the same old
