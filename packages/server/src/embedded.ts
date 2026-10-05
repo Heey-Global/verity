@@ -1,7 +1,7 @@
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import {
   createSessionCloneProvisioner,
-  assertIndependentSessionClone,
+  assertIndependentSessionWorkspace,
   reconcileSessionOrigin,
 } from './session-clone.js';
 import { SessionSandboxProvisioner, sessionContainerName } from './session-sandbox.js';
@@ -3670,7 +3670,12 @@ export async function buildEmbeddedServer(
     ) {
       throw new Error('Session isolation is unavailable');
     }
-    await assertIndependentSessionClone(session.worktree);
+    await assertIndependentSessionWorkspace(
+      session.worktree,
+      project.kind === 'control_plane'
+        ? (config.workspacesDir ?? join(tmpdir(), 'verity-sessions'))
+        : undefined,
+    );
     const canonicalProject =
       (await provisioner?.ensureProjectSandboxAwake?.(project.id)) ??
       (await eventStore.getProject(project.id));
@@ -3710,7 +3715,12 @@ export async function buildEmbeddedServer(
     ) {
       throw new Error('Session isolation is unavailable');
     }
-    await assertIndependentSessionClone(session.worktree);
+    await assertIndependentSessionWorkspace(
+      session.worktree,
+      project.kind === 'control_plane'
+        ? (config.workspacesDir ?? join(tmpdir(), 'verity-sessions'))
+        : undefined,
+    );
     const containerName = sessionContainerName(sessionId);
     try {
       const inspected = await projectDocker.inspectContainer(containerName);
@@ -4903,7 +4913,10 @@ export async function buildEmbeddedServer(
           }
           await synchronizeAgentGatewayForTurn();
           if (!sessionSandboxes) throw new Error('Control-plane session isolation is unavailable');
-          await assertIndependentSessionClone(session.worktree);
+          await assertIndependentSessionWorkspace(
+            session.worktree,
+            config.workspacesDir ?? join(tmpdir(), 'verity-sessions'),
+          );
           const controlProject =
             session.projectId === null
               ? await ensureControlPlaneProject(eventStore)

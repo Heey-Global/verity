@@ -42,6 +42,29 @@ export async function assertIndependentSessionClone(path: string): Promise<void>
     throw new Error('Session clone has external worktree');
 }
 
+/** Scratch control-plane sessions still require a private, server-allocated directory. */
+export async function assertIndependentSessionWorkspace(
+  path: string,
+  scratchRoot?: string,
+): Promise<void> {
+  if (scratchRoot !== undefined) {
+    assertRealDirectory(path);
+    try {
+      lstatSync(join(path, '.git'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        assertRealDirectory(scratchRoot);
+        if (dirname(resolve(path)) !== resolve(scratchRoot)) {
+          throw new Error('Scratch session path escapes its allocation root', { cause: error });
+        }
+        return;
+      }
+      throw error;
+    }
+  }
+  await assertIndependentSessionClone(path);
+}
+
 /** Each checkout owns its objects, refs, index, config and dependency installs. */
 export function createSessionCloneProvisioner(opts: GitWorktreeOptions): WorktreeProvisioner {
   const root = resolve(opts.worktreeRoot);

@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RepositoryHasNoCommitsError } from './worktree.js';
 import {
   assertIndependentSessionClone,
+  assertIndependentSessionWorkspace,
   createSessionCloneProvisioner,
   reconcileSessionOrigin,
 } from './session-clone.js';
@@ -190,4 +191,16 @@ it('reconciles a pre-link session origin during runtime preparation and preserve
   git(checkout, 'remote', 'set-url', 'origin', custom);
   await reconcileSessionOrigin(output, checkout, url);
   expect(git(checkout, 'remote', 'get-url', 'origin')).toBe(custom);
+});
+
+it('accepts only private scratch directories inside the control-plane allocation root', async () => {
+  mkdirSync(root);
+  const scratch = join(root, 'scratch');
+  mkdirSync(scratch);
+  await expect(assertIndependentSessionWorkspace(scratch, root)).resolves.toBeUndefined();
+  await expect(assertIndependentSessionWorkspace(scratch)).rejects.toThrow();
+  await expect(assertIndependentSessionWorkspace(temp, root)).rejects.toThrow();
+  await expect(assertIndependentSessionWorkspace(source, root)).resolves.toBeUndefined();
+  symlinkSync(join(source, '.git'), join(scratch, '.git'));
+  await expect(assertIndependentSessionWorkspace(scratch, root)).rejects.toThrow();
 });
