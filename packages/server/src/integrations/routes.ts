@@ -273,7 +273,7 @@ export function registerIntegrationRoutes(
             code: 'knowledge_storage_unavailable',
           });
         const input: IntegrationEvent = { ...parsed, occurredAt: new Date(parsed.occurredAt) };
-        const target = input.targetEventId
+        let target = input.targetEventId
           ? await store.getEvent(input.accountId, input.sourceId, input.targetEventId)
           : null;
         // Reject orphan edits, but persist redactions so late targets cannot resurrect deleted content.
@@ -306,6 +306,10 @@ export function registerIntegrationRoutes(
                 ? 'event_predates_activation'
                 : 'source_unavailable',
           });
+        }
+        // A target may be imported while the redaction waits for the source transaction lock.
+        if (input.kind === 'redaction' && input.targetEventId) {
+          target = await store.getEvent(input.accountId, input.sourceId, input.targetEventId);
         }
         const day = affectedChatDay(input, target);
         if (day) {

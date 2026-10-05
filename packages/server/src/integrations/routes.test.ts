@@ -537,6 +537,29 @@ it('persists early redactions across retries and applies them to late text and a
     const projected = await readFile(join(knowledgeRoot, relative), 'utf8');
     expect(projected.match(/\[Message deleted\]/gu)).toHaveLength(2);
     expect(projected).not.toContain('Attachment:');
+    // The target can be projected after lookup but before the redaction obtains its source lock.
+    const ingest = store.ingestEvent.bind(store);
+    const spy = vi.spyOn(store, 'ingestEvent').mockImplementation(async (input) => {
+      if (input.eventId === '$racing-delete') {
+        expect(
+          (await send({ ...message, eventId: '$racing-text', body: 'Racing private text' }))
+            .statusCode,
+        ).toBe(200);
+      }
+      return ingest(input);
+    });
+    try {
+      expect(
+        (
+          await send({ ...redaction, eventId: '$racing-delete', targetEventId: '$racing-text' })
+        ).json(),
+      ).toEqual({ accepted: true });
+      const raced = await readFile(join(knowledgeRoot, relative), 'utf8');
+      expect(raced).not.toContain('Racing private text');
+      expect(raced.match(/\[Message deleted\]/gu)).toHaveLength(3);
+    } finally {
+      spy.mockRestore();
+    }
   } finally {
     await app.close();
   }
