@@ -234,7 +234,13 @@ it.each(['sleeping', 'absent'])(
         running: false,
         imageId: 'sha256:pinned',
       })),
-      createContainer: vi.fn(async () => ({ id: 'query', warnings: [] })),
+      createContainer: vi.fn(async (spec: import('./docker.js').ContainerSpec) => {
+        void spec;
+        return {
+          id: 'query',
+          warnings: [],
+        };
+      }),
       startContainer: vi.fn(async () => undefined),
       removeContainer: vi.fn(async () => undefined),
     };
@@ -262,3 +268,49 @@ it.each(['sleeping', 'absent'])(
     expect(docker.removeContainer).toHaveBeenCalledOnce();
   },
 );
+
+it('mounts sleeping session queries from the data volume in Compose deployments', async () => {
+  const docker = {
+    inspectContainer: vi.fn(async () => ({
+      id: 'parent',
+      running: false,
+      imageId: 'sha256:pinned',
+    })),
+    createContainer: vi.fn(async (spec: import('./docker.js').ContainerSpec) => {
+      void spec;
+      return {
+        id: 'query',
+        warnings: [],
+      };
+    }),
+    startContainer: vi.fn(async () => undefined),
+    removeContainer: vi.fn(async () => undefined),
+  };
+  const { exec } = fakeExec({ stdout: 'main' });
+  const git = createSleepingSessionGit({
+    docker,
+    templateContainer: 'parent',
+    projectId: 'project',
+    hostRoot: '/srv/verity/session-clones/one',
+    dataVolume: { name: 'verity-data', root: '/srv/verity' },
+    exec,
+  });
+  expect(await git(['-C', '/srv/verity/session-clones/one', 'show-ref'])).toBe('main');
+  expect(docker.createContainer.mock.calls[0]![0]).toMatchObject({
+    volumeMounts: [
+      { volume: 'verity-data', subpath: 'session-clones/one', target: '/work', readOnly: true },
+    ],
+  });
+  expect(docker.createContainer.mock.calls[0]![0]).not.toHaveProperty('binds');
+  await expect(
+    createSleepingSessionGit({
+      docker,
+      templateContainer: 'parent',
+      projectId: 'project',
+      hostRoot: '/srv/foreign',
+      dataVolume: { name: 'verity-data', root: '/srv/verity' },
+      exec,
+    })([]),
+  ).rejects.toThrow('Metadata checkout escapes data volume');
+  expect(docker.createContainer).toHaveBeenCalledOnce();
+});

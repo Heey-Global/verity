@@ -2276,6 +2276,8 @@ export async function buildEmbeddedServer(
                     ? await resolveSessionProject(session.sessionId, project)
                     : await ensureSessionProject(session.sessionId, project);
                   if (readOnly && runtimeProject.state !== 'active') {
+                    if (config.dataVolume && !dataVolumeRoot)
+                      throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({
                       docker: projectDocker,
                       templateContainer:
@@ -2284,6 +2286,9 @@ export async function buildEmbeddedServer(
                           : project.containerName,
                       projectId: project.id,
                       hostRoot: session.worktree,
+                      ...(config.dataVolume
+                        ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
+                        : {}),
                       dockerBaseUrl: config.dockerBaseUrl,
                     })(args);
                   }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { relative, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { GitOutput } from './branches.js';
@@ -202,10 +203,17 @@ export function createSleepingSessionGit(opts: {
   templateContainer: string;
   projectId: string;
   hostRoot: string;
+  dataVolume?: { name: string; root: string };
   dockerBaseUrl?: string | undefined;
   exec?: SandboxExec;
 }): GitOutput {
   return async (args) => {
+    const subpath = opts.dataVolume ? relative(opts.dataVolume.root, opts.hostRoot) : undefined;
+    if (
+      subpath !== undefined &&
+      (subpath === '' || subpath.startsWith('..') || isAbsolute(subpath))
+    )
+      throw new Error('Metadata checkout escapes data volume');
     const parent = await opts.docker.inspectContainer(opts.templateContainer);
     const image = parent.imageId ?? parent.image;
     if (!image) throw new Error('Metadata query image is unavailable');
@@ -213,7 +221,13 @@ export function createSleepingSessionGit(opts: {
     await opts.docker.createContainer({
       name,
       image,
-      binds: [`${opts.hostRoot}:/work:ro`],
+      ...(opts.dataVolume
+        ? {
+            volumeMounts: [
+              { volume: opts.dataVolume.name, subpath: subpath!, target: '/work', readOnly: true },
+            ],
+          }
+        : { binds: [`${opts.hostRoot}:/work:ro`] }),
       user: parent.user || '1000:1000',
       entrypoint: ['sleep'],
       command: ['infinity'],

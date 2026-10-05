@@ -40,6 +40,8 @@ describe('production session isolation wiring', () => {
     expect(text).toMatch(/'show-ref'/);
     expect(text).toMatch(/readOnly && runtimeProject.state !== 'active'/);
     expect(text).toContain('createSleepingSessionGit');
+    expect(text).toContain('name: config.dataVolume');
+    expect(text).toContain('root: dataVolumeRoot');
     expect(text).toMatch(/args\[index \+ 2\] !== 'worktree' \|\| args\[index \+ 3\] === 'list'/);
   });
   it('resolves project-less branch calls through the canonical control project', () => {
