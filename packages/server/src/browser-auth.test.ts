@@ -133,4 +133,45 @@ describe('browser sessions', () => {
     expect(registry.verify(token.token)).toBe(false);
     await app.close();
   });
+
+  it.each([true, false])(
+    'does not switch enrollment credential type on retry (browser=%s)',
+    async (browser) => {
+      const { privateKey } = generateKeyPairSync('ed25519');
+      const pairing = createDevicePairingManager({
+        privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
+        pairingCode: 'a'.repeat(43),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        loadConsumedCodeHash: () => undefined,
+        storeConsumedCodeHash: () => true,
+      });
+      const registry = await createAuthTokenRegistry(tokenStore(), { enabled: true });
+      const app = Fastify();
+      registerPairingRoutes(app, { authRegistry: registry, devicePairing: pairing });
+      const payload = { code: pairing.issueInvitation().code, enrollmentId: 'e'.repeat(43) };
+      const endpoint = browser ? '/pair/enroll/browser' : '/pair/enroll';
+      const headers = { origin: 'http://localhost:80' };
+      try {
+        expect(
+          (await app.inject({ method: 'POST', url: endpoint, headers, payload })).statusCode,
+        ).toBe(200);
+        expect(
+          (await app.inject({ method: 'POST', url: endpoint, headers, payload })).statusCode,
+        ).toBe(200);
+        // Replaying JS-visible enrollment material must not turn a HttpOnly session into a readable bearer.
+        const crossed = await app.inject({
+          method: 'POST',
+          url: browser ? '/pair/enroll' : '/pair/enroll/browser',
+          headers,
+          payload,
+        });
+        expect(crossed.statusCode).toBe(409);
+        expect(crossed.json()).not.toHaveProperty('token');
+        expect(crossed.headers['set-cookie']).toBeUndefined();
+      } finally {
+        await app.close();
+        registry.dispose?.();
+      }
+    },
+  );
 });

@@ -96,8 +96,10 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     const { code, enrollmentId, deviceLabel } = pairingEnrollBody.parse(request.body);
     const credential = pairing.enrollmentCredential(code, enrollmentId);
     if (registry.resolveId(credential.token) === credential.id) {
-      if (browser && !registry.isBrowserToken(credential.token))
-        return reply.code(409).send({ error: 'invitation already enrolled a native device' });
+      if (browser !== registry.isBrowserToken(credential.token))
+        return reply
+          .code(409)
+          .send({ error: 'invitation already enrolled a different device type' });
       pairingThrottle.recordSuccess(request.ip);
       if (browser) setBrowserSession(reply, credential.token);
       return browser
