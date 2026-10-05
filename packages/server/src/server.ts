@@ -9035,19 +9035,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(409);
       return { error: 'saving this way is available only for local projects' };
     }
-    const sandboxGit = deps.sessionSandboxGit
-      ? await deps.sessionSandboxGit(id, target.project, session.worktree)
-      : deps.sandboxGit?.(target.project, target.basePath);
-    if (!(await branchesForSession(session)) || sandboxGit === undefined) {
-      reply.code(503);
-      return { error: 'saving to this project is not configured' };
-    }
     if (localSavesInFlight.has(id) || conductor.isBusy(id)) {
       reply.code(409);
       return { error: 'finish the current session activity before saving to the project' };
     }
+    const admission = await conductor.tryRunExclusive(id, async () => {
+      if (localSavesInFlight.has(id)) return null;
+      const git = deps.sessionSandboxGit
+        ? await deps.sessionSandboxGit(id, target.project, session.worktree)
+        : deps.sandboxGit?.(target.project, target.basePath);
+      if (!(await branchesForSession(session)) || git === undefined) return undefined;
+      localSavesInFlight.add(id);
+      return git;
+    });
+    if (!admission.ran || admission.value === null) {
+      reply.code(409);
+      return { error: 'finish the current session activity before saving to the project' };
+    }
+    const sandboxGit = admission.value;
+    if (sandboxGit === undefined) {
+      reply.code(503);
+      return { error: 'saving to this project is not configured' };
+    }
 
-    localSavesInFlight.add(id);
     const approvalRef = `refs/verity/save-approval/${randomUUID()}`;
     const prompt =
       "Save this session's work to the local project. Review the working tree and the branch changes. " +

@@ -9705,6 +9705,25 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
     });
   };
 
+  it.each(['merge', 'save-to-project'])(
+    'does not provision a busy session sandbox for %s',
+    async (action) => {
+      await seedLocalSession();
+      const provisionSessionGit = vi.fn(async () => sandboxGit);
+      tryRunExclusive.mockResolvedValueOnce({ ran: false });
+      const app = buildLocal({ sessionSandboxGit: provisionSessionGit });
+      try {
+        const response = await app.inject({ method: 'POST', url: `/sessions/s1/${action}` });
+        expect(response.statusCode).toBe(409);
+        expect(provisionSessionGit).not.toHaveBeenCalled();
+        expect(sendTurn).not.toHaveBeenCalled();
+        expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it('commits through the agent before adding the session work to the project', async () => {
     await seedLocalSession();
     const app = buildLocal();

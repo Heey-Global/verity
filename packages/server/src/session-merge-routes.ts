@@ -316,9 +316,7 @@ export function registerSessionMergeRoutes(
       setStatus(503);
       return { error: 'merging is not configured' };
     }
-    const sessionGit = deps.sessionSandboxGit
-      ? await deps.sessionSandboxGit(id, project, session.worktree)
-      : sandboxGit;
+    let sessionGit = sandboxGit;
     // Merging a branch a live turn is still writing to would land half-finished
     // work — same admission rule as the branch switch below. The turn lock is held
     // for the whole merge rather than only sampled first: a turn that started in
@@ -327,6 +325,9 @@ export function registerSessionMergeRoutes(
     let merged: { base: string; branch: string; mergedTip: string; baseTip: string };
     try {
       const attempt = await conductor.tryRunExclusive(id, async () => {
+        sessionGit = deps.sessionSandboxGit
+          ? await deps.sessionSandboxGit(id, project, session.worktree)
+          : sandboxGit;
         if (approvedTip !== undefined) {
           const currentTip = (
             await sessionGit(['-C', session.worktree, 'rev-parse', 'HEAD'])
