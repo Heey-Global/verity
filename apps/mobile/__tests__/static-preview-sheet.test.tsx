@@ -974,10 +974,12 @@ describe('managed dev servers', () => {
     expect(alert.mock.calls[0]?.[1]).toContain('node server.mjs --port {port}');
     expect(alert.mock.calls[0]?.[1]).toContain('curtis-voice');
     expect(alert.mock.calls[0]?.[1]).toContain('without a PIN');
-    expect(approveManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', {
-      command: 'node server.mjs --port {port}',
-      workdir: 'curtis-voice',
-    });
+    expect(approveManagedDevServer).toHaveBeenCalledWith(
+      'session-one',
+      'srv-1',
+      { command: 'node server.mjs --port {port}', workdir: 'curtis-voice' },
+      {},
+    );
   });
 
   it('does not turn Local on when the operator cancels the approval', async () => {
@@ -1092,6 +1094,81 @@ describe('managed dev servers', () => {
     });
   });
 
+  it('approves for Shared online without opening the server locally', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    answer('1 hour', 'Share');
+    renderSheet(
+      managedClient(
+        [
+          demo({
+            approved: false,
+            instance: { ...demo().instance!, url: null, awaitingApproval: true, localOn: false },
+          }),
+        ],
+        {
+          approveManagedDevServer,
+          createSessionPortPreviewShare: jest.fn(async () => link()),
+        },
+      ),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(approveManagedDevServer).toHaveBeenCalledWith(
+        'session-one',
+        'srv-1',
+        { command: 'node server.mjs --port {port}', workdir: 'curtis-voice' },
+        { local: false },
+      ),
+    );
+  });
+
+  // Started only for the link: a failed link must not leave it running with
+  // no access on.
+  it('stops a server it started for Shared online when the link fails', async () => {
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const running = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
+    const controlManagedDevServer = jest.fn(async () => running);
+    answer('1 hour');
+    renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers: jest
+          .fn()
+          .mockResolvedValueOnce([stopped])
+          .mockResolvedValue([running]),
+        controlManagedDevServer,
+        createSessionPortPreviewShare: jest.fn(async () => {
+          throw new Error('Uplink refused');
+        }),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+    );
+  });
+
+  // An older Core has no Local route; its switch started and stopped the server.
+  it('falls back to start and stop on a Core without the Local switch', async () => {
+    const server = demo();
+    delete server.instance!.localOn;
+    const controlManagedDevServer = jest.fn(async () => server);
+    const setManagedDevServerLocal = jest.fn();
+    renderSheet(managedClient([server], { controlManagedDevServer, setManagedDevServerLocal }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+    );
+    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+  });
+
   it('shows the public link, opens it with the PIN, and copies the PIN', async () => {
     const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
     renderSheet(
@@ -1125,7 +1202,9 @@ describe('managed dev servers', () => {
     const onOpenSettings = jest.fn();
     renderSheet(
       managedClient([demo()], {
-        getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'premium-required' })),
+        getPreviewCapabilities: jest.fn(async () => ({
+          publicSharing: 'premium-required' as const,
+        })),
       }),
       { onOpenSettings },
     );

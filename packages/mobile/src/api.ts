@@ -3556,13 +3556,16 @@ export class VerityClient {
     sessionId: string,
     serverId: string,
     seen: { command: string; workdir: string },
+    options: { local?: boolean } = {},
   ): Promise<ManagedDevServer[]> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/approve`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(seen),
+        body: JSON.stringify(
+          options.local === undefined ? seen : { ...seen, local: options.local },
+        ),
       },
     );
     return z

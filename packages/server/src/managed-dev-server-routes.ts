@@ -81,11 +81,15 @@ export function registerManagedDevServerRoutes(
     if (!m) return;
     return respond(reply, async () => {
       const { sessionId, serverId } = serverParams.parse(request.params);
-      const seen = z
-        .object({ command: z.string().min(1), workdir: z.string().min(1) })
+      const { local, ...seen } = z
+        .object({
+          command: z.string().min(1),
+          workdir: z.string().min(1),
+          local: z.boolean().optional(),
+        })
         .strict()
         .parse(request.body);
-      return { servers: await m.approve(sessionId, serverId, seen) };
+      return { servers: await m.approve(sessionId, serverId, seen, { local }) };
     });
   });
   app.get('/sessions/:sessionId/managed-dev-servers/:serverId/logs', async (request, reply) => {

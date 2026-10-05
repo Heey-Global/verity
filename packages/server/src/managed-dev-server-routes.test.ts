@@ -229,6 +229,11 @@ describe('Preview sheet routes', () => {
       url,
       payload: { command: 'node server.mjs', workdir: '.' },
     });
-    expect(approve).toHaveBeenCalledWith('s1', 'srv', { command: 'node server.mjs', workdir: '.' });
+    expect(approve).toHaveBeenCalledWith(
+      's1',
+      'srv',
+      { command: 'node server.mjs', workdir: '.' },
+      { local: undefined },
+    );
   });
 });

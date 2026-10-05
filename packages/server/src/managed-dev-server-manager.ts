@@ -353,6 +353,7 @@ export class ManagedDevServerManager {
     sessionId: string,
     idOrName: string,
     seen: { command: string; workdir: string },
+    options: { local?: boolean | undefined } = {},
   ): Promise<ManagedServerView[]> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
@@ -363,7 +364,12 @@ export class ManagedDevServerManager {
         409,
       );
     await this.locked(project.id, async () => {
-      const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      let instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      // Approved from Shared online: the operator agreed to a public link, not
+      // to opening the server on the network.
+      if (instance && options.local === false)
+        instance =
+          (await this.servers.updateInstance(instance.id, { localAccess: false })) ?? instance;
       if (instance?.state === 'running') await this.publish(project, approved, instance);
     });
     return this.view(sessionId);

@@ -333,10 +333,13 @@ export function StaticPreviewSheet({
   ) => {
     if (server.approved) return true;
     if (!(await confirmCommand(server, action, mode))) return false;
-    await client.approveManagedDevServer(sessionId, server.id, {
-      command: server.command,
-      workdir: server.workdir,
-    });
+    await client.approveManagedDevServer(
+      sessionId,
+      server.id,
+      { command: server.command, workdir: server.workdir },
+      // Approved for a public link only: the server must not also open locally.
+      mode === 'online' && !managedLocalOn(server) ? { local: false } : {},
+    );
     return true;
   };
 
@@ -381,6 +384,10 @@ export function StaticPreviewSheet({
   const toggleLocal = (server: ManagedDevServer, on: boolean) =>
     void managedAction(server, 'local', async () => {
       if (on && !(await approveManaged(server, 'Allow', 'local'))) return;
+      // A Core before the access switches has no Local route; its single
+      // switch started and stopped the server.
+      if (server.instance && server.instance.localOn === undefined)
+        return client.controlManagedDevServer(sessionId, server.id, on ? 'start' : 'stop');
       return client.setManagedDevServerLocal(sessionId, server.id, on);
     });
 
@@ -400,13 +407,21 @@ export function StaticPreviewSheet({
         await client.controlManagedDevServer(sessionId, server.id, 'start', {
           local: managedLocalOn(server),
         });
-      const instance = await waitUntilRunning(server.id);
-      const share = await client.createSessionPortPreviewShare(sessionId, {
-        targetPort: instance.sandboxPort,
-        managedInstanceId: instance.id,
-        pin: generatePreviewPin(),
-        ttlSeconds,
-      });
+      let share: PublicPreviewShare;
+      try {
+        const instance = await waitUntilRunning(server.id);
+        share = await client.createSessionPortPreviewShare(sessionId, {
+          targetPort: instance.sandboxPort,
+          managedInstanceId: instance.id,
+          pin: generatePreviewPin(),
+          ttlSeconds,
+        });
+      } catch (caught) {
+        // Started only for this link: with no access on, nothing may keep running.
+        if (!running && !managedLocalOn(server))
+          await client.controlManagedDevServer(sessionId, server.id, 'stop').catch(() => undefined);
+        throw caught;
+      }
       createdShareIds.current.add(share.id);
       setShares((current) => [share, ...current]);
     });

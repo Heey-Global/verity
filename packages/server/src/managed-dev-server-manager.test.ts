@@ -498,6 +498,23 @@ describe('managed dev servers', () => {
       expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
     });
 
+    // Approving from Shared online agrees to a public link, not to opening the
+    // agent's server on the network.
+    it('keeps Local off when an agent-started server is approved for Shared online', async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await manager.start('s1', 'Demo', 'agent');
+      await listen();
+      await manager.approve(
+        's1',
+        'Demo',
+        { command: 'node server.mjs', workdir: '.' },
+        { local: false },
+      );
+      await manager.tick();
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+      expect(shares.create).not.toHaveBeenCalled();
+    });
+
     it('refuses Local on for an unapproved command', async () => {
       await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
       await expect(manager.setLocal('s1', 'Demo', true)).rejects.toThrow(/approve/u);
