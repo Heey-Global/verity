@@ -1,20 +1,20 @@
 {
   "schema": 1,
   "product": "server",
-  "version": "4.11.1",
-  "source": "7f2c35cb4d966293c4d38f37fa4674364ffa5085",
-  "releasePr": 1126,
+  "version": "4.12.0",
+  "source": "3a809ad70ecdf9e570da6250ab68a8d3abd32199",
+  "releasePr": 1140,
   "images": {
-    "verity-server": "ghcr.io/heey-global/verity/verity-server@sha256:8f8dfadcad863f0b5b6522420087c35fc9461c1aaee89afbc4baa379f7b0dc76",
-    "verity-sandbox": "ghcr.io/heey-global/verity/verity-sandbox@sha256:a9b0cf7e0d7c551018f919c27057fa715daafc9fa40f04f9c1f6cd0590103c0d",
-    "verity-project-relay": "ghcr.io/heey-global/verity/verity-project-relay@sha256:1f3e654cf9d73fd77cf1ead1b46f0e143ed4fc8003670e1bf475d14987f23652",
-    "verity-preview-edge": "ghcr.io/heey-global/verity/verity-preview-edge@sha256:9ae9a84163611f5e8d7b185752705b52bb83eca1552c792d2aeb07f1ec590f5d",
-    "verity-preview-connector": "ghcr.io/heey-global/verity/verity-preview-connector@sha256:01c98e6dc25f6f2ef0df1c01c0c92083096ac572cda8865d77f6888cdd4f5f7c",
-    "verity-matrix-connector": "ghcr.io/heey-global/verity/verity-matrix-connector@sha256:8481cfca04a71c82e28c00145cd8baad5f102254dc481280bc64dfc310eb6fa8",
-    "verity-sandbox-toolkit": "ghcr.io/heey-global/verity/verity-sandbox-toolkit@sha256:d5a83e81781345cd166edfbb7fe813e6e5e92ed71b02c09bd7d54382082fd327"
+    "verity-server": "ghcr.io/heey-global/verity/verity-server@sha256:ed4a1bc852fad02742772333938166352a32c5043cb951d0f17bc073500351f0",
+    "verity-sandbox": "ghcr.io/heey-global/verity/verity-sandbox@sha256:f7a1749f6f5653a7433e4f20b42adfdadf4f4268ebe37ecb9096f2523b734761",
+    "verity-project-relay": "ghcr.io/heey-global/verity/verity-project-relay@sha256:f736d610bdca070f416b163a779adc1b8fb0d9574febb6089c223b5d8d7b4fca",
+    "verity-preview-edge": "ghcr.io/heey-global/verity/verity-preview-edge@sha256:ea37109ae529c41dd2a8b199d2cd5c093c7cb1a4491332c8c490f190601b08de",
+    "verity-preview-connector": "ghcr.io/heey-global/verity/verity-preview-connector@sha256:2c532c7b46ec2482ca7824265b971ca0196ce6ac09783ffb84ade02b5bd8f173",
+    "verity-matrix-connector": "ghcr.io/heey-global/verity/verity-matrix-connector@sha256:f67bb2b3201bf78fd65a33877260d3adefcd23cb2b36e07702403a8e3913b7ca",
+    "verity-sandbox-toolkit": "ghcr.io/heey-global/verity/verity-sandbox-toolkit@sha256:3b19d8a406f4f7dc8ab1c3ab56e83987c8eb1bf35e47cd8ce8dee740f86bf5bf"
   },
   "envelopes": {
-    "amd64": "ghcr.io/heey-global/verity/verity-server@sha256:7a0f04f8ee89f244165080df503667b9698a259fafa059b1d0ab30758b63bfd7",
-    "arm64": "ghcr.io/heey-global/verity/verity-server@sha256:861985384fa7da703347cfdd26c074f78821d6a4274503648bdc080966a63f8e"
+    "amd64": "ghcr.io/heey-global/verity/verity-server@sha256:3c707dcff6793a200b07cc7a25ef08c99a9f388e2720d5272ce3bee6f8969239",
+    "arm64": "ghcr.io/heey-global/verity/verity-server@sha256:268f08503e9721dd5557e6aef8468d6b358e4cdb7431ea77e5984390063d48cd"
   }
 }
