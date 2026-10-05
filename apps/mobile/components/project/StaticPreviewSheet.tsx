@@ -720,7 +720,7 @@ export function StaticPreviewSheet({
     >
       <Text style={styles.caption}>
         View an app the agent is running, like a website or an API, in your browser, or share it
-        with others through a link. You see every change right away.
+        with others through a link.
       </Text>
       {devServersLoading && devServers.length === 0 ? (
         <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
@@ -774,7 +774,7 @@ export function StaticPreviewSheet({
     <>
       <Text style={styles.caption}>
         View a folder of finished files, like an HTML page or slides, as a website in your browser,
-        or share it with others through a link. Pick the folder that contains index.html.
+        or share it with others through a link.
       </Text>
       <View style={styles.browserHeader}>
         {path ? (
