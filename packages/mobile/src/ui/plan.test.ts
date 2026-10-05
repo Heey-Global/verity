@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { ToolCall } from '../happy/message.js';
 import { planHeadline, planView } from './plan.js';
 
-function call(name: string, input: unknown): ToolCall {
+function call(name: string, input: unknown, state: ToolCall['state'] = 'completed'): ToolCall {
   return {
     name,
-    state: 'completed',
+    state,
     input,
     createdAt: 0,
     startedAt: null,
@@ -46,6 +46,7 @@ describe('planView', () => {
     ['an unknown status', call('TodoWrite', { todos: [{ content: 'x', status: 'blocked' }] })],
     ['a missing content', call('TodoWrite', { todos: [{ status: 'pending' }] })],
     ['a non-object input', call('TodoWrite', 'todos')],
+    ['a failed call', call('TodoWrite', { todos: [{ content: 'x', status: 'pending' }] }, 'error')],
   ])('is null for %s', (_label, tool) => {
     expect(planView(tool)).toBeNull();
   });
