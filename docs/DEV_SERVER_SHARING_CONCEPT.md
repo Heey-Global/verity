@@ -101,10 +101,58 @@ worktree-based cwd match stays as a fallback for processes started another way.
 Listeners that match no session are shown as project listeners so
 that nothing disappears silently.
 
-### 2.6 Starting services
+### 2.6 Managed dev servers
 
-Users or agents start HTTP/WebSocket services in a project sandbox. Verity detects the
-listeners and provides shares on them. An active share keeps the sandbox awake (ADR 0020).
+Decided 2026-10-05. This revises the earlier removal of configured dev servers: asking the
+agent to start a server every time was slow, and nobody could tell whether it was still
+running. Entries come back, but the agent creates them, Verity runs them, and the operator
+switches them on and off from the Preview sheet.
+
+**Entry per project, instance per session.** An entry holds a name, a command, and a
+subdirectory of the worktree. It belongs to the project and can be started in any session of
+it. Started from a session, it runs in that session's worktree. Entries live in the Verity
+database, not in the repository, so switching one off or deleting it never creates a commit.
+A repository file that seeds entries can be added later if entries should travel with the code.
+
+**Ports.** The sandbox port is an internal detail and is never shown: not in the app, not on
+the inline card, not in agent replies. Verity picks a free sandbox port for each pair of
+session and entry and passes it as `PORT` or substitutes `{port}` in the command. All sessions
+of a project share one sandbox, so this keeps two sessions running the same entry apart. The
+only port anyone sees is the network port from the local range, shown as an address such as
+`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so
+a bookmark keeps working across restarts. A new session may get different ports. When the
+local range is full, the pair whose server ran least recently loses its network reservation;
+its sandbox port is kept.
+
+**Supervision.** Verity starts the entry as its own process and tracks one of four states:
+starting, running, stopped, crashed. "Running" requires the port to answer, not merely the
+command to have started. Verity keeps the last few hundred lines of output, readable in the
+app and by the agent. Stopping ends the command and all its children so no orphan holds the
+port. A crashed server stays crashed and shows its error; there is no automatic restart,
+because a silent restart hides the fault. Running entries keep the sandbox awake as an active
+share does (ADR 0020). When the sandbox is recreated, for example by an update, Verity starts
+again what was running before.
+
+**Agent.** `verity-dev-server` gains `add`, `update`, `remove`, `start`, `stop`, `status`,
+`logs`, and `list`. `start` replies with the network address, and the agent names only that
+address. None of these needs operator approval: an entry only runs a command in the sandbox,
+which the agent may do anyway. Additions and changes appear in the chat as a small card. The
+agent-seed guidance tells the agent to start servers only through an entry, never with
+`nohup` or `&`, and to create an entry when none fits. Servers started past Verity are still
+detected and listed as not managed, with an offer to save them as an entry. The existing
+`announce` command stays for that case.
+
+**Operator.** The operator switches entries on and off and deletes them in the app. Editing
+stays with the agent, because typing a command on a phone is impractical.
+
+**Preview sheet.** The Dev server tab lists "Your servers" first, one row per entry with a
+switch, the state, and the network address while it runs. A crashed row is marked and links
+to its logs. The arrow opens the detail view: state, address, and logs at the top, then the
+two access cards ("On your network", "Over the internet"), then "Delete entry". Servers
+started past Verity follow under "Not managed" with "Save as entry"; the section disappears
+when empty. With no entries the tab says "No servers yet. Ask the agent to set up your app as
+a server." The inline chat card and the green dot on the Preview icon keep showing running
+entries.
 
 ### 2.7 Opening a local share from outside the home network
 
@@ -227,6 +275,10 @@ becomes "Open settings" and the text names Verity Premium.
 5. Rework the app: always-open Preview sheet, per-listener actions, capability-based gating,
    reachability probe with the three outcomes, inline listener card.
 6. Update `deploy/README.md`, the Compose files, and ADR 0020 references.
+7. Managed dev servers (2.6): entries table and per-session port bindings; supervised
+   start, stop, state, and log capture in the project runtime; restart after sandbox
+   recreation; `verity-dev-server` entry commands and agent-seed guidance; Preview sheet
+   rows with switches, detail view with logs, and the not-managed section.
 
 ## 5. Implementation details and verification boundaries
 
