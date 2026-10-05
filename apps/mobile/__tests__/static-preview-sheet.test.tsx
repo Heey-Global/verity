@@ -113,6 +113,17 @@ it('separates running servers and static folders into two tabs', async () => {
   expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
 });
 
+// Each tab says what it is for in plain words. Without that line the static
+// tab was a bare file list and users could not tell the two paths apart.
+it('explains what each tab previews', async () => {
+  renderSheet(makeClient());
+  expect(await screen.findByText(/Make a server running in this session/)).toBeTruthy();
+  expect(screen.queryByText(/Make a folder of finished files/)).toBeNull();
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  expect(await screen.findByText(/Make a folder of finished files/)).toBeTruthy();
+  expect(screen.queryByText(/Make a server running in this session/)).toBeNull();
+});
+
 it('opens on static files when no server runs in the session', async () => {
   renderSheet(makeClient({ listSessionDevServers: jest.fn(async () => []) }), {
     detectedServers: [],
@@ -493,6 +504,7 @@ it('separates project listeners from the session’s own', async () => {
     }),
   );
   expect(await screen.findByText('OTHER SERVERS IN THIS PROJECT')).toBeTruthy();
+  expect(screen.getByText('Started outside this session.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Storybook on port 8080' })).toBeTruthy();
 });
 

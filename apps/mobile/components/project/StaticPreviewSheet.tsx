@@ -719,7 +719,8 @@ export function StaticPreviewSheet({
       accessibilityLabel="Dev servers"
     >
       <Text style={styles.caption}>
-        Web apps, APIs or Storybook started in this session. Visitors see your changes live.
+        Make a server running in this session, like a website or an API, available on your network
+        or through a public link.
       </Text>
       {devServersLoading && devServers.length === 0 ? (
         <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
@@ -732,7 +733,7 @@ export function StaticPreviewSheet({
           <Icon name="server" size={22} color={theme.colors.textFaint} />
           <Text style={styles.emptyTitle}>No dev server running</Text>
           <Text style={[styles.caption, styles.centered]}>
-            Ask the agent to start one. It shows up here as soon as it listens.
+            Ask the agent to start your app. It appears here as soon as it is reachable.
           </Text>
         </View>
       ) : null}
@@ -761,6 +762,7 @@ export function StaticPreviewSheet({
       {projectServers.length > 0 ? (
         <>
           <Text style={[styles.label, styles.sectionLabel]}>OTHER SERVERS IN THIS PROJECT</Text>
+          <Text style={styles.caption}>Started outside this session.</Text>
           {projectServers.map(renderServerRow)}
         </>
       ) : null}
@@ -770,6 +772,10 @@ export function StaticPreviewSheet({
 
   const renderFolderTab = () => (
     <>
+      <Text style={styles.caption}>
+        Make a folder of finished files, like an HTML page or slides, available as a website on your
+        network or through a public link.
+      </Text>
       <View style={styles.browserHeader}>
         {path ? (
           <Pressable
@@ -789,7 +795,7 @@ export function StaticPreviewSheet({
             {path ? folderTitle(path) : 'Worktree'}
           </Text>
           <Text style={styles.rowDetail} numberOfLines={1}>
-            {path ? `Worktree / ${path}` : 'HTML, slides or a built site, served as files'}
+            {path ? `Worktree / ${path}` : 'Root of this session’s files'}
           </Text>
         </View>
       </View>
