@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.7](https://github.com/Heey-Global/verity/compare/mobile-v1.52.6...mobile-v1.52.7) (2026-10-05)
+
+
+### Features
+
+* **mobile:** open a session's preview from its list row ([#1154](https://github.com/Heey-Global/verity/issues/1154)) ([c2bb622](https://github.com/Heey-Global/verity/commit/c2bb6222e42074df4d70efddda250aa1c4b319fe))
+
 ## [1.52.6](https://github.com/Heey-Global/verity/compare/mobile-v1.52.5...mobile-v1.52.6) (2026-10-05)
 
 
