@@ -446,7 +446,10 @@ export class ManagedDevServerManager {
    * its worktree. A move also forgets the instances, which belong to the source
    * project and would otherwise hold their network ports forever.
    */
-  async stopSession(sessionId: string, options: { forget?: boolean } = {}): Promise<void> {
+  async stopSession(
+    sessionId: string,
+    options: { forget?: boolean; legacyRuntime?: boolean } = {},
+  ): Promise<void> {
     const instances = await this.servers.listInstances({ sessionId });
     const session = await this.options.store.getSession(sessionId);
     const project = session?.projectId
@@ -454,7 +457,12 @@ export class ManagedDevServerManager {
       : undefined;
     const work = async () => {
       for (const instance of instances) {
-        if (project) await this.stopInstance(project, instance, null).catch(() => undefined);
+        if (project) {
+          const stop = this.stopInstance(project, instance, null, options.legacyRuntime);
+          // Migration must abort if a legacy process cannot be stopped.
+          if (options.legacyRuntime) await stop;
+          else await stop.catch(() => undefined);
+        }
         if (options.forget) await this.servers.deleteInstance(instance.id);
       }
     };
@@ -601,17 +609,18 @@ export class ManagedDevServerManager {
     project: ProjectRecord,
     instance: ManagedDevServerInstanceRecord,
     detail: string | null,
+    legacyRuntime = false,
   ): Promise<void> {
+    // Only the migration path may stop tagged processes in the legacy shared runtime.
+    const runtimeProject = legacyRuntime
+      ? project
+      : ((await this.options.resolveSessionProject?.(instance.sessionId, project)) ?? project);
     await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     await this.unpublish(instance);
-    if (project.state === 'active' && project.containerName) {
-      const runtimeProject = await this.options.resolveSessionProject?.(
-        instance.sessionId,
-        project,
-      );
-      await this.options.runtime
-        .stopManagedServer(runtimeProject ?? project, instance.id)
-        .catch(() => undefined);
+    if (runtimeProject.state === 'active' && runtimeProject.containerName) {
+      const stop = this.options.runtime.stopManagedServer(runtimeProject, instance.id);
+      if (legacyRuntime) await stop;
+      else await stop.catch(() => undefined);
     }
     await this.servers.updateInstance(instance.id, {
       state: 'stopped',

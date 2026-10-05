@@ -11,6 +11,7 @@ import {
   BranchNotFoundError,
   DirtyWorktreeError,
   InvalidBranchNameError,
+  isValidBranchName,
   MergeConflictError,
   NothingToMergeError,
   type GitBranchService,
@@ -19,6 +20,38 @@ import {
 import { SandboxUnavailableError } from './sandbox-git.js';
 import { sessionParams } from './session-route-schemas.js';
 import { transferSessionCommit } from './session-git-transfer.js';
+
+/** Import the central merge and retain it as the private clone's next branch base. */
+export async function syncLocalMergeBase(opts: {
+  basePath: string;
+  worktree: string;
+  base: string;
+  baseTip: string;
+  centralGit: GitOutput;
+  sessionGit: GitOutput;
+}): Promise<void> {
+  if (!isValidBranchName(opts.base)) throw new InvalidBranchNameError(opts.base);
+  if (!/^[0-9a-f]{40,64}$/.test(opts.baseTip)) throw new Error('Invalid merge commit');
+  const transfer = await transferSessionCommit({
+    source: opts.basePath,
+    destination: opts.worktree,
+    sourceGit: opts.centralGit,
+    destinationGit: opts.sessionGit,
+    commit: opts.baseTip,
+  });
+  try {
+    // Detaching HEAD alone leaves new branches rooted at the clone's pre-merge base.
+    await opts.sessionGit([
+      '-C',
+      opts.worktree,
+      'update-ref',
+      `refs/heads/${opts.base}`,
+      opts.baseTip,
+    ]);
+  } finally {
+    await transfer.cleanup();
+  }
+}
 
 type PrSummary = Pick<PullRequestStatus, 'phase' | 'pipeline' | 'mergeable'>;
 export interface SessionMergeRouteDeps {
@@ -384,14 +417,14 @@ export function registerSessionMergeRoutes(
           // The whole merge result: the branch commit it absorbed decides what may be
           // deleted, the merge commit it created is where the worktree lands.
           if (deps.sessionSandboxGit) {
-            const transfer = await transferSessionCommit({
-              source: basePath,
-              destination: session.worktree,
-              sourceGit: sandboxGit,
-              destinationGit: sessionGit,
-              commit: merged.baseTip,
+            await syncLocalMergeBase({
+              basePath,
+              worktree: session.worktree,
+              base,
+              baseTip: merged.baseTip,
+              centralGit: sandboxGit,
+              sessionGit,
             });
-            await transfer.cleanup();
           }
           const { deletedBranch, retainedBranch, skipped } = await branches.resetToLocalBase(
             session.worktree,

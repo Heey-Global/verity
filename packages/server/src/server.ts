@@ -8580,7 +8580,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       privateCloneRoot: deps.sessionIsolationMigration.privateCloneRoot,
       stopSessionProcesses: async (sessionId) => {
         conductor.closeSession?.(sessionId);
-        await deps.managedDevServerManager?.stopSession(sessionId);
+        await deps.managedDevServerManager?.stopSession(sessionId, { legacyRuntime: true });
         await deps.localPreviewManager?.stopSession(sessionId);
         await deps.removeSessionSandbox?.(sessionId);
       },

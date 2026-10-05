@@ -10,7 +10,7 @@ import {
   realpathSync,
   rmSync,
 } from 'node:fs';
-import { join, relative, isAbsolute, resolve } from 'node:path';
+import { basename, join, relative, isAbsolute, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { GitOutput } from './branches.js';
 
@@ -24,18 +24,75 @@ export async function transferSessionCommit(opts: {
 }): Promise<{ ref: string; cleanup: () => Promise<void> }> {
   const source = resolve(opts.source);
   const destination = resolve(opts.destination);
-  if (realpathSync(source) !== source || realpathSync(destination) !== destination)
-    throw new Error('Git transfer requires real checkout paths');
-  const sourceDir = mkdtempSync(join(source, '.verity-transfer-'));
-  const destinationDir = mkdtempSync(join(destination, '.verity-transfer-'));
+  const pinCheckout = (checkout: string): number => {
+    const fd = openSync(
+      checkout,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    if (realpathSync(`/proc/self/fd/${String(fd)}`) !== checkout) {
+      closeSync(fd);
+      throw new Error('Git transfer requires real checkout paths');
+    }
+    return fd;
+  };
+  const sourceRootFd = pinCheckout(source);
+  let destinationRootFd: number;
+  try {
+    destinationRootFd = pinCheckout(destination);
+  } catch (error) {
+    closeSync(sourceRootFd);
+    throw error;
+  }
+  const sourceRoot = `/proc/self/fd/${String(sourceRootFd)}`;
+  const destinationRoot = `/proc/self/fd/${String(destinationRootFd)}`;
+  let sourcePinnedDir: string;
+  let destinationPinnedDir: string;
+  try {
+    sourcePinnedDir = mkdtempSync(join(sourceRoot, '.verity-transfer-'));
+    destinationPinnedDir = mkdtempSync(join(destinationRoot, '.verity-transfer-'));
+  } catch (error) {
+    closeSync(sourceRootFd);
+    closeSync(destinationRootFd);
+    throw error;
+  }
+  const sourceDir = join(source, basename(sourcePinnedDir));
+  const destinationDir = join(destination, basename(destinationPinnedDir));
+  let cleaned = false;
+  let destinationFd: number | undefined;
   const ref = `refs/verity/transfers/${randomUUID()}`;
   const cleanup = async (): Promise<void> => {
     await opts.sourceGit(['-C', source, 'update-ref', '-d', ref]).catch(() => undefined);
     await opts.destinationGit(['-C', destination, 'update-ref', '-d', ref]).catch(() => undefined);
-    rmSync(sourceDir, { recursive: true, force: true });
-    rmSync(destinationDir, { recursive: true, force: true });
+    if (cleaned) return;
+    cleaned = true;
+    try {
+      // Pin checkout ancestors too: a replaced checkout path must not redirect
+      // recursive cleanup into another host directory.
+      rmSync(sourcePinnedDir, { recursive: true, force: true });
+      rmSync(destinationPinnedDir, { recursive: true, force: true });
+    } finally {
+      closeSync(sourceRootFd);
+      closeSync(destinationRootFd);
+    }
   };
   try {
+    // Pin and validate the directory before opening a child: O_NOFOLLOW on the
+    // bundle alone does not protect against an agent replacing an ancestor.
+    const destinationDirectoryFd = openSync(
+      destinationPinnedDir,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      if (realpathSync(`/proc/self/fd/${String(destinationDirectoryFd)}`) !== destinationDir)
+        throw new Error('Unsafe Git bundle destination');
+      destinationFd = openSync(
+        `/proc/self/fd/${String(destinationDirectoryFd)}/commit.bundle`,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+    } finally {
+      closeSync(destinationDirectoryFd);
+    }
     const commit =
       opts.commit ?? (await opts.sourceGit(['-C', source, 'rev-parse', 'HEAD'])).trim();
     if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(commit))
@@ -54,11 +111,13 @@ export async function transferSessionCommit(opts: {
         throw new Error('Unsafe Git bundle source');
       await pipeline(
         createReadStream(sourceBundle, { fd, autoClose: false }),
-        createWriteStream(destinationBundle, { flags: 'wx', mode: 0o600 }),
+        createWriteStream(destinationBundle, { fd: destinationFd, autoClose: false }),
       );
     } finally {
       closeSync(fd);
     }
+    if (realpathSync(destinationBundle) !== realpathSync(`/proc/self/fd/${String(destinationFd)}`))
+      throw new Error('Unsafe Git bundle destination');
     await opts.destinationGit([
       '-C',
       destination,
@@ -71,5 +130,7 @@ export async function transferSessionCommit(opts: {
   } catch (error) {
     await cleanup();
     throw new Error('Session Git transfer failed', { cause: error });
+  } finally {
+    if (destinationFd !== undefined) closeSync(destinationFd);
   }
 }

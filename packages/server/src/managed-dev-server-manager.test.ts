@@ -147,6 +147,60 @@ afterEach(() => manager.close());
 const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0]!.instance!;
 
 describe('isolated managed server runtimes', () => {
+  it('stops an active sibling even when the calling session is sleeping', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s2', 'Demo', 'agent');
+    const instanceId = sandbox.started[0]!.instanceId;
+    manager.close();
+    const resolve = vi.fn(async (sessionId: string, project: ProjectRecord) => ({
+      ...project,
+      containerName: `private-${sessionId}`,
+      state: sessionId === 's1' ? ('sleeping' as const) : ('active' as const),
+    }));
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: () => '/work',
+      resolveSessionProject: resolve,
+    });
+    await ctx.store.updateProjectState('p1', 'sleeping');
+    await manager.stopElsewhere('s1', instanceId);
+    expect(sandbox.stop).toHaveBeenCalledWith(
+      expect.objectContaining({ containerName: 'private-s2', state: 'active' }),
+      instanceId,
+    );
+  });
+
+  it('stops legacy migration processes without resolving a private clone and propagates failures', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    manager.close();
+    const resolve = vi.fn(async () => {
+      throw new Error('Legacy linked worktree is not an independent clone');
+    });
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: () => '/work',
+      resolveSessionProject: resolve,
+    });
+    sandbox.stop.mockRejectedValueOnce(new Error('Runtime stop failed'));
+    await expect(manager.stopSession('s1', { legacyRuntime: true })).rejects.toThrow(
+      'Runtime stop failed',
+    );
+    expect(resolve).not.toHaveBeenCalled();
+    await manager.stopSession('s1', { legacyRuntime: true });
+    expect(sandbox.stop).toHaveBeenLastCalledWith(
+      expect.objectContaining({ containerName: 'sandbox' }),
+      sandbox.started[0]!.instanceId,
+    );
+    expect(
+      (await ctx.store.managedDevServers.getInstance(sandbox.started[0]!.instanceId))?.state,
+    ).toBe('stopped');
+  });
+
   it('prepares only explicit starts and targets each session container for supervision and stop', async () => {
     manager.close();
     const resolve = vi.fn(async (sessionId: string, project: ProjectRecord) => ({

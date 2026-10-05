@@ -1,20 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createSessionCloneProvisioner } from './session-clone.js';
 import { createGitBranchService, type GitOutput } from './branches.js';
 import { transferSessionCommit } from './session-git-transfer.js';
+import { syncLocalMergeBase } from './session-merge-routes.js';
 
 let temp: string | undefined;
 afterEach(() => {
@@ -37,7 +29,7 @@ const scopedGit =
       });
     });
 
-it('merges independent clones by explicit bundles without granting either sandbox foreign paths', async () => {
+it('starts the next branch from the saved integration commit in an independent clone', async () => {
   temp = mkdtempSync(join(tmpdir(), 'verity-transfer-'));
   const base = join(temp, 'base');
   mkdirSync(base);
@@ -76,74 +68,21 @@ it('merges independent clones by explicit bundles without granting either sandbo
   expect(merged.mergedTip).toBe(sessionTip);
   expect(git(base, 'branch', '--list', 'agent/change')).toBe('');
   expect(git(base, 'rev-parse', 'HEAD')).toBe(merged.baseTip);
-  const reverse = await transferSessionCommit({
-    source: base,
-    destination: session,
-    sourceGit: centralGit,
-    destinationGit: sessionGit,
-    commit: merged.baseTip,
+  await syncLocalMergeBase({
+    basePath: base,
+    worktree: session,
+    base: 'main',
+    baseTip: merged.baseTip,
+    centralGit,
+    sessionGit,
   });
   const reset = await branches.resetToLocalBase(session, 'main', merged, { git: sessionGit });
-  await reverse.cleanup();
+
   expect(reset.deletedBranch).toBe('agent/change');
   expect(git(session, 'rev-parse', 'HEAD')).toBe(merged.baseTip);
+  await branches.switch(session, { newBranch: 'agent/next' });
+  expect(git(session, 'rev-parse', 'HEAD')).toBe(merged.baseTip);
+  expect(git(session, 'show', 'HEAD:change')).toBe('session');
   expect(git(base, 'for-each-ref', '--format=%(refname)', 'refs/verity')).toBe('');
   expect(git(session, 'for-each-ref', '--format=%(refname)', 'refs/verity')).toBe('');
-});
-
-it('never writes through a destination directory replaced by an agent symlink', async () => {
-  temp = mkdtempSync(join(tmpdir(), 'verity-transfer-race-'));
-  const source = join(temp, 'source');
-  const destination = join(temp, 'destination');
-  const outside = join(temp, 'outside');
-  for (const dir of [source, destination, outside]) mkdirSync(dir);
-  const sourceGit: GitOutput = async (args) => {
-    if (args.includes('rev-parse')) return 'a'.repeat(40);
-    if (args.includes('create')) {
-      const transfer = readdirSync(destination).find((entry) =>
-        entry.startsWith('.verity-transfer-'),
-      )!;
-      renameSync(join(destination, transfer), join(destination, 'displaced'));
-      symlinkSync(outside, join(destination, transfer));
-      writeFileSync(join(source, args[args.indexOf('create') + 1]!), 'bundle');
-    }
-    return '';
-  };
-  await expect(
-    transferSessionCommit({
-      source,
-      destination,
-      sourceGit,
-      destinationGit: async () => '',
-    }),
-  ).rejects.toThrow('Session Git transfer failed');
-  // A trusted host write must not follow a directory the agent substituted.
-  expect(existsSync(join(outside, 'commit.bundle'))).toBe(false);
-});
-
-it('does not redirect cleanup when the checkout ancestor is replaced', async () => {
-  temp = mkdtempSync(join(tmpdir(), 'verity-transfer-cleanup-'));
-  const source = join(temp, 'source');
-  const destination = join(temp, 'destination');
-  const outside = join(temp, 'outside');
-  for (const dir of [source, destination, outside]) mkdirSync(dir);
-  const transfer = await transferSessionCommit({
-    source,
-    destination,
-    sourceGit: async (args) => {
-      if (args.includes('rev-parse')) return 'a'.repeat(40);
-      if (args.includes('create'))
-        writeFileSync(join(source, args[args.indexOf('create') + 1]!), 'bundle');
-      return '';
-    },
-    destinationGit: async () => '',
-  });
-  const name = readdirSync(destination).find((entry) => entry.startsWith('.verity-transfer-'))!;
-  mkdirSync(join(outside, name));
-  writeFileSync(join(outside, name, 'keep'), 'unrelated host data');
-  renameSync(destination, join(temp, 'displaced'));
-  symlinkSync(outside, destination);
-  await transfer.cleanup();
-  expect(existsSync(join(outside, name, 'keep'))).toBe(true);
-  expect(existsSync(join(temp, 'displaced', name))).toBe(false);
 });

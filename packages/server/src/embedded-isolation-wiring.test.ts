@@ -29,6 +29,14 @@ function property(expression: ts.NewExpression, name: string): string | undefine
 }
 
 describe('production session isolation wiring', () => {
+  it('migration explicitly stops legacy managed processes before copying their workspace', () => {
+    const serverSource = readFileSync(new URL('./server.ts', import.meta.url), 'utf8');
+    const migration = serverSource.slice(
+      serverSource.indexOf('registerSessionIsolationMigrationRoute('),
+    );
+    // The private resolver rejects linked worktrees, so ordinary shutdown leaves legacy writers alive.
+    expect(migration).toMatch(/stopSession\(sessionId,\s*\{\s*legacyRuntime:\s*true\s*\}\)/);
+  });
   it('every Docker agent backend uses a private runtime and checkout', () => {
     const backends = nodes(ts.isNewExpression).filter(
       (node) => node.expression.getText(source) === 'DockerExecBackend',
