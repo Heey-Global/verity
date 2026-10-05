@@ -887,6 +887,43 @@ describe('managed dev servers', () => {
       }
     });
 
+    it.each(['start', 'approve'] as const)(
+      'refreshes access intent when %s keeps an existing process running',
+      async (action) => {
+        await approvedDemo();
+        await manager.setLocal('s1', 'Demo', true);
+        const id = await listen();
+        const share = await publicLink(id);
+        const ended = await ctx.store.transitionPublicPreviewShare(
+          share.id,
+          ['creating', 'active'],
+          'revoked',
+          {},
+        );
+        const previous = now;
+        try {
+          now = ended!.updatedAt.getTime() + 1;
+          if (action === 'start') await manager.start('s1', 'Demo', 'operator', { local: false });
+          else
+            await manager.approve(
+              's1',
+              'Demo',
+              { command: 'node server.mjs', workdir: '.' },
+              { local: false },
+            );
+          await manager.publicLinkEnded(id, share.id);
+          await manager.tick();
+          expect((await instanceOf()).state).toBe('running');
+          expect(sandbox.started).toHaveLength(1);
+          expect(
+            (await ctx.store.managedDevServers.getInstance(id))!.accessStartedAt!.getTime(),
+          ).toBe(now);
+        } finally {
+          now = previous;
+        }
+      },
+    );
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });

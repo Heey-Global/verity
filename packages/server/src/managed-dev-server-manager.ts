@@ -375,7 +375,10 @@ export class ManagedDevServerManager {
       // to opening the server on the network.
       if (instance && options.local === false) {
         instance =
-          (await this.servers.updateInstance(instance.id, { localAccess: false })) ?? instance;
+          (await this.servers.updateInstance(instance.id, {
+            localAccess: false,
+            accessStartedAt: new Date(this.now()),
+          })) ?? instance;
         // Still published from an earlier approved run: that address goes too.
         try {
           await this.unpublish(instance);
@@ -667,7 +670,14 @@ export class ManagedDevServerManager {
     if (local !== undefined && instance.localAccess !== local)
       instance =
         (await this.servers.updateInstance(instance.id, { localAccess: local })) ?? instance;
-    if (by === 'operator') this.pendingLinkEnds.delete(instance.id);
+    if (by === 'operator') {
+      this.pendingLinkEnds.delete(instance.id);
+      if (local === false)
+        instance =
+          (await this.servers.updateInstance(instance.id, {
+            accessStartedAt: new Date(this.now()),
+          })) ?? instance;
+    }
     if (local === false) await this.unpublish(instance);
     const status = await this.options.runtime
       .managedServerStatus(project, instance.id)
