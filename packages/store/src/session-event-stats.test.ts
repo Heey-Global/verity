@@ -139,7 +139,13 @@ describe('durable session event statistics', () => {
       expect(
         (await migrator.migrateTo('0132_unique_brokered_prompt_v2_grants')).error,
       ).toBeUndefined();
-      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(2);
+      // The rolled-back schema predates fields required by the current session loader.
+      const historicalSession = await ctx.db
+        .selectFrom('sessions')
+        .select('last_seen_event_count')
+        .where('session_id', '=', 'a')
+        .executeTakeFirstOrThrow();
+      expect(historicalSession.last_seen_event_count).toBe(2);
       expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(5);
       expect((await migrator.migrateToLatest()).error).toBeUndefined();
       expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
