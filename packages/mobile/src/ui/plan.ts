@@ -64,7 +64,7 @@ export function planHeadline(plan: PlanView): string {
 export function planProposal(tool: ToolCall): string | null {
   const presented = planningToolName(tool.name) === PRESENT_PLAN_TOOL;
   if (!presented && tool.name !== 'ExitPlanMode') return null;
-  if (presented && tool.state === 'error') return null;
+  if (presented && tool.state !== 'completed') return null;
   const plan = record(record(tool.input)?.arguments)?.plan ?? record(tool.input)?.plan;
   return typeof plan === 'string' && plan.trim() !== '' ? plan : null;
 }

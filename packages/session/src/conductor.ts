@@ -4600,6 +4600,7 @@ export class Conductor {
           boundId = publicSessionId;
           this.starting.delete(opts.worktree); // bound → release the start lock
           this.inFlight.add(publicSessionId); // serialize turns against the still-running spawn
+          this.runningPlanning.set(publicSessionId, false);
           this.turns.set(publicSessionId, handle); // operator can cancel/steer now (#79/#101)
           // The session row exists now (either preallocated by the server or
           // created by ingest from the backend `session` event), so persist the

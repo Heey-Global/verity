@@ -83,6 +83,10 @@ describe('planProposal', () => {
     expect(planProposal(call('verity_present_plan', { plan: 'Plan' }, 'error'))).toBeNull();
   });
 
+  it('waits for the gateway to accept a plan before offering it', () => {
+    expect(planProposal(call('verity_present_plan', { plan: 'Plan' }, 'running'))).toBeNull();
+  });
+
   it('ignores other tools and empty or malformed plans', () => {
     expect(planProposal(call('Bash', { plan: 'Plan' }))).toBeNull();
     expect(planProposal(call('verity_present_plan', { plan: '  ' }))).toBeNull();

@@ -6432,6 +6432,24 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('steers messages into the first turn of a fresh session', async () => {
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const { sessionId } = await conductor.startSession({ worktree: '/wt/fresh', prompt: 'first' });
+    await waitFor(fake.ready);
+    try {
+      expect(await conductor.dispatchTurn(sessionId, 'refine it')).toEqual({ queued: false });
+      expect(fake.steered.map((message) => message.text)).toEqual(['refine it']);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy(sessionId));
+    }
+  });
+
   it('queues messages when planning starts during a writable turn', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const fake = steerableBackend();
