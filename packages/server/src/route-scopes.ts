@@ -159,6 +159,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/integrations/matrix/source/left',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
+    'POST',
     '/internal/integrations/matrix/event',
     'container-capability',
     'Matrix connector bearer token',
