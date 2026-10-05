@@ -123,6 +123,8 @@ export const sessionSummarySchema = z.object({
    * the wire: an OLDER server omits it on the list, and absent simply reads as "no
    * unread signal" (never a false unread). The detail endpoint always sends it. */
   eventCount: z.number().int().nonnegative().optional(),
+  /** Version associated with this count; forward it unchanged when marking seen. */
+  eventCountVersion: z.literal('dev-servers-excluded-v1').optional(),
   /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
    * last open, persisted server-side so the dot syncs across devices. A session is
    * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
@@ -3830,11 +3832,15 @@ export class VerityClient {
    * lightweight ack with the resolved mark; the synced value itself arrives on the
    * next `GET /sessions`. 404 (unknown session) and 409 (incompatible or stale count)
    * throw a {@link VerityApiError}. */
-  async setSessionSeen(id: string, eventCount: number): Promise<SessionSeen> {
+  async setSessionSeen(
+    id: string,
+    eventCount: number,
+    counterVersion?: string,
+  ): Promise<SessionSeen> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/seen`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ eventCount, counterVersion: 'dev-servers-excluded-v1' }),
+      body: JSON.stringify({ eventCount, counterVersion }),
     });
     return sessionSeenSchema.parse(await res.json());
   }

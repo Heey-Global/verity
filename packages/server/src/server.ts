@@ -4746,6 +4746,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable: await worktreeExists(session.worktree),
       eventCount: facts.eventCount,
+      eventCountVersion: 'dev-servers-excluded-v1',
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
@@ -7155,6 +7156,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
         resumable: await worktreeExists(session.worktree),
         eventCount: facts.eventCount,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: facts.lastActivityAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),

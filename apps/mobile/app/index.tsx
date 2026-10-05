@@ -407,7 +407,7 @@ function SessionList({ client }: { client: VerityClient }) {
   const onOpenSession = useCallback(
     (session: SessionSummary) => {
       if (client) prefetchBranches(client, session.sessionId);
-      markSeen(session.sessionId, session.eventCount);
+      markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
     },
     [client, markSeen],
   );
@@ -595,7 +595,7 @@ function SessionList({ client }: { client: VerityClient }) {
   useEffect(() => {
     if (!selectedId) return;
     const open = sessions.find((s) => s.sessionId === selectedId);
-    if (open) markSeen(open.sessionId, open.eventCount);
+    if (open) markSeen(open.sessionId, open.eventCount, open.eventCountVersion);
   }, [selectedId, sessions, markSeen]);
 
   const onRefreshOverview = useCallback(async () => {

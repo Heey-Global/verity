@@ -4845,7 +4845,11 @@ describe('GET /projects (#174)', () => {
       lastSeenEventCount: 1,
     });
     const detail = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
-    expect(detail.json()).toMatchObject({ eventCount: 1, lastSeenEventCount: 1 });
+    expect(detail.json()).toMatchObject({
+      eventCount: 1,
+      lastSeenEventCount: 1,
+      eventCountVersion: 'dev-servers-excluded-v1',
+    });
     await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'new message' });
     const unread = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
     expect(unread.json()).toMatchObject({ eventCount: 2, lastSeenEventCount: 1 });
