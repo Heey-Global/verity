@@ -371,9 +371,12 @@ export class ManagedDevServerManager {
       let instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       // Approved from Shared online: the operator agreed to a public link, not
       // to opening the server on the network.
-      if (instance && options.local === false)
+      if (instance && options.local === false) {
         instance =
           (await this.servers.updateInstance(instance.id, { localAccess: false })) ?? instance;
+        // Still published from an earlier approved run: that address goes too.
+        await this.unpublish(instance);
+      }
       if (instance?.state === 'running') await this.publish(project, approved, instance);
     });
     return this.view(sessionId);
@@ -396,8 +399,9 @@ export class ManagedDevServerManager {
   /**
    * `local` is the operator's Local switch for this start: true from the Local
    * switch, false when Shared online starts the server alone. Absent, a running
-   * instance keeps what it had; an agent start of a stopped one turns Local on, so
-   * no server runs with no access left and nothing to stop it.
+   * instance keeps what it had; an agent start of a stopped one without a live
+   * public link turns Local on, so no server runs with no access left and
+   * nothing to stop it.
    */
   async start(
     sessionId: string,
@@ -430,8 +434,11 @@ export class ManagedDevServerManager {
     await this.locked(project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       if (on) {
-        // Only a live process gets the flag; anything else, crashed included, starts.
-        if (instance && (instance.state === 'running' || instance.state === 'starting')) {
+        // Only a live process of the approved command gets the flag; anything
+        // else starts, crashed included, and an older command restarts.
+        if (instance && !this.ranApproved(entry, instance) && instance.state === 'running')
+          await this.stopInstance(project, instance, null);
+        else if (instance && (instance.state === 'running' || instance.state === 'starting')) {
           const updated = await this.servers.updateInstance(instance.id, { localAccess: true });
           if (updated?.state === 'running') await this.publish(project, entry, updated);
           return;
@@ -575,7 +582,8 @@ export class ManagedDevServerManager {
         sessionId,
         sandboxPorts: MANAGED_SANDBOX_PORTS,
       });
-      const access = local ?? (by === 'agent' ? true : undefined);
+      const access =
+        local ?? (by === 'agent' && !(await this.hasLivePublicLink(instance)) ? true : undefined);
       await this.servers.updateInstance(instance.id, {
         ...(access !== undefined ? { localAccess: access } : {}),
         desired: 'running',
@@ -621,7 +629,12 @@ export class ManagedDevServerManager {
       this.activeProjects.add(project.id);
       return;
     }
-    if (local === undefined && by === 'agent' && !instance.localAccess)
+    if (
+      local === undefined &&
+      by === 'agent' &&
+      !instance.localAccess &&
+      !(await this.hasLivePublicLink(instance))
+    )
       instance =
         (await this.servers.updateInstance(instance.id, { localAccess: true })) ?? instance;
     if (status.alive) await this.options.runtime.stopManagedServer(project, instance.id);

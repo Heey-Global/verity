@@ -948,6 +948,7 @@ export class PreviewShareManager {
               failure: current.failure,
             },
           );
+          this.notifyEnded(current);
         }),
     );
     const rejected: unknown[] = [];

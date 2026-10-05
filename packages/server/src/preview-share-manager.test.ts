@@ -1439,7 +1439,7 @@ describe('PreviewShareManager', () => {
 
   // A managed dev server with Local off stops once its last link ends; without
   // this notice an expired link would leave it running unnoticed.
-  it('reports an ended managed link on Uplink expiry and on revocation', async () => {
+  it('reports an ended managed link on Uplink expiry, revocation, and disabling', async () => {
     const onShareEnded = vi.fn();
     const { manager, store, record } = fixture({ onShareEnded });
     const active = {
@@ -1460,6 +1460,12 @@ describe('PreviewShareManager', () => {
     store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
     await manager.stop(record.id);
     expect(onShareEnded).toHaveBeenCalledTimes(2);
+
+    // Losing the Uplink or Premium ends every link at once.
+    store.listPublicPreviewShares.mockResolvedValueOnce([active]);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.disableAll('lease expired');
+    expect(onShareEnded).toHaveBeenCalledTimes(3);
   });
 
   it('rejects root and hidden static publish paths before contacting Uplink', async () => {

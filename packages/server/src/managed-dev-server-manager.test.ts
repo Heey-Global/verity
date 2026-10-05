@@ -542,6 +542,51 @@ describe('managed dev servers', () => {
       expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
     });
 
+    // The operator chose Shared online only; an agent restart must not open the
+    // server on the network without a PIN while that link is live.
+    it('keeps Local off on an agent restart while a public link is live', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const instanceId = await listen();
+      await publicLink(instanceId);
+      await manager.restart('s1', 'Demo', 'agent');
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+      expect(shares.create).not.toHaveBeenCalled();
+    });
+
+    // Approving a changed command for Shared online must also end the network
+    // address the earlier run still has.
+    it('ends the network address of an older run when approved for Shared online', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      expect(shares.shares).toHaveLength(1);
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve(
+        's1',
+        'Demo',
+        { command: 'node changed.mjs', workdir: '.' },
+        { local: false },
+      );
+      expect(shares.shares).toHaveLength(0);
+      expect(await instanceOf()).toMatchObject({ url: null, localOn: false });
+    });
+
+    // Local on for a server still running an older command would set a flag the
+    // view cannot show; it restarts with the approved command instead.
+    it('restarts a server running an older command when Local turns on', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve('s1', 'Demo', { command: 'node changed.mjs', workdir: '.' });
+      await manager.setLocal('s1', 'Demo', true);
+      expect(sandbox.started.at(-1)!.command).toContain('changed.mjs');
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
     it('refuses Local on for an unapproved command', async () => {
       await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
       await expect(manager.setLocal('s1', 'Demo', true)).rejects.toThrow(/approve/u);
