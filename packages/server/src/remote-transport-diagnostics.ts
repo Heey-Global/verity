@@ -38,11 +38,11 @@ export class RemoteTransportDiagnostics {
 
   frame(direction: 'in' | 'out', frame: Record<string, unknown>, writeId?: number): void {
     // Never copy arbitrary frame values: even malformed types can contain credentials.
-    const type = ['stream.open', 'stream.data', 'stream.end', 'stream.reset', 'attached'].includes(
-      String(frame.type),
-    )
-      ? frame.type
-      : 'unknown';
+    const type =
+      typeof frame.type === 'string' &&
+      ['stream.open', 'stream.data', 'stream.end', 'stream.reset', 'attached'].includes(frame.type)
+        ? frame.type
+        : 'unknown';
     this.trace.push({
       ...(writeId === undefined ? {} : { writeId }),
       at: Date.now(),

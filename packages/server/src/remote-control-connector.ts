@@ -373,7 +373,10 @@ class ConnectorSession implements RemoteConnectorReservation {
   private failProtocol(frame?: unknown): void {
     // Only the frame type: payloads are inner TLS records and stream IDs are enough to correlate.
     const type =
-      frame && typeof frame === 'object' && !Array.isArray(frame)
+      frame &&
+      typeof frame === 'object' &&
+      !Array.isArray(frame) &&
+      typeof (frame as Frame).type === 'string'
         ? [
             'stream.open',
             'stream.data',
@@ -382,8 +385,8 @@ class ConnectorSession implements RemoteConnectorReservation {
             '(binary)',
             '(oversize)',
             '(unparseable)',
-          ].includes(String((frame as Frame).type))
-          ? String((frame as Frame).type)
+          ].includes((frame as Frame).type as string)
+          ? (frame as Frame).type
           : 'unknown'
         : typeof frame;
     this.options.log?.warn(

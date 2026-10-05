@@ -76,6 +76,16 @@ describe('remote transport diagnostics', () => {
     });
   });
 
+  it('does not coerce JSON objects used as a malformed frame type', () => {
+    const diagnostics = new RemoteTransportDiagnostics('session_one');
+    expect(() =>
+      diagnostics.frame('in', JSON.parse('{"type":{"toString":null}}') as Record<string, unknown>),
+    ).not.toThrow();
+    expect(diagnostics.snapshot(undefined).trace).toEqual([
+      { at: expect.any(Number), direction: 'in', type: 'unknown' },
+    ]);
+  });
+
   it('bounds pending callbacks and resumes admitting writes when one settles', () => {
     const diagnostics = new RemoteTransportDiagnostics('session_one');
     const first = diagnostics.enqueue(1)!;
