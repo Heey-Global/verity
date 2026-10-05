@@ -195,9 +195,8 @@ its two access switches decide whether it runs.
 - _Local_ on starts the server if needed and publishes it on the operator's network. The first
   time, or after a changed command, a confirmation shows the command and subdirectory and the
   tap approves them.
-- _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the public link with a PIN. If the command is not approved yet, the same confirmation as for Local comes first; approval covers running the command, not local publishing, so Local stays off. Local stays off unless the operator turns it on.
-- Turning one switch off ends only that access. Turning the last one off stops the server;
-  when that also ends a public link, the operator confirms first.
+- _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the public link with a PIN. If the command is not approved yet, the same confirmation as for Local comes first. Local stays off unless the operator turns it on; the switches, not the approval, decide which accesses exist.
+- Turning Shared online off always asks first, because it ends a public link. Turning Local off ends only local access; when it is the last switch on, the server stops too.
 - When a public link expires while Local is off, the server stops as well, so it does not keep
   running unnoticed and keep the sandbox awake.
 - A server the agent started without approval runs with both switches off. This is the one
@@ -214,7 +213,7 @@ its two access switches decide whether it runs.
 "Stopped" or the state as plain text ("Running", "Starting…", "Crashed", "Running, not shared yet"), and on
 the right "Details ›", or "View output ›" after a crash; the whole header opens the detail view.
 Below it a card with two rows, Local and Shared online, each with its icon, its switch, and,
-while on, its address. The Local address opens the browser when tapped and has an open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in, which the edge exchanges for a session cookie and strips from the address (2.2); below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies it.
+while on, its address. The Local address opens the browser when tapped and has an open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in, which the edge exchanges for a session cookie and strips from the address (2.2); below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies the address only; the PIN is never part of a copied or displayed address.
 
 The detail view shows the state and since when, Restart and Stop while it runs, Start again and Ask the agent after a crash, and Start when stopped, the output, the command with its subdirectory and the note that the agent
 changes it, and "Delete entry" at the bottom. 
@@ -246,7 +245,7 @@ serve only the phone while the app is in the foreground. It stays noted as an id
 ### 2.8 Gating in the app
 
 The Preview button always opens and lists every detected listener of the session and the
-project. Each listener has two actions. "Open locally" is always active. "Share publicly" is
+project. Each listener has two actions. "Open on network" is always active. "Share online" is
 visible for everyone, active only with entitlement, otherwise it shows a premium hint and a link
 to settings. If the Uplink is temporarily unreachable the action reads "temporarily unavailable",
 not "premium".
@@ -275,7 +274,7 @@ stream the app already holds.
 
 ### 2.10 App flow: what first, then how
 
-This flow applies to static folders and to servers started past Verity. Managed entries (2.6) show their two accesses as switches directly in the list and use the same names, Local network and Shared online.
+This flow applies to static folders and to servers started past Verity. Managed entries (2.6) show their two accesses as switches directly in the list and use the same names: the Local switch is the Local network access, and Shared online is the public link.
 
 The sheet asks two questions one after the other and never mixes them.
 
