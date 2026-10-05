@@ -113,6 +113,44 @@ export async function createOtaManifest(github, baselineSha, version) {
   const { ManifestPlugin } = await import('release-please/build/src/plugin.js');
   const { TagName } = await import('release-please/build/src/util/tag-name.js');
   const { Version } = await import('release-please/build/src/version.js');
+  const { PullRequestBody } = await import('release-please/build/src/util/pull-request-body.js');
+  /** @type {import('release-please').GitHub['pullRequestIterator']} */
+  const pullRequestIterator = async function* (...args) {
+    for await (const pr of github.pullRequestIterator(...args)) {
+      if (
+        args[1] === 'MERGED' &&
+        pr.headBranchName === 'release-please--branches--main--components--mobile-ota' &&
+        pr.labels.includes('autorelease: pending-mobile-ota')
+      ) {
+        const releases = PullRequestBody.parse(pr.body)?.releaseData;
+        // An unpublished patch on a retired runtime must not strand the new runtime.
+        // Unknown bodies and current/future releases retain the SDK's publication guard.
+        if (
+          releases?.length &&
+          releases.every((release) => {
+            const prior = release.version?.toString();
+            return (
+              prior &&
+              versionPattern.test(prior) &&
+              `${prior.split('.').slice(0, 2).join('.')}.0`.localeCompare(
+                `${version.split('.').slice(0, 2).join('.')}.0`,
+                'en',
+                { numeric: true },
+              ) < 0
+            );
+          })
+        )
+          continue;
+      }
+      yield pr;
+    }
+  };
+  const scopedGithub = new Proxy(github, {
+    get(target, property, receiver) {
+      if (property === 'pullRequestIterator') return pullRequestIterator;
+      return /** @type {unknown} */ (Reflect.get(target, property, receiver));
+    },
+  });
   // Release Please's root component would otherwise include unrelated server
   // commits, and an apps/mobile component would silently omit shared mobile code.
   registerPlugin(
@@ -149,7 +187,7 @@ export async function createOtaManifest(github, baselineSha, version) {
       })(options.github, options.targetBranch, options.repositoryConfig),
   );
   return Manifest.fromManifest(
-    github,
+    scopedGithub,
     'main',
     otaConfigPath,
     otaManifestPath,

@@ -61,9 +61,14 @@ async function* rows<T>(items: T[]) {
   yield* items;
 }
 
-it.each(['1.52.4', '1.53.1'])(
-  'uses the real Release Please SDK to create a fixed-version PR %s with only mobile changes',
-  async (version) => {
+it.each([
+  { version: '1.52.4', pendingVersion: undefined, blocked: false },
+  { version: '1.53.1', pendingVersion: '1.52.7', blocked: false },
+  { version: '1.53.2', pendingVersion: '1.53.1', blocked: true },
+  { version: '1.53.1', pendingVersion: '1.54.1', blocked: true },
+])(
+  'plans OTA $version with pending $pendingVersion through the real SDK (blocked: $blocked)',
+  async ({ version, pendingVersion, blocked }) => {
     const baseline = 'b'.repeat(40);
     const commits: Commit[] = [
       {
@@ -94,6 +99,21 @@ it.each(['1.52.4', '1.53.1'])(
         return Promise.resolve({ ...pr, number: 123 });
       },
     );
+    const { PullRequestBody } = await import('release-please/build/src/util/pull-request-body.js');
+    const { Version } = await import('release-please/build/src/version.js');
+    const pendingMarker = pendingVersion ?? '1.52.7';
+    const pending = {
+      number: 1157,
+      title: `chore(main): release staging OTA ${pendingMarker}`,
+      headBranchName: 'release-please--branches--main--components--mobile-ota',
+      labels: ['autorelease: pending-mobile-ota'],
+      body: new PullRequestBody([
+        {
+          version: Version.parse(pendingMarker),
+          notes: `## [${pendingMarker}](https://example.com/compare/previous...next)`,
+        },
+      ]).toString(),
+    };
     const github = {
       repository: { owner: 'example', repo: 'verity', defaultBranch: 'main' },
       getFileJson: (path: string) =>
@@ -101,11 +121,17 @@ it.each(['1.52.4', '1.53.1'])(
       releaseIterator: () => rows([]),
       tagIterator: () => rows([]),
       mergeCommitIterator: () => rows(commits),
-      pullRequestIterator: () => rows([]),
+      pullRequestIterator: (_branch: string, status: string) =>
+        rows(status === 'MERGED' && pendingVersion !== undefined ? [pending] : []),
       createPullRequest,
     } as unknown as GitHub;
     const manifest = await createOtaManifest(github, baseline, version);
     const prs = await manifest.createPullRequests();
+    if (blocked) {
+      expect(prs).toEqual([]);
+      expect(createPullRequest).not.toHaveBeenCalled();
+      return;
+    }
     expect(prs).toHaveLength(1);
     expect(prs[0]?.headBranchName).toBe('release-please--branches--main--components--mobile-ota');
     expect(prs[0]?.title).toBe(`chore(release): staging mobile OTA ${version}`);
