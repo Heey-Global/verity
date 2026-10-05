@@ -118,11 +118,13 @@ export const sessionSummarySchema = z.object({
    * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
    * token/remote) — both render as "no PR marker". */
   pr: sessionPrSchema.nullable().optional(),
-  /** Total persisted events (#387) — a monotonic activity counter the overview
-   * compares against a per-device "last seen" mark for the unread dot. OPTIONAL on
+  /** Persisted events excluding dev-server snapshots — the overview compares this
+   * against the server-persisted "last seen" mark for the unread dot. OPTIONAL on
    * the wire: an OLDER server omits it on the list, and absent simply reads as "no
    * unread signal" (never a false unread). The detail endpoint always sends it. */
   eventCount: z.number().int().nonnegative().optional(),
+  /** Version associated with this count; forward it unchanged when marking seen. */
+  eventCountVersion: z.literal('dev-servers-excluded-v1').optional(),
   /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
    * last open, persisted server-side so the dot syncs across devices. A session is
    * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
@@ -3430,6 +3432,16 @@ export class VerityClient {
       .shares.map((share) => this.resolveLocalPreview(share));
   }
 
+  async listProjectLocalPreviewShares(projectId: string): Promise<LocalPreviewShare[]> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/local-shares`, {
+      method: 'GET',
+    });
+    return z
+      .object({ shares: z.array(localPreviewShareSchema) })
+      .parse(await res.json())
+      .shares.map((share) => this.resolveLocalPreview(share));
+  }
+
   async stopLocalPreviewShare(shareId: string): Promise<void> {
     await this.request(`/local-shares/${encodeURIComponent(shareId)}`, { method: 'DELETE' });
   }
@@ -3863,12 +3875,17 @@ export class VerityClient {
    * `eventCount` observed when the operator opened it. Persisted server-side and
    * monotonic, so clearing the dot on one device clears it on every device. Returns a
    * lightweight ack with the resolved mark; the synced value itself arrives on the
-   * next `GET /sessions`. 404 (unknown session) throws a {@link VerityApiError}. */
-  async setSessionSeen(id: string, eventCount: number): Promise<SessionSeen> {
+   * next `GET /sessions`. 404 (unknown session) and 409 (incompatible or stale count)
+   * throw a {@link VerityApiError}. */
+  async setSessionSeen(
+    id: string,
+    eventCount: number,
+    counterVersion?: string,
+  ): Promise<SessionSeen> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/seen`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ eventCount }),
+      body: JSON.stringify({ eventCount, counterVersion }),
     });
     return sessionSeenSchema.parse(await res.json());
   }

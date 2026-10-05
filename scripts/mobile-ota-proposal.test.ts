@@ -108,7 +108,7 @@ it.each(['1.52.4', '1.53.1'])(
     const prs = await manifest.createPullRequests();
     expect(prs).toHaveLength(1);
     expect(prs[0]?.headBranchName).toBe('release-please--branches--main--components--mobile-ota');
-    expect(prs[0]?.title).toContain(version);
+    expect(prs[0]?.title).toBe(`chore(release): staging mobile OTA ${version}`);
     expect(prs[0]?.body).toContain('render staged messages');
     const parts = version.split('.').map(Number);
     const previous = `${parts[0]}.${parts[1]}.${Number(parts[2]) - 1}`;

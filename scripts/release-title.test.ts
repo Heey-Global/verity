@@ -55,3 +55,42 @@ describe('release title input', () => {
     expect(result.stderr).toContain('Conventional Commit');
   });
 });
+
+// A missing environment in an automated title hides what merging approves.
+it.each([
+  ['backend', '.', 'server'],
+  ['mobile', 'apps/mobile', 'mobile native'],
+  ['mobile-ota', '.', 'mobile OTA'],
+])('labels the %s release approval as Staging', (file, path, product) => {
+  const config = JSON.parse(readFileSync(`release-please-config.${file}.json`, 'utf8')) as {
+    packages: Record<string, { 'pull-request-title-pattern'?: string }>;
+  };
+  expect(config.packages[path]?.['pull-request-title-pattern']).toBe(
+    `chore(release): staging ${product} \${version}`,
+  );
+});
+
+it.each([
+  ['scripts/production-promotion.ts', 'production ${product} ${candidate.version}'],
+  ['scripts/mobile-ota-release.ts', 'production mobile OTA ${candidate.version}'],
+])('labels every promotion title and commit in %s as Production', (file, suffix) => {
+  const source = readFileSync(file, 'utf8');
+  const titles = [...source.matchAll(/(?:message=|const title = `)(chore[^`]+)`/g)].map(
+    (match) => match[1],
+  );
+  expect(titles).toHaveLength(2);
+  expect(titles.every((title) => title === `chore(release): ${suffix}`)).toBe(true);
+});
+
+// Title-based recovery must keep finding approvals after the naming migration.
+it('keeps workflow release lookups compatible with current and historical titles', () => {
+  const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
+  const lookups = workflow
+    .split('\n')
+    .filter((line) => line.includes('.title == "chore(main): release'));
+  expect(lookups).toHaveLength(3);
+  for (const lookup of lookups) {
+    const product = lookup.includes('release mobile') ? 'mobile native' : 'server';
+    expect(lookup).toContain('or .title == "chore(release): staging ' + product);
+  }
+});

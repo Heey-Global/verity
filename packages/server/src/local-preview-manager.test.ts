@@ -72,6 +72,13 @@ it('fences mutation while preserving shares when a move is refused', async () =>
   expect(manager.list('s1')).toEqual([]);
 });
 
+it('lists ready shares by project, not only by session', async () => {
+  const { manager } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  expect(manager.listProject('p1').map((value) => value.id)).toEqual([share.id]);
+  expect(manager.listProject('p2')).toEqual([]);
+});
+
 it('reclaims expired local shares and their connector', async () => {
   const { manager, docker } = fixture();
   const share = await manager.create('s1', { targetPort: 3000 });

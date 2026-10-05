@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.52.7](https://github.com/Heey-Global/verity/compare/mobile-v1.52.6...mobile-v1.52.7) (2026-10-05)
+
+
+### Features
+
+* **mobile:** open a session's preview from its list row ([#1154](https://github.com/Heey-Global/verity/issues/1154)) ([c2bb622](https://github.com/Heey-Global/verity/commit/c2bb6222e42074df4d70efddda250aa1c4b319fe))
+
+## [1.52.6](https://github.com/Heey-Global/verity/compare/mobile-v1.52.5...mobile-v1.52.6) (2026-10-05)
+
+
+### Features
+
+* **remote:** add correlated Core transport diagnostics ([#1150](https://github.com/Heey-Global/verity/issues/1150)) ([809a201](https://github.com/Heey-Global/verity/commit/809a201fe4553fdb8ea8da7183b2e9b844b9b220))
+
+## [1.52.5](https://github.com/Heey-Global/verity/compare/mobile-v1.52.4...mobile-v1.52.5) (2026-10-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sessions:** Session read acknowledgments require counterVersion dev-servers-excluded-v1. Older clients must update before marking sessions seen.
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v1.6.0 ([#1137](https://github.com/Heey-Global/verity/issues/1137)) ([0667313](https://github.com/Heey-Global/verity/commit/0667313a9f9260a1b1c714531318e942de3d8773))
+* **mobile:** explain both preview tabs in plain words ([#1144](https://github.com/Heey-Global/verity/issues/1144)) ([6b58371](https://github.com/Heey-Global/verity/commit/6b58371534e0571b42f81812d35915f79f45274a))
+* **sessions:** exclude dev-server events from unread badges ([#1149](https://github.com/Heey-Global/verity/issues/1149)) ([7bc715b](https://github.com/Heey-Global/verity/commit/7bc715b5cbcebf81b346eac2f7ef7e5c3ded889e))
+
 ## [1.52.4](https://github.com/Heey-Global/verity/compare/mobile-v1.52.3...mobile-v1.52.4) (2026-10-04)
 
 

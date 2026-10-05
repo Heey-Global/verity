@@ -74,6 +74,13 @@ import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
+import {
+  localPreviewLinks,
+  mergeSessionPreviewUrls,
+  nextProjectPreviewLinks,
+  publicPreviewLinks,
+  type ProjectPreviewLinks,
+} from '../lib/sessionPreviewLinks';
 import { prefetchBranches } from '../lib/branchesPrefetch';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
@@ -196,7 +203,7 @@ function SessionList({ client }: { client: VerityClient }) {
     refresh: refreshProjects,
     devServersByProject,
     detectionsByProject,
-    previewSessionIds,
+    previewUrls,
   } = useProjects(client);
   // Returning to the overview refetches the sessions too, not just the projects
   // (`useProjects` does its own). Deleting a project takes its sessions with it,
@@ -407,7 +414,7 @@ function SessionList({ client }: { client: VerityClient }) {
   const onOpenSession = useCallback(
     (session: SessionSummary) => {
       if (client) prefetchBranches(client, session.sessionId);
-      markSeen(session.sessionId, session.eventCount);
+      markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
     },
     [client, markSeen],
   );
@@ -556,7 +563,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onRepairProject={(projectId) => void repairProjectRow(projectId)}
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
-          previewSessionIds={previewSessionIds}
+          previewUrls={previewUrls}
           selectedId={wide ? selectedId : null}
           renamingId={renaming?.sessionId ?? null}
           updatingProjectIds={updatingProjectIds}
@@ -573,7 +580,7 @@ function SessionList({ client }: { client: VerityClient }) {
       wide,
       selectedId,
       unread,
-      previewSessionIds,
+      previewUrls,
       onOpenSession,
       createSessionInPane,
       renaming,
@@ -595,7 +602,7 @@ function SessionList({ client }: { client: VerityClient }) {
   useEffect(() => {
     if (!selectedId) return;
     const open = sessions.find((s) => s.sessionId === selectedId);
-    if (open) markSeen(open.sessionId, open.eventCount);
+    if (open) markSeen(open.sessionId, open.eventCount, open.eventCountVersion);
   }, [selectedId, sessions, markSeen]);
 
   const onRefreshOverview = useCallback(async () => {
@@ -835,7 +842,12 @@ function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const devServersByProject = new Map<string, DevServer[]>();
   const detectionsByProject = new Map<string, DevServerDetection>();
-  const [previewSessionIds, setPreviewSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  // Session id → the URL its preview icon opens; see mergeSessionPreviewUrls.
+  const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
+    () => new Map(),
+  );
+  const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
+  const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
@@ -870,27 +882,35 @@ function useProjects(client: VerityClient) {
       try {
         const nextProjects = await client.listProjects();
         const activeProjects = nextProjects.filter((project) => project.state === 'active');
-        const previewResultsPromise = Promise.allSettled(
-          activeProjects.map((project) => client.listPublicPreviewShares(project.id)),
-        );
-        const previewResults = await previewResultsPromise;
+        const projectIds = activeProjects.map((project) => project.id);
+        const [publicResults, localResults] = await Promise.all([
+          Promise.allSettled(
+            projectIds.map((id) => client.listPublicPreviewShares(id).then(publicPreviewLinks)),
+          ),
+          Promise.allSettled(
+            projectIds.map((id) =>
+              client.listProjectLocalPreviewShares(id).then(localPreviewLinks),
+            ),
+          ),
+        ]);
         if (generation !== loadGeneration.current) return;
-        if (previewResults.every((result) => result.status === 'fulfilled')) {
-          const next = new Set<string>();
-          for (const result of previewResults) {
-            if (result.status !== 'fulfilled') continue;
-            for (const share of result.value) {
-              if (
-                share.sessionId &&
-                share.targetKind === 'static-folder' &&
-                share.state === 'active' &&
-                new Date(share.expiresAt).getTime() > Date.now()
-              )
-                next.add(share.sessionId);
-            }
-          }
-          setPreviewSessionIds(next);
-        }
+        publicPreviewLinksRef.current = nextProjectPreviewLinks(
+          publicPreviewLinksRef.current,
+          projectIds,
+          publicResults,
+        );
+        localPreviewLinksRef.current = nextProjectPreviewLinks(
+          localPreviewLinksRef.current,
+          projectIds,
+          localResults,
+        );
+        setPreviewUrls(
+          mergeSessionPreviewUrls(
+            publicPreviewLinksRef.current,
+            localPreviewLinksRef.current,
+            Date.now(),
+          ),
+        );
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -947,7 +967,7 @@ function useProjects(client: VerityClient) {
     projects,
     devServersByProject,
     detectionsByProject,
-    previewSessionIds,
+    previewUrls,
     loading,
     error,
     refresh: () => load(),
@@ -1079,7 +1099,7 @@ function ProjectGroup({
   onRepairProject,
   defaultNewSessionProject,
   unread,
-  previewSessionIds,
+  previewUrls,
   selectedId,
   renamingId,
   updatingProjectIds,
@@ -1106,7 +1126,7 @@ function ProjectGroup({
   onRepairProject?: ((projectId: string) => void) | undefined;
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
-  previewSessionIds: ReadonlySet<string>;
+  previewUrls: ReadonlyMap<string, string | null>;
   selectedId?: string | null;
   renamingId?: string | null;
   updatingProjectIds?: ReadonlySet<string>;
@@ -1382,7 +1402,8 @@ function ProjectGroup({
                     }
                     onOpen={() => onOpenSession(session)}
                     unread={unread.has(session.sessionId)}
-                    previewActive={previewSessionIds.has(session.sessionId)}
+                    previewActive={previewUrls.has(session.sessionId)}
+                    previewUrl={previewUrls.get(session.sessionId) ?? null}
                     selected={selectedId === session.sessionId}
                     renaming={renamingId === session.sessionId}
                   />
@@ -1681,6 +1702,7 @@ function SessionRow({
   onOpen,
   unread,
   previewActive,
+  previewUrl,
   selected,
   renaming,
 }: {
@@ -1690,6 +1712,8 @@ function SessionRow({
   onOpen?: () => void;
   unread?: boolean;
   previewActive?: boolean;
+  /** Where the preview icon leads; null while a public share has no origin yet. */
+  previewUrl?: string | null;
   selected?: boolean;
   renaming?: boolean;
 }) {
@@ -1747,24 +1771,44 @@ function SessionRow({
       <View style={styles.colChevron} />
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
       <View style={styles.titleBlock}>
-        <View style={styles.sessionTitleLine}>
-          {previewActive ? <Icon name="monitor" size={14} color={theme.colors.primary} /> : null}
+        <Text style={styles.sessionTitle} numberOfLines={1}>
+          {label}
+        </Text>
+        {/* Model name, then the session's standing features. The model is always
+            there and the icons are not, so the model keeps the left edge and the
+            icons follow it; its fixed width lets them start at the same x in every
+            row without holding space for an icon that is absent. */}
+        <View style={styles.sessionSubLine}>
+          <Text
+            style={[
+              styles.rowSub,
+              notice ? { color: theme.colors.tone.danger, flexShrink: 1 } : styles.sessionModel,
+            ]}
+            numberOfLines={1}
+            {...(notice ? { accessibilityRole: 'alert' as const } : {})}
+          >
+            {notice ? attentionNoticeText(notice) : subtitle}
+          </Text>
           {session.automation?.status === 'enabled' ? (
             <View accessible accessibilityLabel="Automation active">
-              <Icon name="repeat" size={14} color={theme.colors.primary} />
+              <Icon name="repeat" size={13} color={theme.colors.primary} />
             </View>
           ) : null}
-          <Text style={styles.sessionTitle} numberOfLines={1}>
-            {label}
-          </Text>
+          {previewActive ? (
+            <Pressable
+              // openURL rejects only if no handler can open the URL; swallow it.
+              // Enabled even without a URL yet: a disabled Pressable lets the tap fall
+              // through to the row, which would open the session instead.
+              onPress={() => previewUrl && void Linking.openURL(previewUrl).catch(() => undefined)}
+              hitSlop={8}
+              accessibilityRole="link"
+              accessibilityLabel="Open preview"
+              accessibilityState={{ disabled: !previewUrl }}
+            >
+              <Icon name="monitor" size={13} color={theme.colors.primary} />
+            </Pressable>
+          ) : null}
         </View>
-        <Text
-          style={[styles.rowSub, notice ? { color: theme.colors.tone.danger } : null]}
-          numberOfLines={1}
-          {...(notice ? { accessibilityRole: 'alert' as const } : {})}
-        >
-          {notice ? attentionNoticeText(notice) : subtitle}
-        </Text>
       </View>
       {/* Right: attention icons, then the lifecycle label — hidden while working
           since the left dot already conveys it. */}
@@ -2418,7 +2462,19 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
     lineHeight: 19 * theme.fontScale,
   },
-  sessionTitleLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
+  sessionSubLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
+  // A fixed basis that fits a typical model name ("Codex gpt-6.1-astra"), so the
+  // icons after it line up across rows; a longer name is cut short rather than
+  // pushing them. A basis, not a minWidth: a minWidth is a floor flexShrink cannot
+  // go below, which on a narrow row or at a large font scale would push the icons
+  // out of the row instead of shrinking the name.
+  sessionModel: {
+    flexBasis: 150 * theme.fontScale,
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 0,
+    marginRight: theme.spacing.xs,
+  },
   statusPill: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 2,

@@ -1,5 +1,28 @@
 # Changelog
 
+## [4.14.0](https://github.com/Heey-Global/verity/compare/v4.13.0...v4.14.0) (2026-10-05)
+
+
+### Features
+
+* **release:** allow manual native mobile release planning ([#1158](https://github.com/Heey-Global/verity/issues/1158)) ([9372243](https://github.com/Heey-Global/verity/commit/93722435260c4ee57d63ac29a1c17757b0bf55d8))
+
+## [4.13.0](https://github.com/Heey-Global/verity/compare/v4.12.0...v4.13.0) (2026-10-05)
+
+
+### Features
+
+* **mobile:** open a session's preview from its list row ([#1154](https://github.com/Heey-Global/verity/issues/1154)) ([c2bb622](https://github.com/Heey-Global/verity/commit/c2bb6222e42074df4d70efddda250aa1c4b319fe))
+* **remote:** add correlated Core transport diagnostics ([#1150](https://github.com/Heey-Global/verity/issues/1150)) ([809a201](https://github.com/Heey-Global/verity/commit/809a201fe4553fdb8ea8da7183b2e9b844b9b220))
+* **session:** show agent plans as a live checklist ([#1148](https://github.com/Heey-Global/verity/issues/1148)) ([45ead02](https://github.com/Heey-Global/verity/commit/45ead02bb1cd547547970e655e59f318153d757f))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v1.6.0 ([#1137](https://github.com/Heey-Global/verity/issues/1137)) ([0667313](https://github.com/Heey-Global/verity/commit/0667313a9f9260a1b1c714531318e942de3d8773))
+* **matrix:** identify rejected event imports in server logs ([#1155](https://github.com/Heey-Global/verity/issues/1155)) ([d5fd602](https://github.com/Heey-Global/verity/commit/d5fd60207ab006c48ca87508360bed6c0931ac26))
+* **sessions:** exclude dev-server events from unread badges ([7bc715b](https://github.com/Heey-Global/verity/commit/7bc715b5cbcebf81b346eac2f7ef7e5c3ded889e))
+
 ## [4.12.0](https://github.com/Heey-Global/verity/compare/v4.11.1...v4.12.0) (2026-10-05)
 
 

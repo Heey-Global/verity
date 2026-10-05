@@ -2777,10 +2777,11 @@ export interface SessionSummary extends SessionRecord {
   /** Compact PR status for the current branch (#387). `null` = looked up, no open
    * PR; ABSENT = GitHub not configured (no `branchPrStatus`) or not yet resolved. */
   pr?: SessionPrSummary | null;
-  /** Total persisted events for this session (#387) — a monotonic activity counter
-   * the overview compares against a per-device "last seen" mark to show an unread
-   * dot. Carried on the summary so the list needn't open each session to know it. */
+  /** Persisted events excluding dev-server snapshots; compared against the synced
+   * read marker to show the overview unread dot. */
   eventCount: number;
+  /** Version associated with eventCount; absent in summaries from older servers. */
+  eventCountVersion?: 'dev-servers-excluded-v1';
   /** Timestamp of the newest canonical event, for metadata-only recency displays. */
   lastActivityAt: number | null;
   /**
@@ -4719,7 +4720,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const pendingPermissions = [
       ...new Set([...conductor.pendingPermissions(session.sessionId), ...pendingLinks]),
     ];
-    const projectedStatus = liveStatusFromProjection(session.sessionId, events, facts.eventCount);
+    // Unread counts exclude listener snapshots; the seq still identifies a nonempty log.
+    const projectedStatus = liveStatusFromProjection(
+      session.sessionId,
+      events,
+      facts.lastEventSeq === 0 ? 0 : 1,
+    );
     // A permission event is durable so reconnect can rebuild its card, but its
     // answer travels over the live runner channel. Once that channel no longer
     // reports the prompt, do not let the historical event keep the overview in
@@ -4757,6 +4763,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable: await worktreeExists(session.worktree),
       eventCount: facts.eventCount,
+      eventCountVersion: 'dev-servers-excluded-v1',
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
@@ -7227,7 +7234,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const pendingPermissions = [
         ...new Set([...conductor.pendingPermissions(id), ...pendingLinks]),
       ];
-      const projectedStatus = liveStatusFromProjection(id, events, facts.eventCount);
+      // Status needs log presence independently of the filtered unread count.
+      const projectedStatus = liveStatusFromProjection(
+        id,
+        events,
+        facts.lastEventSeq === 0 ? 0 : 1,
+      );
       const status =
         pendingLinks.length > 0
           ? 'awaiting_input'
@@ -7250,6 +7262,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
         resumable: await worktreeExists(session.worktree),
         eventCount: facts.eventCount,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: facts.lastActivityAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),

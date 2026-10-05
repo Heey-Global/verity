@@ -3252,6 +3252,7 @@ describe('GET /sessions', () => {
         usage: ZERO_USAGE,
         resumable: false, // fake worktree path → not on disk
         eventCount: 1,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -3266,6 +3267,7 @@ describe('GET /sessions', () => {
         usage: ZERO_USAGE,
         resumable: false,
         eventCount: 0,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: null,
         lastSeenEventCount: null,
       },
@@ -3435,6 +3437,7 @@ describe('GET /sessions', () => {
         },
         resumable: false,
         eventCount: 2,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -4807,7 +4810,7 @@ describe('GET /projects (#174)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 2 },
+      payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ sessionId: 's-seen', lastSeenEventCount: 2 });
@@ -4816,7 +4819,7 @@ describe('GET /projects (#174)', () => {
     const stale = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 1 },
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(stale.json()).toMatchObject({ lastSeenEventCount: 2 });
 
@@ -4827,11 +4830,70 @@ describe('GET /projects (#174)', () => {
     expect(summary?.lastSeenEventCount).toBe(2);
   });
 
+  it('updates listener snapshots without making session summaries unread', async () => {
+    const sessionId = 's-listener-unread';
+    await ctx.store.createSession({ sessionId, worktree: '/wt/listener', model: 'm' });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'read' });
+    await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
+    });
+    await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
+    const listed = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(
+      listed.json<Array<{ sessionId: string }>>().find((s) => s.sessionId === sessionId),
+    ).toMatchObject({
+      eventCount: 1,
+      lastSeenEventCount: 1,
+    });
+    const detail = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
+    expect(detail.json()).toMatchObject({
+      eventCount: 1,
+      lastSeenEventCount: 1,
+      eventCountVersion: 'dev-servers-excluded-v1',
+    });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'new message' });
+    const unread = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
+    expect(unread.json()).toMatchObject({ eventCount: 2, lastSeenEventCount: 1 });
+  });
+
+  it('rejects stale all-event read marks without hiding unread messages', async () => {
+    const sessionId = 's-stale-read-count';
+    await ctx.store.createSession({ sessionId, worktree: '/wt/stale', model: 'm' });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'read' });
+    await ctx.store.setSessionSeen(sessionId, 1);
+    await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'unread' });
+    const stale = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 3, counterVersion: 'dev-servers-excluded-v1' },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    // The legacy count can also overlap the new count; an upper bound cannot detect it.
+    const overlapping = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 2 },
+    });
+    expect(overlapping.statusCode).toBe(409);
+    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    const valid = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
+    });
+    expect(valid.statusCode).toBe(200);
+    expect(valid.json()).toMatchObject({ lastSeenEventCount: 2 });
+  });
+
   it('returns 404 when marking an unknown session seen', async () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/does-not-exist/seen',
-      payload: { eventCount: 1 },
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ error: expect.stringContaining('not found') });
@@ -6205,6 +6267,7 @@ describe('GET /sessions/:id', () => {
       usage: ZERO_USAGE,
       resumable: false,
       eventCount: 2,
+      eventCountVersion: 'dev-servers-excluded-v1',
       lastActivityAt: expect.any(Number),
       lastSeenEventCount: null,
       busy: false,

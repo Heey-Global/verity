@@ -667,7 +667,7 @@ describe('Verity website publication smoke', () => {
     expect(backend?.['changelog-path']).toBe(`/${['CHANGE', 'LOG.md'].join('')}`);
     expect(backend?.['package-name']).toBe('server');
     expect(backend?.['pull-request-title-pattern']).toBe(
-      'chore${scope}: release server ${version}',
+      'chore(release): staging server ${version}',
     );
     expect(backend?.['include-component-in-tag']).toBe(false);
     // A fixed history boundary makes every future release replay the same old
@@ -1026,6 +1026,27 @@ describe('native iOS compile gate', () => {
     expect(cache?.with?.path).toBe('${{ runner.temp }}/verity-mobile-ccache');
     expect(cache?.with?.key).toContain("hashFiles('package-lock.json'");
     expect(cache?.with?.['restore-keys']).toContain('mobile-ci-ccache-');
+  });
+
+  it('builds native variants concurrently and finalizes only after both succeed', () => {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<
+        string,
+        {
+          strategy?: { 'max-parallel': number; matrix: { variant: string[] } };
+          needs?: string[];
+          if?: string;
+        }
+      >;
+    };
+    const strategy = release.jobs['publish-mobile-native']?.strategy;
+    const variants = strategy?.matrix.variant ?? [];
+    expect(variants).toEqual(['staging', 'production']);
+    // Serial matrix scheduling silently doubles the wait for production approval.
+    expect(strategy?.['max-parallel']).toBeGreaterThanOrEqual(variants.length);
+    const finalization = release.jobs['finalize-mobile-staging'];
+    expect(finalization?.needs).toContain('publish-mobile-native');
+    expect(finalization?.if).toBe("needs.publish-mobile-native.result == 'success'");
   });
 
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {

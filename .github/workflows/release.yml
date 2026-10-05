@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      mobile-replan:
+        description: Plan pending mobile changes as a native release PR
+        required: false
+        default: false
+        type: boolean
       backend-replan:
         description: Plan the next backend release PR after a completed publication
         required: false
@@ -201,6 +206,7 @@ jobs:
 
       - name: Validate backend re-plan request
         env:
+          MOBILE_REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
           REPLAN: ${{ inputs.backend-replan }}
           RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
@@ -222,8 +228,39 @@ jobs:
             if [[ "$EVENT_NAME" != workflow_dispatch ||
                   -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
                   "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ||
-                  "${RECONCILE:-false}" == true ]]; then
+                  "${RECONCILE:-false}" == true || "${MOBILE_REPLAN:-false}" == true ]]; then
               echo '::error::A backend re-plan is a manual planning run and must carry no recovery input.' >&2
+              exit 1
+            fi
+          fi
+
+      - name: Validate mobile re-plan request
+        env:
+          REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
+          OTHER_REPLAN: ${{ inputs.backend-replan || format('{0}', github.event.inputs['backend-replan']) == 'true' }}
+          REF: ${{ github.ref }}
+          RECONCILE: ${{ inputs.reconcile }}
+          EVENT_NAME: ${{ github.event_name }}
+          MOBILE_TAG: ${{ inputs.mobile-tag }}
+          VERSION: ${{ inputs.backend-version }}
+          SOURCE_REF: ${{ inputs.backend-ref }}
+          SCHEMA_FORWARD_MAX: ${{ inputs.backend-schema-forward-max }}
+          REPUBLISH: ${{ inputs.backend-republish }}
+          ARTIFACT_ONLY: ${{ inputs.backend-artifact-only }}
+          ACCEPT_NO_ROLLBACK: ${{ inputs.backend-accept-no-rollback }}
+          WEBSITE_VERSION: ${{ inputs.website-version }}
+          WEBSITE_REF: ${{ inputs.website-ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$REPLAN" == true ]]; then
+            # A re-plan carries no recovery input: planning may never publish,
+            # and a request that mixes both hides which mode actually ran.
+            if [[ "$EVENT_NAME" != workflow_dispatch || "$REF" != refs/heads/main || "$OTHER_REPLAN" == true ||
+                  -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
+                  "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ||
+                  "${RECONCILE:-false}" == true ]]; then
+              echo '::error::A mobile re-plan is a manual planning run and must carry no recovery input.' >&2
               exit 1
             fi
           fi
@@ -232,6 +269,7 @@ jobs:
         env:
           RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
+          MOBILE_REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
           REPLAN: ${{ inputs.backend-replan }}
           MOBILE_TAG: ${{ inputs.mobile-tag }}
           VERSION: ${{ inputs.backend-version }}
@@ -249,7 +287,7 @@ jobs:
             # A reconcile run replays the push lifecycle at the current main
             # head. Recovery inputs pin an older source and a re-plan may never
             # publish, so a request mixing them hides which mode actually ran.
-            if [[ "$EVENT_NAME" != workflow_dispatch || "$REPLAN" == true ||
+            if [[ "$EVENT_NAME" != workflow_dispatch || "$REPLAN" == true || "${MOBILE_REPLAN:-false}" == true ||
                   -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
                   "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ]]; then
               echo '::error::A reconcile run replays the push lifecycle at the main head and must carry no recovery or re-plan input.' >&2
@@ -298,7 +336,7 @@ jobs:
       # hiding a manifest or a file that does not belong to the selected train.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'push' || inputs.backend-replan || inputs.reconcile
+        if: github.event_name == 'push' || inputs.backend-replan || inputs.mobile-replan || inputs.reconcile
         with:
           fetch-depth: 0
 
@@ -471,7 +509,8 @@ jobs:
         id: lifecycle
         if: >-
           ((github.event_name == 'push' || inputs.reconcile) && steps.selected-trains.outputs[inputs.train] == 'true') ||
-          (inputs.backend-replan && inputs.train == 'backend')
+          (inputs.backend-replan && inputs.train == 'backend') ||
+          (inputs.mobile-replan && inputs.train == 'mobile')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -571,7 +610,10 @@ jobs:
 
       - name: Open mobile release PR or create release
         id: release-mobile
-        if: (github.event_name == 'push' || inputs.reconcile) && inputs.train == 'mobile' && steps.selected-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip'
+        if: >-
+          inputs.train == 'mobile' &&
+          (((github.event_name == 'push' || inputs.reconcile) && steps.selected-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip') ||
+          (inputs.mobile-replan && steps.lifecycle.outputs.mode == 'plan'))
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -823,7 +865,9 @@ jobs:
     # allocation scoped to the native release job only.
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Separate app identities and runner-local build counters allow both
+      # variants to build together; finalization waits for the whole matrix.
+      max-parallel: 2
       matrix:
         variant: [staging, production]
     runs-on: xcode-27
@@ -1175,7 +1219,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${MOBILE_TAG#mobile-v}"
-          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and .title == "chore(main): release mobile '"$version"'") | .number')"
+          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
           [[ "$pr" =~ ^[0-9]+$ ]]
           jq --argjson releasePr "$pr" '. + {releasePr:$releasePr}' native-candidates/native-production.json > "$RUNNER_TEMP/mobile-production.json"
           if gh release view "$MOBILE_TAG" --json assets --jq '.assets[].name' | grep -Fxq production-candidate.json; then
@@ -1212,7 +1256,7 @@ jobs:
             version="${MOBILE_TAG#mobile-v}"
             pr_numbers="$(gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
-              '.[] | select(.merged_at != null and .title == "chore(main): release mobile '"$version"'") | .number')"
+              '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
             pr_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$pr_numbers")"
             if [ "$pr_count" -ne 1 ]; then
               echo "::error::Expected exactly one release PR for $MOBILE_TAG, found $pr_count." >&2
@@ -3251,7 +3295,7 @@ jobs:
             gh release edit "$TAG" --draft=false --latest=false
             exit 0
           fi
-          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and .title == "chore(main): release server '"$VERSION"'") | .number')"
+          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release server '"$VERSION"'" or .title == "chore(release): staging server '"$VERSION"'")) | .number')"
           [[ "$pr" =~ ^[0-9]+$ ]]
           amd64="$(oras resolve "ghcr.io/heey-global/verity/verity-server:candidate-stable-v${VERSION}-amd64")"
           arm64="$(oras resolve "ghcr.io/heey-global/verity/verity-server:candidate-stable-v${VERSION}-arm64")"

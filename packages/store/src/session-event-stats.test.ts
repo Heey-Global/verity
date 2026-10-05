@@ -21,19 +21,19 @@ beforeEach(async () => {
 async function expectCanonicalStats(id: string): Promise<void> {
   const rows = await ctx.db
     .selectFrom('events')
-    .select(['id', 'created_at'])
+    .select(['id', 'created_at', 'type'])
     .where('session_id', '=', id)
     .orderBy('id', 'desc')
     .execute();
   const marker = await ctx.store.getSessionEventStats(id);
   expect(marker).toMatchObject({
-    eventCount: rows.length,
+    eventCount: rows.filter((row) => row.type !== 'dev_servers_changed').length,
     lastEventSeq: Number(rows[0]?.id ?? 0),
     lastActivityAt: rows[0]?.created_at.getTime() ?? null,
   });
   const facts = (await ctx.store.listSessionProjectionFacts([id], 5)).get(id);
   expect(facts).toMatchObject({
-    eventCount: rows.length,
+    eventCount: rows.filter((row) => row.type !== 'dev_servers_changed').length,
     lastEventSeq: Number(rows[0]?.id ?? 0),
     lastActivityAt: rows[0]?.created_at.getTime() ?? null,
   });
@@ -65,6 +65,87 @@ describe('durable session event statistics', () => {
     expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBeGreaterThan(
       (await ctx.store.getSession('a'))!.lastSeenEventCount!,
     );
+  });
+
+  it('keeps listener lifecycle changes out of unread counts without losing snapshots', async () => {
+    await ctx.store.appendEvent('a', { t: 'text', delta: 'read message' });
+    await ctx.store.setSessionSeen('a', 1);
+    const before = (await ctx.store.getSessionEventStats('a'))!;
+    const listener = {
+      port: 5173,
+      reachable: true,
+      pid: 1,
+      name: 'vite',
+      command: 'vite',
+      workdir: '/work/a',
+    };
+    for (const devServers of [[listener], [], [{ ...listener, pid: 99 }]]) {
+      await ctx.store.appendEvent('a', { t: 'dev_servers_changed', devServers });
+      await expectCanonicalStats('a');
+      expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(1);
+      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
+      expect((await ctx.store.getLatestDevServersEvent('a'))!.devServers).toEqual(devServers);
+    }
+    expect((await ctx.store.getSessionEventStats('a'))!.lastEventSeq).toBeGreaterThan(
+      before.lastEventSeq,
+    );
+    await ctx.store.appendEvent('a', { t: 'text', delta: 'unread message' });
+    await ctx.store.appendEvent('a', { t: 'dev_servers_changed', devServers: [] });
+    expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(2);
+    expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
+  });
+
+  it('maintains filtered counts on listener edits, moves and deletion', async () => {
+    const event = await ctx.store.appendEvent('a', { t: 'dev_servers_changed', devServers: [] });
+    await expectCanonicalStats('a');
+    await sql`update events set type = 'text', payload = '{"t":"text","delta":"visible"}'::jsonb
+      where id = ${event.seq}`.execute(ctx.db);
+    await expectCanonicalStats('a');
+    await sql`update events set type = 'dev_servers_changed',
+      payload = '{"t":"dev_servers_changed","devServers":[]}'::jsonb,
+      session_id = 'b' where id = ${event.seq}`.execute(ctx.db);
+    await expectCanonicalStats('a');
+    await expectCanonicalStats('b');
+    await ctx.db.deleteFrom('events').where('id', '=', event.seq).execute();
+    await expectCanonicalStats('b');
+  });
+
+  it('translates historical read marks without clearing unread messages', async () => {
+    const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
+    try {
+      expect(
+        (await migrator.migrateTo('0132_unique_brokered_prompt_v2_grants')).error,
+      ).toBeUndefined();
+      for (const id of ['a', 'b']) {
+        await ctx.store.appendEvent(id, { t: 'dev_servers_changed', devServers: [] });
+        await ctx.store.appendEvent(id, { t: 'text', delta: 'read' });
+        if (id === 'a') await ctx.store.setSessionSeen(id, 2);
+        await ctx.store.appendEvent(id, { t: 'dev_servers_changed', devServers: [] });
+        await ctx.store.appendEvent(id, { t: 'text', delta: 'unread' });
+        await ctx.store.appendEvent(id, { t: 'dev_servers_changed', devServers: [] });
+      }
+      await ctx.store.createSession({ sessionId: 'c', worktree: '/wt/c', model: 'm' });
+      await ctx.store.appendEvent('c', { t: 'text', delta: 'already read' });
+      await ctx.store.appendEvent('c', { t: 'dev_servers_changed', devServers: [] });
+      await ctx.store.setSessionSeen('c', 2);
+      await ctx.store.appendEvent('c', { t: 'dev_servers_changed', devServers: [] });
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+      expect((await ctx.store.getSession('c'))!.lastSeenEventCount).toBe(1);
+      expect((await ctx.store.getSessionEventStats('c'))!.eventCount).toBe(1);
+      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
+      expect((await ctx.store.getSession('b'))!.lastSeenEventCount).toBeNull();
+      await expectCanonicalStats('a');
+      expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(2);
+      expect(
+        (await migrator.migrateTo('0132_unique_brokered_prompt_v2_grants')).error,
+      ).toBeUndefined();
+      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(2);
+      expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(5);
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
+    } finally {
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+    }
   });
 
   it('keeps never-written sessions empty and removes markers on session deletion', async () => {

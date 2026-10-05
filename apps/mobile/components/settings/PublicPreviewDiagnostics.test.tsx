@@ -87,14 +87,14 @@ it("shows Core's side of each tunnel stream beside the phone test result", async
   await waitFor(() =>
     expect(
       screen.getByText(
-        /abcdef01: from phone 1911 B, to Core 1911 B, Core answered after 53 ms, from Core 3080 B, to phone 3080 B in 3 frames \(2 from phone\), open, 31\.1 s/u,
+        /abcdef01: from phone 1911 B, to Core 1911 B, Core answered after 53 ms, from Core 3080 B, accepted by Core transport 3080 B in 3 attempted frames \(2 from phone\), open, 31\.1 s/u,
       ),
     ).toBeOnTheScreen(),
   );
   // A Core without frame counts renders the line as before.
   expect(
     screen.getByText(
-      /abcdef02: .*Core never answered, from Core 0 B, to phone 0 B, open, 30\.8 s/u,
+      /abcdef02: .*Core never answered, from Core 0 B, accepted by Core transport 0 B, open, 30\.8 s/u,
     ),
   ).toBeOnTheScreen();
 });

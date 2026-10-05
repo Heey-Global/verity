@@ -88,6 +88,11 @@ export class LocalPreviewManager {
       .filter((v) => v.ready && v.share.sessionId === sessionId)
       .map((v) => v.share);
   }
+  listProject(projectId: string): LocalPreviewShare[] {
+    return [...this.active.values()]
+      .filter((v) => v.ready && v.share.projectId === projectId)
+      .map((v) => v.share);
+  }
   ownsConnector(id: string, shareId?: string): boolean {
     if (shareId && this.active.has(shareId)) return true;
     return [...this.active.values()].some((state) => state.connectorId === id);

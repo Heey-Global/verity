@@ -3648,10 +3648,118 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropIndex('secret_provider_permissions_brokered_v2_active_unique').execute();
     },
   },
+  '0133_dev_servers_unread': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`lock table events in share row exclusive mode`.execute(db);
+      await sql`lock table sessions in share row exclusive mode`.execute(db);
+      // Translate the old read frontier before changing its counter. Subtracting
+      // every listener event would also subtract events the person never saw.
+      await sql`update sessions s set last_seen_event_count = greatest(0,
+        s.last_seen_event_count - (select count(*) from (
+          select type from events where session_id = s.session_id
+          order by id limit s.last_seen_event_count
+        ) seen where type = 'dev_servers_changed'))
+        where s.last_seen_event_count is not null`.execute(db);
+      await sql`update session_event_stats stats set event_count = (
+        select count(*) from events where session_id = stats.session_id
+          and type <> 'dev_servers_changed'), revision = revision + 1`.execute(db);
+      await sql`create or replace function maintain_session_event_stats() returns trigger
+        language plpgsql as $$
+        begin
+          if TG_OP = 'UPDATE' then
+            -- Session moves must lock both counters in a deterministic order.
+            perform session_id from session_event_stats
+              where session_id in (OLD.session_id, NEW.session_id)
+              order by session_id for update;
+          end if;
+          if TG_OP in ('DELETE', 'UPDATE') then
+            update session_event_stats set event_count = event_count - case when OLD.type = 'dev_servers_changed' then 0 else 1 end,
+              revision = revision + 1 where session_id = OLD.session_id;
+            if exists (select 1 from session_event_stats
+              where session_id = OLD.session_id and last_event_seq = OLD.id) then
+              update session_event_stats set
+                last_event_seq = coalesce((select id from events
+                  where session_id = OLD.session_id order by id desc limit 1), 0),
+                last_activity_at = (select created_at from events
+                  where session_id = OLD.session_id order by id desc limit 1)
+                where session_id = OLD.session_id;
+            end if;
+          end if;
+          if TG_OP in ('INSERT', 'UPDATE') then
+            insert into session_event_stats
+              (session_id, event_count, last_event_seq, last_activity_at, revision)
+              values (NEW.session_id, case when NEW.type = 'dev_servers_changed' then 0 else 1 end, NEW.id, NEW.created_at, 1)
+              on conflict (session_id) do update set
+                event_count = session_event_stats.event_count + excluded.event_count,
+                revision = session_event_stats.revision + 1,
+                last_event_seq = greatest(session_event_stats.last_event_seq, NEW.id),
+                last_activity_at = case
+                  when NEW.id >= session_event_stats.last_event_seq then NEW.created_at
+                  else session_event_stats.last_activity_at end;
+          end if;
+          return null;
+        end
+        $$`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`lock table events in share row exclusive mode`.execute(db);
+      await sql`lock table sessions in share row exclusive mode`.execute(db);
+      // Restore the same message frontier; adding all snapshots could acknowledge
+      // an unread message that appeared before a later listener snapshot.
+      await sql`update sessions s set last_seen_event_count = last_seen_event_count +
+        (select count(*) from events where session_id = s.session_id
+          and type = 'dev_servers_changed' and id <= coalesce((
+            select max(id) from (select id from events
+              where session_id = s.session_id and type <> 'dev_servers_changed'
+              order by id limit s.last_seen_event_count) seen
+          ), 0))
+        where last_seen_event_count is not null`.execute(db);
+      await sql`update session_event_stats stats set event_count = (
+        select count(*) from events where session_id = stats.session_id),
+        revision = revision + 1`.execute(db);
+      await sql`create or replace function maintain_session_event_stats() returns trigger
+        language plpgsql as $$
+        begin
+          if TG_OP = 'UPDATE' then
+            -- Session moves must lock both counters in a deterministic order.
+            perform session_id from session_event_stats
+              where session_id in (OLD.session_id, NEW.session_id)
+              order by session_id for update;
+          end if;
+          if TG_OP in ('DELETE', 'UPDATE') then
+            update session_event_stats set event_count = event_count - 1,
+              revision = revision + 1 where session_id = OLD.session_id;
+            if exists (select 1 from session_event_stats
+              where session_id = OLD.session_id and last_event_seq = OLD.id) then
+              update session_event_stats set
+                last_event_seq = coalesce((select id from events
+                  where session_id = OLD.session_id order by id desc limit 1), 0),
+                last_activity_at = (select created_at from events
+                  where session_id = OLD.session_id order by id desc limit 1)
+                where session_id = OLD.session_id;
+            end if;
+          end if;
+          if TG_OP in ('INSERT', 'UPDATE') then
+            insert into session_event_stats
+              (session_id, event_count, last_event_seq, last_activity_at, revision)
+              values (NEW.session_id, 1, NEW.id, NEW.created_at, 1)
+              on conflict (session_id) do update set
+                event_count = session_event_stats.event_count + 1,
+                revision = session_event_stats.revision + 1,
+                last_event_seq = greatest(session_event_stats.last_event_seq, NEW.id),
+                last_activity_at = case
+                  when NEW.id >= session_event_stats.last_event_seq then NEW.created_at
+                  else session_event_stats.last_activity_at end;
+          end if;
+          return null;
+        end
+        $$`.execute(db);
+    },
+  },
   // Planning mode is session state rather than a per-turn option: it has to hold
   // across every message the operator exchanges while refining a plan, and the
   // turn that starts it is not the one it first restricts.
-  '0133_session_planning': {
+  '0134_session_planning': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`alter table sessions add column planning text check (planning in ('active', 'implemented', 'discarded'))`.execute(
         db,
@@ -3661,7 +3769,7 @@ const migrations: Record<string, Migration> = {
       await sql`alter table sessions drop column planning`.execute(db);
     },
   },
-  '0134_session_planning_revision': {
+  '0135_session_planning_revision': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`alter table sessions add column planning_revision integer not null default 0 check (planning_revision >= 0), add column planning_plan text`.execute(
         db,

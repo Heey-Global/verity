@@ -10,7 +10,7 @@ if [ "${ARTIFACT_ONLY:-false}" != true ]; then
   version="${TAG#v}"
   pr_numbers="$(gh api --paginate \
     "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
-    '.[] | select(.merged_at != null and .title == "chore(main): release server '"$version"'") | .number')"
+    '.[] | select(.merged_at != null and (.title == "chore(release): staging server '"$version"'" or .title == "chore(main): release server '"$version"'")) | .number')"
   pr_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$pr_numbers")"
   if [ "$pr_count" -ne 1 ]; then
     echo "::error::Expected exactly one release PR for $TAG, found $pr_count." >&2

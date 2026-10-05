@@ -25,6 +25,11 @@ existing OTA promotion PR activates its exact production update group. Productio
 OTA waits until the native runtime's production promotion has been approved.
 Previously recorded `testflight` candidates retain their delivery channel.
 
+Release PR titles use `chore(release): <environment> <product> <version>`, with
+`staging` or `production` and `server`, `mobile native`, or `mobile OTA`. Native
+Staging approval builds both app variants; Production approval verifies the
+recorded production TestFlight build.
+
 ## Mobile registration
 
 Register `build.verity.app.staging` in App Store Connect and an iOS Google OAuth
