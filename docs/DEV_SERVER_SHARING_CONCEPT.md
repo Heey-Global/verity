@@ -129,7 +129,7 @@ because a silent restart hides the fault. Running entries keep the sandbox awake
 share does (ADR 0020). When the sandbox is recreated, for example by an update, Verity starts again what was running before, with the command that last ran; a pending `update` waits for the operator's next restart.
 
 **Agent.** `verity-dev-server` gains `add`, `update`, `remove`, `start`, `stop`, `status`,
-`logs`, and `list`. `start` replies with the network address once the entry is published locally, and the agent names only that address. While an entry is running but not yet published (the gated case under edge cases), `start` replies "Running, not shared yet: switch it on in the Preview list to open it on your network", and the Preview row shows the same state. None of these needs operator approval: an entry only runs a command in the sandbox,
+`logs`, and `list`. `start` replies with the network address once the entry is published locally, and the agent names only that address. While an entry is running but not yet approved for local publishing (see edge cases), `start` replies "Running, not shared yet: tap Open on network in the Preview list", and the Preview row shows the same state. None of these needs operator approval: an entry only runs a command in the sandbox,
 which the agent may do anyway. Additions and changes appear in the chat as a small card. The
 agent-seed guidance tells the agent to start servers only through an entry, never with
 `nohup` or `&`, and to create an entry when none fits. Servers started past Verity are still
@@ -142,20 +142,22 @@ detected and listed as not managed, with an offer to save them as an entry. The 
   whenever the operator switches it on, in any session, and after sandbox recreation. The
   command is therefore always shown: on the chat card for `add` and `update`, and in the
   detail view, so the operator never starts something they cannot read.
-- _Starting publishes locally._ Starting an entry also creates its "On your network" share,
-  because the network address is the only address anyone sees. This widens what the agent can
-  do alone: before, a listener became reachable on the network only after the operator tapped
-  Open. It is accepted because local shares are open on the operator's trusted network by
-  decision (2.2), the command is visible to the operator, and the operator can switch the entry
-  off or delete it at any time. Status: open for operator confirmation; the stricter variant
-  publishes an entry's first start only after the operator has switched it on once in the app.
-  The public share stays an explicit operator step with its PIN and entitlement check.
+- _Local publishing needs one operator approval._ Interim rule until the operator confirms
+  otherwise. An entry's sandbox process may start on the agent's request, but its "On your
+  network" share is created only after the operator approved the entry once by tapping "Open
+  on network" on its row or detail view. The approval belongs to the entry's command and
+  subdirectory and is reset by `update`, so an approved command cannot be swapped for another
+  one. Once approved, starts by the agent or after sandbox recreation publish locally without
+  another tap. Without approval the row shows "Running, not shared yet" with "Open on network".
+  The permissive alternative, publishing on every start without approval, widens what the agent
+  can do alone and stays open for operator confirmation. The public share is always an explicit
+  operator step with its PIN and entitlement check.
 - _Startup deadline._ An entry that does not answer on its port within 60 seconds moves to
   crashed with "Did not answer on its port", typically a command that ignores `PORT`. Missing the deadline stops the process tree as Stop does, so nothing keeps holding the port or keeps the sandbox awake.
 - _Port collisions._ A stopped pair keeps its network reservation; eviction when the range is
   full is the only exception. If its sandbox port is taken by another process at start, Verity
   picks a new sandbox port silently. The network address does not change.
-- _Lifecycle._ Deleting a session stops its instances and releases both ports. Removing an entry, by the agent or the operator, first stops every running instance of it and then releases both ports of all its pairs. `update`
+- _Lifecycle._ Deleting a session stops its instances and releases both ports. Removing an entry, by the agent or the operator, first stops every running or starting instance of it and then releases both ports of all its pairs. `update`
   applies on the next start; a running instance shows "Restart to apply changes".
 
 **Operator.** The operator switches entries on and off and deletes them in the app. Editing
@@ -293,9 +295,7 @@ becomes "Open settings" and the text names Verity Premium.
    start, stop, state, and log capture in the project runtime; restart after sandbox
    recreation; `verity-dev-server` entry commands and agent-seed guidance; Preview sheet
    rows with switches, detail view with logs, and the not-managed section.
-   Gate: whether an agent-initiated start publishes locally without a prior operator switch-on
-   (see edge cases) must be confirmed before this step ships; until then the stricter variant
-   applies.
+   Local publishing follows the interim approval rule under edge cases.
 
 ## 5. Implementation details and verification boundaries
 
