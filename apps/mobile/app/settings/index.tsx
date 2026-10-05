@@ -83,8 +83,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         if (result === 'current') Alert.alert('Verity is up to date', APP_VERSION_LABEL);
         if (result === 'busy') Alert.alert('Update check in progress');
         if (result === 'disabled') Alert.alert('Updates unavailable', 'EAS Update is disabled.');
-        if (result === 'failed') {
-          Alert.alert('Update failed', 'Could not check for an update. Try again later.');
+        if (typeof result === 'object' && result.status === 'failed') {
+          Alert.alert('Update failed', result.message);
         }
       })
       .finally(() => setCheckingForUpdate(false));
