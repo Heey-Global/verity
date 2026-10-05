@@ -1,4 +1,5 @@
-import type { SessionUpdate, ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
+import { randomUUID } from 'node:crypto';
+import type { PlanEntry, SessionUpdate, ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
 import { parseAutomationProposal, parseChoicesBlock, type AgentEvent } from '@verity/events';
 import {
   lifecycleSignalsFromMeta,
@@ -184,6 +185,10 @@ function acpLifecycleSignals(
   return signals;
 }
 
+/** The tool name a plan snapshot travels under; the app renders its `todos`
+ *  input as a checklist. */
+export const PLAN_TOOL_NAME = 'TodoWrite';
+
 export interface AcpEventAdapterOptions {
   /** `_meta` key the agent carries its extras under. Defaults to Claude's. */
   readonly metaNamespace?: string | undefined;
@@ -201,6 +206,7 @@ export class AcpEventAdapter {
   private readonly snapshots = new Map<string, ToolCall | ToolCallUpdate>();
   private readonly pendingTerminal = new Set<string>();
   private readonly lifecycle = new StructuredLifecycleMapper();
+  private lastPlan: string | undefined;
   private readonly metaNamespace: string;
   private readonly resolveToolName:
     ((tool: ToolCall | ToolCallUpdate) => string | undefined) | undefined;
@@ -244,7 +250,12 @@ export class AcpEventAdapter {
       case 'tool_call_update':
         return [...this.tool(update), ...lifecycle];
       case 'plan':
+        return [...lifecycle, ...this.plan(update.entries, update._meta)];
       case 'plan_update':
+        return [
+          ...lifecycle,
+          ...(update.plan.type === 'items' ? this.plan(update.plan.entries, update._meta) : []),
+        ];
       case 'plan_removed':
       case 'available_commands_update':
       case 'current_mode_update':
@@ -255,7 +266,7 @@ export class AcpEventAdapter {
         // reducer close the active text block and render an "Unrecognized
         // event / acp" row between ordinary message chunks. Capability,
         // configuration and usage state is handled by the ACP session/result
-        // path; plans do not yet have a canonical Verity presentation.
+        // path. A removed plan stays in history as the snapshot it last showed.
         return lifecycle;
       case 'notice':
         // ACP notices are live advisories, not session history. The session
@@ -278,6 +289,31 @@ export class AcpEventAdapter {
       case 'user_message_chunk':
         return lifecycle;
     }
+  }
+
+  /** Carry a plan snapshot as a settled `TodoWrite` call rather than a new event
+   *  kind: app builds that predate plan rendering reject an unknown `t` and would
+   *  then fail to load the session's whole history page, while a tool call renders
+   *  everywhere. ACP sends the complete list on every update; an unchanged repeat
+   *  is dropped, and an empty list is not a checklist worth a row. */
+  private plan(
+    entries: readonly PlanEntry[],
+    meta: { [key: string]: unknown } | null | undefined,
+  ): AgentEvent[] {
+    const todos = entries.map(({ content, status, priority }) => ({ content, status, priority }));
+    const fingerprint = JSON.stringify(todos);
+    if (fingerprint === this.lastPlan) return [];
+    this.lastPlan = fingerprint;
+    if (todos.length === 0) return [];
+    // Random rather than counted: the store keys tool messages by this id, and a
+    // resumed session starts a fresh adapter.
+    const id = `plan-${randomUUID()}`;
+    const parent = this.parent(meta);
+    return [
+      { t: 'tool_call_start', id, name: PLAN_TOOL_NAME, parentToolId: parent },
+      { t: 'tool_call', id, name: PLAN_TOOL_NAME, input: { todos }, parentToolId: parent },
+      { t: 'tool_result', id, output: '', isError: false, parentToolId: parent },
+    ];
   }
 
   private parent(meta: { [key: string]: unknown } | null | undefined): string | undefined {

@@ -88,6 +88,8 @@ import {
   sessionFileTargetFromLocalLink,
   splitRichText,
   toolCallView,
+  planHeadline,
+  type PlanView,
   trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
@@ -5983,6 +5985,16 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   if (item.kind === 'todo-group')
     return <TodoGroup key={item.tools[0]?.id ?? item.id} tools={item.tools} />;
   if (item.kind === 'delegated-agent') return <DelegatedAgent key={item.id} row={item} />;
+  // Keyed by the snapshot and its open state, so a cell recycled from (or into) the
+  // open checklist does not keep the other's height or toggled state.
+  if (item.kind === 'plan')
+    return (
+      <PlanCard
+        key={`${item.message.id}:${String(item.latest)}`}
+        plan={item.plan}
+        latest={item.latest}
+      />
+    );
   switch (item.message.kind) {
     case 'user-text':
       return <UserBubble message={item.message} />;
@@ -7206,6 +7218,68 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
         </View>
       ) : null}
     </View>
+  );
+}
+
+const PLAN_MARK: Record<PlanView['entries'][number]['status'], string> = {
+  completed: '✓',
+  in_progress: '◐',
+  pending: '○',
+};
+
+// The agent's task list. The latest snapshot opens as a checklist; older ones are
+// history and show one line — progress plus the step then in hand — until tapped.
+function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
+  const { theme } = useUnistyles();
+  const [expanded, setExpanded] = useState(latest);
+  const done = plan.completed === plan.entries.length;
+  const color = done ? theme.colors.tone.done : theme.colors.tone.active;
+  return (
+    <Pressable
+      style={styles.toolCard}
+      onPress={() => setExpanded((e) => !e)}
+      accessibilityRole="button"
+      accessibilityState={{ expanded }}
+      accessibilityLabel={`${planHeadline(plan)}${plan.current !== null ? `, now: ${plan.current}` : ''}`}
+    >
+      <View style={styles.toolHeader}>
+        <View style={[styles.toolDot, { backgroundColor: color }]} />
+        <Text style={styles.toolHeadline} numberOfLines={1}>
+          {planHeadline(plan)}
+          {!expanded && plan.current !== null ? ` · ${plan.current}` : ''}
+        </Text>
+        <Icon
+          name={expanded ? 'chevron-down' : 'chevron-right'}
+          size={16}
+          color={theme.colors.textFaint}
+        />
+      </View>
+      {expanded ? (
+        <View style={styles.toolDetail}>
+          {plan.entries.map((entry, index) => (
+            <View key={index} style={styles.planEntry}>
+              <Text
+                style={[
+                  styles.planMark,
+                  entry.status === 'in_progress' ? { color: theme.colors.tone.active } : null,
+                ]}
+              >
+                {PLAN_MARK[entry.status]}
+              </Text>
+              <Text
+                style={[
+                  styles.planEntryText,
+                  entry.status === 'completed' ? styles.planEntryDone : null,
+                  entry.status === 'in_progress' ? styles.planEntryCurrent : null,
+                ]}
+              >
+                {entry.content}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -10787,6 +10861,27 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.xs,
     marginTop: theme.spacing.xs,
     marginLeft: theme.spacing.lg,
+  },
+  planEntry: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  planMark: {
+    width: 14 * theme.fontScale,
+    color: theme.colors.textFaint,
+    fontSize: theme.text.sm,
+  },
+  planEntryText: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+  },
+  planEntryDone: {
+    color: theme.colors.textFaint,
+    textDecorationLine: 'line-through',
+  },
+  planEntryCurrent: {
+    fontWeight: '600',
   },
   toolCommand: {
     color: theme.colors.text,

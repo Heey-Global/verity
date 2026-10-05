@@ -1,4 +1,5 @@
 import type { Message, ToolCallMessage } from '../happy/message.js';
+import { planView, type PlanView } from './plan.js';
 
 /**
  * Transcript row grouping (pure → unit-testable). The session chat list renders
@@ -9,12 +10,16 @@ import type { Message, ToolCallMessage } from '../happy/message.js';
  *  - nest a SUB-agent's whole subtree (events tagged with `parentToolId`) under
  *    its spawning Agent/Task card as a collapsible `delegated-agent` row, instead
  *    of flattening the sub-agent's tool churn into the main transcript (#98);
- *  - collapse a run of `TaskCreate`/`TaskUpdate` calls into one `todo-group`.
+ *  - collapse a run of `TaskCreate`/`TaskUpdate` calls into one `todo-group`;
+ *  - lift a plan snapshot out of its tool run as a `plan` checklist. Snapshots
+ *    with nothing between them collapse to the newest, and only the level's last
+ *    plan is `latest` — the one the screen shows open.
  */
 export type Row =
   | { kind: 'message'; message: Message }
   | { kind: 'tool-group'; id: string; tools: ToolCallMessage[] }
   | { kind: 'todo-group'; id: string; tools: ToolCallMessage[] }
+  | { kind: 'plan'; message: ToolCallMessage; plan: PlanView; latest: boolean }
   | {
       kind: 'delegated-agent';
       id: string;
@@ -128,6 +133,12 @@ function buildRows(
         childRows: buildRows(kids, childrenByParent, nextVisited),
         toolCount: countTools(kids, childrenByParent, nextVisited),
       });
+    } else if (planView(m.tool) !== null) {
+      flushAll();
+      const plan = planView(m.tool)!;
+      const row: Row = { kind: 'plan', message: m, plan, latest: false };
+      if (rows[rows.length - 1]?.kind === 'plan') rows[rows.length - 1] = row;
+      else rows.push(row);
     } else if (isTodoTool(m.tool.name)) {
       flushTools();
       todoRun.push(m);
@@ -137,6 +148,13 @@ function buildRows(
     }
   }
   flushAll();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row?.kind === 'plan') {
+      rows[i] = { ...row, latest: true };
+      break;
+    }
+  }
   return rows;
 }
 
@@ -176,6 +194,10 @@ export function reconcileTranscriptRows(rows: Row[], previousRows: readonly Row[
     switch (row.kind) {
       case 'message':
         return old.kind === 'message' && old.message === row.message ? old : row;
+      case 'plan':
+        return old.kind === 'plan' && old.message === row.message && old.latest === row.latest
+          ? old
+          : row;
       case 'tool-group':
       case 'todo-group':
         return (old.kind === 'tool-group' || old.kind === 'todo-group') &&
@@ -208,6 +230,7 @@ export function rowKey(row: Row): string {
     case 'delegated-agent':
       return row.id;
     case 'message':
+    case 'plan':
       return row.message.id;
   }
 }
@@ -242,6 +265,8 @@ function lengthBucket(length: number): string {
  * cannot carry its tall height into a collapsed one.
  */
 export function rowRecycleType(row: Row): string {
+  // The latest plan renders open, older ones as one line.
+  if (row.kind === 'plan') return row.latest ? 'plan:open' : 'plan:closed';
   if (row.kind !== 'message') return row.kind;
   const message = row.message;
   if (message.kind === 'agent-text') {

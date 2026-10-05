@@ -1,6 +1,12 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
-import { AcpEventAdapter, AcpTextStream, finalAcpTextEvents } from './acp-adapter.js';
+import { isAgentEvent } from '@verity/events';
+import {
+  AcpEventAdapter,
+  AcpTextStream,
+  finalAcpTextEvents,
+  PLAN_TOOL_NAME,
+} from './acp-adapter.js';
 
 describe('AcpEventAdapter', () => {
   it('maps text and nested thinking attribution', () => {
@@ -36,6 +42,10 @@ describe('AcpEventAdapter', () => {
         sessionUpdate: 'plan_update',
         plan: { type: 'items', planId: 'plan-1', entries: [] },
       },
+      {
+        sessionUpdate: 'plan_update',
+        plan: { type: 'markdown', planId: 'plan-2', content: '# Plan' },
+      },
       { sessionUpdate: 'plan_removed', planId: 'plan-1' },
       { sessionUpdate: 'available_commands_update', availableCommands: [] },
       { sessionUpdate: 'current_mode_update', currentModeId: 'default' },
@@ -47,6 +57,52 @@ describe('AcpEventAdapter', () => {
     ];
 
     expect(updates.flatMap((update) => adapter.consume(update))).toEqual([]);
+  });
+
+  // Plans ride on a tool call, not a new event kind: an app build that predates the
+  // checklist fails a whole history page on an unknown `t`. A schema-valid event of
+  // a new kind would pass every server test while breaking those clients.
+  it('carries each changed ACP plan snapshot as a settled TodoWrite call', () => {
+    const adapter = new AcpEventAdapter();
+    const entries = [
+      { content: 'Find the cause', priority: 'high', status: 'completed' },
+      { content: 'Fix it', priority: 'medium', status: 'in_progress' },
+    ] as const;
+    const events = adapter.consume({
+      sessionUpdate: 'plan',
+      entries: [...entries],
+      _meta: { claudeCode: { parentToolUseId: 'task-1' } },
+    });
+
+    expect(events.map((event) => event.t)).toEqual(['tool_call_start', 'tool_call', 'tool_result']);
+    for (const event of events) expect(event).toMatchObject({ parentToolId: 'task-1' });
+    const call = events[1];
+    expect(call).toEqual({
+      t: 'tool_call',
+      id: expect.stringMatching(/^plan-/),
+      name: PLAN_TOOL_NAME,
+      input: { todos: entries },
+      parentToolId: 'task-1',
+    });
+    for (const event of events)
+      expect(event).toMatchObject({ id: call?.t === 'tool_call' && call.id });
+    for (const event of events) expect(isAgentEvent(event)).toBe(true);
+
+    // An unchanged resend is not another row; the next real change is.
+    expect(adapter.consume({ sessionUpdate: 'plan', entries: [...entries] })).toEqual([]);
+    const next = adapter.consume({
+      sessionUpdate: 'plan_update',
+      plan: {
+        type: 'items',
+        planId: 'plan-1',
+        entries: [{ content: 'Fix it', priority: 'medium', status: 'completed' }],
+      },
+    });
+    expect(next[1]).toMatchObject({
+      t: 'tool_call',
+      input: { todos: [{ content: 'Fix it', priority: 'medium', status: 'completed' }] },
+    });
+    expect(next[1]).not.toMatchObject({ id: call?.t === 'tool_call' && call.id });
   });
 
   it('maps vendor-neutral Claude lifecycle metadata without rendering carrier updates', () => {
