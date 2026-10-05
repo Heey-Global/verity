@@ -865,7 +865,9 @@ jobs:
     # allocation scoped to the native release job only.
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Separate app identities and runner-local build counters allow both
+      # variants to build together; finalization waits for the whole matrix.
+      max-parallel: 2
       matrix:
         variant: [staging, production]
     runs-on: xcode-27
