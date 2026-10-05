@@ -119,11 +119,10 @@ the inline card, not in agent replies. Verity picks a free sandbox port for each
 session and entry and passes it as `PORT` or substitutes `{port}` in the command. All sessions
 of a project share one sandbox, so this keeps two sessions running the same entry apart. The
 only port anyone sees is the network port from the local range, shown as an address such as
-`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so a bookmark keeps working across restarts, with two exceptions listed under edge cases: eviction of a stopped pair's network port when the range is full, and a silent sandbox-port change on collision. A new session may get different ports. When the local range is full, the stopped pair whose server ran least recently loses its network reservation; its sandbox port is kept. Running pairs are never evicted. If every reservation belongs to a running server, the start fails with "All network ports are in use" and names the setting that enlarges the range.
+`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so a bookmark keeps working across restarts, with two exceptions listed under edge cases: eviction of a stopped pair's network port when the range is full, and a silent sandbox-port change on collision. A new session may get different ports. When the local range is full, the non-running pair (stopped or crashed) whose server ran least recently, with never-run pairs counted as oldest, loses its network reservation; its sandbox port is kept. Running pairs are never evicted. If every reservation belongs to a running server, the start fails with "All network ports are in use" and names the setting that enlarges the range.
 
 **Supervision.** Verity starts the entry as its own process and tracks one of four states:
-starting, running, stopped, crashed. "Running" requires the port to answer, not merely the
-command to have started. Verity keeps the last few hundred lines of output, readable in the
+starting, running, stopped, crashed. "Running" requires the port to answer through the same path the share forwards to, including the loopback forwarder (2.4), not merely the command to have started. Verity keeps the last few hundred lines of output, readable in the
 app and by the agent. Stopping ends the command and all its children so no orphan holds the
 port. A crashed server stays crashed and shows its error; there is no automatic restart,
 because a silent restart hides the fault. Running entries keep the sandbox awake as an active
@@ -154,8 +153,7 @@ detected and listed as not managed, with an offer to save them as an entry. The 
   publishes an entry's first start only after the operator has switched it on once in the app.
   The public share stays an explicit operator step with its PIN and entitlement check.
 - _Startup deadline._ An entry that does not answer on its port within 60 seconds moves to
-  crashed with "Did not answer on its port", typically a command that ignores `PORT`. It no
-  longer keeps the sandbox awake.
+  crashed with "Did not answer on its port", typically a command that ignores `PORT`. Missing the deadline stops the process tree as Stop does, so nothing keeps holding the port or keeps the sandbox awake.
 - _Port collisions._ A stopped pair keeps its network reservation; eviction when the range is
   full is the only exception. If its sandbox port is taken by another process at start, Verity
   picks a new sandbox port silently. The network address does not change.
@@ -298,6 +296,9 @@ becomes "Open settings" and the text names Verity Premium.
    start, stop, state, and log capture in the project runtime; restart after sandbox
    recreation; `verity-dev-server` entry commands and agent-seed guidance; Preview sheet
    rows with switches, detail view with logs, and the not-managed section.
+   Gate: whether an agent-initiated start publishes locally without a prior operator switch-on
+   (see edge cases) must be confirmed before this step ships; until then the stricter variant
+   applies.
 
 ## 5. Implementation details and verification boundaries
 
