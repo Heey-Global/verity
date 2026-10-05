@@ -1118,7 +1118,13 @@ export function StaticPreviewSheet({
                     : undefined
                 }
                 publicSharing={publicSharing}
-                pending={managedSwitch?.id === server.id ? managedSwitch.kind : undefined}
+                pending={
+                  managedSwitch?.id === server.id
+                    ? managedSwitch.kind
+                    : managedPending
+                      ? 'other'
+                      : undefined
+                }
                 pinCopied={pinCopiedFor === server.id}
                 onLocal={(on) => toggleLocal(server, on)}
                 onOnline={(on) => toggleOnline(server, on)}

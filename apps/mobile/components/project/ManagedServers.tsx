@@ -82,7 +82,7 @@ export function ManagedServerBlock({
   publicLink: ManagedPublicLink | undefined;
   publicSharing: PublicSharing;
   /** The switch whose change is in flight. */
-  pending: 'local' | 'online' | undefined;
+  pending: 'local' | 'online' | 'other' | undefined;
   pinCopied: boolean;
   onLocal: (on: boolean) => void;
   onOnline: (on: boolean) => void;

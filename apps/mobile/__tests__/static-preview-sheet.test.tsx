@@ -1232,6 +1232,28 @@ describe('managed dev servers', () => {
     await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1'));
   });
 
+  it('disables other server switches while a managed action is pending', async () => {
+    let complete!: (server: ManagedDevServer) => void;
+    const pending = new Promise<ManagedDevServer>((resolve) => {
+      complete = resolve;
+    });
+    const first = demo();
+    const second = demo({ id: 'srv-2', name: 'API' });
+    const setManagedDevServerLocal = jest.fn(async () => pending);
+    renderSheet(managedClient([first, second], { setManagedDevServerLocal }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    const other = screen.getByRole('switch', { name: 'Local for API' });
+    expect(other.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(other);
+    expect(setManagedDevServerLocal).toHaveBeenCalledTimes(1);
+    await act(async () => complete(first));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('switch', { name: 'Local for API' }).props.accessibilityState.disabled,
+      ).toBe(false),
+    );
+  });
+
   it('cleans up a running online-only instance when creating its link fails', async () => {
     const server = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
     const controlManagedDevServer = jest.fn(async () => server);

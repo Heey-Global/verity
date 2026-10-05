@@ -674,6 +674,32 @@ describe('managed dev servers', () => {
       expect((await instanceOf()).state).toBe('stopped');
     });
 
+    it('recovers terminal-link cleanup after the Core restarts', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoked', {});
+      manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: (_project, worktree) => worktree,
+        now: () => now,
+      });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const terminal = await ctx.store.getPublicPreviewShare(share.id);
+      await ctx.store.managedDevServers.updateInstance(id, {
+        startedAt: new Date(terminal!.updatedAt.getTime() + 1),
+      });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });

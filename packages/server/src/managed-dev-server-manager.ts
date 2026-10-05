@@ -928,7 +928,30 @@ export class ManagedDevServerManager {
       // Re-read under the project lock: a stop since the pass began wins.
       const instance = await this.servers.getInstance(snapshot.id);
       if (!instance || instance.desired !== 'running') continue;
-      if (!instance.localAccess) await this.unpublish(instance);
+      if (!instance.localAccess) {
+        await this.unpublish(instance);
+        const links = await this.options.store.listPublicPreviewShares(projectId);
+        const live = links.some(
+          (link) =>
+            link.managedInstanceId === instance.id &&
+            (link.state === 'active' || link.state === 'creating') &&
+            link.expiresAt.getTime() > this.now(),
+        );
+        // Terminal link data survives a Core restart that lost its cleanup queue.
+        // Older links must not cancel a new start waiting for its share creation.
+        const ended = links.some(
+          (link) =>
+            link.managedInstanceId === instance.id &&
+            (link.state === 'revoked' || link.state === 'expired' || link.state === 'failed') &&
+            instance.startedAt &&
+            link.updatedAt.getTime() > instance.startedAt.getTime(),
+        );
+        if (!live && ended) {
+          await this.stopInstance(project, instance, null);
+          changed = true;
+          continue;
+        }
+      }
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
       if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {
