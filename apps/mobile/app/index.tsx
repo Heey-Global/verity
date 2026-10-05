@@ -1783,7 +1783,7 @@ function SessionRow({
             {label}
           </Text>
           {markers.length > 0 || showLabel ? (
-            <View style={styles.sessionLineEnd}>
+            <View style={[styles.sessionLineEnd, styles.sessionTitleLineEnd]}>
               <AttentionMarkers flags={markers} />
               {/* The lifecycle label is hidden while working since the left dot
                   already conveys it. */}
@@ -2475,6 +2475,10 @@ const styles = StyleSheet.create((theme) => ({
   sessionTitleBlock: { paddingRight: theme.spacing.lg },
   sessionLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   sessionSub: { minWidth: 0, flexShrink: 1 },
+  // Held to the title's line height so the label, which is a hair taller, cannot
+  // grow the row when it appears or hides on a working <-> idle switch; this list
+  // re-measures rows on every poll.
+  sessionTitleLineEnd: { height: 19 * theme.fontScale },
   sessionLineEnd: {
     marginLeft: 'auto',
     flexDirection: 'row',
