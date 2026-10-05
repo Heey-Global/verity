@@ -2447,6 +2447,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
   });
 
@@ -2493,6 +2495,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
       branch: 'feat/122-x',
     });
     expect(branchSvc.current).toHaveBeenCalledWith('/wt/s1');
@@ -2514,6 +2518,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: 'Auth Refactor',
+      planningPlan: null,
+      planningRevision: 0,
     });
     await noBranches.close();
   });
@@ -2543,6 +2549,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
     await noBranches.close();
   });
@@ -3246,6 +3254,8 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
         status: 'awaiting_input',
         pendingPermissions: [],
@@ -3261,6 +3271,8 @@ describe('GET /sessions', () => {
         worktree: '/wt/s2',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
         status: 'idle',
         pendingPermissions: [],
@@ -3425,6 +3437,8 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
         status: 'completed',
         pendingPermissions: [],
@@ -6261,6 +6275,8 @@ describe('GET /sessions/:id', () => {
       worktree: '/wt/s1',
       model: 'm',
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
       projectId: null,
       status: 'running',
       pendingPermissions: [],
