@@ -1130,6 +1130,7 @@ export class SupervisorRunnerClient implements RunnerClient {
         : {}),
       ...(opts.resumeSessionId !== undefined ? { resumeSessionId: opts.resumeSessionId } : {}),
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+      ...(opts.planning === true ? { planning: true } : {}),
       ...(opts.allowedTools !== undefined ? { allowedTools: [...opts.allowedTools] } : {}),
       ...(opts.disallowedTools !== undefined ? { disallowedTools: [...opts.disallowedTools] } : {}),
       ...(opts.toolless === true ? { toolless: true } : {}),

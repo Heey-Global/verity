@@ -276,6 +276,9 @@ const TOOL_SCHEMAS = {
   verity_session_progress: sessionProgressRequestSchema,
   verity_recent_session_messages: recentSessionMessagesRequestSchema,
   verity_publish_session_progress: publishSessionProgressRequestSchema,
+  verity_start_planning: z.object({}).strict(),
+  verity_present_plan: z.object({ plan: z.string().trim().min(1).max(50_000) }).strict(),
+  verity_end_planning: z.object({}).strict(),
   verity_google_slides: z
     .object({
       action: z.enum(['inspect_deck', 'read_slide', 'edit', 'thumbnail', 'insert_image']),
@@ -392,6 +395,12 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_session_progress: SESSION_PROGRESS_TOOL_DESCRIPTION,
   verity_recent_session_messages: RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
   verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
+  verity_start_planning:
+    'Put this session into planning mode. Call it when the user chooses to plan first or asks you to plan before implementing. From the next message on you cannot change files until the user ends planning.',
+  verity_present_plan:
+    'Submit the complete current plan as Markdown (goal, steps, open questions or risks) while the session is in planning mode. Verity shows it to the user with an "Implement plan" button. Submit the whole revised plan again whenever it changes, instead of writing the plan into your reply.',
+  verity_end_planning:
+    'Ask the user to confirm ending planning mode and implementing the latest presented plan. Call it only when the user tells you in the chat to go ahead. On approval Verity starts the implementation as a new turn, so end your turn right after it returns.',
   verity_google_slides:
     'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit accepts any structurally valid Google Slides batchUpdate request and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested; insert_image accepts a Verity session attachmentId, a public HTTP(S) imageUrl, or an imagePath relative to this session worktree.',
   verity_google_docs:

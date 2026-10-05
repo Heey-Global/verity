@@ -24590,6 +24590,29 @@ ${SCHEDULE_HELP} \`prompt\` is the instruction you receive on every run; make it
 
 ${PROPOSAL_RULES}`;
 
+// node_modules/@verity/events/dist/planning.js
+var START_PLANNING_TOOL = "verity_start_planning";
+var PRESENT_PLAN_TOOL = "verity_present_plan";
+var END_PLANNING_TOOL = "verity_end_planning";
+var PLANNING_TOOLS = [
+  START_PLANNING_TOOL,
+  PRESENT_PLAN_TOOL,
+  END_PLANNING_TOOL
+];
+function planningToolName(name2) {
+  return PLANNING_TOOLS.find((tool) => name2 === tool || name2 === `mcp__verity__${tool}` || name2 === `verity_${tool}`);
+}
+var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
+
+Before a materially larger change with real design choices, offer to plan it first: ask with a \`verity:choices\` block whose options include "Plan first" (recommended) and "Implement directly". When the user picks "Plan first", or asks in any wording to plan before implementing, call \`${START_PLANNING_TOOL}\` and then work out the plan without changing any files. Small, clear tasks need no planning.`;
+var PLANNING_ACTIVE_SYSTEM_PROMPT = `# Planning mode is active (Verity)
+
+This session is in planning mode. You cannot change files, and every request for approval is refused. Investigate, ask clarifying questions, and discuss in the chat as usual.
+
+When the plan is complete, or the user asks to see it, submit it with \`${PRESENT_PLAN_TOOL}\` as concise Markdown (goal, steps, open questions or risks) instead of writing it into your reply. Verity shows it with an "Implement plan" button. Submit the whole revised plan the same way whenever it changes. Do not call \`ExitPlanMode\`.
+
+Never start implementing on your own. If the user tells you in the chat to go ahead, call \`${END_PLANNING_TOOL}\`: it asks the user to confirm, and Verity starts the implementation once your turn ends. End your turn right after it returns.`;
+
 // node_modules/@verity/events/dist/session-handoff-tool.js
 var import_zod2 = __toESM(require_zod(), 1);
 var DECEPTIVE_IN_A_RENDERED_LINE = /[\p{Cc}\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
@@ -29851,7 +29874,13 @@ async function runAcpTurn(opts, profile) {
       }
       return response;
     };
-    if (opts.permissionControl !== true || opts.onPermissionRequest === void 0) {
+    const planning = opts.planning === true;
+    if (planning && planningToolName(name2) !== void 0) {
+      const allow = request2.options.find((option) => option.kind === "allow_once");
+      if (allow !== void 0)
+        return { outcome: { outcome: "selected", optionId: allow.optionId } };
+    }
+    if (planning || opts.permissionControl !== true || opts.onPermissionRequest === void 0) {
       const reject = request2.options.find((option) => option.kind === "reject_once");
       return adopt(reject === void 0 ? { outcome: { outcome: "cancelled" } } : { outcome: { outcome: "selected", optionId: reject.optionId } });
     }
@@ -30007,10 +30036,15 @@ async function runAcpTurn(opts, profile) {
           await writer.write({ t: "notice", text });
         }
       }, opts);
+      if (opts.planning === true && setMode === void 0 && profile.planningViaConfig !== true) {
+        throw new Error("The agent does not support the required planning permission mode.");
+      }
       if (setMode !== void 0) {
         try {
           await setMode();
         } catch {
+          if (opts.planning === true)
+            throw new Error("The agent refused the required planning permission mode.");
           const wanted = activeMode;
           activeMode = void 0;
           restoreMode = void 0;
@@ -30262,6 +30296,17 @@ function parseCodexModel(model) {
 var CODEX_ACP_META = "codex";
 var MODEL_CONFIG_ID = "model";
 var CODEX_AGENT_MODE = "agent-full-access";
+var CODEX_PLANNING_MODE = "read-only";
+function codexMode(planning) {
+  return planning === true ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
+}
+var CODEX_MCP_TITLE = /^mcp\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/;
+function codexToolName(tool) {
+  const mcp = typeof tool.title === "string" ? CODEX_MCP_TITLE.exec(tool.title) : null;
+  if (mcp !== null)
+    return `mcp__${mcp[1]}__${mcp[2]}`;
+  return toolNameFromKind(tool);
+}
 async function selectModel(setup, opts) {
   const wanted = parseCodexModel(opts.model);
   if (wanted === void 0)
@@ -30284,17 +30329,18 @@ var CODEX_ACP_PROFILE = {
   loadSessionUnsupported: "Codex ACP adapter does not support persistent session loading",
   // codex-acp advertises no tool `name`, only ACP's `kind` and a `title` that for
   // a command execution IS the command line.
-  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: toolNameFromKind },
+  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: codexToolName },
   // codex-acp takes no session-level options: the model and mode are configured
   // once the session answers with what this account can actually serve.
   sessionMeta: () => ({}),
   defaultModelLabel: () => CODEX_DEFAULT_MODEL,
   promptText: (opts) => promptWithSystemDirectives(opts),
-  sessionMode: () => CODEX_AGENT_MODE,
-  // No vocabulary, stated rather than omitted: `sessionMode` above ignores
-  // `opts.permissionMode` and returns a constant, so no caller-supplied string can
-  // become this session's mode and there is nothing for a §5b allowlist to bound.
-  // The day that arrow starts reading its options, this line has to change with it.
+  sessionMode: (opts) => codexMode(opts.planning),
+  // No vocabulary, stated rather than omitted: `codexMode` ignores
+  // `opts.permissionMode` and picks one of two constants, so no caller-supplied
+  // string can become this session's mode and there is nothing for a §5b
+  // allowlist to bound. The day it starts reading that option, this line has to
+  // change with it.
   permissionModes: void 0,
   configureSession: selectModel
 };
@@ -30334,7 +30380,7 @@ async function configureSession(setup, opts) {
       (value, current) => `OpenCode model "${value}" was not applied; this turn runs on "${current}".`
     );
   }
-  const mode = openCodeMode(opts.permissionMode);
+  const mode = opts.planning === true ? PLAN_MODE : openCodeMode(opts.permissionMode);
   const outcome = await applySelectOption(
     setup,
     MODE_CONFIG_ID,
@@ -30368,6 +30414,7 @@ var OPENCODE_ACP_PROFILE = {
   // name that reached the multi-purpose CLI would let the caller's argv pick the
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: "opencode-acp",
+  planningViaConfig: true,
   telemetryBackend: "opencode-acp",
   httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the
@@ -31547,6 +31594,7 @@ var startTurnRequestSchema = import_zod6.z.strictObject({
   appendSystemPrompt: boundedString(1024 * 1024).optional(),
   resumeSessionId: boundedString(256).optional(),
   permissionMode: boundedString(128).optional(),
+  planning: import_zod6.z.literal(true).optional(),
   allowedTools: import_zod6.z.array(boundedString(4096)).max(256).optional(),
   disallowedTools: import_zod6.z.array(boundedString(4096)).max(256).optional(),
   toolless: import_zod6.z.boolean().optional(),
@@ -31648,6 +31696,7 @@ var turn = await server.run(join3(turnDir, "events.jsonl"), {
   ...request.appendSystemPrompt !== void 0 ? { appendSystemPrompt: request.appendSystemPrompt } : {},
   ...request.resumeSessionId !== void 0 ? { resumeSessionId: request.resumeSessionId } : {},
   ...request.permissionMode !== void 0 ? { permissionMode: request.permissionMode } : {},
+  ...request.planning === true ? { planning: true } : {},
   ...request.allowedTools !== void 0 ? { allowedTools: request.allowedTools } : {},
   ...request.disallowedTools !== void 0 ? { disallowedTools: request.disallowedTools } : {},
   ...request.toolless === true ? { toolless: true } : {},

@@ -48,6 +48,7 @@ export {
   type SessionProjectionFacts,
   type SessionEventStats,
   type SessionRecord,
+  type SessionPlanning,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,

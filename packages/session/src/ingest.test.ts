@@ -71,6 +71,8 @@ describe('SessionWriter (turn ingestion)', () => {
       name: null,
       projectId: null,
       lastSeenEventCount: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
     const events = await ctx.store.getEvents('s1');
     expect(events.map((e) => e.t)).toEqual(['session', 'text', 'result']);

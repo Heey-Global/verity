@@ -54,7 +54,17 @@ export interface SessionRecord {
    *  `eventCount` at the last open. `null` = never opened → not unread. Global, so
    *  it syncs across devices; advanced monotonically by {@link EventStore.setSessionSeen}. */
   lastSeenEventCount: number | null;
+  /** Planning mode. Optional so records built outside the store need not state it;
+   *  absent and `null` both mean the session never planned. */
+  planning?: SessionPlanning | null;
+  planningRevision?: number;
+  planningPlan?: string | null;
 }
+
+/** `active`: turns run without permission to change files until the operator
+ *  ends planning. `implemented` / `discarded`: how the last planning round ended,
+ *  which tells the app whether the newest plan was carried out. */
+export type SessionPlanning = 'active' | 'implemented' | 'discarded';
 
 export interface SessionLinkRecord {
   sessionId: string;
@@ -108,7 +118,10 @@ export interface GoogleSlideImageCleanupRecord {
 /** Input to {@link EventStore.createSession}: a {@link SessionRecord} whose
  * `name` is optional (a fresh session starts nameless unless the operator named
  * it at spawn). */
-export type SessionInput = Omit<SessionRecord, 'name' | 'projectId' | 'lastSeenEventCount'> & {
+export type SessionInput = Omit<
+  SessionRecord,
+  'name' | 'projectId' | 'lastSeenEventCount' | 'planning'
+> & {
   name?: string | null;
   projectId?: string | null;
 };
@@ -1734,7 +1747,17 @@ export class EventStore implements EventSink {
   async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     const row = await this.db
       .selectFrom('sessions')
-      .select(['session_id', 'worktree', 'model', 'name', 'project_id', 'last_seen_event_count'])
+      .select([
+        'session_id',
+        'worktree',
+        'model',
+        'name',
+        'project_id',
+        'last_seen_event_count',
+        'planning',
+        'planning_revision',
+        'planning_plan',
+      ])
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     if (!row) return undefined;
@@ -1745,6 +1768,9 @@ export class EventStore implements EventSink {
       name: row.name,
       projectId: row.project_id,
       lastSeenEventCount: row.last_seen_event_count,
+      ...(row.planning !== null ? { planning: row.planning } : {}),
+      planningRevision: row.planning_revision,
+      planningPlan: row.planning_plan,
     };
   }
 
@@ -2278,7 +2304,17 @@ export class EventStore implements EventSink {
   async listSessions(): Promise<SessionRecord[]> {
     const rows = await this.db
       .selectFrom('sessions')
-      .select(['session_id', 'worktree', 'model', 'name', 'project_id', 'last_seen_event_count'])
+      .select([
+        'session_id',
+        'worktree',
+        'model',
+        'name',
+        'project_id',
+        'last_seen_event_count',
+        'planning',
+        'planning_revision',
+        'planning_plan',
+      ])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
       .orderBy('created_at', 'asc')
@@ -2291,6 +2327,9 @@ export class EventStore implements EventSink {
       name: r.name,
       projectId: r.project_id,
       lastSeenEventCount: r.last_seen_event_count,
+      ...(r.planning !== null ? { planning: r.planning } : {}),
+      planningRevision: r.planning_revision,
+      planningPlan: r.planning_plan,
     }));
   }
 
@@ -2608,6 +2647,64 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
+  }
+
+  /** Move a session into or out of planning mode. `from` makes the write
+   *  conditional, so two racing decisions (a tap on "Implement plan" and the
+   *  approval of an agent's request) cannot both win. Answers whether it changed. */
+  async setSessionPlanning(
+    sessionId: string,
+    planning: SessionPlanning,
+    from?: readonly (SessionPlanning | null)[],
+    expectedRevision?: number,
+  ): Promise<boolean> {
+    let query = this.db
+      .updateTable('sessions')
+      .set({ planning })
+      .where('session_id', '=', sessionId);
+    if (from !== undefined) {
+      const states = from.filter((state): state is SessionPlanning => state !== null);
+      query = query.where((eb) =>
+        eb.or([
+          ...(states.length > 0 ? [eb('planning', 'in', states)] : []),
+          ...(from.includes(null) ? [eb('planning', 'is', null)] : []),
+        ]),
+      );
+    }
+    // A device can approve an old card while another device is publishing its revision.
+    // Checking in this UPDATE prevents the read-before-write race from accepting it.
+    if (expectedRevision !== undefined) {
+      query = query
+        .where('planning_revision', '=', expectedRevision)
+        .where('planning_plan', 'is not', null);
+    }
+    const result = await query.executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async startSessionPlanning(sessionId: string): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({
+        planning: 'active',
+        planning_plan: null,
+        planning_revision: sql`planning_revision + 1`,
+      })
+      .where('session_id', '=', sessionId)
+      .where((eb) => eb.or([eb('planning', 'is', null), eb('planning', '!=', 'active')]))
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async presentSessionPlan(sessionId: string, plan: string): Promise<number | undefined> {
+    const row = await this.db
+      .updateTable('sessions')
+      .set({ planning_plan: plan, planning_revision: sql`planning_revision + 1` })
+      .where('session_id', '=', sessionId)
+      .where('planning', '=', 'active')
+      .returning('planning_revision')
+      .executeTakeFirst();
+    return row?.planning_revision;
   }
 
   async getSessionBackendState(
@@ -4314,6 +4411,32 @@ export class EventStore implements EventSink {
         opts: JSON.stringify(input.opts),
       })
       .execute();
+  }
+
+  /** Accept a plan and its implementation backlog entry together. A restart
+   * between acceptance and the live queue update must still recover the work. */
+  async enqueuePlanImplementation(input: QueuedTurnInput, revision: number): Promise<boolean> {
+    return this.db.transaction().execute(async (tx) => {
+      const result = await tx
+        .updateTable('sessions')
+        .set({ planning: 'implemented' })
+        .where('session_id', '=', input.sessionId)
+        .where('planning', '=', 'active')
+        .where('planning_revision', '=', revision)
+        .where('planning_plan', 'is not', null)
+        .executeTakeFirst();
+      if (result.numUpdatedRows === 0n) return false;
+      await tx
+        .insertInto('queued_turns')
+        .values({
+          id: input.id,
+          session_id: input.sessionId,
+          prompt: input.prompt,
+          opts: JSON.stringify(input.opts),
+        })
+        .execute();
+      return true;
+    });
   }
 
   /**

@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   appendExternalPromptData,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   turnFailureErrorKind,
   type AgentEvent,
@@ -12,6 +13,7 @@ import {
   type AttachmentUpload,
 } from '@verity/events';
 import { isLocalProject } from '@verity/store';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import type {
   EventStore,
   QueuedTurnOpts,
@@ -684,6 +686,13 @@ export interface DispatchTurnOptions {
    * the next foreground; keyed dispatches dedupe so the replay returns the prior
    * result instead of dispatching a second turn. Omitted by in-app turns. */
   clientReplyId?: string;
+  /** Wait for the running turn instead of steering into it. A turn that must run
+   *  under different session state than the live one — the implementation that
+   *  follows an accepted plan — cannot be folded into the planning turn still
+   *  running under the old posture. */
+  queueBehindActiveTurn?: boolean;
+  /** Atomically accept this plan revision with the durable implementation queue. */
+  planningRevision?: number;
 }
 
 interface QueuedConductorTurn {
@@ -871,6 +880,7 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly runningPlanning = new Map<string, boolean>();
   /** Stop-watchdog waiters woken by {@link releaseInFlight} — how the cancel path
    * observes "the session is actually free again" regardless of WHICH settle path
    * (launch run loop, reattached tail, force-settle) released it. */
@@ -1005,7 +1015,10 @@ export class Conductor {
   // a genuine retry can run; successes stay so a late re-flush is a no-op. Bounded
   // per session by {@link MAX_SEEN_REPLIES_PER_SESSION} — process-local, so a
   // restart at worst re-runs a mid-flight reply (still ordered by the durable queue).
-  private readonly seenReplies = new Map<string, Map<string, Promise<{ queued: boolean }>>>();
+  private readonly seenReplies = new Map<
+    string,
+    Map<string, Promise<{ queued: boolean; accepted?: boolean }>>
+  >();
   // Whether new turns run with the permission control loop on (#27). Default off.
   private readonly permissionControl: boolean;
   // The default backend each turn runs through (ADR 0001 / #143). Default: the
@@ -1606,6 +1619,12 @@ export class Conductor {
     return this.inFlight.has(sessionId);
   }
 
+  /** Restricts the live turn even after the session's planning decision.
+   * Recovered turns retain restrictions until their unknown posture settles. */
+  isPlanningTurn(sessionId: string): boolean {
+    return this.inFlight.has(sessionId) && this.runningPlanning.get(sessionId) !== false;
+  }
+
   /**
    * A stateless one-shot model query — spawns the backend's `query` (e.g. `claude -p`)
    * ONCE with no session, transcript, worktree, or store writes, and returns its raw
@@ -2028,6 +2047,7 @@ export class Conductor {
   /** Release this session's turn lock and run actions waiting on that exact boundary. */
   private releaseInFlight(sessionId: string): void {
     this.inFlight.delete(sessionId);
+    this.runningPlanning.delete(sessionId);
     // The fence dropping IS the recovery from an unconfirmed stop, whichever path got
     // there (reaper, late run-loop settle, or the liveness sweep).
     this.clearTerminationUnconfirmed(sessionId);
@@ -3043,7 +3063,7 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
-  ): Promise<{ queued: boolean }> {
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     const { clientReplyId } = dispatchOpts;
     if (clientReplyId === undefined) {
       return this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
@@ -3059,8 +3079,8 @@ export class Conductor {
   private dispatchIdempotent(
     sessionId: string,
     clientReplyId: string,
-    run: () => Promise<{ queued: boolean }>,
-  ): Promise<{ queued: boolean }> {
+    run: () => Promise<{ queued: boolean; accepted?: boolean }>,
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     let replies = this.seenReplies.get(sessionId);
     if (replies === undefined) {
       replies = new Map();
@@ -3092,7 +3112,7 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
-  ): Promise<{ queued: boolean }> {
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     const displayPrompt = dispatchOpts.displayPrompt ?? prompt;
     if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
     // Busy → first try to STEER the running turn (#101 Stage B): if it exposes a
@@ -3102,7 +3122,7 @@ export class Conductor {
     // check and the write) do we fall back to enqueueing behind it (#90 Stage A),
     // which runs the message as a fresh `--resume` turn the moment claude is free.
     // Validate the prompt here too so we never steer/queue a blank turn.
-    if (this.inFlight.has(sessionId)) {
+    if (this.inFlight.has(sessionId) || dispatchOpts.planningRevision !== undefined) {
       if (opts.requireStandalone === true) throw new SessionBusyError(sessionId);
       if (!turnHasContent(prompt, opts))
         throw new Error('turn must have a prompt or an attachment');
@@ -3112,7 +3132,17 @@ export class Conductor {
       // it runs as a `--resume` turn that materializes the file correctly. Images
       // still steer into the running turn as before.
       const hasFileAttachment = opts.attachments?.some((a) => a.kind === 'file') ?? false;
-      const turn = hasFileAttachment ? undefined : this.turns.get(sessionId);
+      const planning = (await this.deps.store.getSession(sessionId))?.planning === 'active';
+      // A mode change needs a fresh turn; steering retains the live permissions.
+      const runningPlanning = this.runningPlanning.get(sessionId);
+      const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
+      const turn =
+        hasFileAttachment ||
+        postureChanged ||
+        dispatchOpts.queueBehindActiveTurn === true ||
+        dispatchOpts.planningRevision !== undefined
+          ? undefined
+          : this.turns.get(sessionId);
       if (
         turn &&
         (await turn.steer({
@@ -3140,18 +3170,24 @@ export class Conductor {
       // stored content-addressed; the row carries refs (rehydrated by {@link recover}).
       // `id` is the store row key AND the operator's retract handle ({@link dequeue}).
       const id = randomUUID();
+      let accepted = true;
       const enqueue = (async (): Promise<void> => {
         const storedOpts = await this.toStorableOpts(
           opts,
           displayPrompt === prompt ? undefined : displayPrompt,
           dispatchOpts.peer,
         );
-        await this.deps.store.enqueueTurn({
-          id,
-          sessionId,
-          prompt,
-          opts: storedOpts,
-        });
+        const input = { id, sessionId, prompt, opts: storedOpts };
+        if (dispatchOpts.planningRevision !== undefined) {
+          if (
+            !(await this.deps.store.enqueuePlanImplementation(input, dispatchOpts.planningRevision))
+          ) {
+            accepted = false;
+            return;
+          }
+        } else {
+          await this.deps.store.enqueueTurn(input);
+        }
         // Re-fetch the live queue AFTER the await (a concurrent enqueue may have
         // created it meanwhile) and append — the in-memory queue stays authoritative
         // for the live drain.
@@ -3180,6 +3216,7 @@ export class Conductor {
       // If the in-flight turn settled DURING the persist await, its drain already ran
       // and found the queue empty (we hadn't pushed yet) — kick one now so the item
       // isn't stranded until the next turn. If it's still in flight, its settle drains.
+      if (!accepted) return { queued: false, accepted: false };
       if (!this.inFlight.has(sessionId)) this.drainNext(sessionId);
       return { queued: true };
     }
@@ -4584,6 +4621,7 @@ export class Conductor {
           boundId = publicSessionId;
           this.starting.delete(opts.worktree); // bound → release the start lock
           this.inFlight.add(publicSessionId); // serialize turns against the still-running spawn
+          this.runningPlanning.set(publicSessionId, false);
           this.turns.set(publicSessionId, handle); // operator can cancel/steer now (#79/#101)
           // The session row exists now (either preallocated by the server or
           // created by ingest from the backend `session` event), so persist the
@@ -5382,8 +5420,18 @@ export class Conductor {
     includeRuntimePrompt: boolean,
     localProject: boolean,
   ): RunTurnOptions {
-    const permissionMode = opts.permissionMode ?? this.deps.permissionMode;
+    // Planning mode is the session's, not the request's: it overrides whatever
+    // posture the turn asked for, because a turn that could still change files is
+    // exactly what planning exists to prevent.
+    const planning = session.planning === 'active';
+    this.runningPlanning.set(sessionId, planning);
+    const permissionMode = planning
+      ? PLANNING_PERMISSION_MODE
+      : (opts.permissionMode ?? this.deps.permissionMode);
     const timeoutMs = opts.timeoutMs ?? this.deps.timeoutMs;
+    const systemPrompt = includeRuntimePrompt
+      ? turnSystemPrompt(localProject)
+      : RESUME_SYSTEM_PROMPT;
     // exactOptionalPropertyTypes: omit absent keys rather than assign undefined.
     return {
       store: this.deps.store,
@@ -5394,9 +5442,9 @@ export class Conductor {
       // Resumed contexts already carry the heavy runtime policy, but still receive
       // compact convergence directives that must affect existing long-lived
       // sessions: user-facing terminology and visible-media output contracts.
-      appendSystemPrompt: includeRuntimePrompt
-        ? turnSystemPrompt(localProject)
-        : RESUME_SYSTEM_PROMPT,
+      appendSystemPrompt: planning
+        ? `${systemPrompt}\n\n${PLANNING_ACTIVE_SYSTEM_PROMPT}`
+        : systemPrompt,
       model: opts.model ?? session.model,
       storeSessionId: sessionId,
       // Hold stdin open so a mid-turn operator message can be folded into THIS
@@ -5410,6 +5458,7 @@ export class Conductor {
       // inbound request to the conductor's `onPermissionRequest` hook).
       ...(this.permissionControl ? { permissionControl: true } : {}),
       ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(planning ? { planning: true } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
       ...(opts.disallowedTools !== undefined ? { disallowedTools: opts.disallowedTools } : {}),

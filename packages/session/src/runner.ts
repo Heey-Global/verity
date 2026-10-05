@@ -25,6 +25,10 @@ import {
  */
 export const ALLOWED_PERMISSION_MODES = ['auto', 'default', 'plan', 'acceptEdits'] as const;
 
+/** The permission mode of a planning turn: Claude's and OpenCode's `plan` modes.
+ *  Codex has none and reads the turn's `planning` flag instead. */
+export const PLANNING_PERMISSION_MODE = 'plan' satisfies (typeof ALLOWED_PERMISSION_MODES)[number];
+
 /** Cap on retained stderr (keep the most recent bytes for diagnostics). */
 const STDERR_CAP_BYTES = 16 * 1024;
 

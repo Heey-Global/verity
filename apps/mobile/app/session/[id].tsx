@@ -30,6 +30,7 @@ import {
   type SessionFileContent,
   type SessionFileRoot,
   type SessionGoogleWorkspaceFile,
+  type SessionPlanning,
   type ToolCallMessage,
   type UserTextMessage,
   agentEventDescriptor,
@@ -37,6 +38,12 @@ import {
   engineLabel,
   groupModelsByEngine,
   formatChoiceAnswer,
+  planProposal,
+  planProposalRevision,
+  planProposalDisplay,
+  planningToolName,
+  END_PLANNING_TOOL,
+  START_PLANNING_TOOL,
   freezeTranscriptTail,
   frozenTranscriptRows,
   gmailPreviewHtml,
@@ -48,6 +55,7 @@ import {
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
+  withPlanningSnapshot,
   pullRequestStatusText,
   markdownSectionTitle,
   modelRateLimited,
@@ -535,6 +543,13 @@ interface SessionActions {
   automationReady: boolean;
   /** Only the newest proposal can be confirmed; older cards are superseded. */
   latestAutomationProposalId: string | null;
+  /** Planning mode, for the plan cards' button and status line. */
+  planning: SessionPlanning | undefined;
+  planningRevision: number | undefined;
+  planningPlan: string | null | undefined;
+  decidingPlanning: boolean;
+  /** The plan card's "Implement plan": the tap itself is the operator's approval. */
+  implementPlan: (revision?: number) => void;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
@@ -619,6 +634,12 @@ export function SessionChat({
     waitingMessages,
     pendingMessages,
     branch: liveBranch,
+    planning,
+    planningRevision,
+    planningPlan,
+    decidingPlanning,
+    planningError,
+    decidePlanning,
     decidingPermission,
     permissionError,
     sendTurn,
@@ -1103,7 +1124,11 @@ export function SessionChat({
   // Group consecutive tool calls into one collapsible row (Claude-app style: a run
   // of tools reads as a single rolling line, not N stacked cards). The reducer keeps
   // messages chronological; grouping needs that order.
-  const transcriptData = useTranscriptRows(session.messages);
+  const loadedTranscriptData = useTranscriptRows(session.messages);
+  const transcriptData = useMemo(
+    () => withPlanningSnapshot(loadedTranscriptData, { planning, planningPlan, planningRevision }),
+    [loadedTranscriptData, planning, planningPlan, planningRevision],
+  );
   const localMeetingData = useTranscriptRows(localMeetingMessages);
   const pendingEchoData = useTranscriptRows(pendingEchoMessages);
   const liveChronologicalData = useMemo(
@@ -3239,6 +3264,51 @@ export function SessionChat({
     }
     return null;
   }, [session.messages]);
+  // Only a plan of the current round counts: one an earlier round already decided
+  // must not be offered for implementation again.
+  const hasPresentedPlan = useMemo(() => {
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const m = session.messages[i];
+      if (m?.kind !== 'tool-call') continue;
+      if (planProposal(m.tool) !== null) return true;
+      if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL)
+        return false;
+    }
+    return false;
+  }, [session.messages]);
+  const implementPlan = useCallback(
+    (revision?: number) => {
+      decidePlanning('implement', revision);
+      scrollToLatest(true);
+    },
+    [decidePlanning, scrollToLatest],
+  );
+  // "End" always asks: ending planning gives the agent its file access back, and
+  // with a plan on the table the operator also has to say what becomes of it.
+  const endPlanning = useCallback(() => {
+    if (planningPlan == null) {
+      Alert.alert(
+        'End planning mode?',
+        'The agent can change files again from your next message.',
+        [
+          { text: 'Keep planning', style: 'cancel' },
+          { text: 'End', onPress: () => decidePlanning('discard') },
+        ],
+      );
+      return;
+    }
+    Alert.alert(
+      'End planning mode?',
+      hasPresentedPlan
+        ? 'What should happen to the latest plan? It stays in the chat either way.'
+        : `What should happen to this plan?\n\n${planningPlan}`,
+      [
+        { text: 'Implement plan', onPress: () => implementPlan(planningRevision) },
+        { text: 'Discard plan', style: 'destructive', onPress: () => decidePlanning('discard') },
+        { text: 'Keep planning', style: 'cancel' },
+      ],
+    );
+  }, [decidePlanning, hasPresentedPlan, implementPlan, planningRevision, planningPlan]);
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -3250,6 +3320,11 @@ export function SessionChat({
       automation,
       automationReady,
       latestAutomationProposalId,
+      planning,
+      planningRevision,
+      planningPlan,
+      decidingPlanning,
+      implementPlan,
     }),
     [
       sendQuickReply,
@@ -3261,6 +3336,11 @@ export function SessionChat({
       automation,
       automationReady,
       latestAutomationProposalId,
+      planning,
+      planningRevision,
+      planningPlan,
+      decidingPlanning,
+      implementPlan,
     ],
   );
   // Local upload placeholders may sit after the transcript tail, but quick-action
@@ -4183,6 +4263,9 @@ export function SessionChat({
           busy={working}
           onSave={onSaveToProject}
         />
+      ) : null}
+      {planning === 'active' ? (
+        <PlanningBar deciding={decidingPlanning} error={planningError} onEnd={endPlanning} />
       ) : null}
       <InputBar
         inputRef={inputRef}
@@ -5961,6 +6044,15 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
         latest={item.latest}
       />
     );
+  if (item.kind === 'plan-proposal')
+    return (
+      <PlanProposalCard
+        key={`${item.message.id}:${String(item.latest)}`}
+        markdown={item.markdown}
+        latest={item.latest}
+        revision={planProposalRevision(item.message.tool)}
+      />
+    );
   switch (item.message.kind) {
     case 'user-text':
       return <UserBubble message={item.message} />;
@@ -7249,6 +7341,150 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
   );
 }
 
+/** A plan the agent presented for the operator's decision. Only the newest one can
+ * be implemented; older versions collapse to one line, expandable. */
+function PlanProposalCard({
+  markdown: presentedMarkdown,
+  latest,
+  revision: presentedRevision,
+}: {
+  markdown: string;
+  latest: boolean;
+  revision?: number;
+}) {
+  const { theme } = useUnistyles();
+  const actions = useContext(SessionActionsContext);
+  const [expanded, setExpanded] = useState(latest);
+  const planning = actions?.planning;
+  const { markdown, revision } = planProposalDisplay(
+    { markdown: presentedMarkdown, revision: presentedRevision },
+    latest,
+    actions,
+  );
+  const decidable = latest && planning === 'active' && actions?.planningPlan !== null;
+  const enabled =
+    decidable &&
+    revision !== undefined &&
+    actions !== null &&
+    !actions.dead &&
+    !actions.decidingPlanning;
+  const status = !latest
+    ? 'Earlier version'
+    : planning === 'implemented'
+      ? 'Implemented'
+      : planning === 'discarded'
+        ? 'Discarded'
+        : null;
+  return (
+    <View style={styles.toolCard}>
+      <Pressable
+        style={styles.toolHeader}
+        onPress={() => setExpanded((e) => !e)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        accessibilityLabel={status === null ? 'Plan' : `Plan, ${status}`}
+      >
+        <View
+          style={[
+            styles.toolDot,
+            {
+              backgroundColor: decidable
+                ? theme.colors.tone.attention
+                : planning === 'implemented' && latest
+                  ? theme.colors.tone.done
+                  : theme.colors.tone.idle,
+            },
+          ]}
+        />
+        <Text style={styles.toolHeadline} numberOfLines={1}>
+          {status === null ? 'Plan' : `Plan · ${status}`}
+        </Text>
+        <Icon
+          name={expanded ? 'chevron-down' : 'chevron-right'}
+          size={16}
+          color={theme.colors.textFaint}
+        />
+      </Pressable>
+      {expanded ? (
+        <View style={styles.toolDetail}>
+          <MarkdownText
+            content={markdown}
+            onOpenLocalFile={null}
+            sessionFileImageSource={null}
+            onOpenImage={() => undefined}
+          />
+        </View>
+      ) : null}
+      {decidable ? (
+        <View style={styles.choicesChips}>
+          <Pressable
+            onPress={() => enabled && actions?.implementPlan(revision)}
+            disabled={!enabled}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !enabled }}
+            accessibilityLabel="Implement plan"
+            style={({ pressed }) => [
+              styles.chip,
+              styles.chipRecommended,
+              enabled ? null : styles.chipDisabled,
+              pressed && enabled ? styles.chipPressed : null,
+            ]}
+          >
+            <Text style={styles.chipStar}>★</Text>
+            <Text style={[styles.chipLabel, styles.chipLabelRecommended]}>Implement plan</Text>
+          </Pressable>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** Shown above the composer while the session is in planning mode. */
+function PlanningBar({
+  deciding,
+  error,
+  onEnd,
+}: {
+  deciding: boolean;
+  error: string | undefined;
+  onEnd: () => void;
+}) {
+  return (
+    <View style={styles.prBarWrap}>
+      <View style={styles.prBar}>
+        <View style={styles.prLocalMain}>
+          <Text style={styles.prTitle} numberOfLines={1}>
+            Planning mode
+          </Text>
+          <Text style={styles.prSub} numberOfLines={1}>
+            The agent makes no file changes.
+          </Text>
+          {error !== undefined ? (
+            <Text style={styles.prError} numberOfLines={2}>
+              {error}
+            </Text>
+          ) : null}
+        </View>
+        <Pressable
+          onPress={onEnd}
+          disabled={deciding}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: deciding, busy: deciding }}
+          accessibilityLabel="End planning mode"
+          style={({ pressed }) => [
+            styles.chip,
+            styles.planningBarEnd,
+            deciding ? styles.chipDisabled : null,
+            pressed && !deciding ? styles.chipPressed : null,
+          ]}
+        >
+          <Text style={styles.chipLabel}>End</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function EventRow({ message }: { message: ModeSwitchMessage }) {
   const { theme } = useUnistyles();
   const descriptor = agentEventDescriptor(message.event);
@@ -7928,6 +8164,7 @@ function PermissionPrompt({
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
+  const isEndPlanning = planningToolName(pending.tool) === END_PLANNING_TOOL;
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
@@ -8020,6 +8257,7 @@ function PermissionPrompt({
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
+      isEndPlanning ? 'Implement the plan?' : null,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
     // so this is consistency rather than exposure — but it is the headline, and the one field
@@ -8061,7 +8299,13 @@ function PermissionPrompt({
               : pending.riskClass}
         </Text>
       </View>
-      {knowledgeSummary !== null ? (
+      {isEndPlanning ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionHttpMeta}>
+            Planning mode ends and the agent may change files again to implement the latest plan.
+          </Text>
+        </View>
+      ) : knowledgeSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable>
             Source: {spellOutBidiControls(knowledgeSummary.source)}
@@ -10182,6 +10426,9 @@ const styles = StyleSheet.create((theme) => ({
   /** The local merge bar has no status dot and nothing to open, so it carries the
    *  padding `prOpenTarget` gives the PR row itself — without it the branch name sits
    *  flush against the bar's border on one side and the Merge button on the other. */
+  planningBarEnd: {
+    marginRight: theme.spacing.sm,
+  },
   prLocalMain: {
     flex: 1,
     minWidth: 0,

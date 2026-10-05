@@ -10,7 +10,7 @@ import type {
   RequestPermissionResponse,
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { AgentEvent, Usage } from '@verity/events';
+import { planningToolName, type AgentEvent, type Usage } from '@verity/events';
 import type { PermissionDecision, PermissionRequest } from './index.js';
 import type {
   RunResult,
@@ -149,6 +149,8 @@ export interface AcpBackendProfile {
    *  mode-carrying permission request asks which posture an approval implies.
    *  Agents that do not advertise the mode keep their own clamped current mode. */
   sessionMode?(opts: RunTurnOptions): string | undefined;
+  /** The profile verifies restrictive planning through configureSession instead. */
+  readonly planningViaConfig?: boolean;
   /** The one tool whose approval legitimately also picks a permission posture
    *  (Claude's `ExitPlanMode`). Profiles that name none never have a permission
    *  request read as a posture, whatever its options look like. */
@@ -695,7 +697,22 @@ export async function runAcpTurn(
       }
       return response;
     };
-    if (opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
+    // A planning turn refuses every request without asking. Whatever an agent asks
+    // for here is a step beyond reading — an edit, a command outside its read-only
+    // sandbox, Claude's own `ExitPlanMode` — and approving it would carry out part
+    // of a plan the operator has not accepted yet. The operator leaves planning
+    // through Verity instead, which ends it for every agent the same way.
+    const planning = opts.planning === true;
+    // Except Verity's own planning tools: a read-only posture may gate any MCP call
+    // behind a request, and refusing these would leave the agent no way to present
+    // its plan. The gateway still decides them itself — ending planning raises the
+    // operator's card there.
+    if (planning && planningToolName(name) !== undefined) {
+      const allow = request.options.find((option) => option.kind === 'allow_once');
+      if (allow !== undefined)
+        return { outcome: { outcome: 'selected', optionId: allow.optionId } };
+    }
+    if (planning || opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
       // No approval UI is wired, so every request is refused. On a mode picker
       // the refusal IS "no, keep planning" and lands the session in `plan`;
       // pulling it back to the configured posture would turn a turn Verity
@@ -974,10 +991,15 @@ export async function runAcpTurn(
         // it rather than trust it. Awaited, unlike the drift pull-back: the mode
         // has to hold before the prompt goes out, or the turn's first tool call
         // runs in a posture nobody chose.
+        if (opts.planning === true && setMode === undefined && profile.planningViaConfig !== true) {
+          throw new Error('The agent does not support the required planning permission mode.');
+        }
         if (setMode !== undefined) {
           try {
             await setMode();
           } catch {
+            if (opts.planning === true)
+              throw new Error('The agent refused the required planning permission mode.');
             // The mode catalogue is reported once, at session creation, and ACP
             // offers no way to re-read it: `session/set_config_option` answers
             // with config options only. So a model selected just above can have

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message, ToolCallMessage } from '../happy/message.js';
-import { groupRows, rowKey, rowRecycleType } from './transcriptRows.js';
+import { groupRows, rowKey, rowRecycleType, withPlanningSnapshot } from './transcriptRows.js';
 
 function userText(id: string): Message {
   return { kind: 'user-text', id, localId: null, createdAt: 0, text: id };
@@ -313,5 +313,95 @@ describe('plan rows', () => {
 
   it('leaves a TodoWrite call it cannot read as an ordinary tool', () => {
     expect(groupRows([toolCall('tool-x', { name: 'TodoWrite' })])[0]?.kind).toBe('tool-group');
+  });
+
+  it('lifts presented plans out of tool runs and marks only the newest as latest', () => {
+    const presented = (id: string, name: string, plan: string): ToolCallMessage => {
+      const message = toolCall(id, { name });
+      message.tool.input = { plan };
+      return message;
+    };
+    const rows = groupRows([
+      toolCall('tool-a'),
+      presented('tool-v1', 'mcp__verity__verity_present_plan', '1. First draft'),
+      userText('u1'),
+      presented('tool-v2', 'verity_present_plan', '1. Revised'),
+      toolCall('tool-b'),
+    ]);
+    // The "Implement plan" decision refers to the newest plan only; an older one
+    // keeping its button would implement a plan the operator already revised.
+    expect(
+      rows.map((row) =>
+        row.kind === 'plan-proposal' ? `proposal:${rowKey(row)}:${String(row.latest)}` : row.kind,
+      ),
+    ).toEqual([
+      'tool-group',
+      'proposal:tool-v1:false',
+      'message',
+      'proposal:tool-v2:true',
+      'tool-group',
+    ]);
+    expect(rows[3]).toMatchObject({ markdown: '1. Revised' });
+    expect(rowRecycleType(rows[3]!)).toBe('plan-proposal:short');
+
+    const delegated = presented('tool-child-plan', 'verity_present_plan', 'Child plan');
+    delegated.parentToolId = 'agent';
+    const mixed = groupRows([
+      presented('tool-parent-plan', 'verity_present_plan', 'Parent plan'),
+      toolCall('tool-agent', { name: 'Agent' }),
+      delegated,
+    ]);
+    expect(mixed[0]).toMatchObject({ kind: 'plan-proposal', latest: false });
+    expect(mixed[1]).toMatchObject({
+      kind: 'delegated-agent',
+      childRows: [expect.objectContaining({ kind: 'plan-proposal', latest: true })],
+    });
+
+    // A new planning round starts with no plan to decide on: the last round's plan
+    // was already implemented or discarded, so it must not get its button back.
+    const failedStart = toolCall('tool-failed-start', { name: 'verity_start_planning' });
+    failedStart.tool.state = 'error';
+    const failedRound = groupRows([
+      presented('tool-existing', 'verity_present_plan', 'Existing plan'),
+      failedStart,
+    ]);
+    expect(failedRound[0]).toMatchObject({ kind: 'plan-proposal', latest: true });
+    const nextRound = groupRows([
+      presented('tool-v1', 'verity_present_plan', '1. Done already'),
+      toolCall('tool-start', { name: 'mcp__verity__verity_start_planning' }),
+    ]);
+    expect(nextRound[0]).toMatchObject({ kind: 'plan-proposal', latest: false });
+  });
+});
+
+describe('withPlanningSnapshot', () => {
+  it('restores the exact persisted plan and revision when the loaded history is truncated', () => {
+    const rows = groupRows([userText('recent')]);
+    const restored = withPlanningSnapshot(rows, {
+      planning: 'active',
+      planningPlan: 'Persisted plan to review',
+      planningRevision: 7,
+    });
+    expect(restored).toHaveLength(2);
+    expect(restored[1]).toMatchObject({
+      kind: 'plan-proposal',
+      latest: true,
+      markdown: 'Persisted plan to review',
+      message: { tool: { result: { planningRevision: 7 } } },
+    });
+    expect(
+      withPlanningSnapshot(restored, {
+        planning: 'active',
+        planningPlan: 'Persisted plan to review',
+        planningRevision: 7,
+      }),
+    ).toBe(restored);
+    expect(
+      withPlanningSnapshot(rows, {
+        planning: 'discarded',
+        planningPlan: 'Old plan',
+        planningRevision: 7,
+      }),
+    ).toBe(rows);
   });
 });

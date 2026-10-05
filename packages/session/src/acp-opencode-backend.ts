@@ -94,7 +94,7 @@ async function configureSession(setup: AcpSessionSetup, opts: RunTurnOptions): P
   // model was selected, and a posture is the wrong thing to infer from a stale read:
   // a skipped `plan` write would run an edit-free turn's tools for real. Asserting it
   // after the model also matches the order the Codex profile settled on.
-  const mode = openCodeMode(opts.permissionMode);
+  const mode = opts.planning === true ? PLAN_MODE : openCodeMode(opts.permissionMode);
   const outcome = await applySelectOption(
     setup,
     MODE_CONFIG_ID,
@@ -141,6 +141,7 @@ const OPENCODE_ACP_PROFILE: AcpBackendProfile = {
   // name that reached the multi-purpose CLI would let the caller's argv pick the
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: 'opencode-acp',
+  planningViaConfig: true,
   telemetryBackend: 'opencode-acp',
   httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the

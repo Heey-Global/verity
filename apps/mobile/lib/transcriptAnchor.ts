@@ -61,6 +61,7 @@ export function anchorMessageId(row: Row | undefined): string | null {
   switch (row.kind) {
     case 'message':
     case 'plan':
+    case 'plan-proposal':
       return row.message.id;
     case 'tool-group':
     case 'todo-group':
@@ -83,6 +84,7 @@ export function rowMatchesAnchor(row: Row, anchor: ScrollAnchor): boolean {
     switch (row.kind) {
       case 'message':
       case 'plan':
+      case 'plan-proposal':
         if (row.message.id === anchor.messageId) return true;
         break;
       case 'tool-group':

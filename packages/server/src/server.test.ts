@@ -2447,6 +2447,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
   });
 
@@ -2493,6 +2495,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
       branch: 'feat/122-x',
     });
     expect(branchSvc.current).toHaveBeenCalledWith('/wt/s1');
@@ -2514,6 +2518,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: 'Auth Refactor',
+      planningPlan: null,
+      planningRevision: 0,
     });
     await noBranches.close();
   });
@@ -2543,6 +2549,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
     await noBranches.close();
   });
@@ -3246,6 +3254,8 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
         status: 'awaiting_input',
         pendingPermissions: [],
@@ -3261,6 +3271,8 @@ describe('GET /sessions', () => {
         worktree: '/wt/s2',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
         status: 'idle',
         pendingPermissions: [],
@@ -3425,6 +3437,8 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
         status: 'completed',
         pendingPermissions: [],
@@ -6261,6 +6275,8 @@ describe('GET /sessions/:id', () => {
       worktree: '/wt/s1',
       model: 'm',
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
       projectId: null,
       status: 'running',
       pendingPermissions: [],
@@ -12975,6 +12991,55 @@ describe('DELETE /projects/:id', () => {
       expect(turnDuringTeardown).toEqual({
         statusCode: 409,
         body: { error: 'session is being deleted with its project' },
+      });
+      expect(dispatchTurn).not.toHaveBeenCalled();
+      expect(await ctx.store.listSessions()).toEqual([]);
+    } finally {
+      await a.close();
+    }
+  });
+
+  // An accepted plan is also a turn: it must respect the deletion fence.
+  it('refuses plan implementation while the project teardown is running', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-plan-race',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-plan-race',
+      worktree: '/wt/plan-race',
+      model: 'm',
+      projectId: 'p-plan-race',
+    });
+    await ctx.store.setSessionPlanning('s-plan-race', 'active');
+    await ctx.store.presentSessionPlan('s-plan-race', 'Delete fence plan');
+    const base = fakeDeprovisioner();
+    let turnDuringTeardown: { statusCode: number; body: unknown } | undefined;
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      deprovisioner: {
+        deprovision: vi.fn(async (projectId: string): Promise<ProjectRecord> => {
+          const res = await a.inject({
+            method: 'POST',
+            url: '/sessions/s-plan-race/planning',
+            payload: { action: 'implement', planningRevision: 1 },
+          });
+          turnDuringTeardown = { statusCode: res.statusCode, body: res.json() };
+          return base.deprovision(projectId);
+        }),
+      },
+    });
+    try {
+      const res = await a.inject({ method: 'DELETE', url: '/projects/p-plan-race' });
+      expect(res.statusCode).toBe(200);
+      expect(turnDuringTeardown).toEqual({
+        statusCode: 409,
+        body: { error: 'invalid request' },
       });
       expect(dispatchTurn).not.toHaveBeenCalled();
       expect(await ctx.store.listSessions()).toEqual([]);

@@ -8,6 +8,8 @@ import {
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
   MEMORY_SYSTEM_PROMPT,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
@@ -26,6 +28,7 @@ import {
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryEventBus } from './bus.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import {
   BackendTerminationUnconfirmedError,
   Conductor,
@@ -90,6 +93,7 @@ const ZERO_USAGE = {
 const RESUME_SET = [
   TERMINOLOGY_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
@@ -1071,6 +1075,31 @@ describe('Conductor.sendTurn', () => {
     });
     expect(fake.last().env?.VERITY_TEST).toBe('1');
     expect(seen.length).toBeGreaterThan(0); // events fanned out to the bus
+  });
+
+  it('runs every turn of a planning session in the planning mode, whatever the turn asked for', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    const fake = scriptedBackend({ text: 'hi' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      permissionMode: 'auto',
+      worktreeExists: async () => true,
+    });
+
+    // A per-turn posture must not reopen file changes while the operator is still
+    // refining the plan; only ending planning in Verity does that.
+    await conductor.sendTurn('s1', 'go', { permissionMode: 'acceptEdits' });
+    expect(fake.last().permissionMode).toBe(PLANNING_PERMISSION_MODE);
+    expect(fake.last().planning).toBe(true);
+    expect(fake.last().appendSystemPrompt).toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+
+    await ctx.store.setSessionPlanning('s1', 'implemented');
+    await conductor.sendTurn('s1', 'go on', { permissionMode: 'acceptEdits' });
+    expect(fake.last().permissionMode).toBe('acceptEdits');
+    expect(fake.last().planning).toBeUndefined();
+    expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
   });
 
   it('threads per-turn allow/deny tool lists into the turn options', async () => {
@@ -2374,6 +2403,40 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('recovers the implementation accepted before a process interruption exactly once', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    await ctx.store.enqueuePlanImplementation(
+      {
+        id: 'plan-implementation',
+        sessionId: 's1',
+        prompt: 'Implement approved work',
+        opts: { displayPrompt: 'Implement plan' },
+      },
+      revision!,
+    );
+    const seenPrompts: string[] = [];
+    const backend: Backend = {
+      run: async (opts) => {
+        expect(opts.planning).not.toBe(true);
+        seenPrompts.push(opts.prompt ?? '');
+        return { sessionId: 's1', exitCode: 0, stderr: '', aborted: false };
+      },
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.recover();
+    await vi.waitFor(() => expect(seenPrompts).toEqual(['Implement approved work']));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(await ctx.store.listQueuedTurns()).toEqual([]);
+    await conductor.recover();
+    expect(seenPrompts).toHaveLength(1);
+  });
+
   it('recover is a no-op when the store has no queued turns or orphan tail prompts', async () => {
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
     await expect(conductor.recover()).resolves.toBeUndefined();
@@ -2841,6 +2904,12 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     expect(conductor.isBusy('s1')).toBe(true);
     expect(await ctx.store.listRunningTurns()).toHaveLength(1); // marker held while running
     expect((await ctx.store.getEvents('s1')).map((e) => e.t)).not.toContain('interrupted');
+
+    // Recovery cannot establish the original permissions; never steer a fresh
+    // instruction into that unknown posture, even after planning was discarded.
+    await ctx.store.setSessionPlanning('s1', 'discarded');
+    expect(await conductor.dispatchTurn('s1', 'implement it')).toEqual({ queued: true });
+    await conductor.dequeue('s1', conductor.queuedItems('s1')[0]!.id);
 
     // Control reaches the reattached turn's live handle.
     const cancellation = conductor.cancelTurn('s1');
@@ -6395,6 +6464,132 @@ describe('Conductor mid-turn steering (#101)', () => {
     const prompts = (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt');
     expect(prompts.find((event) => event.text === 'first')?.steered).toBeUndefined();
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
+  });
+
+  it('keeps the live planning turn restricted after a planning decision', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'plan it');
+    await waitFor(fake.ready);
+    try {
+      await ctx.store.setSessionPlanning('s1', 'discarded');
+      expect(conductor.isPlanningTurn('s1')).toBe(true);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+    expect(conductor.isPlanningTurn('s1')).toBe(false);
+  });
+
+  it('steers messages into the first turn of a fresh session', async () => {
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const { sessionId } = await conductor.startSession({ worktree: '/wt/fresh', prompt: 'first' });
+    await waitFor(fake.ready);
+    try {
+      expect(await conductor.dispatchTurn(sessionId, 'refine it')).toEqual({ queued: false });
+      expect(fake.steered.map((message) => message.text)).toEqual(['refine it']);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy(sessionId));
+    }
+  });
+
+  it('queues messages when planning starts during a writable turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first');
+    await waitFor(fake.ready);
+    await ctx.store.setSessionPlanning('s1', 'active');
+    try {
+      // Steering would let this planning instruction inherit writable permissions.
+      expect(await conductor.dispatchTurn('s1', 'refine the plan')).toEqual({ queued: true });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+    expect(fake.last().planning).toBe(true);
+  });
+
+  it('durably accepts and dispatches a plan when the session is idle', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const enqueue = vi.spyOn(ctx.store, 'enqueuePlanImplementation');
+    try {
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement approved work',
+          {},
+          { planningRevision: revision! },
+        ),
+      ).toEqual({ queued: true });
+      await waitFor(fake.ready);
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
+      expect(fake.last().planning).not.toBe(true);
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement approved work',
+          {},
+          { planningRevision: revision! },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
+  it('queues a turn behind the live one when asked, even though it could steer', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.dispatchTurn('s1', 'plan it');
+    await waitFor(fake.ready);
+
+    // The implementation of an accepted plan must start as its own turn: steered
+    // into the planning turn, it would run under the planning posture it ends.
+    const res = await conductor.dispatchTurn('s1', 'implement', undefined, {
+      queueBehindActiveTurn: true,
+    });
+
+    expect(res).toEqual({ queued: true });
+    expect(fake.steered).toEqual([]);
+    expect(conductor.queuedItems('s1').map((i) => i.text)).toEqual(['implement']);
+
+    fake.release();
+    await waitFor(() => !conductor.isBusy('s1'));
   });
 
   it('falls back to queueing when the live turn has no writable steering channel', async () => {

@@ -188,7 +188,18 @@ const queuedItemSchema = z.union([
 ]);
 export type QueuedItem = z.infer<typeof queuedItemSchema>;
 
+/** Planning mode (`active`), or how the last planning round ended. A value this
+ * build does not know reads as absent rather than failing the whole response. */
+const sessionPlanningSchema = z
+  .enum(['active', 'implemented', 'discarded'])
+  .optional()
+  .catch(undefined);
+export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
+
 export const sessionDetailSchema = sessionSummarySchema.extend({
+  planning: sessionPlanningSchema,
+  planningRevision: z.number().int().nonnegative().optional(),
+  planningPlan: z.string().nullable().optional(),
   eventCount: z.number().int().nonnegative(),
   /** True while a turn is in flight (the agent is working). OPTIONAL on the wire
    * for forward-compat with an older server; absent → not busy. */
@@ -229,6 +240,12 @@ export const sessionActivitySchema = z.object({
    * OPTIONAL on the wire (absent on an older server) — the header then keeps its
    * load-once value; `null` means explicitly unnamed. */
   name: z.string().nullable().optional(),
+  /** Planning mode, polled so the planning bar follows an agent that starts
+   * planning mid-turn. Absent on an older server and for a session that never
+   * planned. */
+  planning: sessionPlanningSchema,
+  planningRevision: z.number().int().nonnegative().optional(),
+  planningPlan: z.string().nullable().optional(),
 });
 export type SessionActivity = z.infer<typeof sessionActivitySchema>;
 
@@ -3794,6 +3811,24 @@ export class VerityClient {
       body: JSON.stringify(body),
     });
     return sessionMovedSchema.parse(await response.json());
+  }
+
+  /** End planning mode: `implement` starts the implementation of the latest plan as
+   * a new turn, `discard` leaves it unimplemented. 409 when the session is no
+   * longer planning (another device or the agent's approved request decided). */
+  async decidePlanning(
+    id: string,
+    action: 'implement' | 'discard',
+    planningRevision?: number,
+  ): Promise<{ planning: SessionPlanning }> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/planning`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, planningRevision }),
+    });
+    return z
+      .object({ planning: z.enum(['active', 'implemented', 'discarded']) })
+      .parse(await res.json());
   }
 
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {

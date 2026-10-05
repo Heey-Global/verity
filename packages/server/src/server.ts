@@ -91,6 +91,9 @@ import {
   BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
+  END_PLANNING_TOOL,
+  PRESENT_PLAN_TOOL,
+  START_PLANNING_TOOL,
   TERMINOLOGY_SYSTEM_PROMPT,
   RECENT_SESSION_MESSAGES_DEFAULT,
   recentSessionMessagesRequestSchema,
@@ -321,6 +324,7 @@ import {
 import { parseOwnerRepo } from './canonical.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
+import { createSessionPlanning, registerPlanningRoutes } from './planning.js';
 import type { ListenerDiscovery } from './listener-discovery.js';
 import { registerLocalPreviewRoutes } from './local-preview-routes.js';
 import type { LocalPreviewManager } from './local-preview-manager.js';
@@ -3177,6 +3181,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // background-failure sink can log through it (chicken/egg: the conductor is
   // built before the routes, but the logger exists once `app` does).
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
+  const sessionPlanning = createSessionPlanning({
+    eventStore: deps.eventStore,
+    dispatchTurn: (sessionId, prompt, opts, dispatchOpts) => {
+      // No await before dispatch: deletion must not reopen a quiesced worktree.
+      if (sessionsBeingReaped.has(sessionId)) {
+        throw Object.assign(new Error('session is being deleted with its project'), {
+          statusCode: 409,
+        });
+      }
+      return conductor.dispatchTurn(sessionId, prompt, opts, dispatchOpts);
+    },
+  });
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
   // root, nothing may start work on the project or its sessions: a turn
@@ -5540,6 +5556,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       runtimeReadiness: deps.secretJobRuntimeReadiness,
       uplinkDiagnostics: deps.uplinkDiagnostics,
     });
+    // Bind the eventual card answer to the plan that existed before the card opened.
+    const planningApprovalRevisions = new WeakMap<object, number>();
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -5549,6 +5567,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
+        if (
+          toolName === START_PLANNING_TOOL ||
+          toolName === PRESENT_PLAN_TOOL ||
+          toolName === END_PLANNING_TOOL
+        ) {
+          const session = await deps.eventStore.getSession(sessionId);
+          if (session?.projectId !== projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          // Presenting a plan or asking to implement it only means something inside
+          // planning mode. Refusing outside it tells the agent the operator already
+          // decided, instead of raising a card whose answer could change nothing.
+          if (toolName !== START_PLANNING_TOOL && session.planning !== 'active')
+            throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
+          if (toolName === END_PLANNING_TOOL) {
+            if (session.planningPlan == null || session.planningRevision === undefined)
+              throw new ControlPlaneSessionAuthorityError(
+                'Present a plan before requesting implementation.',
+              );
+            planningApprovalRevisions.set(input.request as object, session.planningRevision);
+          }
+          return;
+        }
+        // Gateway capabilities run outside the backend's read-only sandbox.
+        // Neither a standing grant nor a new approval may reopen them while planning.
+        if (
+          (await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
+          conductor.isPlanningTurn?.(sessionId)
+        ) {
+          throw new ControlPlaneSessionAuthorityError(
+            'External tools are unavailable in planning mode; use read-only local tools.',
+          );
+        }
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId) {
@@ -5735,6 +5785,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
+        // Starting planning only takes the agent's own permissions away, and a
+        // presented plan only shows text, so neither needs the operator. Ending it is
+        // the operator's decision and always raises the card.
+        if (toolName === START_PLANNING_TOOL || toolName === PRESENT_PLAN_TOOL) {
+          const session = await deps.eventStore.getSession(sessionId);
+          return session?.projectId === projectId;
+        }
         if (toolName === 'verity_send_session_message') {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId) return false;
@@ -5823,6 +5880,53 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       },
       invokeTool: async (input) => {
+        if (input.toolName === START_PLANNING_TOOL) {
+          if (await sessionPlanning.isPlanning(input.sessionId))
+            throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
+          if (!(await sessionPlanning.start(input.sessionId)))
+            throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
+          return {
+            planning: 'active',
+            note: 'Planning mode is on. Do not change any files in this turn either; Verity enforces it from the next message.',
+          };
+        }
+        if (input.toolName === PRESENT_PLAN_TOOL) {
+          const planningRevision = await sessionPlanning.present(
+            input.sessionId,
+            (input.request as { plan: string }).plan,
+          );
+          if (planningRevision === undefined)
+            throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
+          return {
+            presented: true,
+            planningRevision,
+            note: 'The user sees this plan with an "Implement plan" button. Wait for their decision and do not implement it.',
+          };
+        }
+        if (input.toolName === END_PLANNING_TOOL) {
+          // Reached only through an approved card.
+          const planningRevision = planningApprovalRevisions.get(input.request as object);
+          if (
+            planningRevision === undefined ||
+            !(await sessionPlanning.implement(input.sessionId, planningRevision))
+          )
+            throw new ControlPlaneSessionAuthorityError(
+              'The plan was updated. Please review the current plan and request approval again.',
+            );
+          return {
+            planning: 'implemented',
+            note: 'The user approved. End your turn now; Verity starts the implementation as a new turn.',
+          };
+        }
+        // Planning can begin while an external approval card is pending.
+        if (
+          (await sessionPlanning.isPlanning(input.sessionId)) ||
+          conductor.isPlanningTurn?.(input.sessionId)
+        ) {
+          throw new ControlPlaneSessionAuthorityError(
+            'External tools are unavailable in planning mode; use read-only local tools.',
+          );
+        }
         if (input.toolName === 'verity_list_linked_sessions') {
           const links = await deps.eventStore.listSessionLinks(input.sessionId);
           const projects = await deps.eventStore.listProjects();
@@ -6006,6 +6110,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.authRegistry === undefined ||
       deps.authRegistry.verify(bearerToken(request.headers.authorization)) === true,
   });
+  registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
   registerAutomationRoutes(app, {
     eventStore: deps.eventStore,
     checkScript: (automation) => automationExecutor.checkScript(automation),
@@ -8300,6 +8405,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             busy,
             name: session.name,
             ...(branch !== undefined ? { branch } : {}),
+            // Polled with the rest so the planning bar follows an agent that starts
+            // planning mid-turn, not only the operator's own taps.
+            ...(session.planning !== undefined ? { planning: session.planning } : {}),
+            planningRevision: session.planningRevision,
+            planningPlan: session.planningPlan,
           };
         } catch {
           return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive

@@ -920,6 +920,8 @@ describe('EventStore — sessions', () => {
       name: null,
       projectId: null,
       lastSeenEventCount: null,
+      planningRevision: 0,
+      planningPlan: null,
     });
   });
 
@@ -930,6 +932,8 @@ describe('EventStore — sessions', () => {
       name: 'Add settings',
       projectId: null,
       lastSeenEventCount: null,
+      planningRevision: 0,
+      planningPlan: null,
     });
   });
 
@@ -950,6 +954,24 @@ describe('EventStore — sessions', () => {
 
     // Unknown session id → false (the server maps this to a 404).
     expect(await ctx.store.setSessionSeen('missing', 1)).toBe(false);
+  });
+
+  it('setSessionPlanning moves planning mode only from the states it is told to expect', async () => {
+    await ctx.store.createSession(session);
+    // Never planned: the record carries no planning state at all.
+    expect(await ctx.store.getSession('s1')).not.toHaveProperty('planning');
+
+    expect(await ctx.store.setSessionPlanning('s1', 'active', [null, 'implemented'])).toBe(true);
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+
+    // The first decision wins: a second one expecting `active` finds it already gone,
+    // so a tap and an approval racing each other cannot both start an implementation.
+    expect(await ctx.store.setSessionPlanning('s1', 'implemented', ['active'])).toBe(true);
+    expect(await ctx.store.setSessionPlanning('s1', 'discarded', ['active'])).toBe(false);
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
+    expect((await ctx.store.listSessions())[0]?.planning).toBe('implemented');
+
+    expect(await ctx.store.setSessionPlanning('missing', 'active')).toBe(false);
   });
 
   it('returns undefined for an unknown session', async () => {

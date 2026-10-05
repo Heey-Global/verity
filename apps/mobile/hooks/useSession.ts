@@ -37,6 +37,8 @@ export interface UseSession extends SessionModelState {
   /** Answer the live per-tool permission prompt (#149): POST the operator's
    * allow/deny for `toolUseId`. The pending prompt clears via the stream. */
   decidePermission: (toolUseId: string, decision: PermissionDecision) => void;
+  /** End planning mode: implement the latest plan or discard it. */
+  decidePlanning: (action: 'implement' | 'discard', planningRevision?: number) => void;
   /** Switch the session's engine/model from its next turn onward; the choice is
    * persisted, so the header chip + subsequent turns reflect it. */
   switchModel: (model: string) => void;
@@ -169,6 +171,12 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   const switchModel = useCallback((next: string) => void model.switchModel(next), [model]);
 
+  const decidePlanning = useCallback(
+    (action: 'implement' | 'discard', planningRevision?: number) =>
+      void model.decidePlanning(action, planningRevision),
+    [model],
+  );
+
   return {
     ...state,
     sendTurn,
@@ -178,6 +186,7 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     cancelWaiting,
     dismissPending,
     decidePermission,
+    decidePlanning,
     switchModel,
   };
 }

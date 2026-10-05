@@ -183,6 +183,13 @@ export interface RunTurnOptions {
   /** Permission mode; defaults to `auto` (fleet operator default, §5b). */
   permissionMode?: string;
   /**
+   * The session is in Verity's planning mode. Distinct from a `plan` permission
+   * mode a caller may ask for on its own: only planning mode refuses every in-turn
+   * approval (including Claude's `ExitPlanMode`) and moves Codex into its
+   * read-only sandbox, because only it has a Verity-side way out.
+   */
+  planning?: boolean;
+  /**
    * Per-turn tool allowlist (§5b). Each entry is a tool name or scoped pattern
    * (e.g. `Bash(git *)`); passed comma-joined to `--allowedTools`. Patterns may
    * contain spaces, so they're joined by comma (not space) to stay one argv arg.

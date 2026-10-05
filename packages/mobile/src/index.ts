@@ -77,6 +77,7 @@ export {
 export {
   groupRows,
   reconcileTranscriptRows,
+  withPlanningSnapshot,
   rowKey,
   rowRecycleType,
   type Row,
@@ -88,6 +89,9 @@ export {
 } from './ui/transcriptFreeze.js';
 export {
   planHeadline,
+  planProposal,
+  planProposalRevision,
+  planProposalDisplay,
   planView,
   type PlanEntry,
   type PlanEntryStatus,
@@ -324,6 +328,7 @@ export {
   type MessageSearchResult,
   type SandboxUpdate,
   type SessionActivity,
+  type SessionPlanning,
   type SessionAwaitingProvisioning,
   type SessionCreated,
   type SessionCreateResult,
@@ -361,6 +366,7 @@ export type {
 } from './happy/message.js';
 export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
+export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
   reprovisionActiveProjects,
   type ReprovisionProgress,

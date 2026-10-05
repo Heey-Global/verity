@@ -2590,3 +2590,130 @@ it('keeps a session usable after a missing knowledge error', async () => {
     model.stop();
   }
 });
+
+describe('SessionModel — planning', () => {
+  it.each(['implement', 'discard'] as const)(
+    'keeps a successful %s decision when an earlier activity poll returns late',
+    async (action) => {
+      vi.useFakeTimers();
+      const { connect } = recordingConnect();
+      const client = stubClient();
+      const active = {
+        busy: false,
+        queued: [],
+        planning: 'active' as const,
+        planningRevision: 7,
+        planningPlan: 'Reviewed plan',
+      };
+      let resolvePoll!: (value: typeof active) => void;
+      const delayed = new Promise<typeof active>((resolve) => {
+        resolvePoll = resolve;
+      });
+      const getActivity = vi
+        .fn()
+        .mockResolvedValueOnce(active)
+        .mockReturnValueOnce(delayed)
+        .mockResolvedValue({ ...active, planningRevision: 8, planningPlan: 'Next round' });
+      client.getActivity = getActivity;
+      const decided = action === 'implement' ? 'implemented' : 'discarded';
+      client.decidePlanning = vi.fn().mockResolvedValue({ planning: decided });
+      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      try {
+        model.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(model.state.planning).toBe('active');
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(getActivity).toHaveBeenCalledTimes(2);
+        await model.decidePlanning(action, 7);
+        expect(model.state.planning).toBe(decided);
+        resolvePoll(active);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(model.state.planning).toBe(decided);
+        expect(model.state.planningRevision).toBe(7);
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(model.state.planning).toBe('active');
+        expect(model.state.planningRevision).toBe(8);
+      } finally {
+        model.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('follows planning mode from the poll and ends it on the operator decision', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    let planning: string | undefined = 'active';
+    client.getActivity = vi.fn(async () => ({ busy: false, queued: [], planning })) as never;
+    const decidePlanning = vi.fn(async () => {
+      planning = 'implemented';
+      return { planning: 'implemented' as const };
+    });
+    client.decidePlanning = decidePlanning;
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    try {
+      model.start();
+      await flush();
+      await flush();
+      // An agent can start planning mid-turn; only the poll tells the app.
+      expect(model.state.planning).toBe('active');
+
+      await model.decidePlanning('implement', 7);
+      expect(decidePlanning).toHaveBeenCalledWith('s1', 'implement', 7);
+      expect(model.state.planning).toBe('implemented');
+      expect(model.state.planningError).toBeUndefined();
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('refreshes the changed plan after a stale approval and preserves the review notice', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    let revision = 2;
+    client.getActivity = vi.fn(async () => ({
+      busy: false,
+      queued: [],
+      planning: 'active',
+      planningRevision: revision,
+      planningPlan: `Plan ${String(revision)}`,
+    })) as never;
+    const decidePlanning = vi.fn(async () => {
+      revision = 3;
+      throw new VerityApiError(409, 'plan changed', { code: 'stalePlan' });
+    });
+    client.decidePlanning = decidePlanning;
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    try {
+      model.start();
+      await flush();
+      await flush();
+      expect(model.state.planningPlan).toBe('Plan 2');
+      await model.decidePlanning('implement', 2);
+      await flush();
+      expect(decidePlanning).toHaveBeenCalledWith('s1', 'implement', 2);
+      expect(model.state.planningRevision).toBe(3);
+      expect(model.state.planningPlan).toBe('Plan 3');
+      expect(model.state.planningError).toBe('The plan was updated. Please review it again.');
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('explains a decision that lost to another one', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    client.decidePlanning = vi.fn(async () => {
+      throw new VerityApiError(409, 'this session is not in planning mode');
+    });
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    try {
+      model.start();
+      await model.decidePlanning('discard');
+      expect(model.state.planningError).toBe('Planning already ended.');
+      expect(model.state.decidingPlanning).toBe(false);
+    } finally {
+      model.stop();
+    }
+  });
+});

@@ -133,6 +133,9 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_session_progress: 'Verity Session Progress',
   verity_publish_session_progress: 'Verity Published Progress',
   verity_diagnostics: 'Verity Diagnostics',
+  verity_start_planning: 'Verity Planning Mode',
+  verity_present_plan: 'Verity Plan',
+  verity_end_planning: 'Verity Implement Plan',
 };
 
 /** Strip a backend's MCP qualification (`mcp__verity__`, OpenCode's `verity_`) off a known

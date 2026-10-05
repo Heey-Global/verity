@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolCall } from '../happy/message.js';
-import { planHeadline, planView } from './plan.js';
+import {
+  planHeadline,
+  planProposal,
+  planProposalRevision,
+  planProposalDisplay,
+  planView,
+} from './plan.js';
 
 function call(name: string, input: unknown, state: ToolCall['state'] = 'completed'): ToolCall {
   return {
@@ -49,5 +55,75 @@ describe('planView', () => {
     ['a failed call', call('TodoWrite', { todos: [{ content: 'x', status: 'pending' }] }, 'error')],
   ])('is null for %s', (_label, tool) => {
     expect(planView(tool)).toBeNull();
+  });
+});
+
+describe('planProposal', () => {
+  it('reads a presented plan under every backend qualification and from ExitPlanMode', () => {
+    for (const name of [
+      'verity_present_plan',
+      'mcp__verity__verity_present_plan',
+      'verity_verity_present_plan',
+      'ExitPlanMode',
+    ]) {
+      expect(planProposal(call(name, { plan: '## Goal\n1. Step' }))).toBe('## Goal\n1. Step');
+    }
+  });
+
+  it('reads the plan out of the arguments Codex wraps an MCP call input in', () => {
+    expect(
+      planProposal(
+        call('mcp__verity__verity_present_plan', {
+          server: 'verity',
+          tool: 'verity_present_plan',
+          arguments: { plan: '1. Step' },
+        }),
+      ),
+    ).toBe('1. Step');
+  });
+
+  it('keeps a refused ExitPlanMode plan but drops a presentation the gateway refused', () => {
+    // Planning mode refuses Claude's ExitPlanMode on purpose; its plan still stands.
+    expect(planProposal(call('ExitPlanMode', { plan: 'Plan' }, 'error'))).toBe('Plan');
+    // A refused presentation happened outside planning mode and never reached anyone.
+    expect(planProposal(call('verity_present_plan', { plan: 'Plan' }, 'error'))).toBeNull();
+  });
+
+  it('waits for the gateway to accept a plan before offering it', () => {
+    expect(planProposal(call('verity_present_plan', { plan: 'Plan' }, 'running'))).toBeNull();
+  });
+
+  it('ignores other tools and empty or malformed plans', () => {
+    expect(planProposal(call('Bash', { plan: 'Plan' }))).toBeNull();
+    expect(planProposal(call('verity_present_plan', { plan: '  ' }))).toBeNull();
+    expect(planProposal(call('verity_present_plan', { plan: 3 }))).toBeNull();
+  });
+});
+
+describe('planProposalRevision', () => {
+  it('reads the displayed presentation revision from MCP text', () => {
+    const tool = call('verity_present_plan', { plan: 'First' });
+    tool.result = {
+      content: [{ type: 'text', text: JSON.stringify({ presented: true, planningRevision: 3 }) }],
+    };
+    expect(planProposalRevision(tool)).toBe(3);
+    expect(planProposalRevision({ ...tool, state: 'error' })).toBeUndefined();
+    expect(planProposalRevision({ ...tool, result: { planningRevision: -1 } })).toBeUndefined();
+  });
+});
+
+describe('planProposalDisplay', () => {
+  it('updates both displayed text and approval revision together', () => {
+    const shown = { markdown: 'Old plan', revision: 2 };
+    const current = { planningPlan: 'New plan', planningRevision: 3 };
+    expect(planProposalDisplay(shown, true, current)).toEqual({
+      markdown: 'New plan',
+      revision: 3,
+    });
+    expect(planProposalDisplay(shown, false, current)).toEqual(shown);
+    expect(planProposalDisplay(shown, true, { planningRevision: 3 })).toEqual(shown);
+    expect(
+      planProposalDisplay(shown, true, { planningPlan: 'Older poll', planningRevision: 1 }),
+    ).toEqual(shown);
   });
 });

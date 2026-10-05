@@ -3756,6 +3756,31 @@ const migrations: Record<string, Migration> = {
         $$`.execute(db);
     },
   },
+  // Planning mode is session state rather than a per-turn option: it has to hold
+  // across every message the operator exchanges while refining a plan, and the
+  // turn that starts it is not the one it first restricts.
+  '0134_session_planning': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column planning text check (planning in ('active', 'implemented', 'discarded'))`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column planning`.execute(db);
+    },
+  },
+  '0135_session_planning_revision': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column planning_revision integer not null default 0 check (planning_revision >= 0), add column planning_plan text`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column planning_plan, drop column planning_revision`.execute(
+        db,
+      );
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
