@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,6 +79,14 @@ beforeEach(async () => {
 
 afterEach(() => {
   if (base) rmSync(base, { recursive: true, force: true });
+});
+
+it('ships the guarded Git wrapper unchanged in the toolkit', () => {
+  const shipped = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../features/verity-sandbox-toolkit/agent-seed/bin/git',
+  );
+  expect(readFileSync(shipped, 'utf8')).toBe(readFileSync(WRAPPER, 'utf8'));
 });
 
 describe('agent-seed/bin/git guard (self-remove of session worktree)', () => {

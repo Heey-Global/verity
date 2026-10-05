@@ -57,6 +57,41 @@ describe('independent listener discovery', () => {
       discovery.close();
     }
   });
+  it('retains a background scan when a later direct scan fails without an isolation resolver', async () => {
+    const project = {
+      id: 'p',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'sandbox',
+      state: 'active',
+    };
+    const session = { sessionId: 'a', projectId: 'p', worktree: '/data/org-repo/a' };
+    const store = {
+      getSession: async () => session,
+      getProject: async () => project,
+      listSessions: async () => [session],
+      getLatestDevServersEvent: async () => undefined,
+      appendEvent: async () => ({ seq: 1, ts: Date.now() }),
+    } as unknown as EventStore;
+    const scan = vi.fn(async () => [
+      { port: 5173, pid: 1, cwd: '/work/a', command: 'vite', bind: 'any' as const },
+    ]);
+    const discovery = new ListenerDiscovery({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      hostCloneRoot: '/data',
+      scan,
+    });
+    try {
+      await discovery.refreshProject(project as never);
+      scan.mockRejectedValueOnce(new Error('Transient scan failure'));
+      expect(await discovery.listSessionDevServers('a')).toMatchObject([
+        { port: 5173, scope: 'session' },
+      ]);
+    } finally {
+      discovery.close();
+    }
+  });
   it('includes unassigned project listeners and excludes another session', async () => {
     const project = {
       id: 'p',

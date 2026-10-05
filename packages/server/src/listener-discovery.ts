@@ -55,13 +55,14 @@ export class ListenerDiscovery {
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (!this.active(project)) return [];
     if (!this.options.resolveSessionProject) await this.watch(project);
+    const cacheKey = this.options.resolveSessionProject ? project.containerName : project.id;
     let processes: ListeningProcess[];
     try {
       processes = await this.options.scan(project);
-      this.healthy.set(project.containerName, processes);
+      this.healthy.set(cacheKey, processes);
       this.options.onScan?.(project, processes);
     } catch {
-      processes = this.healthy.get(project.containerName) ?? [];
+      processes = this.healthy.get(cacheKey) ?? [];
     }
     return this.attribute(project, sessionId, processes);
   }
