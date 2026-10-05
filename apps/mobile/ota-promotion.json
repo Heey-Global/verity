@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.52.3",
+  "version": "1.52.4",
   "runtime": "1.52.0",
   "channel": "production",
-  "commit": "fef71150bf2ec6ea1a00ad7d1ef2de3155a2f0c8",
-  "tag": "mobile-v1.52.3",
-  "branch": "staging-mobile-v1.52.3-fef71150bf2ec6ea1a00ad7d1ef2de3155a2f0c8",
-  "baseline": "mobile-v1.52.2",
-  "group": "d522c5c6-feb4-42c2-9485-1534cf11acc6",
+  "commit": "80db6d3929b7950080d7ca7b230132ccc81181f9",
+  "tag": "mobile-v1.52.4",
+  "branch": "staging-mobile-v1.52.4-80db6d3929b7950080d7ca7b230132ccc81181f9",
+  "baseline": "mobile-v1.52.3",
+  "group": "f6017a79-3c92-437e-a7ef-d080d9d9e7c8",
   "notes": [
-    "remove redundant secret store settings entry (#1129)",
-    "split preview into dev server and static file tabs (#1128)"
+    "show subscription plan and usage on provider settings (#1142)",
+    "unify scoped approvals and prevent redundant prompts (#1139)"
   ]
 }
