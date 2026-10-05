@@ -142,13 +142,11 @@ detected and listed as not managed, with an offer to save them as an entry. They
   whenever the operator switches it on, in any session, and after sandbox recreation. The
   command is therefore always shown: on the chat card for `add` and `update`, and in the
   detail view, so the operator never starts something they cannot read.
-- _Local publishing needs one operator approval._ Interim rule until the operator confirms
-  otherwise. An entry's sandbox process may start on the agent's request, but its "On your
+- _Local publishing needs one operator approval._ Decided by the operator on 2026-10-05. An entry's sandbox process may start on the agent's request, but its "On your
   network" share is created only after the operator approved the entry once by tapping "Open
   on network" on its row or detail view. The approval is keyed to the exact command and subdirectory it approved and is checked against what is actually executed, including the last-run values at a restart after sandbox recreation, compared before `{port}` substitution, so a changed sandbox port does not void it and an approved command line cannot be swapped for another one. The approval covers the command line, not the files it runs: the agent can still change the code behind it, as it can change any code in the worktree. Once approved, starts by the agent or after sandbox recreation publish locally without
   another tap. Without approval the row shows "Running, not shared yet" with "Open on network".
-  The permissive alternative, publishing on every start without approval, widens what the agent
-  can do alone and stays open for operator confirmation. The public share is always an explicit
+  The permissive alternative, publishing on every start without approval, was rejected because it would let the agent alone expose an unauthenticated service on the operator's network. The public share is always an explicit
   operator step with its PIN and entitlement check.
 - _Startup deadline._ An entry that does not answer on its port within 60 seconds moves to
   crashed with "Did not answer on its port", typically a command that ignores `PORT`. Missing the deadline stops the process tree as Stop does, so nothing keeps holding the port or keeps the sandbox awake.
@@ -293,7 +291,7 @@ becomes "Open settings" and the text names Verity Premium.
    start, stop, state, and log capture in the project runtime; restart after sandbox
    recreation; `verity-dev-server` entry commands and agent-seed guidance; Preview sheet
    rows with switches, detail view with logs, and the not-managed section.
-   Local publishing follows the interim approval rule under edge cases.
+   Local publishing follows the approval rule under edge cases.
 
 ## 5. Implementation details and verification boundaries
 
