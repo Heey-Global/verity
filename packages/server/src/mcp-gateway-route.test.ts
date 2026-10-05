@@ -88,6 +88,7 @@ function build(
     authorizeCall?: McpGatewayDeps['authorizeCall'];
     standing?: boolean;
     planningOnApproval?: boolean;
+    planningTurn?: boolean;
   } = {},
 ): Harness {
   const cipher = createSealableSecretCipher();
@@ -160,6 +161,7 @@ function build(
   // Only `requestExternalPermission` is reachable from this route; the rest of the
   // conductor surface is deliberately absent so a wiring slip shows up as a crash.
   const conductor = {
+    isPlanningTurn: () => options.planningTurn === true,
     requestExternalPermission: (input: {
       sessionId: string;
       toolUseId: string;
@@ -383,13 +385,19 @@ it('lets the agent start planning and present plans, but leaves ending it to the
 });
 
 it.each([
-  [false, false],
-  [true, false],
-  [false, true],
+  [false, false, undefined],
+  [true, false, undefined],
+  [false, true, undefined],
+  [true, false, 'implemented'],
+  [true, false, 'discarded'],
 ])(
-  'blocks external calls during planning before authorization (standing=%s, during approval=%s)',
-  async (standing, planningOnApproval) => {
-    const harness = build({ standing, planningOnApproval });
+  'blocks external calls during planning before authorization (standing=%s, during approval=%s, decided=%s)',
+  async (standing, planningOnApproval, decided) => {
+    const harness = build({
+      standing: standing === true,
+      planningOnApproval: planningOnApproval === true,
+      planningTurn: decided !== undefined,
+    });
     await harness.store.createProject({
       id: 'p1',
       kind: 'local',
@@ -405,7 +413,15 @@ it.each([
       worktree: '/wt/s1',
       model: 'm',
     });
-    if (!planningOnApproval) await harness.store.setSessionPlanning('s1', 'active');
+    if (!planningOnApproval)
+      await harness.store.setSessionPlanning(
+        's1',
+        decided === 'implemented'
+          ? 'implemented'
+          : decided === 'discarded'
+            ? 'discarded'
+            : 'active',
+      );
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
     await withListener(harness, async (socketPath) => {
       // The external executor is outside the agent's sandbox, so local read-only

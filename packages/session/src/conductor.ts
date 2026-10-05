@@ -1614,6 +1614,12 @@ export class Conductor {
     return this.inFlight.has(sessionId);
   }
 
+  /** Restricts the live turn even after the session's planning decision.
+   * Recovered turns retain restrictions until their unknown posture settles. */
+  isPlanningTurn(sessionId: string): boolean {
+    return this.inFlight.has(sessionId) && this.runningPlanning.get(sessionId) !== false;
+  }
+
   /**
    * A stateless one-shot model query — spawns the backend's `query` (e.g. `claude -p`)
    * ONCE with no session, transcript, worktree, or store writes, and returns its raw

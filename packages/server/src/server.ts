@@ -5575,7 +5575,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         // Gateway capabilities run outside the backend's read-only sandbox.
         // Neither a standing grant nor a new approval may reopen them while planning.
-        if ((await deps.eventStore.getSession(sessionId))?.planning === 'active') {
+        if (
+          (await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
+          conductor.isPlanningTurn?.(sessionId)
+        ) {
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
@@ -5888,7 +5891,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           };
         }
         // Planning can begin while an external approval card is pending.
-        if (await sessionPlanning.isPlanning(input.sessionId)) {
+        if (
+          (await sessionPlanning.isPlanning(input.sessionId)) ||
+          conductor.isPlanningTurn?.(input.sessionId)
+        ) {
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
