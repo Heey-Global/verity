@@ -700,6 +700,16 @@ describe('managed dev servers', () => {
       expect((await instanceOf()).state).toBe('starting');
     });
 
+    it('does not apply completed Local cleanup to a new online-only start', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      await manager.setLocal('s1', 'Demo', false);
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });

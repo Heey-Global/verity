@@ -1121,7 +1121,7 @@ export function StaticPreviewSheet({
                 pending={
                   managedSwitch?.id === server.id
                     ? managedSwitch.kind
-                    : managedPending
+                    : managedPending || busy
                       ? 'other'
                       : undefined
                 }

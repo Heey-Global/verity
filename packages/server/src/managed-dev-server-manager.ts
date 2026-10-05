@@ -459,6 +459,7 @@ export class ManagedDevServerManager {
       if (!(await this.hasLivePublicLink(instance)))
         await this.stopInstance(project, instance, null);
       else this.refreshQuietly(project);
+      this.pendingLinkEnds.delete(instance.id);
     });
     return this.viewOf(sessionId, entry.id);
   }
@@ -643,6 +644,7 @@ export class ManagedDevServerManager {
     if (local !== undefined && instance.localAccess !== local)
       instance =
         (await this.servers.updateInstance(instance.id, { localAccess: local })) ?? instance;
+    if (by === 'operator') this.pendingLinkEnds.delete(instance.id);
     if (local === false) await this.unpublish(instance);
     const status = await this.options.runtime
       .managedServerStatus(project, instance.id)

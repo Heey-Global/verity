@@ -1599,6 +1599,33 @@ describe('managed dev servers', () => {
   });
 
   // Stop from the details ends both accesses; a public link asks first.
+  it('keeps overview switches disabled while Stop from details revokes the link', async () => {
+    let complete!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    const stopPublicPreviewShare = jest.fn(async () => pending);
+    const setManagedDevServerLocal = jest.fn();
+    answer('Stop sharing');
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [link()]),
+        stopPublicPreviewShare,
+        setManagedDevServerLocal,
+      }),
+    );
+    await screen.findByRole('link', { name: 'Open the public link of Curtis Demo' });
+    fireEvent.press(screen.getByRole('button', { name: /Curtis Demo, Running\. Details/u }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalled());
+    fireEvent.press(screen.getByRole('button', { name: 'Back to preview targets' }));
+    const toggle = screen.getByRole('switch', { name: 'Local for Curtis Demo' });
+    expect(toggle.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(toggle);
+    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+    await act(async () => complete());
+  });
+
   it('stops the public link and the server from the details after confirming', async () => {
     const stopPublicPreviewShare = jest.fn(async () => undefined);
     const controlManagedDevServer = jest.fn(async () => demo());
