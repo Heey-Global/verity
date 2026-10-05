@@ -415,6 +415,96 @@ describe('managed dev servers', () => {
     expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), 'gone');
   });
 
+  describe('access switches', () => {
+    const approvedDemo = async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await ctx.store.managedDevServers.approve(
+        (await ctx.store.managedDevServers.getByName('p1', 'Demo'))!.id,
+        { command: 'node server.mjs', workdir: '.' },
+      );
+    };
+    const listen = async () => {
+      const run = sandbox.started.at(-1)!;
+      sandbox.listen(run.instanceId, Number(run.env.PORT));
+      await manager.tick();
+      return run.instanceId;
+    };
+    const publicLink = (instanceId: string, expiresAt = new Date(now + 3_600_000)) =>
+      ctx.store.createPublicPreviewShare({
+        id: `share-${instanceId}`,
+        projectId: 'p1',
+        devServerId: null,
+        managedInstanceId: instanceId,
+        sessionId: 's1',
+        containerGeneration: 'g1',
+        targetPort: 41000,
+        publicOrigin: 'https://x.share.verity.build',
+        edgeUrl: 'wss://x.share.verity.build/__verity/connector',
+        pinHash: 'scrypt:salt:hash',
+        pin: '123456',
+        connectorToken: 'token',
+        sessionSecret: 'secret',
+        connectorContainerName: 'verity-preview-x',
+        expiresAt,
+      });
+
+    // Shared online alone must not also open the server on the local network.
+    it('runs without a network address when started for Shared online only', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+      expect(shares.create).not.toHaveBeenCalled();
+    });
+
+    it('stops the server when Local turns off and no public link is left', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      expect(await instanceOf()).toMatchObject({ localOn: true, url: 'http://verity.local:8100' });
+      await manager.setLocal('s1', 'Demo', false);
+      expect(await instanceOf()).toMatchObject({ state: 'stopped', localOn: false, url: null });
+    });
+
+    // With a public link still live, turning Local off ends only local access.
+    it('keeps the server running for a live public link when Local turns off', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const instanceId = await listen();
+      await publicLink(instanceId);
+      await manager.setLocal('s1', 'Demo', false);
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+    });
+
+    // An expired link with Local off leaves nothing anyone can open; the server
+    // must not keep running unnoticed and keep the sandbox awake.
+    it('stops when the last public link ends while Local is off', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const instanceId = await listen();
+      const share = await publicLink(instanceId);
+      await manager.publicLinkEnded(instanceId);
+      expect((await instanceOf()).state).toBe('running');
+      await ctx.store.transitionPublicPreviewShare(share.id, ['active', 'creating'], 'expired', {});
+      await manager.publicLinkEnded(instanceId);
+      expect((await instanceOf()).state).toBe('stopped');
+    });
+
+    it('keeps the server when a public link ends while Local is on', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const instanceId = await listen();
+      await manager.publicLinkEnded(instanceId);
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
+    it('refuses Local on for an unapproved command', async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await expect(manager.setLocal('s1', 'Demo', true)).rejects.toThrow(/approve/u);
+      expect(sandbox.started).toHaveLength(0);
+    });
+  });
+
   it('gives sibling entries of the session their internal URLs', async () => {
     await manager.add('s1', { name: 'Voice API', command: 'node api.mjs' });
     await manager.add('s1', { name: 'Web', command: 'vite --port {port}' });

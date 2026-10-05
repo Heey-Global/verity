@@ -2428,6 +2428,8 @@ export async function buildEmbeddedServer(
     }
     return sandbox?.user || undefined;
   };
+  // Filled once the managed dev server manager exists, further down.
+  const managedLinkEnded: { current?: (instanceId: string) => void } = {};
   let previewShareManager: PreviewShareManager | undefined;
   const withPreviewProjectMutation = async <T>(
     projectId: string,
@@ -2481,6 +2483,9 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
+      onShareEnded: (share) => {
+        if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId);
+      },
       docker: projectDocker,
       resolveConnectorImage: config.publicPreviews.resolveConnectorImage,
       ...(config.dataVolume ? { dataVolume: config.dataVolume } : {}),
@@ -3578,6 +3583,8 @@ export async function buildEmbeddedServer(
         Promise.reject(new Error('sandbox wake is unavailable')),
       log: (message, detail) => managedDevServerLog.current?.(message, detail),
     });
+    const managed = managedDevServerManager;
+    managedLinkEnded.current = (instanceId) => void managed.publicLinkEnded(instanceId);
   }
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised

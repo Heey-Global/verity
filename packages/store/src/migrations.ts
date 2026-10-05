@@ -3843,6 +3843,18 @@ const migrations: Record<string, Migration> = {
       await sql`alter table public_preview_shares drop column managed_instance_id`.execute(db);
     },
   },
+  '0138_managed_local_access': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The operator's Local switch. Starting through Shared online alone leaves
+      // it off, so the server runs without a network address.
+      await sql`alter table managed_dev_server_instances add column local_access boolean not null default true`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table managed_dev_server_instances drop column local_access`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

@@ -43,6 +43,7 @@ function fixture(
     inspectArtifact?: PreviewShareManagerOptions['inspectArtifact'];
     listArtifactDirectory?: PreviewShareManagerOptions['listArtifactDirectory'];
     agentSeedHostPath?: string | undefined;
+    onShareEnded?: PreviewShareManagerOptions['onShareEnded'];
   } = {},
 ) {
   const record = {
@@ -134,6 +135,7 @@ function fixture(
     wait: vi.fn(async () => undefined),
     log,
     ...(options.inspectArtifact === undefined ? {} : { inspectArtifact: options.inspectArtifact }),
+    ...(options.onShareEnded === undefined ? {} : { onShareEnded: options.onShareEnded }),
     ...(options.listArtifactDirectory === undefined
       ? {}
       : { listArtifactDirectory: options.listArtifactDirectory }),
@@ -1435,6 +1437,31 @@ describe('PreviewShareManager', () => {
     );
   });
 
+  // A managed dev server with Local off stops once its last link ends; without
+  // this notice an expired link would leave it running unnoticed.
+  it('reports an ended managed link on Uplink expiry and on revocation', async () => {
+    const onShareEnded = vi.fn();
+    const { manager, store, record } = fixture({ onShareEnded });
+    const active = {
+      ...record,
+      state: 'active' as const,
+      connectorContainerId: 'connector-id',
+      managedInstanceId: 'instance-1',
+    };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.finishExpiredByUplink(record.id);
+    expect(onShareEnded).toHaveBeenLastCalledWith({
+      id: record.id,
+      managedInstanceId: 'instance-1',
+    });
+
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.stop(record.id);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects root and hidden static publish paths before contacting Uplink', async () => {
     const { manager, edge } = fixture();
     await expect(
@@ -2324,6 +2351,7 @@ describe('managed public links', () => {
       serverId: 'entry-1',
       projectId: 'p1',
       sessionId: 's1',
+      localAccess: true,
       sandboxPort: 41000,
       networkPort: 8100,
       state: 'stopped',

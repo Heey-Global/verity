@@ -123,6 +123,9 @@ export interface PreviewShareManagerOptions {
    * round trip, the connector start and the wait for its edge connection all
    * sit behind the same spinner. */
   log?: Pick<Console, 'info' | 'warn'>;
+  /** Called once a share has ended, revoked or expired. Managed dev servers stop
+   *  when their last access ends (concept 2.6). */
+  onShareEnded?: (share: { id: string; managedInstanceId: string | null }) => void;
 }
 
 /** Records the milliseconds spent in each named step, in the order they ran. */
@@ -1012,7 +1015,19 @@ export class PreviewShareManager {
       connectorContainerId: null,
       revokedAt: this.now(),
     });
+    this.notifyEnded(current);
     return true;
+  }
+
+  private notifyEnded(share: { id: string; managedInstanceId?: string | null | undefined }) {
+    try {
+      this.options.onShareEnded?.({
+        id: share.id,
+        managedInstanceId: share.managedInstanceId ?? null,
+      });
+    } catch {
+      /* A listener must not turn a completed revocation into a failure. */
+    }
   }
 
   /** The Uplink has authoritatively expired and removed the public edge. Only
@@ -1036,6 +1051,7 @@ export class PreviewShareManager {
       connectorContainerId: null,
       revokedAt: this.now(),
     });
+    this.notifyEnded(current);
   }
 
   /** Startup/periodic convergence: TTL, missing or replaced sandboxes, and

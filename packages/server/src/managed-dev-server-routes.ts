@@ -11,6 +11,8 @@ import {
 } from './managed-dev-server-manager.js';
 
 const sessionParams = z.object({ sessionId: z.string().min(1) });
+/** Start from Shared online leaves Local off; absent keeps what the instance had. */
+const startBody = z.object({ local: z.boolean().optional() }).strict();
 const serverParams = sessionParams.extend({ serverId: z.string().min(1) });
 
 async function respond<T>(reply: FastifyReply, operation: () => Promise<T>): Promise<T | void> {
@@ -55,10 +57,21 @@ export function registerManagedDevServerRoutes(
             ? await m.stop(sessionId, serverId)
             : action === 'restart'
               ? await m.restart(sessionId, serverId, 'operator')
-              : await m.start(sessionId, serverId, 'operator');
+              : await m.start(sessionId, serverId, 'operator', {
+                  local: startBody.parse(request.body ?? {}).local,
+                });
         return { server };
       });
     };
+  app.post('/sessions/:sessionId/managed-dev-servers/:serverId/local', async (request, reply) => {
+    const m = manager(reply);
+    if (!m) return;
+    return respond(reply, async () => {
+      const { sessionId, serverId } = serverParams.parse(request.params);
+      const { on } = z.object({ on: z.boolean() }).strict().parse(request.body);
+      return { server: await m.setLocal(sessionId, serverId, on) };
+    });
+  });
   // Spelled out: the route-scope scan reads literal paths only.
   app.post('/sessions/:sessionId/managed-dev-servers/:serverId/start', lifecycle('start'));
   app.post('/sessions/:sessionId/managed-dev-servers/:serverId/stop', lifecycle('stop'));
