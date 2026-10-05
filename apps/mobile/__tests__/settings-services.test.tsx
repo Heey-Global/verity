@@ -259,7 +259,6 @@ describe('settings/services — AI backends', () => {
       }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Claude'));
 
     fireEvent.press(await screen.findByLabelText('Reconnect Claude'));
 
@@ -267,6 +266,152 @@ describe('settings/services — AI backends', () => {
     expect(await screen.findByLabelText('Open Claude login page')).toBeOnTheScreen();
     expect(screen.getByLabelText('Claude returned code')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Reconnect Claude')).toBeNull();
+  });
+
+  // The provider page is the provider: its actions must be reachable without a
+  // disclosure tap, and its usage must be the provider's own — the probe answers
+  // for every connected agent at once, so a missing filter shows Codex's quota
+  // under Claude's name.
+  it.each([
+    ['claude', ClaudeScreen, { claudeCodeOauthCredentialsConfigured: true }, 'Claude', 42],
+    ['codex', CodexScreen, { codexAuthJsonConfigured: true }, 'Codex', 87],
+  ] as const)(
+    'shows %s actions and its own usage without expanding anything',
+    async (_provider, Screen, configured, title, fiveHourPercent) => {
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      const listProviderLimits = jest.fn().mockResolvedValue([
+        {
+          status: 'allowed',
+          resetsAt,
+          window: 'five_hour',
+          usedPercent: 42,
+          providerLabel: 'Claude',
+        },
+        {
+          status: 'allowed',
+          resetsAt,
+          window: 'five_hour',
+          usedPercent: 87,
+          providerLabel: 'Codex',
+        },
+        {
+          status: 'allowed',
+          resetsAt: resetsAt + 86_400,
+          window: 'weekly',
+          usedPercent: 12,
+          providerLabel: title,
+        },
+      ]);
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', { listProviderLimits, settings: makeSettings(configured) }),
+      );
+      render(<Screen />);
+
+      expect(await screen.findByLabelText('Logout ' + title)).toBeOnTheScreen();
+      expect(screen.getByLabelText('Reconnect ' + title)).toBeOnTheScreen();
+      expect(await screen.findByText(`${fiveHourPercent}% used`)).toBeOnTheScreen();
+      expect(screen.getByText('12% used')).toBeOnTheScreen();
+      expect(screen.queryByText(`${fiveHourPercent === 42 ? 87 : 42}% used`)).toBeNull();
+    },
+  );
+
+  it('names the subscription plan the server derived from the login', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({
+          codexAuthJsonConfigured: true,
+          codexSubscriptionPlan: 'Plus',
+          claudeSubscriptionPlan: 'Max 20x',
+        }),
+      }),
+    );
+    render(<CodexScreen />);
+
+    expect(
+      await screen.findByText('Codex Plus subscription, connected to this Verity server.'),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText(/Max 20x/)).toBeNull();
+  });
+
+  // The app cannot read the plan out of a login; only the server can. Without
+  // a settings reload on connect, the card says "connected" with no plan until
+  // the screen happens to remount.
+  it('picks up the plan once a login completes', async () => {
+    const getVeritySettings = jest
+      .fn()
+      .mockResolvedValueOnce(makeSettings({ codexAuthJsonConfigured: false }))
+      .mockResolvedValue(
+        makeSettings({ codexAuthJsonConfigured: true, codexSubscriptionPlan: 'Pro' }),
+      );
+    const startAgentLogin = jest.fn().mockResolvedValue({
+      sessionId: '44444444-4444-4444-8444-444444444444',
+      provider: 'codex',
+      status: 'complete',
+      verificationUri: null,
+      userCode: null,
+      needsCode: false,
+      configured: true,
+      message: null,
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { getVeritySettings, startAgentLogin }),
+    );
+    render(<CodexScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Connect Codex'));
+
+    expect(
+      await screen.findByText('Codex Pro subscription, connected to this Verity server.'),
+    ).toBeOnTheScreen();
+  });
+
+  // A disconnected account's quota is not the operator's any more; leaving it
+  // on screen after Logout reads as a login that did not take.
+  it('drops usage and plan once the provider is logged out', async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    const disconnectAgentLogin = jest.fn().mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        disconnectAgentLogin,
+        listProviderLimits: jest.fn().mockResolvedValue([
+          {
+            status: 'allowed',
+            resetsAt,
+            window: 'five_hour',
+            usedPercent: 42,
+            providerLabel: 'Claude',
+          },
+        ]),
+        settings: makeSettings({
+          claudeCodeOauthCredentialsConfigured: true,
+          claudeSubscriptionPlan: 'Pro',
+        }),
+      }),
+    );
+    render(<ClaudeScreen />);
+    expect(await screen.findByText('42% used')).toBeOnTheScreen();
+    expect(screen.getByText(/Claude Pro subscription/)).toBeOnTheScreen();
+
+    fireEvent.press(screen.getByLabelText('Logout Claude'));
+
+    expect(await screen.findByLabelText('Connect Claude')).toBeOnTheScreen();
+    expect(screen.queryByText('42% used')).toBeNull();
+    expect(screen.queryByText(/Claude Pro subscription/)).toBeNull();
+  });
+
+  it('hides usage while the provider is not connected', async () => {
+    const listProviderLimits = jest.fn().mockResolvedValue([]);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listProviderLimits,
+        settings: makeSettings({ claudeCodeOauthCredentialsConfigured: false }),
+      }),
+    );
+    render(<ClaudeScreen />);
+
+    expect(await screen.findByLabelText('Connect Claude')).toBeOnTheScreen();
+    expect(screen.queryByText('Usage')).toBeNull();
+    expect(listProviderLimits).not.toHaveBeenCalled();
   });
 
   it('starts Claude re-login automatically when opened from an expired chat session', async () => {
@@ -356,7 +501,7 @@ describe('settings/services — AI backends', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { startAgentLogin }));
     render(<ServicesSettingsScreen />);
 
-    await screen.findByLabelText('Claude');
+    await screen.findAllByLabelText(/^(Connect|Logout) Claude$/);
     expect(startAgentLogin).not.toHaveBeenCalled();
   });
 
@@ -605,7 +750,10 @@ it.each([
   expect(mockPush).toHaveBeenCalledWith(route);
   catalog.unmount();
   render(<DetailScreen />);
-  expect(await screen.findByLabelText(title)).toBeOnTheScreen();
-  expect(screen.queryByLabelText(otherTitle)).toBeNull();
-  expect(screen.queryByLabelText('OpenCode')).toBeNull();
+  expect(
+    (await screen.findAllByLabelText(new RegExp(`^(Connect|Logout) ${title}$`))).length,
+  ).toBeGreaterThan(0);
+  expect(screen.queryByText(otherTitle)).toBeNull();
+  expect(screen.queryByLabelText(new RegExp(otherTitle))).toBeNull();
+  expect(screen.queryByText(/OpenCode/)).toBeNull();
 });

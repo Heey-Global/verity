@@ -578,6 +578,9 @@ export const veritySettingsSchema = z.object({
   transcribeExternalConfigured: z.boolean().default(false),
   claudeCodeOauthCredentialsConfigured: z.boolean(),
   codexAuthJsonConfigured: z.boolean(),
+  // Absent from servers older than the plan labels.
+  claudeSubscriptionPlan: z.string().nullable().optional(),
+  codexSubscriptionPlan: z.string().nullable().optional(),
   opencodeBaseUrl: z.string().nullable().optional(),
   opencodeModels: z.string().nullable().optional(),
   opencodeDisabledModels: z.string().nullable().optional(),

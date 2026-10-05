@@ -13,6 +13,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../components/AgentLoginPanel';
 import { SecretStoreSection } from '../../components/settings/SecretStoreSection';
+import { ProviderUsagePanel } from '../../components/settings/ProviderUsagePanel';
 import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
 import {
   SecretPasteField,
@@ -119,10 +120,7 @@ export function ConnectionSettingsDetail({
       ) : null}
 
       {managed && (section === 'claude' || section === 'codex') ? (
-        <SettingsGroup
-          title={section === 'claude' ? 'Claude' : 'Codex'}
-          description="Subscription connection."
-        >
+        <SettingsGroup title="Subscription">
           {writable ? (
             <View style={styles.panelStack}>
               <AgentLoginPanel
@@ -131,17 +129,31 @@ export function ConnectionSettingsDetail({
                   claude: settings?.claudeCodeOauthCredentialsConfigured ?? false,
                   codex: settings?.codexAuthJsonConfigured ?? false,
                 }}
-                onConfiguredChange={(provider, configured) =>
+                onConfiguredChange={(provider, configured) => {
                   patchVeritySettingsLocally((current) => ({
                     ...current,
+                    // A plan belongs to the login it was read from; a later
+                    // login may be another account, so drop it until reload.
                     ...(provider === 'claude'
-                      ? { claudeCodeOauthCredentialsConfigured: configured }
-                      : { codexAuthJsonConfigured: configured }),
-                  }))
-                }
+                      ? {
+                          claudeCodeOauthCredentialsConfigured: configured,
+                          ...(configured ? {} : { claudeSubscriptionPlan: null }),
+                        }
+                      : {
+                          codexAuthJsonConfigured: configured,
+                          ...(configured ? {} : { codexSubscriptionPlan: null }),
+                        }),
+                  }));
+                  // Only the server can read the plan out of the new login.
+                  if (configured) reload();
+                }}
                 onSealed={() => {
                   setVeritySettingsError('Unlock the secret store first.');
                   void refreshSecretStatus(client);
+                }}
+                subscriptionPlans={{
+                  claude: settings?.claudeSubscriptionPlan,
+                  codex: settings?.codexSubscriptionPlan,
                 }}
                 selectedProvider={section}
                 compact
@@ -163,6 +175,13 @@ export function ConnectionSettingsDetail({
               </Text>
             </SettingsPanel>
           )}
+        </SettingsGroup>
+      ) : null}
+      {managed &&
+      ((section === 'claude' && settings?.claudeCodeOauthCredentialsConfigured) ||
+        (section === 'codex' && settings?.codexAuthJsonConfigured)) ? (
+        <SettingsGroup title="Usage">
+          <ProviderUsagePanel client={client} provider={section} />
         </SettingsGroup>
       ) : null}
 

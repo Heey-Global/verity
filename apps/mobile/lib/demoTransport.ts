@@ -81,6 +81,8 @@ function initialSettings() {
     transcribeLocalAvailable: false,
     claudeCodeOauthCredentialsConfigured: true,
     codexAuthJsonConfigured: true,
+    claudeSubscriptionPlan: 'Max 20x',
+    codexSubscriptionPlan: 'Plus',
     googleDriveClientId: null,
     googleDriveAccountEmail: null,
     googleDriveConnected: false,
