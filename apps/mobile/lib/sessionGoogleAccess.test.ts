@@ -1,5 +1,6 @@
 import { VerityApiError, type VerityClient } from '@verity/mobile';
 import {
+  getProjectGoogleAccess,
   hasConnectedGoogleAccount,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
@@ -63,11 +64,13 @@ it.each(['gmail', 'calendar', 'contacts'] as const)(
 );
 
 it.each(['gmail', 'calendar', 'contacts'] as const)(
-  'enables %s in a projectless session without broadening access',
+  'enables %s for the session only, even inside a project',
   async (service) => {
     const { client, project, enable } = fixture();
-    const result = await connectSessionGoogleService(client, 's1', undefined, service);
+    const result = await connectSessionGoogleService(client, 's1', service);
     expect(result).toMatchObject({ kind: 'session', connection: { enabled: true } });
+    // A project grant would silently extend access to every sibling chat.
+    expect(client.enableProjectGoogleConnection).not.toHaveBeenCalled();
     expect(project).not.toHaveBeenCalled();
     expect(enable).toHaveBeenCalledWith('s1');
     expect(mockAuth).not.toHaveBeenCalled();
@@ -75,41 +78,58 @@ it.each(['gmail', 'calendar', 'contacts'] as const)(
 );
 
 it.each(['gmail', 'calendar', 'contacts'] as const)(
-  'toggles only the selected project %s grant directly',
+  'revokes only the session %s grant when the project has none',
   async (service) => {
-    const { client, enable, disable } = fixture();
-    expect(await connectSessionGoogleService(client, 's1', 'p1', service)).toMatchObject({
-      kind: 'session',
-      connection: { enabled: true },
-    });
-    expect(client.enableProjectGoogleConnection).toHaveBeenCalledWith('p1', service);
-    expect(await disconnectSessionGoogleService(client, 's1', 'p1', service)).toBe('project');
-    expect(client.disableProjectGoogleConnection).toHaveBeenCalledWith('p1', service);
-    expect(enable).not.toHaveBeenCalled();
-    expect(disable).not.toHaveBeenCalled();
-    expect(mockAuth).not.toHaveBeenCalled();
+    const { client, disable } = fixture();
+    expect(await disconnectSessionGoogleService(client, 's1', 'p1', service)).toBe('session');
+    expect(disable).toHaveBeenCalledWith('s1');
+    expect(client.disableProjectGoogleConnection).not.toHaveBeenCalled();
   },
 );
 
-it('does not bypass project authorization errors', async () => {
-  const { client, project, enable, disable } = fixture();
+it.each(['gmail', 'calendar', 'contacts'] as const)(
+  'revokes an enabled project %s grant that keeps the session enabled',
+  async (service) => {
+    const { client, project, disable } = fixture();
+    project.mockResolvedValue({ connected: true, enabled: true });
+    expect(await disconnectSessionGoogleService(client, 's1', 'p1', service)).toBe('project');
+    expect(client.disableProjectGoogleConnection).toHaveBeenCalledWith('p1', service);
+    expect(disable).not.toHaveBeenCalled();
+  },
+);
+
+it('reports only enabled project grants as project access', async () => {
+  const { client, project } = fixture();
+  project.mockImplementation(async (_projectId: string, service: string) => {
+    if (service === 'contacts') throw new VerityApiError(404, 'Not found');
+    return { connected: true, enabled: service === 'calendar' };
+  });
+  await expect(getProjectGoogleAccess(client, 'p1')).resolves.toEqual({
+    gmail: false,
+    calendar: true,
+    contacts: false,
+  });
+  await expect(getProjectGoogleAccess(client, undefined)).resolves.toEqual({
+    gmail: false,
+    calendar: false,
+    contacts: false,
+  });
+});
+
+it('does not bypass project authorization errors when revoking', async () => {
+  const { client, project, disable } = fixture();
   project.mockRejectedValue(new VerityApiError(403, 'Forbidden'));
   await expect(disconnectSessionGoogleService(client, 's1', 'p1', 'gmail')).rejects.toThrow(
     'Forbidden',
   );
-  await expect(connectSessionGoogleService(client, 's1', 'p1', 'gmail')).rejects.toThrow(
-    'Forbidden',
-  );
-  expect(enable).not.toHaveBeenCalled();
   expect(disable).not.toHaveBeenCalled();
 });
 
-it('honors cancellation and authorizes before enabling legacy access', async () => {
-  const { client, project, get, connect, enable } = fixture();
-  project.mockRejectedValue(new VerityApiError(404, 'Not found'));
+it('honors cancellation and authorizes before enabling session access', async () => {
+  const { client, get, connect, enable } = fixture();
   get.mockResolvedValue({ connected: false, enabled: false, clientId: 'google-client' });
   mockAuth.mockResolvedValueOnce({ kind: 'cancelled' });
-  expect(await connectSessionGoogleService(client, 's1', 'p1', 'calendar')).toEqual({
+  expect(await connectSessionGoogleService(client, 's1', 'calendar')).toEqual({
     kind: 'cancelled',
   });
   expect(connect).not.toHaveBeenCalled();
@@ -120,7 +140,7 @@ it('honors cancellation and authorizes before enabling legacy access', async () 
     codeVerifier: 'verifier',
     redirectUri: 'app:/oauth',
   });
-  expect(await connectSessionGoogleService(client, 's1', 'p1', 'calendar')).toMatchObject({
+  expect(await connectSessionGoogleService(client, 's1', 'calendar')).toMatchObject({
     kind: 'session',
   });
   expect(connect).toHaveBeenCalledWith({
@@ -157,7 +177,7 @@ it('refreshes sibling permissions after an OAuth account change', async () => {
     codeVerifier: 'verifier',
     redirectUri: 'app:/oauth',
   });
-  const result = await connectSessionGoogleService(client, 's1', undefined, 'gmail');
+  const result = await connectSessionGoogleService(client, 's1', 'gmail');
   expect(result).toMatchObject({
     kind: 'session',
     connections: {
@@ -168,26 +188,6 @@ it('refreshes sibling permissions after an OAuth account change', async () => {
   });
   expect(calendar).toHaveBeenCalledWith('s1');
   expect(contacts).toHaveBeenCalledWith('s1');
-});
-
-it('authorizes a missing project scope before enabling the selected service', async () => {
-  const { client, project, connect, enable } = fixture();
-  project.mockResolvedValue({ connected: false, enabled: false, clientId: 'google-client' });
-  mockAuth.mockResolvedValueOnce({ kind: 'cancelled' });
-  await expect(connectSessionGoogleService(client, 's1', 'p1', 'gmail')).resolves.toEqual({
-    kind: 'cancelled',
-  });
-  expect(client.enableProjectGoogleConnection).not.toHaveBeenCalled();
-  mockAuth.mockResolvedValueOnce({
-    kind: 'success',
-    code: 'code',
-    codeVerifier: 'verifier',
-    redirectUri: 'app:/oauth',
-  });
-  await connectSessionGoogleService(client, 's1', 'p1', 'gmail');
-  expect(connect).toHaveBeenCalled();
-  expect(client.enableProjectGoogleConnection).toHaveBeenCalledWith('p1', 'gmail');
-  expect(enable).not.toHaveBeenCalled();
 });
 
 it('uses legacy account status only when the central endpoint is missing', async () => {
