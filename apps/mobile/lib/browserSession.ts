@@ -142,8 +142,11 @@ export async function pairBrowser(raw: string): Promise<'password' | 'authentica
   return 'password';
 }
 export async function authenticateBrowser(password: string, initialize: boolean): Promise<void> {
-  if ((bootstrap === null || bootstrap.expiresAt <= Date.now()) && session === null)
-    throw new Error('Pairing expired. Paste a new installer code.');
+  if ((bootstrap === null || bootstrap.expiresAt <= Date.now()) && session === null) {
+    // The HttpOnly cookie survives a reload even though JavaScript session state does not.
+    if (!(await refreshBrowserSession()))
+      throw new Error('Pairing expired. Paste a new installer code.');
+  }
   await request(
     initialize ? '/secret/init/browser' : '/secret/unlock/browser',
     { password, deviceLabel: 'Web browser' },

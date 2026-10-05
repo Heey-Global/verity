@@ -129,3 +129,30 @@ test('browser-only invitations accept the opaque code created by the web Devices
   expect(await pairBrowser('q'.repeat(32))).toBe('authenticated');
   expect(calls.map((call) => call.path)).toEqual(['/pair/enroll/browser', '/auth/session']);
 });
+
+test('a reloaded unlock screen restores its cookie session before sending the password', async () => {
+  // Reload drops JavaScript state but must not discard an existing paired browser.
+  jest.resetModules();
+  const reloaded = jest.requireActual<typeof import('./browserSession')>('./browserSession');
+  await reloaded.authenticateBrowser('a-long-master-password', false);
+  expect(calls.map((call) => call.path)).toEqual([
+    '/auth/session',
+    '/secret/unlock/browser',
+    '/auth/session',
+  ]);
+  expect(calls[1].init).toMatchObject({
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+  });
+  expect(calls[1].init!.headers).not.toHaveProperty('x-verity-pairing');
+});
+
+test('a reloaded unlock screen with a revoked cookie does not submit the password', async () => {
+  jest.resetModules();
+  const reloaded = jest.requireActual<typeof import('./browserSession')>('./browserSession');
+  sessionStatus = 401;
+  await expect(reloaded.authenticateBrowser('a-long-master-password', false)).rejects.toThrow(
+    'Pairing expired',
+  );
+  expect(calls.map((call) => call.path)).toEqual(['/auth/session']);
+});
