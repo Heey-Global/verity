@@ -193,8 +193,8 @@ the app. Editing stays with the agent, because typing a command on a phone is im
 its two access switches decide whether it runs.
 
 - _Local_ on starts the server if needed and publishes it on the operator's network. The first
-  time, or after a changed command, a confirmation shows the command and subdirectory and the
-  tap approves them.
+  time, or after a changed command, a confirmation shows the command and subdirectory, says that
+  anyone on the network can open it without a PIN, and the tap approves them.
 - _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the public link with a PIN. If the command is not approved yet, the same confirmation as for Local comes first. Local stays off unless the operator turns it on; the switches, not the approval, decide which accesses exist.
 - Turning Shared online off always asks first, because it ends a public link.
 - Whenever no access is left on, the server stops: turning off the last switch, either one,
