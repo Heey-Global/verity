@@ -122,6 +122,26 @@ describe('agent-seed/bin/git guard (self-remove of session worktree)', () => {
     expect(existsSync(join(main, '.verity-sessions/agent-test'))).toBe(true);
   });
 
+  it.each(['prune', 'unlock', 'move', 'repair'])(
+    'blocks shared worktree administration: %s',
+    async (action) => {
+      const { code, stderr } = await runWrapper(['-C', main, 'worktree', action], base);
+      expect(code).toBe(1);
+      expect(stderr).toContain('verity git guard: refusing');
+    },
+  );
+
+  it('preserves an invisible live session index when prune is requested', async () => {
+    const admin = join(main, '.git', 'worktrees', 'agent-test');
+    writeFileSync(join(admin, 'gitdir'), '/invisible-host/session/.git\n');
+    const { code } = await runWrapper(['worktree', 'prune', '--expire', 'now'], main);
+    expect(code).toBe(1);
+    expect(existsSync(join(admin, 'index'))).toBe(true);
+    // Verify the fixture exposes the incident instead of relying on Git expiry defaults.
+    await realGit(main, 'worktree', 'prune', '--expire', 'now');
+    expect(existsSync(admin)).toBe(false);
+  });
+
   it('allows removing a normal (non-session) worktree', async () => {
     expect(existsSync(join(main, 'sidetree'))).toBe(true);
     const { code } = await runWrapper(['worktree', 'remove', 'sidetree'], main);
