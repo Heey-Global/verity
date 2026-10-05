@@ -1,5 +1,9 @@
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
-import { createSessionCloneProvisioner, assertIndependentSessionClone } from './session-clone.js';
+import {
+  createSessionCloneProvisioner,
+  assertIndependentSessionClone,
+  reconcileSessionOrigin,
+} from './session-clone.js';
 import { SessionSandboxProvisioner, sessionContainerName } from './session-sandbox.js';
 import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
@@ -2246,10 +2250,12 @@ export async function buildEmbeddedServer(
                   const session = (await eventStore.listSessions()).find(
                     (row) => row.worktree === path,
                   );
-                  if (!session?.projectId || !projectDocker) {
+                  if (!session || !projectDocker) {
                     throw new Error('Git operation has no isolated session context');
                   }
-                  const project = await eventStore.getProject(session.projectId);
+                  const project = await eventStore.getProject(
+                    session.projectId ?? CONTROL_PLANE_PROJECT_ID,
+                  );
                   if (!project) throw new Error('Project is unavailable');
                   const readOnly =
                     [
@@ -2272,7 +2278,10 @@ export async function buildEmbeddedServer(
                   if (readOnly && runtimeProject.state !== 'active') {
                     return createSleepingSessionGit({
                       docker: projectDocker,
-                      templateContainer: project.containerName,
+                      templateContainer:
+                        project.kind === 'control_plane'
+                          ? MANAGED_CONTROL_PLANE_RUNNER_NAME
+                          : project.containerName,
                       projectId: project.id,
                       hostRoot: session.worktree,
                       dockerBaseUrl: config.dockerBaseUrl,
@@ -3649,7 +3658,11 @@ export async function buildEmbeddedServer(
     project: ProjectRecord,
   ): Promise<ProjectRecord> => {
     const session = await eventStore.getSession(sessionId);
-    if (!session || session.projectId !== project.id || !sessionSandboxes) {
+    if (
+      !session ||
+      (session.projectId ?? CONTROL_PLANE_PROJECT_ID) !== project.id ||
+      !sessionSandboxes
+    ) {
       throw new Error('Session isolation is unavailable');
     }
     await assertIndependentSessionClone(session.worktree);
@@ -3658,19 +3671,38 @@ export async function buildEmbeddedServer(
       (await eventStore.getProject(project.id));
     if (!canonicalProject || canonicalProject.state !== 'active')
       throw new Error('Project is not active');
-    return sessionSandboxes.ensure(
+    const runtimeProject = await sessionSandboxes.ensure(
       canonicalProject.kind === 'control_plane'
         ? { ...canonicalProject, containerName: MANAGED_CONTROL_PLANE_RUNNER_NAME }
         : canonicalProject,
       session,
     );
+    if (project.kind === 'github' || project.kind === undefined) {
+      if (!projectDocker) throw new Error('Session Git isolation is unavailable');
+      await reconcileSessionOrigin(
+        createSandboxGit({
+          containerName: runtimeProject.containerName,
+          hostRoot: session.worktree,
+          dockerBaseUrl: config.dockerBaseUrl,
+          inspect: () => projectDocker.inspectContainer(runtimeProject.containerName),
+        }),
+        session.worktree,
+        `https://github.com/${project.owner}/${project.repo}.git`,
+      );
+    }
+    return runtimeProject;
   };
   const resolveSessionProject = async (
     sessionId: string,
     project: ProjectRecord,
   ): Promise<ProjectRecord> => {
     const session = await eventStore.getSession(sessionId);
-    if (!session || session.projectId !== project.id || !sessionSandboxes || !projectDocker) {
+    if (
+      !session ||
+      (session.projectId ?? CONTROL_PLANE_PROJECT_ID) !== project.id ||
+      !sessionSandboxes ||
+      !projectDocker
+    ) {
       throw new Error('Session isolation is unavailable');
     }
     await assertIndependentSessionClone(session.worktree);

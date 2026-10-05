@@ -137,3 +137,18 @@ export function createSessionCloneProvisioner(opts: GitWorktreeOptions): Worktre
     },
   };
 }
+
+/** Existing local clones gain a remote after linking, while custom remotes remain intact. */
+export async function reconcileSessionOrigin(
+  git: import('./branches.js').GitOutput,
+  checkout: string,
+  url: string,
+): Promise<void> {
+  try {
+    await git(['-C', checkout, 'remote', 'get-url', 'origin']);
+    return;
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 2) throw error;
+  }
+  await git(['-C', checkout, 'remote', 'add', 'origin', url]);
+}

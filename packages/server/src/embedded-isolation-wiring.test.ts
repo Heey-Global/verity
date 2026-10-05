@@ -42,6 +42,20 @@ describe('production session isolation wiring', () => {
     expect(text).toContain('createSleepingSessionGit');
     expect(text).toMatch(/args\[index \+ 2\] !== 'worktree' \|\| args\[index \+ 3\] === 'list'/);
   });
+  it('resolves project-less branch calls through the canonical control project', () => {
+    const branches = nodes(ts.isVariableDeclaration).find(
+      (node) => node.name.getText(source) === 'branches',
+    );
+    const text = branches?.initializer?.getText(source);
+    expect(text).toContain('session.projectId ?? CONTROL_PLANE_PROJECT_ID');
+    expect(text).not.toContain('!session?.projectId');
+    expect(text).toContain("project.kind === 'control_plane'");
+    expect(text).toContain('MANAGED_CONTROL_PLANE_RUNNER_NAME');
+    const preparation = nodes(ts.isVariableDeclaration).find(
+      (node) => node.name.getText(source) === 'ensureSessionProject',
+    );
+    expect(preparation?.initializer?.getText(source)).toContain('reconcileSessionOrigin');
+  });
   it('protects legacy transcript cwd directories alongside private session transcripts', () => {
     const property = nodes(ts.isPropertyAssignment).find(
       (node) => node.name.getText(source) === 'liveCwdDirs',

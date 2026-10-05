@@ -220,6 +220,7 @@ export function createSleepingSessionGit(opts: {
       network: 'none',
       readOnlyRootfs: true,
       capDrop: ['ALL'],
+      ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
       securityOpt: [...new Set([...(parent.securityOpt ?? []), 'no-new-privileges:true'])],
       ...(parent.runtime ? { runtime: parent.runtime } : {}),
       ...(parent.memoryBytes ? { memoryBytes: parent.memoryBytes } : {}),

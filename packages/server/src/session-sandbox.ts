@@ -148,6 +148,7 @@ export function sessionSandboxSpec(
     ...(parent.extraHosts ? { extraHosts: parent.extraHosts } : {}),
     ...(parent.sysctls ? { sysctls: parent.sysctls } : {}),
     capDrop: ['ALL'],
+    ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
     ...(parent.capAdd ? { capAdd: parent.capAdd } : {}),
     securityOpt: parent.securityOpt ?? ['no-new-privileges:true'],
     ...(parent.groupAdd ? { groupAdd: parent.groupAdd } : {}),

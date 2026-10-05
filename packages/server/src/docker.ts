@@ -404,6 +404,8 @@ export interface ContainerInspect {
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
   image?: string | undefined;
+  /** Per-process resource limits retained by session containers. */
+  ulimits?: Array<{ name: string; soft: number; hard: number }> | undefined;
   /** Immutable image ID used by this container. */
   imageId?: string | undefined;
   /** OpenContainers/custom labels recorded on the container config. */
@@ -1775,6 +1777,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         };
         NetworkSettings?: { Networks?: unknown };
         HostConfig?: {
+          Ulimits?: unknown;
           PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
@@ -1832,6 +1835,19 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
             )
           : undefined;
       return {
+        ...(Array.isArray(json.HostConfig?.Ulimits)
+          ? {
+              ulimits: json.HostConfig.Ulimits.flatMap((value: unknown) => {
+                if (typeof value !== 'object' || value === null) return [];
+                const limit = value as { Name?: unknown; Soft?: unknown; Hard?: unknown };
+                return typeof limit.Name === 'string' &&
+                  typeof limit.Soft === 'number' &&
+                  typeof limit.Hard === 'number'
+                  ? [{ name: limit.Name, soft: limit.Soft, hard: limit.Hard }]
+                  : [];
+              }),
+            }
+          : {}),
         id: json.Id,
         running: json.State?.Running === true,
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),

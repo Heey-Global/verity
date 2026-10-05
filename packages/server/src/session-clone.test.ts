@@ -12,7 +12,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RepositoryHasNoCommitsError } from './worktree.js';
-import { assertIndependentSessionClone, createSessionCloneProvisioner } from './session-clone.js';
+import {
+  assertIndependentSessionClone,
+  createSessionCloneProvisioner,
+  reconcileSessionOrigin,
+} from './session-clone.js';
 
 const git = (path: string, ...args: string[]) =>
   execFileSync('git', ['-C', path, ...args], {
@@ -157,4 +161,33 @@ describe('independent session clones', () => {
     expect(() => statSync(join(root, 'agent-failure'))).toThrow();
     expect(git(source, 'status', '--porcelain')).toBe('');
   });
+});
+
+it('reconciles a pre-link session origin during runtime preparation and preserves custom remotes', async () => {
+  const checkout = await createSessionCloneProvisioner({
+    repoDir: source,
+    worktreeRoot: root,
+    baseBranch: 'main',
+  }).add('session/pre-link');
+  const output = async (args: readonly string[]) => {
+    try {
+      return execFileSync('git', [...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      throw Object.assign(error as Error, { code: (error as { status: number }).status });
+    }
+  };
+  const url = 'https://github.com/example/linked.git';
+  git(source, 'remote', 'add', 'origin', url);
+  await reconcileSessionOrigin(output, checkout, url);
+  expect(git(checkout, 'remote', 'get-url', 'origin')).toBe(url);
+  expect(git(checkout, 'config', '--get', 'remote.origin.fetch')).toBe(
+    '+refs/heads/*:refs/remotes/origin/*',
+  );
+  const custom = 'https://github.com/example/custom.git';
+  git(checkout, 'remote', 'set-url', 'origin', custom);
+  await reconcileSessionOrigin(output, checkout, url);
+  expect(git(checkout, 'remote', 'get-url', 'origin')).toBe(custom);
 });

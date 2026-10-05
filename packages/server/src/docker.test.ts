@@ -1182,6 +1182,7 @@ describe('createDockerClient (#174)', () => {
         resp: res({
           Id: 'abc',
           Image: 'sha256:actual-content',
+          HostConfig: { Ulimits: [{ Name: 'core', Soft: 0, Hard: 0 }] },
           Config: { Image: 'sandbox:latest' },
         }),
       },
@@ -1193,6 +1194,7 @@ describe('createDockerClient (#174)', () => {
     ).toMatchObject({
       image: 'sandbox:latest',
       imageId: 'sha256:actual-content',
+      ulimits: [{ name: 'core', soft: 0, hard: 0 }],
     });
   });
 

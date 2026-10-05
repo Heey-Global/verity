@@ -15,6 +15,7 @@ const template: ContainerInspect = {
   running: true,
   image: 'sandbox:latest',
   imageId: 'sha256:new-image',
+  ulimits: [{ name: 'core', soft: 0, hard: 0 }],
   mounts: [
     { type: 'bind', source: '/data/project', destination: '/work', readWrite: true },
     { type: 'bind', source: '/data/runner', destination: '/run/verity-runner', readWrite: true },
@@ -220,6 +221,7 @@ it.each([true, false])(
     expect(docker.createContainer).toHaveBeenCalledWith(
       expect.objectContaining({
         image: template.imageId,
+        ulimits: [{ name: 'core', soft: 0, hard: 0 }],
         binds: expect.arrayContaining(['/data/private/session:/work']),
       }),
     );
