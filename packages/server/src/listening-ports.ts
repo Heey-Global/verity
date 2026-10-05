@@ -3,6 +3,8 @@ import { posix } from 'node:path';
 /** A TCP listener inside a project sandbox, joined to the process that owns it. */
 export interface ListeningProcess {
   sessionId?: string;
+  /** `VERITY_DEV_SERVER_INSTANCE` of the owning process: a managed dev server. */
+  instanceId?: string;
   announcedName?: string;
   port: number;
   /** `any` is reachable from the preview connector over the project network;
@@ -28,6 +30,8 @@ export interface SessionDevServer {
   command: string;
   /** Working directory relative to the session worktree; `.` for its root. */
   workdir: string;
+  /** Set when the listener belongs to a managed dev server instance. */
+  managedInstanceId?: string;
 }
 
 const MAX_COMMAND_CHARS = 300;
@@ -46,6 +50,8 @@ export const LISTENING_PORTS_SCRIPT = [
   // glob matches a single process; the parser attributes sockets by that header.
   'ls -l /proc/[0-9]*/fd /dev/null 2>/dev/null',
   "echo '#proc'",
+  // A literal tab: not every sed in a sandbox image understands `\t`.
+  "t=$(printf '\\t')",
   'for d in /proc/[0-9]*; do',
   'c=$(readlink "$d/cwd" 2>/dev/null) || continue',
   `printf 'P\\t%s\\t%s\\t' "\${d#/proc/}" "$c"`,
@@ -53,12 +59,10 @@ export const LISTENING_PORTS_SCRIPT = [
   // An empty or vanished cmdline makes `cut` print nothing, which would glue the
   // next process onto this line. The extra newline ends it either way.
   'echo',
-  `printf 'E\\t%s\\t' "\${d#/proc/}"`,
-  `tr '\\0' '\\n' < "$d/environ" 2>/dev/null | sed -n 's/^VERITY_SESSION_ID=//p' | head -c 200`,
-  'echo',
-  `printf 'F\\t%s\\t' "\${d#/proc/}"`,
-  `tr '\\0' '\\n' < "$d/environ" 2>/dev/null | sed -n 's/^VERITY_PREVIEW_FORWARDER=//p' | head -c 20`,
-  'echo',
+  // One read of the environment per process yields every Verity marker: the
+  // session, a managed instance, and the preview forwarder's own relay processes.
+  'p=${d#/proc/}',
+  `tr '\\0' '\\n' < "$d/environ" 2>/dev/null | sed -n -e "s/^VERITY_SESSION_ID=\\(.\\{0,200\\}\\).*/E$t$p$t\\1/p" -e "s/^VERITY_DEV_SERVER_INSTANCE=\\(.\\{0,80\\}\\).*/I$t$p$t\\1/p" -e "s/^VERITY_PREVIEW_FORWARDER=\\(.\\{0,20\\}\\).*/F$t$p$t\\1/p"`,
   'done',
   "echo '#announce'",
   'for f in /tmp/verity-dev-servers/announcements/*.json; do [ -f "$f" ] && cat "$f" && echo; done',
@@ -94,6 +98,7 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
   const processes = new Map<number, { cwd: string; command: string }>();
   const forwarders = new Set<number>();
   const sessions = new Map<number, string>();
+  const instances = new Map<number, string>();
   const announcements = new Map<number, { name: string; pid: number; sessionId?: string }>();
   let section = '';
   let fdPid: number | null = null;
@@ -165,6 +170,9 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
     } else if (section === '#proc' && line.startsWith('F\t')) {
       const [, pid, marker] = line.split('\t');
       if (pid && marker) forwarders.add(Number(pid));
+    } else if (section === '#proc' && line.startsWith('I\t')) {
+      const [, pid, instanceId] = line.split('\t');
+      if (pid && instanceId) instances.set(Number(pid), instanceId);
     } else if (section === '#proc' && line.startsWith('E\t')) {
       const [, pid, sessionId] = line.split('\t');
       if (pid && sessionId) sessions.set(Number(pid), sessionId);
@@ -184,11 +192,13 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
     if (current && rank[current.bind] >= rank[listener.bind]) continue;
     const announcement = announcements.get(listener.port);
     const sessionId = sessions.get(pid);
+    const instanceId = instances.get(pid);
     byPort.set(listener.port, {
       ...listener,
       pid,
       ...process,
       ...(sessionId ? { sessionId } : {}),
+      ...(instanceId ? { instanceId } : {}),
       ...(announcement &&
       (announcement.pid === pid || (sessionId && announcement.sessionId === sessionId))
         ? { announcedName: announcement.name }
@@ -245,6 +255,7 @@ export function sessionDevServers(
         name: process.announcedName ?? devServerName(process.command),
         command: process.command,
         workdir: posix.relative(root, cwd) || '.',
+        ...(process.instanceId ? { managedInstanceId: process.instanceId } : {}),
       },
     ];
   });

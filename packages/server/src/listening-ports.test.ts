@@ -250,3 +250,15 @@ it('joins environment and announcement metadata only to verified sockets', () =>
   ]);
   expect(parseListeningProcesses(output)).toHaveLength(1);
 });
+
+// The supervisor recognises a managed server only by this tag; losing it in the
+// parser would leave every managed server stuck in "starting".
+it('carries the managed instance tag from the process environment to the listener', () => {
+  const output =
+    '#tcp\n 0: 00000000:A028 00000000:0000 0A 0:0 0:0 0 1000 0 456\n#fd\n/proc/42/fd:\nlrwx -> socket:[456]\n#proc\nP\t42\t/work/s1\tnode server.mjs\nI\t42\tinstance-1\nE\t42\tsession-a\n#announce\n';
+  const [listener] = parseListeningProcesses(output);
+  expect(listener).toMatchObject({ port: 41000, instanceId: 'instance-1', sessionId: 'session-a' });
+  expect(sessionDevServers([listener!], '/work/s1', 'session-a')).toMatchObject([
+    { port: 41000, managedInstanceId: 'instance-1' },
+  ]);
+});

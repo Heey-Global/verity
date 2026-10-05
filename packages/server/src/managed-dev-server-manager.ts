@@ -1,0 +1,661 @@
+import {
+  ManagedDevServerConflictError,
+  ManagedDevServerInputError,
+  ManagedDevServerPortsFullError,
+  type EventStore,
+  type ManagedDevServerInstanceRecord,
+  type ManagedDevServerRecord,
+  type ProjectRecord,
+} from '@verity/store';
+import type { ListeningProcess } from './listening-ports.js';
+import type { LocalPreviewShare } from './local-preview-manager.js';
+
+/** Sandbox ports Verity hands out to managed instances. Internal only. */
+export const MANAGED_SANDBOX_PORTS: readonly number[] = Array.from(
+  { length: 1000 },
+  (_, index) => 41_000 + index,
+);
+/** A server that has not answered on its port by then is reported crashed. */
+export const MANAGED_STARTUP_DEADLINE_MS = 60_000;
+const MONITOR_INTERVAL_MS = 2_000;
+const MANAGED_SHARE_TTL_SECONDS = 30 * 86_400;
+
+export type StartedBy = 'agent' | 'operator' | 'recovery';
+
+export interface ManagedDevServerRuntime {
+  startManagedServer(
+    project: ProjectRecord,
+    input: {
+      instanceId: string;
+      command: string;
+      worktree: string;
+      workdir: string;
+      env: Record<string, string>;
+    },
+  ): Promise<{ ok: true } | { ok: false; reason: string }>;
+  stopManagedServer(project: ProjectRecord, instanceId: string): Promise<void>;
+  managedServerStatus(
+    project: ProjectRecord,
+    instanceId: string,
+  ): Promise<{ alive: boolean; exitCode: number | null }>;
+  managedServerLogs(project: ProjectRecord, instanceId: string, lines?: number): Promise<string>;
+  listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]>;
+}
+
+/** The subset of the local preview manager a managed instance publishes through. */
+export interface ManagedLocalShares {
+  create(
+    sessionId: string,
+    input: { targetPort: number; ttlSeconds: number; networkPort: number },
+  ): Promise<LocalPreviewShare>;
+  stop(id: string): Promise<boolean>;
+  list(sessionId: string): LocalPreviewShare[];
+  heldPorts(): Map<number, LocalPreviewShare>;
+  portOf(shareId: string): number | undefined;
+}
+
+export interface ManagedDevServerManagerOptions {
+  store: EventStore;
+  runtime: ManagedDevServerRuntime;
+  /** Absent when local previews are unavailable; entries then run without an address. */
+  localShares?: ManagedLocalShares | undefined;
+  /** The local preview range, the only ports anyone sees. */
+  networkPorts: readonly number[];
+  /** The session worktree as the sandbox sees it. */
+  sandboxWorktree(project: ProjectRecord, worktree: string): string;
+  /** Instances whose public link is live and must keep their network port. */
+  protectedInstances?: () => ReadonlySet<string>;
+  /** Pushes a refreshed listener snapshot to the app. */
+  refreshListeners?: (project: ProjectRecord) => Promise<void> | void;
+  now?: () => number;
+  log?: (message: string, detail?: Record<string, unknown>) => void;
+}
+
+export interface ManagedInstanceView {
+  id: string;
+  sessionId: string;
+  state: ManagedDevServerInstanceRecord['state'];
+  desired: ManagedDevServerInstanceRecord['desired'];
+  detail: string | null;
+  /** The network address; set while the instance is published locally. */
+  url: string | null;
+  /** True while running without the operator's approval for local publishing. */
+  awaitingApproval: boolean;
+  /** The running command differs from the entry's current one. */
+  restartToApply: boolean;
+  startedAt: string | null;
+}
+
+export interface ManagedServerView {
+  id: string;
+  name: string;
+  command: string;
+  workdir: string;
+  approved: boolean;
+  /** This session's instance, if the entry ever ran here. */
+  instance: ManagedInstanceView | null;
+  /** Running or starting instances in other sessions of the project. */
+  elsewhere: Array<{ instanceId: string; sessionId: string; sessionName: string | null }>;
+}
+
+export class ManagedDevServerError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = 'ManagedDevServerError';
+  }
+}
+
+interface SessionContext {
+  project: ProjectRecord;
+  sessionId: string;
+  worktree: string;
+}
+
+/**
+ * Runs dev servers the agent set up (concept 2.6): starts them in a session's
+ * worktree, tells starting from running from crashed by watching the tagged
+ * listener, publishes them on the operator's network once approved, and brings
+ * them back after a sandbox is recreated.
+ */
+export class ManagedDevServerManager {
+  private readonly now: () => number;
+  private readonly timer: ReturnType<typeof setInterval>;
+  private ticking: Promise<void> | undefined;
+  private reserved = new Set<number>();
+  private closed = false;
+
+  constructor(private readonly options: ManagedDevServerManagerOptions) {
+    this.now = options.now ?? Date.now;
+    this.timer = setInterval(() => void this.tick(), MONITOR_INTERVAL_MS);
+    this.timer.unref?.();
+    void this.refreshReserved();
+  }
+
+  /** Network ports reserved for instances; the ad hoc share allocator skips them. */
+  reservedNetworkPorts(): ReadonlySet<number> {
+    return this.reserved;
+  }
+
+  close(): void {
+    this.closed = true;
+    clearInterval(this.timer);
+  }
+
+  private get servers() {
+    return this.options.store.managedDevServers;
+  }
+
+  private async refreshReserved(): Promise<void> {
+    try {
+      this.reserved = await this.servers.reservedNetworkPorts();
+    } catch {
+      /* Keep the previous snapshot; the next reservation refreshes it. */
+    }
+  }
+
+  private async context(sessionId: string): Promise<SessionContext> {
+    const session = await this.options.store.getSession(sessionId);
+    if (!session?.projectId || !session.worktree)
+      throw new ManagedDevServerError('session not found', 404);
+    const project = await this.options.store.getProject(session.projectId);
+    if (!project) throw new ManagedDevServerError('project not found', 404);
+    return { project, sessionId, worktree: session.worktree };
+  }
+
+  private async entry(projectId: string, idOrName: string): Promise<ManagedDevServerRecord> {
+    const byId = await this.servers.get(idOrName);
+    if (byId && byId.projectId === projectId) return byId;
+    let byName: ManagedDevServerRecord | undefined;
+    try {
+      byName = await this.servers.getByName(projectId, idOrName);
+    } catch {
+      byName = undefined;
+    }
+    if (!byName) throw new ManagedDevServerError(`no server named "${idOrName}"`, 404);
+    return byName;
+  }
+
+  private urlFor(instance: ManagedDevServerInstanceRecord): string | null {
+    const share = this.shareFor(instance);
+    return share?.url ?? null;
+  }
+
+  private shareFor(instance: ManagedDevServerInstanceRecord): LocalPreviewShare | undefined {
+    const local = this.options.localShares;
+    if (!local || instance.networkPort === null) return undefined;
+    const share = local.heldPorts().get(instance.networkPort);
+    return share && share.sessionId === instance.sessionId ? share : undefined;
+  }
+
+  // ---- entries ----------------------------------------------------------
+
+  async view(sessionId: string): Promise<ManagedServerView[]> {
+    const { project } = await this.context(sessionId);
+    const [entries, instances, sessions] = await Promise.all([
+      this.servers.list(project.id),
+      this.servers.listInstances({ projectId: project.id }),
+      this.options.store.listSessions(),
+    ]);
+    const names = new Map(sessions.map((session) => [session.sessionId, session.name ?? null]));
+    return entries.map((entry) => {
+      const own = instances.find(
+        (instance) => instance.serverId === entry.id && instance.sessionId === sessionId,
+      );
+      return {
+        id: entry.id,
+        name: entry.name,
+        command: entry.command,
+        workdir: entry.workdir,
+        approved: entry.approved,
+        instance: own ? this.instanceView(entry, own) : null,
+        elsewhere: instances
+          .filter(
+            (instance) =>
+              instance.serverId === entry.id &&
+              instance.sessionId !== sessionId &&
+              (instance.state === 'running' || instance.state === 'starting'),
+          )
+          .map((instance) => ({
+            instanceId: instance.id,
+            sessionId: instance.sessionId,
+            sessionName: names.get(instance.sessionId) ?? null,
+          })),
+      };
+    });
+  }
+
+  private instanceView(
+    entry: ManagedDevServerRecord,
+    instance: ManagedDevServerInstanceRecord,
+  ): ManagedInstanceView {
+    const url = instance.state === 'running' ? this.urlFor(instance) : null;
+    return {
+      id: instance.id,
+      sessionId: instance.sessionId,
+      state: instance.state,
+      desired: instance.desired,
+      detail: instance.detail,
+      url,
+      awaitingApproval:
+        instance.state === 'running' && url === null && !this.ranApproved(entry, instance),
+      restartToApply:
+        (instance.state === 'running' || instance.state === 'starting') &&
+        (instance.lastRunCommand !== entry.command || instance.lastRunWorkdir !== entry.workdir),
+      startedAt: instance.startedAt?.toISOString() ?? null,
+    };
+  }
+
+  /** Approval for what actually runs, not for the entry's current command. */
+  private ranApproved(entry: ManagedDevServerRecord, instance: ManagedDevServerInstanceRecord) {
+    return (
+      entry.approved &&
+      instance.lastRunCommand === entry.command &&
+      instance.lastRunWorkdir === entry.workdir
+    );
+  }
+
+  async add(
+    sessionId: string,
+    input: { name: string; command: string; workdir?: string | undefined },
+  ): Promise<ManagedDevServerRecord> {
+    const { project } = await this.context(sessionId);
+    return this.translate(() => this.servers.create({ projectId: project.id, ...input }));
+  }
+
+  async update(
+    sessionId: string,
+    idOrName: string,
+    patch: {
+      name?: string | undefined;
+      command?: string | undefined;
+      workdir?: string | undefined;
+    },
+  ): Promise<ManagedDevServerRecord> {
+    const { project } = await this.context(sessionId);
+    const entry = await this.entry(project.id, idOrName);
+    const updated = await this.translate(() => this.servers.update(entry.id, patch));
+    if (!updated) throw new ManagedDevServerError('server not found', 404);
+    return updated;
+  }
+
+  /** Stops every instance of the entry, then deletes it and with it all its ports. */
+  async remove(sessionId: string, idOrName: string): Promise<void> {
+    const { project } = await this.context(sessionId);
+    const entry = await this.entry(project.id, idOrName);
+    for (const instance of await this.servers.listInstances({ serverId: entry.id }))
+      await this.stopInstance(project, instance, 'Entry removed');
+    await this.servers.delete(entry.id);
+    await this.refreshReserved();
+  }
+
+  /** The operator approves exactly what they were shown. */
+  async approve(
+    sessionId: string,
+    idOrName: string,
+    seen: { command: string; workdir: string },
+  ): Promise<ManagedServerView[]> {
+    const { project } = await this.context(sessionId);
+    const entry = await this.entry(project.id, idOrName);
+    const approved = await this.servers.approve(entry.id, seen);
+    if (!approved)
+      throw new ManagedDevServerError(
+        'The command changed in the meantime. Review it again before approving.',
+        409,
+      );
+    const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+    if (instance?.state === 'running') await this.publish(project, approved, instance);
+    return this.view(sessionId);
+  }
+
+  private async translate<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof ManagedDevServerConflictError)
+        throw new ManagedDevServerError(error.message, 409);
+      if (error instanceof ManagedDevServerInputError)
+        throw new ManagedDevServerError(error.message, 400);
+      throw error;
+    }
+  }
+
+  // ---- lifecycle --------------------------------------------------------
+
+  async start(sessionId: string, idOrName: string, by: StartedBy): Promise<ManagedServerView> {
+    const context = await this.context(sessionId);
+    const entry = await this.entry(context.project.id, idOrName);
+    if (by === 'operator') {
+      // Switching an entry on is the operator's own act and approves what runs,
+      // after the app showed the command (first approval goes through approve()).
+      if (!entry.approved)
+        throw new ManagedDevServerError('Review and approve the command first', 409);
+    }
+    await this.startEntry(context, entry, by);
+    return this.viewOf(sessionId, entry.id);
+  }
+
+  async restart(sessionId: string, idOrName: string, by: StartedBy): Promise<ManagedServerView> {
+    const context = await this.context(sessionId);
+    const entry = await this.entry(context.project.id, idOrName);
+    const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+    if (instance) await this.stopInstance(context.project, instance, null);
+    return this.start(sessionId, entry.id, by);
+  }
+
+  async stop(sessionId: string, idOrName: string): Promise<ManagedServerView> {
+    const { project } = await this.context(sessionId);
+    const entry = await this.entry(project.id, idOrName);
+    const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+    if (instance) await this.stopInstance(project, instance, null);
+    return this.viewOf(sessionId, entry.id);
+  }
+
+  /** Stops an instance in another session of the same project, from the list row. */
+  async stopElsewhere(sessionId: string, instanceId: string): Promise<ManagedServerView[]> {
+    const { project } = await this.context(sessionId);
+    const instance = await this.servers.getInstance(instanceId);
+    if (!instance || instance.projectId !== project.id)
+      throw new ManagedDevServerError('instance not found', 404);
+    await this.stopInstance(project, instance, null);
+    return this.view(sessionId);
+  }
+
+  async logs(sessionId: string, idOrName: string, lines = 300): Promise<string> {
+    const { project } = await this.context(sessionId);
+    const entry = await this.entry(project.id, idOrName);
+    const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+    if (!instance) return '';
+    return this.options.runtime.managedServerLogs(project, instance.id, lines);
+  }
+
+  /** Called before a session is deleted: its processes must not outlive it. */
+  async stopSession(sessionId: string): Promise<void> {
+    const session = await this.options.store.getSession(sessionId);
+    if (!session?.projectId) return;
+    const project = await this.options.store.getProject(session.projectId);
+    if (!project) return;
+    for (const instance of await this.servers.listInstances({ sessionId }))
+      await this.stopInstance(project, instance, null).catch(() => undefined);
+    await this.refreshReserved();
+  }
+
+  private async viewOf(sessionId: string, serverId: string): Promise<ManagedServerView> {
+    const view = (await this.view(sessionId)).find((server) => server.id === serverId);
+    if (!view) throw new ManagedDevServerError('server not found', 404);
+    return view;
+  }
+
+  private async startEntry(
+    context: SessionContext,
+    entry: ManagedDevServerRecord,
+    by: StartedBy,
+  ): Promise<void> {
+    const { project, sessionId } = context;
+    if (project.state !== 'active' || !project.containerName)
+      throw new ManagedDevServerError('the project sandbox is not running', 409);
+    const processes = await this.options.runtime.listListeningProcesses(project).catch(() => []);
+    const busy = new Set(processes.map((process) => process.port));
+    let instance = await this.servers.ensureInstance({
+      serverId: entry.id,
+      sessionId,
+      sandboxPorts: MANAGED_SANDBOX_PORTS,
+      avoid: busy,
+    });
+    const status = await this.options.runtime
+      .managedServerStatus(project, instance.id)
+      .catch(() => ({ alive: false, exitCode: null }));
+    if (status.alive && (instance.state === 'running' || instance.state === 'starting')) return;
+    if (status.alive) await this.options.runtime.stopManagedServer(project, instance.id);
+    const holder = processes.find((process) => process.port === instance.sandboxPort);
+    if (holder && holder.instanceId !== instance.id) {
+      const moved = await this.servers.moveSandboxPort(instance.id, MANAGED_SANDBOX_PORTS, busy);
+      if (moved) instance = moved;
+    }
+    const command = by === 'recovery' ? (instance.lastRunCommand ?? entry.command) : entry.command;
+    const workdir = by === 'recovery' ? (instance.lastRunWorkdir ?? entry.workdir) : entry.workdir;
+    const siblings = await this.siblingEnv(project, sessionId, entry.id);
+    const result = await this.options.runtime.startManagedServer(project, {
+      instanceId: instance.id,
+      command: command.replaceAll('{port}', String(instance.sandboxPort)),
+      worktree: this.options.sandboxWorktree(project, context.worktree),
+      workdir,
+      env: {
+        ...siblings,
+        PORT: String(instance.sandboxPort),
+        VERITY_SESSION_ID: sessionId,
+      },
+    });
+    const now = new Date(this.now());
+    if (!result.ok) {
+      await this.servers.updateInstance(instance.id, {
+        desired: 'stopped',
+        state: 'crashed',
+        detail: result.reason,
+        lastRunCommand: command,
+        lastRunWorkdir: workdir,
+      });
+      return;
+    }
+    await this.servers.updateInstance(instance.id, {
+      desired: 'running',
+      state: 'starting',
+      detail: null,
+      lastRunCommand: command,
+      lastRunWorkdir: workdir,
+      startedAt: now,
+      lastRanAt: now,
+    });
+    this.options.log?.('verity: managed dev server starting', {
+      projectId: project.id,
+      sessionId,
+      serverId: entry.id,
+      by,
+    });
+  }
+
+  /** `VERITY_SERVER_<NAME>_URL` for each other running entry of the session. */
+  private async siblingEnv(
+    project: ProjectRecord,
+    sessionId: string,
+    exceptServerId: string,
+  ): Promise<Record<string, string>> {
+    const [entries, instances] = await Promise.all([
+      this.servers.list(project.id),
+      this.servers.listInstances({ sessionId }),
+    ]);
+    const env: Record<string, string> = {};
+    for (const instance of instances) {
+      if (instance.serverId === exceptServerId) continue;
+      if (instance.state !== 'running' && instance.state !== 'starting') continue;
+      const entry = entries.find((value) => value.id === instance.serverId);
+      if (entry)
+        env[`VERITY_SERVER_${entry.nameKey}_URL`] =
+          `http://127.0.0.1:${String(instance.sandboxPort)}`;
+    }
+    return env;
+  }
+
+  private async stopInstance(
+    project: ProjectRecord,
+    instance: ManagedDevServerInstanceRecord,
+    detail: string | null,
+  ): Promise<void> {
+    await this.servers.updateInstance(instance.id, { desired: 'stopped' });
+    await this.unpublish(instance);
+    if (project.state === 'active' && project.containerName)
+      await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
+    await this.servers.updateInstance(instance.id, {
+      state: 'stopped',
+      detail,
+      ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
+    });
+    void this.options.refreshListeners?.(project);
+  }
+
+  // ---- publishing -------------------------------------------------------
+
+  private async publish(
+    project: ProjectRecord,
+    entry: ManagedDevServerRecord,
+    instance: ManagedDevServerInstanceRecord,
+  ): Promise<void> {
+    const local = this.options.localShares;
+    if (!local) return;
+    if (
+      !instance.lastRunCommand ||
+      !instance.lastRunWorkdir ||
+      !(await this.servers.isApproved(entry.id, instance.lastRunCommand, instance.lastRunWorkdir))
+    )
+      return;
+    const existing = this.shareFor(instance);
+    if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
+    const held = local.heldPorts();
+    const externallyUsed = new Set(
+      [...held.entries()]
+        .filter(
+          ([port, share]) =>
+            port !== instance.networkPort || share.sessionId !== instance.sessionId,
+        )
+        .map(([port]) => port),
+    );
+    let reservation: { port: number; evictedInstanceId?: string };
+    try {
+      reservation = await this.servers.reserveNetworkPort(instance.id, this.options.networkPorts, {
+        protect: this.options.protectedInstances?.() ?? new Set(),
+        externallyUsed,
+      });
+    } catch (error) {
+      if (error instanceof ManagedDevServerPortsFullError) {
+        await this.servers.updateInstance(instance.id, {
+          detail:
+            'All network ports are in use. Stop another server or enlarge VERITY_LOCAL_PREVIEW_PORT_RANGE.',
+        });
+        return;
+      }
+      throw error;
+    }
+    await this.refreshReserved();
+    try {
+      await local.create(instance.sessionId, {
+        targetPort: instance.sandboxPort,
+        ttlSeconds: MANAGED_SHARE_TTL_SECONDS,
+        networkPort: reservation.port,
+      });
+      if (instance.detail) await this.servers.updateInstance(instance.id, { detail: null });
+    } catch (error) {
+      this.options.log?.('verity: managed dev server could not publish locally', {
+        projectId: project.id,
+        instanceId: instance.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async unpublish(instance: ManagedDevServerInstanceRecord): Promise<void> {
+    const share = this.shareFor(instance);
+    if (share) await this.options.localShares?.stop(share.id).catch(() => false);
+  }
+
+  // ---- supervision ------------------------------------------------------
+
+  /** One pass over active instances. Exposed for tests and for discovery pushes. */
+  tick(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.ticking ??= this.supervise().finally(() => {
+      this.ticking = undefined;
+    });
+    return this.ticking;
+  }
+
+  private async supervise(): Promise<void> {
+    let instances: ManagedDevServerInstanceRecord[];
+    try {
+      instances = await this.servers.listInstances({ desired: 'running' });
+    } catch {
+      return;
+    }
+    const byProject = new Map<string, ManagedDevServerInstanceRecord[]>();
+    for (const instance of instances)
+      byProject.set(instance.projectId, [...(byProject.get(instance.projectId) ?? []), instance]);
+    for (const [projectId, group] of byProject) {
+      try {
+        await this.superviseProject(projectId, group);
+      } catch (error) {
+        this.options.log?.('verity: managed dev server supervision failed', {
+          projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  private async superviseProject(
+    projectId: string,
+    instances: ManagedDevServerInstanceRecord[],
+  ): Promise<void> {
+    const project = await this.options.store.getProject(projectId);
+    if (!project || project.state !== 'active' || !project.containerName) return;
+    const processes = await this.options.runtime.listListeningProcesses(project);
+    let changed = false;
+    for (const instance of instances) {
+      const entry = await this.servers.get(instance.serverId);
+      if (!entry) continue;
+      const tagged = processes.filter((process) => process.instanceId === instance.id);
+      const onPort = tagged.find((process) => process.port === instance.sandboxPort);
+      if (onPort) {
+        if (instance.state !== 'running') {
+          await this.servers.updateInstance(instance.id, { state: 'running', detail: null });
+          changed = true;
+        }
+        const current = (await this.servers.getInstance(instance.id)) ?? instance;
+        await this.publish(project, entry, current);
+        continue;
+      }
+      const status = await this.options.runtime
+        .managedServerStatus(project, instance.id)
+        .catch(() => ({ alive: true, exitCode: null }));
+      const elapsed = this.now() - (instance.startedAt?.getTime() ?? 0);
+      if (!status.alive && status.exitCode === null && elapsed > 5_000) {
+        // Nothing runs and no exit was recorded: the sandbox was recreated and its
+        // /tmp is gone. Start again with what last ran; a pending update waits for
+        // the operator's next restart.
+        const session = await this.options.store.getSession(instance.sessionId);
+        if (session?.worktree) {
+          await this.startEntry(
+            { project, sessionId: instance.sessionId, worktree: session.worktree },
+            entry,
+            'recovery',
+          );
+          changed = true;
+        }
+        continue;
+      }
+      // Just launched: the launcher may not be visible yet.
+      if (!status.alive && status.exitCode === null) continue;
+      const timedOut = instance.state === 'starting' && elapsed > MANAGED_STARTUP_DEADLINE_MS;
+      if (status.alive && !timedOut) continue;
+      const elsewhere = tagged[0];
+      const detail = !status.alive
+        ? status.exitCode === null
+          ? 'The server exited'
+          : `The server exited with code ${String(status.exitCode)}`
+        : elsewhere
+          ? `Did not answer on its port: it listens on ${String(elsewhere.port)} instead. Use $PORT or {port} in the command.`
+          : 'Did not answer on its port within 60 seconds';
+      await this.unpublish(instance);
+      if (status.alive)
+        await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
+      await this.servers.updateInstance(instance.id, {
+        desired: 'stopped',
+        state: 'crashed',
+        detail,
+        ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
+      });
+      changed = true;
+    }
+    if (changed) void this.options.refreshListeners?.(project);
+  }
+}

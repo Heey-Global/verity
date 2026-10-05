@@ -122,6 +122,11 @@ export class ListenerDiscovery {
     }
   }
 
+  /** Rescans a project now, for changes Verity made itself (managed dev servers). */
+  refreshProject(project: ProjectRecord): Promise<void> {
+    return this.refresh(project);
+  }
+
   private refresh(project: ProjectRecord): Promise<void> {
     const existing = this.pending.get(project.id);
     if (existing) {

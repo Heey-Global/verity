@@ -347,6 +347,8 @@ export const agentEventSchema = z.discriminatedUnion('t', [
         workdir: z.string(),
         scope: z.enum(['session', 'project']).optional(),
         sessionId: z.string().optional(),
+        /** Set when the listener belongs to a managed dev server instance. */
+        managedInstanceId: z.string().optional(),
       }),
     ),
   }),

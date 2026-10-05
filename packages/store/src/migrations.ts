@@ -3780,7 +3780,8 @@ const migrations: Record<string, Migration> = {
         db,
       );
     },
-  },  '0136_managed_dev_servers': {
+  },
+  '0136_managed_dev_servers': {
     async up(db: Kysely<unknown>): Promise<void> {
       // Dev servers the agent sets up and Verity runs (concept 2.6). An entry is a
       // project-wide recipe; an instance binds it to one session's worktree with

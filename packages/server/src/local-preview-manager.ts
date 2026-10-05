@@ -44,6 +44,8 @@ export interface LocalPreviewManagerOptions extends Omit<PreviewShareManagerOpti
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     port: number,
   ) => Promise<number>;
+  /** Network ports reserved for managed dev servers; ad hoc shares skip them. */
+  reservedNetworkPorts?: () => ReadonlySet<number>;
 }
 
 /** Local edges are process-owned. Restarting Server closes their sockets; startup
@@ -93,6 +95,13 @@ export class LocalPreviewManager {
       .filter((v) => v.ready && v.share.projectId === projectId)
       .map((v) => v.share);
   }
+  /** Network ports held by shares right now, with the share that holds each. */
+  heldPorts(): Map<number, LocalPreviewShare> {
+    return new Map([...this.active.values()].map((state) => [state.port, state.share]));
+  }
+  portOf(shareId: string): number | undefined {
+    return this.active.get(shareId)?.port;
+  }
   ownsConnector(id: string, shareId?: string): boolean {
     if (shareId && this.active.has(shareId)) return true;
     return [...this.active.values()].some((state) => state.connectorId === id);
@@ -106,6 +115,8 @@ export class LocalPreviewManager {
       targetPort?: number | undefined;
       staticPath?: string | undefined;
       ttlSeconds?: number | undefined;
+      /** The managed dev server's reserved network port. */
+      networkPort?: number | undefined;
     },
   ): Promise<LocalPreviewShare> {
     const key = JSON.stringify([sessionId, input.targetPort ?? null, input.staticPath ?? null]);
@@ -127,6 +138,7 @@ export class LocalPreviewManager {
       targetPort?: number | undefined;
       staticPath?: string | undefined;
       ttlSeconds?: number | undefined;
+      networkPort?: number | undefined;
     },
   ): Promise<LocalPreviewShare> {
     if (this.closing || this.blockedSessions.has(sessionId))
@@ -145,9 +157,23 @@ export class LocalPreviewManager {
       (s) =>
         s.targetPort === (input.targetPort ?? null) && s.staticPath === (input.staticPath ?? null),
     );
-    if (existing && existing.expiresAt.getTime() > Date.now()) return existing;
+    const existingPort = existing ? this.active.get(existing.id)?.port : undefined;
+    if (
+      existing &&
+      existing.expiresAt.getTime() > Date.now() &&
+      (input.networkPort === undefined || existingPort === input.networkPort)
+    )
+      return existing;
     if (existing) await this.stop(existing.id);
-    const port = this.ports.find((p) => !this.reserved.has(p));
+    const managed = this.options.reservedNetworkPorts?.() ?? new Set<number>();
+    const port =
+      input.networkPort !== undefined
+        ? this.reserved.has(input.networkPort) || !this.ports.includes(input.networkPort)
+          ? undefined
+          : input.networkPort
+        : this.ports.find((p) => !this.reserved.has(p) && !managed.has(p));
+    if (port === undefined && input.networkPort !== undefined)
+      throw new PreviewShareConflictError('the reserved network port is in use');
     if (port === undefined)
       throw new PreviewShareConflictError(
         'local preview ports are full; stop a preview or expand VERITY_LOCAL_PREVIEW_PORT_RANGE',

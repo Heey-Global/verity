@@ -144,6 +144,8 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/git/sign',
   'POST /internal/github/token',
   'POST /internal/project/memory',
+  // `verity-dev-server`: managed dev servers (concept 2.6), same capability as memory.
+  'POST /internal/dev-servers',
   // The loopback MCP gateway (ADR 0014 D1). It rides the project-bound socket for the same
   // reason the others do: the project identity the handler binds its per-turn bearer to is
   // the one the connection proved, not one the request body could claim.

@@ -327,6 +327,11 @@ import { registerAutomationRoutes } from './automation-routes.js';
 import { createSessionPlanning, registerPlanningRoutes } from './planning.js';
 import type { ListenerDiscovery } from './listener-discovery.js';
 import { registerLocalPreviewRoutes } from './local-preview-routes.js';
+import {
+  registerManagedDevServerAgentRoute,
+  registerManagedDevServerRoutes,
+} from './managed-dev-server-routes.js';
+import type { ManagedDevServerManager } from './managed-dev-server-manager.js';
 import type { LocalPreviewManager } from './local-preview-manager.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import type { PreviewShareManager } from './preview-share-manager.js';
@@ -1085,6 +1090,8 @@ export interface ServerDeps {
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   listenerDiscovery?: ListenerDiscovery | undefined;
   localPreviewManager?: LocalPreviewManager | undefined;
+  /** Dev servers the agent sets up and Verity runs (concept 2.6). */
+  managedDevServerManager?: ManagedDevServerManager | undefined;
   previewSharingCapability?:
     | (() =>
         | Promise<'available' | 'premium-required' | 'unavailable'>
@@ -3022,6 +3029,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? await deps.localPreviewManager?.beginSessionMove(session.projectId)
       : undefined;
     try {
+      // Processes started for this session must not outlive its worktree.
+      await deps.managedDevServerManager?.stopSession(sessionId).catch(() => undefined);
       await deps.localPreviewManager?.stopSession(sessionId);
       // `.catch()` alone would only cover a REJECTED promise; an implementation that
       // throws before returning one would escape and fail the delete — the outcome the
@@ -6127,6 +6136,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onAutomationsChanged: () => automationScheduler.wake(),
   });
 
+  registerManagedDevServerRoutes(app, { manager: deps.managedDevServerManager });
+  registerManagedDevServerAgentRoute(app, {
+    manager: deps.managedDevServerManager,
+    capabilities: deps.ghTokenCapabilities,
+    eventStore: deps.eventStore,
+  });
   registerLocalPreviewRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.localPreviewManager ? { manager: deps.localPreviewManager } : {}),
@@ -9281,6 +9296,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                     `The old workspace ${session.worktree} and branch ${snapshot.branch} are retained. ` +
                     `Commits were not transferred. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
                   await deps.previewShareManager?.revokeSessionShares(source.id, id);
+                  await deps.managedDevServerManager?.stopSession(id);
                   await deps.localPreviewManager?.stopSession(id);
                   await deps.eventStore.commitSessionMove(
                     id,
