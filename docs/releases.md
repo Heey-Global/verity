@@ -219,6 +219,15 @@ explicit runtime string are excluded from that comparison; native modules,
 plugins, native assets, and custom native preparation still matter. Failure to
 establish compatibility blocks OTA.
 
+To request a new TestFlight binary without native changes, dispatch
+`release-dispatch.yml` on `main` with `mobile-replan=true`. This only opens or
+updates the next native release PR (for example, 1.52.0 to 1.53.0); merging
+that PR approves the build. Recovery and reconciliation inputs cannot be combined
+with this request. Release Please needs releasable mobile commits since the last
+native release; with no such commits, no new PR is created. This request does not
+force an empty release. Pending publication must be resolved before another release
+can be planned. Production still requires its separate promotion PR.
+
 Once `main` needs a different native runtime, its changes accumulate in the
 native release PR. Do not publish that source to the old runtime. Supporting
 parallel OTA fixes for an older runtime would need an explicit maintenance

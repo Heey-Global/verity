@@ -1371,8 +1371,7 @@ describe('planning resumes after publication', () => {
         step.uses?.startsWith('googleapis/release-please-action@') &&
         step.if?.includes('backend-replan'),
     );
-    // Only the backend train may be planned this way: the mobile train decides
-    // between OTA and native from the push diff, which a manual run has not got.
+    // Backend planning must remain scoped when native planning is also available.
     expect(reachable).toHaveLength(1);
     expect(reachable[0]?.id).toBe('release-backend');
     expect(reachable[0]?.if).toContain(
@@ -1383,6 +1382,76 @@ describe('planning resumes after publication', () => {
     // An API dispatch carries inputs as strings. Forwarding one unnormalized
     // into this boolean input fails the dispatched run before it can plan.
     expect(forwarded).toContain("format('{0}', inputs['backend-replan']) == 'true'");
+  });
+
+  it('plans a requested native release without permitting manual publication', () => {
+    const steps = release.jobs['release-please']?.steps ?? [];
+    const action = steps.find((step) => step.id === 'release-mobile');
+    // A manual binary request must not publish a pending candidate implicitly.
+    expect(action?.if).toContain("inputs.mobile-replan && steps.lifecycle.outputs.mode == 'plan'");
+    expect(action?.with?.['skip-github-release']).toContain(
+      "steps.lifecycle.outputs.mode != 'release'",
+    );
+    expect(steps.find((step) => step.run?.includes('release-lifecycle.mjs'))?.if).toContain(
+      'inputs.mobile-replan',
+    );
+    expect(
+      steps.find(
+        (step) => step.uses?.startsWith('actions/checkout@') && step.with?.['fetch-depth'] === 0,
+      )?.if,
+    ).toContain('inputs.mobile-replan');
+    expect(dispatch.jobs['release-train']?.with?.['mobile-replan']).toContain(
+      "matrix.train == 'mobile'",
+    );
+    expect(dispatch.jobs['release-train']?.with?.['mobile-replan']).toContain(
+      "format('{0}', inputs['mobile-replan']) == 'true'",
+    );
+    const guard = steps.find((step) => step.name === 'Validate mobile re-plan request');
+    expect(guard?.run).toBeDefined();
+    // Matrix siblings must reject mixed recovery inputs before publishing.
+    expect(guard?.env?.REPLAN).toContain(
+      "format('{0}', github.event.inputs['mobile-replan']) == 'true'",
+    );
+    for (const overrides of [
+      {},
+      { REF: 'refs/heads/feature' },
+      { EVENT_NAME: 'push' },
+      { MOBILE_TAG: 'mobile-v1.52.0' },
+      { RECONCILE: 'true' },
+      { OTHER_REPLAN: 'true' },
+      { VERSION: '1.2.3' },
+      { SOURCE_REF: 'main' },
+      { WEBSITE_VERSION: '1.0.0' },
+      { WEBSITE_REF: 'main' },
+      { REPUBLISH: 'true' },
+      { ARTIFACT_ONLY: 'true' },
+      { ACCEPT_NO_ROLLBACK: 'true' },
+      { SCHEMA_FORWARD_MAX: '0042_x' },
+    ]) {
+      const result = spawnSync('bash', ['-c', guard!.run!], {
+        env: {
+          ...process.env,
+          REPLAN: 'true',
+          EVENT_NAME: 'workflow_dispatch',
+          REF: 'refs/heads/main',
+          OTHER_REPLAN: 'false',
+          MOBILE_TAG: '',
+          VERSION: '',
+          SOURCE_REF: '',
+          SCHEMA_FORWARD_MAX: '',
+          WEBSITE_VERSION: '',
+          WEBSITE_REF: '',
+          REPUBLISH: 'false',
+          ARTIFACT_ONLY: 'false',
+          ACCEPT_NO_ROLLBACK: 'false',
+          RECONCILE: 'false',
+          ...overrides,
+        },
+      });
+      expect(result.status === 0, JSON.stringify(overrides)).toBe(
+        Object.keys(overrides).length === 0,
+      );
+    }
   });
 
   it('refuses a re-plan that carries any recovery input', () => {
