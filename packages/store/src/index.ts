@@ -102,6 +102,19 @@ export {
 } from './store.js';
 export { TranscriptStore } from './transcript.js';
 export {
+  ManagedDevServerStore,
+  ManagedDevServerConflictError,
+  ManagedDevServerInputError,
+  ManagedDevServerPortsFullError,
+  managedDevServerNameKey,
+  normalizeManagedDevServerWorkdir,
+  type ManagedDevServerRecord,
+  type ManagedDevServerInstanceRecord,
+  type ManagedDevServerDesired,
+  type ManagedDevServerState,
+  type ManagedDevServerInstancePatch,
+} from './managed-dev-servers.js';
+export {
   LiveMeetingStore,
   type LiveMeetingSyncRecord,
   type LiveMeetingNoteSyncRecord,

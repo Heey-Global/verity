@@ -481,6 +481,7 @@ export interface DevServerCreateRequest {
 export type DevServerPatchRequest = Omit<DevServerCreateRequest, 'sourceKey'>;
 
 const publicPreviewShareSchema = z.object({
+  managedInstanceId: z.string().nullable().optional(),
   pinLocked: z.boolean().optional(),
   id: z.string(),
   projectId: z.string(),
@@ -525,8 +526,39 @@ const sessionDevServerSchema = z.object({
   workdir: z.string(),
   scope: z.enum(['session', 'project']).optional(),
   sessionId: z.string().optional(),
+  /** Set when the listener belongs to a managed dev server instance. */
+  managedInstanceId: z.string().optional(),
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
+
+const managedDevServerSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  command: z.string(),
+  workdir: z.string(),
+  approved: z.boolean(),
+  instance: z
+    .object({
+      id: z.string(),
+      sessionId: z.string(),
+      state: z.enum(['stopped', 'starting', 'running', 'crashed']),
+      desired: z.enum(['running', 'stopped']),
+      detail: z.string().nullable(),
+      url: z.string().url().nullable(),
+      localShareId: z.string().nullable().optional(),
+      /** Internal; a share target only, never shown. */
+      sandboxPort: z.number().int(),
+      awaitingApproval: z.boolean(),
+      restartToApply: z.boolean(),
+      startedAt: z.string().nullable(),
+    })
+    .nullable(),
+  elsewhere: z.array(
+    z.object({ instanceId: z.string(), sessionId: z.string(), sessionName: z.string().nullable() }),
+  ),
+});
+/** A dev server the agent set up and Verity runs (concept 2.6). */
+export type ManagedDevServer = z.infer<typeof managedDevServerSchema>;
 
 const publicPreviewShareResponseSchema = z.object({ share: publicPreviewShareSchema });
 const publicPreviewSharesResponseSchema = z.object({
@@ -3442,6 +3474,103 @@ export class VerityClient {
       .shares.map((share) => this.resolveLocalPreview(share));
   }
 
+  private resolveManaged(server: ManagedDevServer): ManagedDevServer {
+    const url = server.instance?.url;
+    if (!server.instance || !url) return server;
+    return {
+      ...server,
+      instance: {
+        ...server.instance,
+        url: this.resolveLocalPreview({ id: server.id, url } as LocalPreviewShare).url,
+      },
+    };
+  }
+
+  async listManagedDevServers(sessionId: string): Promise<ManagedDevServer[] | null> {
+    let res: Response;
+    try {
+      res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers`, {
+        method: 'GET',
+      });
+    } catch (err) {
+      // An older Core has no such route, and one without Docker answers 503; the
+      // sheet then shows detected servers only.
+      if (
+        err instanceof VerityApiError &&
+        ((err.status === 404 && err.message === 'Not Found') || err.status === 503)
+      )
+        return null;
+      throw err;
+    }
+    return z
+      .object({ servers: z.array(managedDevServerSchema) })
+      .parse(await res.json())
+      .servers.map((server) => this.resolveManaged(server));
+  }
+
+  async controlManagedDevServer(
+    sessionId: string,
+    serverId: string,
+    action: 'start' | 'stop' | 'restart',
+  ): Promise<ManagedDevServer> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/${action}`,
+      { method: 'POST' },
+    );
+    return this.resolveManaged(
+      z.object({ server: managedDevServerSchema }).parse(await res.json()).server,
+    );
+  }
+
+  /** Approves exactly the command and subdirectory the operator was shown. */
+  async approveManagedDevServer(
+    sessionId: string,
+    serverId: string,
+    seen: { command: string; workdir: string },
+  ): Promise<ManagedDevServer[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/approve`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(seen),
+      },
+    );
+    return z
+      .object({ servers: z.array(managedDevServerSchema) })
+      .parse(await res.json())
+      .servers.map((server) => this.resolveManaged(server));
+  }
+
+  async managedDevServerLogs(sessionId: string, serverId: string): Promise<string> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/logs`,
+      { method: 'GET' },
+    );
+    return z.object({ logs: z.string() }).parse(await res.json()).logs;
+  }
+
+  async deleteManagedDevServer(sessionId: string, serverId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async stopManagedDevServerInstance(
+    sessionId: string,
+    instanceId: string,
+  ): Promise<ManagedDevServer[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-server-instances/${encodeURIComponent(instanceId)}/stop`,
+      { method: 'POST' },
+    );
+    return z
+      .object({ servers: z.array(managedDevServerSchema) })
+      .parse(await res.json())
+      .servers.map((server) => this.resolveManaged(server));
+  }
+
   async stopLocalPreviewShare(shareId: string): Promise<void> {
     await this.request(`/local-shares/${encodeURIComponent(shareId)}`, { method: 'DELETE' });
   }
@@ -3529,7 +3658,7 @@ export class VerityClient {
 
   async createSessionPortPreviewShare(
     sessionId: string,
-    body: PublicPreviewShareCreateRequest & { targetPort: number },
+    body: PublicPreviewShareCreateRequest & { targetPort: number; managedInstanceId?: string },
   ): Promise<PublicPreviewShare> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/public-port-shares`,

@@ -1,5 +1,7 @@
 import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
+import { localPreviewPorts } from './local-preview-ports.js';
+import { ManagedDevServerManager } from './managed-dev-server-manager.js';
 import { ListenerDiscovery } from './listener-discovery.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
@@ -213,7 +215,7 @@ import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 import { containerNameFor } from './canonical.js';
-import { DockerExecBackend, dockerHostFor } from './project-backend.js';
+import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
 import { createSandboxGit } from './sandbox-git.js';
 import { projectSettingsEnv, type ProjectEnvironmentSettings } from './project-settings-env.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
@@ -3490,6 +3492,8 @@ export async function buildEmbeddedServer(
   // events the FileTailRunnerClient republishes off the tailed event file must
   // reach the exact bus the live stream reads from, not a second instance.
   const bus = new InMemoryEventBus();
+  // Declared before discovery, whose scans feed its orphan sweep.
+  let managedDevServerManager: ManagedDevServerManager | undefined;
   const listenerDiscovery =
     config.dockerBaseUrl && config.hostCloneRoot
       ? new ListenerDiscovery({
@@ -3498,6 +3502,9 @@ export async function buildEmbeddedServer(
           hostCloneRoot: config.hostCloneRoot,
           dockerBaseUrl: config.dockerBaseUrl,
           resolveUser: resolvePreviewUser,
+          onScan: (project, processes) => {
+            void managedDevServerManager?.sweepOrphans(project, processes);
+          },
           scan: (project) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
@@ -3508,6 +3515,10 @@ export async function buildEmbeddedServer(
 
   const localConnectorImage =
     config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
+  // `app.log` exists only once the control plane is built further down.
+  const managedDevServerLog: {
+    current?: (message: string, detail?: Record<string, unknown>) => void;
+  } = {};
   const localPreviewManager =
     projectDocker && localConnectorImage && config.hostCloneRoot
       ? new LocalPreviewManager({
@@ -3544,8 +3555,30 @@ export async function buildEmbeddedServer(
           ...(process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE
             ? { portRange: process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE }
             : {}),
+          reservedNetworkPorts: () =>
+            managedDevServerManager?.reservedNetworkPorts() ?? new Set<number>(),
         })
       : undefined;
+  // Dev servers the agent sets up and Verity runs (concept 2.6).
+  if (projectDocker && config.hostCloneRoot) {
+    const hostCloneRoot = config.hostCloneRoot;
+    managedDevServerManager = new ManagedDevServerManager({
+      store: eventStore,
+      runtime: new DockerProjectRuntime({
+        resolveUser: resolvePreviewUser,
+        dockerBaseUrl: config.dockerBaseUrl,
+      }),
+      ...(localPreviewManager ? { localShares: localPreviewManager } : {}),
+      networkPorts: localPreviewPorts(process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE),
+      sandboxWorktree: (project, worktree) =>
+        containerPathFor(worktree, projectClonePath(hostCloneRoot, project)),
+      refreshListeners: (project) => listenerDiscovery?.refreshProject(project),
+      wakeSandbox: (projectId, sessionId) =>
+        provisioner?.ensureProjectSandboxAwake(projectId, new Set([sessionId])) ??
+        Promise.reject(new Error('sandbox wake is unavailable')),
+      log: (message, detail) => managedDevServerLog.current?.(message, detail),
+    });
+  }
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised
   // when `config.runnerTransport` is on; cheap to build unconditionally.
@@ -3997,6 +4030,7 @@ export async function buildEmbeddedServer(
       : {}),
     ...(listenerDiscovery ? { listenerDiscovery } : {}),
     ...(localPreviewManager ? { localPreviewManager } : {}),
+    ...(managedDevServerManager ? { managedDevServerManager } : {}),
     previewSharingCapability: async () => {
       const settings = await eventStore.getVeritySettings();
       return previewSharingCapability(
@@ -4925,6 +4959,8 @@ export async function buildEmbeddedServer(
     });
   }
   app.addHook('onClose', () => listenerDiscovery?.close());
+  managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
+  app.addHook('onClose', () => managedDevServerManager?.close());
   void listenerDiscovery?.reconcile();
   app.addHook('onClose', () => claudeCredentialSync.close());
   let preserveProjectRelaysOnClose = false;

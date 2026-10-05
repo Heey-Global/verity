@@ -3781,6 +3781,68 @@ const migrations: Record<string, Migration> = {
       );
     },
   },
+  '0136_managed_dev_servers': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Dev servers the agent sets up and Verity runs (concept 2.6). An entry is a
+      // project-wide recipe; an instance binds it to one session's worktree with
+      // its own sandbox and network port. The approval columns hold the exact
+      // command and subdirectory the operator approved for local publishing.
+      await sql`create table managed_dev_servers (
+        id text primary key,
+        project_id text not null references projects(id) on delete cascade,
+        name text not null,
+        name_key text not null,
+        command text not null,
+        workdir text not null default '.',
+        approved_command text,
+        approved_workdir text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (project_id, name_key)
+      )`.execute(db);
+      await sql`create table managed_dev_server_instances (
+        id text primary key,
+        server_id text not null references managed_dev_servers(id) on delete cascade,
+        project_id text not null references projects(id) on delete cascade,
+        session_id text not null references sessions(session_id) on delete cascade,
+        sandbox_port integer not null check (sandbox_port between 1024 and 65535),
+        network_port integer check (network_port between 1 and 65535),
+        desired text not null default 'stopped' check (desired in ('running', 'stopped')),
+        state text not null default 'stopped' check (state in ('stopped', 'starting', 'running', 'crashed')),
+        detail text,
+        last_run_command text,
+        last_run_workdir text,
+        started_at timestamptz,
+        last_ran_at timestamptz,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (server_id, session_id),
+        unique (project_id, sandbox_port)
+      )`.execute(db);
+      await sql`create unique index managed_dev_server_instances_network_port_idx on managed_dev_server_instances (network_port) where network_port is not null`.execute(
+        db,
+      );
+      await sql`create index managed_dev_server_instances_session_idx on managed_dev_server_instances (session_id)`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table managed_dev_server_instances`.execute(db);
+      await sql`drop table managed_dev_servers`.execute(db);
+    },
+  },
+  '0137_managed_public_links': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Keep the pair identity even after deletion so reconciliation can revoke its link.
+      await sql`alter table public_preview_shares add column managed_instance_id text`.execute(db);
+      await sql`create unique index public_preview_managed_instance_idx on public_preview_shares (managed_instance_id) where managed_instance_id is not null and state in ('creating', 'active', 'revoking')`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table public_preview_shares drop column managed_instance_id`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

@@ -28,6 +28,7 @@ import type {
   QueuedTurnOpts,
   ScheduleConfig,
 } from './schema.js';
+import { ManagedDevServerStore } from './managed-dev-servers.js';
 
 /** A stored image blob: its media type and raw bytes (for serving). */
 export interface AttachmentBlob {
@@ -521,6 +522,7 @@ export type PublicPreviewShareState =
   'creating' | 'active' | 'revoking' | 'revoked' | 'expired' | 'failed';
 
 export interface PublicPreviewShareRecord {
+  managedInstanceId?: string | null;
   pinLocked?: boolean;
   id: string;
   projectId: string;
@@ -547,6 +549,7 @@ export interface PublicPreviewShareRecord {
 }
 
 export interface PublicPreviewShareCreateInput {
+  managedInstanceId?: string | null;
   id: string;
   projectId: string;
   devServerId: string | null;
@@ -1318,11 +1321,13 @@ export class EventStore implements EventSink {
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db);
+    this.managedDevServers = new ManagedDevServerStore(db);
   }
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
+  readonly managedDevServers: ManagedDevServerStore;
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
 
@@ -6498,6 +6503,7 @@ export class EventStore implements EventSink {
       id: row.id,
       projectId: row.project_id,
       devServerId: row.dev_server_id,
+      managedInstanceId: row.managed_instance_id,
       containerGeneration: row.container_generation,
       targetPort: row.target_port,
       targetKind: row.target_kind,
@@ -6530,6 +6536,7 @@ export class EventStore implements EventSink {
         id: input.id,
         project_id: input.projectId,
         dev_server_id: input.devServerId,
+        managed_instance_id: input.managedInstanceId ?? null,
         container_generation: input.containerGeneration,
         target_port: input.targetPort,
         target_kind: input.targetKind ?? 'dev-server',
@@ -6629,6 +6636,8 @@ export class EventStore implements EventSink {
     to: PublicPreviewShareState,
     patch: {
       connectorContainerId?: string | null;
+      targetPort?: number;
+      containerGeneration?: string;
       failure?: string | null;
       revokedAt?: Date | null;
     } = {},
@@ -6642,6 +6651,10 @@ export class EventStore implements EventSink {
         ...(patch.connectorContainerId === undefined
           ? {}
           : { connector_container_id: patch.connectorContainerId }),
+        ...(patch.targetPort === undefined ? {} : { target_port: patch.targetPort }),
+        ...(patch.containerGeneration === undefined
+          ? {}
+          : { container_generation: patch.containerGeneration }),
         ...(patch.failure === undefined ? {} : { failure: patch.failure }),
         ...(patch.revokedAt === undefined
           ? {}

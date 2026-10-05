@@ -1,6 +1,6 @@
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type { SessionDevServer } from '@verity/mobile';
+import type { ManagedDevServer, SessionDevServer } from '@verity/mobile';
 import { Icon } from '../Icon';
 
 /**
@@ -11,12 +11,14 @@ import { Icon } from '../Icon';
  */
 export function RunningServerCard({
   server,
+  managed,
   opening,
   disabled,
   onOpen,
   onShare,
 }: {
   server: SessionDevServer;
+  managed?: ManagedDevServer | undefined;
   opening: boolean;
   disabled: boolean;
   onOpen: () => void;
@@ -26,7 +28,11 @@ export function RunningServerCard({
   return (
     <View
       style={styles.card}
-      accessibilityLabel={`${server.name} is running on port ${String(server.port)}`}
+      accessibilityLabel={
+        server.managedInstanceId
+          ? `${server.name} is running`
+          : `${server.name} is running on port ${String(server.port)}`
+      }
     >
       <View style={styles.title}>
         <View style={styles.dot} />
@@ -35,6 +41,12 @@ export function RunningServerCard({
           <Text style={styles.state}> · Server running</Text>
         </Text>
       </View>
+      {managed ? (
+        <Text selectable style={styles.command}>
+          {managed.command}
+          {managed.workdir !== '.' ? `\nin ${managed.workdir}` : ''}
+        </Text>
+      ) : null}
       <View style={styles.actions}>
         <Pressable
           style={[styles.button, disabled && styles.buttonDisabled]}
@@ -99,6 +111,7 @@ const styles = StyleSheet.create((theme) => ({
     columnGap: theme.spacing.md,
     rowGap: theme.spacing.xs,
   },
+  command: { color: theme.colors.textMuted, fontSize: theme.text.xs, flexBasis: '100%' },
   title: {
     flexDirection: 'row',
     alignItems: 'center',

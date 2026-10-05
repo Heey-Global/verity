@@ -213,3 +213,13 @@ describe('persistent Sandbox activity', () => {
     ).resolves.toBe(false);
   });
 });
+
+it('lets a stopped managed server sleep while its public link stays valid', async () => {
+  await expect(
+    projectHasPersistentSandboxActivity({
+      project: project('p1'),
+      listShares: async () => [{ state: 'active', managedInstanceId: 'instance-1' } as never],
+      hasLocalShares: () => false,
+    }),
+  ).resolves.toBe(false);
+});

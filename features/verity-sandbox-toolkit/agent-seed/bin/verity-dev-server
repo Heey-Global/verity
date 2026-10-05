@@ -1,24 +1,187 @@
 #!/usr/bin/env node
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+// Verity dev servers for the agent.
+//
+// Managed servers (concept 2.6): the agent sets an entry up once, Verity runs it,
+// and the operator switches it on and off in the Preview sheet. The commands talk
+// to the Verity server over the project-bound broker with the per-container
+// capability, like `verity-memory`.
+//
+// `announce` and `scan` remain for servers started outside Verity.
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.env.VERITY_DEV_SERVER_STATE_DIR ?? '/tmp/verity-dev-servers';
 const args = process.argv.slice(2);
-const usage = 'Usage: verity-dev-server announce --port <1-65535> --name <name> | scan';
+const usage = `Usage:
+  verity-dev-server list
+  verity-dev-server add <name> --command "<command>" [--workdir <subdirectory>]
+  verity-dev-server update <name> [--name <new name>] [--command "<command>"] [--workdir <dir>]
+  verity-dev-server start|stop|restart|status|logs|remove <name>
+  verity-dev-server announce --port <1-65535> --name <name>
+  verity-dev-server scan
+
+The command receives its port in $PORT, or write {port} where the port goes.
+Name only the address Verity reports; the port inside the sandbox is internal.`;
+
+function fail(message, code = 1) {
+  console.error(message);
+  process.exit(code);
+}
+
+function flags(list, allowed) {
+  const values = new Map();
+  for (let index = 0; index < list.length; index += 2) {
+    const flag = list[index];
+    const value = list[index + 1];
+    if (!allowed.includes(flag) || value === undefined || values.has(flag)) fail(usage, 2);
+    values.set(flag, value);
+  }
+  return values;
+}
+
+function brokerUrl() {
+  const direct = process.env.VERITY_DEV_SERVER_URL;
+  if (direct) return direct;
+  // Sandboxes provisioned before this command existed carry only the memory URL;
+  // both routes live on the same project-bound broker.
+  const memory = process.env.VERITY_PROJECT_MEMORY_URL ?? '';
+  if (/\/internal\/project\/memory$/u.test(memory))
+    return memory.replace(/\/internal\/project\/memory$/u, '/internal/dev-servers');
+  fail(
+    'verity-dev-server: managed dev servers are unavailable in this sandbox. Start the server yourself and run: verity-dev-server announce --port <port> --name <name>',
+  );
+}
+
+function capability() {
+  const file = process.env.VERITY_GH_BROKER_CAPABILITY_FILE ?? '/run/verity/gh-token-capability';
+  try {
+    const value = readFileSync(file, 'utf8').trim();
+    if (value) return value;
+  } catch {
+    /* reported below */
+  }
+  fail(`verity-dev-server: capability file '${file}' is missing or empty`);
+}
+
+async function call(body) {
+  const sessionId = process.env.VERITY_SESSION_ID;
+  if (!sessionId)
+    fail('verity-dev-server: VERITY_SESSION_ID is not set; run this from a Verity session');
+  let response;
+  try {
+    response = await fetch(brokerUrl(), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${capability()}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ...body, sessionId }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    fail(`verity-dev-server: could not reach Verity (${error.message})`);
+  }
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    payload = { error: text };
+  }
+  if (!response.ok) fail(`verity-dev-server: ${payload.error ?? `HTTP ${response.status}`}`);
+  return payload;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Starting returns at once; the server answers on its port later. Wait for it. */
+async function waitForStart(name, first) {
+  let result = first;
+  const deadline = Date.now() + 75_000;
+  while (result.state === undefined || result.state === 'starting') {
+    if (Date.now() > deadline) break;
+    await sleep(2000);
+    result = await call({ action: 'status', name });
+  }
+  console.log(result.server);
+  if (result.state === 'crashed') process.exitCode = 1;
+}
+
+async function managed(command, rest) {
+  const [name, ...options] = rest;
+  switch (command) {
+    case 'list': {
+      if (rest.length) fail(usage, 2);
+      const { servers } = await call({ action: 'list' });
+      if (servers.length === 0)
+        console.log('No servers set up yet. Add one with: verity-dev-server add');
+      for (const server of servers)
+        console.log(
+          `${server.status}\n  command: ${server.command}\n  subdirectory: ${server.workdir}`,
+        );
+      return;
+    }
+    case 'add': {
+      if (!name) fail(usage, 2);
+      const values = flags(options, ['--command', '--workdir']);
+      if (!values.get('--command')) fail(usage, 2);
+      const result = await call({
+        action: 'add',
+        name,
+        command: values.get('--command'),
+        ...(values.has('--workdir') ? { workdir: values.get('--workdir') } : {}),
+      });
+      console.log(result.message);
+      return;
+    }
+    case 'update': {
+      if (!name) fail(usage, 2);
+      const values = flags(options, ['--name', '--command', '--workdir']);
+      if (values.size === 0) fail(usage, 2);
+      const result = await call({
+        action: 'update',
+        name,
+        ...(values.has('--name') ? { newName: values.get('--name') } : {}),
+        ...(values.has('--command') ? { command: values.get('--command') } : {}),
+        ...(values.has('--workdir') ? { workdir: values.get('--workdir') } : {}),
+      });
+      console.log(result.message);
+      return;
+    }
+    case 'start':
+    case 'restart': {
+      if (!name || options.length) fail(usage, 2);
+      await call({ action: command, name });
+      await waitForStart(name, { state: 'starting' });
+      return;
+    }
+    case 'stop':
+    case 'status': {
+      if (!name || options.length) fail(usage, 2);
+      const result = await call({ action: command, name });
+      console.log(result.server);
+      if (result.state === 'crashed') process.exitCode = 1;
+      return;
+    }
+    case 'remove': {
+      if (!name || options.length) fail(usage, 2);
+      console.log((await call({ action: 'remove', name })).message);
+      return;
+    }
+    case 'logs': {
+      if (!name || options.length) fail(usage, 2);
+      process.stdout.write((await call({ action: 'logs', name })).logs || '(no output yet)\n');
+      return;
+    }
+  }
+}
+
 try {
   if (args[0] === 'scan' && args.length === 1) {
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, 'scan-request'), String(Date.now()));
   } else if (args[0] === 'announce') {
-    const values = new Map();
-    for (let index = 1; index < args.length; index += 2) {
-      const flag = args[index];
-      const value = args[index + 1];
-      if (!['--port', '--name'].includes(flag) || value === undefined || values.has(flag)) {
-        throw new Error(usage);
-      }
-      values.set(flag, value);
-    }
+    const values = flags(args.slice(1), ['--port', '--name']);
     const portText = values.get('--port') ?? '';
     const port = Number(portText);
     const name = (values.get('--name') ?? '').trim();
@@ -45,6 +208,12 @@ try {
     console.log(
       `Announced ${name} on port ${port}. Verity will verify the listener; access is shared from the app.`,
     );
+  } else if (
+    ['list', 'add', 'update', 'start', 'stop', 'restart', 'status', 'logs', 'remove'].includes(
+      args[0],
+    )
+  ) {
+    await managed(args[0], args.slice(1));
   } else {
     throw new Error(usage);
   }
