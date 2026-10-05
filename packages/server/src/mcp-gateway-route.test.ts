@@ -672,7 +672,7 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
     });
   });
 
-  it('explicitly disables standing grants for a trusted CLI approval', async () => {
+  it('enables standing grants for a trusted CLI approval', async () => {
     const harness = build({ trustedCli: true });
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
     await withListener(harness, async (socketPath) => {
@@ -694,7 +694,7 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
           sessionId: 's1',
           callId: expect.any(String),
           toolName: 'verity_secret_run',
-          allowStandingGrant: false,
+          allowStandingGrant: true,
         },
       ]);
     });

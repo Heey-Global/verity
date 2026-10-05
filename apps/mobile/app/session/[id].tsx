@@ -7848,8 +7848,7 @@ function EngineSwitcherSheet({
 // unmounts. Both buttons are real <Pressable> buttons with explicit accessibility
 // labels so they're focus/keyboard reachable (a11y). A brokered-HTTP prompt shows
 // a readable request summary instead of raw JSON and offers scoped allows
-// (ADR 0011 D2): HTTP supports every scope; trusted CLI remains one-time because
-// generic CLI configuration can load code that an argv digest cannot safely model.
+// for both HTTP and CLI: once, this session, or 30 days in the project.
 function PermissionPrompt({
   pending,
   deciding,

@@ -1254,6 +1254,47 @@ describe('migrateToLatest', () => {
     }
   });
 
+  it('fences concurrent v2 grant inserts while retaining legacy grants', async () => {
+    const ctx = await createIsolatedTestDb();
+    try {
+      await seedProject(ctx.db, {
+        id: 'p-grants',
+        owner: 'acme',
+        repo: 'grants',
+        containerName: 'verity-acme-grants',
+        state: 'active',
+      });
+      const insert = (id: string, issuer: string) =>
+        sql`
+        insert into secret_provider_permissions (
+          id, project_id, binding_id, binding_version, secret_name,
+          tool_id, scope, session_id, granted_by, issuer, state
+        ) values (
+          ${id}, 'p-grants', 'project-doppler:b1', 1, 'TEST_KEY',
+          'verity_http_request:example.com', 'project', null, 'operator', ${issuer}, 'active'
+        ) on conflict do nothing
+      `.execute(ctx.db);
+      await insert('legacy-grant', 'brokered-prompt');
+      // Without a predicate for the new issuer, ON CONFLICT silently admits every
+      // concurrent approval and leaves multiple live grants behind.
+      await Promise.all(
+        Array.from({ length: 8 }, (_, i) => insert(`v2-grant-${i}`, 'brokered-prompt-v2')),
+      );
+      const rows = await ctx.db
+        .selectFrom('secret_provider_permissions')
+        .select(['issuer'])
+        .where('state', '=', 'active')
+        .execute();
+      expect(rows.filter((row) => row.issuer === 'brokered-prompt-v2')).toHaveLength(1);
+      expect(rows.filter((row) => row.issuer === 'brokered-prompt')).toHaveLength(1);
+      const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
+      expect((await migrator.migrateTo('0131_matrix_import_diagnostics')).error).toBeUndefined();
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('rolls back cleanly — the down migration drops the schema', async () => {
     const ctx = await createIsolatedTestDb();
     try {

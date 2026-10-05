@@ -8579,7 +8579,7 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
 });
 
 describe('brokeredGrantTarget — what a standing grant is allowed to cover', () => {
-  it('derives a reusable target only for a hash-bound trusted CLI entry script', () => {
+  it('derives exact command targets and retains hash-bound entry script targets', () => {
     expect(
       brokeredGrantTarget('verity_secret_run', {
         secrets: [
@@ -8588,7 +8588,7 @@ describe('brokeredGrantTarget — what a standing grant is allowed to cover', ()
         ],
         command: ['/usr/local/bin/fastlane', 'deliver'],
       }),
-    ).toBeUndefined();
+    ).toBeDefined();
     const input = {
       secrets: [
         { secretAlias: 'TOKEN', env: 'TOKEN' },
@@ -8632,7 +8632,7 @@ describe('brokeredGrantTarget — what a standing grant is allowed to cover', ()
         ...input,
         entryScript: { ...input.entryScript, loading: 'dynamic' },
       }),
-    ).toBeUndefined();
+    ).toBeDefined();
     // Inline and unrelated shapes remain one-time.
     expect(
       brokeredGrantTarget('verity_secret_run', {
@@ -9011,7 +9011,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     });
   });
 
-  it('executes a trusted CLI allow but refuses project scope across worktrees', async () => {
+  it('persists a trusted CLI project approval for the exact command', async () => {
     await createProjectSession('sg-cli-project');
     const fake = trustedCliPermissionBackend('toolu_cli_project', 'req-cli-project');
     const persist = vi.fn(async () => undefined);
@@ -9033,12 +9033,12 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       { behavior: 'allow' },
       { scope: 'project', onScopeSaved },
     );
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
-    expect(persist).not.toHaveBeenCalled();
+    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
     await vi.waitFor(() => expect(conductor.isBusy('sg-cli-project')).toBe(false));
   });
 
-  it('ignores standing grants for trusted CLI invocations', async () => {
+  it('auto-approves trusted CLI invocations covered by exact command grants', async () => {
     await createProjectSession('sg-cli-grant');
     const fake = trustedCliPermissionBackend('toolu_cli_grant', 'req-cli-grant');
     const check = vi.fn(async () => true);
@@ -9051,10 +9051,10 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     });
     await conductor.dispatchTurn('sg-cli-grant', 'go');
     await vi.waitFor(() => {
-      expect(conductor.pendingPermissions('sg-cli-grant')).toEqual(['toolu_cli_grant']);
+      expect(fake.decisions()).toEqual([{ behavior: 'allow' }]);
     });
-    expect(check).not.toHaveBeenCalled();
-    expect(fake.decisions()).toEqual([]);
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(conductor.pendingPermissions('sg-cli-grant')).toEqual([]);
   });
 
   it('leaves the prompt parked when no grant matches', async () => {
@@ -9204,14 +9204,15 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     });
     // The card is written to the transcript with the channel the caller stated, so the
     // app offers only the scopes that channel accepts.
-    const events = await ctx.store.getEvents('x1');
-    expect(events.at(-1)).toMatchObject({
-      t: 'permission',
-      id: 'toolu_gw',
-      tool: 'verity_http_request',
-      riskClass: 'ask',
-      grantChannel: 'acp',
-    });
+    await vi.waitFor(async () =>
+      expect((await ctx.store.getEvents('x1')).at(-1)).toMatchObject({
+        t: 'permission',
+        id: 'toolu_gw',
+        tool: 'verity_http_request',
+        riskClass: 'ask',
+        grantChannel: 'acp',
+      }),
+    );
     await expect(conductor.decidePermission('x1', 'toolu_gw', { behavior: 'allow' })).resolves.toBe(
       true,
     );
@@ -9244,6 +9245,53 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(conductor.pendingPermissions('x3')).toEqual([]);
   });
 
+  it('does not publish a permission while a standing grant lookup is pending', async () => {
+    await createProjectSession('x4-delayed');
+    let resolveCheck!: (covered: boolean) => void;
+    const check = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    const publish = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      bus: { publish, subscribe: vi.fn(), subscribeAll: vi.fn() },
+    });
+    const answered = ask(conductor, 'x4-delayed', 'toolu_delayed');
+    await vi.waitFor(() => expect(check).toHaveBeenCalled());
+    expect(await ctx.store.getEvents('x4-delayed')).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+    resolveCheck(true);
+    await expect(answered).resolves.toEqual({
+      decision: { behavior: 'allow' },
+      decidedBy: 'grant',
+    });
+    expect(await ctx.store.getEvents('x4-delayed')).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('aborts promptly while a standing grant lookup remains unresolved', async () => {
+    await createProjectSession('x4-abort-lookup');
+    const check = vi.fn(() => new Promise<boolean>(() => {}));
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+    });
+    const controller = new AbortController();
+    const answered = ask(conductor, 'x4-abort-lookup', 'toolu_abort_lookup', controller.signal);
+    await vi.waitFor(() => expect(check).toHaveBeenCalled());
+    // A stalled permission store must not hold cancellation hostage.
+    controller.abort();
+    await expect(answered).resolves.toMatchObject({ decision: { behavior: 'deny' } });
+    expect(conductor.pendingPermissions('x4-abort-lookup')).toEqual([]);
+    expect(await ctx.store.getEvents('x4-abort-lookup')).toEqual([]);
+  });
+
   it('auto-approves against ACP grants only, and records the scope on that channel', async () => {
     await createProjectSession('x4');
     const check = vi.fn(async () => true);
@@ -9258,6 +9306,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       decision: { behavior: 'allow' },
       decidedBy: 'grant',
     });
+    expect(await ctx.store.getEvents('x4')).toEqual([]);
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'x4',
@@ -9265,6 +9314,56 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
       channel: 'acp',
+    });
+  });
+
+  it('binds project CLI grants to the server-resolved execution directory', async () => {
+    await createProjectSession('cwd-first');
+    await createProjectSession('cwd-second');
+    const targets = new Set<string>();
+    const check = vi.fn(async (grant: { target: string }) => targets.has(grant.target));
+    const persist = vi.fn(async (grant: { target: string }) => {
+      targets.add(grant.target);
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      persistBrokeredHttpGrant: persist,
+    });
+    const request = (sessionId: string, toolUseId: string) =>
+      conductor.requestExternalPermission({
+        sessionId,
+        toolUseId,
+        toolName: 'verity_secret_run',
+        input: {
+          command: ['/usr/bin/example-cli', 'deploy', './config'],
+          secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN' }],
+        },
+        channel: 'acp',
+        allowStandingGrant: true,
+      });
+    const first = request('cwd-first', 'first');
+    await vi.waitFor(async () => expect((await ctx.store.getEvents('cwd-first')).length).toBe(1));
+    await conductor.decidePermission(
+      'cwd-first',
+      'first',
+      { behavior: 'allow' },
+      { scope: 'project' },
+    );
+    await first;
+    await expect(request('cwd-first', 'reuse')).resolves.toMatchObject({ decidedBy: 'grant' });
+    // Relative operands in another worktree must not inherit the first directory's consent.
+    const second = request('cwd-second', 'other');
+    await vi.waitFor(async () => expect((await ctx.store.getEvents('cwd-second')).length).toBe(1));
+    expect(check.mock.calls.at(-1)?.[0].target).not.toBe(persist.mock.calls[0]?.[0].target);
+    await conductor.decidePermission('cwd-second', 'other', {
+      behavior: 'deny',
+      message: 'different directory',
+    });
+    await expect(second).resolves.toMatchObject({
+      decidedBy: 'card',
+      decision: { behavior: 'deny' },
     });
   });
 
@@ -9302,8 +9401,8 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
-    expect(persist).not.toHaveBeenCalled();
+    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
   });
 
   it('never consults a grant for a tool that resolves no secret, flag or no flag', async () => {
