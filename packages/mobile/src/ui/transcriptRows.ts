@@ -133,9 +133,11 @@ function buildRows(
         childRows: buildRows(kids, childrenByParent, nextVisited),
         toolCount: countTools(kids, childrenByParent, nextVisited),
       });
-    } else if (planView(m.tool) !== null) {
+      continue;
+    }
+    const plan = planView(m.tool);
+    if (plan !== null) {
       flushAll();
-      const plan = planView(m.tool)!;
       const row: Row = { kind: 'plan', message: m, plan, latest: false };
       if (rows[rows.length - 1]?.kind === 'plan') rows[rows.length - 1] = row;
       else rows.push(row);

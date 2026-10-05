@@ -28827,7 +28827,8 @@ var AcpEventAdapter = class {
   snapshots = /* @__PURE__ */ new Map();
   pendingTerminal = /* @__PURE__ */ new Set();
   lifecycle = new StructuredLifecycleMapper();
-  lastPlan;
+  /** Last plan snapshot per agent (`''` for the main one, else its dispatching tool). */
+  lastPlans = /* @__PURE__ */ new Map();
   metaNamespace;
   resolveToolName;
   constructor(options = {}) {
@@ -28871,6 +28872,8 @@ var AcpEventAdapter = class {
           ...update.plan.type === "items" ? this.plan(update.plan.entries, update._meta) : []
         ];
       case "plan_removed":
+        this.lastPlans.clear();
+        return lifecycle;
       case "available_commands_update":
       case "current_mode_update":
       case "config_option_update":
@@ -28898,17 +28901,18 @@ var AcpEventAdapter = class {
    *  kind: app builds that predate plan rendering reject an unknown `t` and would
    *  then fail to load the session's whole history page, while a tool call renders
    *  everywhere. ACP sends the complete list on every update; an unchanged repeat
-   *  is dropped, and an empty list is not a checklist worth a row. */
+   *  from the same agent is dropped, and an empty list is not a checklist worth a
+   *  row. History a resumed session replays never reaches this adapter. */
   plan(entries, meta) {
     const todos = entries.map(({ content: content2, status, priority }) => ({ content: content2, status, priority }));
+    const parent = this.parent(meta);
     const fingerprint = JSON.stringify(todos);
-    if (fingerprint === this.lastPlan)
+    if (fingerprint === this.lastPlans.get(parent ?? ""))
       return [];
-    this.lastPlan = fingerprint;
+    this.lastPlans.set(parent ?? "", fingerprint);
     if (todos.length === 0)
       return [];
     const id2 = `plan-${randomUUID()}`;
-    const parent = this.parent(meta);
     return [
       { t: "tool_call_start", id: id2, name: PLAN_TOOL_NAME, parentToolId: parent },
       { t: "tool_call", id: id2, name: PLAN_TOOL_NAME, input: { todos }, parentToolId: parent },
