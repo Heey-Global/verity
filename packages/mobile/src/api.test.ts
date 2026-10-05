@@ -3636,6 +3636,26 @@ describe('managed dev server actions', () => {
     },
   );
 
+  // Starting from Shared online must tell Core to leave Local off.
+  it('sends the Local switch with a start and on its own route', async () => {
+    const server = {
+      id: 'entry/1',
+      name: 'Web',
+      command: 'npm run dev',
+      workdir: '.',
+      approved: true,
+      instance: null,
+      elsewhere: [],
+    };
+    const { fetch, calls } = fakeFetchSequence(json({ server }), json({ server }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.controlManagedDevServer('s/1', server.id, 'start', { local: false });
+    expect(jsonBody(calls[0])).toEqual({ local: false });
+    await client.setManagedDevServerLocal('s/1', server.id, true);
+    expect(calls[1]?.url).toBe('http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/local');
+    expect(jsonBody(calls[1])).toEqual({ on: true });
+  });
+
   it('approves the displayed command, reads logs, stops another instance, and deletes the entry', async () => {
     const { fetch, calls } = fakeFetchSequence(
       json({ servers: [] }),

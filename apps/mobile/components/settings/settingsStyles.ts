@@ -520,29 +520,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontSize: theme.text.sm,
     fontWeight: '600',
   },
-  toggleTrack: {
-    width: 46,
-    height: 26,
-    padding: 3,
-    borderRadius: theme.radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    backgroundColor: theme.colors.setup.surfaceAlt,
-  },
-  toggleTrackOn: {
-    borderColor: theme.colors.setup.text,
-    backgroundColor: `${theme.colors.setup.text}33`,
-  },
-  toggleKnob: {
-    width: 20,
-    height: 20,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.setup.textMuted,
-  },
-  toggleKnobOn: {
-    transform: [{ translateX: 20 }],
-    backgroundColor: theme.colors.primary,
-  },
   footnote: {
     color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
