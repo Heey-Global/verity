@@ -642,10 +642,13 @@ export function managedStartScript(project: ProjectRecord, instanceId: string): 
   const exit = shellQuote(managedFile(project, instanceId, 'exit'));
   return [
     'set -u',
-    'root=$(cd -P -- "$1" 2>/dev/null && pwd -P) || exit 3',
-    'target=$(cd -P -- "$1/$2" 2>/dev/null && pwd -P) || exit 3',
+    // Check the directory already opened by cd, then launch from that handle.
+    // Reopening a resolved path after checking it allows a symlink swap to escape.
+    'cd -P -- "$1" 2>/dev/null || exit 3',
+    'root=$(pwd -P) || exit 3',
+    'cd -P -- "$2" 2>/dev/null || exit 3',
+    'target=$(pwd -P) || exit 3',
     'case "$target/" in "$root"/*) ;; *) exit 4 ;; esac',
-    'cd -- "$target" || exit 3',
     `mkdir -p "$(dirname ${log})"`,
     `rm -f ${exit}`,
     'command -v setsid >/dev/null 2>&1 || { echo "setsid is required" >&2; exit 1; }',

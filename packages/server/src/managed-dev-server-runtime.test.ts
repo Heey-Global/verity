@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectRecord } from '@verity/store';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DockerProjectRuntime, type RuntimeRunner } from './project-runtime.js';
+import { DockerProjectRuntime, managedStartScript, type RuntimeRunner } from './project-runtime.js';
 
 const exec = promisify(execFile);
 
@@ -114,4 +114,38 @@ describe('managed dev server runtime scripts', () => {
     await waitFor(async () => (await runtime.managedServerStatus(project, 'm4')).exitCode !== null);
     expect(await runtime.managedServerStatus(project, 'm4')).toEqual({ alive: false, exitCode: 7 });
   });
+});
+
+// Swapping the checked path must not redirect the launch into a sibling worktree.
+it('launches from the directory handle even if its pathname changes during validation', async () => {
+  const root = worktree();
+  const outside = worktree();
+  started.push('m5');
+  const wrapper = `pwd() {
+    command pwd -P
+    if [ "$PWD" = "$SWAP_ROOT/app" ] && [ ! -e "$SWAP_ROOT/swapped" ]; then
+      mv "$SWAP_ROOT/app" "$SWAP_ROOT/original"
+      ln -s "$SWAP_OUTSIDE" "$SWAP_ROOT/app"
+      touch "$SWAP_ROOT/swapped"
+    fi
+  }
+`;
+  await exec(
+    'sh',
+    ['-c', wrapper + managedStartScript(project, 'm5'), 'test', root, 'app', 'touch launched'],
+    {
+      env: {
+        ...process.env,
+        SWAP_ROOT: root,
+        SWAP_OUTSIDE: outside,
+        VERITY_DEV_SERVER_INSTANCE: 'm5',
+      },
+    },
+  );
+  await waitFor(
+    async () =>
+      existsSync(join(root, 'original/launched')) || existsSync(join(outside, 'launched')),
+  );
+  expect(existsSync(join(root, 'original/launched'))).toBe(true);
+  expect(existsSync(join(outside, 'launched'))).toBe(false);
 });
