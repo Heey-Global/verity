@@ -29,6 +29,17 @@ function toolCall(
   };
 }
 
+function planCall(id: string, done: number, opts: { parentToolId?: string } = {}): ToolCallMessage {
+  const message = toolCall(id, { name: 'TodoWrite', ...opts });
+  message.tool.input = {
+    todos: ['One', 'Two', 'Three'].map((content, index) => ({
+      content,
+      status: index < done ? 'completed' : 'pending',
+    })),
+  };
+  return message;
+}
+
 function agentText(id: string, parentToolId?: string): Message {
   return {
     kind: 'agent-text',
@@ -253,5 +264,54 @@ describe('groupRows reference sharing', () => {
     expect(after[0]).not.toBe(before[0]);
     expect(after[1]).toBe(before[1]);
     expect(after[0]).toMatchObject({ childRows: [{ message: { text: 'new child text' } }] });
+  });
+});
+
+describe('plan rows', () => {
+  it('lifts plans out of tool runs, collapses back-to-back snapshots, and opens only the last', () => {
+    const rows = groupRows([
+      toolCall('tool-a'),
+      planCall('tool-p1', 0),
+      planCall('tool-p2', 1),
+      toolCall('tool-b'),
+      toolCall('tool-c'),
+      planCall('tool-p3', 2),
+      userText('u1'),
+    ]);
+    expect(
+      rows.map((row) =>
+        row.kind === 'plan' ? `plan:${rowKey(row)}:${String(row.latest)}` : row.kind,
+      ),
+    ).toEqual(['tool-group', 'plan:tool-p2:false', 'tool-group', 'plan:tool-p3:true', 'message']);
+    const [latest] = rows.filter((row) => row.kind === 'plan' && row.latest);
+    expect(latest?.kind === 'plan' && latest.plan.completed).toBe(2);
+    expect(rowRecycleType(rows[1]!)).toBe('plan:closed');
+    expect(rowRecycleType(rows[3]!)).toBe('plan:open');
+  });
+
+  it('re-renders a plan row that stops being the latest', () => {
+    const first = planCall('tool-p1', 0);
+    const before = groupRows([first]);
+    const after = groupRows([first, toolCall('tool-a'), planCall('tool-p2', 1)], before);
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[0]).toMatchObject({ kind: 'plan', latest: false });
+    // Unchanged, it is reused so the list does not re-render it.
+    expect(groupRows([first, toolCall('tool-a'), planCall('tool-p2', 1)], after)[0]).toBe(after[0]);
+  });
+
+  it('keeps a sub-agent plan inside its delegation', () => {
+    const rows = groupRows([
+      toolCall('tool-agent', { name: 'Agent' }),
+      planCall('tool-p1', 1, { parentToolId: 'agent' }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind === 'delegated-agent' && rows[0].childRows[0]).toMatchObject({
+      kind: 'plan',
+      latest: true,
+    });
+  });
+
+  it('leaves a TodoWrite call it cannot read as an ordinary tool', () => {
+    expect(groupRows([toolCall('tool-x', { name: 'TodoWrite' })])[0]?.kind).toBe('tool-group');
   });
 });

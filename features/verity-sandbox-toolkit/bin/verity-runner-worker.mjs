@@ -28698,6 +28698,9 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 
+// packages/session/dist/acp-adapter.js
+import { randomUUID } from "node:crypto";
+
 // packages/session/dist/structured-lifecycle.js
 function isRecord2(value) {
   return typeof value === "object" && value !== null;
@@ -28891,11 +28894,13 @@ function acpLifecycleSignals(update, namespace) {
   }
   return signals;
 }
+var PLAN_TOOL_NAME = "TodoWrite";
 var AcpEventAdapter = class {
   emitted = /* @__PURE__ */ new Map();
   snapshots = /* @__PURE__ */ new Map();
   pendingTerminal = /* @__PURE__ */ new Set();
   lifecycle = new StructuredLifecycleMapper();
+  lastPlan;
   metaNamespace;
   resolveToolName;
   constructor(options = {}) {
@@ -28932,7 +28937,12 @@ var AcpEventAdapter = class {
       case "tool_call_update":
         return [...this.tool(update), ...lifecycle];
       case "plan":
+        return [...lifecycle, ...this.plan(update.entries, update._meta)];
       case "plan_update":
+        return [
+          ...lifecycle,
+          ...update.plan.type === "items" ? this.plan(update.plan.entries, update._meta) : []
+        ];
       case "plan_removed":
       case "available_commands_update":
       case "current_mode_update":
@@ -28960,6 +28970,27 @@ var AcpEventAdapter = class {
       case "user_message_chunk":
         return lifecycle;
     }
+  }
+  /** Carry a plan snapshot as a settled `TodoWrite` call rather than a new event
+   *  kind: app builds that predate plan rendering reject an unknown `t` and would
+   *  then fail to load the session's whole history page, while a tool call renders
+   *  everywhere. ACP sends the complete list on every update; an unchanged repeat
+   *  is dropped, and an empty list is not a checklist worth a row. */
+  plan(entries, meta) {
+    const todos = entries.map(({ content: content2, status, priority }) => ({ content: content2, status, priority }));
+    const fingerprint = JSON.stringify(todos);
+    if (fingerprint === this.lastPlan)
+      return [];
+    this.lastPlan = fingerprint;
+    if (todos.length === 0)
+      return [];
+    const id2 = `plan-${randomUUID()}`;
+    const parent = this.parent(meta);
+    return [
+      { t: "tool_call_start", id: id2, name: PLAN_TOOL_NAME, parentToolId: parent },
+      { t: "tool_call", id: id2, name: PLAN_TOOL_NAME, input: { todos }, parentToolId: parent },
+      { t: "tool_result", id: id2, output: "", isError: false, parentToolId: parent }
+    ];
   }
   parent(meta) {
     return parentToolId2(meta, this.metaNamespace);
@@ -30607,7 +30638,7 @@ function createBrokerSpawner(socketPath) {
 }
 
 // packages/session/dist/runner-server.js
-import { createHash as createHash3, randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID3, timingSafeEqual } from "node:crypto";
 import { mkdir as mkdir3, open as open4 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
 
@@ -31194,10 +31225,10 @@ async function serveControl(socketPath, handlers, opts = {}) {
 
 // packages/session/dist/runner-state.js
 import { chmod, open as open3, rename, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { dirname as dirname2 } from "node:path";
 async function writeRunnerState(path, state) {
-  const tmp = `${path}.${randomUUID()}.tmp`;
+  const tmp = `${path}.${randomUUID2()}.tmp`;
   await writeFile2(tmp, JSON.stringify(state), "utf8");
   await chmod(tmp, 416);
   const file = await open3(tmp, "r");
@@ -31328,7 +31359,7 @@ var RunnerServer = class {
       await handle.close().catch(() => void 0);
       throw error;
     }
-    const runnerInstanceId = randomUUID2();
+    const runnerInstanceId = randomUUID3();
     const { controlSocketPath, controlCapability, exclusiveEventFile, terminalizeErrors, turnId, ...runOpts } = opts;
     void exclusiveEventFile;
     const writer = new SerialFrameWriter(handle, turnId, runnerInstanceId);
