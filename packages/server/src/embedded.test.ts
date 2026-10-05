@@ -25,6 +25,8 @@ import {
 import { createEmbeddedDb, createTestDb, truncateAll } from '@verity/store/testing';
 import {
   FileTailRunnerClient,
+  Conductor,
+  type ConductorDeps,
   InMemoryEventBus,
   LoopbackRunnerClient,
   RUNNER_SUPERVISOR_BACKENDS,
@@ -1724,6 +1726,79 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     ).toBeInstanceOf(SupervisorRunnerClient);
     expect(resolveRuntime).toHaveBeenCalledWith('control', 'verity-control');
   });
+
+  it.each([
+    ['claude-acp', 'success'],
+    ['opencode-acp', 'success'],
+    ['claude-acp', 'failure'],
+    ['opencode-acp', 'launch-error'],
+  ] as const)(
+    'runs a toolless %s query in a disposable private runtime (%s)',
+    async (runnerSupervisorBackend, outcome) => {
+      const runtime = join(dir, 'runners', 'query-private');
+      await mkdir(runtime, { recursive: true });
+      const server = createServer((peer) => peer.end(`${JSON.stringify({ ok: true })}\n`));
+      servers.push(server);
+      await new Promise<void>((resolve) =>
+        server.listen(join(runtime, 'supervisor.sock'), resolve),
+      );
+      const cleanup = vi.fn(async () => undefined);
+      const prepare = vi.fn(async () => ({
+        sessionId: 'query-private',
+        runtimeDir: runtime,
+        cleanup,
+      }));
+      const wiring = buildRunnerConductorWiring({
+        ...baseDeps(),
+        runnerSupervisor: true,
+        controlPlaneProjectId: 'verity-control',
+        resolveSessionRuntime: () => {
+          throw new Error('Persisted resolver used for query');
+        },
+        prepareEphemeralRuntime: prepare,
+        resolveSandboxCwd: () => '/work',
+      });
+      let context: Parameters<NonNullable<ConductorDeps['runner']>>[1] | undefined;
+      const start = vi.spyOn(FileTailRunnerClient.prototype, 'startTurn').mockImplementation(() => {
+        if (outcome === 'launch-error') throw new Error('Launch refused');
+        context?.ephemeralEventSink?.({ t: 'text', delta: 'Private answer' });
+        return {
+          result: Promise.resolve({
+            sessionId: 'native-query',
+            exitCode: outcome === 'failure' ? 1 : 0,
+            stderr: '',
+            aborted: false,
+          }),
+          steer: async () => false,
+          answerPermission: async () => false,
+          cancel: async () => false,
+        };
+      });
+      try {
+        const conductor = new Conductor({
+          store: testDb.store,
+          backend: { runnerSupervisorBackend } as Backend,
+          runner: async (selected, queryContext) => {
+            context = queryContext;
+            return wiring.runner!(selected, queryContext);
+          },
+        });
+        await expect(
+          conductor.query({ prompt: 'Summarize', cwd: '/host/private', toolless: true }),
+        ).resolves.toBe(outcome === 'success' ? 'Private answer' : undefined);
+        expect(prepare).toHaveBeenCalledWith('verity-control');
+        expect(start.mock.calls[0]?.[0]).toMatchObject({
+          storeSessionId: 'query-private',
+          toolless: true,
+          cwd: '/work',
+          worktree: '/work',
+        });
+        expect(cleanup).toHaveBeenCalledOnce();
+      } finally {
+        start.mockRestore();
+      }
+    },
+  );
 
   it('refuses an unavailable isolated runtime without loopback fallback', async () => {
     const wiring = buildRunnerConductorWiring({

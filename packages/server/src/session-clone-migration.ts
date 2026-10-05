@@ -98,6 +98,7 @@ export async function migrateLegacySessionClone(
     cpSync(checkout, join(backup, 'checkout'), {
       recursive: true,
       dereference: false,
+      verbatimSymlinks: true,
       mode: constants.COPYFILE_FICLONE,
     });
     mkdirSync(resolve(destination, '..'), { recursive: true });
@@ -106,6 +107,7 @@ export async function migrateLegacySessionClone(
     cpSync(join(backup, 'checkout'), destination, {
       recursive: true,
       dereference: false,
+      verbatimSymlinks: true,
       mode: constants.COPYFILE_FICLONE,
     });
     await assertIndependentSessionClone(destination);
@@ -133,7 +135,12 @@ export async function migrateLegacySessionClone(
     throw new Error('Backup root must not contain symlinks');
   const backup = mkdtempSync(join(backupRoot, 'session-migration-'));
   const copy = (from: string, to: string): void => {
-    cpSync(from, to, { recursive: true, dereference: false, mode: constants.COPYFILE_FICLONE });
+    cpSync(from, to, {
+      recursive: true,
+      dereference: false,
+      verbatimSymlinks: true,
+      mode: constants.COPYFILE_FICLONE,
+    });
   };
   // Nothing in the checkout changes until all recoverable files and Git state are backed up.
   copy(checkout, join(backup, 'checkout'));

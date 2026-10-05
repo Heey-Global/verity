@@ -1029,6 +1029,12 @@ export function buildRunnerConductorWiring(deps: {
   /** Host runtime for a persisted isolated session; failure never falls back. */
   resolveSessionRuntime?:
     ((sessionId: string, projectId: string) => string | Promise<string>) | undefined;
+  /** Disposable private runtime for a query that has no persisted session. */
+  prepareEphemeralRuntime?:
+    | ((
+        projectId: string,
+      ) => Promise<{ sessionId: string; runtimeDir: string; cleanup: () => Promise<void> }>)
+    | undefined;
   /** Map an isolated checkout into its session container. */
   resolveSandboxCwd?: ((worktree: string) => string) | undefined;
   hostCloneRoot?: string | undefined;
@@ -1134,12 +1140,24 @@ export function buildRunnerConductorWiring(deps: {
           return new LoopbackRunnerClient(backend);
         }
         const isolated = deps.resolveSessionRuntime !== undefined;
-        if (isolated && context.sessionId === null) {
-          throw new Error('An isolated runner requires a persisted session identity.');
+        if (
+          isolated &&
+          context.sessionId === null &&
+          (deps.prepareEphemeralRuntime === undefined || context.ephemeralEventSink === undefined)
+        ) {
+          throw new Error(
+            'An isolated runner requires a persisted session identity or a private ephemeral runtime.',
+          );
         }
-        const runtimeDir = isolated
-          ? await deps.resolveSessionRuntime!(context.sessionId!, runnerProjectId)
-          : join(dataVolumeRoot, 'runners', runnerProjectId);
+        const ephemeralRuntime =
+          isolated && context.sessionId === null
+            ? await deps.prepareEphemeralRuntime!(runnerProjectId)
+            : undefined;
+        const runtimeDir =
+          ephemeralRuntime?.runtimeDir ??
+          (isolated
+            ? await deps.resolveSessionRuntime!(context.sessionId!, runnerProjectId)
+            : join(dataVolumeRoot, 'runners', runnerProjectId));
         const turnSandboxPath =
           isolated && deps.resolveSandboxCwd !== undefined ? deps.resolveSandboxCwd : sandboxPath;
         // Provisioning can deliberately disable the Sandbox supervisor for a project
@@ -1168,6 +1186,7 @@ export function buildRunnerConductorWiring(deps: {
             reason,
           });
           if (isAcpBackend || isolated) {
+            await ephemeralRuntime?.cleanup();
             throw new Error(
               `${isAcpBackend ? 'ACP' : 'Isolated session'} requires a reachable project supervisor; ${reason}. Repair the project before sending another message.`,
             );
@@ -1281,6 +1300,9 @@ export function buildRunnerConductorWiring(deps: {
                 : undefined,
           mapTurnOptions: (opts) => ({
             ...opts,
+            ...(ephemeralRuntime
+              ? { storeSessionId: ephemeralRuntime.sessionId, toolless: true }
+              : {}),
             worktree: turnSandboxPath(opts.worktree),
             cwd: turnSandboxPath(opts.cwd),
             ...(projectHttpMcpServers.length === 0
@@ -1335,14 +1357,24 @@ export function buildRunnerConductorWiring(deps: {
         const ephemeralClient: RunnerClient = {
           startTurn: (opts, hooks) => {
             let backendSessionId: string | undefined;
-            const turn = supervisorClient.startTurn(opts, {
-              ...hooks,
-              onSession: async (id) => {
-                backendSessionId = id;
-                await hooks.onSession?.(id);
-              },
-            });
+            let turn: ReturnType<SupervisorRunnerClient['startTurn']>;
+            try {
+              turn = supervisorClient.startTurn(opts, {
+                ...hooks,
+                onSession: async (id) => {
+                  backendSessionId = id;
+                  await hooks.onSession?.(id);
+                },
+              });
+            } catch (error) {
+              void ephemeralRuntime?.cleanup().catch(() => undefined);
+              throw error;
+            }
             const cleanup = async (): Promise<void> => {
+              if (ephemeralRuntime) {
+                await ephemeralRuntime.cleanup();
+                return;
+              }
               const paths: string[] = [];
               if (opts.turnId !== undefined) paths.push(join(runtimeDir, 'turns', opts.turnId));
               if (backendSessionId !== undefined) {
@@ -3407,12 +3439,21 @@ export async function buildEmbeddedServer(
     }
     provisioner = new ProvisionerImpl({
       stopProjectSessionSandboxes: async (projectId) => {
-        const results = await Promise.allSettled(
+        const ids = new Set(
           (await eventStore.listSessions())
             .filter((session) => session.projectId === projectId)
-            .map(async (session) => {
-              await sessionSandboxes?.stop(session.sessionId, projectId);
-            }),
+            .map((session) => session.sessionId),
+        );
+        // Disposable queries have no store row; stopped-server recovery still owns
+        // their labelled containers and must quiesce them before revoking authority.
+        for (const container of (await docker?.listContainers?.()) ?? []) {
+          const id = container.labels?.['verity.session-id'];
+          if (id && container.labels?.['verity.project-id'] === projectId) ids.add(id);
+        }
+        const results = await Promise.allSettled(
+          [...ids].map(async (sessionId) => {
+            await sessionSandboxes?.stop(sessionId, projectId);
+          }),
         );
         const failures = results
           .filter((result) => result.status === 'rejected')
@@ -4652,6 +4693,59 @@ export async function buildEmbeddedServer(
         resolveSessionRuntime: (sessionId, projectId) => {
           if (!sessionSandboxes) throw new Error('Session isolation is unavailable');
           return sessionSandboxes.runtimePath(sessionId, projectId);
+        },
+        prepareEphemeralRuntime: async (projectId) => {
+          if (!sessionSandboxes || !config.dataVolumeRoot)
+            throw new Error('Ephemeral isolation is unavailable');
+          const project =
+            (await eventStore.getProject(projectId)) ??
+            (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
+              ? (await eventStore.listProjects()).find((record) => record.kind === 'control_plane')
+              : undefined);
+          if (!project) throw new Error('Query project is unavailable');
+          const active = (await provisioner?.ensureProjectSandboxAwake?.(project.id)) ?? project;
+          if (active.state !== 'active') throw new Error('Query project is not active');
+          if (!provisioner?.tryBeginProjectSandboxActivity?.(project.id))
+            throw new Error('Query project is changing');
+          let released = false;
+          const release = () => {
+            if (!released) {
+              released = true;
+              provisioner.endProjectSandboxActivity?.(project.id);
+            }
+          };
+          const sessionId = `query-${randomUUID()}`;
+          const worktree = join(config.dataVolumeRoot, 'query-workspaces', sessionId);
+          const runtimeDir = sessionSandboxes.runtimePath(sessionId, project.id);
+          const cleanup = async () => {
+            try {
+              await sessionSandboxes.remove(sessionId);
+              await rm(worktree, { recursive: true, force: true });
+              // Runner-owned children can outlive the server's traverse-only runtime
+              // directory. Remove what the server owns; orphan sweeping handles the rest.
+              await chmod(runtimeDir, 0o700).catch(() => undefined);
+              await rm(runtimeDir, { recursive: true, force: true }).catch(() => undefined);
+              await rm(`${runtimeDir}.workspace-post-create-complete`, { force: true });
+            } finally {
+              release();
+            }
+          };
+          try {
+            if ((await eventStore.getProject(project.id))?.state !== 'active')
+              throw new Error('Query project stopped');
+            mkdirSync(worktree, { recursive: true });
+            await chmod(worktree, 0o777);
+            await sessionSandboxes.ensure(
+              active.kind === 'control_plane'
+                ? { ...active, containerName: MANAGED_CONTROL_PLANE_RUNNER_NAME }
+                : active,
+              { sessionId, worktree },
+            );
+            return { sessionId, runtimeDir, cleanup };
+          } catch (error) {
+            await cleanup();
+            throw error;
+          }
         },
         resolveSandboxCwd: () => '/work',
         // ADR 0014 D1: the ACP tool gateway bearer registry. The

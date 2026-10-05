@@ -17,7 +17,9 @@ additional safeguards; the container mount boundary provides isolation.
 
 The server derives each session container from the project's configured image and
 reviewed infrastructure mounts. It supplies a private runner runtime directory and
-session identity. The parent workspace, shared writable dependencies, parent
+session identity. Toolless meta-queries use disposable private runtimes and
+workspaces, including their own broker identity; successful, failed, and refused
+queries dispose their containers. The parent workspace, shared writable dependencies, parent
 runner directory, and Docker socket are excluded, including for sessions working
 on the Verity control project. Unsupported shared mounts or unsafe container
 settings refuse session startup instead of falling back to a shared workspace.
@@ -51,7 +53,8 @@ session-owned processes, and preserves a complete backup of its working files an
 available Git metadata before preparing a private destination outside the shared
 project directory. Its index, staged-only objects, branch or detached HEAD, and
 available merge/rebase state, repository settings, upstreams, and branch reflogs are
-retained. Shared workspace and hook paths are removed from the private config;
+retained. Relative symlink targets are preserved in the backup and destination.
+Shared workspace and hook paths are removed from the private config;
 external config includes require manual recovery. Metadata symlinks or object alternates
 require manual recovery rather than silently preserving shared Git storage.
 

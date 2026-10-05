@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  symlinkSync,
+  readlinkSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
@@ -135,3 +144,35 @@ it('preserves upstreams, remotes, repository settings and reflog recovery commit
   git(checkout, 'gc', '--prune=now');
   expect(git(checkout, 'show', `${recoverable}:file`)).toBe('recoverable');
 });
+
+it.each(['linked', 'independent'])(
+  'preserves relative symlink text through backup and private relocation (%s)',
+  async (kind) => {
+    if (kind === 'independent') {
+      git(source, 'worktree', 'remove', checkout);
+      execFileSync('git', ['clone', '--no-local', source, checkout], { stdio: 'ignore' });
+    }
+    symlinkSync('./file', join(checkout, 'link'));
+    git(checkout, 'add', 'link');
+    git(
+      checkout,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '-m',
+      'relative link',
+    );
+    const destination = join(temp, 'private', 'session');
+    const migrated = await migrateLegacySessionClone({
+      checkoutPath: checkout,
+      destinationPath: destination,
+      backupRoot,
+      stopped: true,
+    });
+    expect(readlinkSync(join(destination, 'link'))).toBe('./file');
+    expect(readlinkSync(join(migrated.backupPath!, 'checkout', 'link'))).toBe('./file');
+    expect(git(destination, 'status', '--porcelain')).toBe('');
+  },
+);
