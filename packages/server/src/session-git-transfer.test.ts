@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   statSync,
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -12,13 +13,27 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createSessionCloneProvisioner } from './session-clone.js';
 import { createGitBranchService, type GitOutput } from './branches.js';
 import { transferSessionCommit } from './session-git-transfer.js';
 
+const race = vi.hoisted(() => ({ substitute: undefined as ((path: string) => void) | undefined }));
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...fs,
+    mkdtempSync: (prefix: string) => {
+      const path = fs.mkdtempSync(prefix);
+      if (prefix.includes('.verity-transfer-')) race.substitute?.(path);
+      return path;
+    },
+  };
+});
+
 let temp: string | undefined;
 afterEach(() => {
+  race.substitute = undefined;
   if (temp) rmSync(temp, { recursive: true, force: true });
 });
 const git = (dir: string, ...args: string[]) =>
@@ -218,3 +233,31 @@ it('grants sandbox users access to transfer files without requiring the server U
     await transfer.cleanup();
   }
 });
+
+it.each([1, 2])(
+  'rejects directory substitution before transfer permissions or files are changed (directory %s)',
+  async (directory) => {
+    temp = mkdtempSync(join(tmpdir(), 'verity-transfer-early-race-'));
+    const source = join(temp, 'source');
+    const destination = join(temp, 'destination');
+    const outside = join(temp, 'outside');
+    for (const path of [source, destination, outside]) mkdirSync(path);
+    chmodSync(outside, 0o700);
+    let count = 0;
+    race.substitute = (path) => {
+      if (++count !== directory) return;
+      renameSync(path, `${path}-original`);
+      symlinkSync(outside, path);
+    };
+    await expect(
+      transferSessionCommit({
+        source,
+        destination,
+        sourceGit: async () => 'a'.repeat(40),
+        destinationGit: async () => '',
+      }),
+    ).rejects.toThrow();
+    expect(statSync(outside).mode & 0o777).toBe(0o700);
+    expect(existsSync(join(outside, 'commit.bundle'))).toBe(false);
+  },
+);

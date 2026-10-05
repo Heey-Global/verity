@@ -136,9 +136,9 @@ export class ListenerDiscovery {
         const previous =
           this.snapshots.get(sessionId) ?? JSON.stringify(persisted?.devServers ?? []);
         if (snapshot === previous || this.closed) return;
-        this.snapshots.set(sessionId, snapshot);
         const event = { t: 'dev_servers_changed' as const, devServers: servers };
         const { seq, ts } = await this.options.eventStore.appendEvent(sessionId, event);
+        this.snapshots.set(sessionId, snapshot);
         this.options.bus.publish(sessionId, { seq, ts, event });
         return;
       }

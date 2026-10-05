@@ -276,3 +276,34 @@ describe('independent listener discovery', () => {
     }
   });
 });
+
+it('retries isolated listener persistence after a failed append', async () => {
+  const project = { id: 'p', containerName: 'parent', state: 'active' };
+  const session = { sessionId: 'a', projectId: 'p', worktree: '/data/a' };
+  const appendEvent = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('store unavailable'))
+    .mockResolvedValue({ seq: 1, ts: 1 });
+  const store = {
+    getSession: async () => session,
+    getProject: async () => project,
+    listSessions: async () => [session],
+    getLatestDevServersEvent: async () => undefined,
+    appendEvent,
+  } as unknown as EventStore;
+  const discovery = new ListenerDiscovery({
+    eventStore: store,
+    bus: new InMemoryEventBus(),
+    hostCloneRoot: '/data',
+    scan: async () => [{ port: 5173, pid: 1, cwd: '/work', command: 'vite', bind: 'any' }],
+    resolveSessionProject: async (_id, record) => ({ ...record, containerName: 'private' }),
+  });
+  try {
+    await discovery.refreshProject(project as never);
+    await discovery.refreshProject(project as never);
+    await discovery.refreshProject(project as never);
+    expect(appendEvent).toHaveBeenCalledTimes(2);
+  } finally {
+    discovery.close();
+  }
+});

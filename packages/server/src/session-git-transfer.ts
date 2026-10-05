@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
   constants,
-  chmodSync,
   fchmodSync,
   closeSync,
   createReadStream,
@@ -52,8 +51,6 @@ export async function transferSessionCommit(opts: {
   try {
     sourcePinnedDir = mkdtempSync(join(sourceRoot, '.verity-transfer-'));
     destinationPinnedDir = mkdtempSync(join(destinationRoot, '.verity-transfer-'));
-    chmodSync(sourcePinnedDir, 0o777);
-    chmodSync(destinationPinnedDir, 0o755);
   } catch (error) {
     closeSync(sourceRootFd);
     closeSync(destinationRootFd);
@@ -63,6 +60,8 @@ export async function transferSessionCommit(opts: {
   const destinationDir = join(destination, basename(destinationPinnedDir));
   let cleaned = false;
   let destinationFd: number | undefined;
+  let sourceDirectoryFd: number | undefined;
+  let destinationDirectoryFd: number | undefined;
   const ref = `refs/verity/transfers/${randomUUID()}`;
   const cleanup = async (): Promise<void> => {
     await opts.sourceGit(['-C', source, 'update-ref', '-d', ref]).catch(() => undefined);
@@ -75,6 +74,8 @@ export async function transferSessionCommit(opts: {
       rmSync(sourcePinnedDir, { recursive: true, force: true });
       rmSync(destinationPinnedDir, { recursive: true, force: true });
     } finally {
+      if (sourceDirectoryFd !== undefined) closeSync(sourceDirectoryFd);
+      if (destinationDirectoryFd !== undefined) closeSync(destinationDirectoryFd);
       closeSync(sourceRootFd);
       closeSync(destinationRootFd);
     }
@@ -82,11 +83,21 @@ export async function transferSessionCommit(opts: {
   try {
     // Pin and validate the directory before opening a child: O_NOFOLLOW on the
     // bundle alone does not protect against an agent replacing an ancestor.
-    const destinationDirectoryFd = openSync(
+    sourceDirectoryFd = openSync(
+      sourcePinnedDir,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    destinationDirectoryFd = openSync(
       destinationPinnedDir,
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
     );
-    try {
+    if (realpathSync(`/proc/self/fd/${String(sourceDirectoryFd)}`) !== sourceDir)
+      throw new Error('Unsafe Git bundle source');
+    if (realpathSync(`/proc/self/fd/${String(destinationDirectoryFd)}`) !== destinationDir)
+      throw new Error('Unsafe Git bundle destination');
+    fchmodSync(sourceDirectoryFd, 0o777);
+    fchmodSync(destinationDirectoryFd, 0o755);
+    {
       if (realpathSync(`/proc/self/fd/${String(destinationDirectoryFd)}`) !== destinationDir)
         throw new Error('Unsafe Git bundle destination');
       destinationFd = openSync(
@@ -94,12 +105,10 @@ export async function transferSessionCommit(opts: {
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
         0o600,
       );
-    } finally {
-      closeSync(destinationDirectoryFd);
     }
     fchmodSync(destinationFd, 0o444);
     const sourcePlaceholder = openSync(
-      join(sourcePinnedDir, 'commit.bundle'),
+      `/proc/self/fd/${String(sourceDirectoryFd)}/commit.bundle`,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o666,
     );

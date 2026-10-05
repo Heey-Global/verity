@@ -150,7 +150,7 @@ export function sessionSandboxSpec(
     capDrop: ['ALL'],
     ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
     ...(parent.capAdd ? { capAdd: parent.capAdd } : {}),
-    securityOpt: parent.securityOpt ?? ['no-new-privileges:true'],
+    securityOpt: [...new Set([...(parent.securityOpt ?? []), 'no-new-privileges:true'])],
     ...(parent.groupAdd ? { groupAdd: parent.groupAdd } : {}),
     ...(parent.memoryBytes ? { memoryBytes: parent.memoryBytes } : {}),
     ...(parent.memorySwapBytes !== undefined ? { memorySwapBytes: parent.memorySwapBytes } : {}),

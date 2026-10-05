@@ -232,3 +232,11 @@ it.each([true, false])(
     );
   },
 );
+
+it('enforces no-new-privileges even when the template contains an empty security option list', () => {
+  const spec = sessionSandboxSpec(
+    { ...template, securityOpt: [] },
+    { project, sessionId: 'one', worktree: '/data/one' },
+  );
+  expect(spec.securityOpt).toContain('no-new-privileges:true');
+});

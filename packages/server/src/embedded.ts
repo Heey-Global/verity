@@ -2287,7 +2287,7 @@ export async function buildEmbeddedServer(
                       projectId: project.id,
                       hostRoot: session.worktree,
                       ...(config.dataVolume
-                        ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
+                        ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot! } }
                         : {}),
                       dockerBaseUrl: config.dockerBaseUrl,
                     })(args);
