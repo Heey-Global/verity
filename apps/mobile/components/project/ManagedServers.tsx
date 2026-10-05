@@ -157,7 +157,9 @@ export function ManagedServerBlock({
               </Pressable>
             ) : (
               <Text style={styles.rowDetail}>
-                {localOn ? 'Starting on your network…' : 'Starts the server on your network'}
+                {localOn
+                  ? (server.instance?.detail ?? 'Starting on your network…')
+                  : 'Starts the server on your network'}
               </Text>
             )}
           </View>
@@ -340,6 +342,9 @@ export function ManagedServerDetail({
           </Text>
         ) : null}
       </View>
+      {state === 'running' && instance?.detail ? (
+        <Text style={styles.warning}>{instance.detail}</Text>
+      ) : null}
       {instance?.restartToApply ? (
         <Text style={styles.rowDetail}>
           The agent changed the command. Restart to apply it; you approve it again.

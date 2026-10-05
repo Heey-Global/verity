@@ -1281,6 +1281,15 @@ describe('managed dev servers', () => {
     expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   });
 
+  it('shows failed Local publication in the overview and details', async () => {
+    const detail = 'No network ports available';
+    renderSheet(managedClient([demo({ instance: { ...demo().instance!, url: null, detail } })]));
+    expect(await screen.findByText(detail)).toBeTruthy();
+    expect(screen.queryByText('Starting on your network…')).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: /Curtis Demo, Running\. Details/u }));
+    expect(await screen.findByText(detail)).toBeTruthy();
+  });
+
   it('cleans up a running online-only instance when creating its link fails', async () => {
     const server = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
     const controlManagedDevServer = jest.fn(async () => server);
