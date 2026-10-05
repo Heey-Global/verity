@@ -597,6 +597,34 @@ describe('managed dev servers', () => {
       expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
     });
 
+    it('restarts an outdated starting command when Local turns on', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve('s1', 'Demo', { command: 'node changed.mjs', workdir: '.' });
+      await manager.setLocal('s1', 'Demo', true);
+      expect(sandbox.started).toHaveLength(2);
+      expect(sandbox.started.at(-1)!.command).toContain('changed.mjs');
+    });
+
+    it('conditional cleanup preserves access enabled by another client', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      await manager.stop('s1', 'Demo', { onlyIfUnshared: true });
+      expect((await instanceOf()).state).toBe('running');
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoked', {});
+      await manager.setLocal('s1', 'Demo', true);
+      await manager.stop('s1', 'Demo', { onlyIfUnshared: true });
+      expect((await instanceOf()).state).toBe('running');
+      await manager.setLocal('s1', 'Demo', false);
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.stop('s1', 'Demo', { onlyIfUnshared: true });
+      expect((await instanceOf()).state).toBe('stopped');
+    });
+
     it('refuses Local on for an unapproved command', async () => {
       await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
       await expect(manager.setLocal('s1', 'Demo', true)).rejects.toThrow(/approve/u);

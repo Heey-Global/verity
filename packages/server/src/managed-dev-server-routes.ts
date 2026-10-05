@@ -54,7 +54,14 @@ export function registerManagedDevServerRoutes(
         const { sessionId, serverId } = serverParams.parse(request.params);
         const server =
           action === 'stop'
-            ? await m.stop(sessionId, serverId)
+            ? await m.stop(
+                sessionId,
+                serverId,
+                z
+                  .object({ onlyIfUnshared: z.boolean().optional() })
+                  .strict()
+                  .parse(request.body ?? {}),
+              )
             : action === 'restart'
               ? await m.restart(sessionId, serverId, 'operator')
               : await m.start(sessionId, serverId, 'operator', {

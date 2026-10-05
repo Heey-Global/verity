@@ -3516,16 +3516,16 @@ export class VerityClient {
     sessionId: string,
     serverId: string,
     action: 'start' | 'stop' | 'restart',
-    options: { local?: boolean } = {},
+    options: { local?: boolean; onlyIfUnshared?: boolean } = {},
   ): Promise<ManagedDevServer> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/${action}`,
-      options.local === undefined
+      options.local === undefined && options.onlyIfUnshared === undefined
         ? { method: 'POST' }
         : {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ local: options.local }),
+            body: JSON.stringify(options),
           },
     );
     return this.resolveManaged(

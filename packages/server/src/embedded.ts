@@ -5015,6 +5015,9 @@ export async function buildEmbeddedServer(
         const swept = await sweepOrphanedPreviewShares({
           store: eventStore,
           docker: projectDocker,
+          onShareEnded: ({ managedInstanceId }) => {
+            if (managedInstanceId) managedLinkEnded.current?.(managedInstanceId);
+          },
         });
         if (swept > 0) {
           app.log.warn({ swept }, 'revoked orphaned public preview shares');

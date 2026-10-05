@@ -1743,16 +1743,28 @@ describe('sweepOrphanedPreviewShares', () => {
   it('kills the connector and revokes every non-terminal share', async () => {
     const { store, docker, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'active', connectorContainerId: 'connector-id' },
+      {
+        ...record,
+        state: 'active',
+        connectorContainerId: 'connector-id',
+        managedInstanceId: 'managed-1',
+      },
       { ...record, id: 'other', state: 'creating', connectorContainerName: 'verity-preview-other' },
       { ...record, id: 'done', state: 'revoked' },
     ]);
+    const onShareEnded = vi.fn();
     const swept = await sweepOrphanedPreviewShares({
       store: store as unknown as EventStore,
       docker: docker as unknown as DockerClient,
       now: () => new Date('2030-01-01T00:00:00Z'),
+      onShareEnded,
     });
     expect(swept).toBe(2);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+    expect(onShareEnded).toHaveBeenCalledWith({
+      id: record.id,
+      managedInstanceId: 'managed-1',
+    });
     expect(docker.removeContainer).toHaveBeenNthCalledWith(1, 'connector-id');
     expect(docker.removeContainer).toHaveBeenNthCalledWith(2, 'verity-preview-other');
     expect(store.transitionPublicPreviewShare.mock.calls.map(([id, , to]) => [id, to])).toEqual([

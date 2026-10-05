@@ -452,13 +452,25 @@ export function StaticPreviewSheet({
       } catch (caught) {
         // Started only for this link: with no access on, nothing may keep running.
         if (!running && !managedLocalOn(server))
-          await client.controlManagedDevServer(sessionId, server.id, 'stop').catch(() => undefined);
+          await client
+            .controlManagedDevServer(
+              sessionId,
+              server.id,
+              'stop',
+              server.accessSwitches ? { onlyIfUnshared: true } : {},
+            )
+            .catch(() => undefined);
         throw caught;
       }
       if (!sheetOpen.current) {
         await client.stopPublicPreviewShare(share.id);
         if (!running && !managedLocalOn(server))
-          await client.controlManagedDevServer(sessionId, server.id, 'stop');
+          await client.controlManagedDevServer(
+            sessionId,
+            server.id,
+            'stop',
+            server.accessSwitches ? { onlyIfUnshared: true } : {},
+          );
         return;
       }
       createdShareIds.current.add(share.id);

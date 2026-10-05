@@ -436,7 +436,11 @@ export class ManagedDevServerManager {
       if (on) {
         // Only a live process of the approved command gets the flag; anything
         // else starts, crashed included, and an older command restarts.
-        if (instance && !this.ranApproved(entry, instance) && instance.state === 'running')
+        if (
+          instance &&
+          !this.ranApproved(entry, instance) &&
+          (instance.state === 'running' || instance.state === 'starting')
+        )
           await this.stopInstance(project, instance, null);
         else if (instance && (instance.state === 'running' || instance.state === 'starting')) {
           const updated = await this.servers.updateInstance(instance.id, { localAccess: true });
@@ -504,11 +508,21 @@ export class ManagedDevServerManager {
     return this.viewOf(sessionId, entry.id);
   }
 
-  async stop(sessionId: string, idOrName: string): Promise<ManagedServerView> {
+  async stop(
+    sessionId: string,
+    idOrName: string,
+    options: { onlyIfUnshared?: boolean | undefined } = {},
+  ): Promise<ManagedServerView> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
     await this.locked(project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      if (
+        instance &&
+        options.onlyIfUnshared &&
+        (instance.localAccess || (await this.hasLivePublicLink(instance)))
+      )
+        return;
       if (instance) await this.stopInstance(project, instance, null);
     });
     return this.viewOf(sessionId, entry.id);

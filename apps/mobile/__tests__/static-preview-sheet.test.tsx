@@ -1152,7 +1152,9 @@ describe('managed dev servers', () => {
     );
     fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
     await waitFor(() =>
-      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
     );
   });
 
@@ -1180,7 +1182,9 @@ describe('managed dev servers', () => {
     );
     fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
     await waitFor(() =>
-      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
     );
     expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   });
@@ -1221,7 +1225,10 @@ describe('managed dev servers', () => {
     );
     view.unmount();
     await waitFor(
-      () => expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+      () =>
+        expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+          onlyIfUnshared: true,
+        }),
       { timeout: 4_000 },
     );
     expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
@@ -1292,7 +1299,9 @@ describe('managed dev servers', () => {
       complete(phase === 'list' ? [running] : link());
     });
     await waitFor(() =>
-      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
     );
     if (phase === 'list') expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
     else expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1');

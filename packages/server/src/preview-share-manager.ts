@@ -1477,6 +1477,7 @@ export async function sweepOrphanedPreviewShares(options: {
   store: EventStore;
   docker: DockerClient;
   now?: () => Date;
+  onShareEnded?: PreviewShareManagerOptions['onShareEnded'];
 }): Promise<number> {
   const now = options.now ?? (() => new Date());
   const shares = await options.store.listPublicPreviewShares();
@@ -1493,6 +1494,14 @@ export async function sweepOrphanedPreviewShares(options: {
         connectorContainerId: null,
         revokedAt: now(),
       });
+      try {
+        options.onShareEnded?.({
+          id: share.id,
+          managedInstanceId: share.managedInstanceId ?? null,
+        });
+      } catch {
+        /* Cleanup remains complete if a listener fails. */
+      }
       swept += 1;
     } catch (error) {
       // One unreachable container must not strand the remaining records.
