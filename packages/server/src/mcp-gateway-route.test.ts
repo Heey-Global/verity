@@ -233,9 +233,18 @@ function build(
           // Typed as the real method, so the four-argument call the route makes is checked
           // against `Conductor` at compile time rather than only at run time — the cast
           // below would otherwise let an arity change through silently.
-          dispatchTurn: ((sessionId, prompt, turnOpts, dispatchOpts) => {
+          dispatchTurn: (async (sessionId, prompt, turnOpts, dispatchOpts) => {
             dispatches.push({ sessionId, prompt, turnOpts, dispatchOpts: dispatchOpts ?? {} });
-            return Promise.resolve({ queued: true });
+            if (dispatchOpts?.planningRevision !== undefined) {
+              return {
+                queued: true,
+                accepted: await store.enqueuePlanImplementation(
+                  { id: crypto.randomUUID(), sessionId, prompt, opts: {} },
+                  dispatchOpts.planningRevision,
+                ),
+              };
+            }
+            return { queued: true };
           }) satisfies Conductor['dispatchTurn'],
         }
       : {}),
