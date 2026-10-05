@@ -201,7 +201,11 @@ function detect() {
   const version = readFileSync(otaVersionPath, 'utf8').trim();
   if (!versionPattern.test(version)) throw new Error('Invalid OTA version marker');
   const runtime = `${version.split('.').slice(0, 2).join('.')}.0`;
-  if (version.endsWith('.0')) {
+  const nativeVersion = readFileSync('apps/mobile/version.txt', 'utf8').trim();
+  if (!versionPattern.test(nativeVersion) || !nativeVersion.endsWith('.0'))
+    throw new Error('Invalid native version marker');
+  // Replaying an unfinished patch from a retired runtime strands planning on the new line.
+  if (runtime !== nativeVersion || version.endsWith('.0')) {
     appendFileSync(output, 'mode=plan\n');
     return;
   }

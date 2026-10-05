@@ -136,6 +136,7 @@ it.each(['1.52.4', '1.53.1'])(
 
 function detectFixture(
   options: {
+    nativeVersion?: string;
     released?: boolean;
     complete?: boolean;
     tagCommit?: string;
@@ -148,6 +149,7 @@ function detectFixture(
   mkdirSync(join(cwd, 'apps/mobile/ota'), { recursive: true });
   mkdirSync(join(cwd, 'bin'));
   writeFileSync(join(cwd, otaVersionPath), '1.52.4\n');
+  writeFileSync(join(cwd, 'apps/mobile/version.txt'), `${options.nativeVersion ?? '1.52.0'}\n`);
   writeFileSync(join(cwd, otaManifestPath), JSON.stringify({ '.': '1.52.4' }));
   const commit = 'c'.repeat(40);
   const pr = {
@@ -268,4 +270,10 @@ it('publishes only merged fixed versions under the shared mobile release lock', 
     packages: Record<string, { 'exclude-paths': string[] }>;
   };
   expect(native.packages['apps/mobile']?.['exclude-paths']).toContain('apps/mobile/ota');
+});
+
+it('plans the new native line instead of replaying an unfinished obsolete OTA release', () => {
+  const result = detectFixture({ nativeVersion: '1.53.0' });
+  expect(result.status).toBe(0);
+  expect(result.output).toBe('mode=plan\n');
 });
