@@ -275,6 +275,12 @@ export class AcpEventAdapter {
         // Retained summaries do not yet have a canonical transcript event. The
         // preceding compaction_update already fixed and emitted the boundary.
         return lifecycle;
+      case 'subagent_update':
+      case 'session_message':
+      case 'session_message_chunk':
+        // Experimental child-session snapshots and messages have no canonical
+        // transcript representation; do not leak them into the parent's text.
+        return lifecycle;
       case 'user_message_chunk':
         return lifecycle;
     }

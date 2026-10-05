@@ -41,6 +41,13 @@ describe('AcpEventAdapter', () => {
       { sessionUpdate: 'current_mode_update', currentModeId: 'default' },
       { sessionUpdate: 'config_option_update', configOptions: [] },
       { sessionUpdate: 'session_info_update', title: 'Smoke test' },
+      { sessionUpdate: 'subagent_update', sessionId: 'child-1' },
+      { sessionUpdate: 'session_message', messageId: 'message-1', content: [] },
+      {
+        sessionUpdate: 'session_message_chunk',
+        messageId: 'message-1',
+        content: { type: 'text', text: 'child message' },
+      },
       { sessionUpdate: 'notice', severity: 'info', title: 'Ready' },
       { sessionUpdate: 'usage_update', used: 1, size: 100 },
       { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'echo' } },
