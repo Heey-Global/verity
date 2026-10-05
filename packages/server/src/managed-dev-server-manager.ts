@@ -135,6 +135,9 @@ export class ManagedDevServerManager {
   private readonly publishRetryAt = new Map<string, number>();
   /** Running instances whose listener vanished while processes stayed alive. */
   private readonly missingSince = new Map<string, number>();
+  /** Recent recovery starts per instance; a server killed hard over and over is
+   *  reported instead of being restarted forever. */
+  private readonly recoveries = new Map<string, number[]>();
   /** Last periodic status check per running instance (log trimming). */
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
@@ -704,6 +707,20 @@ export class ManagedDevServerManager {
         // Nothing runs and no exit was recorded: the sandbox was recreated and its
         // /tmp is gone. Start again with what last ran; a pending update waits for
         // the operator's next restart.
+        const recent = (this.recoveries.get(instance.id) ?? []).filter(
+          (at) => this.now() - at < 10 * 60_000,
+        );
+        if (recent.length >= 3) {
+          this.recoveries.delete(instance.id);
+          await this.servers.updateInstance(instance.id, {
+            desired: 'stopped',
+            state: 'crashed',
+            detail: 'The server was stopped from outside several times, possibly out of memory',
+          });
+          changed = true;
+          continue;
+        }
+        this.recoveries.set(instance.id, [...recent, this.now()]);
         const session = await this.options.store.getSession(instance.sessionId);
         if (session?.worktree) {
           await this.startEntry(

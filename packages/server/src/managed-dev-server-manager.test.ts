@@ -336,6 +336,21 @@ describe('managed dev servers', () => {
     expect(await ctx.store.managedDevServers.listInstances({ sessionId: 's1' })).toEqual([]);
   });
 
+  it('stops recovering a server that keeps disappearing without an exit code', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    for (let round = 0; round < 4; round++) {
+      sandbox.recreate();
+      now += 10_000;
+      await manager.tick();
+    }
+    expect(sandbox.started).toHaveLength(4);
+    expect(await instanceOf()).toMatchObject({
+      state: 'crashed',
+      detail: expect.stringContaining('stopped from outside'),
+    });
+  });
+
   it('gives sibling entries of the session their internal URLs', async () => {
     await manager.add('s1', { name: 'Voice API', command: 'node api.mjs' });
     await manager.add('s1', { name: 'Web', command: 'vite --port {port}' });
