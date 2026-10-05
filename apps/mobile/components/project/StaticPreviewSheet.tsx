@@ -4,6 +4,7 @@ import {
   Alert,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   Share,
@@ -372,6 +373,7 @@ export function StaticPreviewSheet({
         'How long should the link work?',
         'Visitors need the link and its PIN.',
         [
+          ...(Platform.OS === 'ios' ? [cancel] : []),
           options[0]!,
           options[1]!,
           {

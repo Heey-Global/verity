@@ -155,6 +155,7 @@ export class ManagedDevServerManager {
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
   private activeProjects = new Set<string>();
+  private readonly pendingLinkEnds = new Set<string>();
   private closed = false;
 
   constructor(private readonly options: ManagedDevServerManagerOptions) {
@@ -466,16 +467,23 @@ export class ManagedDevServerManager {
    * open, so the server stops instead of running unnoticed.
    */
   async publicLinkEnded(instanceId: string): Promise<void> {
-    const instance = await this.servers.getInstance(instanceId).catch(() => undefined);
-    if (!instance || instance.localAccess || instance.desired !== 'running') return;
-    const project = await this.options.store.getProject(instance.projectId);
-    if (!project) return;
-    await this.locked(project.id, async () => {
-      const current = await this.servers.getInstance(instanceId);
-      if (!current || current.localAccess || current.desired !== 'running') return;
-      if (await this.hasLivePublicLink(current)) return;
-      await this.stopInstance(project, current, null);
-    }).catch(() => undefined);
+    this.pendingLinkEnds.add(instanceId);
+    try {
+      const instance = await this.servers.getInstance(instanceId);
+      if (instance && !instance.localAccess && instance.desired === 'running') {
+        const project = await this.options.store.getProject(instance.projectId);
+        if (project)
+          await this.locked(project.id, async () => {
+            const current = await this.servers.getInstance(instanceId);
+            if (!current || current.localAccess || current.desired !== 'running') return;
+            if (await this.hasLivePublicLink(current)) return;
+            await this.stopInstance(project, current, null);
+          });
+      }
+      this.pendingLinkEnds.delete(instanceId);
+    } catch {
+      // The link is already terminal; supervision must retry its cleanup.
+    }
   }
 
   private async hasLivePublicLink(instance: ManagedDevServerInstanceRecord): Promise<boolean> {
@@ -823,7 +831,7 @@ export class ManagedDevServerManager {
 
   private async unpublish(instance: ManagedDevServerInstanceRecord): Promise<void> {
     const share = this.shareFor(instance);
-    if (share) await this.options.localShares?.stop(share.id).catch(() => false);
+    if (share) await this.options.localShares?.stop(share.id);
   }
 
   /**
@@ -862,6 +870,7 @@ export class ManagedDevServerManager {
   }
 
   private async supervise(): Promise<void> {
+    for (const id of this.pendingLinkEnds) await this.publicLinkEnded(id);
     let instances: ManagedDevServerInstanceRecord[];
     try {
       instances = await this.servers.listInstances({ desired: 'running' });
@@ -896,6 +905,7 @@ export class ManagedDevServerManager {
       // Re-read under the project lock: a stop since the pass began wins.
       const instance = await this.servers.getInstance(snapshot.id);
       if (!instance || instance.desired !== 'running') continue;
+      if (!instance.localAccess) await this.unpublish(instance);
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
       if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {

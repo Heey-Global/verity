@@ -624,6 +624,33 @@ describe('managed dev servers', () => {
       expect((await instanceOf()).localOn).toBe(false);
     });
 
+    it('retries failed Local teardown while online sharing keeps the process running', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      await publicLink(id);
+      const stop = vi
+        .spyOn(shares.local, 'stop')
+        .mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.setLocal('s1', 'Demo', false)).rejects.toThrow('edge unavailable');
+      expect(shares.shares).toHaveLength(1);
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+      expect(stop).toHaveBeenCalledTimes(2);
+      expect((await instanceOf()).state).toBe('running');
+    });
+
+    it('retries link-ended cleanup after a transient store failure', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      vi.spyOn(ctx.store, 'getProject').mockRejectedValueOnce(new Error('store unavailable'));
+      await manager.publicLinkEnded(id);
+      expect((await instanceOf()).state).toBe('running');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });

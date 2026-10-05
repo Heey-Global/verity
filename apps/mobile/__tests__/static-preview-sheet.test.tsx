@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert, Linking, Modal, Share } from 'react-native';
+import { Alert, Linking, Modal, Platform, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import type {
   ManagedDevServer,
@@ -1318,7 +1318,24 @@ describe('managed dev servers', () => {
         expect.objectContaining({ ttlSeconds: seconds }),
       ),
     );
-    for (const call of alert.mock.calls) expect(call[2]!.length).toBeLessThanOrEqual(3);
+    for (const call of alert.mock.calls)
+      expect(call[2]!.length).toBeLessThanOrEqual(Platform.OS === 'ios' ? 4 : 3);
+  });
+
+  it('offers Cancel directly in the first iOS lifetime dialog', async () => {
+    const previous = Platform.OS;
+    Platform.OS = 'ios';
+    try {
+      const createSessionPortPreviewShare = jest.fn(async () => link());
+      const alert = answer('Cancel');
+      renderSheet(managedClient([demo()], { createSessionPortPreviewShare }));
+      fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+      await waitFor(() => expect(alert).toHaveBeenCalled());
+      expect(alert.mock.calls[0]![2]!.some((button) => button.text === 'Cancel')).toBe(true);
+      expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+    } finally {
+      Platform.OS = previous;
+    }
   });
 
   it.each(['list', 'create'])('cleans up when closed during the %s request', async (phase) => {
