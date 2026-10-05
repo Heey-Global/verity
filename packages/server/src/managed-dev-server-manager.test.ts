@@ -515,6 +515,21 @@ describe('managed dev servers', () => {
       expect(shares.create).not.toHaveBeenCalled();
     });
 
+    // A crash keeps the switches; turning Local on again must start the server
+    // rather than mark a dead process as shared.
+    it('starts a crashed server again when Local turns on', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const instanceId = await listen();
+      sandbox.crash(instanceId, 1);
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('crashed');
+      await manager.setLocal('s1', 'Demo', true);
+      expect(sandbox.started).toHaveLength(2);
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
     it('refuses Local on for an unapproved command', async () => {
       await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
       await expect(manager.setLocal('s1', 'Demo', true)).rejects.toThrow(/approve/u);

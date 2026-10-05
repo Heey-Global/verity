@@ -537,6 +537,8 @@ const managedDevServerSchema = z.object({
   command: z.string(),
   workdir: z.string(),
   approved: z.boolean(),
+  /** Present on Cores with the Local and Shared online switches. */
+  accessSwitches: z.boolean().optional(),
   instance: z
     .object({
       id: z.string(),

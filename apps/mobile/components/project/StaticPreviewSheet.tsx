@@ -338,7 +338,7 @@ export function StaticPreviewSheet({
       server.id,
       { command: server.command, workdir: server.workdir },
       // Approved for a public link only: the server must not also open locally.
-      mode === 'online' && !managedLocalOn(server) ? { local: false } : {},
+      mode === 'online' && server.accessSwitches && !managedLocalOn(server) ? { local: false } : {},
     );
     return true;
   };
@@ -386,7 +386,7 @@ export function StaticPreviewSheet({
       if (on && !(await approveManaged(server, 'Allow', 'local'))) return;
       // A Core before the access switches has no Local route; its single
       // switch started and stopped the server.
-      if (server.instance && server.instance.localOn === undefined)
+      if (!server.accessSwitches)
         return client.controlManagedDevServer(sessionId, server.id, on ? 'start' : 'stop');
       return client.setManagedDevServerLocal(sessionId, server.id, on);
     });
@@ -404,9 +404,14 @@ export function StaticPreviewSheet({
       if (!(await approveManaged(server, 'Share', 'online'))) return;
       const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
       if (!running)
-        await client.controlManagedDevServer(sessionId, server.id, 'start', {
-          local: managedLocalOn(server),
-        });
+        await client.controlManagedDevServer(
+          sessionId,
+          server.id,
+          'start',
+          // An older Core ignores Local and opens the server on the network too;
+          // its Local switch then shows that honestly.
+          server.accessSwitches ? { local: managedLocalOn(server) } : {},
+        );
       let share: PublicPreviewShare;
       try {
         const instance = await waitUntilRunning(server.id);

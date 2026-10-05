@@ -883,6 +883,7 @@ describe('managed dev servers', () => {
     command: 'node server.mjs --port {port}',
     workdir: 'curtis-voice',
     approved: true,
+    accessSwitches: true,
     instance: {
       id: 'inst-1',
       localShareId: 'local-share-1',
@@ -1155,9 +1156,10 @@ describe('managed dev servers', () => {
     );
   });
 
-  // An older Core has no Local route; its switch started and stopped the server.
+  // An older Core has no Local route and rejects unknown body fields with 400;
+  // its switch started and stopped the server, also before it ever ran.
   it('falls back to start and stop on a Core without the Local switch', async () => {
-    const server = demo();
+    const server = demo({ accessSwitches: undefined });
     delete server.instance!.localOn;
     const controlManagedDevServer = jest.fn(async () => server);
     const setManagedDevServerLocal = jest.fn();
@@ -1167,6 +1169,28 @@ describe('managed dev servers', () => {
       expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
     );
     expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+  });
+
+  it('approves and starts without the Local field on an older Core', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    const controlManagedDevServer = jest.fn(async () => demo());
+    answer('Allow');
+    renderSheet(
+      managedClient([demo({ accessSwitches: undefined, approved: false, instance: null })], {
+        approveManagedDevServer,
+        controlManagedDevServer,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start'),
+    );
+    expect(approveManagedDevServer).toHaveBeenCalledWith(
+      'session-one',
+      'srv-1',
+      { command: 'node server.mjs --port {port}', workdir: 'curtis-voice' },
+      {},
+    );
   });
 
   it('shows the public link, opens it with the PIN, and copies the PIN', async () => {

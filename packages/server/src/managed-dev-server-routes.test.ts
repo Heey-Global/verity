@@ -31,6 +31,7 @@ function view(
     command: 'node server.mjs --port {port}',
     workdir: '.',
     approved: true,
+    accessSwitches: true,
     instance:
       instance === null
         ? null

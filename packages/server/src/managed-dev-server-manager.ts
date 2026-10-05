@@ -105,6 +105,9 @@ export interface ManagedServerView {
   command: string;
   workdir: string;
   approved: boolean;
+  /** This Core has the Local and Shared online switches (`/local`, `local` on
+   *  start and approve). Lets newer apps fall back on older Cores. */
+  accessSwitches: true;
   /** This session's instance, if the entry ever ran here. */
   instance: ManagedInstanceView | null;
   /** Running or starting instances in other sessions of the project. */
@@ -259,6 +262,7 @@ export class ManagedDevServerManager {
         command: entry.command,
         workdir: entry.workdir,
         approved: entry.approved,
+        accessSwitches: true as const,
         instance: own ? this.instanceView(entry, own) : null,
         elsewhere: instances
           .filter(
@@ -425,7 +429,8 @@ export class ManagedDevServerManager {
     await this.locked(project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       if (on) {
-        if (instance && (instance.desired === 'running' || instance.state === 'starting')) {
+        // Only a live process gets the flag; anything else, crashed included, starts.
+        if (instance && (instance.state === 'running' || instance.state === 'starting')) {
           const updated = await this.servers.updateInstance(instance.id, { localAccess: true });
           if (updated?.state === 'running') await this.publish(project, entry, updated);
           return;
