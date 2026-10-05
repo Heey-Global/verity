@@ -1026,7 +1026,7 @@ export function StaticPreviewSheet({
                     )
                   }
                   disabled={stopping}
-                  hitSlop={10}
+                  hitSlop={14}
                   accessibilityRole="button"
                   accessibilityLabel="Copy preview link"
                 >
@@ -1056,7 +1056,7 @@ export function StaticPreviewSheet({
                       void Clipboard.setStringAsync(share.pin).then(() => setCopied('pin'))
                     }
                     disabled={stopping}
-                    hitSlop={10}
+                    hitSlop={14}
                     accessibilityRole="button"
                     accessibilityLabel="Copy PIN"
                   >
@@ -1072,22 +1072,20 @@ export function StaticPreviewSheet({
           ) : (
             <Text style={styles.caption}>The link starts working in a moment.</Text>
           )}
-          {share.publicOrigin ? (
+          {share.publicOrigin && !share.pinLocked ? (
             <View style={styles.actions}>
-              {!share.pinLocked ? (
-                <Pressable
-                  style={[styles.primaryButton, styles.actionButton]}
-                  onPress={() =>
-                    void Share.share({ message: shareMessage(share) }).catch(() => undefined)
-                  }
-                  disabled={stopping}
-                  accessibilityRole="button"
-                  accessibilityLabel="Share link and PIN"
-                >
-                  <Icon name="share" size={16} color={theme.colors.onPrimary} />
-                  <Text style={styles.actionPrimaryText}>Send link and PIN</Text>
-                </Pressable>
-              ) : null}
+              <Pressable
+                style={[styles.primaryButton, styles.actionButton]}
+                onPress={() =>
+                  void Share.share({ message: shareMessage(share) }).catch(() => undefined)
+                }
+                disabled={stopping}
+                accessibilityRole="button"
+                accessibilityLabel="Share link and PIN"
+              >
+                <Icon name="share" size={16} color={theme.colors.onPrimary} />
+                <Text style={styles.actionPrimaryText}>Send link and PIN</Text>
+              </Pressable>
             </View>
           ) : null}
           <Pressable
@@ -1535,7 +1533,7 @@ const styles = StyleSheet.create((theme) => ({
   secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
   dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
   link: { flex: 1, minWidth: 0, color: theme.colors.text, fontSize: theme.text.sm },
-  linkMuted: { flex: 1, minWidth: 0, color: theme.colors.textMuted, fontSize: theme.text.sm },
+  linkMuted: { color: theme.colors.textMuted, fontSize: theme.text.sm },
   linkBox: {
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
