@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   constants,
+  chmodSync,
+  fchmodSync,
   closeSync,
   createReadStream,
   createWriteStream,
@@ -50,6 +52,8 @@ export async function transferSessionCommit(opts: {
   try {
     sourcePinnedDir = mkdtempSync(join(sourceRoot, '.verity-transfer-'));
     destinationPinnedDir = mkdtempSync(join(destinationRoot, '.verity-transfer-'));
+    chmodSync(sourcePinnedDir, 0o777);
+    chmodSync(destinationPinnedDir, 0o755);
   } catch (error) {
     closeSync(sourceRootFd);
     closeSync(destinationRootFd);
@@ -92,6 +96,17 @@ export async function transferSessionCommit(opts: {
       );
     } finally {
       closeSync(destinationDirectoryFd);
+    }
+    fchmodSync(destinationFd, 0o444);
+    const sourcePlaceholder = openSync(
+      join(sourcePinnedDir, 'commit.bundle'),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o666,
+    );
+    try {
+      fchmodSync(sourcePlaceholder, 0o666);
+    } finally {
+      closeSync(sourcePlaceholder);
     }
     const commit =
       opts.commit ?? (await opts.sourceGit(['-C', source, 'rev-parse', 'HEAD'])).trim();

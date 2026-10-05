@@ -52,7 +52,15 @@ export async function migrateLegacySessionClone(
     throw new Error('Migration requires a real checkout directory');
   // Initialized submodules retain administrative links outside the private checkout.
   // Refuse before moving any recovery artifacts rather than severing those links.
-  const { stdout: indexedFiles } = await exec('git', ['-C', checkout, 'ls-files', '--stage', '-z']);
+  const { stdout: indexedFiles } = await exec('git', [
+    '-c',
+    'core.fsmonitor=false',
+    '-C',
+    checkout,
+    'ls-files',
+    '--stage',
+    '-z',
+  ]);
   for (const entry of indexedFiles.split('\0')) {
     if (!entry.startsWith('160000 ')) continue;
     const submodule = entry.slice(entry.indexOf('\t') + 1);

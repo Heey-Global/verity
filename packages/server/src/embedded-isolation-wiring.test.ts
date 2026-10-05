@@ -38,6 +38,8 @@ describe('production session isolation wiring', () => {
     expect(text).toMatch(/'rev-parse'/);
     expect(text).toMatch(/'for-each-ref'/);
     expect(text).toMatch(/'show-ref'/);
+    expect(text).toMatch(/readOnly && runtimeProject.state !== 'active'/);
+    expect(text).toContain('createSleepingSessionGit');
     expect(text).toMatch(/args\[index \+ 2\] !== 'worktree' \|\| args\[index \+ 3\] === 'list'/);
   });
   it('protects legacy transcript cwd directories alongside private session transcripts', () => {

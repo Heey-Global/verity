@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
   existsSync,
+  chmodSync,
   symlinkSync,
   readlinkSync,
   mkdtempSync,
@@ -201,4 +202,14 @@ it('rejects initialized submodules before modifying the checkout or recovery art
   expect(existsSync(backupRoot)).toBe(false);
   expect(readFileSync(join(checkout, 'nested', '.git'), 'utf8')).toBe(link);
   expect(git(join(checkout, 'nested'), 'show', 'HEAD:file')).toBe('submodule content');
+});
+
+it('does not execute a checkout fsmonitor during server-side inspection', async () => {
+  const marker = join(temp, 'server-hook-ran');
+  const hook = join(temp, 'fsmonitor');
+  writeFileSync(hook, `#!/bin/sh\nprintf compromised > '${marker}'\n`);
+  chmodSync(hook, 0o755);
+  git(checkout, 'config', 'core.fsmonitor', hook);
+  await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true });
+  expect(existsSync(marker)).toBe(false);
 });

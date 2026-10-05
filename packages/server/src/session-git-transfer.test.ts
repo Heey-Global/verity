@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
+  statSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -165,6 +166,7 @@ it('rejects substituted FIFOs without blocking the server while waiting for a wr
           if (args.includes('rev-parse')) return 'a'.repeat(40);
           if (args.includes('create')) {
             const bundle = join(source, args[args.indexOf('create') + 1]!);
+            rmSync(bundle);
             execFileSync('mkfifo', [bundle]);
             // Release a regressed blocking open so the test fails without hanging the worker.
             writer = spawn('sh', ['-c', 'sleep 2; printf x > "$1"', 'fifo-writer', bundle]);
@@ -178,5 +180,41 @@ it('rejects substituted FIFOs without blocking the server while waiting for a wr
     expect(Date.now() - openedAt).toBeLessThan(1000);
   } finally {
     writer?.kill();
+  }
+});
+
+it('grants sandbox users access to transfer files without requiring the server UID', async () => {
+  temp = mkdtempSync(join(tmpdir(), 'verity-transfer-permissions-'));
+  const source = join(temp, 'source');
+  const destination = join(temp, 'destination');
+  mkdirSync(source);
+  mkdirSync(destination);
+  let modes: number[] = [];
+  const transfer = await transferSessionCommit({
+    source,
+    destination,
+    sourceGit: async (args) => {
+      if (args.includes('rev-parse')) return 'a'.repeat(40);
+      if (args.includes('create')) {
+        const bundle = join(source, args[args.indexOf('create') + 1]!);
+        const target = readdirSync(destination).find((entry) =>
+          entry.startsWith('.verity-transfer-'),
+        )!;
+        modes = [
+          statSync(join(bundle, '..')).mode & 0o777,
+          statSync(bundle).mode & 0o666,
+          statSync(join(destination, target)).mode & 0o555,
+          statSync(join(destination, target, 'commit.bundle')).mode & 0o444,
+        ];
+        writeFileSync(bundle, 'bundle');
+      }
+      return '';
+    },
+    destinationGit: async () => '',
+  });
+  try {
+    expect(modes).toEqual([0o777, 0o666, 0o555, 0o444]);
+  } finally {
+    await transfer.cleanup();
   }
 });

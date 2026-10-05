@@ -218,7 +218,7 @@ import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 import { containerNameFor } from './canonical.js';
 import { DockerExecBackend, dockerHostFor } from './project-backend.js';
-import { createSandboxGit } from './sandbox-git.js';
+import { createSandboxGit, createSleepingSessionGit } from './sandbox-git.js';
 import { projectSettingsEnv, type ProjectEnvironmentSettings } from './project-settings-env.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
@@ -2269,6 +2269,15 @@ export async function buildEmbeddedServer(
                   const runtimeProject = readOnly
                     ? await resolveSessionProject(session.sessionId, project)
                     : await ensureSessionProject(session.sessionId, project);
+                  if (readOnly && runtimeProject.state !== 'active') {
+                    return createSleepingSessionGit({
+                      docker: projectDocker,
+                      templateContainer: project.containerName,
+                      projectId: project.id,
+                      hostRoot: session.worktree,
+                      dockerBaseUrl: config.dockerBaseUrl,
+                    })(args);
+                  }
                   return createSandboxGit({
                     containerName: runtimeProject.containerName,
                     hostRoot: session.worktree,

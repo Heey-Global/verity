@@ -121,7 +121,7 @@ export function sessionSandboxSpec(
   );
   const spec: ContainerSpec = {
     name: sessionContainerName(input.sessionId),
-    image: parent.image,
+    image: parent.imageId ?? parent.image,
     binds,
     volumeMounts,
     labels: {
@@ -253,7 +253,7 @@ export class SessionSandboxProvisioner {
         throw new Error('Session sandbox ownership mismatch');
       }
       if (
-        current.image !== spec.image ||
+        (current.imageId ?? current.image) !== spec.image ||
         current.labels['verity.session-contract'] !== spec.labels!['verity.session-contract']
       ) {
         if (current.running) await this.docker.stopContainer(name);

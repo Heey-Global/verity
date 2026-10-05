@@ -13,7 +13,8 @@ const template: ContainerInspect = {
   deviceCount: 0,
   id: 'parent',
   running: true,
-  image: 'sandbox@sha256:pinned',
+  image: 'sandbox:latest',
+  imageId: 'sha256:new-image',
   mounts: [
     { type: 'bind', source: '/data/project', destination: '/work', readWrite: true },
     { type: 'bind', source: '/data/runner', destination: '/run/verity-runner', readWrite: true },
@@ -197,7 +198,7 @@ it.each([true, false])(
       inspectContainer: vi.fn(async (name: string) =>
         name === project.containerName
           ? template
-          : { ...template, running, image: 'old-image', labels: desired.labels },
+          : { ...template, running, imageId: 'sha256:old-image', labels: desired.labels },
       ),
       stopContainer: vi.fn(async () => {
         if (!running) throw new Error('Docker HTTP 304: already stopped');
@@ -218,7 +219,7 @@ it.each([true, false])(
     expect(docker.removeContainer).toHaveBeenCalledOnce();
     expect(docker.createContainer).toHaveBeenCalledWith(
       expect.objectContaining({
-        image: template.image,
+        image: template.imageId,
         binds: expect.arrayContaining(['/data/private/session:/work']),
       }),
     );

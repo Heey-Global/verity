@@ -1174,6 +1174,28 @@ describe('createDockerClient (#174)', () => {
     expect(fetch.calls[0]?.url).toContain(encodeURIComponent('{"until":["168h"]}'));
   });
 
+  it('inspectContainer keeps the immutable image ID separate from its mutable tag', async () => {
+    const fetch = fakeFetch([
+      {
+        match: /\/containers\/abc\/json/,
+        method: 'GET',
+        resp: res({
+          Id: 'abc',
+          Image: 'sha256:actual-content',
+          Config: { Image: 'sandbox:latest' },
+        }),
+      },
+    ]);
+    expect(
+      await createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch }).inspectContainer(
+        'abc',
+      ),
+    ).toMatchObject({
+      image: 'sandbox:latest',
+      imageId: 'sha256:actual-content',
+    });
+  });
+
   it('inspectContainer reads {State.Running} + Id, returns {id, running}', async () => {
     const fetch = fakeFetch([
       {

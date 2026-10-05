@@ -404,6 +404,8 @@ export interface ContainerInspect {
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
   image?: string | undefined;
+  /** Immutable image ID used by this container. */
+  imageId?: string | undefined;
   /** OpenContainers/custom labels recorded on the container config. */
   labels?: Record<string, string> | undefined;
   /** Docker networks attached to the container, keyed by network name. */
@@ -1755,6 +1757,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       if (!res.ok) throw await toDockerError(res, id);
       const json = (await res.json()) as {
         Id?: unknown;
+        Image?: unknown;
         RestartCount?: unknown;
         State?: {
           Running?: unknown;
@@ -1832,6 +1835,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         id: json.Id,
         running: json.State?.Running === true,
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),
+        ...(typeof json.Image === 'string' ? { imageId: json.Image } : {}),
         ...(labels !== undefined ? { labels } : {}),
         ...(networks !== undefined ? { networks } : {}),
         ...(typeof json.Config?.User === 'string' ? { user: json.Config.User } : {}),
