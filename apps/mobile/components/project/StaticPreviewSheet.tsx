@@ -357,20 +357,37 @@ export function StaticPreviewSheet({
       : undefined;
 
   const askLinkLifetime = () =>
-    new Promise<number | undefined>((resolve) =>
+    new Promise<number | undefined>((resolve) => {
+      const cancel = {
+        text: 'Cancel',
+        style: 'cancel' as const,
+        onPress: () => resolve(undefined),
+      };
+      const options = PUBLIC_PREVIEW_DURATIONS.map((option) => ({
+        text: option.a11y,
+        onPress: () => resolve(option.seconds),
+      }));
+      // Android permits only three Alert buttons; longer lifetimes use a second dialog.
       Alert.alert(
         'How long should the link work?',
         'Visitors need the link and its PIN.',
         [
-          ...PUBLIC_PREVIEW_DURATIONS.map((option) => ({
-            text: option.a11y,
-            onPress: () => resolve(option.seconds),
-          })),
-          { text: 'Cancel', style: 'cancel' as const, onPress: () => resolve(undefined) },
+          options[0]!,
+          options[1]!,
+          {
+            text: 'More durations',
+            onPress: () =>
+              Alert.alert(
+                'Longer link lifetime',
+                'Visitors need the link and its PIN.',
+                [options[2]!, options[3]!, cancel],
+                { cancelable: true, onDismiss: () => resolve(undefined) },
+              ),
+          },
         ],
         { cancelable: true, onDismiss: () => resolve(undefined) },
-      ),
-    );
+      );
+    });
 
   /** Waits until the instance answers on its port; a public link needs that. */
   const waitUntilRunning = async (serverId: string) => {
@@ -378,6 +395,7 @@ export function StaticPreviewSheet({
       // Closed meanwhile: nobody would see the link or its PIN, so none is made.
       if (!sheetOpen.current) throw new Error('The Preview sheet was closed.');
       const servers = await client.listManagedDevServers(sessionId);
+      if (!sheetOpen.current) throw new Error('The Preview sheet was closed.');
       if (servers) setManaged(servers);
       const instance = servers?.find((value) => value.id === serverId)?.instance;
       if (instance?.state === 'running') return instance;
@@ -436,6 +454,12 @@ export function StaticPreviewSheet({
         if (!running && !managedLocalOn(server))
           await client.controlManagedDevServer(sessionId, server.id, 'stop').catch(() => undefined);
         throw caught;
+      }
+      if (!sheetOpen.current) {
+        await client.stopPublicPreviewShare(share.id);
+        if (!running && !managedLocalOn(server))
+          await client.controlManagedDevServer(sessionId, server.id, 'stop');
+        return;
       }
       createdShareIds.current.add(share.id);
       setShares((current) => [share, ...current]);

@@ -515,6 +515,16 @@ describe('managed dev servers', () => {
       expect(shares.create).not.toHaveBeenCalled();
     });
 
+    it('unpublishes an already running server when start disables Local', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      expect(shares.shares).toHaveLength(1);
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      expect(shares.shares).toHaveLength(0);
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: false, url: null });
+    });
+
     // A crash keeps the switches; turning Local on again must start the server
     // rather than mark a dead process as shared.
     it('starts a crashed server again when Local turns on', async () => {

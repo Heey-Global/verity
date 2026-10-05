@@ -619,6 +619,7 @@ export class ManagedDevServerManager {
     if (local !== undefined && instance.localAccess !== local)
       instance =
         (await this.servers.updateInstance(instance.id, { localAccess: local })) ?? instance;
+    if (local === false) await this.unpublish(instance);
     const status = await this.options.runtime
       .managedServerStatus(project, instance.id)
       .catch(() => ({ alive: false, exitCode: null }));

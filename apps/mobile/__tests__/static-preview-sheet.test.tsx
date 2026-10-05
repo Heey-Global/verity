@@ -1227,6 +1227,77 @@ describe('managed dev servers', () => {
     expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['1 hour', 3600],
+    ['24 hours', 86400],
+    ['7 days', 604800],
+    ['30 days', 2592000],
+  ])('offers %s without exceeding the native dialog button limit', async (label, seconds) => {
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    const alert = answer(
+      ...(seconds > 86400 ? ['More durations', String(label)] : [String(label)]),
+    );
+    renderSheet(managedClient([demo()], { createSessionPortPreviewShare }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
+        'session-one',
+        expect.objectContaining({ ttlSeconds: seconds }),
+      ),
+    );
+    for (const call of alert.mock.calls) expect(call[2]!.length).toBeLessThanOrEqual(3);
+  });
+
+  it.each(['list', 'create'])('cleans up when closed during the %s request', async (phase) => {
+    let complete!: (value: any) => void;
+    const pending = new Promise<any>((resolve) => {
+      complete = resolve;
+    });
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const running = demo({ instance: { ...demo().instance!, localOn: false, url: null } });
+    const listManagedDevServers = jest
+      .fn()
+      .mockResolvedValueOnce([stopped])
+      .mockImplementation(async () => (phase === 'list' ? pending : [running]));
+    const createSessionPortPreviewShare = jest.fn(async () =>
+      phase === 'create' ? pending : link(),
+    );
+    const stopPublicPreviewShare = jest.fn(async () => {});
+    const controlManagedDevServer = jest.fn(async () => running);
+    answer('1 hour');
+    const view = renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers,
+        createSessionPortPreviewShare,
+        stopPublicPreviewShare,
+        controlManagedDevServer,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      phase === 'list'
+        ? expect(listManagedDevServers).toHaveBeenCalledTimes(2)
+        : expect(createSessionPortPreviewShare).toHaveBeenCalled(),
+    );
+    view.unmount();
+    await act(async () => {
+      complete(phase === 'list' ? [running] : link());
+    });
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+    );
+    if (phase === 'list') expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+    else expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1');
+  });
+
   // A link the Uplink has not given an address yet is already on; pressing the
   // switch again must not create a second one.
   it('shows a link without an address yet as being created', async () => {
