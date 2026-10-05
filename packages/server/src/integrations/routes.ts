@@ -265,6 +265,19 @@ export function registerIntegrationRoutes(
           : null;
         // Changes to unknown or non-message events are not useful Knowledge data.
         if (input.kind !== 'message' && target?.kind !== 'message') {
+          // Older workers may not report retry sidecars; access logs alone hide the failed event.
+          request.log.warn(
+            {
+              code: 'target_message_not_found',
+              accountId: input.accountId,
+              sourceId: input.sourceId,
+              eventId: input.eventId,
+              targetEventId: input.targetEventId,
+              kind: input.kind,
+              targetState: target === null ? 'missing' : 'non_message',
+            },
+            'Matrix event import rejected',
+          );
           return reply
             .code(422)
             .send({ error: 'Target message not found', code: 'target_message_not_found' });
