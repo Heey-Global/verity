@@ -4827,6 +4827,30 @@ describe('GET /projects (#174)', () => {
     expect(summary?.lastSeenEventCount).toBe(2);
   });
 
+  it('updates listener snapshots without making session summaries unread', async () => {
+    const sessionId = 's-listener-unread';
+    await ctx.store.createSession({ sessionId, worktree: '/wt/listener', model: 'm' });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'read' });
+    await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 1 },
+    });
+    await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
+    const listed = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(
+      listed.json<Array<{ sessionId: string }>>().find((s) => s.sessionId === sessionId),
+    ).toMatchObject({
+      eventCount: 1,
+      lastSeenEventCount: 1,
+    });
+    const detail = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
+    expect(detail.json()).toMatchObject({ eventCount: 1, lastSeenEventCount: 1 });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'new message' });
+    const unread = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
+    expect(unread.json()).toMatchObject({ eventCount: 2, lastSeenEventCount: 1 });
+  });
+
   it('returns 404 when marking an unknown session seen', async () => {
     const res = await app.inject({
       method: 'PATCH',

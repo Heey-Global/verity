@@ -4703,7 +4703,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const pendingPermissions = [
       ...new Set([...conductor.pendingPermissions(session.sessionId), ...pendingLinks]),
     ];
-    const projectedStatus = liveStatusFromProjection(session.sessionId, events, facts.eventCount);
+    // Unread counts exclude listener snapshots; the seq still identifies a nonempty log.
+    const projectedStatus = liveStatusFromProjection(
+      session.sessionId,
+      events,
+      facts.lastEventSeq === 0 ? 0 : 1,
+    );
     // A permission event is durable so reconnect can rebuild its card, but its
     // answer travels over the live runner channel. Once that channel no longer
     // reports the prompt, do not let the historical event keep the overview in
@@ -7122,7 +7127,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const pendingPermissions = [
         ...new Set([...conductor.pendingPermissions(id), ...pendingLinks]),
       ];
-      const projectedStatus = liveStatusFromProjection(id, events, facts.eventCount);
+      // Status needs log presence independently of the filtered unread count.
+      const projectedStatus = liveStatusFromProjection(
+        id,
+        events,
+        facts.lastEventSeq === 0 ? 0 : 1,
+      );
       const status =
         pendingLinks.length > 0
           ? 'awaiting_input'
