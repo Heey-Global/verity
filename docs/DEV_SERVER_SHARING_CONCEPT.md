@@ -110,7 +110,7 @@ switches them on and off from the Preview sheet.
 
 **Entry per project, instance per session.** An entry holds a name, a command, and a
 subdirectory of the worktree. It belongs to the project and can be started in any session of
-it. The subdirectory must be relative and stay inside the session's worktree after resolving symlinks; absolute paths and `..` are rejected. Started from a session, it runs in that session's worktree. Entries live in the Verity
+it. The subdirectory must be relative and stay inside the session's worktree after resolving symlinks; absolute paths and `..` are rejected. The check runs at every start against that session's worktree, not only at `add`, because a symlink can change in between. Started from a session, it runs in that session's worktree. Entries live in the Verity
 database, not in the repository, so switching one off or deleting it never creates a commit.
 A repository file that seeds entries can be added later if entries should travel with the code.
 
@@ -119,7 +119,7 @@ the inline card, not in agent replies. Verity picks a free sandbox port for each
 session and entry and passes it as `PORT` or substitutes `{port}` in the command. All sessions
 of a project share one sandbox, so this keeps two sessions running the same entry apart. The
 only port anyone sees is the network port from the local range, shown as an address such as
-`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so a bookmark keeps working across restarts, with two exceptions listed under edge cases: eviction of a stopped pair's network port when the range is full, and a silent sandbox-port change on collision. A new session may get different ports. When the local range is full, the non-running pair (stopped or crashed) whose server ran least recently, with never-run pairs counted as oldest, loses its network reservation; its sandbox port is kept. Running pairs are never evicted. If every reservation belongs to a running server, the start fails with "All network ports are in use" and names the setting that enlarges the range.
+`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so a bookmark keeps working across restarts, with the exceptions listed under edge cases: eviction of a non-running pair's network port when the range is full, a silent sandbox-port change on collision, and removal of the entry. A new session may get different ports. When the local range is full, the non-running pair (stopped or crashed) whose server ran least recently, with never-run pairs counted as oldest, loses its network reservation; its sandbox port is kept. Running and starting pairs are never evicted. If every reservation belongs to a running or starting server, the start fails with "All network ports are in use" and names the setting that enlarges the range.
 
 **Supervision.** Verity starts the entry as its own process and tracks one of four states:
 starting, running, stopped, crashed. "Running" requires the port to answer through the same path the share forwards to, including the loopback forwarder (2.4), not merely the command to have started. Verity keeps the last few hundred lines of output, readable in the
@@ -289,7 +289,7 @@ becomes "Open settings" and the text names Verity Premium.
 5. Rework the app: always-open Preview sheet, per-listener actions, capability-based gating,
    reachability probe with the three outcomes, inline listener card.
 6. Update `deploy/README.md`, the Compose files, and ADR 0020 references.
-7. Managed dev servers (2.6): entries table and per-session port bindings; supervised
+7. Managed dev servers (2.6): entries table and per-session pairs holding both ports and the command and subdirectory that last ran; supervised
    start, stop, state, and log capture in the project runtime; restart after sandbox
    recreation; `verity-dev-server` entry commands and agent-seed guidance; Preview sheet
    rows with switches, detail view with logs, and the not-managed section.
