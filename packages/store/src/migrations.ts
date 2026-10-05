@@ -3850,8 +3850,13 @@ const migrations: Record<string, Migration> = {
       await sql`alter table managed_dev_server_instances add column local_access boolean not null default true`.execute(
         db,
       );
+      await sql`alter table managed_dev_server_instances add column access_started_at timestamptz`.execute(
+        db,
+      );
+      await sql`update managed_dev_server_instances set access_started_at = started_at`.execute(db);
     },
     async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table managed_dev_server_instances drop column access_started_at`.execute(db);
       await sql`alter table managed_dev_server_instances drop column local_access`.execute(db);
     },
   },

@@ -695,6 +695,7 @@ describe('managed dev servers', () => {
       const terminal = await ctx.store.getPublicPreviewShare(share.id);
       await ctx.store.managedDevServers.updateInstance(id, {
         startedAt: new Date(terminal!.updatedAt.getTime() + 1),
+        accessStartedAt: new Date(terminal!.updatedAt.getTime() + 1),
       });
       await manager.tick();
       expect((await instanceOf()).state).toBe('starting');
@@ -825,6 +826,7 @@ describe('managed dev servers', () => {
       await manager.start('s1', 'Demo', 'operator', { local: false });
       await ctx.store.managedDevServers.updateInstance(id, {
         startedAt: new Date(ended!.updatedAt.getTime() + 1),
+        accessStartedAt: new Date(ended!.updatedAt.getTime() + 1),
       });
       await manager.publicLinkEnded(id, share.id);
       expect((await instanceOf()).state).toBe('starting');
@@ -843,7 +845,10 @@ describe('managed dev servers', () => {
       });
       await manager.stop('s1', 'Demo');
       await manager.start('s1', 'Demo', 'operator', { local: false });
-      await ctx.store.managedDevServers.updateInstance(id, { startedAt: new Date(now + 2) });
+      await ctx.store.managedDevServers.updateInstance(id, {
+        startedAt: new Date(now + 2),
+        accessStartedAt: new Date(now + 2),
+      });
       await ctx.store.transitionPublicPreviewShare(share.id, ['revoking'], 'revoked', {
         revokedAt: began,
       });
@@ -851,6 +856,35 @@ describe('managed dev servers', () => {
       expect((await instanceOf()).state).toBe('starting');
       await manager.tick();
       expect((await instanceOf()).state).toBe('starting');
+    });
+
+    it('keeps link cleanup attached to the access lifecycle during automatic recovery', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      const initial = await ctx.store.managedDevServers.getInstance(id);
+      const began = new Date(initial!.accessStartedAt!.getTime() + 1);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoking', {
+        revokedAt: began,
+      });
+      sandbox.recreate();
+      const previous = now;
+      try {
+        now = began.getTime() + 6000;
+        await manager.tick();
+        expect(sandbox.started).toHaveLength(2);
+        const recovered = await ctx.store.managedDevServers.getInstance(id);
+        expect(recovered!.startedAt!.getTime()).toBeGreaterThan(began.getTime());
+        expect(recovered!.accessStartedAt).toEqual(initial!.accessStartedAt);
+        await ctx.store.transitionPublicPreviewShare(share.id, ['revoking'], 'revoked', {
+          revokedAt: began,
+        });
+        await manager.publicLinkEnded(id, share.id);
+        expect((await instanceOf()).state).toBe('stopped');
+      } finally {
+        now = previous;
+      }
     });
 
     it('conditional cleanup preserves access enabled by another client', async () => {

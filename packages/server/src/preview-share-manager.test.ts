@@ -2398,6 +2398,7 @@ describe('managed public links', () => {
       lastRunCommand: 'node server.mjs',
       lastRunWorkdir: '.',
       startedAt: null,
+      accessStartedAt: null,
       lastRanAt: null,
     };
     let running = false;

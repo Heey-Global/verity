@@ -36,6 +36,7 @@ export interface ManagedDevServerInstanceRecord {
   lastRunCommand: string | null;
   lastRunWorkdir: string | null;
   startedAt: Date | null;
+  accessStartedAt: Date | null;
   lastRanAt: Date | null;
   /** The operator's Local switch. */
   localAccess: boolean;
@@ -146,6 +147,7 @@ function instanceRecord(
     lastRunCommand: row.last_run_command,
     lastRunWorkdir: row.last_run_workdir,
     startedAt: row.started_at,
+    accessStartedAt: row.access_started_at,
     lastRanAt: row.last_ran_at,
     localAccess: row.local_access,
   };
@@ -158,6 +160,7 @@ export interface ManagedDevServerInstancePatch {
   lastRunCommand?: string | null;
   lastRunWorkdir?: string | null;
   startedAt?: Date | null;
+  accessStartedAt?: Date | null;
   lastRanAt?: Date | null;
   localAccess?: boolean;
 }
@@ -444,6 +447,9 @@ export class ManagedDevServerStore {
         ...(patch.lastRunWorkdir !== undefined ? { last_run_workdir: patch.lastRunWorkdir } : {}),
         ...(patch.startedAt !== undefined
           ? { started_at: patch.startedAt?.toISOString() ?? null }
+          : {}),
+        ...(patch.accessStartedAt !== undefined
+          ? { access_started_at: patch.accessStartedAt?.toISOString() ?? null }
           : {}),
         ...(patch.localAccess !== undefined ? { local_access: patch.localAccess } : {}),
         ...(patch.lastRanAt !== undefined

@@ -492,8 +492,9 @@ export class ManagedDevServerManager {
               const ended = await this.options.store.getPublicPreviewShare(shareId);
               if (
                 !ended ||
-                (current.startedAt &&
-                  (ended.revokedAt ?? ended.updatedAt).getTime() < current.startedAt.getTime())
+                ((current.accessStartedAt ?? current.startedAt) &&
+                  (ended.revokedAt ?? ended.updatedAt).getTime() <
+                    (current.accessStartedAt ?? current.startedAt)!.getTime())
               )
                 return;
             }
@@ -635,6 +636,10 @@ export class ManagedDevServerManager {
         lastRunCommand: entry.command,
         lastRunWorkdir: entry.workdir,
         startedAt: new Date(this.now()),
+        accessStartedAt:
+          by === 'recovery'
+            ? (instance.accessStartedAt ?? instance.startedAt ?? new Date(this.now()))
+            : new Date(this.now()),
       });
       this.activeProjects.add(project.id);
       void this.options
@@ -725,6 +730,8 @@ export class ManagedDevServerManager {
       lastRunCommand: command,
       lastRunWorkdir: workdir,
       startedAt: now,
+      accessStartedAt:
+        by === 'recovery' ? (instance.accessStartedAt ?? instance.startedAt ?? now) : now,
       lastRanAt: now,
     });
     this.options.log?.('verity: managed dev server starting', {
@@ -963,8 +970,9 @@ export class ManagedDevServerManager {
           (link) =>
             link.managedInstanceId === instance.id &&
             (link.state === 'revoked' || link.state === 'expired' || link.state === 'failed') &&
-            instance.startedAt &&
-            (link.revokedAt ?? link.updatedAt).getTime() > instance.startedAt.getTime(),
+            (instance.accessStartedAt ?? instance.startedAt) &&
+            (link.revokedAt ?? link.updatedAt).getTime() >
+              (instance.accessStartedAt ?? instance.startedAt)!.getTime(),
         );
         if (!live && ended) {
           await this.stopInstance(project, instance, null);
