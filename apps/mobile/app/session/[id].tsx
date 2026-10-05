@@ -228,6 +228,7 @@ import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
   hasConnectedGoogleAccount,
+  getProjectGoogleAccess,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
   type GoogleService,
@@ -2424,6 +2425,11 @@ export function SessionChat({
   const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
     null,
   );
+  const [projectGoogleAccess, setProjectGoogleAccess] = useState<Record<GoogleService, boolean>>({
+    gmail: false,
+    calendar: false,
+    contacts: false,
+  });
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2457,10 +2463,15 @@ export function SessionChat({
           if (active) setContactsConnection(connection);
         })
         .catch(() => undefined);
+      void getProjectGoogleAccess(client, projectId)
+        .then((access) => {
+          if (active) setProjectGoogleAccess(access);
+        })
+        .catch(() => undefined);
       return () => {
         active = false;
       };
-    }, [client, sessionId]),
+    }, [client, projectId, sessionId]),
   );
   // A dead session (worktree gone) can't take turns — disable sending proactively
   // (`resumable === false`); `undefined` (detail still loading) stays enabled.
@@ -3052,7 +3063,7 @@ export function SessionChat({
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       setAttachMenuOpen(false);
-      void connectSessionGoogleService(client, sessionId, projectId, service)
+      void connectSessionGoogleService(client, sessionId, service)
         .then((result) => {
           if (result.kind === 'session') {
             setGmailConnection(result.connections.gmail);
@@ -3067,7 +3078,7 @@ export function SessionChat({
           ),
         );
     },
-    [client, projectId, sessionId],
+    [client, sessionId],
   );
   const onConnectGmail = useCallback(
     () => onConnectGoogleService('gmail'),
@@ -3085,6 +3096,7 @@ export function SessionChat({
     (service: GoogleService) => {
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
+          setProjectGoogleAccess((current) => ({ ...current, [service]: false }));
           if (service === 'gmail')
             setGmailConnection((current) =>
               current === null ? null : { ...current, enabled: false },
@@ -3748,7 +3760,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="mail" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Gmail{projectId ? ' · Project access' : ''}
+              Gmail{projectGoogleAccess.gmail ? ' · Project access' : ''}
               {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3757,7 +3769,9 @@ export function SessionChat({
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={
-              projectId ? 'Disable Gmail for this project' : 'Disconnect Gmail from this session'
+              projectGoogleAccess.gmail
+                ? 'Disable Gmail for this project'
+                : 'Disconnect Gmail from this session'
             }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
@@ -3769,7 +3783,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="calendar" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Calendar{projectId ? ' · Project access' : ''}
+              Google Calendar{projectGoogleAccess.calendar ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3778,7 +3792,7 @@ export function SessionChat({
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={
-              projectId
+              projectGoogleAccess.calendar
                 ? 'Disable Google Calendar for this project'
                 : 'Disconnect Google Calendar from this session'
             }
@@ -3792,7 +3806,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="users" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Contacts{projectId ? ' · Project access' : ''}
+              Google Contacts{projectGoogleAccess.contacts ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3801,7 +3815,7 @@ export function SessionChat({
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={
-              projectId
+              projectGoogleAccess.contacts
                 ? 'Disable Google Contacts for this project'
                 : 'Disconnect Google Contacts from this session'
             }

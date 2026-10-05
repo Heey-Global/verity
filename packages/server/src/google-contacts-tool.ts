@@ -41,7 +41,7 @@ export function createGoogleContactsTool(deps: {
       settings.googleDriveAccountEmail?.toLowerCase() !== connection.accountEmail.toLowerCase()
     )
       throw new Error(
-        'Google Contacts is not enabled for the calling session. Open Project settings → Connections to grant this project access',
+        'Google Contacts is not enabled for the calling session. Enable it for this chat, or grant project-wide access in Project settings → Connections',
       );
     return {
       email: settings.googleDriveAccountEmail,
