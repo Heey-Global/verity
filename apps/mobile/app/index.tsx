@@ -1815,7 +1815,9 @@ function SessionRow({
           </Text>
           {automationActive || previewActive ? (
             <View style={styles.sessionFeatures}>
-              <Text style={styles.rowSub}>·</Text>
+              <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
+                ·
+              </Text>
               {automationActive ? (
                 <View accessible accessibilityLabel="Automation active">
                   <Icon name="repeat" size={14} color={theme.colors.primary} />
@@ -2475,7 +2477,12 @@ const styles = StyleSheet.create((theme) => ({
   sessionTitleBlock: { paddingRight: theme.spacing.lg },
   sessionLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   // Shrinks never: the model name gives way first, so the features stay visible.
-  sessionFeatures: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
+  sessionFeatures: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: theme.spacing.xs,
+  },
   sessionSub: { minWidth: 0, flexShrink: 1 },
   // Held to the title's line height so the label, which is a hair taller, cannot
   // grow the row when it appears or hides on a working <-> idle switch; this list
