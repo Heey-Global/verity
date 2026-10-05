@@ -1028,7 +1028,9 @@ export function StaticPreviewSheet({
                   disabled={stopping}
                   hitSlop={14}
                   accessibilityRole="button"
-                  accessibilityLabel="Copy preview link"
+                  accessibilityLabel={
+                    copied === 'public-link' ? 'Link copied' : 'Copy preview link'
+                  }
                 >
                   <Icon
                     name={copied === 'public-link' ? 'check' : 'copy'}
@@ -1038,7 +1040,7 @@ export function StaticPreviewSheet({
                 </Pressable>
               </View>
               {share.pinLocked ? (
-                <Text style={styles.error}>
+                <Text style={[styles.error, styles.credentialDivider, styles.lockedNote]}>
                   PIN access locked after too many failed attempts. Already signed-in visitors can
                   still use this link. Stop sharing, then create a new link to let new visitors in.
                 </Text>
@@ -1058,7 +1060,7 @@ export function StaticPreviewSheet({
                     disabled={stopping}
                     hitSlop={14}
                     accessibilityRole="button"
-                    accessibilityLabel="Copy PIN"
+                    accessibilityLabel={copied === 'pin' ? 'PIN copied' : 'Copy PIN'}
                   >
                     <Icon
                       name={copied === 'pin' ? 'check' : 'copy'}
@@ -1532,7 +1534,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
   dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
-  link: { flex: 1, minWidth: 0, color: theme.colors.text, fontSize: theme.text.sm },
   linkMuted: { color: theme.colors.textMuted, fontSize: theme.text.sm },
   linkBox: {
     paddingHorizontal: theme.spacing.md,
@@ -1557,6 +1558,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   credentialDivider: { borderTopWidth: 1, borderTopColor: theme.colors.border },
   credentialValue: { flex: 1, minWidth: 0 },
+  lockedNote: { paddingVertical: theme.spacing.md },
   linkValue: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
   pinValue: {
     color: theme.colors.text,
