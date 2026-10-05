@@ -76,3 +76,48 @@ function record(value: unknown): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined;
 }
+
+/** The revision belongs to this successful presentation, never to a later poll. */
+export function planProposalRevision(tool: ToolCall): number | undefined {
+  if (planningToolName(tool.name) !== PRESENT_PLAN_TOOL || tool.state !== 'completed')
+    return undefined;
+  const extract = (value: unknown): number | undefined => {
+    const object = record(value);
+    const revision = object?.planningRevision;
+    if (typeof revision === 'number' && Number.isSafeInteger(revision) && revision > 0)
+      return revision;
+    if (object?.structuredContent !== undefined) return extract(object.structuredContent);
+    const content = object?.content ?? (Array.isArray(value) ? value : undefined);
+    if (Array.isArray(content)) {
+      for (const item of content) {
+        const text = record(item)?.text;
+        if (typeof text !== 'string') continue;
+        try {
+          const found = extract(JSON.parse(text));
+          if (found !== undefined) return found;
+        } catch {
+          /* Non-JSON tool text carries no revision. */
+        }
+      }
+    }
+    return undefined;
+  };
+  return extract(tool.result);
+}
+
+/** Keep the text and approval revision from the same snapshot. */
+export function planProposalDisplay(
+  presented: { markdown: string; revision?: number },
+  latest: boolean,
+  current: { planningPlan?: string | null; planningRevision?: number } | null,
+): { markdown: string; revision: number | undefined } {
+  if (
+    latest &&
+    current?.planningPlan != null &&
+    current.planningRevision !== undefined &&
+    (presented.revision === undefined || current.planningRevision >= presented.revision)
+  ) {
+    return { markdown: current.planningPlan, revision: current.planningRevision };
+  }
+  return { markdown: presented.markdown, revision: presented.revision };
+}

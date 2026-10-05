@@ -89,6 +89,8 @@ export {
 export {
   planHeadline,
   planProposal,
+  planProposalRevision,
+  planProposalDisplay,
   planView,
   type PlanEntry,
   type PlanEntryStatus,

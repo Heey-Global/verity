@@ -152,6 +152,8 @@ export interface SessionModelState {
   /** Planning mode (`active`) or how the last planning round ended; `undefined`
    * when the session never planned. Drives the planning bar and plan buttons. */
   planning: SessionPlanning | undefined;
+  planningRevision: number | undefined;
+  planningPlan: string | null | undefined;
   /** True while an "implement" / "discard" decision is in flight. */
   decidingPlanning: boolean;
   /** Why the last planning decision failed, if it did. */
@@ -291,6 +293,8 @@ export class SessionModel {
   // Planning mode from the session detail and the activity poll. undefined = the
   // session never planned (or an older server).
   private _planning: SessionPlanning | undefined;
+  private _planningRevision: number | undefined;
+  private _planningPlan: string | null | undefined;
   private _decidingPlanning = false;
   private _planningError: string | undefined;
   private _activityTimer: ReturnType<typeof setInterval> | undefined;
@@ -436,6 +440,8 @@ export class SessionModel {
       waitingMessages: this.subtractDeliveredWaiting(),
       branch: this._branch,
       planning: this._planning,
+      planningRevision: this._planningRevision,
+      planningPlan: this._planningPlan,
       decidingPlanning: this._decidingPlanning,
       planningError: this._planningError,
       hasOlder: this._hasOlder,
@@ -886,6 +892,8 @@ export class SessionModel {
         terminationUnconfirmed === this._terminationUnconfirmed &&
         activity.branch === this._branch &&
         (activity.planning === undefined || activity.planning === this._planning) &&
+        (activity.planningRevision === undefined ||
+          activity.planningRevision === this._planningRevision) &&
         sameItems(activity.queued, this._waiting) &&
         !nameChanged &&
         !modelSwitchPendingChanged &&
@@ -902,6 +910,14 @@ export class SessionModel {
       // Absent means "not reported" (an older server, or a poll whose session read
       // failed), not "never planned": keep the last known value then.
       if (activity.planning !== undefined) this._planning = activity.planning;
+      if (
+        activity.planningRevision !== undefined &&
+        (this._planningRevision === undefined ||
+          activity.planningRevision >= this._planningRevision)
+      ) {
+        this._planningRevision = activity.planningRevision;
+        this._planningPlan = activity.planningPlan;
+      }
       if (nameChanged) this._name = activity.name;
       // A freshly reported queue entry may cover a local echo — reconcile before
       // emitting.
@@ -969,7 +985,11 @@ export class SessionModel {
         this._resumable = detail.resumable;
       }
       // Seed only: the activity poll and the operator's own decision are fresher.
-      if (!this._activityLoaded) this._planning = detail.planning;
+      if (!this._activityLoaded) {
+        this._planning = detail.planning;
+        this._planningRevision = detail.planningRevision;
+        this._planningPlan = detail.planningPlan;
+      }
       this.emit();
     } catch {
       // leave undefined; the send path's 410 handling is the backstop
@@ -1179,19 +1199,25 @@ export class SessionModel {
    */
   /** End planning mode from the app: implement the latest plan, or discard it. A
    * 409 means another decision already ended planning; the next poll shows how. */
-  async decidePlanning(action: 'implement' | 'discard'): Promise<void> {
+  async decidePlanning(action: 'implement' | 'discard', planningRevision?: number): Promise<void> {
     if (this._decidingPlanning) return;
     this._decidingPlanning = true;
     this._planningError = undefined;
     this.emit();
     try {
-      const result = await this.opts.client.decidePlanning(this.opts.sessionId, action);
+      const result = await this.opts.client.decidePlanning(
+        this.opts.sessionId,
+        action,
+        planningRevision,
+      );
       this._planning = result.planning;
     } catch (error) {
       this._planningError =
-        error instanceof VerityApiError && error.status === 409
-          ? 'Planning already ended.'
-          : 'Could not end planning. Try again.';
+        error instanceof VerityApiError && error.status === 409 && error.code === 'stalePlan'
+          ? 'The plan was updated. Please review it again.'
+          : error instanceof VerityApiError && error.status === 409
+            ? 'Planning already ended.'
+            : 'Could not end planning. Try again.';
     } finally {
       this._decidingPlanning = false;
       this.emit();

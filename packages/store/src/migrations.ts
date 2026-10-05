@@ -3661,6 +3661,18 @@ const migrations: Record<string, Migration> = {
       await sql`alter table sessions drop column planning`.execute(db);
     },
   },
+  '0134_session_planning_revision': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column planning_revision integer not null default 0 check (planning_revision >= 0), add column planning_plan text`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column planning_plan, drop column planning_revision`.execute(
+        db,
+      );
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

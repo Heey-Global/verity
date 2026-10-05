@@ -5549,6 +5549,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       runtimeReadiness: deps.secretJobRuntimeReadiness,
       uplinkDiagnostics: deps.uplinkDiagnostics,
     });
+    // Bind the eventual card answer to the plan that existed before the card opened.
+    const planningApprovalRevisions = new WeakMap<object, number>();
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -5571,6 +5573,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // decided, instead of raising a card whose answer could change nothing.
           if (toolName !== START_PLANNING_TOOL && session.planning !== 'active')
             throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
+          if (toolName === END_PLANNING_TOOL) {
+            if (session.planningPlan == null || session.planningRevision === undefined)
+              throw new ControlPlaneSessionAuthorityError(
+                'Present a plan before requesting implementation.',
+              );
+            planningApprovalRevisions.set(input.request as object, session.planningRevision);
+          }
           return;
         }
         // Gateway capabilities run outside the backend's read-only sandbox.
@@ -5867,24 +5876,36 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (input.toolName === START_PLANNING_TOOL) {
           if (await sessionPlanning.isPlanning(input.sessionId))
             throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
-          await sessionPlanning.start(input.sessionId);
+          if (!(await sessionPlanning.start(input.sessionId)))
+            throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
           return {
             planning: 'active',
             note: 'Planning mode is on. Do not change any files in this turn either; Verity enforces it from the next message.',
           };
         }
         if (input.toolName === PRESENT_PLAN_TOOL) {
-          if (!(await sessionPlanning.isPlanning(input.sessionId)))
+          const planningRevision = await sessionPlanning.present(
+            input.sessionId,
+            (input.request as { plan: string }).plan,
+          );
+          if (planningRevision === undefined)
             throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
           return {
             presented: true,
+            planningRevision,
             note: 'The user sees this plan with an "Implement plan" button. Wait for their decision and do not implement it.',
           };
         }
         if (input.toolName === END_PLANNING_TOOL) {
           // Reached only through an approved card.
-          if (!(await sessionPlanning.implement(input.sessionId)))
-            throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
+          const planningRevision = planningApprovalRevisions.get(input.request as object);
+          if (
+            planningRevision === undefined ||
+            !(await sessionPlanning.implement(input.sessionId, planningRevision))
+          )
+            throw new ControlPlaneSessionAuthorityError(
+              'The plan was updated. Please review the current plan and request approval again.',
+            );
           return {
             planning: 'implemented',
             note: 'The user approved. End your turn now; Verity starts the implementation as a new turn.',
@@ -8374,6 +8395,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             // Polled with the rest so the planning bar follows an agent that starts
             // planning mid-turn, not only the operator's own taps.
             ...(session.planning !== undefined ? { planning: session.planning } : {}),
+            planningRevision: session.planningRevision,
+            planningPlan: session.planningPlan,
           };
         } catch {
           return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive

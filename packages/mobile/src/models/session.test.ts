@@ -2610,10 +2610,43 @@ describe('SessionModel — planning', () => {
       // An agent can start planning mid-turn; only the poll tells the app.
       expect(model.state.planning).toBe('active');
 
-      await model.decidePlanning('implement');
-      expect(decidePlanning).toHaveBeenCalledWith('s1', 'implement');
+      await model.decidePlanning('implement', 7);
+      expect(decidePlanning).toHaveBeenCalledWith('s1', 'implement', 7);
       expect(model.state.planning).toBe('implemented');
       expect(model.state.planningError).toBeUndefined();
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('refreshes the changed plan after a stale approval and preserves the review notice', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    let revision = 2;
+    client.getActivity = vi.fn(async () => ({
+      busy: false,
+      queued: [],
+      planning: 'active',
+      planningRevision: revision,
+      planningPlan: `Plan ${String(revision)}`,
+    })) as never;
+    const decidePlanning = vi.fn(async () => {
+      revision = 3;
+      throw new VerityApiError(409, 'plan changed', { code: 'stalePlan' });
+    });
+    client.decidePlanning = decidePlanning;
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    try {
+      model.start();
+      await flush();
+      await flush();
+      expect(model.state.planningPlan).toBe('Plan 2');
+      await model.decidePlanning('implement', 2);
+      await flush();
+      expect(decidePlanning).toHaveBeenCalledWith('s1', 'implement', 2);
+      expect(model.state.planningRevision).toBe(3);
+      expect(model.state.planningPlan).toBe('Plan 3');
+      expect(model.state.planningError).toBe('The plan was updated. Please review it again.');
     } finally {
       model.stop();
     }

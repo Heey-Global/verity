@@ -39,6 +39,8 @@ import {
   groupModelsByEngine,
   formatChoiceAnswer,
   planProposal,
+  planProposalRevision,
+  planProposalDisplay,
   planningToolName,
   END_PLANNING_TOOL,
   START_PLANNING_TOOL,
@@ -541,9 +543,11 @@ interface SessionActions {
   latestAutomationProposalId: string | null;
   /** Planning mode, for the plan cards' button and status line. */
   planning: SessionPlanning | undefined;
+  planningRevision: number | undefined;
+  planningPlan: string | null | undefined;
   decidingPlanning: boolean;
   /** The plan card's "Implement plan": the tap itself is the operator's approval. */
-  implementPlan: () => void;
+  implementPlan: (revision?: number) => void;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
@@ -629,6 +633,8 @@ export function SessionChat({
     pendingMessages,
     branch: liveBranch,
     planning,
+    planningRevision,
+    planningPlan,
     decidingPlanning,
     planningError,
     decidePlanning,
@@ -3266,14 +3272,17 @@ export function SessionChat({
     }
     return false;
   }, [session.messages]);
-  const implementPlan = useCallback(() => {
-    decidePlanning('implement');
-    scrollToLatest(true);
-  }, [decidePlanning, scrollToLatest]);
+  const implementPlan = useCallback(
+    (revision?: number) => {
+      decidePlanning('implement', revision);
+      scrollToLatest(true);
+    },
+    [decidePlanning, scrollToLatest],
+  );
   // "End" always asks: ending planning gives the agent its file access back, and
   // with a plan on the table the operator also has to say what becomes of it.
   const endPlanning = useCallback(() => {
-    if (!hasPresentedPlan) {
+    if (!hasPresentedPlan || planningPlan === null) {
       Alert.alert(
         'End planning mode?',
         'The agent can change files again from your next message.',
@@ -3288,12 +3297,12 @@ export function SessionChat({
       'End planning mode?',
       'What should happen to the latest plan? It stays in the chat either way.',
       [
-        { text: 'Implement plan', onPress: implementPlan },
+        { text: 'Implement plan', onPress: () => implementPlan(planningRevision) },
         { text: 'Discard plan', style: 'destructive', onPress: () => decidePlanning('discard') },
         { text: 'Keep planning', style: 'cancel' },
       ],
     );
-  }, [decidePlanning, hasPresentedPlan, implementPlan]);
+  }, [decidePlanning, hasPresentedPlan, implementPlan, planningRevision, planningPlan]);
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -3306,6 +3315,8 @@ export function SessionChat({
       automationReady,
       latestAutomationProposalId,
       planning,
+      planningRevision,
+      planningPlan,
       decidingPlanning,
       implementPlan,
     }),
@@ -3320,6 +3331,8 @@ export function SessionChat({
       automationReady,
       latestAutomationProposalId,
       planning,
+      planningRevision,
+      planningPlan,
       decidingPlanning,
       implementPlan,
     ],
@@ -6064,6 +6077,7 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
         key={`${item.message.id}:${String(item.latest)}`}
         markdown={item.markdown}
         latest={item.latest}
+        revision={planProposalRevision(item.message.tool)}
       />
     );
   switch (item.message.kind) {
@@ -7356,13 +7370,31 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
 
 /** A plan the agent presented for the operator's decision. Only the newest one can
  * be implemented; older versions collapse to one line, expandable. */
-function PlanProposalCard({ markdown, latest }: { markdown: string; latest: boolean }) {
+function PlanProposalCard({
+  markdown: presentedMarkdown,
+  latest,
+  revision: presentedRevision,
+}: {
+  markdown: string;
+  latest: boolean;
+  revision?: number;
+}) {
   const { theme } = useUnistyles();
   const actions = useContext(SessionActionsContext);
   const [expanded, setExpanded] = useState(latest);
   const planning = actions?.planning;
-  const decidable = latest && planning === 'active';
-  const enabled = decidable && actions !== null && !actions.dead && !actions.decidingPlanning;
+  const { markdown, revision } = planProposalDisplay(
+    { markdown: presentedMarkdown, revision: presentedRevision },
+    latest,
+    actions,
+  );
+  const decidable = latest && planning === 'active' && actions?.planningPlan !== null;
+  const enabled =
+    decidable &&
+    revision !== undefined &&
+    actions !== null &&
+    !actions.dead &&
+    !actions.decidingPlanning;
   const status = !latest
     ? 'Earlier version'
     : planning === 'implemented'
@@ -7413,7 +7445,7 @@ function PlanProposalCard({ markdown, latest }: { markdown: string; latest: bool
       {decidable ? (
         <View style={styles.choicesChips}>
           <Pressable
-            onPress={() => enabled && actions?.implementPlan()}
+            onPress={() => enabled && actions?.implementPlan(revision)}
             disabled={!enabled}
             accessibilityRole="button"
             accessibilityState={{ disabled: !enabled }}

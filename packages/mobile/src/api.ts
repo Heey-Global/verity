@@ -196,6 +196,8 @@ export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>
 
 export const sessionDetailSchema = sessionSummarySchema.extend({
   planning: sessionPlanningSchema,
+  planningRevision: z.number().int().nonnegative().optional(),
+  planningPlan: z.string().nullable().optional(),
   eventCount: z.number().int().nonnegative(),
   /** True while a turn is in flight (the agent is working). OPTIONAL on the wire
    * for forward-compat with an older server; absent → not busy. */
@@ -240,6 +242,8 @@ export const sessionActivitySchema = z.object({
    * planning mid-turn. Absent on an older server and for a session that never
    * planned. */
   planning: sessionPlanningSchema,
+  planningRevision: z.number().int().nonnegative().optional(),
+  planningPlan: z.string().nullable().optional(),
 });
 export type SessionActivity = z.infer<typeof sessionActivitySchema>;
 
@@ -3803,11 +3807,12 @@ export class VerityClient {
   async decidePlanning(
     id: string,
     action: 'implement' | 'discard',
+    planningRevision?: number,
   ): Promise<{ planning: SessionPlanning }> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/planning`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, planningRevision }),
     });
     return z
       .object({ planning: z.enum(['active', 'implemented', 'discarded']) })

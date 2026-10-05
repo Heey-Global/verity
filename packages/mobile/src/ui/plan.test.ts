@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolCall } from '../happy/message.js';
-import { planHeadline, planProposal, planView } from './plan.js';
+import {
+  planHeadline,
+  planProposal,
+  planProposalRevision,
+  planProposalDisplay,
+  planView,
+} from './plan.js';
 
 function call(name: string, input: unknown, state: ToolCall['state'] = 'completed'): ToolCall {
   return {
@@ -91,5 +97,33 @@ describe('planProposal', () => {
     expect(planProposal(call('Bash', { plan: 'Plan' }))).toBeNull();
     expect(planProposal(call('verity_present_plan', { plan: '  ' }))).toBeNull();
     expect(planProposal(call('verity_present_plan', { plan: 3 }))).toBeNull();
+  });
+});
+
+describe('planProposalRevision', () => {
+  it('reads the displayed presentation revision from MCP text', () => {
+    const tool = call('verity_present_plan', { plan: 'First' });
+    tool.result = {
+      content: [{ type: 'text', text: JSON.stringify({ presented: true, planningRevision: 3 }) }],
+    };
+    expect(planProposalRevision(tool)).toBe(3);
+    expect(planProposalRevision({ ...tool, state: 'error' })).toBeUndefined();
+    expect(planProposalRevision({ ...tool, result: { planningRevision: -1 } })).toBeUndefined();
+  });
+});
+
+describe('planProposalDisplay', () => {
+  it('updates both displayed text and approval revision together', () => {
+    const shown = { markdown: 'Old plan', revision: 2 };
+    const current = { planningPlan: 'New plan', planningRevision: 3 };
+    expect(planProposalDisplay(shown, true, current)).toEqual({
+      markdown: 'New plan',
+      revision: 3,
+    });
+    expect(planProposalDisplay(shown, false, current)).toEqual(shown);
+    expect(planProposalDisplay(shown, true, { planningRevision: 3 })).toEqual(shown);
+    expect(
+      planProposalDisplay(shown, true, { planningPlan: 'Older poll', planningRevision: 1 }),
+    ).toEqual(shown);
   });
 });

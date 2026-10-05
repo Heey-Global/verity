@@ -57,6 +57,8 @@ export interface SessionsTable {
     'active' | 'implemented' | 'discarded' | null | undefined,
     'active' | 'implemented' | 'discarded' | null
   >;
+  planning_revision: ColumnType<number, number | undefined, number>;
+  planning_plan: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 

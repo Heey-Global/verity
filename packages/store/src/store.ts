@@ -57,6 +57,8 @@ export interface SessionRecord {
   /** Planning mode. Optional so records built outside the store need not state it;
    *  absent and `null` both mean the session never planned. */
   planning?: SessionPlanning | null;
+  planningRevision?: number;
+  planningPlan?: string | null;
 }
 
 /** `active`: turns run without permission to change files until the operator
@@ -1754,6 +1756,8 @@ export class EventStore implements EventSink {
         'project_id',
         'last_seen_event_count',
         'planning',
+        'planning_revision',
+        'planning_plan',
       ])
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
@@ -1766,6 +1770,8 @@ export class EventStore implements EventSink {
       projectId: row.project_id,
       lastSeenEventCount: row.last_seen_event_count,
       ...(row.planning !== null ? { planning: row.planning } : {}),
+      planningRevision: row.planning_revision,
+      planningPlan: row.planning_plan,
     };
   }
 
@@ -2307,6 +2313,8 @@ export class EventStore implements EventSink {
         'project_id',
         'last_seen_event_count',
         'planning',
+        'planning_revision',
+        'planning_plan',
       ])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
@@ -2321,6 +2329,8 @@ export class EventStore implements EventSink {
       projectId: r.project_id,
       lastSeenEventCount: r.last_seen_event_count,
       ...(r.planning !== null ? { planning: r.planning } : {}),
+      planningRevision: r.planning_revision,
+      planningPlan: r.planning_plan,
     }));
   }
 
@@ -2647,6 +2657,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     planning: SessionPlanning,
     from?: readonly (SessionPlanning | null)[],
+    expectedRevision?: number,
   ): Promise<boolean> {
     let query = this.db
       .updateTable('sessions')
@@ -2661,8 +2672,40 @@ export class EventStore implements EventSink {
         ]),
       );
     }
+    // A device can approve an old card while another device is publishing its revision.
+    // Checking in this UPDATE prevents the read-before-write race from accepting it.
+    if (expectedRevision !== undefined) {
+      query = query
+        .where('planning_revision', '=', expectedRevision)
+        .where('planning_plan', 'is not', null);
+    }
     const result = await query.executeTakeFirst();
     return result.numUpdatedRows > 0n;
+  }
+
+  async startSessionPlanning(sessionId: string): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({
+        planning: 'active',
+        planning_plan: null,
+        planning_revision: sql`planning_revision + 1`,
+      })
+      .where('session_id', '=', sessionId)
+      .where((eb) => eb.or([eb('planning', 'is', null), eb('planning', '!=', 'active')]))
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async presentSessionPlan(sessionId: string, plan: string): Promise<number | undefined> {
+    const row = await this.db
+      .updateTable('sessions')
+      .set({ planning_plan: plan, planning_revision: sql`planning_revision + 1` })
+      .where('session_id', '=', sessionId)
+      .where('planning', '=', 'active')
+      .returning('planning_revision')
+      .executeTakeFirst();
+    return row?.planning_revision;
   }
 
   async getSessionBackendState(

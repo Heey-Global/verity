@@ -12936,6 +12936,7 @@ describe('DELETE /projects/:id', () => {
       projectId: 'p-plan-race',
     });
     await ctx.store.setSessionPlanning('s-plan-race', 'active');
+    await ctx.store.presentSessionPlan('s-plan-race', 'Delete fence plan');
     const base = fakeDeprovisioner();
     let turnDuringTeardown: { statusCode: number; body: unknown } | undefined;
     const a = buildServer({
@@ -12947,7 +12948,7 @@ describe('DELETE /projects/:id', () => {
           const res = await a.inject({
             method: 'POST',
             url: '/sessions/s-plan-race/planning',
-            payload: { action: 'implement' },
+            payload: { action: 'implement', planningRevision: 1 },
           });
           turnDuringTeardown = { statusCode: res.statusCode, body: res.json() };
           return base.deprovision(projectId);
