@@ -86,6 +86,13 @@ export {
   frozenTranscriptRows,
   type FrozenTranscriptTail,
 } from './ui/transcriptFreeze.js';
+export {
+  planHeadline,
+  planView,
+  type PlanEntry,
+  type PlanEntryStatus,
+  type PlanView,
+} from './ui/plan.js';
 export { parseMarkdownBlocks, splitTableCells, type MdBlock } from './ui/markdownTable.js';
 export { chunkFilePreview } from './ui/filePreview.js';
 export { printableFileHtml, markdownToHtml, isMarkdownPath } from './ui/printDocument.js';
