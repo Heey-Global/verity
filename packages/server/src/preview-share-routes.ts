@@ -25,6 +25,7 @@ const staticCreateBody = createBody.extend({
 });
 const portCreateBody = createBody.extend({
   targetPort: z.number().int().min(1).max(65_535),
+  managedInstanceId: z.string().min(1).optional(),
 });
 
 export function registerPreviewShareRoutes(

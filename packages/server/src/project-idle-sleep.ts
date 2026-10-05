@@ -14,7 +14,10 @@ export async function projectHasPersistentSandboxActivity(input: {
 }): Promise<boolean> {
   if (input.hasLocalShares?.()) return true;
   const shares = await input.listShares();
-  return shares.some((share) => ['creating', 'active', 'revoking'].includes(share.state));
+  // Managed instances keep the sandbox awake themselves; their offline links do not.
+  return shares.some(
+    (share) => !share.managedInstanceId && ['creating', 'active', 'revoking'].includes(share.state),
+  );
 }
 
 export function startProjectIdleSleepScheduler(input: {

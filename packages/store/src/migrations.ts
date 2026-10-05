@@ -3831,6 +3831,18 @@ const migrations: Record<string, Migration> = {
       await sql`drop table managed_dev_servers`.execute(db);
     },
   },
+  '0137_managed_public_links': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Keep the pair identity even after deletion so reconciliation can revoke its link.
+      await sql`alter table public_preview_shares add column managed_instance_id text`.execute(db);
+      await sql`create unique index public_preview_managed_instance_idx on public_preview_shares (managed_instance_id) where managed_instance_id is not null and state in ('creating', 'active', 'revoking')`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table public_preview_shares drop column managed_instance_id`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

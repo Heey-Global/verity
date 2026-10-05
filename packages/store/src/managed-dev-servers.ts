@@ -497,6 +497,14 @@ export class ManagedDevServerStore {
             await assign(free);
             return { port: free };
           }
+          const liveLinks = await tx
+            .selectFrom('public_preview_shares')
+            .select('managed_instance_id')
+            .where('managed_instance_id', 'is not', null)
+            .where('state', 'in', ['creating', 'active', 'revoking'])
+            .where('expires_at', '>', new Date())
+            .execute();
+          const protectedLinks = new Set(liveLinks.map((link) => link.managed_instance_id));
           const victim = holders
             .filter(
               (row) =>
@@ -506,7 +514,8 @@ export class ManagedDevServerStore {
                 row.state !== 'running' &&
                 row.state !== 'starting' &&
                 row.desired !== 'running' &&
-                !options.protect.has(row.id),
+                !options.protect.has(row.id) &&
+                !protectedLinks.has(row.id),
             )
             .sort(
               (a, b) =>
@@ -540,6 +549,18 @@ export class ManagedDevServerStore {
       .updateTable('managed_dev_server_instances')
       .set({ network_port: null, updated_at: sql`now()` as unknown as string })
       .where('id', '=', id)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom('public_preview_shares')
+              .select('id')
+              .where('managed_instance_id', '=', id)
+              .where('state', 'in', ['creating', 'active', 'revoking'])
+              .where('expires_at', '>', new Date()),
+          ),
+        ),
+      )
       .execute();
   }
 

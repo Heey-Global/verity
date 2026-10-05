@@ -1054,6 +1054,7 @@ export interface PublicPreviewPinLocksTable {
  * material is encrypted by EventStore before it reaches the three *_secret
  * columns. */
 export interface PublicPreviewSharesTable {
+  managed_instance_id: ColumnType<string | null, string | null | undefined, string | null>;
   pin_locked: ColumnType<boolean, boolean | undefined, boolean>;
   id: string;
   project_id: string;

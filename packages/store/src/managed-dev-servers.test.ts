@@ -179,3 +179,46 @@ describe('managed dev server instances', () => {
     expect(await servers().listInstances({ projectId: 'p1' })).toHaveLength(0);
   });
 });
+
+it('protects a stopped pair with a live public link from eviction and publication failure', async () => {
+  const entry = await add('Protected');
+  const first = await servers().ensureInstance({
+    serverId: entry.id,
+    sessionId: 's1',
+    sandboxPorts: [4100, 4101],
+  });
+  const second = await servers().ensureInstance({
+    serverId: entry.id,
+    sessionId: 's2',
+    sandboxPorts: [4100, 4101],
+  });
+  const options = { protect: new Set<string>(), externallyUsed: new Set<number>() };
+  await servers().reserveNetworkPort(first.id, [8100], options);
+  const share = await ctx.store.createPublicPreviewShare({
+    id: 'public-link',
+    projectId: 'p1',
+    devServerId: null,
+    managedInstanceId: first.id,
+    sessionId: 's1',
+    containerGeneration: 'g1',
+    targetPort: first.sandboxPort,
+    publicOrigin: 'https://preview.example',
+    edgeUrl: 'wss://preview.example/connector',
+    pin: '123456',
+    pinHash: 'hash',
+    connectorToken: 'token',
+    sessionSecret: 'secret',
+    connectorContainerName: 'connector',
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+  expect((await ctx.store.getPublicPreviewShare(share.id))?.managedInstanceId).toBe(first.id);
+  await servers().releaseNetworkPort(first.id);
+  expect((await servers().getInstance(first.id))?.networkPort).toBe(8100);
+  await expect(servers().reserveNetworkPort(second.id, [8100], options)).rejects.toBeInstanceOf(
+    ManagedDevServerPortsFullError,
+  );
+  await ctx.store.transitionPublicPreviewShare(share.id, ['creating'], 'revoked');
+  expect((await servers().reserveNetworkPort(second.id, [8100], options)).evictedInstanceId).toBe(
+    first.id,
+  );
+});
