@@ -119,10 +119,7 @@ the inline card, not in agent replies. Verity picks a free sandbox port for each
 session and entry and passes it as `PORT` or substitutes `{port}` in the command. All sessions
 of a project share one sandbox, so this keeps two sessions running the same entry apart. The
 only port anyone sees is the network port from the local range, shown as an address such as
-`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so
-a bookmark keeps working across restarts. A new session may get different ports. When the
-local range is full, the pair whose server ran least recently loses its network reservation;
-its sandbox port is kept.
+`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so a bookmark keeps working across restarts, with two exceptions listed under edge cases: eviction of a stopped pair's network port when the range is full, and a silent sandbox-port change on collision. A new session may get different ports. When the local range is full, the stopped pair whose server ran least recently loses its network reservation; its sandbox port is kept. Running pairs are never evicted. If every reservation belongs to a running server, the start fails with "All network ports are in use" and names the setting that enlarges the range.
 
 **Supervision.** Verity starts the entry as its own process and tracks one of four states:
 starting, running, stopped, crashed. "Running" requires the port to answer, not merely the
@@ -149,9 +146,13 @@ detected and listed as not managed, with an offer to save them as an entry. The 
   command is therefore always shown: on the chat card for `add` and `update`, and in the
   detail view, so the operator never starts something they cannot read.
 - _Starting publishes locally._ Starting an entry also creates its "On your network" share,
-  because local shares are open on the operator's network by decision (2.2) and the network
-  address is the only address anyone sees. The public share stays an explicit operator step
-  with its PIN and entitlement check.
+  because the network address is the only address anyone sees. This widens what the agent can
+  do alone: before, a listener became reachable on the network only after the operator tapped
+  Open. It is accepted because local shares are open on the operator's trusted network by
+  decision (2.2), the command is visible to the operator, and the operator can switch the entry
+  off or delete it at any time. Status: open for operator confirmation; the stricter variant
+  publishes an entry's first start only after the operator has switched it on once in the app.
+  The public share stays an explicit operator step with its PIN and entitlement check.
 - _Startup deadline._ An entry that does not answer on its port within 60 seconds moves to
   crashed with "Did not answer on its port", typically a command that ignores `PORT`. It no
   longer keeps the sandbox awake.
@@ -168,9 +169,7 @@ stays with the agent, because typing a command on a phone is impractical.
 **Preview sheet.** The Dev server tab lists "Your servers" first, one row per entry with a
 switch, the state, and the network address while it runs. A crashed row is marked and links
 to its logs. The arrow opens the detail view: state, address, and logs at the top, then the
-two access cards ("On your network", "Over the internet"), then "Delete entry". Servers
-started past Verity follow under "Not managed" with "Save as entry"; the section disappears
-when empty. With no entries the tab says "No servers yet. Ask the agent to set up your app as
+two access cards ("On your network", "Over the internet"), then "Delete entry". Servers started past Verity follow under "Not managed" with "Save as entry", which asks the agent to create the entry rather than copying the detected command line: that line usually hard-codes its port and may carry secrets. The section disappears when empty. With no entries the tab says "No servers yet. Ask the agent to set up your app as
 a server." The inline chat card and the green dot on the Preview icon keep showing running
 entries.
 
