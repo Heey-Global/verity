@@ -7,8 +7,6 @@ import { registerIntegrationRoutes } from './routes.js';
 it.each([
   ['edit', 'missing'],
   ['edit', 'non_message'],
-  ['redaction', 'missing'],
-  ['redaction', 'non_message'],
 ] as const)(
   'identifies a rejected %s with a %s target without logging content',
   async (kind, targetState) => {

@@ -28,7 +28,7 @@ export interface IntegrationImportDiagnostic {
 }
 
 export type IntegrationProvider = 'matrix';
-export type IntegrationSourceStatus = 'pending' | 'active' | 'paused';
+export type IntegrationSourceStatus = 'pending' | 'active' | 'paused' | 'left';
 export type IntegrationEventKind = 'message' | 'edit' | 'redaction';
 
 export interface IntegrationAccount {
@@ -252,8 +252,29 @@ export class IntegrationStore {
       .execute();
   }
 
-  async listSources(projectId?: string): Promise<IntegrationSource[]> {
+  async rediscoverSource(accountId: string, sourceId: string): Promise<void> {
+    await this.db
+      .updateTable('integration_sources')
+      .set({ status: 'paused' })
+      .where('account_id', '=', accountId)
+      .where('source_id', '=', sourceId)
+      .where('status', '=', 'left')
+      .execute();
+  }
+
+  async markSourceLeft(accountId: string, sourceId: string): Promise<void> {
+    // Keep the binding and event rows: deleting the source would cascade into imported history.
+    await this.db
+      .updateTable('integration_sources')
+      .set({ status: 'left' })
+      .where('account_id', '=', accountId)
+      .where('source_id', '=', sourceId)
+      .execute();
+  }
+
+  async listSources(projectId?: string, includeLeft = false): Promise<IntegrationSource[]> {
     let query = this.db.selectFrom('integration_sources').selectAll();
+    if (!includeLeft) query = query.where('status', '!=', 'left');
     if (projectId) query = query.where('project_id', '=', projectId);
     const rows = await query.orderBy('display_name').execute();
     return rows.map((row) => ({
@@ -262,7 +283,9 @@ export class IntegrationStore {
       displayName: row.display_name,
       inviter: row.inviter,
       projectId: row.project_id,
-      status: (row.project_id ? row.status : 'pending') as IntegrationSourceStatus,
+      status: (row.status === 'left' || row.project_id
+        ? row.status
+        : 'pending') as IntegrationSourceStatus,
       activatedAt: row.activated_at,
       lastIngestedAt: row.last_ingested_at,
       lastError: row.last_error,

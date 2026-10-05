@@ -417,3 +417,227 @@ it('keeps safe failed import evidence on its room and clears it only with a new 
   ).toBe(false);
   await app.close();
 });
+
+it('persists early redactions across retries and applies them to late text and attachments', async () => {
+  const accountId = `@deferred-${randomUUID()}:example.test`;
+  const sourceId = '!deferred:example.test';
+  const projectId = randomUUID();
+  const store = ctx.store.integrations;
+  await store.upsertAccount({
+    id: accountId,
+    provider: 'matrix',
+    endpoint: 'https://example.test',
+    displayName: 'Matrix',
+    status: 'online',
+  });
+  await ctx.store.upsertProject({
+    id: projectId,
+    owner: 'example',
+    repo: 'deferred',
+    containerName: `deferred-${projectId}`,
+    state: 'absent',
+  });
+  await store.discoverSource({ accountId, sourceId, displayName: 'Deferred room' });
+  await store.setSourceBinding(accountId, sourceId, projectId);
+  const token = 'a-secret-long-enough-for-the-worker-route';
+  const createApp = () => {
+    const app = Fastify();
+    registerIntegrationRoutes(app, { store, dataRoot: root, connectorToken: token });
+    return app;
+  };
+  let app = createApp();
+  const headers = { authorization: `Bearer ${token}` };
+  const occurredAt = new Date(Date.now() + 10_000).toISOString();
+  const base = { accountId, sourceId, sender: '@sender:example.test', occurredAt };
+  const send = (payload: object) =>
+    app.inject({
+      method: 'POST',
+      url: '/internal/integrations/matrix/event',
+      headers,
+      payload,
+    });
+  const redaction = {
+    ...base,
+    eventId: '$early-delete',
+    targetEventId: '$late-text',
+    kind: 'redaction',
+    body: null,
+    occurredAt: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+  try {
+    expect((await send(redaction)).json()).toEqual({ accepted: true });
+    expect(await store.getEvent(accountId, sourceId, redaction.eventId)).toMatchObject({
+      kind: 'redaction',
+      targetEventId: '$late-text',
+      body: null,
+    });
+    await app.close();
+    app = createApp();
+    expect((await send(redaction)).json()).toEqual({ accepted: false });
+    expect(await store.listChangesForTargets(accountId, sourceId, ['$late-text'])).toHaveLength(1);
+    const message = {
+      ...base,
+      eventId: '$late-text',
+      targetEventId: null,
+      kind: 'message',
+      body: 'Deleted private text',
+    };
+    expect((await send(message)).json()).toEqual({ accepted: true });
+    expect((await send(message)).json()).toEqual({ accepted: false });
+    expect(await store.getEvent(accountId, sourceId, message.eventId)).not.toBeNull();
+    const { projectChatDay } = await import('./knowledge-projection.js');
+    const binding = (await store.listSources(projectId))[0]!;
+    const relative = await projectChatDay(store, root, {
+      accountId,
+      sourceId,
+      projectId,
+      displayName: binding.displayName,
+      activatedAt: binding.activatedAt!,
+      day: occurredAt.slice(0, 10),
+    });
+    const knowledgeRoot = join(root, 'knowledge', projectId);
+    const text = await readFile(join(knowledgeRoot, relative), 'utf8');
+    expect(text).toContain('[Message deleted]');
+    expect(text).not.toContain(message.body);
+    expect(text.match(/## /gu)).toHaveLength(1);
+    expect(
+      (
+        await send({ ...redaction, eventId: '$early-file-delete', targetEventId: '$late-file' })
+      ).json(),
+    ).toEqual({ accepted: true });
+    const attachment = {
+      event: {
+        ...base,
+        eventId: '$late-file',
+        targetEventId: null,
+        kind: 'message',
+        body: 'Attachment',
+      },
+      fileName: 'secret.txt',
+      data: Buffer.from('Deleted attachment contents').toString('base64'),
+    };
+    for (const accepted of [true, false]) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/attachment',
+        headers,
+        payload: attachment,
+      });
+      expect(response.statusCode).toBe(200);
+      const result = response.json<{ accepted: boolean; path: string }>();
+      expect(result.accepted).toBe(accepted);
+      await expect(readFile(join(knowledgeRoot, result.path))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(
+        readFile(join(knowledgeRoot, '.text', `${result.path}.md`)),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    expect(await store.getEvent(accountId, sourceId, '$late-file')).not.toBeNull();
+    const projected = await readFile(join(knowledgeRoot, relative), 'utf8');
+    expect(projected.match(/\[Message deleted\]/gu)).toHaveLength(2);
+    expect(projected).not.toContain('Attachment:');
+  } finally {
+    await app.close();
+  }
+});
+
+it('hides explicitly left rooms while preserving bindings, history and worker outbox retention', async () => {
+  const store = ctx.store.integrations;
+  const accountId = `@left-${randomUUID()}:example.test`;
+  const sourceId = '!left:example.test';
+  const projectId = randomUUID();
+  await store.upsertAccount({
+    id: accountId,
+    provider: 'matrix',
+    endpoint: 'https://example.test',
+    displayName: 'Matrix',
+    status: 'online',
+  });
+  await ctx.store.upsertProject({
+    id: projectId,
+    owner: 'example',
+    repo: 'left',
+    containerName: `left-${projectId}`,
+    state: 'absent',
+  });
+  await store.discoverSource({ accountId, sourceId, displayName: 'Room' });
+  const binding = await store.setSourceBinding(accountId, sourceId, projectId);
+  const event = {
+    accountId,
+    sourceId,
+    eventId: '$retained',
+    targetEventId: null,
+    kind: 'message' as const,
+    sender: '@sender:example.test',
+    occurredAt: new Date(Date.now() + 10_000),
+    body: 'Retained history',
+  };
+  await store.ingestEvent(event);
+  const token = 'a-secret-long-enough-for-the-worker-route';
+  const app = Fastify();
+  registerIntegrationRoutes(app, { store, dataRoot: root, connectorToken: token });
+  const headers = { authorization: `Bearer ${token}` };
+  const url = '/internal/integrations/matrix/source/left';
+  const payload = { accountId, sourceId };
+  const workerRooms = async () =>
+    (
+      await app.inject({
+        method: 'GET',
+        url: `/internal/integrations/matrix/bindings?accountId=${encodeURIComponent(accountId)}`,
+        headers,
+      })
+    ).json<{
+      sources: { sourceId: string; status: string; projectId: string; activatedAt: string }[];
+    }>().sources;
+  try {
+    expect((await app.inject({ method: 'POST', url, payload })).statusCode).toBe(401);
+    expect((await store.listSources(projectId)).map((item) => item.sourceId)).toContain(sourceId);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect((await app.inject({ method: 'POST', url, headers, payload })).statusCode).toBe(200);
+    }
+    expect(await store.listSources(projectId)).toEqual([]);
+    expect((await store.listSources()).some((item) => item.sourceId === sourceId)).toBe(false);
+    // An absent worker binding deletes its outbox entries; left bindings must stay present.
+    expect(await workerRooms()).toEqual([
+      expect.objectContaining({
+        sourceId,
+        status: 'left',
+        projectId,
+        activatedAt: binding!.activatedAt!.toISOString(),
+      }),
+    ]);
+    expect(await store.getEvent(accountId, sourceId, event.eventId)).toMatchObject({
+      eventId: event.eventId,
+      body: event.body,
+    });
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/internal/integrations/matrix/event',
+          headers,
+          payload: { ...event, occurredAt: event.occurredAt.toISOString(), eventId: '$pending' },
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/internal/integrations/matrix/source',
+          headers,
+          payload: { ...payload, displayName: 'Invited again' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect((await store.listSources(projectId))[0]).toMatchObject({
+      status: 'paused',
+      projectId,
+      activatedAt: binding!.activatedAt,
+    });
+    expect(await store.getEvent(accountId, sourceId, event.eventId)).not.toBeNull();
+  } finally {
+    await app.close();
+  }
+});

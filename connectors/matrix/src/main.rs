@@ -901,17 +901,43 @@ async fn main() -> Result<()> {
 
     loop {
         match api.bindings().await {
-            Ok(next) => {
+            Ok(mut next) => {
+                // Explicit leave state is authoritative; missing rooms during sync are not.
+                for room in client.left_rooms() {
+                    if let Some(binding) = next.get_mut(room.room_id().as_str()) {
+                        if binding.status != "left" {
+                            match api
+                                .post(
+                                    "/internal/integrations/matrix/source/left",
+                                    &serde_json::json!({
+                                        "accountId": api.account_id,
+                                        "sourceId": room.room_id().to_string(),
+                                    }),
+                                )
+                                .await
+                            {
+                                Ok(()) => binding.status = "left".into(),
+                                Err(error) => warn!(room = %room.room_id(), %error, "could not report left room"),
+                            }
+                        }
+                    }
+                }
                 *bindings.write().await = next.clone();
                 for room in client.joined_rooms() {
-                    if !next.contains_key(room.room_id().as_str()) {
+                    if next
+                        .get(room.room_id().as_str())
+                        .is_none_or(|binding| binding.status == "left")
+                    {
                         if let Err(error) = api.discover(&room).await {
                             warn!(room = %room.room_id(), %error, "could not report joined room");
                         }
                     }
                 }
                 for room in client.invited_rooms() {
-                    if !next.contains_key(room.room_id().as_str()) {
+                    if next
+                        .get(room.room_id().as_str())
+                        .is_none_or(|binding| binding.status == "left")
+                    {
                         if let Err(error) = api.discover(&room).await {
                             warn!(%error, "could not report invitation");
                         }
@@ -1087,12 +1113,14 @@ mod tests {
                 event.body
             );
         }
-        let mut paused = bindings.clone();
-        paused.get_mut(&event.source_id).unwrap().status = "paused".into();
-        let paused_report = outbox.flush(&api, &client, &paused).await.unwrap();
-        assert_eq!(paused_report.failures, 1);
-        assert_eq!(paused_report.diagnostics[0].attempts, 2);
-        assert!(outbox.file(&event).exists());
+        for status in ["paused", "left"] {
+            let mut suspended = bindings.clone();
+            suspended.get_mut(&event.source_id).unwrap().status = status.into();
+            let report = outbox.flush(&api, &client, &suspended).await.unwrap();
+            assert_eq!(report.failures, 1);
+            assert_eq!(report.diagnostics[0].attempts, 2);
+            assert!(outbox.file(&event).exists());
+        }
         let report = outbox.flush(&api, &client, &bindings).await.unwrap();
         assert_eq!(report.failures, 0);
         assert!(report.diagnostics.is_empty());

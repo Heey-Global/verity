@@ -225,7 +225,9 @@ export function registerIntegrationRoutes(
       async (request) => {
         const { accountId } = z.object({ accountId: identifier }).strict().parse(request.query);
         return {
-          sources: (await store.listSources()).filter((item) => item.accountId === accountId),
+          sources: (await store.listSources(undefined, true)).filter(
+            (item) => item.accountId === accountId,
+          ),
         };
       },
     );
@@ -245,7 +247,18 @@ export function registerIntegrationRoutes(
       '/internal/integrations/matrix/source',
       { preHandler: workerOnly },
       async (request) => {
-        await store.discoverSource(source.parse(request.body));
+        const input = source.parse(request.body);
+        await store.discoverSource(input);
+        await store.rediscoverSource(input.accountId, input.sourceId);
+        return { ok: true };
+      },
+    );
+    instance.post(
+      '/internal/integrations/matrix/source/left',
+      { preHandler: workerOnly },
+      async (request) => {
+        const input = source.pick({ accountId: true, sourceId: true }).strict().parse(request.body);
+        await store.markSourceLeft(input.accountId, input.sourceId);
         return { ok: true };
       },
     );
@@ -263,8 +276,8 @@ export function registerIntegrationRoutes(
         const target = input.targetEventId
           ? await store.getEvent(input.accountId, input.sourceId, input.targetEventId)
           : null;
-        // Changes to unknown or non-message events are not useful Knowledge data.
-        if (input.kind !== 'message' && target?.kind !== 'message') {
+        // Reject orphan edits, but persist redactions so late targets cannot resurrect deleted content.
+        if (input.kind === 'edit' && target?.kind !== 'message') {
           // Older workers may not report retry sidecars; access logs alone hide the failed event.
           request.log.warn(
             {
