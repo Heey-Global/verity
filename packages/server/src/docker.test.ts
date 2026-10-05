@@ -1192,6 +1192,8 @@ describe('createDockerClient (#174)', () => {
           HostConfig: {
             Runtime: 'runsc',
             NetworkMode: 'none',
+            ExtraHosts: ['control:10.0.0.1'],
+            Sysctls: { 'net.ipv4.ip_unprivileged_port_start': '0' },
             ReadonlyRootfs: true,
             Tmpfs: { '/tmp': 'rw,noexec' },
             CapDrop: ['ALL'],
@@ -1249,6 +1251,8 @@ describe('createDockerClient (#174)', () => {
     ]);
     expect(result).toMatchObject({
       networkMode: 'none',
+      extraHosts: ['control:10.0.0.1'],
+      sysctls: { 'net.ipv4.ip_unprivileged_port_start': '0' },
       readOnlyRootfs: true,
       capDrop: ['ALL'],
       pidsLimit: 128,

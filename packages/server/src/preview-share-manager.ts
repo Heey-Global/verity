@@ -80,6 +80,14 @@ export interface PreviewEdgeControl {
 
 export interface PreviewShareManagerOptions {
   store: EventStore;
+  resolveSessionProject?: (
+    sessionId: string,
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+  ) => Promise<NonNullable<Awaited<ReturnType<EventStore['getProject']>>>>;
+  sandboxWorktree?: (
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    worktree: string,
+  ) => string;
   docker: DockerClient;
   edge: PreviewEdgeControl;
   resolveConnectorImage: () => Promise<string | undefined>;
@@ -197,13 +205,20 @@ export class PreviewShareManager {
     this.now = options.now ?? (() => new Date());
   }
 
+  private async runtimeProject(projectId: string, sessionId?: string | null) {
+    const project = await this.options.store.getProject(projectId);
+    return project && sessionId && this.options.resolveSessionProject
+      ? this.options.resolveSessionProject(sessionId, project)
+      : project;
+  }
+
   async prepareLocalTarget(
     sessionId: string,
     target: { targetPort?: number | undefined; staticPath?: string | undefined },
   ) {
     const session = await this.options.store.getSession(sessionId);
     if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
-    const project = await this.options.store.getProject(session.projectId);
+    const project = await this.runtimeProject(session.projectId, sessionId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
     const sandbox = await this.options.docker.inspectContainer(project.containerName);
@@ -214,7 +229,11 @@ export class PreviewShareManager {
       sandbox,
       projectNetworkName(project.id),
       project.id,
-      projectWorkspaceSubpath(project, this.options),
+      projectWorkspaceSubpath(
+        project,
+        this.options,
+        this.options.resolveSessionProject ? session.worktree : undefined,
+      ),
       this.options,
       target.staticPath !== undefined,
     );
@@ -250,7 +269,7 @@ export class PreviewShareManager {
     path: string,
     sessionId: string,
   ): Promise<{ directories: string[]; files: string[] }> {
-    const project = await this.options.store.getProject(projectId);
+    const project = await this.runtimeProject(projectId, sessionId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
     if (!this.options.hostCloneRoot) {
@@ -291,7 +310,7 @@ export class PreviewShareManager {
   async listSessionDevServers(sessionId: string): Promise<SessionDevServer[]> {
     const session = await this.options.store.getSession(sessionId);
     if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
-    const project = await this.options.store.getProject(session.projectId);
+    const project = await this.runtimeProject(session.projectId, sessionId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (project.state !== 'active') return [];
     let sandbox;
@@ -320,10 +339,9 @@ export class PreviewShareManager {
     }
     let sandboxWorktree: string;
     try {
-      sandboxWorktree = containerPathFor(
-        worktree,
-        projectClonePath(this.options.hostCloneRoot, project),
-      );
+      sandboxWorktree =
+        this.options.sandboxWorktree?.(project, worktree) ??
+        containerPathFor(worktree, projectClonePath(this.options.hostCloneRoot, project));
     } catch {
       throw new PreviewShareConflictError('session worktree is outside the project checkout');
     }
@@ -495,7 +513,7 @@ export class PreviewShareManager {
     if (session && session.projectId !== projectId) {
       throw new PreviewShareInputError('session does not belong to project');
     }
-    const project = await this.options.store.getProject(projectId);
+    const project = await this.runtimeProject(projectId, input.sessionId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (managed && managed.projectId !== project.id)
       throw new PreviewShareInputError('managed server does not belong to project');
@@ -548,7 +566,11 @@ export class PreviewShareManager {
     if (!sandbox.running || !generation) {
       throw new PreviewShareConflictError('sandbox is not running with a relay generation');
     }
-    const workspaceSubpath = projectWorkspaceSubpath(project, this.options);
+    const workspaceSubpath = projectWorkspaceSubpath(
+      project,
+      this.options,
+      this.options.resolveSessionProject ? session?.worktree : undefined,
+    );
     await assertEligibleSandbox(
       sandbox,
       projectNetworkName(project.id),
@@ -1066,7 +1088,7 @@ export class PreviewShareManager {
           });
           continue;
         }
-        const project = await this.options.store.getProject(share.projectId);
+        const project = await this.runtimeProject(share.projectId, share.sessionId);
         const devServer = share.devServerId
           ? await this.options.store.getDevServer(share.devServerId)
           : undefined;
@@ -1145,7 +1167,7 @@ export class PreviewShareManager {
     const session = share.sessionId
       ? await this.options.store.getSession(share.sessionId)
       : undefined;
-    const project = await this.options.store.getProject(share.projectId);
+    const project = await this.runtimeProject(share.projectId, share.sessionId);
     if (
       !instance ||
       !project ||
@@ -1211,7 +1233,7 @@ export class PreviewShareManager {
     );
     const current = await this.options.store.getPublicPreviewShare(share.id);
     if (current?.state !== 'active') return;
-    const project = await this.options.store.getProject(share.projectId);
+    const project = await this.runtimeProject(share.projectId, share.sessionId);
     if (!project) return;
     const id = await this.createConnector(
       share,
@@ -1242,7 +1264,7 @@ export class PreviewShareManager {
     timer?: PhaseTimer,
     offline = false,
   ): Promise<string> {
-    const project = await this.options.store.getProject(share.projectId);
+    const project = await this.runtimeProject(share.projectId, share.sessionId);
     const targetPort =
       offline || share.targetPort === null || !project
         ? share.targetPort
@@ -1342,6 +1364,18 @@ export class PreviewShareManager {
   ): Promise<string> {
     if (!this.options.hostCloneRoot) {
       throw new PreviewShareConflictError('static preview storage is not configured');
+    }
+    if (this.options.resolveSessionProject && worktree) {
+      const source = resolve(worktree);
+      const canonical = await realpath(source).catch(() => undefined);
+      const dataRoot = this.options.dataVolumeRoot;
+      const within = dataRoot && canonical ? relative(dataRoot, canonical) : undefined;
+      if (canonical !== source || !within || within.startsWith('..') || posix.isAbsolute(within))
+        throw new PreviewShareConflictError('session checkout is outside Verity storage');
+      const gitDir = await lstat(join(source, '.git')).catch(() => undefined);
+      if (!gitDir?.isDirectory())
+        throw new PreviewShareConflictError('session checkout is not independent');
+      return source;
     }
     const clonePath = projectClonePath(this.options.hostCloneRoot, project);
     const cloneSubpath = relative(this.options.hostCloneRoot, clonePath).split('\\').join('/');
@@ -1666,6 +1700,21 @@ async function assertEligibleSandbox(
     ) {
       continue;
     }
+    const isolatedSessionId = sandbox.labels?.['verity.session-id'];
+    if (
+      isolatedSessionId &&
+      /^[a-zA-Z0-9_-]+$/.test(isolatedSessionId) &&
+      mount.destination === '/run/verity-runner' &&
+      mount.readWrite === true &&
+      options.dataVolumeRoot &&
+      mountMatchesProjectData(
+        mount,
+        `runners/session-${isolatedSessionId}`,
+        options.dataVolume,
+        options.dataVolumeRoot,
+      )
+    )
+      continue;
     if (knownStandardPreviewMount(mount, projectId, workspaceSubpath, options)) continue;
     if (isPreviewArtifactDestination(mount.destination)) {
       if (
@@ -1718,11 +1767,15 @@ function knownStandardPreviewMount(
 function projectWorkspaceSubpath(
   project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
   options: Pick<PreviewShareManagerOptions, 'dataVolumeRoot' | 'hostCloneRoot'>,
+  worktree?: string,
 ): string {
   if (options.dataVolumeRoot === undefined || options.hostCloneRoot === undefined) {
     throw new PreviewShareConflictError('public preview storage is not configured');
   }
-  const subpath = relative(options.dataVolumeRoot, projectClonePath(options.hostCloneRoot, project))
+  const subpath = relative(
+    options.dataVolumeRoot,
+    worktree ?? projectClonePath(options.hostCloneRoot, project),
+  )
     .split('\\')
     .join('/');
   if (!subpath || subpath === '.' || posix.isAbsolute(subpath) || subpath.startsWith('../')) {

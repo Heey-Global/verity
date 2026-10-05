@@ -424,6 +424,8 @@ export interface ContainerInspect {
    *  `Restarting`, which is only true during the brief window of a restart. */
   restartCount?: number | undefined;
   healthStatus?: string | undefined;
+  extraHosts?: string[] | undefined;
+  sysctls?: Record<string, string> | undefined;
   networkMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
   tmpfs?: Record<string, string> | undefined;
@@ -1773,6 +1775,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
+          ExtraHosts?: unknown;
+          Sysctls?: unknown;
           ReadonlyRootfs?: unknown;
           Tmpfs?: unknown;
           CapDrop?: unknown;
@@ -1846,6 +1850,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           ? { readOnlyRootfs: json.HostConfig.ReadonlyRootfs }
           : {}),
         ...(isStringRecord(json.HostConfig?.Tmpfs) ? { tmpfs: json.HostConfig.Tmpfs } : {}),
+        ...(isStringArray(json.HostConfig?.ExtraHosts)
+          ? { extraHosts: json.HostConfig.ExtraHosts }
+          : {}),
+        ...(parseDockerLabels(json.HostConfig?.Sysctls)
+          ? { sysctls: parseDockerLabels(json.HostConfig?.Sysctls) }
+          : {}),
         ...(isStringArray(json.HostConfig?.CapDrop) ? { capDrop: json.HostConfig.CapDrop } : {}),
         ...(isStringArray(json.HostConfig?.SecurityOpt)
           ? { securityOpt: json.HostConfig.SecurityOpt }

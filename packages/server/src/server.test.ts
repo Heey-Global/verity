@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -7072,6 +7073,53 @@ describe('DELETE /sessions/:id', () => {
 });
 
 describe('DELETE /sessions/:id (worktree cleanup)', () => {
+  it('removes only the deleted private clone after its container is stopped', async () => {
+    const root = join(worktreeRoot, 'private-clones');
+    const own = join(root, 'own');
+    const sibling = join(root, 'sibling');
+    mkdirSync(own, { recursive: true });
+    execFileSync('git', ['init', own], { stdio: 'ignore' });
+    mkdirSync(sibling);
+    writeFileSync(join(sibling, 'unfinished.txt'), 'keep');
+    await ctx.store.upsertProject({
+      id: 'private-project',
+      owner: 'local',
+      repo: 'private',
+      containerName: 'central',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'private-delete',
+      projectId: 'private-project',
+      worktree: own,
+      model: 'm',
+    });
+    const removeContainer = vi.fn(() => {
+      expect(existsSync(own)).toBe(true);
+      return Promise.resolve();
+    });
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      worktrees: { add: () => Promise.resolve(own), remove: () => Promise.resolve() },
+      removeSessionSandbox: removeContainer,
+      sessionIsolationMigration: {
+        backupRoot: join(worktreeRoot, 'backups'),
+        privateCloneRoot: () => root,
+      },
+    });
+    try {
+      const response = await a.inject({ method: 'DELETE', url: '/sessions/private-delete' });
+      expect(response.statusCode).toBe(200);
+      expect(removeContainer).toHaveBeenCalledWith('private-delete');
+      expect(existsSync(own)).toBe(false);
+      expect(readFileSync(join(sibling, 'unfinished.txt'), 'utf8')).toBe('keep');
+    } finally {
+      await a.close();
+    }
+  });
+
   function fake() {
     const removed: string[] = [];
     const provisioner = {

@@ -974,6 +974,57 @@ describe('EventStore — sessions', () => {
     expect(await ctx.store.setSessionPlanning('missing', 'active')).toBe(false);
   });
 
+  it('relocates an idle workspace once while preserving its project and conversation', async () => {
+    await ctx.store.upsertProject({
+      id: 'p',
+      owner: 'local',
+      repo: 'repo',
+      containerName: 'test-p',
+      state: 'active',
+    });
+    await ctx.store.createSession({ ...session, projectId: 'p' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'context to preserve' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: 'codex',
+      backendSessionId: 'old-thread',
+      contextSeq: 1,
+    });
+    const before = await ctx.store.getSession('s1');
+    const events = await ctx.store.getEvents('s1');
+    expect(await ctx.store.relocateSessionWorkspace('s1', session.worktree, '/isolated/s1')).toBe(
+      true,
+    );
+    expect(await ctx.store.getSession('s1')).toEqual({ ...before, worktree: '/isolated/s1' });
+    expect(await ctx.store.getEvents('s1')).toEqual(events);
+    expect(await ctx.store.getSessionBackendState('s1', 'codex')).toBeUndefined();
+    expect(await ctx.store.consumePendingNotes('s1')).toEqual([
+      expect.stringContaining('/isolated/s1'),
+    ]);
+    expect(await ctx.store.relocateSessionWorkspace('s1', session.worktree, '/wrong')).toBe(false);
+    expect(await ctx.store.relocateSessionWorkspace('missing', '/old', '/new')).toBe(false);
+    expect(await ctx.store.consumePendingNotes('s1')).toEqual([]);
+  });
+
+  it('refuses relocation while a durable running turn exists', async () => {
+    await ctx.store.createSession(session);
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: 1 });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: 'codex',
+      backendSessionId: 'active-thread',
+      contextSeq: 1,
+    });
+    expect(await ctx.store.relocateSessionWorkspace('s1', session.worktree, '/isolated/s1')).toBe(
+      false,
+    );
+    expect((await ctx.store.getSession('s1'))?.worktree).toBe(session.worktree);
+    expect(await ctx.store.getSessionBackendState('s1', 'codex')).toMatchObject({
+      backendSessionId: 'active-thread',
+    });
+    expect(await ctx.store.consumePendingNotes('s1')).toEqual([]);
+  });
+
   it('returns undefined for an unknown session', async () => {
     expect(await ctx.store.getSession('missing')).toBeUndefined();
   });

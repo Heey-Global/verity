@@ -2277,6 +2277,29 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  /** Prepare a runtime that is mounted into exactly one session container. */
+  prepareSessionRuntime(sessionId: string): string {
+    return this.prepareRunnerRuntime(`session-${sessionId}`, true)!;
+  }
+
+  async awaitSessionRuntime(runtimePath: string): Promise<void> {
+    await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runtimePath);
+  }
+
+  async startSessionRuntime(containerName: string, runtimePath: string): Promise<void> {
+    if (this.opts.dockerHostForBuild === undefined) {
+      throw new ProvisioningError('Session isolation requires a Docker exec host');
+    }
+    await this.containerCommand({
+      containerName,
+      dockerHost: this.opts.dockerHostForBuild,
+      user: `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
+      workdir: RUNNER_RUNTIME_TARGET,
+      command: 'verity-runner-stack-start',
+    });
+    await this.awaitSessionRuntime(runtimePath);
+  }
+
   private prepareRunnerRuntime(projectId: string, enabled: boolean): string | undefined {
     if (!enabled) return undefined;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(projectId)) {

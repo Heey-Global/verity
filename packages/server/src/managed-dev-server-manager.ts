@@ -68,6 +68,8 @@ export interface ManagedDevServerManagerOptions {
   networkPorts: readonly number[];
   /** The session worktree as the sandbox sees it. */
   sandboxWorktree(project: ProjectRecord, worktree: string): string;
+  resolveSessionProject?: (sessionId: string, project: ProjectRecord) => Promise<ProjectRecord>;
+  prepareSessionProject?: (sessionId: string, project: ProjectRecord) => Promise<ProjectRecord>;
   /** Instances whose public link is live and must keep their network port. */
   protectedInstances?: () => ReadonlySet<string>;
   /** Pushes a refreshed listener snapshot to the app. */
@@ -208,7 +210,8 @@ export class ManagedDevServerManager {
       throw new ManagedDevServerError('session not found', 404);
     const project = await this.options.store.getProject(session.projectId);
     if (!project) throw new ManagedDevServerError('project not found', 404);
-    return { project, sessionId, worktree: session.worktree };
+    const runtimeProject = await this.options.resolveSessionProject?.(sessionId, project);
+    return { project: runtimeProject ?? project, sessionId, worktree: session.worktree };
   }
 
   private async entry(projectId: string, idOrName: string): Promise<ManagedDevServerRecord> {
@@ -471,7 +474,9 @@ export class ManagedDevServerManager {
     entry: ManagedDevServerRecord,
     by: StartedBy,
   ): Promise<void> {
-    const { project, sessionId } = context;
+    const { sessionId } = context;
+    const project =
+      (await this.options.prepareSessionProject?.(sessionId, context.project)) ?? context.project;
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
       // Record the intent, wake the sandbox, and let supervision start the server
       // once it is up: an instance that should run but has no process is started.
@@ -599,8 +604,15 @@ export class ManagedDevServerManager {
   ): Promise<void> {
     await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     await this.unpublish(instance);
-    if (project.state === 'active' && project.containerName)
-      await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
+    if (project.state === 'active' && project.containerName) {
+      const runtimeProject = await this.options.resolveSessionProject?.(
+        instance.sessionId,
+        project,
+      );
+      await this.options.runtime
+        .stopManagedServer(runtimeProject ?? project, instance.id)
+        .catch(() => undefined);
+    }
     await this.servers.updateInstance(instance.id, {
       state: 'stopped',
       detail,
@@ -753,9 +765,9 @@ export class ManagedDevServerManager {
     projectId: string,
     instances: ManagedDevServerInstanceRecord[],
   ): Promise<void> {
-    const project = await this.options.store.getProject(projectId);
-    if (!project || project.state !== 'active' || !project.containerName) return;
-    const processes = await this.options.runtime.listListeningProcesses(project);
+    const baseProject = await this.options.store.getProject(projectId);
+    if (!baseProject || baseProject.state !== 'active' || !baseProject.containerName) return;
+    const scans = new Map<string, ListeningProcess[]>();
     let changed = false;
     for (const snapshot of instances) {
       // Re-read under the project lock: a stop since the pass began wins.
@@ -763,6 +775,15 @@ export class ManagedDevServerManager {
       if (!instance || instance.desired !== 'running') continue;
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
+      const project =
+        (await this.options.resolveSessionProject?.(instance.sessionId, baseProject)) ??
+        baseProject;
+      const key = project.containerName;
+      let processes = scans.get(key);
+      if (!processes) {
+        processes = await this.options.runtime.listListeningProcesses(project);
+        scans.set(key, processes);
+      }
       if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {
         const session = await this.options.store.getSession(instance.sessionId);
         if (session?.worktree) {
@@ -862,6 +883,6 @@ export class ManagedDevServerManager {
       });
       changed = true;
     }
-    if (changed) this.refreshQuietly(project);
+    if (changed) this.refreshQuietly(baseProject);
   }
 }

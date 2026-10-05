@@ -146,6 +146,56 @@ afterEach(() => manager.close());
 
 const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0]!.instance!;
 
+describe('isolated managed server runtimes', () => {
+  it('prepares only explicit starts and targets each session container for supervision and stop', async () => {
+    manager.close();
+    const resolve = vi.fn(async (sessionId: string, project: ProjectRecord) => ({
+      ...project,
+      containerName: `private-${sessionId}`,
+    }));
+    const started = vi.spyOn(sandbox.runtime, 'startManagedServer');
+    const scanned = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
+    const prepare = vi.fn(async (sessionId: string, project: ProjectRecord) =>
+      resolve(sessionId, project),
+    );
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: () => '/work',
+      resolveSessionProject: resolve,
+      prepareSessionProject: prepare,
+      now: () => now,
+    });
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.view('s2');
+    expect(prepare).not.toHaveBeenCalled();
+
+    await manager.start('s1', 'Demo', 'agent');
+    await manager.start('s2', 'Demo', 'agent');
+    expect(prepare.mock.calls.map(([id]) => id)).toEqual(['s1', 's2']);
+    expect(started.mock.calls.map(([project]) => project.containerName)).toEqual([
+      'private-s1',
+      'private-s2',
+    ]);
+    for (const run of sandbox.started) sandbox.listen(run.instanceId, Number(run.env.PORT));
+    scanned.mockClear();
+    await manager.tick();
+    expect(scanned.mock.calls.map(([project]) => project.containerName)).toEqual([
+      'private-s1',
+      'private-s2',
+    ]);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    await manager.logs('s1', 'Demo');
+    expect(prepare).toHaveBeenCalledTimes(2);
+    await manager.stop('s1', 'Demo');
+    expect(sandbox.stop.mock.calls.at(-1)?.[0].containerName).toBe('private-s1');
+    expect(sandbox.stop.mock.calls.some(([project]) => project.containerName === 'sandbox')).toBe(
+      false,
+    );
+  });
+});
+
 describe('managed dev servers', () => {
   it('starts an entry with its own port and reports running only once the port answers', async () => {
     await manager.add('s1', {

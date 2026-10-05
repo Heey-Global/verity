@@ -566,13 +566,32 @@ describe('refreshProjectGitHubToken', () => {
 });
 
 describe('createProjectWorktreeFactory', () => {
-  // A writable clone dir (the factory `mkdir`s `<clone>/.verity-sessions`).
+  let root: string;
   let clone: string;
   beforeEach(() => {
-    clone = mkdtempSync(join(tmpdir(), 'verity-project-wt-'));
+    root = mkdtempSync(join(tmpdir(), 'verity-project-clone-'));
+    clone = join(root, 'clone');
+    execFileSync('git', ['init', '-b', 'main', clone]);
+    execFileSync('git', [
+      '-C',
+      clone,
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'fixture',
+    ]);
+    const origin = join(root, 'origin.git');
+    execFileSync('git', ['clone', '--bare', clone, origin]);
+    execFileSync('git', ['-C', clone, 'remote', 'add', 'origin', origin]);
   });
   afterEach(() => {
-    rmSync(clone, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   });
 
   const b64 = (token: string): string =>
@@ -580,13 +599,15 @@ describe('createProjectWorktreeFactory', () => {
 
   it('produces a provisioner whose refreshBase fetch carries the minted project token', async () => {
     const calls: string[][] = [];
-    const git: GitRunner = async (args) => {
+    const git: GitRunner = (args) => {
       calls.push([...args]);
+      execFileSync('git', [...args], { stdio: 'pipe' });
+      return Promise.resolve();
     };
     const factory = createProjectWorktreeFactory(async () => 'secret-project-token');
     const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
 
-    await provisioner.add('agent/wired');
+    const checkout = await provisioner.add('agent/wired');
 
     const fetch = calls.find((c) => c.includes('fetch'));
     expect(fetch).toBeDefined();
@@ -595,16 +616,16 @@ describe('createProjectWorktreeFactory', () => {
     // global git credential.
     expect(fetch).toEqual([
       '-C',
-      clone,
+      checkout,
       '-c',
       `http.extraheader=Authorization: Basic ${b64('secret-project-token')}`,
       'fetch',
       'origin',
       'HEAD',
     ]);
-    // Worktrees are rooted under the project clone's `.verity-sessions`.
-    const add = calls.find((c) => c.includes('worktree') && c.includes('add'));
-    expect(add?.[4]).toContain(join(clone, '.verity-sessions'));
+    // A private checkout cannot expose the central clone through its parent mount.
+    expect(checkout).toContain(join(root, '.verity-session-clones', sampleAppProject().id));
+    expect(calls.find((c) => c[0] === 'clone')).toContain('--no-local');
   });
 
   it('mints the token FRESH per add (rotated short-TTL token), scoped to the project', async () => {
@@ -615,8 +636,10 @@ describe('createProjectWorktreeFactory', () => {
       return `tok-${n++}`;
     });
     const calls: string[][] = [];
-    const git: GitRunner = async (args) => {
+    const git: GitRunner = (args) => {
       calls.push([...args]);
+      execFileSync('git', [...args], { stdio: 'pipe' });
+      return Promise.resolve();
     };
     const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
 
@@ -638,16 +661,18 @@ describe('createProjectWorktreeFactory', () => {
 
   it('runs the fetch tokenless when the mint yields no token', async () => {
     const calls: string[][] = [];
-    const git: GitRunner = async (args) => {
+    const git: GitRunner = (args) => {
       calls.push([...args]);
+      execFileSync('git', [...args], { stdio: 'pipe' });
+      return Promise.resolve();
     };
     const factory = createProjectWorktreeFactory(async () => undefined);
     const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
 
-    await provisioner.add('agent/notoken');
+    const checkout = await provisioner.add('agent/notoken');
 
     const fetch = calls.find((c) => c.includes('fetch'));
-    expect(fetch).toEqual(['-C', clone, 'fetch', 'origin', 'HEAD']);
+    expect(fetch).toEqual(['-C', checkout, 'fetch', 'origin', 'HEAD']);
     expect(fetch).not.toContain('-c');
   });
 
@@ -655,8 +680,10 @@ describe('createProjectWorktreeFactory', () => {
     // A stale clone-dir .gh-token must NOT be read anymore — it would sit in /work.
     writeFileSync(join(clone, '.gh-token'), 'persisted-project-token\n', { mode: 0o600 });
     const calls: string[][] = [];
-    const git: GitRunner = async (args) => {
+    const git: GitRunner = (args) => {
       calls.push([...args]);
+      execFileSync('git', [...args], { stdio: 'pipe' });
+      return Promise.resolve();
     };
     const factory = createProjectWorktreeFactory(async () => undefined);
     const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
@@ -1642,6 +1669,82 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       worktree: '/wt',
     });
     expect(client).toBeInstanceOf(FileTailRunnerClient);
+  });
+
+  it('selects a session runtime instead of the shared project supervisor', async () => {
+    const runtime = join(dir, 'runners', 'session-s');
+    await mkdir(runtime, { recursive: true });
+    const server = createServer((peer) => peer.end(`${JSON.stringify({ ok: true })}\n`));
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const resolveRuntime = vi.fn(() => runtime);
+    const wiring = buildRunnerConductorWiring({
+      ...baseDeps(),
+      runnerSupervisor: true,
+      resolveSessionRuntime: resolveRuntime,
+      resolveSandboxCwd: () => '/work',
+    });
+    expect(
+      await wiring.runner?.(backend, {
+        sessionId: 's',
+        projectId: 'proj-1',
+        worktree: '/host/session-s',
+      }),
+    ).toBeInstanceOf(SupervisorRunnerClient);
+    expect(resolveRuntime).toHaveBeenCalledWith('s', 'proj-1');
+    await expect(
+      wiring.runner?.(nonSupervisorBackend, {
+        sessionId: 's',
+        projectId: 'proj-1',
+        worktree: '/host/session-s',
+      }),
+    ).rejects.toThrow('supervised backend');
+  });
+
+  it('uses a private runtime for control-plane sessions when isolation is configured', async () => {
+    const runtime = join(dir, 'runners', 'session-control');
+    await mkdir(runtime, { recursive: true });
+    const server = createServer((peer) => peer.end(`${JSON.stringify({ ok: true })}\n`));
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const resolveRuntime = vi.fn(() => runtime);
+    const wiring = buildRunnerConductorWiring({
+      ...baseDeps(),
+      runnerSupervisor: true,
+      controlPlaneProjectId: 'verity-control',
+      isControlPlaneProject: async () => true,
+      resolveSessionRuntime: resolveRuntime,
+    });
+    expect(
+      await wiring.runner?.(backend, {
+        sessionId: 'control',
+        projectId: null,
+        worktree: '/host/control',
+      }),
+    ).toBeInstanceOf(SupervisorRunnerClient);
+    expect(resolveRuntime).toHaveBeenCalledWith('control', 'verity-control');
+  });
+
+  it('refuses an unavailable isolated runtime without loopback fallback', async () => {
+    const wiring = buildRunnerConductorWiring({
+      ...baseDeps(),
+      runnerSupervisor: true,
+      resolveSessionRuntime: () => join(dir, 'runners', 'session-s'),
+    });
+    await expect(
+      wiring.runner?.(backend, {
+        sessionId: 's',
+        projectId: 'proj-1',
+        worktree: '/host/session-s',
+      }),
+    ).rejects.toThrow('requires a reachable');
+    await expect(
+      wiring.runner?.(backend, {
+        sessionId: null,
+        projectId: 'proj-1',
+        worktree: '/host/session-s',
+      }),
+    ).rejects.toThrow('persisted session identity');
   });
 
   it('on-flag manages the transcript server-side and wires reattach recovery', () => {

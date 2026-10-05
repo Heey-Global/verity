@@ -19,6 +19,35 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 describe('independent listener discovery', () => {
+  it('scans only the resolved private container and attributes its checkout to its session', async () => {
+    const project = { id: 'p', containerName: 'shared', state: 'active' };
+    const store = {
+      getSession: async () => ({ sessionId: 'a', projectId: 'p', worktree: '/data/private/a' }),
+      getProject: async () => project,
+    } as unknown as EventStore;
+    const scan = vi.fn(async () => [
+      { port: 5173, pid: 1, cwd: '/work', command: 'vite', bind: 'any' as const },
+      { port: 8000, pid: 2, cwd: '/work', command: 'node', bind: 'any' as const, sessionId: 'b' },
+    ]);
+    const discovery = new ListenerDiscovery({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      hostCloneRoot: '/data',
+      scan,
+      resolveSessionProject: async (_sessionId, record) => ({
+        ...record,
+        containerName: 'private-a',
+      }),
+    });
+    try {
+      const servers = await discovery.listSessionDevServers('a');
+      expect(scan).toHaveBeenCalledWith(expect.objectContaining({ containerName: 'private-a' }));
+      expect(servers.map((server) => server.port)).toEqual([5173]);
+      expect(servers[0]?.sessionId).toBe('a');
+    } finally {
+      discovery.close();
+    }
+  });
   it('includes unassigned project listeners and excludes another session', async () => {
     const project = {
       id: 'p',

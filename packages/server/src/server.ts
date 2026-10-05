@@ -1,3 +1,5 @@
+import { registerSessionIsolationMigrationRoute } from './session-isolation-migration-route.js';
+import { createSessionCloneProvisioner } from './session-clone.js';
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
 import { googleAppClient } from './google-app-client.js';
@@ -212,7 +214,6 @@ import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-read
 import { createSessionPrCache } from './session-pr-cache.js';
 import type { PushSender } from './push-sender.js';
 import {
-  createGitWorktreeProvisioner,
   createScratchProvisioner,
   RepositoryHasNoCommitsError,
   type WorktreeProvisioner,
@@ -1468,6 +1469,18 @@ export interface ServerDeps {
    *  sandbox is already allowed to run code, instead of on the server. Absent → the
    *  local merge is refused rather than run server-side. */
   sandboxGit?: ((project: ProjectRecord, clonePath: string) => GitOutput) | undefined;
+  sessionSandboxGit?: (
+    sessionId: string,
+    project: ProjectRecord,
+    worktree: string,
+  ) => Promise<GitOutput>;
+  removeSessionSandbox?: (sessionId: string) => Promise<void>;
+  resolveSessionSandbox?: (sessionId: string) => Promise<ProjectRecord>;
+  sessionIsolationMigration?: {
+    backupRoot: string;
+    privateCloneRoot: (project: ProjectRecord) => string;
+  };
+
   /** Runtime actions for an active project container, e.g. starting its dev server. */
   projectRuntime?: ProjectRuntime | undefined;
   /** Server-side meeting transcription with speaker diarization. When omitted, the
@@ -3059,6 +3072,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       } catch {
         // Logged by the implementation; never fatal here.
       }
+      await deps.removeSessionSandbox?.(sessionId);
+      if (session?.projectId && deps.sessionIsolationMigration) {
+        const project = await deps.eventStore.getProject(session.projectId);
+        if (project) {
+          const root = deps.sessionIsolationMigration.privateCloneRoot(project);
+          if (dirname(session.worktree) === root) {
+            try {
+              await createSessionCloneProvisioner({
+                repoDir: deps.workspaceDir ?? root,
+                worktreeRoot: root,
+              }).remove(session.worktree);
+            } catch (error) {
+              app.log.warn(
+                { err: error, sessionId },
+                'verity: could not remove private session clone',
+              );
+            }
+          }
+        }
+      }
       return await deps.eventStore.deleteSession(sessionId);
     } finally {
       release?.();
@@ -3472,11 +3505,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
               project.id,
             );
+            const runtimeProject = deps.resolveSessionSandbox
+              ? await deps.resolveSessionSandbox(session.sessionId)
+              : project;
             return runtime.runAutomationScript(
-              project,
+              runtimeProject,
               settings ?? emptyProjectSettings(project.id),
               {
-                workdir: containerPathFor(session.worktree, projectClonePath(cloneRoot, project)),
+                workdir: deps.resolveSessionSandbox
+                  ? '/work'
+                  : containerPathFor(session.worktree, projectClonePath(cloneRoot, project)),
                 script,
                 timeoutMs: 120_000,
                 maxOutputBytes: 64 * 1024,
@@ -5398,9 +5436,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             };
             const provisioner =
               deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-              createGitWorktreeProvisioner({
+              createSessionCloneProvisioner({
                 repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
+                worktreeRoot: join(dirname(projectClone), '.verity-session-clones', project.id),
                 ...worktreeOpts,
               });
             await deps.refreshProjectToken?.(project);
@@ -8534,6 +8572,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // caller discards the body, and building a summary would reload the whole event log
   // just to compute a status/usage nobody here reads. 404 for an unknown session id.
   registerSessionSeenRoute(app, { store: deps.eventStore });
+  if (deps.sessionIsolationMigration) {
+    registerSessionIsolationMigrationRoute(app, {
+      eventStore: deps.eventStore,
+      conductor,
+      backupRoot: deps.sessionIsolationMigration.backupRoot,
+      privateCloneRoot: deps.sessionIsolationMigration.privateCloneRoot,
+      stopSessionProcesses: async (sessionId) => {
+        conductor.closeSession?.(sessionId);
+        await deps.managedDevServerManager?.stopSession(sessionId);
+        await deps.localPreviewManager?.stopSession(sessionId);
+        await deps.removeSessionSandbox?.(sessionId);
+      },
+      relocateSessionWorkspace: (id, expected, next) =>
+        deps.eventStore.relocateSessionWorkspace(id, expected, next),
+    });
+  }
 
   // Permanently delete a session: drop its durable log (events + transcript
   // lines + the session row, transactionally) and remove its isolated worktree
@@ -8580,9 +8634,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const projectClone = projectClonePath(deps.projectCloneRoot, project);
             cleanupWorktrees =
               deps.projectWorktrees?.(project, projectClone) ??
-              createGitWorktreeProvisioner({
+              createSessionCloneProvisioner({
                 repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
+                worktreeRoot: join(dirname(projectClone), '.verity-session-clones', project.id),
               });
           }
         }
@@ -8948,6 +9002,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     branchPrStatus: deps.branchPrStatus,
     branchPrStatusForBranches: deps.branchPrStatusForBranches,
     sandboxGit: deps.sandboxGit,
+    ...(deps.sessionSandboxGit ? { sessionSandboxGit: deps.sessionSandboxGit } : {}),
     conductor,
     branchesForSession,
     localMergeTarget,
@@ -8970,7 +9025,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(409);
       return { error: 'saving this way is available only for local projects' };
     }
-    const sandboxGit = deps.sandboxGit?.(target.project, target.basePath);
+    const sandboxGit = deps.sessionSandboxGit
+      ? await deps.sessionSandboxGit(id, target.project, session.worktree)
+      : deps.sandboxGit?.(target.project, target.basePath);
     if (!(await branchesForSession(session)) || sandboxGit === undefined) {
       reply.code(503);
       return { error: 'saving to this project is not configured' };
@@ -9203,7 +9260,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 const moveWorktreeOptions = { baseBranch: settings?.defaultBranch ?? 'main' };
                 const provisioner =
                   deps.projectWorktrees?.(target, targetClone, moveWorktreeOptions) ??
-                  createGitWorktreeProvisioner({
+                  createSessionCloneProvisioner({
                     repoDir: targetClone,
                     worktreeRoot: join(targetClone, '.verity-sessions'),
                     ...moveWorktreeOptions,

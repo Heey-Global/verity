@@ -14,9 +14,11 @@ import {
   MergeConflictError,
   NothingToMergeError,
   type GitBranchService,
+  type GitOutput,
 } from './branches.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import { sessionParams } from './session-route-schemas.js';
+import { transferSessionCommit } from './session-git-transfer.js';
 
 type PrSummary = Pick<PullRequestStatus, 'phase' | 'pipeline' | 'mergeable'>;
 export interface SessionMergeRouteDeps {
@@ -26,6 +28,11 @@ export interface SessionMergeRouteDeps {
   branchPrStatus: ServerDeps['branchPrStatus'];
   branchPrStatusForBranches: ServerDeps['branchPrStatusForBranches'];
   sandboxGit: ServerDeps['sandboxGit'];
+  sessionSandboxGit?: (
+    sessionId: string,
+    project: ProjectRecord,
+    worktree: string,
+  ) => Promise<GitOutput>;
   conductor: Pick<
     Conductor,
     'dispatchTurn' | 'runWhenIdle' | 'emitMerged' | 'tryRunExclusive' | 'runExclusive'
@@ -265,6 +272,9 @@ export function registerSessionMergeRoutes(
       setStatus(503);
       return { error: 'merging is not configured' };
     }
+    const sessionGit = deps.sessionSandboxGit
+      ? await deps.sessionSandboxGit(id, project, session.worktree)
+      : sandboxGit;
     // Merging a branch a live turn is still writing to would land half-finished
     // work — same admission rule as the branch switch below. The turn lock is held
     // for the whole merge rather than only sampled first: a turn that started in
@@ -275,11 +285,28 @@ export function registerSessionMergeRoutes(
       const attempt = await conductor.tryRunExclusive(id, async () => {
         if (approvedTip !== undefined) {
           const currentTip = (
-            await sandboxGit(['-C', session.worktree, 'rev-parse', 'HEAD'])
+            await sessionGit(['-C', session.worktree, 'rev-parse', 'HEAD'])
           ).trim();
           if (currentTip !== approvedTip) return null;
         }
-        return branches.mergeIntoLocalBase(session.worktree, basePath, { git: sandboxGit });
+        if (!deps.sessionSandboxGit) {
+          return branches.mergeIntoLocalBase(session.worktree, basePath, { git: sandboxGit });
+        }
+        const transfer = await transferSessionCommit({
+          source: session.worktree,
+          destination: basePath,
+          sourceGit: sessionGit,
+          destinationGit: sandboxGit,
+        });
+        try {
+          return await branches.mergeIntoLocalBase(session.worktree, basePath, {
+            git: sandboxGit,
+            sessionGit,
+            mergeRef: transfer.ref,
+          });
+        } finally {
+          await transfer.cleanup();
+        }
       });
       if (!attempt.ran) {
         setStatus(409);
@@ -356,11 +383,21 @@ export function registerSessionMergeRoutes(
         try {
           // The whole merge result: the branch commit it absorbed decides what may be
           // deleted, the merge commit it created is where the worktree lands.
+          if (deps.sessionSandboxGit) {
+            const transfer = await transferSessionCommit({
+              source: basePath,
+              destination: session.worktree,
+              sourceGit: sandboxGit,
+              destinationGit: sessionGit,
+              commit: merged.baseTip,
+            });
+            await transfer.cleanup();
+          }
           const { deletedBranch, retainedBranch, skipped } = await branches.resetToLocalBase(
             session.worktree,
             base,
             merged,
-            { git: sandboxGit },
+            { git: sessionGit },
           );
           if (skipped === true) {
             note = `${merge}, up to the commit it was on when you merged. Your worktree kept that branch because it has moved on since — commit or discard what is there and merge again to bring the rest across.`;

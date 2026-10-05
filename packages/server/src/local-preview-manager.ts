@@ -372,7 +372,11 @@ export class LocalPreviewManager {
         await this.stop(state.share.id);
         continue;
       }
-      const project = await this.options.store.getProject(state.share.projectId);
+      const storedProject = await this.options.store.getProject(state.share.projectId);
+      const project =
+        storedProject && this.options.resolveSessionProject
+          ? await this.options.resolveSessionProject(state.share.sessionId, storedProject)
+          : storedProject;
       const session = await this.options.store.getSession(state.share.sessionId);
       if (!project || project.state !== 'active' || session?.projectId !== project.id) {
         await this.stop(state.share.id);

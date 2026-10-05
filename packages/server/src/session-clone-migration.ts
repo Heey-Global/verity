@@ -1,0 +1,177 @@
+import { execFile } from 'node:child_process';
+import {
+  constants,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import { assertIndependentSessionClone } from './session-clone.js';
+
+const exec = promisify(execFile);
+
+export interface SessionCloneMigrationOptions {
+  checkoutPath: string;
+  backupRoot: string;
+  /** Optional private destination; the original checkout then remains untouched. */
+  destinationPath?: string;
+  /** The server must stop the agent and development processes before calling. */
+  stopped: boolean;
+}
+
+function assertNoMetadataSymlinks(directory: string): void {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isSymbolicLink())
+      throw new Error('Git metadata contains a symlink; migration requires manual recovery');
+    if (entry.isDirectory()) assertNoMetadataSymlinks(join(directory, entry.name));
+  }
+}
+
+function contains(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/** Explicit offline migration. The complete backup survives both success and failure. */
+export async function migrateLegacySessionClone(
+  opts: SessionCloneMigrationOptions,
+): Promise<{ backupPath: string | undefined }> {
+  if (!opts.stopped)
+    throw new Error('Stop the session and its development processes before migration');
+  const checkout = resolve(opts.checkoutPath);
+  if (realpathSync(checkout) !== checkout || !lstatSync(checkout).isDirectory())
+    throw new Error('Migration requires a real checkout directory');
+  let gitFile = join(checkout, '.git');
+  if (lstatSync(gitFile).isDirectory()) {
+    await assertIndependentSessionClone(checkout);
+    if (!opts.destinationPath || resolve(opts.destinationPath) === checkout)
+      return { backupPath: undefined };
+    const destination = resolve(opts.destinationPath);
+    const backupRoot = resolve(opts.backupRoot);
+    if (contains(checkout, destination) || contains(checkout, backupRoot))
+      throw new Error('Migration destination and backup must be outside the original checkout');
+    if (existsSync(destination)) throw new Error('Migration destination already exists');
+    mkdirSync(backupRoot, { recursive: true });
+    if (realpathSync(backupRoot) !== backupRoot)
+      throw new Error('Backup root must not contain symlinks');
+    const backup = mkdtempSync(join(backupRoot, 'session-migration-'));
+    cpSync(checkout, join(backup, 'checkout'), {
+      recursive: true,
+      dereference: false,
+      mode: constants.COPYFILE_FICLONE,
+    });
+    mkdirSync(resolve(destination, '..'), { recursive: true });
+    if (realpathSync(resolve(destination, '..')) !== resolve(destination, '..'))
+      throw new Error('Migration destination parent must not contain symlinks');
+    cpSync(join(backup, 'checkout'), destination, {
+      recursive: true,
+      dereference: false,
+      mode: constants.COPYFILE_FICLONE,
+    });
+    await assertIndependentSessionClone(destination);
+    return { backupPath: backup };
+  }
+  if (!lstatSync(gitFile).isFile())
+    throw new Error('Migration requires a regular worktree Git link');
+  const link = readFileSync(gitFile, 'utf8');
+  if (!link.startsWith('gitdir:')) throw new Error('Invalid worktree Git link');
+  const admin = realpathSync(resolve(checkout, link.slice('gitdir:'.length).trim()));
+  const common = realpathSync(
+    resolve(admin, readFileSync(join(admin, 'commondir'), 'utf8').trim()),
+  );
+  assertNoMetadataSymlinks(common);
+  assertNoMetadataSymlinks(admin);
+  for (const marker of ['objects/info/alternates', 'objects/info/http-alternates']) {
+    if (existsSync(join(common, marker)))
+      throw new Error('Shared object alternates require manual recovery before migration');
+  }
+  const backupRoot = resolve(opts.backupRoot);
+  if (contains(checkout, backupRoot) || contains(common, backupRoot))
+    throw new Error('Backup must be outside the checkout and Git metadata');
+  mkdirSync(backupRoot, { recursive: true });
+  if (realpathSync(backupRoot) !== backupRoot)
+    throw new Error('Backup root must not contain symlinks');
+  const backup = mkdtempSync(join(backupRoot, 'session-migration-'));
+  const copy = (from: string, to: string): void => {
+    cpSync(from, to, { recursive: true, dereference: false, mode: constants.COPYFILE_FICLONE });
+  };
+  // Nothing in the checkout changes until all recoverable files and Git state are backed up.
+  copy(checkout, join(backup, 'checkout'));
+  copy(common, join(backup, 'common-git'));
+  copy(admin, join(backup, 'worktree-git'));
+  writeFileSync(join(backup, 'manifest.json'), `${JSON.stringify({ checkout, admin, common })}\n`);
+  const stage = join(backup, 'independent');
+  await exec('git', ['clone', '--no-local', '--no-checkout', '--', common, stage]);
+  const privateGit = join(stage, '.git');
+  // Transport clones omit unreachable objects, including staged-only blobs and rebase commits.
+  // Copy the snapshot's complete object store and original refs with independent inodes.
+  for (const entry of ['objects', 'refs', 'packed-refs']) {
+    const source = join(backup, 'common-git', entry);
+    if (existsSync(source)) copy(source, join(privateGit, entry));
+  }
+  // A linked worktree's administrative files carry its index and in-flight operations.
+  // gitdir/commondir are precisely the links that must not survive isolation.
+  for (const entry of readdirSync(join(backup, 'worktree-git'))) {
+    if (entry === 'gitdir' || entry === 'commondir' || entry === 'locked') continue;
+    copy(join(backup, 'worktree-git', entry), join(privateGit, entry));
+  }
+  let origin: string | undefined;
+  try {
+    origin = (
+      await exec('git', ['--git-dir', common, 'remote', 'get-url', 'origin'])
+    ).stdout.trim();
+  } catch {
+    /* An offline repository has no origin. */
+  }
+  if (origin) await exec('git', ['-C', stage, 'remote', 'set-url', 'origin', origin]);
+  else await exec('git', ['-C', stage, 'remote', 'remove', 'origin']);
+  await assertIndependentSessionClone(stage);
+  // Rename on the checkout's filesystem; backups may live on another volume.
+  const destination = opts.destinationPath ? resolve(opts.destinationPath) : checkout;
+  if (destination !== checkout) {
+    if (
+      contains(checkout, destination) ||
+      contains(common, destination) ||
+      contains(backup, destination)
+    ) {
+      throw new Error(
+        'Migration destination must be outside the original checkout, Git storage and backup',
+      );
+    }
+    if (existsSync(destination)) throw new Error('Migration destination already exists');
+    mkdirSync(resolve(destination, '..'), { recursive: true });
+    if (realpathSync(resolve(destination, '..')) !== resolve(destination, '..'))
+      throw new Error('Migration destination parent must not contain symlinks');
+    copy(join(backup, 'checkout'), destination);
+    gitFile = join(destination, '.git');
+  }
+  const replacement = join(destination, '.verity-migration-git');
+  if (existsSync(replacement)) throw new Error('A previous migration staging directory exists');
+  copy(privateGit, replacement);
+  const savedLink = join(destination, '.verity-migration-git-link');
+  if (existsSync(savedLink)) {
+    rmSync(replacement, { recursive: true });
+    throw new Error('A previous migration link exists');
+  }
+  renameSync(gitFile, savedLink);
+  try {
+    renameSync(replacement, gitFile);
+    await assertIndependentSessionClone(destination);
+  } catch (error) {
+    rmSync(gitFile, { recursive: true, force: true });
+    renameSync(savedLink, gitFile);
+    rmSync(replacement, { recursive: true, force: true });
+    throw new Error('Migration failed; the original Git link was restored', { cause: error });
+  }
+  rmSync(savedLink);
+  return { backupPath: backup };
+}

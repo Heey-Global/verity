@@ -26,6 +26,8 @@ export class ListenerDiscovery {
       eventStore: EventStore;
       bus: EventBus;
       hostCloneRoot: string;
+      resolveSessionProject?: (sessionId: string, project: ProjectRecord) => Promise<ProjectRecord>;
+      sandboxWorktree?: (project: ProjectRecord, worktree: string) => string;
       dockerBaseUrl?: string;
       resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
       scan: (project: ProjectRecord) => Promise<ListeningProcess[]>;
@@ -45,16 +47,20 @@ export class ListenerDiscovery {
   async listSessionDevServers(sessionId: string): Promise<SessionDevServer[]> {
     const session = await this.options.eventStore.getSession(sessionId);
     if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
-    const project = await this.options.eventStore.getProject(session.projectId);
+    const storedProject = await this.options.eventStore.getProject(session.projectId);
+    const project =
+      storedProject && this.options.resolveSessionProject
+        ? await this.options.resolveSessionProject(sessionId, storedProject)
+        : storedProject;
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (!this.active(project)) return [];
-    await this.watch(project);
+    if (!this.options.resolveSessionProject) await this.watch(project);
     let processes: ListeningProcess[];
     try {
       processes = await this.options.scan(project);
-      this.healthy.set(project.id, processes);
+      this.healthy.set(project.containerName, processes);
     } catch {
-      processes = this.healthy.get(project.id) ?? [];
+      processes = this.healthy.get(project.containerName) ?? [];
     }
     return this.attribute(project, sessionId, processes);
   }
@@ -64,6 +70,13 @@ export class ListenerDiscovery {
     sessionId: string,
     processes: readonly ListeningProcess[],
   ): Promise<SessionDevServer[]> {
+    if (this.options.resolveSessionProject) {
+      return sessionDevServers(
+        processes.filter((process) => !process.sessionId || process.sessionId === sessionId),
+        '/work',
+        sessionId,
+      ).map((server) => ({ ...server, scope: 'session' as const, sessionId }));
+    }
     const sessions = (await this.options.eventStore.listSessions()).filter(
       (s) => s.projectId === project.id && s.worktree,
     );
@@ -114,6 +127,19 @@ export class ListenerDiscovery {
 
   private async refreshSession(sessionId: string): Promise<void> {
     try {
+      if (this.options.resolveSessionProject) {
+        const servers = await this.listSessionDevServers(sessionId);
+        const snapshot = JSON.stringify(servers);
+        const persisted = await this.options.eventStore.getLatestDevServersEvent(sessionId);
+        const previous =
+          this.snapshots.get(sessionId) ?? JSON.stringify(persisted?.devServers ?? []);
+        if (snapshot === previous || this.closed) return;
+        this.snapshots.set(sessionId, snapshot);
+        const event = { t: 'dev_servers_changed' as const, devServers: servers };
+        const { seq, ts } = await this.options.eventStore.appendEvent(sessionId, event);
+        this.options.bus.publish(sessionId, { seq, ts, event });
+        return;
+      }
       const session = await this.options.eventStore.getSession(sessionId);
       if (session?.projectId) {
         const project = await this.options.eventStore.getProject(session.projectId);
@@ -126,6 +152,15 @@ export class ListenerDiscovery {
 
   /** Rescans a project now, for changes Verity made itself (managed dev servers). */
   refreshProject(project: ProjectRecord): Promise<void> {
+    if (this.options.resolveSessionProject) {
+      return this.options.eventStore
+        .listSessions()
+        .then(async (sessions) => {
+          for (const session of sessions.filter((session) => session.projectId === project.id))
+            await this.refreshSession(session.sessionId);
+        })
+        .catch(() => undefined);
+    }
     return this.refresh(project).catch(() => undefined);
   }
 
@@ -234,6 +269,11 @@ export class ListenerDiscovery {
   async reconcile(): Promise<void> {
     if (this.closed) return;
     try {
+      if (this.options.resolveSessionProject) {
+        for (const session of await this.options.eventStore.listSessions())
+          if (session.projectId) await this.refreshSession(session.sessionId);
+        return;
+      }
       const projects = await this.options.eventStore.listProjects();
       for (const [id, watcher] of this.watchers) {
         const project = projects.find((candidate) => candidate.id === id);
