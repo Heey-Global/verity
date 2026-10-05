@@ -986,6 +986,28 @@ describe('managed dev servers', () => {
     );
   });
 
+  it('opens a managed response without localShareId by finding the real local share', async () => {
+    const server = demo();
+    delete server.instance!.localShareId;
+    renderSheet(
+      managedClient([server], {
+        listSessionLocalPreviewShares: jest.fn(async () => [
+          { ...localShare, id: 'another-access', targetPort: server.instance!.sandboxPort },
+          { ...localShare, url: server.instance!.url!, targetPort: server.instance!.sandboxPort },
+        ]),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('link', { name: 'Open Curtis Demo in the browser' }));
+    await waitFor(() =>
+      expect(openLocalPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ id: localShare.id, url: server.instance!.url }),
+        'available',
+        expect.any(Function),
+        undefined,
+      ),
+    );
+  });
+
   it('offers network access for a server the agent started without approval', async () => {
     const approveManagedDevServer = jest.fn(async () => []);
     jest

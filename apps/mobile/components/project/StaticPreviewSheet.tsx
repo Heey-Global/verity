@@ -338,13 +338,26 @@ export function StaticPreviewSheet({
 
   const openManaged = async (server: ManagedDevServer) => {
     const url = server.instance?.url;
-    if (!url || !server.instance?.localShareId) return;
-    await openLocalPreview(
-      { id: server.instance.localShareId, url } as LocalPreviewShare,
-      publicSharing,
-      () => setManagedId(server.id),
-      onOpenSettings,
-    );
+    if (!url || !server.instance) return;
+    try {
+      const id =
+        server.instance.localShareId ??
+        (await client.listSessionLocalPreviewShares(sessionId)).find(
+          (share) =>
+            share.sessionId === sessionId &&
+            share.targetPort === server.instance?.sandboxPort &&
+            new URL(share.url).origin === new URL(url).origin,
+        )?.id;
+      if (!id) throw new Error('Network access changed. Refresh and try again.');
+      await openLocalPreview(
+        { id, url } as LocalPreviewShare,
+        publicSharing,
+        () => setManagedId(server.id),
+        onOpenSettings,
+      );
+    } catch (caught) {
+      setError(previewError(caught));
+    }
   };
 
   const deleteManaged = (server: ManagedDevServer) =>

@@ -3889,12 +3889,22 @@ export function SessionChat({
                     current = approved.find((value) => value.id === current.id) ?? current;
                   }
                   const url = current.instance?.url;
-                  if (!url || !current.instance?.localShareId) return openEntry();
+                  if (!url || !current.instance) return openEntry();
+                  const localShareId =
+                    current.instance.localShareId ??
+                    (await client.listSessionLocalPreviewShares(sessionId)).find(
+                      (share) =>
+                        share.sessionId === sessionId &&
+                        share.targetPort === current.instance?.sandboxPort &&
+                        new URL(share.url).origin === new URL(url).origin,
+                    )?.id;
+                  if (!localShareId)
+                    throw new Error('Network access changed. Refresh and try again.');
                   const capabilities = await client
                     .getPreviewCapabilities()
                     .catch(() => ({ publicSharing: 'unavailable' as const }));
                   await openLocalPreview(
-                    { id: current.instance.localShareId, url } as LocalPreviewShare,
+                    { id: localShareId, url } as LocalPreviewShare,
                     capabilities.publicSharing,
                     openEntry,
                     () => router.push('/settings/services'),
