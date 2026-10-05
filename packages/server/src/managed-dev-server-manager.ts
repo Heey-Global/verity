@@ -637,7 +637,11 @@ export class ManagedDevServerManager {
     const status = await this.options.runtime
       .managedServerStatus(project, instance.id)
       .catch(() => ({ alive: false, exitCode: null }));
-    if (status.alive && (instance.state === 'running' || instance.state === 'starting')) {
+    if (
+      status.alive &&
+      (instance.state === 'running' || instance.state === 'starting') &&
+      (by !== 'operator' || this.ranApproved(entry, instance))
+    ) {
       // Already up after a wake: drop the marker so supervision stops relaunching.
       if (instance.detail === WAKING_DETAIL)
         await this.servers.updateInstance(instance.id, { detail: null });

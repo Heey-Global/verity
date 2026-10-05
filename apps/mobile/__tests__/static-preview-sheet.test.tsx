@@ -1158,6 +1158,34 @@ describe('managed dev servers', () => {
     );
   });
 
+  it('starts a changed command before creating the public link', async () => {
+    const changed = demo({
+      instance: { ...demo().instance!, restartToApply: true, localOn: false, url: null },
+    });
+    const running = demo({ instance: { ...changed.instance!, restartToApply: false } });
+    const controlManagedDevServer = jest.fn(async () => running);
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    answer('1 hour');
+    renderSheet(
+      managedClient([changed], {
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+        listManagedDevServers: jest
+          .fn()
+          .mockResolvedValueOnce([changed])
+          .mockResolvedValue([running]),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() => expect(createSessionPortPreviewShare).toHaveBeenCalled());
+    expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
+      local: false,
+    });
+    expect(controlManagedDevServer.mock.invocationCallOrder[0]).toBeLessThan(
+      createSessionPortPreviewShare.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it('cleans up a running online-only instance when creating its link fails', async () => {
     const server = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
     const controlManagedDevServer = jest.fn(async () => server);

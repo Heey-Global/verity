@@ -445,7 +445,7 @@ export function StaticPreviewSheet({
       }
       if (!(await approveManaged(server, 'Share', 'online'))) return;
       const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
-      if (!running)
+      if (!running || server.instance?.restartToApply)
         await client.controlManagedDevServer(
           sessionId,
           server.id,

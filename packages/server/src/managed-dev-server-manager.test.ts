@@ -607,6 +607,23 @@ describe('managed dev servers', () => {
       expect(sandbox.started.at(-1)!.command).toContain('changed.mjs');
     });
 
+    it('starts the newly approved command before sharing an existing process', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve(
+        's1',
+        'Demo',
+        { command: 'node changed.mjs', workdir: '.' },
+        { local: false },
+      );
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      expect(sandbox.started).toHaveLength(2);
+      expect(sandbox.started.at(-1)!.command).toContain('changed.mjs');
+      expect((await instanceOf()).localOn).toBe(false);
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });
