@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.15.0](https://github.com/Heey-Global/verity/compare/v4.14.0...v4.15.0) (2026-10-05)
+
+
+### Features
+
+* **dev-servers:** manage session servers from Preview and chat ([#1175](https://github.com/Heey-Global/verity/issues/1175)) ([c8aa031](https://github.com/Heey-Global/verity/commit/c8aa03142ec51b3b454119c334a18ecc7bb186ec))
+* **session:** add persistent planning with synchronized plan approvals ([#1163](https://github.com/Heey-Global/verity/issues/1163)) ([c774e2b](https://github.com/Heey-Global/verity/commit/c774e2b218b5fd54d65e7b436cf7ffa882a14d11))
+
+
+### Bug Fixes
+
+* **matrix:** persist early redactions and reconcile left rooms ([#1172](https://github.com/Heey-Global/verity/issues/1172)) ([f3fac93](https://github.com/Heey-Global/verity/commit/f3fac931958e0c2aae2e5539f9a91d0ecc48eb16))
+* **mobile:** keep chat-enabled Google services scoped to the session ([#1171](https://github.com/Heey-Global/verity/issues/1171)) ([7df6fcb](https://github.com/Heey-Global/verity/commit/7df6fcb7676ce21cafcf988e84963e15556a532e))
+* **release:** ignore retired OTA publication blockers ([#1173](https://github.com/Heey-Global/verity/issues/1173)) ([67542fa](https://github.com/Heey-Global/verity/commit/67542fad00b18d5176cf1c3b1439635272a2afd2))
+* **release:** plan OTA after native runtime advances ([#1170](https://github.com/Heey-Global/verity/issues/1170)) ([1f41199](https://github.com/Heey-Global/verity/commit/1f411999fecb29614969c67d3b17b2b56b748898))
+
 ## [4.14.0](https://github.com/Heey-Global/verity/compare/v4.13.0...v4.14.0) (2026-10-05)
 
 
