@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message, ToolCallMessage } from '../happy/message.js';
-import { groupRows, rowKey, rowRecycleType } from './transcriptRows.js';
+import { groupRows, rowKey, rowRecycleType, withPlanningSnapshot } from './transcriptRows.js';
 
 function userText(id: string): Message {
   return { kind: 'user-text', id, localId: null, createdAt: 0, text: id };
@@ -371,5 +371,37 @@ describe('plan rows', () => {
       toolCall('tool-start', { name: 'mcp__verity__verity_start_planning' }),
     ]);
     expect(nextRound[0]).toMatchObject({ kind: 'plan-proposal', latest: false });
+  });
+});
+
+describe('withPlanningSnapshot', () => {
+  it('restores the exact persisted plan and revision when the loaded history is truncated', () => {
+    const rows = groupRows([userText('recent')]);
+    const restored = withPlanningSnapshot(rows, {
+      planning: 'active',
+      planningPlan: 'Persisted plan to review',
+      planningRevision: 7,
+    });
+    expect(restored).toHaveLength(2);
+    expect(restored[1]).toMatchObject({
+      kind: 'plan-proposal',
+      latest: true,
+      markdown: 'Persisted plan to review',
+      message: { tool: { result: { planningRevision: 7 } } },
+    });
+    expect(
+      withPlanningSnapshot(restored, {
+        planning: 'active',
+        planningPlan: 'Persisted plan to review',
+        planningRevision: 7,
+      }),
+    ).toBe(restored);
+    expect(
+      withPlanningSnapshot(rows, {
+        planning: 'discarded',
+        planningPlan: 'Old plan',
+        planningRevision: 7,
+      }),
+    ).toBe(rows);
   });
 });

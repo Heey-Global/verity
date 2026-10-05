@@ -55,6 +55,7 @@ import {
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
+  withPlanningSnapshot,
   pullRequestStatusText,
   markdownSectionTitle,
   modelRateLimited,
@@ -1124,7 +1125,11 @@ export function SessionChat({
   // Group consecutive tool calls into one collapsible row (Claude-app style: a run
   // of tools reads as a single rolling line, not N stacked cards). The reducer keeps
   // messages chronological; grouping needs that order.
-  const transcriptData = useTranscriptRows(session.messages);
+  const loadedTranscriptData = useTranscriptRows(session.messages);
+  const transcriptData = useMemo(
+    () => withPlanningSnapshot(loadedTranscriptData, { planning, planningPlan, planningRevision }),
+    [loadedTranscriptData, planning, planningPlan, planningRevision],
+  );
   const localMeetingData = useTranscriptRows(localMeetingMessages);
   const pendingEchoData = useTranscriptRows(pendingEchoMessages);
   const liveChronologicalData = useMemo(
@@ -3282,7 +3287,7 @@ export function SessionChat({
   // "End" always asks: ending planning gives the agent its file access back, and
   // with a plan on the table the operator also has to say what becomes of it.
   const endPlanning = useCallback(() => {
-    if (!hasPresentedPlan || planningPlan === null) {
+    if (planningPlan == null) {
       Alert.alert(
         'End planning mode?',
         'The agent can change files again from your next message.',
@@ -3295,7 +3300,9 @@ export function SessionChat({
     }
     Alert.alert(
       'End planning mode?',
-      'What should happen to the latest plan? It stays in the chat either way.',
+      hasPresentedPlan
+        ? 'What should happen to the latest plan? It stays in the chat either way.'
+        : `What should happen to this plan?\n\n${planningPlan}`,
       [
         { text: 'Implement plan', onPress: () => implementPlan(planningRevision) },
         { text: 'Discard plan', style: 'destructive', onPress: () => decidePlanning('discard') },

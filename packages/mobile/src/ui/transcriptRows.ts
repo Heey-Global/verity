@@ -1,5 +1,5 @@
 import type { Message, ToolCallMessage } from '../happy/message.js';
-import { START_PLANNING_TOOL, planningToolName } from '@verity/events';
+import { PRESENT_PLAN_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 
 import { planProposal, planView, type PlanView } from './plan.js';
 
@@ -327,4 +327,45 @@ export function rowRecycleType(row: Row): string {
   }
   if (message.kind === 'user-text') return `msg:user-text:${lengthBucket(message.text.length)}`;
   return `msg:${message.kind}`;
+}
+
+/** A persisted proposal remains reviewable when its presentation is outside the loaded history. */
+export function withPlanningSnapshot(
+  rows: Row[],
+  snapshot: { planning?: string; planningPlan?: string | null; planningRevision?: number },
+): Row[] {
+  const hasProposal = (items: readonly Row[]): boolean =>
+    items.some((row) =>
+      row.kind === 'plan-proposal'
+        ? row.latest
+        : row.kind === 'delegated-agent' && hasProposal(row.childRows),
+    );
+  const { planningPlan, planningRevision } = snapshot;
+  if (
+    snapshot.planning !== 'active' ||
+    planningPlan == null ||
+    planningRevision === undefined ||
+    !Number.isSafeInteger(planningRevision) ||
+    planningRevision <= 0 ||
+    hasProposal(rows)
+  )
+    return rows;
+  const message: ToolCallMessage = {
+    kind: 'tool-call',
+    id: `planning-snapshot:${String(planningRevision)}`,
+    localId: null,
+    createdAt: 0,
+    children: [],
+    tool: {
+      name: PRESENT_PLAN_TOOL,
+      state: 'completed',
+      input: { plan: planningPlan },
+      result: { planningRevision },
+      createdAt: 0,
+      startedAt: null,
+      completedAt: null,
+      description: null,
+    },
+  };
+  return [...rows, { kind: 'plan-proposal', message, markdown: planningPlan, latest: true }];
 }

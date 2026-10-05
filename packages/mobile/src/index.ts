@@ -77,6 +77,7 @@ export {
 export {
   groupRows,
   reconcileTranscriptRows,
+  withPlanningSnapshot,
   rowKey,
   rowRecycleType,
   type Row,
