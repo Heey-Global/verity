@@ -155,7 +155,6 @@ export function StaticPreviewSheet({
   initialServer,
   onOpenSettings,
   onAskAgent,
-  initialManagedId,
   settleTimeoutMs = 1_000,
 }: {
   client: VerityClient;
@@ -165,8 +164,6 @@ export function StaticPreviewSheet({
   detectedServers?: SessionDevServer[] | undefined;
   initialServer?: SessionDevServer | undefined;
   onOpenSettings?: (() => void) | undefined;
-  /** Opens straight on a managed server's detail, from its chat card. */
-  initialManagedId?: string | undefined;
   /** Sends a request to the session's agent, for "Save as entry" and crashes. */
   onAskAgent?: ((prompt: string) => void) | undefined;
   /** How long the default tab waits for slow lists before deciding. */
@@ -248,7 +245,7 @@ export function StaticPreviewSheet({
   const [managed, setManaged] = useState<ManagedDevServer[] | null | undefined>(
     typeof client.listManagedDevServers === 'function' ? undefined : null,
   );
-  const [managedId, setManagedId] = useState<string | undefined>(initialManagedId);
+  const [managedId, setManagedId] = useState<string | undefined>();
   const [managedPending, setManagedPending] = useState<string>();
   const [managedLogs, setManagedLogs] = useState<string>();
   const loadManaged = useCallback(async () => {
@@ -376,6 +373,9 @@ export function StaticPreviewSheet({
       if (instance?.state === 'running') return instance;
       if (instance?.state === 'crashed')
         throw new Error(instance.detail ?? 'The server crashed while starting.');
+      // Stopped elsewhere meanwhile: waiting longer would only delay the cleanup.
+      if (!instance || instance.state === 'stopped')
+        throw new Error('The server stopped before the link was ready.');
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
     throw new Error('The server did not start in time.');

@@ -3584,7 +3584,10 @@ export async function buildEmbeddedServer(
       log: (message, detail) => managedDevServerLog.current?.(message, detail),
     });
     const managed = managedDevServerManager;
-    managedLinkEnded.current = (instanceId) => void managed.publicLinkEnded(instanceId);
+    // Fired from a share's teardown; a store error here must not become an
+    // unhandled rejection in the Core.
+    managedLinkEnded.current = (instanceId) =>
+      void managed.publicLinkEnded(instanceId).catch(() => undefined);
   }
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised
