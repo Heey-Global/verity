@@ -1,3 +1,4 @@
+import { ManagedDevServerStore } from './managed-dev-servers.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
@@ -1318,11 +1319,13 @@ export class EventStore implements EventSink {
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db);
+    this.managedDevServers = new ManagedDevServerStore(db);
   }
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
+  readonly managedDevServers: ManagedDevServerStore;
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
 
