@@ -176,3 +176,29 @@ it.each(['linked', 'independent'])(
     expect(git(destination, 'status', '--porcelain')).toBe('');
   },
 );
+
+it('rejects initialized submodules before modifying the checkout or recovery artifacts', async () => {
+  const sub = join(temp, 'submodule-source');
+  mkdirSync(sub);
+  git(sub, 'init', '-b', 'main');
+  git(sub, 'config', 'user.name', 'Test');
+  git(sub, 'config', 'user.email', 'test@example.com');
+  writeFileSync(join(sub, 'file'), 'submodule content');
+  git(sub, 'add', '.');
+  git(sub, 'commit', '-m', 'initial');
+  git(checkout, '-c', 'protocol.file.allow=always', 'submodule', 'add', sub, 'nested');
+  const link = readFileSync(join(checkout, 'nested', '.git'), 'utf8');
+  const destination = join(temp, 'private');
+  await expect(
+    migrateLegacySessionClone({
+      checkoutPath: checkout,
+      backupRoot,
+      destinationPath: destination,
+      stopped: true,
+    }),
+  ).rejects.toThrow('Initialized submodules require manual recovery');
+  expect(existsSync(destination)).toBe(false);
+  expect(existsSync(backupRoot)).toBe(false);
+  expect(readFileSync(join(checkout, 'nested', '.git'), 'utf8')).toBe(link);
+  expect(git(join(checkout, 'nested'), 'show', 'HEAD:file')).toBe('submodule content');
+});

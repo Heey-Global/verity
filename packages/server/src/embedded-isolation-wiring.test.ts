@@ -37,6 +37,8 @@ describe('production session isolation wiring', () => {
     expect(text).toMatch(/readOnly\s*\? await resolveSessionProject/);
     expect(text).toMatch(/'rev-parse'/);
     expect(text).toMatch(/'for-each-ref'/);
+    expect(text).toMatch(/'show-ref'/);
+    expect(text).toMatch(/args\[index \+ 2\] !== 'worktree' \|\| args\[index \+ 3\] === 'list'/);
   });
   it('protects legacy transcript cwd directories alongside private session transcripts', () => {
     const property = nodes(ts.isPropertyAssignment).find(

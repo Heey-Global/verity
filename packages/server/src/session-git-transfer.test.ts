@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -146,4 +146,37 @@ it('does not redirect cleanup when the checkout ancestor is replaced', async () 
   await transfer.cleanup();
   expect(existsSync(join(outside, name, 'keep'))).toBe(true);
   expect(existsSync(join(temp, 'displaced', name))).toBe(false);
+});
+
+it('rejects substituted FIFOs without blocking the server while waiting for a writer', async () => {
+  temp = mkdtempSync(join(tmpdir(), 'verity-transfer-fifo-'));
+  const source = join(temp, 'source');
+  const destination = join(temp, 'destination');
+  mkdirSync(source);
+  mkdirSync(destination);
+  let writer: ReturnType<typeof spawn> | undefined;
+  let openedAt = 0;
+  try {
+    await expect(
+      transferSessionCommit({
+        source,
+        destination,
+        sourceGit: async (args) => {
+          if (args.includes('rev-parse')) return 'a'.repeat(40);
+          if (args.includes('create')) {
+            const bundle = join(source, args[args.indexOf('create') + 1]!);
+            execFileSync('mkfifo', [bundle]);
+            // Release a regressed blocking open so the test fails without hanging the worker.
+            writer = spawn('sh', ['-c', 'sleep 2; printf x > "$1"', 'fifo-writer', bundle]);
+            openedAt = Date.now();
+          }
+          return '';
+        },
+        destinationGit: async () => '',
+      }),
+    ).rejects.toThrow('Session Git transfer failed');
+    expect(Date.now() - openedAt).toBeLessThan(1000);
+  } finally {
+    writer?.kill();
+  }
 });

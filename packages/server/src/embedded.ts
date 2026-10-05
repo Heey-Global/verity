@@ -2251,17 +2251,21 @@ export async function buildEmbeddedServer(
                   }
                   const project = await eventStore.getProject(session.projectId);
                   if (!project) throw new Error('Project is unavailable');
-                  const readOnly = [
-                    'rev-parse',
-                    'for-each-ref',
-                    'symbolic-ref',
-                    'reflog',
-                    'status',
-                    'diff',
-                    'log',
-                    'show',
-                    'merge-base',
-                  ].includes(args[index + 2] ?? '');
+                  const readOnly =
+                    [
+                      'rev-parse',
+                      'for-each-ref',
+                      'symbolic-ref',
+                      'reflog',
+                      'status',
+                      'diff',
+                      'log',
+                      'show',
+                      'merge-base',
+                      'show-ref',
+                      'worktree',
+                    ].includes(args[index + 2] ?? '') &&
+                    (args[index + 2] !== 'worktree' || args[index + 3] === 'list');
                   const runtimeProject = readOnly
                     ? await resolveSessionProject(session.sessionId, project)
                     : await ensureSessionProject(session.sessionId, project);

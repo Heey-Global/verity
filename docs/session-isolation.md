@@ -85,3 +85,5 @@ npx vitest run packages/server/src/session-sandbox.integration.test.ts
 Without the image and fixture-root settings, this suite is skipped. Unit and
 real-Git tests do not establish that the deployed Docker mount boundary works;
 the real-container suite must pass in a suitable deployment environment.
+
+Migration refuses checkouts with initialized submodules before relocation. Their Git storage requires manual recovery; the original checkout remains intact.

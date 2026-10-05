@@ -101,7 +101,10 @@ export async function transferSessionCommit(opts: {
     const sourceBundle = join(sourceDir, 'commit.bundle');
     const destinationBundle = join(destinationDir, 'commit.bundle');
     await opts.sourceGit(['-C', source, 'bundle', 'create', relative(source, sourceBundle), ref]);
-    const fd = openSync(sourceBundle, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const fd = openSync(
+      sourceBundle,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     try {
       // Resolve the opened inode, not a raced pathname: an agent-created symlink in
       // an ancestor must never make the server broker copy an unrelated host file.

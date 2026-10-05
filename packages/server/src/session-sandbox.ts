@@ -256,7 +256,7 @@ export class SessionSandboxProvisioner {
         current.image !== spec.image ||
         current.labels['verity.session-contract'] !== spec.labels!['verity.session-contract']
       ) {
-        await this.docker.stopContainer(name);
+        if (current.running) await this.docker.stopContainer(name);
         await this.docker.removeContainer(name);
         throw new DockerError({ kind: 'container_not_found', id: name });
       }

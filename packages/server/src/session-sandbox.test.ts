@@ -183,44 +183,49 @@ it('preserves inherited post-start and initializes the private gated workspace',
   );
 });
 
-it('recreates an owned container after a project rebuild and preserves private storage', async () => {
-  const desired = sessionSandboxSpec(template, {
-    project,
-    sessionId: 'session',
-    worktree: '/data/private/session',
-    runtimeBinds: ['/data/runners/session-session:/run/verity-runner'],
-  });
-  const docker = {
-    ensureVolume: vi.fn(async () => ({ mountpoint: undefined })),
-    inspectContainer: vi.fn(async (name: string) =>
-      name === project.containerName
-        ? template
-        : { ...template, image: 'old-image', labels: desired.labels },
-    ),
-    stopContainer: vi.fn(async () => undefined),
-    removeContainer: vi.fn(async () => undefined),
-    createContainer: vi.fn(async () => ({ id: 'new', warnings: [] })),
-    startContainer: vi.fn(async () => undefined),
-  };
-  const bootstrap = vi.fn(async () => undefined);
-  const provisioner = new SessionSandboxProvisioner({
-    docker,
-    dataVolumeRoot: '/data',
-    prepareRuntime: async () => ({}),
-    bootstrap,
-  });
-  await provisioner.ensure(project, { sessionId: 'session', worktree: '/data/private/session' });
-  expect(docker.stopContainer).toHaveBeenCalledOnce();
-  expect(docker.removeContainer).toHaveBeenCalledOnce();
-  expect(docker.createContainer).toHaveBeenCalledWith(
-    expect.objectContaining({
-      image: template.image,
-      binds: expect.arrayContaining(['/data/private/session:/work']),
-    }),
-  );
-  expect(bootstrap).toHaveBeenCalledWith(
-    expect.anything(),
-    expect.anything(),
-    expect.objectContaining({ freshContainer: true }),
-  );
-});
+it.each([true, false])(
+  'recreates an owned container after a project rebuild (running=%s)',
+  async (running) => {
+    const desired = sessionSandboxSpec(template, {
+      project,
+      sessionId: 'session',
+      worktree: '/data/private/session',
+      runtimeBinds: ['/data/runners/session-session:/run/verity-runner'],
+    });
+    const docker = {
+      ensureVolume: vi.fn(async () => ({ mountpoint: undefined })),
+      inspectContainer: vi.fn(async (name: string) =>
+        name === project.containerName
+          ? template
+          : { ...template, running, image: 'old-image', labels: desired.labels },
+      ),
+      stopContainer: vi.fn(async () => {
+        if (!running) throw new Error('Docker HTTP 304: already stopped');
+      }),
+      removeContainer: vi.fn(async () => undefined),
+      createContainer: vi.fn(async () => ({ id: 'new', warnings: [] })),
+      startContainer: vi.fn(async () => undefined),
+    };
+    const bootstrap = vi.fn(async () => undefined);
+    const provisioner = new SessionSandboxProvisioner({
+      docker,
+      dataVolumeRoot: '/data',
+      prepareRuntime: async () => ({}),
+      bootstrap,
+    });
+    await provisioner.ensure(project, { sessionId: 'session', worktree: '/data/private/session' });
+    expect(docker.stopContainer).toHaveBeenCalledTimes(running ? 1 : 0);
+    expect(docker.removeContainer).toHaveBeenCalledOnce();
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        image: template.image,
+        binds: expect.arrayContaining(['/data/private/session:/work']),
+      }),
+    );
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ freshContainer: true }),
+    );
+  },
+);
