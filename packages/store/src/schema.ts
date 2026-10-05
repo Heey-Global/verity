@@ -955,6 +955,46 @@ export interface SessionAutomationsTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+/** A dev server the agent set up for a project (concept 2.6). `name_key` is the
+ *  name normalized to upper-case letters, digits and underscores; it is unique per
+ *  project because it also names the sibling URL variable. No column holds a credential. */
+export interface ManagedDevServersTable {
+  id: string;
+  project_id: ColumnType<string, string, never>;
+  name: string;
+  name_key: string;
+  command: string;
+  workdir: ColumnType<string, string | undefined, string>;
+  /** Command template and subdirectory the operator approved for local publishing. */
+  approved_command: ColumnType<string | null, string | null | undefined, string | null>;
+  approved_workdir: ColumnType<string | null, string | null | undefined, string | null>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+/** One managed dev server bound to one session's worktree. */
+export interface ManagedDevServerInstancesTable {
+  id: string;
+  server_id: ColumnType<string, string, never>;
+  project_id: ColumnType<string, string, never>;
+  session_id: ColumnType<string, string, never>;
+  /** Internal to the sandbox; never shown to the operator. */
+  sandbox_port: number;
+  /** Reserved port from the local preview range; the only port anyone sees. */
+  network_port: ColumnType<number | null, number | null | undefined, number | null>;
+  /** `'running' | 'stopped'`: what the operator or agent asked for. */
+  desired: ColumnType<string, string | undefined, string>;
+  /** `'stopped' | 'starting' | 'running' | 'crashed'`: what the supervisor observed. */
+  state: ColumnType<string, string | undefined, string>;
+  detail: ColumnType<string | null, string | null | undefined, string | null>;
+  last_run_command: ColumnType<string | null, string | null | undefined, string | null>;
+  last_run_workdir: ColumnType<string | null, string | null | undefined, string | null>;
+  started_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  last_ran_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
 /** Structured automation schedule. Zone-less legacy schedules remain server-local. */
 export type ScheduleConfig =
   | { kind: 'interval'; everyMinutes: number }
@@ -1015,6 +1055,7 @@ export interface PublicPreviewPinLocksTable {
  * material is encrypted by EventStore before it reaches the three *_secret
  * columns. */
 export interface PublicPreviewSharesTable {
+  managed_instance_id: ColumnType<string | null, string | null | undefined, string | null>;
   pin_locked: ColumnType<boolean, boolean | undefined, boolean>;
   id: string;
   project_id: string;
@@ -1318,6 +1359,8 @@ export interface Database {
   brokered_grant_approvals: BrokeredGrantApprovalsTable;
   brokered_http_consumptions: BrokeredHttpConsumptionsTable;
   session_automations: SessionAutomationsTable;
+  managed_dev_servers: ManagedDevServersTable;
+  managed_dev_server_instances: ManagedDevServerInstancesTable;
   runner_frames: RunnerFramesTable;
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;

@@ -23497,7 +23497,9 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
       command: import_zod.z.string(),
       workdir: import_zod.z.string(),
       scope: import_zod.z.enum(["session", "project"]).optional(),
-      sessionId: import_zod.z.string().optional()
+      sessionId: import_zod.z.string().optional(),
+      /** Set when the listener belongs to a managed dev server instance. */
+      managedInstanceId: import_zod.z.string().optional()
     }))
   }),
   import_zod.z.object({

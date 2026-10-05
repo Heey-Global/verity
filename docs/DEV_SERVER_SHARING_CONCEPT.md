@@ -101,10 +101,100 @@ worktree-based cwd match stays as a fallback for processes started another way.
 Listeners that match no session are shown as project listeners so
 that nothing disappears silently.
 
-### 2.6 Starting services
+### 2.6 Managed dev servers
 
-Users or agents start HTTP/WebSocket services in a project sandbox. Verity detects the
-listeners and provides shares on them. An active share keeps the sandbox awake (ADR 0020).
+Decided 2026-10-05. This revises the earlier removal of configured dev servers: asking the
+agent to start a server every time was slow, and nobody could tell whether it was still
+running. Entries come back, but the agent creates them, Verity runs them, and the operator
+switches them on and off from the Preview sheet.
+
+**Entry per project, instance per session.** An entry holds a name, a command, and a
+subdirectory of the worktree. It belongs to the project and can be started in any session of
+it. The subdirectory must be relative and stay inside the session's worktree after resolving symlinks; absolute paths and `..` are rejected. The check runs at every start against that session's worktree, not only at `add`, because a symlink can change in between. The resolved directory is opened once and the process is launched from that handle, so the check and the launch see the same directory. Started from a session, it runs in that session's worktree. Entries live in the Verity
+database, not in the repository, so switching one off or deleting it never creates a commit.
+A repository file that seeds entries can be added later if entries should travel with the code.
+
+**Ports.** The sandbox port is an internal detail and is never shown: not in the app, not on
+the inline card, not in agent replies. Verity picks a free sandbox port for each pair of
+session and entry and passes it as `PORT` or substitutes `{port}` in the command. All sessions
+of a project share one sandbox, so this keeps two sessions running the same entry apart. The
+only port anyone sees is the network port from the local range, shown as an address such as
+`http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so a bookmark keeps working across restarts, with the exceptions listed under edge cases: eviction of a non-running pair's network port when the range is full, a silent sandbox-port change on collision, and removal of the entry. A new session may get different ports. When the local range is full, the non-running pair (stopped or crashed) whose server ran least recently, with never-run pairs counted as oldest, loses its network reservation; its sandbox port is kept. Running and starting pairs, and pairs with a live public link, are never evicted. If no reservation can be evicted under these rules, the start fails with "All network ports are in use" and names the setting that enlarges the range.
+
+**Supervision.** Verity starts the entry as its own process and tracks one of four states:
+starting, running, stopped, crashed. "Running" requires the port to answer through the same path the share forwards to, including the loopback forwarder (2.4), and the listener must belong to the entry's instance. Verity tags each instance with an environment variable that children inherit even when they daemonize, the same mechanism as session attribution (2.5). The running check and Stop both use that tag. The instance stays running while a tagged process answers on its port, even after the launched command itself exits, as a daemonizing command does; it becomes crashed only when no tagged process answers any more, with the launcher's exit code when there is one. A foreign process on the same port therefore never marks an entry running. Commands whose server clears its environment, as some daemonizers do, are not supported as entries: they never reach running and end at the startup deadline. Verity stops what still carries the tag; a process that dropped it is never killed by Verity and shows up under "Not managed" instead. Verity keeps the last few hundred lines of output, readable in the
+app and by the agent. Stopping ends the command and all its children so no orphan holds the
+port. A crashed server stays crashed and shows its error; there is no automatic restart,
+because a silent restart hides the fault. Running entries keep the sandbox awake as an active
+share does (ADR 0020). When the sandbox is recreated, for example by an update, Verity starts again what was running before, with the command that last ran; a pending `update` waits for the operator's next restart.
+
+**Agent.** `verity-dev-server` gains `add`, `update`, `remove`, `start`, `stop`, `restart`,
+`status`, `logs`, and `list`. `start` replies with the network address once the entry is published locally, and the agent names only that address. While an entry is running but not yet approved for local publishing (see edge cases), `start` replies "Running, not shared yet: tap Open on network in the Preview list", and the Preview row shows the same state. None of these needs operator approval: an entry only runs a command in the sandbox,
+which the agent may do anyway. Additions and changes appear in the chat as a small card. The
+agent-seed guidance tells the agent to start servers only through an entry, never with
+`nohup` or `&`, and to create an entry when none fits. Servers started past Verity are still
+detected and listed as not managed, with an offer to save them as an entry. They keep the same Open and Share actions as before. The existing
+`announce` command stays for that case.
+
+**Edge cases.**
+
+- _Command visibility._ An entry outlives the agent turn that created it and runs again
+  whenever the operator switches it on, in any session, and after sandbox recreation. The
+  command is therefore always shown: on the chat card for `add` and `update`, and in the
+  detail view, so the operator never starts something they cannot read.
+- _Local publishing needs one operator approval._ Decided by the operator on 2026-10-05. An entry's sandbox process may start on the agent's request, but its "On your
+  network" share is created only after the operator approved the entry once by tapping "Open
+  on network" on its row or detail view. The approval is keyed to the exact command and subdirectory it approved and is checked against what is actually executed, including the last-run values at a restart after sandbox recreation, compared before `{port}` substitution, so a changed sandbox port does not void it and an approved command line cannot be swapped for another one. The approval covers the command line, not the files it runs: the agent can still change the code behind it, as it can change any code in the worktree. Once approved, starts by the agent or after sandbox recreation publish locally without
+  another tap. Without approval the row shows "Running, not shared yet" with "Open on network".
+  The permissive alternative, publishing on every start without approval, was rejected because it would let the agent alone expose an unauthenticated service on the operator's network. The public share is always an explicit
+  operator step with its PIN and entitlement check.
+- _Startup deadline._ An entry that does not answer on its port within 60 seconds moves to
+  crashed with "Did not answer on its port", typically a command that ignores `PORT`. Missing the deadline stops every tagged process as Stop does, so nothing keeps holding the port or keeps the sandbox awake.
+- _Port collisions._ A stopped pair keeps its network reservation; eviction when the range is
+  full is the only exception. If its sandbox port is taken by another process at start, Verity
+  picks a new sandbox port silently. The network address does not change.
+- _Lifecycle._ Deleting a session stops its instances and releases both ports. Removing an entry, by the agent or the operator, first stops every running or starting instance of it and then releases both ports of all its pairs. `update`
+  applies on the next start; a running instance shows "Restart to apply changes".
+
+**User flow decisions.** Settled with the operator on 2026-10-05 after walking the flows end
+to end.
+
+- _What counts as approval._ The operator switching an entry on, and "Open on network" on the
+  inline chat card, both approve local publishing, because both are the operator's own act.
+  Only a start requested by the agent needs the one-time tap. Because a row does not show the command, the first approval of an entry, or of a changed command, opens a short confirmation that shows the command and subdirectory before anything is published.
+- _Instances in other sessions._ The list shows entries of the whole project, while the switch
+  acts on the current session. A row whose entry also runs in another session says so, for
+  example "Also running in ‘Yesterday's session'", and offers "Stop" for that instance.
+- _Archived sessions._ Archiving a session stops its instances. There is no idle timeout: a
+  server the operator or agent started keeps running until someone stops it.
+- _Public links survive restarts._ For managed entries a public link stays valid until it
+  expires, with the same address and PIN. While the server is stopped, starting, or crashed,
+  the link shows a "Currently offline" page instead of being revoked. Stopping the link itself
+  stays an explicit operator action. The link belongs to the pair, not to a port: after a sandbox-port change the connector follows the new port, and a pair with a live public link is never evicted from the local range. A public link of a stopped entry does not keep the sandbox awake, and a visitor does not wake it; the visitor sees the offline page.
+- _Several servers together._ Each instance receives the sandbox-internal URLs of the other
+  running entries of the same session as environment variables, such as
+  `VERITY_SERVER_API_URL`, derived from the entry name. Names are unique per project after normalization to upper case letters, digits, and underscores; `add` and `update` reject a name that collides with an existing one, such as `my-api` next to `my_api`. The variables are a snapshot taken at start; if a sibling later moves to another sandbox port after a collision, the dependent entry needs a restart. Entries are not started together
+  automatically; a frontend whose API is off shows its own error.
+- _Open from the list._ Tapping the address in a running row opens the browser directly,
+  without going through the detail view.
+- _Restart._ `verity-dev-server restart <name>` complements the Restart button, for example
+  after new dependencies.
+- _Approval after changes._ The chat card for an `update` says "Needs your approval again
+  after the next restart".
+- _Waking the sandbox._ Switching an entry on while the sandbox sleeps first shows "Waking
+  sandbox…", then "Starting…".
+- _Fixing a crash._ The crashed detail view offers "Ask the agent", which sends the agent the
+  entry name and a pointer to its log.
+
+**Operator.** The operator switches entries on and off and deletes them in the app. Editing
+stays with the agent, because typing a command on a phone is impractical.
+
+**Preview sheet.** The Dev server tab lists "Your servers" first, one row per entry with a
+switch, the state, and the network address while it runs. A crashed row is marked and links
+to its logs. The arrow opens the detail view: state, address, and logs at the top, then the
+two access cards ("On your network", "Over the internet"), then "Delete entry". Servers started past Verity follow under "Not managed" with "Save as entry", which asks the agent to create the entry rather than copying the detected command line: that line usually hard-codes its port and may carry secrets. The section disappears when empty. With no entries the tab says "No servers yet. Ask the agent to set up your app as
+a server." The inline chat card and the green dot on the Preview icon keep showing running
+entries.
 
 ### 2.7 Opening a local share from outside the home network
 
@@ -227,6 +317,13 @@ becomes "Open settings" and the text names Verity Premium.
 5. Rework the app: always-open Preview sheet, per-listener actions, capability-based gating,
    reachability probe with the three outcomes, inline listener card.
 6. Update `deploy/README.md`, the Compose files, and ADR 0020 references.
+7. Managed dev servers (2.6): entries table and per-session pairs holding both ports and the command and subdirectory that last ran; the local-publish approval per entry, keyed to the approved command template and subdirectory; supervised
+   start, stop, state, and log capture in the project runtime; restart after sandbox
+   recreation; `verity-dev-server` entry commands and agent-seed guidance; Preview sheet
+   rows with switches, detail view with logs, and the not-managed section.
+   Local publishing follows the approval rule under edge cases.
+   Public links of managed entries stay valid across restarts with an offline page, and
+   instances receive the internal URLs of their sibling entries (user flow decisions).
 
 ## 5. Implementation details and verification boundaries
 

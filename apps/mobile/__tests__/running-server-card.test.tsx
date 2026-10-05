@@ -44,3 +44,27 @@ it('turns a vanished listener into a stopped-server message', () => {
     body: 'boom',
   });
 });
+
+it('shows the managed recipe and never announces its internal port to screen readers', () => {
+  render(
+    <RunningServerCard
+      server={{ ...server, port: 41000, managedInstanceId: 'instance-1' }}
+      managed={{
+        id: 'entry-1',
+        name: server.name,
+        command: server.command,
+        workdir: '.',
+        approved: false,
+        instance: null,
+        elsewhere: [],
+      }}
+      opening={false}
+      disabled={false}
+      onOpen={jest.fn()}
+      onShare={jest.fn()}
+    />,
+  );
+  expect(screen.getByText(server.command)).toBeTruthy();
+  expect(screen.getByLabelText('Curtis Demo is running')).toBeTruthy();
+  expect(screen.queryByLabelText(/41000/)).toBeNull();
+});

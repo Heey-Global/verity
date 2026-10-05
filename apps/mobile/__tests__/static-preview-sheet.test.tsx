@@ -1,7 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert, Modal, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import type { PublicPreviewShare, SessionDevServer, VerityClient } from '@verity/mobile';
+import type {
+  ManagedDevServer,
+  PublicPreviewShare,
+  SessionDevServer,
+  VerityClient,
+} from '@verity/mobile';
 import { openLocalPreview } from '../components/project/previewAccess';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
@@ -869,4 +874,220 @@ it('directs a second folder to its existing public link and blocks fallback crea
   fireEvent.press(screen.getByRole('button', { name: 'Manage existing folder link' }));
   expect(await screen.findByText('https://dist.example')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
+});
+
+describe('managed dev servers', () => {
+  const demo = (overrides: Partial<ManagedDevServer> = {}): ManagedDevServer => ({
+    id: 'srv-1',
+    name: 'Curtis Demo',
+    command: 'node server.mjs --port {port}',
+    workdir: 'curtis-voice',
+    approved: true,
+    instance: {
+      id: 'inst-1',
+      localShareId: 'local-share-1',
+      sessionId: 'session-one',
+      state: 'running',
+      desired: 'running',
+      detail: null,
+      url: 'http://verity.local:8104/',
+      sandboxPort: 41000,
+      awaitingApproval: false,
+      restartToApply: false,
+      startedAt: null,
+    },
+    elsewhere: [],
+    ...overrides,
+  });
+  const managedClient = (servers: ManagedDevServer[], overrides: Partial<VerityClient> = {}) =>
+    makeClient({
+      listSessionDevServers: jest.fn(async () => [
+        { ...vite, port: 41000, name: 'node', managedInstanceId: 'inst-1' },
+        { ...vite, port: 3000, name: 'API', pid: 41, workdir: 'api', command: 'node api.js' },
+      ]),
+      listManagedDevServers: jest.fn(async () => servers),
+      managedDevServerLogs: jest.fn(async () => 'Listening\n'),
+      ...overrides,
+    });
+
+  // The sandbox port is internal: the row names the server and its network
+  // address, and its listener does not show up again as an unmanaged server.
+  it('lists managed servers by state and address, apart from unmanaged listeners', async () => {
+    renderSheet(managedClient([demo()]));
+    expect(await screen.findByText('YOUR SERVERS')).toBeTruthy();
+    expect(screen.getByText('Running · verity.local:8104')).toBeTruthy();
+    expect(screen.queryByText(/41000/)).toBeNull();
+    expect(screen.getByText('NOT MANAGED')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'API on port 3000' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'node on port 41000' })).toBeNull();
+  });
+
+  // Switching on publishes the server on the network, so the operator sees the
+  // exact command first and approves only that.
+  it('shows the command and approves exactly it before the first start', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    const controlManagedDevServer = jest.fn(async () => demo());
+    const alert = jest
+      .spyOn(Alert, 'alert')
+      .mockImplementation((_title, _message, buttons) =>
+        buttons?.find((button) => button.text === 'Allow and start')?.onPress?.(),
+      );
+    renderSheet(
+      managedClient([demo({ approved: false, instance: null })], {
+        approveManagedDevServer,
+        controlManagedDevServer,
+      }),
+    );
+    fireEvent(await screen.findByLabelText('Curtis Demo off'), 'valueChange', true);
+    await waitFor(() => expect(controlManagedDevServer).toHaveBeenCalled());
+    expect(alert.mock.calls[0]?.[1]).toContain('node server.mjs --port {port}');
+    expect(alert.mock.calls[0]?.[1]).toContain('curtis-voice');
+    expect(approveManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', {
+      command: 'node server.mjs --port {port}',
+      workdir: 'curtis-voice',
+    });
+    expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start');
+  });
+
+  it('does not start when the operator cancels the approval', async () => {
+    const controlManagedDevServer = jest.fn();
+    jest
+      .spyOn(Alert, 'alert')
+      .mockImplementation((_title, _message, buttons) =>
+        buttons?.find((button) => button.text === 'Cancel')?.onPress?.(),
+      );
+    renderSheet(
+      managedClient([demo({ approved: false, instance: null })], { controlManagedDevServer }),
+    );
+    fireEvent(await screen.findByLabelText('Curtis Demo off'), 'valueChange', true);
+    await waitFor(() => expect(Alert.alert).toHaveBeenCalled());
+    expect(controlManagedDevServer).not.toHaveBeenCalled();
+  });
+
+  it('stops a running server from its switch without asking', async () => {
+    const controlManagedDevServer = jest.fn(async () => demo());
+    renderSheet(managedClient([demo()], { controlManagedDevServer }));
+    fireEvent(await screen.findByLabelText('Curtis Demo on'), 'valueChange', false);
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+    );
+  });
+
+  it('opens the address straight from the row', async () => {
+    renderSheet(managedClient([demo()]));
+    fireEvent.press(await screen.findByRole('link', { name: 'Open Curtis Demo in the browser' }));
+    await waitFor(() =>
+      expect(openLocalPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'local-share-1', url: 'http://verity.local:8104/' }),
+        'available',
+        expect.any(Function),
+        undefined,
+      ),
+    );
+  });
+
+  it('opens a managed response without localShareId by finding the real local share', async () => {
+    const server = demo();
+    delete server.instance!.localShareId;
+    renderSheet(
+      managedClient([server], {
+        listSessionLocalPreviewShares: jest.fn(async () => [
+          { ...localShare, id: 'another-access', targetPort: server.instance!.sandboxPort },
+          { ...localShare, url: server.instance!.url!, targetPort: server.instance!.sandboxPort },
+        ]),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('link', { name: 'Open Curtis Demo in the browser' }));
+    await waitFor(() =>
+      expect(openLocalPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ id: localShare.id, url: server.instance!.url }),
+        'available',
+        expect.any(Function),
+        undefined,
+      ),
+    );
+  });
+
+  it('offers network access for a server the agent started without approval', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    jest
+      .spyOn(Alert, 'alert')
+      .mockImplementation((_title, _message, buttons) =>
+        buttons?.find((button) => button.text === 'Allow')?.onPress?.(),
+      );
+    const server = demo({
+      approved: false,
+      instance: { ...demo().instance!, url: null, awaitingApproval: true },
+    });
+    renderSheet(managedClient([server], { approveManagedDevServer }));
+    expect(await screen.findByText('Running, not shared yet')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Details for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Open on network' }));
+    await waitFor(() => expect(approveManagedDevServer).toHaveBeenCalled());
+  });
+
+  it('asks the agent to fix a crashed server and shows its last output', async () => {
+    const onAskAgent = jest.fn();
+    const crashed = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'crashed',
+        desired: 'stopped',
+        url: null,
+        detail: 'The server exited with code 1',
+      },
+    });
+    renderSheet(managedClient([crashed]), { onAskAgent });
+    fireEvent.press(await screen.findByRole('button', { name: 'Details for Curtis Demo' }));
+    expect(await screen.findByText('LAST OUTPUT')).toBeTruthy();
+    expect(await screen.findByText('Listening')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Ask the agent to fix it' }));
+    expect(onAskAgent).toHaveBeenCalledWith(
+      expect.stringContaining('verity-dev-server logs "Curtis Demo"'),
+    );
+  });
+
+  it('keeps the public link and PIN visible while a managed instance is stopped on a new port', async () => {
+    const server = demo();
+    server.instance = {
+      ...server.instance!,
+      state: 'stopped',
+      desired: 'stopped',
+      url: null,
+      sandboxPort: 41001,
+    };
+    renderSheet(
+      managedClient([server], {
+        listPublicPreviewShares: jest.fn(async () => [
+          {
+            id: 'retained',
+            projectId: 'project-one',
+            devServerId: null,
+            targetKind: 'dev-server' as const,
+            targetPort: 41000,
+            sessionId: 'session-one',
+            managedInstanceId: 'inst-1',
+            staticPath: null,
+            state: 'active' as const,
+            publicOrigin: 'https://retained.example',
+            pin: '123456',
+            expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+            createdAt: new Date().toISOString(),
+            failure: null,
+          },
+        ]),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('button', { name: 'Details for Curtis Demo' }));
+    expect(await screen.findByText('https://retained.example')).toBeTruthy();
+    expect(screen.getByText(/Currently offline/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
+  });
+
+  it('asks the agent to save an unmanaged server as an entry', async () => {
+    const onAskAgent = jest.fn();
+    renderSheet(managedClient([demo()]), { onAskAgent });
+    fireEvent.press(await screen.findByRole('button', { name: 'Save API as an entry' }));
+    expect(onAskAgent).toHaveBeenCalledWith(expect.stringContaining('verity-dev-server add'));
+  });
 });

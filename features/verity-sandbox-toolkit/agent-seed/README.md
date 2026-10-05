@@ -45,8 +45,11 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   container that was never provisioned for it. Bypass in a real emergency with
   `git commit --no-verify` / `git push --no-verify`.
 
-- `bin/verity-dev-server announce --port <port> --name <name>` labels a running
-  HTTP or WebSocket listener. The scanner verifies the actual listener; an
-  announcement neither opens access nor authorizes a share. `scan` requests an
-  immediate refresh and can be used by post-tool hooks. Bind development servers
-  to `0.0.0.0` when possible; Verity also supports loopback listeners.
+- `bin/verity-dev-server` manages dev servers that Verity runs for the agent.
+  `add`, `update` and `remove` maintain a project-wide entry (name, command,
+  subdirectory); `start`, `stop`, `restart`, `status` and `logs` act on the
+  entry in the current session. The command receives its port in `$PORT` or
+  through a `{port}` placeholder. The operator approves an entry's command once
+  before it is published on the network. `announce --port <port> --name <name>`
+  labels a server started outside Verity, and `scan` requests an immediate
+  refresh for post-tool hooks.

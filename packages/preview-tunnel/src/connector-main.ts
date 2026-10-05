@@ -1,9 +1,12 @@
 import { PreviewConnector, supervisePreviewConnector } from './index.js';
+import { startOfflinePreviewServer } from './offline-server.js';
 import { startStaticPreviewServer } from './static-server.js';
 
 const maxBodyBytes = optionalPositiveInteger('VERITY_PREVIEW_MAX_BODY_BYTES');
 const requestTimeoutMs = optionalPositiveInteger('VERITY_PREVIEW_REQUEST_TIMEOUT_MS');
 const staticRoot = process.env.VERITY_PREVIEW_STATIC_ROOT?.trim();
+const offlineServer =
+  process.env.VERITY_PREVIEW_OFFLINE === '1' ? await startOfflinePreviewServer() : undefined;
 const staticServer = staticRoot
   ? await startStaticPreviewServer(staticRoot, required('VERITY_PREVIEW_STATIC_PATH'))
   : undefined;
@@ -11,7 +14,8 @@ const connector = new PreviewConnector({
   accessMode: process.env.VERITY_PREVIEW_ACCESS_MODE === 'local-open' ? 'local-open' : 'pin',
   edgeUrl: required('VERITY_PREVIEW_EDGE_URL'),
   connectorToken: required('VERITY_PREVIEW_CONNECTOR_TOKEN'),
-  targetOrigin: staticServer?.origin ?? required('VERITY_PREVIEW_TARGET_ORIGIN'),
+  targetOrigin:
+    offlineServer?.origin ?? staticServer?.origin ?? required('VERITY_PREVIEW_TARGET_ORIGIN'),
   ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }),
   ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
 });
@@ -22,6 +26,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopping = true;
     connector.close();
     void staticServer?.close();
+    void offlineServer?.close();
   });
 }
 

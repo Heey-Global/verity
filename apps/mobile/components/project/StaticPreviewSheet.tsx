@@ -16,11 +16,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
   type LocalPreviewShare,
+  type ManagedDevServer,
   type PublicPreviewShare,
   type SessionDevServer,
   type VerityClient,
 } from '@verity/mobile';
 import { openLocalPreview } from './previewAccess';
+import { ManagedServerDetail, ManagedServerRows, managedStateLine } from './ManagedServers';
 import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
@@ -106,7 +108,10 @@ function serverDetail(server: SessionDevServer): string {
 
 function publicShareMatches(share: PublicPreviewShare, target: PreviewTarget): boolean {
   if (!isLive(share)) return false;
-  if (target.kind === 'port') return isPortShare(share) && share.targetPort === target.server.port;
+  if (target.kind === 'port')
+    return target.server.managedInstanceId
+      ? share.managedInstanceId === target.server.managedInstanceId
+      : isPortShare(share) && share.targetPort === target.server.port;
   return (
     share.targetKind === 'static-folder' &&
     normalizeFolder(share.staticPath) === normalizeFolder(target.path)
@@ -144,6 +149,8 @@ export function StaticPreviewSheet({
   detectedServers,
   initialServer,
   onOpenSettings,
+  onAskAgent,
+  initialManagedId,
   settleTimeoutMs = 1_000,
 }: {
   client: VerityClient;
@@ -153,6 +160,10 @@ export function StaticPreviewSheet({
   detectedServers?: SessionDevServer[] | undefined;
   initialServer?: SessionDevServer | undefined;
   onOpenSettings?: (() => void) | undefined;
+  /** Opens straight on a managed server's detail, from its chat card. */
+  initialManagedId?: string | undefined;
+  /** Sends a request to the session's agent, for "Save as entry" and crashes. */
+  onAskAgent?: ((prompt: string) => void) | undefined;
   /** How long the default tab waits for slow lists before deciding. */
   settleTimeoutMs?: number;
 }) {
@@ -227,6 +238,159 @@ export function StaticPreviewSheet({
   );
   const createdShareIds = useRef(new Set<string>());
   const stoppedShareIds = useRef(new Set<string>());
+
+  // Servers the agent set up and Verity runs. `null`: this Core has none.
+  const [managed, setManaged] = useState<ManagedDevServer[] | null | undefined>(
+    typeof client.listManagedDevServers === 'function' ? undefined : null,
+  );
+  const [managedId, setManagedId] = useState<string | undefined>(initialManagedId);
+  const [managedPending, setManagedPending] = useState<string>();
+  const [managedLogs, setManagedLogs] = useState<string>();
+  const loadManaged = useCallback(async () => {
+    if (typeof client.listManagedDevServers !== 'function') return;
+    try {
+      setManaged(await client.listManagedDevServers(sessionId));
+    } catch {
+      /* Keep the last list; the next refresh tries again. */
+    }
+  }, [client, sessionId]);
+  // Starting takes seconds; a short refresh while the sheet is open shows it
+  // move from starting to running without the user pulling.
+  useEffect(() => {
+    void loadManaged();
+    const timer = setInterval(() => void loadManaged(), 3_000);
+    return () => clearInterval(timer);
+  }, [loadManaged, detectedServers]);
+  const selectedManaged = managed?.find((server) => server.id === managedId);
+  useEffect(() => {
+    if (!managedId) return;
+    let active = true;
+    const load = () =>
+      void client
+        .managedDevServerLogs(sessionId, managedId)
+        .then((logs) => {
+          if (active) setManagedLogs(logs);
+        })
+        .catch(() => undefined);
+    load();
+    const timer = setInterval(load, 3_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [client, managedId, sessionId]);
+
+  /** The operator sees exactly what will run before it is allowed on the network. */
+  const confirmCommand = (server: ManagedDevServer, action: string) =>
+    new Promise<boolean>((resolve) =>
+      Alert.alert(
+        `Allow ${server.name} on your network?`,
+        `The agent set this server up. It runs:\n\n${server.command}${
+          server.workdir !== '.' ? `\n\nin ${server.workdir}` : ''
+        }\n\nAnyone on your network can open it while it runs.`,
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          { text: action, onPress: () => resolve(true) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) },
+      ),
+    );
+
+  const managedAction = async (server: ManagedDevServer, work: () => Promise<unknown>) => {
+    setManagedPending(server.id);
+    setError(undefined);
+    try {
+      await work();
+    } catch (caught) {
+      setError(previewError(caught));
+    } finally {
+      setManagedPending(undefined);
+      await loadManaged();
+    }
+  };
+
+  const approveManaged = async (server: ManagedDevServer, action: string) => {
+    if (!(await confirmCommand(server, action))) return false;
+    await client.approveManagedDevServer(sessionId, server.id, {
+      command: server.command,
+      workdir: server.workdir,
+    });
+    return true;
+  };
+
+  const toggleManaged = (server: ManagedDevServer, on: boolean) =>
+    void managedAction(server, async () => {
+      if (!on) return client.controlManagedDevServer(sessionId, server.id, 'stop');
+      // Switching on is the operator's own act and approves what runs, once
+      // they have seen the command.
+      if (!server.approved && !(await approveManaged(server, 'Allow and start'))) return;
+      return client.controlManagedDevServer(sessionId, server.id, 'start');
+    });
+
+  const restartManaged = (server: ManagedDevServer) =>
+    void managedAction(server, async () => {
+      if (!server.approved && !(await approveManaged(server, 'Allow and restart'))) return;
+      return client.controlManagedDevServer(sessionId, server.id, 'restart');
+    });
+
+  const shareManagedOnNetwork = (server: ManagedDevServer) =>
+    void managedAction(server, () => approveManaged(server, 'Allow'));
+
+  const openManaged = async (server: ManagedDevServer) => {
+    const url = server.instance?.url;
+    if (!url || !server.instance) return;
+    try {
+      const id =
+        server.instance.localShareId ??
+        (await client.listSessionLocalPreviewShares(sessionId)).find(
+          (share) =>
+            share.sessionId === sessionId &&
+            share.targetPort === server.instance?.sandboxPort &&
+            new URL(share.url).origin === new URL(url).origin,
+        )?.id;
+      if (!id) throw new Error('Network access changed. Refresh and try again.');
+      await openLocalPreview(
+        { id, url } as LocalPreviewShare,
+        publicSharing,
+        () => setManagedId(server.id),
+        onOpenSettings,
+      );
+    } catch (caught) {
+      setError(previewError(caught));
+    }
+  };
+
+  const deleteManaged = (server: ManagedDevServer) =>
+    Alert.alert(
+      `Delete ${server.name}?`,
+      'Verity stops it in every session and forgets the entry. The agent can set it up again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            void managedAction(server, async () => {
+              await client.deleteManagedDevServer(sessionId, server.id);
+              setManagedId(undefined);
+            }),
+        },
+      ],
+    );
+
+  /** A managed instance as a share target; its port is internal and not shown. */
+  const managedTarget = (server: ManagedDevServer): PreviewTarget => ({
+    kind: 'port',
+    server: {
+      port: server.instance?.sandboxPort ?? 0,
+      managedInstanceId: server.instance?.id,
+      reachable: true,
+      pid: 0,
+      name: server.name,
+      command: server.command,
+      workdir: server.workdir,
+    },
+  });
 
   const navigate = (nextPath: string) => {
     // Walking the folders pins the tab: a server starting meanwhile must not
@@ -404,6 +568,9 @@ export function StaticPreviewSheet({
         selection.kind === 'port'
           ? await client.createSessionPortPreviewShare(sessionId, {
               targetPort: selection.server.port,
+              ...(selection.server.managedInstanceId
+                ? { managedInstanceId: selection.server.managedInstanceId }
+                : {}),
               pin,
               ttlSeconds: duration,
             })
@@ -534,7 +701,12 @@ export function StaticPreviewSheet({
   }, [ticking]);
 
   const folderReady = loadedPath === path && !loading && !folderError;
-  const sessionServers = devServers.filter((server) => server.scope !== 'project');
+  const sessionServers = devServers.filter(
+    (server) => server.scope !== 'project' && !server.managedInstanceId,
+  );
+  const managedRunning = (managed ?? []).some(
+    (server) => server.instance?.state === 'running' || server.instance?.state === 'starting',
+  );
   const projectServers = devServers.filter((server) => server.scope === 'project');
   // Discovery can lose a listener while its access still needs to be stopped.
   const orphanPorts = Array.from(
@@ -546,7 +718,11 @@ export function StaticPreviewSheet({
         .filter((share) => share.targetPort !== null && localIsLive(share))
         .map((share) => share.targetPort!),
     ]),
-  ).filter((port) => !devServers.some((server) => server.port === port));
+  ).filter(
+    (port) =>
+      !devServers.some((server) => server.port === port) &&
+      !(managed ?? []).some((server) => server.instance?.sandboxPort === port),
+  );
   const liveFolderPaths = Array.from(
     new Set<string>([
       ...shares
@@ -561,7 +737,10 @@ export function StaticPreviewSheet({
   // servers when one runs or still has an access, otherwise on the folders.
   // A Core without port detection has no server tab at all.
   const hasServerTargets =
-    sessionServers.length > 0 || projectServers.length > 0 || orphanPorts.length > 0;
+    sessionServers.length > 0 ||
+    projectServers.length > 0 ||
+    orphanPorts.length > 0 ||
+    (managed ?? []).length > 0;
   const defaultTab: PreviewTab = hasServerTargets ? 'server' : 'folder';
   const activeTab: PreviewTab = !devServersSupported ? 'folder' : (tab ?? defaultTab);
   // The default is decided once, when servers and accesses are known; a server
@@ -570,6 +749,7 @@ export function StaticPreviewSheet({
   const initialStateKnown =
     settleTimedOut ||
     (!devServersLoading && hasServerTargets) ||
+    (managed !== undefined && (managed ?? []).length > 0) ||
     (!devServersLoading &&
       localSharesLoaded &&
       (publicSharesLoaded || (capabilitiesLoaded && publicSharing !== 'available')));
@@ -580,7 +760,8 @@ export function StaticPreviewSheet({
 
   const onRequestClose = () => {
     if (busy) return;
-    if (target) leaveTarget();
+    if (managedId) setManagedId(undefined);
+    else if (target) leaveTarget();
     else if (activeTab === 'folder' && path !== '') navigate(parentFolder(path));
     else onClose();
   };
@@ -691,7 +872,7 @@ export function StaticPreviewSheet({
               color={selected ? theme.colors.text : theme.colors.textMuted}
             />
             <Text style={selected ? styles.tabTextActive : styles.tabText}>{label}</Text>
-            {value === 'server' && sessionServers.length > 0 ? (
+            {value === 'server' && (sessionServers.length > 0 || managedRunning) ? (
               <View style={styles.tabDot} testID="preview-tab-server-dot" />
             ) : null}
           </Pressable>
@@ -710,23 +891,82 @@ export function StaticPreviewSheet({
         Make a server running in this session, like a website or an API, available on your network
         or through a public link.
       </Text>
-      {devServersLoading && devServers.length === 0 ? (
+      {devServersLoading && devServers.length === 0 && !managed?.length ? (
         <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
       ) : null}
+      {managed && managed.length > 0 ? (
+        <>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.label}>YOUR SERVERS</Text>
+            <Text style={styles.sectionHint}>Set up by the agent</Text>
+          </View>
+          <ManagedServerRows
+            servers={managed}
+            pendingId={managedPending}
+            onToggle={toggleManaged}
+            onOpenAddress={(server) => void openManaged(server)}
+            onSelect={(server) => {
+              setError(undefined);
+              setManagedLogs(undefined);
+              setManagedId(server.id);
+            }}
+            onStopElsewhere={(instanceId) =>
+              void client
+                .stopManagedDevServerInstance(sessionId, instanceId)
+                .then(setManaged)
+                .catch((caught: unknown) => setError(previewError(caught)))
+            }
+          />
+        </>
+      ) : null}
       {!devServersLoading &&
+      managed !== undefined &&
+      !managed?.length &&
       sessionServers.length === 0 &&
       orphanPorts.length === 0 &&
       !devServerError ? (
         <View style={styles.emptyCard}>
           <Icon name="server" size={22} color={theme.colors.textFaint} />
-          <Text style={styles.emptyTitle}>No dev server running</Text>
+          <Text style={styles.emptyTitle}>
+            {managed === null ? 'No dev server running' : 'No servers yet'}
+          </Text>
           <Text style={[styles.caption, styles.centered]}>
-            Ask the agent to start your app. It appears here as soon as it is reachable.
+            {managed === null
+              ? 'Ask the agent to start your app. It appears here as soon as it is reachable.'
+              : 'Ask the agent to set up your app as a server. You can then switch it on and off here.'}
           </Text>
         </View>
       ) : null}
       {devServerError ? <Text style={styles.error}>{devServerError}</Text> : null}
-      {sessionServers.map(renderServerRow)}
+      {sessionServers.length > 0 && managed !== null ? (
+        <>
+          <Text style={[styles.label, styles.sectionLabel]}>NOT MANAGED</Text>
+          <Text style={styles.caption}>
+            Started outside Verity. Saving one lets you switch it on and off here.
+          </Text>
+        </>
+      ) : null}
+      {sessionServers.map((server) => (
+        <View key={`unmanaged:${String(server.port)}`} style={styles.unmanaged}>
+          {renderServerRow(server)}
+          {onAskAgent && managed !== null ? (
+            <Pressable
+              onPress={() => {
+                onAskAgent(
+                  `Set up the server that runs \`${server.command}\` in ${server.workdir === '.' ? 'the worktree root' : server.workdir} as a Verity dev server entry with verity-dev-server add, using $PORT or {port} instead of a fixed port. Then stop the old process and start the entry with verity-dev-server start.`,
+                );
+                onClose();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Save ${server.name} as an entry`}
+              style={styles.saveEntry}
+            >
+              <Icon name="bookmark" size={14} color={theme.colors.primary} />
+              <Text style={styles.saveEntryText}>Save as entry</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ))}
       {orphanPorts.map((targetPort) => {
         const port = String(targetPort);
         const server: SessionDevServer = {
@@ -973,6 +1213,11 @@ export function StaticPreviewSheet({
     const share = publicShareFor(selection);
     const creating = busy === 'public';
     const stopping = busy === 'stop-public';
+    const offline =
+      selection.kind === 'port' &&
+      !!selection.server.managedInstanceId &&
+      managed?.find((entry) => entry.instance?.id === selection.server.managedInstanceId)?.instance
+        ?.state !== 'running';
     if (share) {
       const pending = share.state !== 'active' || stopping;
       return (
@@ -999,7 +1244,7 @@ export function StaticPreviewSheet({
                     ? 'Stopping'
                     : share.state === 'creating'
                       ? 'Starting'
-                      : `Live ${expiryLabel(share.expiresAt)}`}
+                      : `${offline ? 'Currently offline ·' : 'Live'} ${expiryLabel(share.expiresAt)}`}
                 </Text>
               </View>
             ),
@@ -1233,6 +1478,95 @@ export function StaticPreviewSheet({
     );
   };
 
+  const renderManagedNetworkCard = (server: ManagedDevServer) => {
+    const url = server.instance?.url ?? null;
+    return (
+      <View
+        style={[styles.card, url ? styles.cardLocalActive : null]}
+        accessibilityLabel="On your network"
+      >
+        {renderCardHeading({
+          icon: 'wifi',
+          title: 'On your network',
+          description: url
+            ? 'Straight from your Verity server, at home or over VPN. No PIN and not encrypted.'
+            : 'Not shared yet. Allow it once and Verity opens it on your network whenever it runs.',
+        })}
+        {url ? (
+          <View style={styles.actions}>
+            <Pressable
+              onPress={() => void openManaged(server)}
+              accessibilityRole="button"
+              accessibilityLabel="Open in browser"
+              style={[styles.primaryButton, styles.actionButton]}
+            >
+              <Icon name="external-link" size={16} color={theme.colors.onPrimary} />
+              <Text style={styles.actionPrimaryText}>Open in browser</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => void Clipboard.setStringAsync(url).then(() => setCopied('local-link'))}
+              accessibilityRole="button"
+              accessibilityLabel="Copy local link"
+              style={[styles.secondaryButton, styles.actionButton]}
+            >
+              <Icon
+                name={copied === 'local-link' ? 'check' : 'copy'}
+                size={16}
+                color={theme.colors.text}
+              />
+              <Text style={styles.secondaryText}>
+                {copied === 'local-link' ? 'Copied' : 'Copy link'}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            onPress={() => shareManagedOnNetwork(server)}
+            disabled={managedPending !== undefined}
+            accessibilityRole="button"
+            accessibilityLabel="Open on network"
+            style={styles.primaryButton}
+          >
+            <Icon name="wifi" size={16} color={theme.colors.onPrimary} />
+            <Text style={styles.actionPrimaryText}>Open on network</Text>
+          </Pressable>
+        )}
+      </View>
+    );
+  };
+
+  const renderManagedDetail = (server: ManagedDevServer) => (
+    <>
+      <ManagedServerDetail
+        server={server}
+        logs={managedLogs}
+        busy={managedPending !== undefined}
+        onStart={() => toggleManaged(server, true)}
+        onStop={() => toggleManaged(server, false)}
+        onRestart={() => restartManaged(server)}
+        onAskAgent={
+          onAskAgent
+            ? () => {
+                onAskAgent(
+                  `The dev server "${server.name}" crashed${server.instance?.detail ? ` (${server.instance.detail})` : ''}. Read its output with verity-dev-server logs "${server.name}", fix the cause, and start it again with verity-dev-server start "${server.name}".`,
+                );
+                onClose();
+              }
+            : undefined
+        }
+        onDelete={() => deleteManaged(server)}
+        networkCard={renderManagedNetworkCard(server)}
+        publicCard={
+          server.instance &&
+          (server.instance.state === 'running' || publicShareFor(managedTarget(server)))
+            ? renderPublicCard(managedTarget(server))
+            : null
+        }
+      />
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </>
+  );
+
   const renderAccess = (selection: PreviewTarget) => (
     <ScrollView
       style={styles.scroll}
@@ -1253,7 +1587,25 @@ export function StaticPreviewSheet({
         <View style={[styles.sheet, { paddingBottom: insets.bottom + theme.spacing.md }]}>
           <View style={styles.handle} />
           <View style={styles.header}>
-            {target ? (
+            {selectedManaged ? (
+              <Pressable
+                onPress={() => setManagedId(undefined)}
+                style={styles.headerBack}
+                accessibilityRole="button"
+                accessibilityLabel="Back to preview targets"
+                hitSlop={12}
+              >
+                <Icon name="chevron-left" size={22} color={theme.colors.text} />
+                <View style={styles.rowText}>
+                  <Text style={styles.title} numberOfLines={1}>
+                    {selectedManaged.name}
+                  </Text>
+                  <Text style={styles.rowDetail} numberOfLines={1}>
+                    {managedStateLine(selectedManaged)}
+                  </Text>
+                </View>
+              </Pressable>
+            ) : target ? (
               <Pressable
                 onPress={leaveTarget}
                 disabled={busy !== undefined}
@@ -1285,7 +1637,9 @@ export function StaticPreviewSheet({
             </Pressable>
           </View>
           <View style={styles.content}>
-            {target ? (
+            {selectedManaged ? (
+              renderManagedDetail(selectedManaged)
+            ) : target ? (
               renderAccess(target)
             ) : (
               <>
@@ -1348,6 +1702,17 @@ const styles = StyleSheet.create((theme) => ({
   list: { gap: theme.spacing.sm, paddingBottom: theme.spacing.md },
   footer: { gap: theme.spacing.md },
   label: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  sectionHint: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  unmanaged: { gap: 4 },
+  saveEntry: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    alignSelf: 'flex-end',
+    paddingVertical: theme.spacing.xs,
+  },
+  saveEntryText: { color: theme.colors.primary, fontSize: theme.text.xs, fontWeight: '600' },
   caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
   body: { color: theme.colors.text, fontSize: theme.text.sm },
   centered: { textAlign: 'center' },

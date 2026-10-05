@@ -5051,6 +5051,8 @@ export class ProvisionerImpl implements Provisioner {
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
             `VERITY_PROJECT_MEMORY_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/memory`,
+            // Managed dev servers (concept 2.6): `verity-dev-server` add/start/stop/....
+            `VERITY_DEV_SERVER_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/dev-servers`,
           ]
         : [];
     // Loopback MCP gateway (ADR 0014 D1). Same internal listener again, but no

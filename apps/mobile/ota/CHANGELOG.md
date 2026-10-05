@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.53.1](https://github.com/Heey-Global/verity/compare/mobile-v1.53.0...mobile-v1.53.1) (2026-10-05)
+
+
+### Features
+
+* **dev-servers:** manage session servers from Preview and chat ([#1175](https://github.com/Heey-Global/verity/issues/1175)) ([c8aa031](https://github.com/Heey-Global/verity/commit/c8aa03142ec51b3b454119c334a18ecc7bb186ec))
+* **session:** add persistent planning with synchronized plan approvals ([#1163](https://github.com/Heey-Global/verity/issues/1163)) ([c774e2b](https://github.com/Heey-Global/verity/commit/c774e2b218b5fd54d65e7b436cf7ffa882a14d11))
+
+
+### Bug Fixes
+
+* **mobile:** even out preview cards and name running servers by state ([#1167](https://github.com/Heey-Global/verity/issues/1167)) ([310848f](https://github.com/Heey-Global/verity/commit/310848f2e209f57c95c683f5cce93bd79208a9f3))
+* **mobile:** keep chat-enabled Google services scoped to the session ([#1171](https://github.com/Heey-Global/verity/issues/1171)) ([7df6fcb](https://github.com/Heey-Global/verity/commit/7df6fcb7676ce21cafcf988e84963e15556a532e))
+* **mobile:** pin session row icons to the row's right edge ([#1166](https://github.com/Heey-Global/verity/issues/1166)) ([17c5a0d](https://github.com/Heey-Global/verity/commit/17c5a0d308b97f156c5fc21363c862de96527dd8))
+
 ## [1.52.7](https://github.com/Heey-Global/verity/compare/mobile-v1.52.6...mobile-v1.52.7) (2026-10-05)
 
 

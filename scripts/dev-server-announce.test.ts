@@ -38,3 +38,69 @@ describe('development listener announcement', () => {
     expect(run(args).invoke).toThrow();
   });
 });
+
+describe('managed dev server commands', () => {
+  // `start` returns before the server answers; the command must wait and print
+  // the network address, because the agent repeats that line to the operator.
+  it('starts, waits for the server, and prints the address with the capability', async () => {
+    const { createServer } = await import('node:http');
+    const { writeFileSync } = await import('node:fs');
+    const { execFile } = await import('node:child_process');
+    const requests: Array<{ authorization?: string; body: Record<string, unknown> }> = [];
+    let polls = 0;
+    const server = createServer((request, response) => {
+      let raw = '';
+      request.on('data', (chunk: Buffer) => (raw += chunk.toString()));
+      request.on('end', () => {
+        const body = JSON.parse(raw) as Record<string, unknown>;
+        requests.push({ authorization: request.headers.authorization, body });
+        const reply =
+          body.action === 'status'
+            ? ++polls < 2
+              ? { server: 'Demo: starting', state: 'starting' }
+              : { server: 'Demo: running at http://verity.local:8104', state: 'running' }
+            : { server: 'Demo: starting' };
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify(reply));
+      });
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const root = mkdtempSync(join(tmpdir(), 'verity-managed-cli-'));
+    directories.push(root);
+    writeFileSync(join(root, 'cap'), 'capability-1\n');
+    try {
+      const address = server.address() as { port: number };
+      const stdout = await new Promise<string>((done, reject) =>
+        execFile(
+          process.execPath,
+          [resolve('agent-seed/bin/verity-dev-server'), 'start', 'Demo'],
+          {
+            env: {
+              ...process.env,
+              VERITY_DEV_SERVER_URL: `http://127.0.0.1:${String(address.port)}/internal/dev-servers`,
+              VERITY_GH_BROKER_CAPABILITY_FILE: join(root, 'cap'),
+              VERITY_SESSION_ID: 'session-1',
+            },
+          },
+          (error, out) => (error ? reject(new Error(error.message)) : done(out)),
+        ),
+      );
+      expect(stdout.trim()).toBe('Demo: running at http://verity.local:8104');
+      expect(requests[0]).toEqual({
+        authorization: 'Bearer capability-1',
+        body: { action: 'start', name: 'Demo', sessionId: 'session-1' },
+      });
+    } finally {
+      server.close();
+    }
+  }, 30_000);
+});
+
+// The toolkit ships its own copy of the agent seed; a fix in one copy alone
+// would reach only some sandboxes.
+it('keeps the toolkit copy of verity-dev-server identical to the agent seed', async () => {
+  const { readFileSync: read } = await import('node:fs');
+  expect(
+    read(resolve('features/verity-sandbox-toolkit/agent-seed/bin/verity-dev-server'), 'utf8'),
+  ).toBe(read(resolve('agent-seed/bin/verity-dev-server'), 'utf8'));
+});
