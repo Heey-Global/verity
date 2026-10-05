@@ -213,10 +213,9 @@ its two access switches decide whether it runs.
   Stop turns both switches off, with the same confirmation when it ends a public link.
 
 **Preview sheet.** The Dev server tab shows one block per entry. The block header holds the name,
-"Stopped" or the state as plain text ("Running", "Starting…", "Crashed", "Running, not shared yet"), and on
-the right "Details ›", or "View output ›" after a crash; the whole header opens the detail view.
+the state as a StatusPill ("✓ Running", spinner with "Starting…", "! Crashed"; a stopped entry shows muted "– Stopped" and an unapproved running one "✓ Running" followed by muted "not shared yet"), and on the right "Details ›", or "View output ›" after a crash; the whole header opens the detail view.
 Below it a card with two rows, Local and Shared online, each with its icon, its switch, and,
-while on, its address. The Local address opens the browser when tapped and has an open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in, which the edge exchanges for a session cookie and strips from the address (2.2); below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies the address only; the PIN is never part of a copied or displayed address.
+while on, its address. The Local address opens the browser when tapped; there is no separate open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in, which the edge exchanges for a session cookie and strips from the address (2.2); below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies the address only; the PIN is never part of a copied or displayed address.
 
 The detail view shows the state and since when, Restart and Stop while it runs, Start again and Ask the agent after a crash, and Start when stopped, the output, the command with its subdirectory and the note that the agent
 changes it, and "Delete entry" at the bottom. 
@@ -285,7 +284,7 @@ stream the app already holds.
 
 ### 2.10 App flow: what first, then how
 
-This flow applies to static folders and to servers started past Verity. Managed entries (2.6) show their two accesses as switches directly in the list and use the same names: the Local switch is the Local network access, and Shared online is the public link.
+This flow applies to static folders and to servers started past Verity. Managed entries (2.6) show their two accesses as switches directly in the list and use the same two names, Local and Shared online.
 
 The sheet asks two questions one after the other and never mixes them.
 
@@ -308,7 +307,7 @@ their active accesses, "Local" and "Shared online until HH:MM".
 **Step two, how.** Two cards, stacked, because both can be active at once and each owns its
 own state and actions. Each card names who can see the preview.
 
-- **Local network.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
+- **Local.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
   the card says that anyone on that network can open it. "Open in browser" creates the local
   share on first use and hands reachability to the probe in 2.7, plus "Copy link". While a local
   share exists the card shows its URL and "Turn off".
