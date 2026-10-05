@@ -1936,13 +1936,22 @@ describe('VerityClient.setSessionSeen (#387)', () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1', lastSeenEventCount: 7 }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    const res = await client.setSessionSeen('s1', 7);
+    const res = await client.setSessionSeen('s1', 7, 'dev-servers-excluded-v1');
 
     expect(res).toEqual({ sessionId: 's1', lastSeenEventCount: 7 });
     expect(calls[0]?.url).toBe('http://host/sessions/s1/seen');
     expect(calls[0]?.init?.method).toBe('PATCH');
     expect(calls[0]?.init?.headers).toEqual({ 'content-type': 'application/json' });
-    expect(calls[0]?.init?.body).toBe(JSON.stringify({ eventCount: 7 }));
+    expect(calls[0]?.init?.body).toBe(
+      JSON.stringify({ eventCount: 7, counterVersion: 'dev-servers-excluded-v1' }),
+    );
+  });
+
+  it('does not label a legacy server count with a newer version', async () => {
+    const { fetch, calls } = fakeFetch(json({ sessionId: 's1', lastSeenEventCount: 2 }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.setSessionSeen('s1', 2);
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ eventCount: 2 }));
   });
 
   it('encodes the session id in the path', async () => {

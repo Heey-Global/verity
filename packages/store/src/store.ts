@@ -852,6 +852,7 @@ function emptyUsageTotals(): UsageTotals {
  * {@link EventStore.listSessionProjectionFacts}.
  */
 export interface SessionEventStats {
+  /** Persisted events excluding dev-server snapshots; used for unread state. */
   eventCount: number;
   lastEventSeq: number;
   lastActivityAt: number | null;
@@ -860,9 +861,7 @@ export interface SessionEventStats {
 }
 
 export interface SessionProjectionFacts {
-  /** Total persisted events (#387) — the unread counter, and the ONLY thing that
-   *  distinguishes an empty log (status `idle`) from one holding nothing the
-   *  status projection reads (status `running`). */
+  /** Persisted events excluding dev-server snapshots; the overview unread counter. */
   eventCount: number;
   /** Highest event seq visible in the snapshot; bounds a later fallback read. */
   lastEventSeq: number;
