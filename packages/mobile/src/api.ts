@@ -545,6 +545,7 @@ const managedDevServerSchema = z.object({
       desired: z.enum(['running', 'stopped']),
       detail: z.string().nullable(),
       url: z.string().url().nullable(),
+      localShareId: z.string().nullable().optional(),
       /** Internal; a share target only, never shown. */
       sandboxPort: z.number().int(),
       awaitingApproval: z.boolean(),

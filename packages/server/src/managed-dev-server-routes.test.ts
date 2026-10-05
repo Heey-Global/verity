@@ -36,6 +36,7 @@ function view(
         ? null
         : {
             id: 'inst',
+            localShareId: 'local-share',
             sessionId: 's1',
             state: 'running',
             desired: 'running',

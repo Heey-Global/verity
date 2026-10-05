@@ -885,6 +885,7 @@ describe('managed dev servers', () => {
     approved: true,
     instance: {
       id: 'inst-1',
+      localShareId: 'local-share-1',
       sessionId: 'session-one',
       state: 'running',
       desired: 'running',
@@ -977,7 +978,7 @@ describe('managed dev servers', () => {
     fireEvent.press(await screen.findByRole('link', { name: 'Open Curtis Demo in the browser' }));
     await waitFor(() =>
       expect(openLocalPreview).toHaveBeenCalledWith(
-        expect.objectContaining({ url: 'http://verity.local:8104/' }),
+        expect.objectContaining({ id: 'local-share-1', url: 'http://verity.local:8104/' }),
         'available',
         expect.any(Function),
         undefined,

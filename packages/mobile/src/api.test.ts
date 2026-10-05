@@ -3563,3 +3563,52 @@ describe('local preview shares', () => {
     expect(JSON.parse(typeof body === 'string' ? body : '')).toEqual({ targetPort: 5173 });
   });
 });
+
+describe('managed dev server client', () => {
+  const server = {
+    id: 'entry-1',
+    name: 'Web',
+    command: 'npm run dev',
+    workdir: '.',
+    approved: true,
+    instance: {
+      id: 'instance-1',
+      localShareId: 'local-share-1',
+      sessionId: 's1',
+      state: 'running',
+      desired: 'running',
+      detail: null,
+      url: 'http://localhost:8100/',
+      sandboxPort: 41000,
+      awaitingApproval: false,
+      restartToApply: false,
+      startedAt: null,
+    },
+    elsewhere: [],
+  };
+
+  // Browser probing uses the local share id, independently minted from the instance.
+  it('preserves the local share identity while resolving its network host', async () => {
+    const { fetch } = fakeFetch(json({ servers: [server] }));
+    const client = new VerityClient({ baseUrl: 'http://verity.local:3000', fetch });
+    const entries = await client.listManagedDevServers('s1');
+    expect(entries?.[0]?.instance).toMatchObject({
+      id: 'instance-1',
+      localShareId: 'local-share-1',
+      url: 'http://verity.local:8100/',
+    });
+  });
+
+  it('falls back for an older Core but preserves an actual missing-session error', async () => {
+    const { fetch } = fakeFetchSequence(
+      json({ error: 'Not Found' }, 404),
+      json({ error: 'session not found' }, 404),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listManagedDevServers('s1')).toBeNull();
+    await expect(client.listManagedDevServers('missing')).rejects.toMatchObject({
+      status: 404,
+      message: 'session not found',
+    });
+  });
+});

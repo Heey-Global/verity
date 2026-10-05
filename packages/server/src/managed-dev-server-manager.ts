@@ -86,6 +86,7 @@ export interface ManagedInstanceView {
   detail: string | null;
   /** The network address; set while the instance is published locally. */
   url: string | null;
+  localShareId: string | null;
   /** Internal; the app uses it only as a share target and never displays it. */
   sandboxPort: number;
   /** True while running without the operator's approval for local publishing. */
@@ -284,6 +285,7 @@ export class ManagedDevServerManager {
       desired: instance.desired,
       detail: instance.detail,
       url,
+      localShareId: url ? (this.shareFor(instance)?.id ?? null) : null,
       sandboxPort: instance.sandboxPort,
       awaitingApproval:
         instance.state === 'running' && url === null && !this.ranApproved(entry, instance),
@@ -623,7 +625,12 @@ export class ManagedDevServerManager {
     )
       return;
     const existing = this.shareFor(instance);
-    if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
+    if (
+      existing &&
+      existing.targetPort === instance.sandboxPort &&
+      existing.expiresAt.getTime() - this.now() > 86_400_000
+    )
+      return;
     // A share close to its end is replaced on the same port; the local manager
     // would otherwise hand the old one back unchanged.
     if (existing) await this.options.localShares?.stop(existing.id).catch(() => false);
@@ -800,6 +807,7 @@ export class ManagedDevServerManager {
         );
         if (recent.length >= 3) {
           this.recoveries.delete(instance.id);
+          await this.unpublish(instance);
           await this.servers.updateInstance(instance.id, {
             desired: 'stopped',
             state: 'crashed',

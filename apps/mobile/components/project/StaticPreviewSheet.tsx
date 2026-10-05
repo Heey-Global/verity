@@ -338,9 +338,9 @@ export function StaticPreviewSheet({
 
   const openManaged = async (server: ManagedDevServer) => {
     const url = server.instance?.url;
-    if (!url) return;
+    if (!url || !server.instance?.localShareId) return;
     await openLocalPreview(
-      { id: server.instance!.id, url } as LocalPreviewShare,
+      { id: server.instance.localShareId, url } as LocalPreviewShare,
       publicSharing,
       () => setManagedId(server.id),
       onOpenSettings,

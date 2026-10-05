@@ -257,6 +257,36 @@ describe('managed dev servers', () => {
 
   // After a sandbox is recreated nothing runs and no exit was recorded. The
   // server comes back with the command that last ran, not a pending update.
+  it('retargets a retained local address after a sandbox-port collision', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: 'node server.mjs', workdir: '.' });
+    await manager.start('s1', 'Demo', 'agent');
+    const first = sandbox.started[0]!;
+    sandbox.listen(first.instanceId, Number(first.env.PORT));
+    await manager.tick();
+    const old = (await manager.view('s1'))[0]!.instance!;
+    expect(old.localShareId).toBe(shares.shares[0]!.id);
+    expect(old.localShareId).not.toBe(old.id);
+    sandbox.recreate();
+    sandbox.listeners.push({
+      port: Number(first.env.PORT),
+      bind: 'any',
+      pid: 7,
+      cwd: '/work',
+      command: 'foreign',
+      sessionId: 's1',
+    });
+    now += 10_000;
+    await manager.tick();
+    const second = sandbox.started[1]!;
+    expect(second.env.PORT).not.toBe(first.env.PORT);
+    sandbox.listen(second.instanceId, Number(second.env.PORT));
+    await manager.tick();
+    expect(shares.shares).toHaveLength(1);
+    expect(shares.shares[0]!.targetPort).toBe(Number(second.env.PORT));
+    expect((await manager.view('s1'))[0]!.instance!.url).toBe(old.url);
+  });
+
   it('restarts after sandbox recreation with the command that last ran', async () => {
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
     await manager.start('s1', 'Demo', 'agent');
@@ -421,4 +451,21 @@ describe('managed dev servers', () => {
     expect(sandbox.stop).toHaveBeenCalledTimes(2);
     expect(await manager.view('s1')).toEqual([]);
   });
+});
+
+it('removes network access when repeated external kills exhaust recovery', async () => {
+  await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+  await manager.approve('s1', 'Demo', { command: 'node server.mjs', workdir: '.' });
+  await manager.start('s1', 'Demo', 'agent');
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const launched = sandbox.started.at(-1)!;
+    sandbox.listen(launched.instanceId, Number(launched.env.PORT));
+    await manager.tick();
+    expect(shares.shares).toHaveLength(1);
+    sandbox.recreate();
+    now += 10_000;
+    await manager.tick();
+  }
+  expect(await instanceOf()).toMatchObject({ state: 'crashed', desired: 'stopped' });
+  expect(shares.shares).toHaveLength(0);
 });

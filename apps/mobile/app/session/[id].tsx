@@ -3889,12 +3889,12 @@ export function SessionChat({
                     current = approved.find((value) => value.id === current.id) ?? current;
                   }
                   const url = current.instance?.url;
-                  if (!url || !current.instance) return openEntry();
+                  if (!url || !current.instance?.localShareId) return openEntry();
                   const capabilities = await client
                     .getPreviewCapabilities()
                     .catch(() => ({ publicSharing: 'unavailable' as const }));
                   await openLocalPreview(
-                    { id: current.instance.id, url } as LocalPreviewShare,
+                    { id: current.instance.localShareId, url } as LocalPreviewShare,
                     capabilities.publicSharing,
                     openEntry,
                     () => router.push('/settings/services'),
