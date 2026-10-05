@@ -1742,6 +1742,7 @@ function SessionRow({
   // would have used is not the thing to say — and the row keeps its height, which
   // this list re-measures on every poll.
   const notice = attentionNotice(session.attention);
+  const automationActive = session.automation?.status === 'enabled';
   // Accent wash marking the row whose rename sheet is open. Driven by an animated
   // value so that on close it lingers a beat and fades out (rather than vanishing)
   // as the sheet dismisses; on open it snaps in.
@@ -1770,62 +1771,75 @@ function SessionRow({
           finished session with something new to read), else nothing. */}
       <View style={styles.colChevron} />
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
-      <View style={styles.titleBlock}>
-        <Text style={styles.sessionTitle} numberOfLines={1}>
-          {label}
-        </Text>
-        {/* Model name, then the session's standing features. The model is always
-            there and the icons are not, so the model keeps the left edge and the
-            icons follow it; its fixed width lets them start at the same x in every
-            row without holding space for an icon that is absent. */}
-        <View style={styles.sessionSubLine}>
+      {/* Two lines, each with a left and a right end, so the row reads as a small
+          table: name and model on the left; on the right the attention markers and
+          lifecycle label beside the name, and the session's standing features
+          (automation, preview) beside the model. Pinning the features to the row's
+          right edge lines them up across rows whatever the model name's length,
+          and a lone icon sits at that edge instead of floating mid-row. */}
+      <View style={[styles.titleBlock, styles.sessionTitleBlock]}>
+        <View style={styles.sessionLine}>
+          <Text style={styles.sessionTitle} numberOfLines={1}>
+            {label}
+          </Text>
+          {markers.length > 0 || showLabel ? (
+            <View style={[styles.sessionLineEnd, styles.sessionTitleLineEnd]}>
+              <AttentionMarkers flags={markers} />
+              {/* The lifecycle label is hidden while working since the left dot
+                  already conveys it. */}
+              {showLabel ? (
+                <View
+                  style={[
+                    styles.statusPill,
+                    { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                  ]}
+                >
+                  <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                    {badge.label}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.sessionLine}>
           <Text
             style={[
               styles.rowSub,
-              notice ? { color: theme.colors.tone.danger, flexShrink: 1 } : styles.sessionModel,
+              styles.sessionSub,
+              notice ? { color: theme.colors.tone.danger } : null,
             ]}
             numberOfLines={1}
             {...(notice ? { accessibilityRole: 'alert' as const } : {})}
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {session.automation?.status === 'enabled' ? (
-            <View accessible accessibilityLabel="Automation active">
-              <Icon name="repeat" size={13} color={theme.colors.primary} />
+          {automationActive || previewActive ? (
+            <View style={styles.sessionLineEnd}>
+              {automationActive ? (
+                <View accessible accessibilityLabel="Automation active">
+                  <Icon name="repeat" size={14} color={theme.colors.primary} />
+                </View>
+              ) : null}
+              {previewActive ? (
+                <Pressable
+                  // openURL rejects only if no handler can open the URL; swallow it.
+                  // Enabled even without a URL yet: a disabled Pressable lets the tap
+                  // fall through to the row, which would open the session instead.
+                  onPress={() =>
+                    previewUrl && void Linking.openURL(previewUrl).catch(() => undefined)
+                  }
+                  hitSlop={8}
+                  accessibilityRole="link"
+                  accessibilityLabel="Open preview"
+                  accessibilityState={{ disabled: !previewUrl }}
+                >
+                  <Icon name="monitor" size={14} color={theme.colors.primary} />
+                </Pressable>
+              ) : null}
             </View>
           ) : null}
-          {previewActive ? (
-            <Pressable
-              // openURL rejects only if no handler can open the URL; swallow it.
-              // Enabled even without a URL yet: a disabled Pressable lets the tap fall
-              // through to the row, which would open the session instead.
-              onPress={() => previewUrl && void Linking.openURL(previewUrl).catch(() => undefined)}
-              hitSlop={8}
-              accessibilityRole="link"
-              accessibilityLabel="Open preview"
-              accessibilityState={{ disabled: !previewUrl }}
-            >
-              <Icon name="monitor" size={13} color={theme.colors.primary} />
-            </Pressable>
-          ) : null}
         </View>
-      </View>
-      {/* Right: attention icons, then the lifecycle label — hidden while working
-          since the left dot already conveys it. */}
-      <View style={styles.rowTrail}>
-        <AttentionMarkers flags={markers} />
-        {showLabel ? (
-          <View
-            style={[
-              styles.statusPill,
-              { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
-            ]}
-          >
-            <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
-              {badge.label}
-            </Text>
-          </View>
-        ) : null}
       </View>
     </View>
   );
@@ -2408,10 +2422,11 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 48,
     backgroundColor: theme.colors.surface,
   },
-  // The [chevron | dot | title | trail] grid. Lives on a plain child View (not the
-  // Pressable) because `<Link asChild>` drops the Pressable's style in the narrow
-  // layout; `flex: 1` fills the Pressable's width in both layouts. paddingLeft ==
-  // the project header's, so a session's leading columns line up under the project's.
+  // The [chevron | dot | title] grid; the title block carries its own right ends.
+  // Lives on a plain child View (not the Pressable) because `<Link asChild>` drops
+  // the Pressable's style in the narrow layout; `flex: 1` fills the Pressable's
+  // width in both layouts. paddingLeft == the project header's, so a session's
+  // leading columns line up under the project's.
   rowInner: {
     flex: 1,
     flexDirection: 'row',
@@ -2442,13 +2457,6 @@ const styles = StyleSheet.create((theme) => ({
   rowPressed: {
     opacity: 0.6,
   },
-  rowTrail: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.sm,
-    paddingRight: theme.spacing.lg,
-  },
   rowSub: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
@@ -2462,18 +2470,20 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
     lineHeight: 19 * theme.fontScale,
   },
-  sessionSubLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
-  // A fixed basis that fits a typical model name ("Codex gpt-6.1-astra"), so the
-  // icons after it line up across rows; a longer name is cut short rather than
-  // pushing them. A basis, not a minWidth: a minWidth is a floor flexShrink cannot
-  // go below, which on a narrow row or at a large font scale would push the icons
-  // out of the row instead of shrinking the name.
-  sessionModel: {
-    flexBasis: 150 * theme.fontScale,
-    flexGrow: 0,
-    flexShrink: 1,
-    minWidth: 0,
-    marginRight: theme.spacing.xs,
+  // The session row has no separate trail column: each line carries its own right
+  // end, so the block runs to the row's right edge.
+  sessionTitleBlock: { paddingRight: theme.spacing.lg },
+  sessionLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  sessionSub: { minWidth: 0, flexShrink: 1 },
+  // Held to the title's line height so the label, which is a hair taller, cannot
+  // grow the row when it appears or hides on a working <-> idle switch; this list
+  // re-measures rows on every poll.
+  sessionTitleLineEnd: { height: 19 * theme.fontScale },
+  sessionLineEnd: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
   },
   statusPill: {
     paddingHorizontal: theme.spacing.sm,
