@@ -4807,7 +4807,7 @@ describe('GET /projects (#174)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 2 },
+      payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ sessionId: 's-seen', lastSeenEventCount: 2 });
@@ -4816,7 +4816,7 @@ describe('GET /projects (#174)', () => {
     const stale = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 1 },
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(stale.json()).toMatchObject({ lastSeenEventCount: 2 });
 
@@ -4834,7 +4834,7 @@ describe('GET /projects (#174)', () => {
     await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,
-      payload: { eventCount: 1 },
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
     });
     await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
     const listed = await app.inject({ method: 'GET', url: '/sessions' });
@@ -4861,14 +4861,22 @@ describe('GET /projects (#174)', () => {
     const stale = await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,
-      payload: { eventCount: 3 },
+      payload: { eventCount: 3, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(stale.statusCode).toBe(409);
+    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    // The legacy count can also overlap the new count; an upper bound cannot detect it.
+    const overlapping = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 2 },
+    });
+    expect(overlapping.statusCode).toBe(409);
     expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
     const valid = await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,
-      payload: { eventCount: 2 },
+      payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(valid.statusCode).toBe(200);
     expect(valid.json()).toMatchObject({ lastSeenEventCount: 2 });
@@ -4878,7 +4886,7 @@ describe('GET /projects (#174)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/does-not-exist/seen',
-      payload: { eventCount: 1 },
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ error: expect.stringContaining('not found') });

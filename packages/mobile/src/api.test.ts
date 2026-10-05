@@ -1942,7 +1942,9 @@ describe('VerityClient.setSessionSeen (#387)', () => {
     expect(calls[0]?.url).toBe('http://host/sessions/s1/seen');
     expect(calls[0]?.init?.method).toBe('PATCH');
     expect(calls[0]?.init?.headers).toEqual({ 'content-type': 'application/json' });
-    expect(calls[0]?.init?.body).toBe(JSON.stringify({ eventCount: 7 }));
+    expect(calls[0]?.init?.body).toBe(
+      JSON.stringify({ eventCount: 7, counterVersion: 'dev-servers-excluded-v1' }),
+    );
   });
 
   it('encodes the session id in the path', async () => {
