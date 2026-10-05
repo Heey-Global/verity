@@ -1,15 +1,16 @@
 {
   "schema": 1,
-  "version": "1.52.5",
+  "version": "1.52.6",
   "runtime": "1.52.0",
   "channel": "production",
-  "commit": "4dd2510d27fafc9d2669b99024e7a322409c8987",
-  "tag": "mobile-v1.52.5",
-  "branch": "staging-mobile-v1.52.5-4dd2510d27fafc9d2669b99024e7a322409c8987",
-  "baseline": "mobile-v1.52.4",
-  "group": "358c761b-6c14-4af5-9f46-dc3785aa3e1f",
+  "commit": "de940f13389cbe71c089d3db23625c47dba81e9a",
+  "tag": "mobile-v1.52.6",
+  "branch": "staging-mobile-v1.52.6-de940f13389cbe71c089d3db23625c47dba81e9a",
+  "baseline": "mobile-v1.52.5",
+  "group": "753273a9-6a0f-4ab4-acaf-26601b9cb30e",
   "notes": [
-    "Breaking: exclude dev-server events from unread badges (#1149)",
-    "explain both preview tabs in plain words (#1144)"
+    "show agent plans as a live checklist (#1148)",
+    "expose OTA update failure diagnostics (#1152)",
+    "add correlated Core transport diagnostics (#1150)"
   ]
 }
