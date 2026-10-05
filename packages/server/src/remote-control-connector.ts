@@ -1,5 +1,6 @@
 import { createConnection, type Socket } from 'node:net';
 import WebSocket from 'ws';
+import { RemoteTransportDiagnostics } from './remote-transport-diagnostics.js';
 import type {
   RemoteConnectorRequest,
   RemoteConnectorReservation,
@@ -184,6 +185,8 @@ class ConnectorSession implements RemoteConnectorReservation {
   private attachReject: ((error: Error) => void) | undefined;
   private attachTimer: NodeJS.Timeout | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
+  private diagnosticTimer: NodeJS.Timeout | undefined;
+  private readonly diagnostics: RemoteTransportDiagnostics;
   private unansweredPingSince: number | undefined;
 
   constructor(
@@ -192,6 +195,7 @@ class ConnectorSession implements RemoteConnectorReservation {
     private readonly onRelease: () => void,
     private readonly onStreamEnded: (record: RemoteStreamRecord) => void = () => undefined,
   ) {
+    this.diagnostics = new RemoteTransportDiagnostics(request.sessionId);
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -223,10 +227,18 @@ class ConnectorSession implements RemoteConnectorReservation {
         this.attachTimer = setTimeout(() => this.release('remote ticket expired'), remaining);
         this.attachTimer.unref();
         ws.on('open', () => {
-          if (!this.terminated) ws.send(JSON.stringify({ type: 'attach', ticket }));
+          if (!this.terminated) {
+            this.logTransport('socket_open');
+            if (this.options.log) {
+              this.diagnosticTimer = setInterval(() => this.logTransport('sample'), 5_000);
+              this.diagnosticTimer.unref();
+            }
+            ws.send(JSON.stringify({ type: 'attach', ticket }));
+          }
         });
         ws.on('message', (data, isBinary) => {
           if (this.terminated) return;
+          this.diagnostics.receive(Buffer.isBuffer(data) ? data.length : 0);
           if (isBinary || !Buffer.isBuffer(data) || data.byteLength > MAX_FRAME_BYTES) {
             this.failProtocol({ type: isBinary ? '(binary)' : '(oversize)' });
             return;
@@ -238,6 +250,8 @@ class ConnectorSession implements RemoteConnectorReservation {
             this.failProtocol({ type: '(unparseable)' });
             return;
           }
+          if (frame && typeof frame === 'object' && !Array.isArray(frame))
+            this.diagnostics.frame('in', frame as Frame);
           if (!this.ready) {
             if (
               !isFrame(frame, 'attached', ['sessionId', 'capability']) ||
@@ -252,31 +266,31 @@ class ConnectorSession implements RemoteConnectorReservation {
             this.attachTimer = undefined;
             this.attachReject = undefined;
             this.startHeartbeat(ws);
+            this.logTransport('attached');
             resolve();
             return;
           }
           try {
             this.handleFrame(frame);
-          } catch (error) {
+          } catch {
             this.options.log?.warn(
-              { sessionId: this.request.sessionId, error },
+              { sessionId: this.request.sessionId, code: 'stream_handler_failed' },
               'remote connector stream handling failed',
             );
             this.release('remote stream failed');
           }
         });
-        ws.on('error', (error) => {
+        ws.on('error', () => {
           this.options.log?.warn(
-            { sessionId: this.request.sessionId, error },
+            { sessionId: this.request.sessionId, code: 'data_socket_error' },
             'remote data connection error',
           );
           this.release('remote data connection failed');
         });
-        ws.on('close', (code, reason) =>
-          this.release(
-            `remote data connection closed (${String(code)}${reason.length ? `: ${reason.toString('utf8').slice(0, 64)}` : ''})`,
-          ),
-        );
+        ws.on('close', (code) => {
+          this.logTransport(`socket_close_${String(code)}`);
+          this.release(`remote data connection closed (${String(code)})`);
+        });
       });
     } finally {
       signal.removeEventListener('abort', onAbort);
@@ -290,11 +304,13 @@ class ConnectorSession implements RemoteConnectorReservation {
   private startHeartbeat(ws: WebSocket): void {
     ws.on('pong', () => {
       this.unansweredPingSince = undefined;
+      this.diagnostics.heartbeat('pong');
     });
     this.heartbeat = setInterval(() => {
       if (this.terminated || ws.readyState !== WebSocket.OPEN) return;
       if (this.unansweredPingSince === undefined) {
         this.unansweredPingSince = Date.now();
+        this.diagnostics.heartbeat('ping');
         ws.ping();
       } else if (Date.now() - this.unansweredPingSince > DATA_PONG_DEADLINE_MS) {
         ws.terminate();
@@ -332,6 +348,8 @@ class ConnectorSession implements RemoteConnectorReservation {
     if (this.terminated) return;
     this.terminated = true;
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.diagnosticTimer) clearInterval(this.diagnosticTimer);
+    this.logTransport('release');
     this.options.log?.info(
       {
         sessionId: this.request.sessionId,
@@ -356,7 +374,17 @@ class ConnectorSession implements RemoteConnectorReservation {
     // Only the frame type: payloads are inner TLS records and stream IDs are enough to correlate.
     const type =
       frame && typeof frame === 'object' && !Array.isArray(frame)
-        ? String((frame as Frame).type).slice(0, 32)
+        ? [
+            'stream.open',
+            'stream.data',
+            'stream.end',
+            'stream.reset',
+            '(binary)',
+            '(oversize)',
+            '(unparseable)',
+          ].includes(String((frame as Frame).type))
+          ? String((frame as Frame).type)
+          : 'unknown'
         : typeof frame;
     this.options.log?.warn(
       { sessionId: this.request.sessionId, frameType: type, attached: this.ready },
@@ -364,6 +392,27 @@ class ConnectorSession implements RemoteConnectorReservation {
     );
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.close(1008, 'invalid remote frame');
     this.release('invalid remote frame');
+  }
+
+  private logTransport(phase: string): void {
+    if (!this.options.log) return;
+    const snapshot = this.diagnostics.snapshot(this.ws);
+    this.options.log.info(
+      {
+        ...snapshot,
+        transportMeaning: 'write_callback_is_local_acceptance_not_peer_receipt',
+        callbackStalled: Number(snapshot.oldestPendingMs) > 10_000,
+        phase,
+        streams: [...this.streams].map(([id, stream]) => ({
+          ...this.record(id, stream, 'open'),
+          localWritableLength: stream.socket.writableLength,
+          localBytesRead: stream.socket.bytesRead,
+          localBytesWritten: stream.socket.bytesWritten,
+          outgoingPaused: stream.outgoingPaused,
+        })),
+      },
+      'remote connector transport diagnostics',
+    );
   }
 
   private send(frame: Frame, onSent?: () => void): void {
@@ -377,13 +426,26 @@ class ConnectorSession implements RemoteConnectorReservation {
       this.release('remote data queue exceeded');
       return;
     }
-    ws.send(raw, (error) => {
-      if (error) this.release('remote data send failed');
-      else {
-        onSent?.();
-        this.resumePausedStreams();
-      }
-    });
+    const write = this.diagnostics.enqueue(Buffer.byteLength(raw));
+    if (write === null) {
+      this.release('remote pending write limit reached');
+      return;
+    }
+    this.diagnostics.frame('out', frame, write);
+    try {
+      ws.send(raw, (error) => {
+        this.diagnostics.complete(write, Boolean(error));
+        if (error) this.release('remote data send failed');
+        else {
+          onSent?.();
+          this.resumePausedStreams();
+        }
+      });
+      this.diagnostics.observeBuffer(ws.bufferedAmount);
+    } catch {
+      this.diagnostics.complete(write, true);
+      this.release('remote data send failed');
+    }
   }
 
   private resumePausedStreams(): void {

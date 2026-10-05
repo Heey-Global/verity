@@ -94,6 +94,120 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it('samples incomplete WebSocket bytes below message delivery and stops sampling on release', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(undefined, {}, log);
+    const reservation = await reserve(f);
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const attaching = reservation.attach(
+      'installation_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attaching;
+    const baseline = log.info.mock.calls.find(([entry]) => entry.phase === 'attached')?.[0];
+    expect(baseline).toBeDefined();
+    // Complete-message counters cannot see a fragmented frame stuck below ws.message.
+    f.peer().send('partial-private-payload', { fin: false });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const sample = log.info.mock.calls.find(([entry]) => entry.phase === 'sample')?.[0];
+    expect(sample.rawMessages).toBe(baseline.rawMessages);
+    expect(sample.socket.bytesRead).toBeGreaterThan(Number(baseline.socket.bytesRead));
+    expect(sample.socket.localPort).toEqual(expect.any(Number));
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain('partial-private-payload');
+    reservation.release('test complete');
+    const calls = log.info.mock.calls.filter(([entry]) => entry.phase === 'sample').length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(log.info.mock.calls.filter(([entry]) => entry.phase === 'sample')).toHaveLength(calls);
+  });
+
+  it('reports a pending write despite an empty ws buffer and accounts for a late callback', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const ws = new EventEmitter() as EventEmitter & {
+      readyState: number;
+      bufferedAmount: number;
+      send: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+      ping: ReturnType<typeof vi.fn>;
+    };
+    Object.assign(ws, {
+      readyState: WebSocket.OPEN,
+      bufferedAmount: 0,
+      send: vi.fn(),
+      close: vi.fn(),
+      ping: vi.fn(),
+    });
+    const local = new EventEmitter() as EventEmitter & { destroy: ReturnType<typeof vi.fn> };
+    Object.assign(local, { destroy: vi.fn(), writableLength: 0 });
+    const pool = createRemoteConnectorPool({
+      dataUrl: 'wss://uplink.example/data',
+      localHost: 'localhost',
+      localPort: 443,
+      log,
+      webSocketFactory: () => ws as unknown as WebSocket,
+      connectLocal: () => local as unknown as Socket,
+    });
+    const reservation = await reserve({ reserve: pool.reserve } as Awaited<
+      ReturnType<typeof fixture>
+    >);
+    vi.useFakeTimers();
+    const attaching = reservation.attach(
+      'installation_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    ws.emit('open');
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'attached',
+          sessionId: 'session_one',
+          capability: 'remote-control-v1',
+        }),
+      ),
+      false,
+    );
+    await attaching;
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({ type: 'stream.open', streamId: 'one', channel: 'remote', meta: {} }),
+      ),
+      false,
+    );
+    local.emit('connect');
+    local.emit('data', Buffer.from('private-response'));
+    await vi.advanceTimersByTimeAsync(15_000);
+    const samples = log.info.mock.calls.filter(([entry]) => entry.phase === 'sample');
+    expect(samples.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        pendingFrames: 1,
+        completedFrames: 0,
+        oldestPendingMs: 15_000,
+        bufferedBytes: 0,
+        callbackStalled: true,
+      }),
+    );
+    const callback = ws.send.mock.calls.at(-1)?.[1] as () => void;
+    callback();
+    reservation.release('test complete');
+    expect(log.info.mock.calls.find(([entry]) => entry.phase === 'release')?.[0]).toEqual(
+      expect.objectContaining({ pendingFrames: 0, completedFrames: 1 }),
+    );
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain('private-response');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('derives data attachment from the authenticated control origin', () => {
     expect(remoteDataUrlForControl('wss://uplink.example/control')).toBe(
       'wss://uplink.example/data',
