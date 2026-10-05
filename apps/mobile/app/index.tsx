@@ -1771,12 +1771,11 @@ function SessionRow({
           finished session with something new to read), else nothing. */}
       <View style={styles.colChevron} />
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
-      {/* Two lines, each with a left and a right end, so the row reads as a small
-          table: name and model on the left; on the right the attention markers and
-          lifecycle label beside the name, and the session's standing features
-          (automation, preview) beside the model. Pinning the features to the row's
-          right edge lines them up across rows whatever the model name's length,
-          and a lone icon sits at that edge instead of floating mid-row. */}
+      {/* Name with the attention markers and lifecycle label at its right end; below
+          it the model, followed directly by the session's standing features
+          (automation, preview). Attached to the model, they use the room a short
+          model name leaves free instead of competing for the right end, which on a
+          phone has no space for them beside the label. */}
       <View style={[styles.titleBlock, styles.sessionTitleBlock]}>
         <View style={styles.sessionLine}>
           <Text style={styles.sessionTitle} numberOfLines={1}>
@@ -1815,7 +1814,8 @@ function SessionRow({
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
           {automationActive || previewActive ? (
-            <View style={styles.sessionLineEnd}>
+            <View style={styles.sessionFeatures}>
+              <Text style={styles.rowSub}>·</Text>
               {automationActive ? (
                 <View accessible accessibilityLabel="Automation active">
                   <Icon name="repeat" size={14} color={theme.colors.primary} />
@@ -2470,10 +2470,12 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
     lineHeight: 19 * theme.fontScale,
   },
-  // The session row has no separate trail column: each line carries its own right
-  // end, so the block runs to the row's right edge.
+  // The session row has no separate trail column: the title line carries its own
+  // right end, so the block runs to the row's right edge.
   sessionTitleBlock: { paddingRight: theme.spacing.lg },
   sessionLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  // Shrinks never: the model name gives way first, so the features stay visible.
+  sessionFeatures: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   sessionSub: { minWidth: 0, flexShrink: 1 },
   // Held to the title's line height so the label, which is a hair taller, cannot
   // grow the row when it appears or hides on a working <-> idle switch; this list
