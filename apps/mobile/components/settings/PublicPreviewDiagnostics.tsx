@@ -30,10 +30,10 @@ function streamLine(record: RemoteStreamRecord): string {
     `${record.streamId}: from phone ${String(record.receivedFromAppBytes)} B, ` +
     `to Core ${String(record.writtenToLocalBytes)} B, ${reply}, ` +
     `from Core ${String(record.receivedFromLocalBytes)} B, ` +
-    `to phone ${String(record.sentToUplinkBytes)} B` +
+    `accepted by Core transport ${String(record.sentToUplinkBytes)} B` +
     (record.framesToApp === undefined
       ? ''
-      : ` in ${String(record.framesToApp)} frames (${String(record.framesFromApp ?? 0)} from phone)`) +
+      : ` in ${String(record.framesToApp)} attempted frames (${String(record.framesFromApp ?? 0)} from phone)`) +
     `, ${record.state}, ${seconds} s`
   );
 }
