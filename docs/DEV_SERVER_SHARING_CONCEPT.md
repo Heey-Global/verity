@@ -186,15 +186,41 @@ to end.
 - _Fixing a crash._ The crashed detail view offers "Ask the agent", which sends the agent the
   entry name and a pointer to its log.
 
-**Operator.** The operator switches entries on and off and deletes them in the app. Editing
-stays with the agent, because typing a command on a phone is impractical.
+**Operator.** The operator controls entries with two switches per entry and deletes them in
+the app. Editing stays with the agent, because typing a command on a phone is impractical.
 
-**Preview sheet.** The Dev server tab lists "Your servers" first, one row per entry with a
-switch, the state, and the network address while it runs. A crashed row is marked and links
-to its logs. The arrow opens the detail view: state, address, and logs at the top, then the
-two access cards ("On your network", "Over the internet"), then "Delete entry". Servers started past Verity follow under "Not managed" with "Save as entry", which asks the agent to create the entry rather than copying the detected command line: that line usually hard-codes its port and may carry secrets. The section disappears when empty. With no entries the tab says "No servers yet. Ask the agent to set up your app as
-a server." The inline chat card and the green dot on the Preview icon keep showing running
-entries.
+**Switches.** Revised with the operator on 2026-10-05. An entry has no run switch of its own;
+its two access switches decide whether it runs.
+
+- _Local_ on starts the server if needed and publishes it on the operator's network. The first
+  time, or after a changed command, a confirmation shows the command and subdirectory and the
+  tap approves them.
+- _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the
+  public link with a PIN. Local stays off unless the operator turns it on.
+- Turning one switch off ends only that access. Turning the last one off stops the server;
+  when that also ends a public link, the operator confirms first.
+- When a public link expires while Local is off, the server stops as well, so it does not keep
+  running unnoticed and keep the sandbox awake.
+- A server the agent started without approval runs with both switches off. This is the one
+  exception; the header reads "Running, not shared yet", and Local approves and publishes it.
+- A crashed server has both switches off; turning either on starts it again.
+
+**Preview sheet.** The Dev server tab shows one block per entry. The block header holds the name,
+the state as plain text ("Running", "Starting…", "Crashed", "Running, not shared yet"), and on
+the right "Details ›", or "View output ›" after a crash; the whole header opens the detail view.
+Below it a card with two rows, Local and Shared online, each with its icon, its switch, and,
+while on, its address or expiry and PIN with an open or share button.
+
+The detail view shows the state and since when, Restart and Stop (or Start again and Ask the
+agent after a crash), the output, the command with its subdirectory and the note that the agent
+changes it, and "Delete entry" at the bottom. Stop ends the server together with both accesses.
+
+Servers started past Verity follow under "Not managed" with "Save as entry", which asks the
+agent to create the entry rather than copying the detected command line: that line usually
+hard-codes its port and may carry secrets. The section disappears when empty. With no entries
+the tab says "No servers yet. Ask the agent to set up your app as a server." The inline chat
+card and the green dot on the Preview icon keep showing running entries. On wide screens the
+sheet's content is capped at a readable width and centered.
 
 ### 2.7 Opening a local share from outside the home network
 
