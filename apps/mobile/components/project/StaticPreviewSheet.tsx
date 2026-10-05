@@ -1716,7 +1716,7 @@ export function StaticPreviewSheet({
       <ManagedServerDetail
         server={server}
         logs={managedLogs}
-        busy={managedPending !== undefined}
+        busy={managedPending !== undefined || busy !== undefined}
         onStart={() => startManaged(server)}
         onStop={() => stopManaged(server)}
         onRestart={() => restartManaged(server)}

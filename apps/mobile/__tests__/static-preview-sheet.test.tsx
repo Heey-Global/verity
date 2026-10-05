@@ -1618,6 +1618,9 @@ describe('managed dev servers', () => {
     fireEvent.press(screen.getByRole('button', { name: /Curtis Demo, Running\. Details/u }));
     fireEvent.press(await screen.findByRole('button', { name: 'Stop' }));
     await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Restart' }).props.accessibilityState.disabled).toBe(
+      true,
+    );
     fireEvent.press(screen.getByRole('button', { name: 'Back to preview targets' }));
     const toggle = screen.getByRole('switch', { name: 'Local for Curtis Demo' });
     expect(toggle.props.accessibilityState.disabled).toBe(true);

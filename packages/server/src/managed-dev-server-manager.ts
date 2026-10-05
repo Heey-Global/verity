@@ -363,13 +363,13 @@ export class ManagedDevServerManager {
   ): Promise<ManagedServerView[]> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
-    const approved = await this.servers.approve(entry.id, seen);
-    if (!approved)
-      throw new ManagedDevServerError(
-        'The command changed in the meantime. Review it again before approving.',
-        409,
-      );
     await this.locked(project.id, async () => {
+      const approved = await this.servers.approve(entry.id, seen);
+      if (!approved)
+        throw new ManagedDevServerError(
+          'The command changed in the meantime. Review it again before approving.',
+          409,
+        );
       let instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       // Approved from Shared online: the operator agreed to a public link, not
       // to opening the server on the network.
@@ -931,7 +931,7 @@ export class ManagedDevServerManager {
       const instance = await this.servers.getInstance(snapshot.id);
       if (!instance || instance.desired !== 'running') continue;
       if (!instance.localAccess) {
-        await this.unpublish(instance);
+        await this.unpublish(instance).catch(() => undefined);
         const links = await this.options.store.listPublicPreviewShares(projectId);
         const live = links.some(
           (link) =>
@@ -1000,7 +1000,7 @@ export class ManagedDevServerManager {
         );
         if (recent.length >= 3) {
           this.recoveries.delete(instance.id);
-          await this.unpublish(instance);
+          await this.unpublish(instance).catch(() => undefined);
           await this.servers.updateInstance(instance.id, {
             desired: 'stopped',
             state: 'crashed',
@@ -1044,7 +1044,7 @@ export class ManagedDevServerManager {
           : elsewhere
             ? `Did not answer on its port: it listens on ${String(elsewhere.port)} instead. Use $PORT or {port} in the command.`
             : 'Did not answer on its port within 60 seconds';
-      await this.unpublish(instance);
+      await this.unpublish(instance).catch(() => undefined);
       if (status.alive)
         await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
       await this.servers.updateInstance(instance.id, {

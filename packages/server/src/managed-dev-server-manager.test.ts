@@ -710,6 +710,61 @@ describe('managed dev servers', () => {
       expect((await instanceOf()).state).toBe('starting');
     });
 
+    it('does not publish Local while online-only approval is being persisted', async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await manager.start('s1', 'Demo', 'agent');
+      await listen();
+      const original = ctx.store.managedDevServers.approve.bind(ctx.store.managedDevServers);
+      let release!: () => void;
+      let entered!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const persisted = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(ctx.store.managedDevServers, 'approve').mockImplementationOnce(async (...args) => {
+        const result = await original(...args);
+        entered();
+        await waiting;
+        return result;
+      });
+      const approval = manager.approve(
+        's1',
+        'Demo',
+        { command: 'node server.mjs', workdir: '.' },
+        { local: false },
+      );
+      await persisted;
+      const supervision = manager.tick();
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(shares.shares).toHaveLength(0);
+      } finally {
+        release();
+        await approval;
+        await supervision;
+      }
+      expect(shares.shares).toHaveLength(0);
+    });
+
+    it('records a startup timeout and stops its process despite edge cleanup failure', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      await ctx.store.managedDevServers.updateInstance(id, {
+        state: 'starting',
+        startedAt: new Date(now - 70_000),
+      });
+      sandbox.listeners.length = 0;
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await manager.tick();
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), id);
+      expect((await instanceOf()).state).toBe('crashed');
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });
