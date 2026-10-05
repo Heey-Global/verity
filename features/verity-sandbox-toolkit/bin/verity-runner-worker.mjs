@@ -24594,6 +24594,14 @@ ${PROPOSAL_RULES}`;
 var START_PLANNING_TOOL = "verity_start_planning";
 var PRESENT_PLAN_TOOL = "verity_present_plan";
 var END_PLANNING_TOOL = "verity_end_planning";
+var PLANNING_TOOLS = [
+  START_PLANNING_TOOL,
+  PRESENT_PLAN_TOOL,
+  END_PLANNING_TOOL
+];
+function planningToolName(name2) {
+  return PLANNING_TOOLS.find((tool) => name2 === tool || name2 === `mcp__verity__${tool}` || name2 === `verity_${tool}`);
+}
 var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
 
 Before a materially larger change with real design choices, offer to plan it first: ask with a \`verity:choices\` block whose options include "Plan first" (recommended) and "Implement directly". When the user picks "Plan first", or asks in any wording to plan before implementing, call \`${START_PLANNING_TOOL}\` and then work out the plan without changing any files. Small, clear tasks need no planning.`;
@@ -29386,7 +29394,6 @@ function signalProcessTree(tree, signal, options = {}) {
 
 // packages/session/dist/runner.js
 var ALLOWED_PERMISSION_MODES = ["auto", "default", "plan", "acceptEdits"];
-var PLANNING_PERMISSION_MODE = "plan";
 var STDERR_CAP_BYTES = 16 * 1024;
 async function* readStrings(readable) {
   for await (const chunk of readable) {
@@ -29867,7 +29874,12 @@ async function runAcpTurn(opts, profile) {
       }
       return response;
     };
-    const planning = opts.permissionMode === PLANNING_PERMISSION_MODE;
+    const planning = opts.planning === true;
+    if (planning && planningToolName(name2) !== void 0) {
+      const allow = request2.options.find((option) => option.kind === "allow_once");
+      if (allow !== void 0)
+        return { outcome: { outcome: "selected", optionId: allow.optionId } };
+    }
     if (planning || opts.permissionControl !== true || opts.onPermissionRequest === void 0) {
       const reject = request2.options.find((option) => option.kind === "reject_once");
       return adopt(reject === void 0 ? { outcome: { outcome: "cancelled" } } : { outcome: { outcome: "selected", optionId: reject.optionId } });
@@ -30280,8 +30292,15 @@ var CODEX_ACP_META = "codex";
 var MODEL_CONFIG_ID = "model";
 var CODEX_AGENT_MODE = "agent-full-access";
 var CODEX_PLANNING_MODE = "read-only";
-function codexMode(permissionMode) {
-  return permissionMode === PLANNING_PERMISSION_MODE ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
+function codexMode(planning) {
+  return planning === true ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
+}
+var CODEX_MCP_TITLE = /^mcp\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/;
+function codexToolName(tool) {
+  const mcp = typeof tool.title === "string" ? CODEX_MCP_TITLE.exec(tool.title) : null;
+  if (mcp !== null)
+    return `mcp__${mcp[1]}__${mcp[2]}`;
+  return toolNameFromKind(tool);
 }
 async function selectModel(setup, opts) {
   const wanted = parseCodexModel(opts.model);
@@ -30305,17 +30324,18 @@ var CODEX_ACP_PROFILE = {
   loadSessionUnsupported: "Codex ACP adapter does not support persistent session loading",
   // codex-acp advertises no tool `name`, only ACP's `kind` and a `title` that for
   // a command execution IS the command line.
-  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: toolNameFromKind },
+  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: codexToolName },
   // codex-acp takes no session-level options: the model and mode are configured
   // once the session answers with what this account can actually serve.
   sessionMeta: () => ({}),
   defaultModelLabel: () => CODEX_DEFAULT_MODEL,
   promptText: (opts) => promptWithSystemDirectives(opts),
-  sessionMode: (opts) => codexMode(opts.permissionMode),
-  // No vocabulary, stated rather than omitted: `codexMode` maps every caller value
-  // onto one of two constants, so no caller-supplied string can become this
-  // session's mode and there is nothing for a §5b allowlist to bound. The day it
-  // starts passing a value through, this line has to change with it.
+  sessionMode: (opts) => codexMode(opts.planning),
+  // No vocabulary, stated rather than omitted: `codexMode` ignores
+  // `opts.permissionMode` and picks one of two constants, so no caller-supplied
+  // string can become this session's mode and there is nothing for a §5b
+  // allowlist to bound. The day it starts reading that option, this line has to
+  // change with it.
   permissionModes: void 0,
   configureSession: selectModel
 };
@@ -31568,6 +31588,7 @@ var startTurnRequestSchema = import_zod6.z.strictObject({
   appendSystemPrompt: boundedString(1024 * 1024).optional(),
   resumeSessionId: boundedString(256).optional(),
   permissionMode: boundedString(128).optional(),
+  planning: import_zod6.z.literal(true).optional(),
   allowedTools: import_zod6.z.array(boundedString(4096)).max(256).optional(),
   disallowedTools: import_zod6.z.array(boundedString(4096)).max(256).optional(),
   toolless: import_zod6.z.boolean().optional(),
@@ -31669,6 +31690,7 @@ var turn = await server.run(join3(turnDir, "events.jsonl"), {
   ...request.appendSystemPrompt !== void 0 ? { appendSystemPrompt: request.appendSystemPrompt } : {},
   ...request.resumeSessionId !== void 0 ? { resumeSessionId: request.resumeSessionId } : {},
   ...request.permissionMode !== void 0 ? { permissionMode: request.permissionMode } : {},
+  ...request.planning === true ? { planning: true } : {},
   ...request.allowedTools !== void 0 ? { allowedTools: request.allowedTools } : {},
   ...request.disallowedTools !== void 0 ? { disallowedTools: request.disallowedTools } : {},
   ...request.toolless === true ? { toolless: true } : {},

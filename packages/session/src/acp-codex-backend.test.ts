@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AcpCodexBackend } from './acp-codex-backend.js';
+import { AcpCodexBackend, codexToolName } from './acp-codex-backend.js';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
@@ -566,11 +566,38 @@ describe('AcpCodexBackend', () => {
       cwd: '/work/project',
       prompt: 'Plan it',
       permissionMode: PLANNING_PERMISSION_MODE,
+      planning: true,
       spawner: fake.spawner,
     });
     expect(write(fake.writes, 'session/set_mode')).toMatchObject({
       params: { modeId: 'read-only' },
     });
+  });
+
+  it('keeps full access for a plan posture requested outside planning mode', async () => {
+    // Only Verity's planning mode has a way back out of the read-only sandbox.
+    const fake = acpSpawner();
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-plan-posture',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      spawner: fake.spawner,
+    });
+    expect(write(fake.writes, 'session/set_mode')).toMatchObject({
+      params: { modeId: 'agent-full-access' },
+    });
+  });
+
+  it('names an MCP call by its server and tool instead of by its execute kind', () => {
+    // Otherwise a plan Codex presents through Verity reads as a Bash command and
+    // never becomes a plan card.
+    expect(
+      codexToolName({ toolCallId: 'c1', kind: 'execute', title: 'mcp.verity.verity_present_plan' }),
+    ).toBe('mcp__verity__verity_present_plan');
+    expect(codexToolName({ toolCallId: 'c2', kind: 'execute', title: 'npm test' })).toBe('Bash');
   });
 
   it('asserts the posture after model selection, not on the mode session/new reported', async () => {

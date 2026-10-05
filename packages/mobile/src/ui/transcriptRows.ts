@@ -1,4 +1,6 @@
 import type { Message, ToolCallMessage } from '../happy/message.js';
+import { START_PLANNING_TOOL, planningToolName } from '@verity/events';
+
 import { planProposal, planView, type PlanView } from './plan.js';
 
 /**
@@ -84,6 +86,8 @@ function buildRows(
   const rows: Row[] = [];
   let toolRun: ToolCallMessage[] = [];
   let todoRun: ToolCallMessage[] = [];
+  // Rows before this index belong to an earlier planning round.
+  let roundStart = 0;
   // A group's key is derived from its LAST member, not its first. History scroll-up
   // prepends an OLDER page, which extends a boundary run at its HEAD — keying by the
   // first tool would change the key of an already-rendered group (its new head is an
@@ -139,6 +143,8 @@ function buildRows(
       });
       continue;
     }
+    // A new planning round makes every earlier plan history: its decision is made.
+    if (planningToolName(m.tool.name) === START_PLANNING_TOOL) roundStart = rows.length;
     const proposal = planProposal(m.tool);
     const plan = planView(m.tool);
     if (proposal !== null) {
@@ -159,12 +165,12 @@ function buildRows(
   }
   flushAll();
   markLatest(rows, 'plan');
-  markLatest(rows, 'plan-proposal');
+  markLatest(rows, 'plan-proposal', roundStart);
   return rows;
 }
 
-function markLatest(rows: Row[], kind: 'plan' | 'plan-proposal'): void {
-  for (let i = rows.length - 1; i >= 0; i--) {
+function markLatest(rows: Row[], kind: 'plan' | 'plan-proposal', from = 0): void {
+  for (let i = rows.length - 1; i >= from; i--) {
     const row = rows[i];
     if (row?.kind === kind) {
       rows[i] = { ...row, latest: true };

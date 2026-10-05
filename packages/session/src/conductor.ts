@@ -5429,6 +5429,7 @@ export class Conductor {
       // inbound request to the conductor's `onPermissionRequest` hook).
       ...(this.permissionControl ? { permissionControl: true } : {}),
       ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(planning ? { planning: true } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
       ...(opts.disallowedTools !== undefined ? { disallowedTools: opts.disallowedTools } : {}),

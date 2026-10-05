@@ -885,7 +885,7 @@ export class SessionModel {
         activity.busy === this._busy &&
         terminationUnconfirmed === this._terminationUnconfirmed &&
         activity.branch === this._branch &&
-        activity.planning === this._planning &&
+        (activity.planning === undefined || activity.planning === this._planning) &&
         sameItems(activity.queued, this._waiting) &&
         !nameChanged &&
         !modelSwitchPendingChanged &&
@@ -899,7 +899,9 @@ export class SessionModel {
       this._terminationUnconfirmed = terminationUnconfirmed;
       this._waiting = activity.queued;
       this._branch = activity.branch;
-      this._planning = activity.planning;
+      // Absent means "not reported" (an older server, or a poll whose session read
+      // failed), not "never planned": keep the last known value then.
+      if (activity.planning !== undefined) this._planning = activity.planning;
       if (nameChanged) this._name = activity.name;
       // A freshly reported queue entry may cover a local echo — reconcile before
       // emitting.

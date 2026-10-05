@@ -64,6 +64,18 @@ describe('planProposal', () => {
     }
   });
 
+  it('reads the plan out of the arguments Codex wraps an MCP call input in', () => {
+    expect(
+      planProposal(
+        call('mcp__verity__verity_present_plan', {
+          server: 'verity',
+          tool: 'verity_present_plan',
+          arguments: { plan: '1. Step' },
+        }),
+      ),
+    ).toBe('1. Step');
+  });
+
   it('keeps a refused ExitPlanMode plan but drops a presentation the gateway refused', () => {
     // Planning mode refuses Claude's ExitPlanMode on purpose; its plan still stands.
     expect(planProposal(call('ExitPlanMode', { plan: 'Plan' }, 'error'))).toBe('Plan');

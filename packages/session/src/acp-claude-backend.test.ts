@@ -49,6 +49,8 @@ function acpSpawner(
      *  of the turn runs in. The adapter announces the switch it made as a
      *  `current_mode_update` before settling the prompt. */
     planPermission?: boolean;
+    /** The tool the ordinary permission request's tool call names (default `Bash`). */
+    permissionToolName?: string;
     /** Answer `session/new` with the mode catalogue the real adapter reports,
      *  so the turn loop has a posture to pin the session to. */
     modes?: { currentModeId: string; availableModes: string[] };
@@ -424,7 +426,7 @@ function acpSpawner(
                   kind: 'execute',
                   title: 'rm -rf /tmp/should-not-run',
                   rawInput: { command: 'rm -rf /tmp/should-not-run' },
-                  _meta: { claudeCode: { toolName: 'Bash' } },
+                  _meta: { claudeCode: { toolName: behavior.permissionToolName ?? 'Bash' } },
                 },
               },
             });
@@ -1545,6 +1547,7 @@ describe('AcpClaudeBackend', () => {
       cwd: '/work/project',
       prompt: 'Plan it',
       permissionMode: PLANNING_PERMISSION_MODE,
+      planning: true,
       spawner: fake.spawner,
       permissionControl: true,
       onPermissionRequest: (request, respond) => {
@@ -1560,6 +1563,43 @@ describe('AcpClaudeBackend', () => {
       }),
     );
     expect(fake.setModes).toEqual(['plan']);
+  });
+
+  /** Answer one permission request for `toolName` inside a planning turn. */
+  async function planningAnswer(toolName: string, storeSessionId: string): Promise<unknown> {
+    const fake = acpSpawner({
+      permission: true,
+      permissionToolName: toolName,
+      modes: CLAUDE_MODES,
+    });
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      planning: true,
+      spawner: fake.spawner,
+      permissionControl: true,
+      onPermissionRequest: (_request, respond) => respond({ behavior: 'deny', message: 'no' }),
+    });
+    return fake.writes.find((message) => message['id'] === 'permission-1')?.['result'];
+  }
+
+  it("lets a planning turn call Verity's own planning tools", async () => {
+    // A read-only posture may gate any MCP call behind a request. Refusing the
+    // planning tools there would leave the agent no way to present its plan; the
+    // gateway still decides them, and ending planning raises its own card.
+    expect(
+      await planningAnswer('mcp__verity__verity_present_plan', 'verity-session-plan-tool'),
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+  });
+
+  it('refuses any other tool in a planning turn', async () => {
+    expect(await planningAnswer('Bash', 'verity-session-plan-bash')).toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject' },
+    });
   });
 
   it('keeps the posture an approved plan chose instead of pulling the turn back into planning', async () => {

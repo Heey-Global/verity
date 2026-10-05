@@ -41,6 +41,7 @@ import {
   planProposal,
   planningToolName,
   END_PLANNING_TOOL,
+  START_PLANNING_TOOL,
   freezeTranscriptTail,
   frozenTranscriptRows,
   gmailPreviewHtml,
@@ -3253,10 +3254,17 @@ export function SessionChat({
     }
     return null;
   }, [session.messages]);
-  const hasPresentedPlan = useMemo(
-    () => session.messages.some((m) => m.kind === 'tool-call' && planProposal(m.tool) !== null),
-    [session.messages],
-  );
+  // Only a plan of the current round counts: one an earlier round already decided
+  // must not be offered for implementation again.
+  const hasPresentedPlan = useMemo(() => {
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const m = session.messages[i];
+      if (m?.kind !== 'tool-call') continue;
+      if (planProposal(m.tool) !== null) return true;
+      if (planningToolName(m.tool.name) === START_PLANNING_TOOL) return false;
+    }
+    return false;
+  }, [session.messages]);
   const implementPlan = useCallback(() => {
     decidePlanning('implement');
     scrollToLatest(true);

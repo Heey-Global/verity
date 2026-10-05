@@ -10,7 +10,7 @@ import type {
   RequestPermissionResponse,
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { AgentEvent, Usage } from '@verity/events';
+import { planningToolName, type AgentEvent, type Usage } from '@verity/events';
 import type { PermissionDecision, PermissionRequest } from './index.js';
 import type {
   RunResult,
@@ -27,7 +27,7 @@ import {
   type AcpEventAdapterOptions,
 } from './acp-adapter.js';
 import { SessionWriter } from './ingest.js';
-import { PLANNING_PERMISSION_MODE, assertSafeArgs, nodeSpawner } from './runner.js';
+import { assertSafeArgs, nodeSpawner } from './runner.js';
 
 const ZERO_USAGE: Usage = {
   inputTokens: 0,
@@ -700,7 +700,16 @@ export async function runAcpTurn(
     // sandbox, Claude's own `ExitPlanMode` — and approving it would carry out part
     // of a plan the operator has not accepted yet. The operator leaves planning
     // through Verity instead, which ends it for every agent the same way.
-    const planning = opts.permissionMode === PLANNING_PERMISSION_MODE;
+    const planning = opts.planning === true;
+    // Except Verity's own planning tools: a read-only posture may gate any MCP call
+    // behind a request, and refusing these would leave the agent no way to present
+    // its plan. The gateway still decides them itself — ending planning raises the
+    // operator's card there.
+    if (planning && planningToolName(name) !== undefined) {
+      const allow = request.options.find((option) => option.kind === 'allow_once');
+      if (allow !== undefined)
+        return { outcome: { outcome: 'selected', optionId: allow.optionId } };
+    }
     if (planning || opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
       // No approval UI is wired, so every request is refused. On a mode picker
       // the refusal IS "no, keep planning" and lands the session in `plan`;

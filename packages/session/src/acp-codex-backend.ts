@@ -1,3 +1,5 @@
+import type { ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
+
 import type { Backend } from './backend.js';
 import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import {
@@ -8,7 +10,6 @@ import {
 } from './acp-backend.js';
 import { toolNameFromKind } from './acp-adapter.js';
 import { applySelectOption } from './acp-session-config.js';
-import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { CODEX_DEFAULT_MODEL, parseCodexModel } from './codex-model.js';
 
 /** codex-acp's own `_meta` key, distinct from the Claude adapter's `claudeCode`. */
@@ -32,11 +33,22 @@ const CODEX_AGENT_MODE = 'agent-full-access';
  *  that a planning turn refuses (`acp-backend.ts`). */
 const CODEX_PLANNING_MODE = 'read-only';
 
-/** The only two modes this profile ever asks for. It reads `opts.permissionMode`
- *  solely to tell a planning turn apart, so no caller-supplied string can become
- *  the session's mode. */
-export function codexMode(permissionMode: string | undefined): string {
-  return permissionMode === PLANNING_PERMISSION_MODE ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
+/** The only two modes this profile ever asks for. No caller-supplied string can
+ *  become the session's mode. */
+export function codexMode(planning: boolean | undefined): string {
+  return planning === true ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
+}
+
+/** codex-acp reports an MCP call as `kind: execute` titled `mcp.<server>.<tool>`,
+ *  which the kind map alone would name `Bash`. Name it the way Claude names MCP
+ *  calls instead, so Verity's own tools (a presented plan above all) are
+ *  recognised whichever agent called them. */
+const CODEX_MCP_TITLE = /^mcp\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/;
+
+export function codexToolName(tool: ToolCall | ToolCallUpdate): string | undefined {
+  const mcp = typeof tool.title === 'string' ? CODEX_MCP_TITLE.exec(tool.title) : null;
+  if (mcp !== null) return `mcp__${mcp[1]!}__${mcp[2]!}`;
+  return toolNameFromKind(tool);
 }
 
 async function selectModel(setup: AcpSessionSetup, opts: RunTurnOptions): Promise<void> {
@@ -62,17 +74,18 @@ const CODEX_ACP_PROFILE: AcpBackendProfile = {
   loadSessionUnsupported: 'Codex ACP adapter does not support persistent session loading',
   // codex-acp advertises no tool `name`, only ACP's `kind` and a `title` that for
   // a command execution IS the command line.
-  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: toolNameFromKind },
+  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: codexToolName },
   // codex-acp takes no session-level options: the model and mode are configured
   // once the session answers with what this account can actually serve.
   sessionMeta: () => ({}),
   defaultModelLabel: () => CODEX_DEFAULT_MODEL,
   promptText: (opts) => promptWithSystemDirectives(opts),
-  sessionMode: (opts) => codexMode(opts.permissionMode),
-  // No vocabulary, stated rather than omitted: `codexMode` maps every caller value
-  // onto one of two constants, so no caller-supplied string can become this
-  // session's mode and there is nothing for a §5b allowlist to bound. The day it
-  // starts passing a value through, this line has to change with it.
+  sessionMode: (opts) => codexMode(opts.planning),
+  // No vocabulary, stated rather than omitted: `codexMode` ignores
+  // `opts.permissionMode` and picks one of two constants, so no caller-supplied
+  // string can become this session's mode and there is nothing for a §5b
+  // allowlist to bound. The day it starts reading that option, this line has to
+  // change with it.
   permissionModes: undefined,
   configureSession: selectModel,
 };

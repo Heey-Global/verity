@@ -343,5 +343,13 @@ describe('plan rows', () => {
     ]);
     expect(rows[3]).toMatchObject({ markdown: '1. Revised' });
     expect(rowRecycleType(rows[3]!)).toBe('plan-proposal:short');
+
+    // A new planning round starts with no plan to decide on: the last round's plan
+    // was already implemented or discarded, so it must not get its button back.
+    const nextRound = groupRows([
+      presented('tool-v1', 'verity_present_plan', '1. Done already'),
+      toolCall('tool-start', { name: 'mcp__verity__verity_start_planning' }),
+    ]);
+    expect(nextRound[0]).toMatchObject({ kind: 'plan-proposal', latest: false });
   });
 });

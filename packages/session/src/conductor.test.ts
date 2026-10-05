@@ -1092,11 +1092,13 @@ describe('Conductor.sendTurn', () => {
     // refining the plan; only ending planning in Verity does that.
     await conductor.sendTurn('s1', 'go', { permissionMode: 'acceptEdits' });
     expect(fake.last().permissionMode).toBe(PLANNING_PERMISSION_MODE);
+    expect(fake.last().planning).toBe(true);
     expect(fake.last().appendSystemPrompt).toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
 
     await ctx.store.setSessionPlanning('s1', 'implemented');
     await conductor.sendTurn('s1', 'go on', { permissionMode: 'acceptEdits' });
     expect(fake.last().permissionMode).toBe('acceptEdits');
+    expect(fake.last().planning).toBeUndefined();
     expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
   });
 

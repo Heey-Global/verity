@@ -65,8 +65,14 @@ export function planProposal(tool: ToolCall): string | null {
   const presented = planningToolName(tool.name) === PRESENT_PLAN_TOOL;
   if (!presented && tool.name !== 'ExitPlanMode') return null;
   if (presented && tool.state === 'error') return null;
-  const input = tool.input;
-  if (typeof input !== 'object' || input === null) return null;
-  const plan = (input as Record<string, unknown>).plan;
+  const plan = record(record(tool.input)?.arguments)?.plan ?? record(tool.input)?.plan;
   return typeof plan === 'string' && plan.trim() !== '' ? plan : null;
+}
+
+/** Codex reports an MCP call's input as `{ server, tool, arguments }`; the other
+ *  agents report the arguments themselves. */
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
