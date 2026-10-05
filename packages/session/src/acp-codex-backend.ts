@@ -35,7 +35,7 @@ const CODEX_PLANNING_MODE = 'read-only';
 
 /** The only two modes this profile ever asks for. No caller-supplied string can
  *  become the session's mode. */
-export function codexMode(planning: boolean | undefined): string {
+function codexMode(planning: boolean | undefined): string {
   return planning === true ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
 }
 

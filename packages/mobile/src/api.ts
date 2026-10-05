@@ -190,7 +190,7 @@ export type QueuedItem = z.infer<typeof queuedItemSchema>;
 
 /** Planning mode (`active`), or how the last planning round ended. A value this
  * build does not know reads as absent rather than failing the whole response. */
-export const sessionPlanningSchema = z
+const sessionPlanningSchema = z
   .enum(['active', 'implemented', 'discarded'])
   .optional()
   .catch(undefined);
