@@ -878,6 +878,7 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly runningPlanning = new Map<string, boolean>();
   /** Stop-watchdog waiters woken by {@link releaseInFlight} — how the cancel path
    * observes "the session is actually free again" regardless of WHICH settle path
    * (launch run loop, reattached tail, force-settle) released it. */
@@ -2035,6 +2036,7 @@ export class Conductor {
   /** Release this session's turn lock and run actions waiting on that exact boundary. */
   private releaseInFlight(sessionId: string): void {
     this.inFlight.delete(sessionId);
+    this.runningPlanning.delete(sessionId);
     // The fence dropping IS the recovery from an unconfirmed stop, whichever path got
     // there (reaper, late run-loop settle, or the liveness sweep).
     this.clearTerminationUnconfirmed(sessionId);
@@ -3119,8 +3121,11 @@ export class Conductor {
       // it runs as a `--resume` turn that materializes the file correctly. Images
       // still steer into the running turn as before.
       const hasFileAttachment = opts.attachments?.some((a) => a.kind === 'file') ?? false;
+      const planning = (await this.deps.store.getSession(sessionId))?.planning === 'active';
+      // A mode change needs a fresh turn; steering retains the live permissions.
+      const postureChanged = planning !== (this.runningPlanning.get(sessionId) ?? false);
       const turn =
-        hasFileAttachment || dispatchOpts.queueBehindActiveTurn === true
+        hasFileAttachment || postureChanged || dispatchOpts.queueBehindActiveTurn === true
           ? undefined
           : this.turns.get(sessionId);
       if (
@@ -5396,6 +5401,7 @@ export class Conductor {
     // posture the turn asked for, because a turn that could still change files is
     // exactly what planning exists to prevent.
     const planning = session.planning === 'active';
+    this.runningPlanning.set(sessionId, planning);
     const permissionMode = planning
       ? PLANNING_PERMISSION_MODE
       : (opts.permissionMode ?? this.deps.permissionMode);

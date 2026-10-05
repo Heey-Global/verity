@@ -203,7 +203,29 @@ export function groupRows(messages: readonly Message[], previousRows: readonly R
     const parent = messageParentToolId(m);
     return parent === undefined || !toolIds.has(parent);
   });
-  return reconcileTranscriptRows(buildRows(topLevel, childrenByParent, new Set()), previousRows);
+  let latestProposal: string | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.kind !== 'tool-call') continue;
+    if (planningToolName(message.tool.name) === START_PLANNING_TOOL) break;
+    if (planProposal(message.tool) !== null) {
+      latestProposal = message.id;
+      break;
+    }
+  }
+  // A delegated subtree must not independently approve an older proposal.
+  const selectProposal = (rows: Row[]): Row[] =>
+    rows.map((row) =>
+      row.kind === 'plan-proposal'
+        ? { ...row, latest: row.message.id === latestProposal }
+        : row.kind === 'delegated-agent'
+          ? { ...row, childRows: selectProposal(row.childRows) }
+          : row,
+    );
+  return reconcileTranscriptRows(
+    selectProposal(buildRows(topLevel, childrenByParent, new Set())),
+    previousRows,
+  );
 }
 
 /** Reuse unchanged rows without retaining rows from previous history pages. */

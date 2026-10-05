@@ -6426,6 +6426,28 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('queues messages when planning starts during a writable turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first');
+    await waitFor(fake.ready);
+    await ctx.store.setSessionPlanning('s1', 'active');
+    try {
+      // Steering would let this planning instruction inherit writable permissions.
+      expect(await conductor.dispatchTurn('s1', 'refine the plan')).toEqual({ queued: true });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+    expect(fake.last().planning).toBe(true);
+  });
+
   it('queues a turn behind the live one when asked, even though it could steer', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const fake = steerableBackend();

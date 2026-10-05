@@ -344,6 +344,19 @@ describe('plan rows', () => {
     expect(rows[3]).toMatchObject({ markdown: '1. Revised' });
     expect(rowRecycleType(rows[3]!)).toBe('plan-proposal:short');
 
+    const delegated = presented('tool-child-plan', 'verity_present_plan', 'Child plan');
+    delegated.parentToolId = 'agent';
+    const mixed = groupRows([
+      presented('tool-parent-plan', 'verity_present_plan', 'Parent plan'),
+      toolCall('tool-agent', { name: 'Agent' }),
+      delegated,
+    ]);
+    expect(mixed[0]).toMatchObject({ kind: 'plan-proposal', latest: false });
+    expect(mixed[1]).toMatchObject({
+      kind: 'delegated-agent',
+      childRows: [expect.objectContaining({ kind: 'plan-proposal', latest: true })],
+    });
+
     // A new planning round starts with no plan to decide on: the last round's plan
     // was already implemented or discarded, so it must not get its button back.
     const nextRound = groupRows([
