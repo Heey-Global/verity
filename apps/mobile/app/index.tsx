@@ -1779,8 +1779,8 @@ function SessionRow({
         </Text>
         {/* Model name, then the session's standing features. The model is always
             there and the icons are not, so the model keeps the left edge and the
-            icons follow it; its reserved minimum width lets them start at the same
-            x in most rows without holding space for an icon that is absent. */}
+            icons follow it; its fixed width lets them start at the same x in every
+            row without holding space for an icon that is absent. */}
         <View style={styles.sessionSubLine}>
           <Text
             style={[
@@ -1805,6 +1805,7 @@ function SessionRow({
               hitSlop={8}
               accessibilityRole="link"
               accessibilityLabel="Open preview"
+              accessibilityState={{ disabled: !previewUrl }}
             >
               <Icon name="monitor" size={13} color={theme.colors.primary} />
             </Pressable>
@@ -2464,9 +2465,18 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 19 * theme.fontScale,
   },
   sessionSubLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
-  // Fits a typical model name ("Codex gpt-6.1-astra") so the icons after it line up
-  // across rows; a longer name pushes them, a narrow row shrinks it.
-  sessionModel: { minWidth: 136 * theme.fontScale, flexShrink: 1, marginRight: theme.spacing.xs },
+  // A fixed basis that fits a typical model name ("Codex gpt-6.1-astra"), so the
+  // icons after it line up across rows; a longer name is cut short rather than
+  // pushing them. A basis, not a minWidth: a minWidth is a floor flexShrink cannot
+  // go below, which on a narrow row or at a large font scale would push the icons
+  // out of the row instead of shrinking the name.
+  sessionModel: {
+    flexBasis: 150 * theme.fontScale,
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 0,
+    marginRight: theme.spacing.xs,
+  },
   statusPill: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 2,
