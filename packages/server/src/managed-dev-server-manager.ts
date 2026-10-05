@@ -18,6 +18,9 @@ export const MANAGED_SANDBOX_PORTS: readonly number[] = Array.from(
 /** A server that has not answered on its port by then is reported crashed. */
 export const MANAGED_STARTUP_DEADLINE_MS = 60_000;
 const MONITOR_INTERVAL_MS = 2_000;
+/** Marks an instance whose start waits for its sandbox to wake. Supervision
+ *  launches it as soon as the sandbox is up, whatever an earlier run left behind. */
+const WAKING_DETAIL = 'Waking sandbox…';
 /** A running server off its port this long, with its processes alive, is crashed. */
 export const MANAGED_SILENT_LIMIT_MS = 30_000;
 const MANAGED_SHARE_TTL_SECONDS = 30 * 86_400;
@@ -131,6 +134,9 @@ export class ManagedDevServerManager {
   private readonly timer: ReturnType<typeof setInterval>;
   private ticking: Promise<void> | undefined;
   private reserved = new Set<number>();
+  /** One mutation or supervision pass per project at a time, so a stop never
+   *  races a pass that still believes the server should run. */
+  private readonly locks = new Map<string, Promise<unknown>>();
   /** Publishing that failed waits before the next attempt instead of every tick. */
   private readonly publishRetryAt = new Map<string, number>();
   /** Running instances whose listener vanished while processes stayed alive. */
@@ -159,6 +165,23 @@ export class ManagedDevServerManager {
   /** Network ports reserved for instances; the ad hoc share allocator skips them. */
   reservedNetworkPorts(): ReadonlySet<number> {
     return this.reserved;
+  }
+
+  private locked<T>(projectId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(projectId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(work);
+    const settled = next.catch(() => undefined);
+    this.locks.set(projectId, settled);
+    void settled.then(() => {
+      if (this.locks.get(projectId) === settled) this.locks.delete(projectId);
+    });
+    return next;
+  }
+
+  private refreshQuietly(project: ProjectRecord): void {
+    void Promise.resolve()
+      .then(() => this.options.refreshListeners?.(project))
+      .catch(() => undefined);
   }
 
   close(): void {
@@ -308,9 +331,11 @@ export class ManagedDevServerManager {
   async remove(sessionId: string, idOrName: string): Promise<void> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
-    for (const instance of await this.servers.listInstances({ serverId: entry.id }))
-      await this.stopInstance(project, instance, 'Entry removed');
-    await this.servers.delete(entry.id);
+    await this.locked(project.id, async () => {
+      for (const instance of await this.servers.listInstances({ serverId: entry.id }))
+        await this.stopInstance(project, instance, 'Entry removed');
+      await this.servers.delete(entry.id);
+    });
     await this.refreshReserved();
   }
 
@@ -328,8 +353,10 @@ export class ManagedDevServerManager {
         'The command changed in the meantime. Review it again before approving.',
         409,
       );
-    const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
-    if (instance?.state === 'running') await this.publish(project, approved, instance);
+    await this.locked(project.id, async () => {
+      const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      if (instance?.state === 'running') await this.publish(project, approved, instance);
+    });
     return this.view(sessionId);
   }
 
@@ -356,7 +383,7 @@ export class ManagedDevServerManager {
       if (!entry.approved)
         throw new ManagedDevServerError('Review and approve the command first', 409);
     }
-    await this.startEntry(context, entry, by);
+    await this.locked(context.project.id, () => this.startEntry(context, entry, by));
     return this.viewOf(sessionId, entry.id);
   }
 
@@ -366,16 +393,21 @@ export class ManagedDevServerManager {
     // Refuse before stopping: a restart that cannot start must not kill what runs.
     if (by === 'operator' && !entry.approved)
       throw new ManagedDevServerError('Review and approve the command first', 409);
-    const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
-    if (instance) await this.stopInstance(context.project, instance, null);
-    return this.start(sessionId, entry.id, by);
+    await this.locked(context.project.id, async () => {
+      const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      if (instance) await this.stopInstance(context.project, instance, null);
+      await this.startEntry(context, entry, by);
+    });
+    return this.viewOf(sessionId, entry.id);
   }
 
   async stop(sessionId: string, idOrName: string): Promise<ManagedServerView> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
-    const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
-    if (instance) await this.stopInstance(project, instance, null);
+    await this.locked(project.id, async () => {
+      const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      if (instance) await this.stopInstance(project, instance, null);
+    });
     return this.viewOf(sessionId, entry.id);
   }
 
@@ -385,7 +417,7 @@ export class ManagedDevServerManager {
     const instance = await this.servers.getInstance(instanceId);
     if (!instance || instance.projectId !== project.id)
       throw new ManagedDevServerError('instance not found', 404);
-    await this.stopInstance(project, instance, null);
+    await this.locked(project.id, () => this.stopInstance(project, instance, null));
     return this.view(sessionId);
   }
 
@@ -415,10 +447,14 @@ export class ManagedDevServerManager {
     const project = session?.projectId
       ? await this.options.store.getProject(session.projectId)
       : undefined;
-    for (const instance of instances) {
-      if (project) await this.stopInstance(project, instance, null).catch(() => undefined);
-      if (options.forget) await this.servers.deleteInstance(instance.id);
-    }
+    const work = async () => {
+      for (const instance of instances) {
+        if (project) await this.stopInstance(project, instance, null).catch(() => undefined);
+        if (options.forget) await this.servers.deleteInstance(instance.id);
+      }
+    };
+    if (project) await this.locked(project.id, work);
+    else await work();
     await this.refreshReserved();
   }
 
@@ -445,19 +481,22 @@ export class ManagedDevServerManager {
       await this.servers.updateInstance(instance.id, {
         desired: 'running',
         state: 'starting',
-        detail: 'Waking sandbox…',
+        detail: WAKING_DETAIL,
         lastRunCommand: entry.command,
         lastRunWorkdir: entry.workdir,
         startedAt: new Date(this.now()),
       });
       this.activeProjects.add(project.id);
-      void this.options.wakeSandbox(project.id, sessionId).catch(async (error: unknown) => {
-        await this.servers.updateInstance(instance.id, {
-          desired: 'stopped',
-          state: 'crashed',
-          detail: `The sandbox did not wake: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      });
+      void this.options
+        .wakeSandbox(project.id, sessionId)
+        .catch((error: unknown) =>
+          this.servers.updateInstance(instance.id, {
+            desired: 'stopped',
+            state: 'crashed',
+            detail: `The sandbox did not wake: ${error instanceof Error ? error.message : String(error)}`,
+          }),
+        )
+        .catch(() => undefined);
       return;
     }
     if (project.state !== 'active' || !project.containerName)
@@ -558,7 +597,7 @@ export class ManagedDevServerManager {
       detail,
       ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
     });
-    void this.options.refreshListeners?.(project);
+    this.refreshQuietly(project);
   }
 
   // ---- publishing -------------------------------------------------------
@@ -635,6 +674,26 @@ export class ManagedDevServerManager {
     if (share) await this.options.localShares?.stop(share.id).catch(() => false);
   }
 
+  /**
+   * Stops tagged processes whose instance no longer exists, for example after a
+   * delete path that removed the rows without stopping the processes first.
+   * Fed by every listener scan of the project.
+   */
+  sweepOrphans(project: ProjectRecord, processes: readonly ListeningProcess[]): Promise<void> {
+    const tags = new Set(
+      processes.flatMap((process) => (process.instanceId ? [process.instanceId] : [])),
+    );
+    if (tags.size === 0 || this.closed) return Promise.resolve();
+    return this.locked(project.id, async () => {
+      const known = new Set(
+        (await this.servers.listInstances({ projectId: project.id })).map((value) => value.id),
+      );
+      for (const tag of tags)
+        if (!known.has(tag))
+          await this.options.runtime.stopManagedServer(project, tag).catch(() => undefined);
+    }).catch(() => undefined);
+  }
+
   // ---- supervision ------------------------------------------------------
 
   /** One pass over active instances. Exposed for tests and for discovery pushes. */
@@ -659,7 +718,7 @@ export class ManagedDevServerManager {
     this.activeProjects = new Set(byProject.keys());
     for (const [projectId, group] of byProject) {
       try {
-        await this.superviseProject(projectId, group);
+        await this.locked(projectId, () => this.superviseProject(projectId, group));
       } catch (error) {
         this.options.log?.('verity: managed dev server supervision failed', {
           projectId,
@@ -677,9 +736,24 @@ export class ManagedDevServerManager {
     if (!project || project.state !== 'active' || !project.containerName) return;
     const processes = await this.options.runtime.listListeningProcesses(project);
     let changed = false;
-    for (const instance of instances) {
+    for (const snapshot of instances) {
+      // Re-read under the project lock: a stop since the pass began wins.
+      const instance = await this.servers.getInstance(snapshot.id);
+      if (!instance || instance.desired !== 'running') continue;
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
+      if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {
+        const session = await this.options.store.getSession(instance.sessionId);
+        if (session?.worktree) {
+          await this.startEntry(
+            { project, sessionId: instance.sessionId, worktree: session.worktree },
+            entry,
+            'recovery',
+          );
+          changed = true;
+        }
+        continue;
+      }
       const tagged = processes.filter((process) => process.instanceId === instance.id);
       const onPort = tagged.find((process) => process.port === instance.sandboxPort);
       if (onPort) {
@@ -766,6 +840,6 @@ export class ManagedDevServerManager {
       });
       changed = true;
     }
-    if (changed) void this.options.refreshListeners?.(project);
+    if (changed) this.refreshQuietly(project);
   }
 }

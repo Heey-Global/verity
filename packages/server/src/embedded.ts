@@ -3492,6 +3492,8 @@ export async function buildEmbeddedServer(
   // events the FileTailRunnerClient republishes off the tailed event file must
   // reach the exact bus the live stream reads from, not a second instance.
   const bus = new InMemoryEventBus();
+  // Declared before discovery, whose scans feed its orphan sweep.
+  let managedDevServerManager: ManagedDevServerManager | undefined;
   const listenerDiscovery =
     config.dockerBaseUrl && config.hostCloneRoot
       ? new ListenerDiscovery({
@@ -3500,6 +3502,9 @@ export async function buildEmbeddedServer(
           hostCloneRoot: config.hostCloneRoot,
           dockerBaseUrl: config.dockerBaseUrl,
           resolveUser: resolvePreviewUser,
+          onScan: (project, processes) => {
+            void managedDevServerManager?.sweepOrphans(project, processes);
+          },
           scan: (project) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
@@ -3510,7 +3515,6 @@ export async function buildEmbeddedServer(
 
   const localConnectorImage =
     config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
-  let managedDevServerManager: ManagedDevServerManager | undefined;
   // `app.log` exists only once the control plane is built further down.
   const managedDevServerLog: {
     current?: (message: string, detail?: Record<string, unknown>) => void;

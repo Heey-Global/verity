@@ -29,6 +29,8 @@ export class ListenerDiscovery {
       dockerBaseUrl?: string;
       resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
       scan: (project: ProjectRecord) => Promise<ListeningProcess[]>;
+      /** Sees every successful scan, e.g. to stop orphaned managed servers. */
+      onScan?: (project: ProjectRecord, processes: ListeningProcess[]) => void;
     },
   ) {
     this.unsubscribe = options.bus.subscribeAll((sessionId, frame) => {
@@ -124,7 +126,7 @@ export class ListenerDiscovery {
 
   /** Rescans a project now, for changes Verity made itself (managed dev servers). */
   refreshProject(project: ProjectRecord): Promise<void> {
-    return this.refresh(project);
+    return this.refresh(project).catch(() => undefined);
   }
 
   private refresh(project: ProjectRecord): Promise<void> {
@@ -141,6 +143,7 @@ export class ListenerDiscovery {
       try {
         processes = this.active(project) ? await this.options.scan(project) : [];
         this.healthy.set(project.id, processes);
+        this.options.onScan?.(project, processes);
       } catch {
         return;
       }

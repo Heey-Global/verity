@@ -351,6 +351,40 @@ describe('managed dev servers', () => {
     });
   });
 
+  // A sandbox put to sleep keeps its /tmp; an exit code from an earlier run
+  // must not be read as the woken start crashing.
+  it('launches a woken instance even when an old exit code is left behind', async () => {
+    manager.close();
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      localShares: shares.local,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project: ProjectRecord, worktree: string) => worktree,
+      wakeSandbox: () => ctx.store.updateProjectState('p1', 'active'),
+      now: () => now,
+    });
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const first = sandbox.started[0]!;
+    sandbox.crash(first.instanceId, 1);
+    await manager.stop('s1', 'Demo');
+    await ctx.store.updateProjectState('p1', 'sleeping');
+    await manager.start('s1', 'Demo', 'agent');
+    await vi.waitFor(async () => expect((await ctx.store.getProject('p1'))?.state).toBe('active'));
+    sandbox.crash(first.instanceId, 1);
+    await manager.tick();
+    expect(sandbox.started).toHaveLength(2);
+  });
+
+  it('stops tagged processes whose instance no longer exists', async () => {
+    const project = (await ctx.store.getProject('p1'))!;
+    await manager.sweepOrphans(project, [
+      { port: 41000, bind: 'any', pid: 9, cwd: '/work', command: 'node', instanceId: 'gone' },
+    ]);
+    expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), 'gone');
+  });
+
   it('gives sibling entries of the session their internal URLs', async () => {
     await manager.add('s1', { name: 'Voice API', command: 'node api.mjs' });
     await manager.add('s1', { name: 'Web', command: 'vite --port {port}' });
