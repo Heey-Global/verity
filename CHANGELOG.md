@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.12.0](https://github.com/Heey-Global/verity/compare/v4.11.1...v4.12.0) (2026-10-05)
+
+
+### Features
+
+* **mobile:** show subscription plan and usage on provider settings ([#1142](https://github.com/Heey-Global/verity/issues/1142)) ([e3d2e0f](https://github.com/Heey-Global/verity/commit/e3d2e0f352dcb8c6cff031a8b3c8c83253f8b8cf))
+
+
+### Bug Fixes
+
+* **control:** permit bounded diagnostics across knowledge boundaries ([#1132](https://github.com/Heey-Global/verity/issues/1132)) ([fbf3a92](https://github.com/Heey-Global/verity/commit/fbf3a92bd572a236960175134a4e1c8fb61b6cc9))
+* **deps:** update dependency @napi-rs/canvas to v1.0.10 ([#1135](https://github.com/Heey-Global/verity/issues/1135)) ([58a7580](https://github.com/Heey-Global/verity/commit/58a758028357f1a4d05029907bb432425d0d578a))
+* **secrets:** unify scoped approvals and prevent redundant prompts ([#1139](https://github.com/Heey-Global/verity/issues/1139)) ([06e803e](https://github.com/Heey-Global/verity/commit/06e803e62394619f0054544d509c74b082fe4dce))
+
 ## [4.11.1](https://github.com/Heey-Global/verity/compare/v4.11.0...v4.11.1) (2026-10-04)
 
 
