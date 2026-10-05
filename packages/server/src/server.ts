@@ -2773,10 +2773,11 @@ export interface SessionSummary extends SessionRecord {
   /** Compact PR status for the current branch (#387). `null` = looked up, no open
    * PR; ABSENT = GitHub not configured (no `branchPrStatus`) or not yet resolved. */
   pr?: SessionPrSummary | null;
-  /** Total persisted events for this session (#387) — a monotonic activity counter
-   * the overview compares against a per-device "last seen" mark to show an unread
-   * dot. Carried on the summary so the list needn't open each session to know it. */
+  /** Persisted events excluding dev-server snapshots; compared against the synced
+   * read marker to show the overview unread dot. */
   eventCount: number;
+  /** Version associated with eventCount; absent in summaries from older servers. */
+  eventCountVersion?: 'dev-servers-excluded-v1';
   /** Timestamp of the newest canonical event, for metadata-only recency displays. */
   lastActivityAt: number | null;
   /**
