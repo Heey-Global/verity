@@ -504,6 +504,7 @@ it('separates project listeners from the session’s own', async () => {
     }),
   );
   expect(await screen.findByText('OTHER SERVERS IN THIS PROJECT')).toBeTruthy();
+  expect(screen.getByText('Started outside this session.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Storybook on port 8080' })).toBeTruthy();
 });
 
