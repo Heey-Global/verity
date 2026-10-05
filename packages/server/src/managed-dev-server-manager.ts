@@ -156,6 +156,7 @@ export class ManagedDevServerManager {
   /** Projects with an instance that should be running; they must not sleep. */
   private activeProjects = new Set<string>();
   private readonly pendingLinkEnds = new Set<string>();
+  private readonly pendingUnpublish = new Map<string, ManagedDevServerInstanceRecord>();
   private closed = false;
 
   constructor(private readonly options: ManagedDevServerManagerOptions) {
@@ -453,6 +454,7 @@ export class ManagedDevServerManager {
       }
       if (!instance) return;
       await this.servers.updateInstance(instance.id, { localAccess: false });
+      this.pendingLinkEnds.add(instance.id);
       await this.unpublish(instance);
       if (!(await this.hasLivePublicLink(instance)))
         await this.stopInstance(project, instance, null);
@@ -741,14 +743,19 @@ export class ManagedDevServerManager {
     detail: string | null,
   ): Promise<void> {
     await this.servers.updateInstance(instance.id, { desired: 'stopped' });
-    await this.unpublish(instance);
-    if (project.state === 'active' && project.containerName)
-      await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
-    await this.servers.updateInstance(instance.id, {
-      state: 'stopped',
-      detail,
-      ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
-    });
+    try {
+      await this.unpublish(instance);
+    } finally {
+      // Edge cleanup must not prevent the server process from being stopped.
+      if (project.state === 'active' && project.containerName)
+        await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
+      await this.servers.updateInstance(instance.id, {
+        state: 'stopped',
+        detail,
+        ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
+      });
+    }
+
     this.refreshQuietly(project);
   }
 
@@ -830,8 +837,14 @@ export class ManagedDevServerManager {
   }
 
   private async unpublish(instance: ManagedDevServerInstanceRecord): Promise<void> {
-    const share = this.shareFor(instance);
-    if (share) await this.options.localShares?.stop(share.id);
+    try {
+      const share = this.shareFor(instance);
+      if (share) await this.options.localShares?.stop(share.id);
+      this.pendingUnpublish.delete(instance.id);
+    } catch (error) {
+      this.pendingUnpublish.set(instance.id, instance);
+      throw error;
+    }
   }
 
   /**
@@ -870,6 +883,16 @@ export class ManagedDevServerManager {
   }
 
   private async supervise(): Promise<void> {
+    for (const instance of this.pendingUnpublish.values()) {
+      await this.locked(instance.projectId, async () => {
+        const current = await this.servers.getInstance(instance.id);
+        if (current?.localAccess && current.desired === 'running') {
+          this.pendingUnpublish.delete(instance.id);
+          return;
+        }
+        await this.unpublish(current ?? instance);
+      }).catch(() => undefined);
+    }
     for (const id of this.pendingLinkEnds) await this.publicLinkEnded(id);
     let instances: ManagedDevServerInstanceRecord[];
     try {

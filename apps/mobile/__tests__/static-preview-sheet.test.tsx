@@ -1186,6 +1186,52 @@ describe('managed dev servers', () => {
     );
   });
 
+  it('conditionally stops after a failed start response', async () => {
+    const server = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const controlManagedDevServer = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValue(server);
+    const createSessionPortPreviewShare = jest.fn();
+    answer('1 hour');
+    renderSheet(
+      managedClient([server], { controlManagedDevServer, createSessionPortPreviewShare }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
+  it('allows stopping a link while it is still being created', async () => {
+    const stopPublicPreviewShare = jest.fn(async () => {});
+    answer('Stop sharing');
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [
+          link({ state: 'creating', publicOrigin: null }),
+        ]),
+        stopPublicPreviewShare,
+      }),
+    );
+    const toggle = await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' });
+    await waitFor(() => expect(toggle.props.accessibilityState.checked).toBe(true));
+    expect(toggle.props.accessibilityState.disabled).toBe(false);
+    fireEvent.press(toggle);
+    await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1'));
+  });
+
   it('cleans up a running online-only instance when creating its link fails', async () => {
     const server = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
     const controlManagedDevServer = jest.fn(async () => server);

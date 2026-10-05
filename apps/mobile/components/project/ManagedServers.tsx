@@ -257,7 +257,7 @@ export function ManagedServerBlock({
             <SwitchControl
               label={`Shared online for ${server.name}`}
               value={onlineOn}
-              pending={pending === 'online' || publicLink?.pending === true}
+              pending={pending === 'online'}
               disabled={busy || (publicSharing === 'unavailable' && !publicLink)}
               onChange={onOnline}
             />

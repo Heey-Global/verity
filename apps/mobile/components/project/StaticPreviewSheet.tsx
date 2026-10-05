@@ -447,17 +447,17 @@ export function StaticPreviewSheet({
       }
       if (!(await approveManaged(server, 'Share', 'online'))) return;
       const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
-      if (!running || server.instance?.restartToApply)
-        await client.controlManagedDevServer(
-          sessionId,
-          server.id,
-          'start',
-          // An older Core ignores Local and opens the server on the network too;
-          // its Local switch then shows that honestly.
-          server.accessSwitches ? { local: managedLocalOn(server) } : {},
-        );
       let share: PublicPreviewShare;
       try {
+        if (!running || server.instance?.restartToApply)
+          await client.controlManagedDevServer(
+            sessionId,
+            server.id,
+            'start',
+            // An older Core ignores Local and opens the server on the network too;
+            // its Local switch then shows that honestly.
+            server.accessSwitches ? { local: managedLocalOn(server) } : {},
+          );
         const instance = await waitUntilRunning(server.id);
         share = await client.createSessionPortPreviewShare(sessionId, {
           targetPort: instance.sandboxPort,

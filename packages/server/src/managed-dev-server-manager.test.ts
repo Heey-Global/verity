@@ -640,6 +640,29 @@ describe('managed dev servers', () => {
       expect((await instanceOf()).state).toBe('running');
     });
 
+    it('stops after failed Local teardown when no public link remains', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.setLocal('s1', 'Demo', false)).rejects.toThrow('edge unavailable');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      expect(shares.shares).toHaveLength(0);
+    });
+
+    it('stops the process even if edge teardown fails and retries edge cleanup', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.stop('s1', 'Demo')).rejects.toThrow('edge unavailable');
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), id);
+      expect((await instanceOf()).state).toBe('stopped');
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+    });
+
     it('retries link-ended cleanup after a transient store failure', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });
