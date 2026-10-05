@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,7 +6,12 @@ import { ProvisionerImpl, type ProvisionerOptions } from './provisioner.js';
 import type { ContainerCommandRunner } from './devcontainer-lifecycle.js';
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(() =>
+  roots.splice(0).forEach((root) => {
+    chmodSync(join(root, 'runtime'), 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }),
+);
 function fixture(failHook = false) {
   const root = mkdtempSync(join(tmpdir(), 'verity-private-lifecycle-'));
   roots.push(root);
@@ -14,6 +19,7 @@ function fixture(failHook = false) {
   const runtime = join(root, 'runtime');
   mkdirSync(join(path, '.devcontainer'), { recursive: true });
   mkdirSync(runtime);
+  chmodSync(runtime, 0o170);
   writeFileSync(
     join(path, '.devcontainer/devcontainer.json'),
     JSON.stringify({ remoteUser: 'root', postCreateCommand: 'npm ci && echo private-hook' }),
@@ -75,6 +81,6 @@ describe('private devcontainer lifecycle', () => {
     ).rejects.toThrow('hook failed');
     expect(f.commands.some((command) => command.startsWith('touch '))).toBe(false);
     expect(f.commands).not.toContain('ready');
-    expect(existsSync(join(f.runtime, 'workspace-post-create-complete'))).toBe(false);
+    expect(existsSync(`${f.runtime}.workspace-post-create-complete`)).toBe(false);
   });
 });

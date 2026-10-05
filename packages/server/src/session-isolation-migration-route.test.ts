@@ -75,13 +75,19 @@ it('requires an idle session, stops its processes and switches only after a back
     release?.();
     await busy;
     const originalGitLink = readFileSync(join(checkout, '.git'), 'utf8');
+    relocate.mockResolvedValueOnce(false);
+    const interrupted = await app.inject({
+      method: 'POST',
+      url: '/sessions/session/isolation/migrate',
+    });
+    expect(interrupted.statusCode).toBe(500);
     const migrated = await app.inject({
       method: 'POST',
       url: '/sessions/session/isolation/migrate',
     });
     expect(migrated.statusCode).toBe(200);
     expect(stop).toHaveBeenCalledWith('session');
-    expect(relocate).toHaveBeenCalledOnce();
+    expect(relocate).toHaveBeenCalledTimes(2);
     const result = migrated.json<{ worktree: string; backupPath: string }>();
     expect(result.worktree).toBe(join(temp, '.verity-session-clones', project.id, 'agent-session'));
     expect(result.backupPath).toContain(join(temp, 'backups', 'session'));

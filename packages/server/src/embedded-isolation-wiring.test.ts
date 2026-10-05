@@ -38,6 +38,17 @@ describe('production session isolation wiring', () => {
     expect(text).toMatch(/'rev-parse'/);
     expect(text).toMatch(/'for-each-ref'/);
   });
+  it('protects legacy transcript cwd directories alongside private session transcripts', () => {
+    const property = nodes(ts.isPropertyAssignment).find(
+      (node) => node.name.getText(source) === 'liveCwdDirs',
+    );
+    const expression = property?.initializer.getText(source);
+    // Legacy subagent transcripts are irreplaceable after the first isolated resume.
+    expect(expression).toContain('sessionSandboxCwd(worktree)');
+    expect(expression).toContain(
+      'runnerSandboxPath(worktree, config.hostCloneRoot, RUNNER_CONTAINER_PROJECT_ROOT)',
+    );
+  });
   it('migration explicitly stops legacy managed processes before copying their workspace', () => {
     const serverSource = readFileSync(new URL('./server.ts', import.meta.url), 'utf8');
     const migration = serverSource.slice(

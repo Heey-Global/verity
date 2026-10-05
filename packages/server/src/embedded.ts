@@ -5003,7 +5003,14 @@ export async function buildEmbeddedServer(
         // claude's own naming rule, applied to the cwd as the SANDBOX saw it — the same
         // derivation the delete path uses, so the two agree on which directory belongs
         // to which session.
-        liveCwdDirs: new Set(worktrees.map((worktree) => encodeCwd(sessionSandboxCwd(worktree)))),
+        liveCwdDirs: new Set(
+          worktrees.flatMap((worktree) => [
+            encodeCwd(sessionSandboxCwd(worktree)),
+            encodeCwd(
+              runnerSandboxPath(worktree, config.hostCloneRoot, RUNNER_CONTAINER_PROJECT_ROOT),
+            ),
+          ]),
+        ),
         dryRun,
         signal: sweepAbort.signal,
       });

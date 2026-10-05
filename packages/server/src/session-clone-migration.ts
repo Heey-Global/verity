@@ -50,6 +50,36 @@ export async function migrateLegacySessionClone(
   const checkout = resolve(opts.checkoutPath);
   if (realpathSync(checkout) !== checkout || !lstatSync(checkout).isDirectory())
     throw new Error('Migration requires a real checkout directory');
+  if (
+    opts.destinationPath &&
+    resolve(opts.destinationPath) !== checkout &&
+    existsSync(opts.destinationPath)
+  ) {
+    const destination = resolve(opts.destinationPath);
+    const backupRoot = resolve(opts.backupRoot);
+    if (!existsSync(backupRoot) || realpathSync(backupRoot) !== backupRoot)
+      throw new Error('Migration destination already exists without a trusted backup');
+    const owned = readdirSync(backupRoot, { withFileTypes: true }).some((entry) => {
+      if (!entry.isDirectory() || !entry.name.startsWith('session-migration-')) return false;
+      const manifest = join(backupRoot, entry.name, 'manifest.json');
+      if (!existsSync(manifest) || lstatSync(manifest).isSymbolicLink()) return false;
+      try {
+        const record = JSON.parse(readFileSync(manifest, 'utf8')) as {
+          checkout?: unknown;
+          destination?: unknown;
+        };
+        return record.checkout === checkout && record.destination === destination;
+      } catch {
+        return false;
+      }
+    });
+    if (!owned || realpathSync(destination) !== destination)
+      throw new Error('Migration destination already exists without a matching migration');
+    // An interrupted relocation may have left a prepared or partial clone. Keep it
+    // intact, then rebuild from the original so later uncommitted work is retained.
+    const recovery = mkdtempSync(join(resolve(destination, '..'), '.migration-recovery-'));
+    renameSync(destination, join(recovery, 'checkout'));
+  }
   let gitFile = join(checkout, '.git');
   if (lstatSync(gitFile).isDirectory()) {
     await assertIndependentSessionClone(checkout);
@@ -64,6 +94,7 @@ export async function migrateLegacySessionClone(
     if (realpathSync(backupRoot) !== backupRoot)
       throw new Error('Backup root must not contain symlinks');
     const backup = mkdtempSync(join(backupRoot, 'session-migration-'));
+    writeFileSync(join(backup, 'manifest.json'), `${JSON.stringify({ checkout, destination })}\n`);
     cpSync(checkout, join(backup, 'checkout'), {
       recursive: true,
       dereference: false,
@@ -108,7 +139,10 @@ export async function migrateLegacySessionClone(
   copy(checkout, join(backup, 'checkout'));
   copy(common, join(backup, 'common-git'));
   copy(admin, join(backup, 'worktree-git'));
-  writeFileSync(join(backup, 'manifest.json'), `${JSON.stringify({ checkout, admin, common })}\n`);
+  writeFileSync(
+    join(backup, 'manifest.json'),
+    `${JSON.stringify({ checkout, admin, common, destination: opts.destinationPath ? resolve(opts.destinationPath) : checkout })}\n`,
+  );
   const stage = join(backup, 'independent');
   await exec('git', ['clone', '--no-local', '--no-checkout', '--', common, stage]);
   const privateGit = join(stage, '.git');

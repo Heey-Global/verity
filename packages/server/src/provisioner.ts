@@ -2304,7 +2304,7 @@ export class ProvisionerImpl implements Provisioner {
     });
     if (workspace?.waitForPostCreate) {
       const settings = devcontainerRuntimeSettings(join(workspace.path, '.devcontainer'));
-      const completed = join(runtimePath, 'workspace-post-create-complete');
+      const completed = `${runtimePath}.workspace-post-create-complete`;
       if (workspace.freshContainer) rmSync(completed, { force: true });
       if (workspace.freshContainer || !existsSync(completed)) {
         if (settings.postCreateCommand !== undefined) {
