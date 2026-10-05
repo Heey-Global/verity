@@ -3415,6 +3415,16 @@ export class VerityClient {
       .shares.map((share) => this.resolveLocalPreview(share));
   }
 
+  async listProjectLocalPreviewShares(projectId: string): Promise<LocalPreviewShare[]> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/local-shares`, {
+      method: 'GET',
+    });
+    return z
+      .object({ shares: z.array(localPreviewShareSchema) })
+      .parse(await res.json())
+      .shares.map((share) => this.resolveLocalPreview(share));
+  }
+
   async stopLocalPreviewShare(shareId: string): Promise<void> {
     await this.request(`/local-shares/${encodeURIComponent(shareId)}`, { method: 'DELETE' });
   }
