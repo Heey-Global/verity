@@ -11,7 +11,8 @@ import { Toggle } from '../Toggle';
 
 /** The public link of a managed instance, as far as the list needs it. */
 export interface ManagedPublicLink {
-  origin: string;
+  /** Null while the Uplink has not assigned the address yet. */
+  origin: string | null;
   pin: string;
   expiresAt: string;
   pinLocked: boolean;
@@ -146,7 +147,6 @@ export function ManagedServerBlock({
             {localOn && localUrl ? (
               <Pressable
                 onPress={onOpenLocal}
-                onLongPress={onOpenLocal}
                 hitSlop={8}
                 accessibilityRole="link"
                 accessibilityLabel={`Open ${server.name} on your network`}
@@ -180,7 +180,9 @@ export function ManagedServerBlock({
           </View>
           <View style={styles.rowText}>
             <Text style={styles.rowTitle}>Shared online</Text>
-            {publicLink ? (
+            {publicLink && !publicLink.origin ? (
+              <Text style={styles.rowDetail}>Creating link…</Text>
+            ) : publicLink?.origin ? (
               <>
                 <Pressable
                   onPress={onOpenPublic}
@@ -231,7 +233,7 @@ export function ManagedServerBlock({
               </Text>
             )}
           </View>
-          {publicLink && !publicLink.pinLocked ? (
+          {publicLink?.origin && !publicLink.pinLocked ? (
             <Pressable
               style={styles.iconAction}
               onPress={onSharePublic}

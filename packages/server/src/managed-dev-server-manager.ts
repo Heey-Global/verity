@@ -395,8 +395,9 @@ export class ManagedDevServerManager {
 
   /**
    * `local` is the operator's Local switch for this start: true from the Local
-   * switch, false when Shared online starts the server alone. Absent, as for the
-   * agent, it keeps what the instance had.
+   * switch, false when Shared online starts the server alone. Absent, a running
+   * instance keeps what it had; an agent start of a stopped one turns Local on, so
+   * no server runs with no access left and nothing to stop it.
    */
   async start(
     sessionId: string,
@@ -574,8 +575,9 @@ export class ManagedDevServerManager {
         sessionId,
         sandboxPorts: MANAGED_SANDBOX_PORTS,
       });
+      const access = local ?? (by === 'agent' ? true : undefined);
       await this.servers.updateInstance(instance.id, {
-        ...(local !== undefined ? { localAccess: local } : {}),
+        ...(access !== undefined ? { localAccess: access } : {}),
         desired: 'running',
         state: 'starting',
         detail: WAKING_DETAIL,
@@ -619,6 +621,9 @@ export class ManagedDevServerManager {
       this.activeProjects.add(project.id);
       return;
     }
+    if (local === undefined && by === 'agent' && !instance.localAccess)
+      instance =
+        (await this.servers.updateInstance(instance.id, { localAccess: true })) ?? instance;
     if (status.alive) await this.options.runtime.stopManagedServer(project, instance.id);
     const holder = processes.find((process) => process.port === instance.sandboxPort);
     if (holder && holder.instanceId !== instance.id) {

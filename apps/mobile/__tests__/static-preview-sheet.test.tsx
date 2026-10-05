@@ -1185,6 +1185,65 @@ describe('managed dev servers', () => {
     expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   });
 
+  // Closed while the server starts: the link and its PIN would reach nobody,
+  // and the server started only for it must not keep running.
+  it('makes no link after the sheet closes during the start', async () => {
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const starting = demo({
+      instance: { ...stopped.instance!, state: 'starting', desired: 'running' },
+    });
+    const controlManagedDevServer = jest.fn(async () => starting);
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    answer('1 hour');
+    const view = renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers: jest
+          .fn()
+          .mockResolvedValueOnce([stopped])
+          .mockResolvedValue([starting]),
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
+        local: false,
+      }),
+    );
+    view.unmount();
+    await waitFor(
+      () => expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+      { timeout: 4_000 },
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
+  // A link the Uplink has not given an address yet is already on; pressing the
+  // switch again must not create a second one.
+  it('shows a link without an address yet as being created', async () => {
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [
+          link({ state: 'creating', publicOrigin: null }),
+        ]),
+      }),
+    );
+    expect(await screen.findByText('Creating link…')).toBeTruthy();
+    expect(
+      screen.getByRole('switch', { name: 'Shared online for Curtis Demo' }).props
+        .accessibilityState,
+    ).toMatchObject({ checked: true });
+  });
+
   // An older Core has no Local route and rejects unknown body fields with 400;
   // its switch started and stopped the server, also before it ever ran.
   it('falls back to start and stop on a Core without the Local switch', async () => {

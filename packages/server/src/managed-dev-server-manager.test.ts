@@ -530,6 +530,18 @@ describe('managed dev servers', () => {
       expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
     });
 
+    // Local off survives a stop; an agent start without it would run a server
+    // nobody can open and nothing stops, since no link will ever end.
+    it('turns Local on when the agent starts a server that had it off', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.stop('s1', 'Demo');
+      await manager.start('s1', 'Demo', 'agent');
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
     it('refuses Local on for an unapproved command', async () => {
       await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
       await expect(manager.setLocal('s1', 'Demo', true)).rejects.toThrow(/approve/u);

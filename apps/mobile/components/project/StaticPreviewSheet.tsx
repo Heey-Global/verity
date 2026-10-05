@@ -303,6 +303,14 @@ export function StaticPreviewSheet({
     );
 
   const [managedSwitch, setManagedSwitch] = useState<{ id: string; kind: 'local' | 'online' }>();
+  const sheetOpen = useRef(true);
+  useEffect(
+    () => () => {
+      sheetOpen.current = false;
+    },
+    [],
+  );
+
   const managedAction = async (
     server: ManagedDevServer,
     kind: 'local' | 'online' | 'other',
@@ -367,6 +375,8 @@ export function StaticPreviewSheet({
   /** Waits until the instance answers on its port; a public link needs that. */
   const waitUntilRunning = async (serverId: string) => {
     for (let attempt = 0; attempt < 40; attempt += 1) {
+      // Closed meanwhile: nobody would see the link or its PIN, so none is made.
+      if (!sheetOpen.current) throw new Error('The Preview sheet was closed.');
       const servers = await client.listManagedDevServers(sessionId);
       if (servers) setManaged(servers);
       const instance = servers?.find((value) => value.id === serverId)?.instance;
@@ -437,9 +447,12 @@ export function StaticPreviewSheet({
     void managedAction(server, 'other', async () => {
       if (!(await approveManaged(server, 'Allow and start', 'local'))) return;
       const keepLocalOff = managedLinkFor(server) !== undefined && !managedLocalOn(server);
-      return client.controlManagedDevServer(sessionId, server.id, 'start', {
-        ...(keepLocalOff ? {} : { local: true }),
-      });
+      return client.controlManagedDevServer(
+        sessionId,
+        server.id,
+        'start',
+        server.accessSwitches && !keepLocalOff ? { local: true } : {},
+      );
     });
 
   const restartManaged = (server: ManagedDevServer) =>
@@ -1040,13 +1053,15 @@ export function StaticPreviewSheet({
                 key={server.id}
                 server={server}
                 publicLink={
-                  link?.publicOrigin
+                  // A link still being created counts as on, so the switch
+                  // cannot start a second one meanwhile.
+                  link
                     ? {
-                        origin: link.publicOrigin,
+                        origin: link.publicOrigin ?? null,
                         pin: link.pin,
                         expiresAt: link.expiresAt,
                         pinLocked: link.pinLocked === true,
-                        pending: link.state !== 'active',
+                        pending: link.state !== 'active' || !link.publicOrigin,
                       }
                     : undefined
                 }
