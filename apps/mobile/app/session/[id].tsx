@@ -108,6 +108,8 @@ import {
   type Row,
   type ToolCallTone,
   type ToolImage,
+  type LocalPreviewShare,
+  type ManagedDevServer,
 } from '@verity/mobile';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import * as Haptics from 'expo-haptics';
@@ -894,6 +896,36 @@ export function SessionChat({
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);
+  const [previewManagedId, setPreviewManagedId] = useState<string>();
+  const [managedEntries, setManagedEntries] = useState<ManagedDevServer[]>([]);
+  const completedServerTools = session.messages.filter(
+    (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
+  ).length;
+  // Names and addresses of managed servers, for their chat cards.
+  const [managedByInstance, setManagedByInstance] = useState<Map<string, ManagedDevServer>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    if (typeof client.listManagedDevServers !== 'function') return;
+    let active = true;
+    void client
+      .listManagedDevServers(sessionId)
+      .then((servers) => {
+        if (!active || !servers) return;
+        setManagedEntries(servers);
+        setManagedByInstance(
+          new Map(
+            servers.flatMap((server) =>
+              server.instance ? [[server.instance.id, server] as const] : [],
+            ),
+          ),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [client, completedServerTools, session.devServers, sessionId]);
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
     if (previewOpening !== null) return;
     setPreviewOpening(server.port);
@@ -3814,18 +3846,105 @@ export function SessionChat({
           describe the session itself, while a server comes and goes. */}
       {session.devServers
         ?.filter((server) => server.scope !== 'project')
-        .map((server) => (
-          <RunningServerCard
-            key={server.port}
-            server={server}
-            opening={previewOpening === server.port}
-            disabled={previewOpening !== null}
-            onOpen={() => void openDetectedLocally(server)}
-            onShare={() => {
-              setPreviewServer(server);
+        .map((server) => {
+          // A managed server is named by its entry and opened through it: its
+          // address is the reserved one, not a fresh ad hoc share.
+          const entry = server.managedInstanceId
+            ? managedByInstance.get(server.managedInstanceId)
+            : undefined;
+          const openEntry = () => {
+            setPreviewManagedId(entry?.id);
+            setStaticPreviewOpen(true);
+          };
+          return (
+            <RunningServerCard
+              key={server.port}
+              server={entry ? { ...server, name: entry.name } : server}
+              managed={entry}
+              opening={previewOpening === server.port}
+              disabled={previewOpening !== null}
+              onOpen={() => {
+                if (!server.managedInstanceId) return void openDetectedLocally(server);
+                if (!entry?.instance) return openEntry();
+                setPreviewOpening(server.port);
+                void (async () => {
+                  let current = entry;
+                  if (!current.approved || current.instance?.awaitingApproval) {
+                    const allowed = await new Promise<boolean>((resolve) =>
+                      Alert.alert(
+                        `Allow ${current.name} on your network?`,
+                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}\n\nAnyone on your network can open it while it runs.`,
+                        [
+                          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                          { text: 'Allow', onPress: () => resolve(true) },
+                        ],
+                        { cancelable: true, onDismiss: () => resolve(false) },
+                      ),
+                    );
+                    if (!allowed) return;
+                    const approved = await client.approveManagedDevServer(sessionId, current.id, {
+                      command: current.command,
+                      workdir: current.workdir,
+                    });
+                    current = approved.find((value) => value.id === current.id) ?? current;
+                  }
+                  const url = current.instance?.url;
+                  if (!url || !current.instance) return openEntry();
+                  const capabilities = await client
+                    .getPreviewCapabilities()
+                    .catch(() => ({ publicSharing: 'unavailable' as const }));
+                  await openLocalPreview(
+                    { id: current.instance.id, url } as LocalPreviewShare,
+                    capabilities.publicSharing,
+                    openEntry,
+                    () => router.push('/settings/services'),
+                  );
+                })()
+                  .catch((caught: unknown) =>
+                    Alert.alert(
+                      'Could not open preview',
+                      caught instanceof Error ? caught.message : 'Try again.',
+                    ),
+                  )
+                  .finally(() => setPreviewOpening(null));
+              }}
+              onShare={() => {
+                if (server.managedInstanceId) return openEntry();
+                setPreviewServer(server);
+                setStaticPreviewOpen(true);
+              }}
+            />
+          );
+        })}
+      {managedEntries
+        .filter(
+          (entry) =>
+            !session.devServers?.some((server) => server.managedInstanceId === entry.instance?.id),
+        )
+        .map((entry) => (
+          <Pressable
+            key={`configured:${entry.id}`}
+            accessibilityRole="button"
+            accessibilityLabel={`Details for ${entry.name}`}
+            onPress={() => {
+              setPreviewManagedId(entry.id);
               setStaticPreviewOpen(true);
             }}
-          />
+            style={{
+              marginHorizontal: theme.spacing.md,
+              padding: theme.spacing.md,
+              backgroundColor: theme.colors.surfaceAlt,
+              borderRadius: theme.radius.md,
+            }}
+          >
+            <Text style={{ color: theme.colors.text }}>
+              {entry.name} · {entry.instance?.state ?? 'Configured'}
+            </Text>
+            <Text style={{ color: theme.colors.textMuted }}>
+              {entry.command}
+              {entry.workdir !== '.' ? `\nin ${entry.workdir}` : ''}
+            </Text>
+          </Pressable>
         ))}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
@@ -3844,6 +3963,11 @@ export function SessionChat({
         <StaticPreviewSheet
           detectedServers={session.devServers}
           initialServer={previewServer}
+          initialManagedId={previewManagedId}
+          onAskAgent={(prompt) => {
+            setStaticPreviewOpen(false);
+            sendQuickReply(prompt);
+          }}
           onOpenSettings={() => {
             setStaticPreviewOpen(false);
             router.push('/settings/services');
@@ -3854,6 +3978,7 @@ export function SessionChat({
           onClose={() => {
             setStaticPreviewOpen(false);
             setPreviewServer(undefined);
+            setPreviewManagedId(undefined);
             refreshStaticPreview();
           }}
         />
