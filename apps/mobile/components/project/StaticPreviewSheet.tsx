@@ -429,6 +429,20 @@ export function StaticPreviewSheet({
       if (publicSharing !== 'available') return;
       const ttlSeconds = await askLinkLifetime();
       if (ttlSeconds === undefined) return;
+      if (!server.accessSwitches) {
+        const confirmed = await new Promise<boolean>((resolve) =>
+          Alert.alert(
+            'Share online and on your network?',
+            'This Core also enables Local access when sharing online. Anyone on your network can open the server without a PIN. The public link requires its PIN.',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Share', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          ),
+        );
+        if (!confirmed) return;
+      }
       if (!(await approveManaged(server, 'Share', 'online'))) return;
       const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
       if (!running)
@@ -451,7 +465,7 @@ export function StaticPreviewSheet({
         });
       } catch (caught) {
         // Started only for this link: with no access on, nothing may keep running.
-        if (!running && !managedLocalOn(server))
+        if ((server.accessSwitches || !running) && !managedLocalOn(server))
           await client
             .controlManagedDevServer(
               sessionId,
@@ -464,7 +478,7 @@ export function StaticPreviewSheet({
       }
       if (!sheetOpen.current) {
         await client.stopPublicPreviewShare(share.id);
-        if (!running && !managedLocalOn(server))
+        if ((server.accessSwitches || !running) && !managedLocalOn(server))
           await client.controlManagedDevServer(
             sessionId,
             server.id,

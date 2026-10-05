@@ -1158,6 +1158,44 @@ describe('managed dev servers', () => {
     );
   });
 
+  it('cleans up a running online-only instance when creating its link fails', async () => {
+    const server = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
+    const controlManagedDevServer = jest.fn(async () => server);
+    answer('1 hour');
+    renderSheet(
+      managedClient([server], {
+        controlManagedDevServer,
+        createSessionPortPreviewShare: jest.fn(async () => {
+          throw new Error('Uplink refused');
+        }),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+  });
+
+  it('requires consent to LAN exposure before sharing online on an older Core', async () => {
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    const alert = answer('1 hour', 'Cancel');
+    renderSheet(
+      managedClient([demo({ accessSwitches: undefined })], { createSessionPortPreviewShare }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(alert).toHaveBeenCalledWith(
+        'Share online and on your network?',
+        expect.stringContaining('without a PIN'),
+        expect.any(Array),
+        expect.any(Object),
+      ),
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
   // Stopped elsewhere while the link waits: give up at once instead of polling
   // for over a minute with the server's fate unclear.
   it('gives up on the link when the server stops while it starts', async () => {
