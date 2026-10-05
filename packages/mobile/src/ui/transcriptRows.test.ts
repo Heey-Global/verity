@@ -359,6 +359,13 @@ describe('plan rows', () => {
 
     // A new planning round starts with no plan to decide on: the last round's plan
     // was already implemented or discarded, so it must not get its button back.
+    const failedStart = toolCall('tool-failed-start', { name: 'verity_start_planning' });
+    failedStart.tool.state = 'error';
+    const failedRound = groupRows([
+      presented('tool-existing', 'verity_present_plan', 'Existing plan'),
+      failedStart,
+    ]);
+    expect(failedRound[0]).toMatchObject({ kind: 'plan-proposal', latest: true });
     const nextRound = groupRows([
       presented('tool-v1', 'verity_present_plan', '1. Done already'),
       toolCall('tool-start', { name: 'mcp__verity__verity_start_planning' }),

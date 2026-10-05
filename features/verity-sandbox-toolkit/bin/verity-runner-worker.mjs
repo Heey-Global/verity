@@ -30036,10 +30036,15 @@ async function runAcpTurn(opts, profile) {
           await writer.write({ t: "notice", text });
         }
       }, opts);
+      if (opts.planning === true && setMode === void 0) {
+        throw new Error("The agent does not support the required planning permission mode.");
+      }
       if (setMode !== void 0) {
         try {
           await setMode();
         } catch {
+          if (opts.planning === true)
+            throw new Error("The agent refused the required planning permission mode.");
           const wanted = activeMode;
           activeMode = void 0;
           restoreMode = void 0;

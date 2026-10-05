@@ -5862,6 +5862,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       },
       invokeTool: async (input) => {
         if (input.toolName === START_PLANNING_TOOL) {
+          if (await sessionPlanning.isPlanning(input.sessionId))
+            throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
           await sessionPlanning.start(input.sessionId);
           return {
             planning: 'active',

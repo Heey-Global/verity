@@ -364,6 +364,7 @@ it('lets the agent start planning and present plans, but leaves ending it to the
     expect((await call('verity_start_planning', {})).isError).toBeUndefined();
     expect((await harness.store.getSession('s1'))?.planning).toBe('active');
     expect((await call('verity_present_plan', { plan: '1. Do it' })).isError).toBeUndefined();
+    expect((await call('verity_start_planning', {})).isError).toBe(true);
     // Starting and presenting only restrict the agent or show text: no card.
     expect(harness.approvals).toEqual([]);
 

@@ -144,7 +144,8 @@ function buildRows(
       continue;
     }
     // A new planning round makes every earlier plan history: its decision is made.
-    if (planningToolName(m.tool.name) === START_PLANNING_TOOL) roundStart = rows.length;
+    if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL)
+      roundStart = rows.length;
     const proposal = planProposal(m.tool);
     const plan = planView(m.tool);
     if (proposal !== null) {
@@ -207,7 +208,11 @@ export function groupRows(messages: readonly Message[], previousRows: readonly R
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message?.kind !== 'tool-call') continue;
-    if (planningToolName(message.tool.name) === START_PLANNING_TOOL) break;
+    if (
+      message.tool.state === 'completed' &&
+      planningToolName(message.tool.name) === START_PLANNING_TOOL
+    )
+      break;
     if (planProposal(message.tool) !== null) {
       latestProposal = message.id;
       break;

@@ -3261,7 +3261,8 @@ export function SessionChat({
       const m = session.messages[i];
       if (m?.kind !== 'tool-call') continue;
       if (planProposal(m.tool) !== null) return true;
-      if (planningToolName(m.tool.name) === START_PLANNING_TOOL) return false;
+      if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL)
+        return false;
     }
     return false;
   }, [session.messages]);

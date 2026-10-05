@@ -989,10 +989,15 @@ export async function runAcpTurn(
         // it rather than trust it. Awaited, unlike the drift pull-back: the mode
         // has to hold before the prompt goes out, or the turn's first tool call
         // runs in a posture nobody chose.
+        if (opts.planning === true && setMode === undefined) {
+          throw new Error('The agent does not support the required planning permission mode.');
+        }
         if (setMode !== undefined) {
           try {
             await setMode();
           } catch {
+            if (opts.planning === true)
+              throw new Error('The agent refused the required planning permission mode.');
             // The mode catalogue is reported once, at session creation, and ACP
             // offers no way to re-read it: `session/set_config_option` answers
             // with config options only. So a model selected just above can have
