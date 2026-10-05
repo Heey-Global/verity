@@ -2286,7 +2286,11 @@ export class ProvisionerImpl implements Provisioner {
     await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runtimePath);
   }
 
-  async startSessionRuntime(containerName: string, runtimePath: string): Promise<void> {
+  async startSessionRuntime(
+    containerName: string,
+    runtimePath: string,
+    workspace?: { path: string; waitForPostCreate: boolean; freshContainer?: boolean },
+  ): Promise<void> {
     if (this.opts.dockerHostForBuild === undefined) {
       throw new ProvisioningError('Session isolation requires a Docker exec host');
     }
@@ -2297,6 +2301,40 @@ export class ProvisionerImpl implements Provisioner {
       workdir: RUNNER_RUNTIME_TARGET,
       command: 'verity-runner-stack-start',
     });
+    if (workspace?.waitForPostCreate) {
+      const settings = devcontainerRuntimeSettings(join(workspace.path, '.devcontainer'));
+      const completed = join(runtimePath, 'workspace-post-create-complete');
+      if (workspace.freshContainer) rmSync(completed, { force: true });
+      if (workspace.freshContainer || !existsSync(completed)) {
+        if (settings.postCreateCommand !== undefined) {
+          await this.containerCommand({
+            containerName,
+            dockerHost: this.opts.dockerHostForBuild,
+            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
+            workdir: '/work',
+            command: NODE_MODULES_INSTALL_WAIT_COMMAND,
+            timeoutMs: NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS * 1000,
+          });
+          await this.containerCommand({
+            containerName,
+            dockerHost: this.opts.dockerHostForBuild,
+            user: settings.remoteUser,
+            workdir: '/work',
+            command: underNodeModulesInstallLock(settings.postCreateCommand, NODE_MODULES_TARGET),
+          });
+        }
+        writeFileSync(completed, 'complete\n', { mode: 0o600 });
+      }
+      // The inherited post-start command waits on a fresh gate on each wake.
+      // Certify the private checkout only after its own lifecycle hook succeeds.
+      await this.containerCommand({
+        containerName,
+        dockerHost: this.opts.dockerHostForBuild,
+        user: settings.remoteUser,
+        workdir: '/work',
+        command: `touch ${DEVCONTAINER_POST_CREATE_READY_FILE}`,
+      });
+    }
     await this.awaitSessionRuntime(runtimePath);
   }
 

@@ -29,7 +29,7 @@ export async function syncLocalMergeBase(opts: {
   baseTip: string;
   centralGit: GitOutput;
   sessionGit: GitOutput;
-}): Promise<void> {
+}): Promise<boolean> {
   if (!isValidBranchName(opts.base)) throw new InvalidBranchNameError(opts.base);
   if (!/^[0-9a-f]{40,64}$/.test(opts.baseTip)) throw new Error('Invalid merge commit');
   const transfer = await transferSessionCommit({
@@ -40,14 +40,25 @@ export async function syncLocalMergeBase(opts: {
     commit: opts.baseTip,
   });
   try {
-    // Detaching HEAD alone leaves new branches rooted at the clone's pre-merge base.
-    await opts.sessionGit([
-      '-C',
-      opts.worktree,
-      'update-ref',
-      `refs/heads/${opts.base}`,
-      opts.baseTip,
-    ]);
+    const ref = `refs/heads/${opts.base}`;
+    // A turn may have committed on the base while housekeeping waited for idle.
+    // Never rewrite its checked-out branch or replace commits absent from the merge.
+    const attached = await opts
+      .sessionGit(['-C', opts.worktree, 'symbolic-ref', '-q', 'HEAD'])
+      .then((out) => out.trim())
+      .catch(() => undefined);
+    if (attached === ref) return false;
+    const oldTip = (
+      await opts.sessionGit(['-C', opts.worktree, 'rev-parse', '--verify', ref])
+    ).trim();
+    const canAdvance = await opts
+      .sessionGit(['-C', opts.worktree, 'merge-base', '--is-ancestor', oldTip, opts.baseTip])
+      .then(() => true)
+      .catch(() => false);
+    if (!canAdvance) return false;
+    // CAS preserves a ref advanced after the ancestry check, including direct Git use.
+    await opts.sessionGit(['-C', opts.worktree, 'update-ref', ref, opts.baseTip, oldTip]);
+    return true;
   } finally {
     await transfer.cleanup();
   }
@@ -417,7 +428,7 @@ export function registerSessionMergeRoutes(
           // The whole merge result: the branch commit it absorbed decides what may be
           // deleted, the merge commit it created is where the worktree lands.
           if (deps.sessionSandboxGit) {
-            await syncLocalMergeBase({
+            const synchronized = await syncLocalMergeBase({
               basePath,
               worktree: session.worktree,
               base,
@@ -425,6 +436,7 @@ export function registerSessionMergeRoutes(
               centralGit: sandboxGit,
               sessionGit,
             });
+            if (!synchronized) throw new Error('Session base changed after the merge');
           }
           const { deletedBranch, retainedBranch, skipped } = await branches.resetToLocalBase(
             session.worktree,

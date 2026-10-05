@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord } from '@verity/store';
-import type { ContainerInspect, DockerClient } from './docker.js';
+import { DockerError, type ContainerInspect, type DockerClient } from './docker.js';
 import { SessionSandboxProvisioner, sessionSandboxSpec } from './session-sandbox.js';
 
 const project = { id: 'project', containerName: 'project-container' } as ProjectRecord;
@@ -132,4 +132,35 @@ describe('existing session sandbox validation', () => {
     ).rejects.toThrow('Session sandbox mount contract mismatch');
     expect(startContainer).not.toHaveBeenCalled();
   });
+});
+
+it('preserves inherited post-start and initializes the private gated workspace', async () => {
+  const command = [
+    'while [ ! -f /tmp/verity-post-create-complete ]; do sleep 0.1; done; exec post-start',
+  ];
+  const createContainer = vi.fn<DockerClient['createContainer']>(async () => ({
+    id: 'private-id',
+    warnings: [],
+  }));
+  const bootstrap = vi.fn(async () => undefined);
+  const provisioner = new SessionSandboxProvisioner({
+    docker: {
+      inspectContainer: vi.fn(async (name: string) => {
+        if (name === project.containerName) return { ...template, command };
+        throw new DockerError({ kind: 'container_not_found', id: name });
+      }),
+      createContainer,
+      startContainer: vi.fn(async () => undefined),
+    } as unknown as DockerClient,
+    dataVolumeRoot: '/data',
+    prepareRuntime: async () => ({}),
+    bootstrap,
+  });
+  await provisioner.ensure(project, { sessionId: 'session', worktree: '/data/private/session' });
+  expect(createContainer.mock.calls[0]?.[0]).toMatchObject({ command });
+  expect(bootstrap).toHaveBeenCalledWith(
+    expect.objectContaining({ containerName: expect.stringContaining('verity-session-') }),
+    '/data/runners/session-session',
+    { path: '/data/private/session', waitForPostCreate: true, freshContainer: true },
+  );
 });

@@ -775,7 +775,7 @@ export class ManagedDevServerManager {
     instances: ManagedDevServerInstanceRecord[],
   ): Promise<void> {
     const baseProject = await this.options.store.getProject(projectId);
-    if (!baseProject || baseProject.state !== 'active' || !baseProject.containerName) return;
+    if (!baseProject) return;
     const scans = new Map<string, ListeningProcess[]>();
     let changed = false;
     for (const snapshot of instances) {
@@ -787,6 +787,9 @@ export class ManagedDevServerManager {
       const project =
         (await this.options.resolveSessionProject?.(instance.sessionId, baseProject)) ??
         baseProject;
+      // A sleeping parent must not hide active private runtimes, and a stopped
+      // sibling must not abort Docker inspection of later instances.
+      if (project.state !== 'active' || !project.containerName) continue;
       const key = project.containerName;
       let processes = scans.get(key);
       if (!processes) {

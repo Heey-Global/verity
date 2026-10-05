@@ -22,6 +22,11 @@ runner directory, and Docker socket are excluded, including for sessions working
 on the Verity control project. Unsupported shared mounts or unsafe container
 settings refuse session startup instead of falling back to a shared workspace.
 
+Devcontainer post-create hooks initialize each private checkout before releasing
+the inherited post-start gate. Reusing a container retains its completed setup;
+recreating it runs initialization again. Dependency installations stay in that
+session's writable workspace.
+
 Project knowledge remains an explicit shared exception: sources and shared
 knowledge are read-only, while `/knowledge/insights` remains writable project
 knowledge. Infrastructure credentials and configuration use reviewed read-only

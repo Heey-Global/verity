@@ -29,11 +29,13 @@ describe('independent listener discovery', () => {
       { port: 5173, pid: 1, cwd: '/work', command: 'vite', bind: 'any' as const },
       { port: 8000, pid: 2, cwd: '/work', command: 'node', bind: 'any' as const, sessionId: 'b' },
     ]);
+    const onScan = vi.fn();
     const discovery = new ListenerDiscovery({
       eventStore: store,
       bus: new InMemoryEventBus(),
       hostCloneRoot: '/data',
       scan,
+      onScan,
       resolveSessionProject: async (_sessionId, record) => ({
         ...record,
         containerName: 'private-a',
@@ -44,6 +46,13 @@ describe('independent listener discovery', () => {
       expect(scan).toHaveBeenCalledWith(expect.objectContaining({ containerName: 'private-a' }));
       expect(servers.map((server) => server.port)).toEqual([5173]);
       expect(servers[0]?.sessionId).toBe('a');
+      expect(onScan).toHaveBeenCalledWith(
+        expect.objectContaining({ containerName: 'private-a' }),
+        await scan.mock.results[0]!.value,
+      );
+      scan.mockRejectedValueOnce(new Error('Docker unavailable'));
+      await discovery.listSessionDevServers('a');
+      expect(onScan).toHaveBeenCalledTimes(1);
     } finally {
       discovery.close();
     }

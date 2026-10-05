@@ -59,6 +59,7 @@ export class ListenerDiscovery {
     try {
       processes = await this.options.scan(project);
       this.healthy.set(project.containerName, processes);
+      this.options.onScan?.(project, processes);
     } catch {
       processes = this.healthy.get(project.containerName) ?? [];
     }

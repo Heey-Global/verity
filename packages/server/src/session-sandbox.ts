@@ -167,7 +167,11 @@ export interface SessionSandboxProvisionerOptions {
     volumeMounts?: NonNullable<ContainerSpec['volumeMounts']>;
     env?: string[];
   }>;
-  bootstrap: (project: ProjectRecord, runtimePath: string) => Promise<void>;
+  bootstrap: (
+    project: ProjectRecord,
+    runtimePath: string,
+    workspace: { path: string; waitForPostCreate: boolean; freshContainer: boolean },
+  ) => Promise<void>;
 }
 
 export class SessionSandboxProvisioner {
@@ -222,6 +226,7 @@ export class SessionSandboxProvisioner {
     };
     const parent = await this.docker.inspectContainer(input.project.containerName);
     const spec = sessionSandboxSpec(parent, isolatedInput);
+    let freshContainer = false;
     try {
       const current = await this.docker.inspectContainer(name);
       if (
@@ -279,6 +284,7 @@ export class SessionSandboxProvisioner {
     } catch (error) {
       if (!(error instanceof DockerError) || error.kind !== 'container_not_found') throw error;
       await this.docker.createContainer(spec);
+      freshContainer = true;
       try {
         await this.docker.startContainer(name);
       } catch (cause) {
@@ -286,7 +292,13 @@ export class SessionSandboxProvisioner {
         throw cause;
       }
     }
-    await this.options.bootstrap(runtime, runtimePath);
+    await this.options.bootstrap(runtime, runtimePath, {
+      path: input.worktree,
+      freshContainer,
+      waitForPostCreate: (spec.command ?? []).some((command) =>
+        command.includes('/tmp/verity-post-create-complete'),
+      ),
+    });
     return runtime;
   }
   async remove(sessionId: string): Promise<void> {

@@ -3552,10 +3552,10 @@ export async function buildEmbeddedServer(
             }
             return Promise.resolve({});
           },
-          bootstrap: (project, runtimePath) =>
+          bootstrap: (project, runtimePath, workspace) =>
             project.kind === 'control_plane'
               ? provisioner.awaitSessionRuntime(runtimePath)
-              : provisioner.startSessionRuntime(project.containerName, runtimePath),
+              : provisioner.startSessionRuntime(project.containerName, runtimePath, workspace),
         })
       : undefined;
   const ensureSessionProject = async (
