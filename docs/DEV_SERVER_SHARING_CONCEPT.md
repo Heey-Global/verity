@@ -110,7 +110,7 @@ switches them on and off from the Preview sheet.
 
 **Entry per project, instance per session.** An entry holds a name, a command, and a
 subdirectory of the worktree. It belongs to the project and can be started in any session of
-it. Started from a session, it runs in that session's worktree. Entries live in the Verity
+it. The subdirectory must be relative and stay inside the session's worktree after resolving symlinks; absolute paths and `..` are rejected. Started from a session, it runs in that session's worktree. Entries live in the Verity
 database, not in the repository, so switching one off or deleting it never creates a commit.
 A repository file that seeds entries can be added later if entries should travel with the code.
 
@@ -126,12 +126,10 @@ starting, running, stopped, crashed. "Running" requires the port to answer throu
 app and by the agent. Stopping ends the command and all its children so no orphan holds the
 port. A crashed server stays crashed and shows its error; there is no automatic restart,
 because a silent restart hides the fault. Running entries keep the sandbox awake as an active
-share does (ADR 0020). When the sandbox is recreated, for example by an update, Verity starts
-again what was running before.
+share does (ADR 0020). When the sandbox is recreated, for example by an update, Verity starts again what was running before, with the command that last ran; a pending `update` waits for the operator's next restart.
 
 **Agent.** `verity-dev-server` gains `add`, `update`, `remove`, `start`, `stop`, `status`,
-`logs`, and `list`. `start` replies with the network address, and the agent names only that
-address. None of these needs operator approval: an entry only runs a command in the sandbox,
+`logs`, and `list`. `start` replies with the network address once the entry is published locally, and the agent names only that address. While an entry is running but not yet published (the gated case under edge cases), `start` replies "Running, not shared yet: switch it on in the Preview list to open it on your network", and the Preview row shows the same state. None of these needs operator approval: an entry only runs a command in the sandbox,
 which the agent may do anyway. Additions and changes appear in the chat as a small card. The
 agent-seed guidance tells the agent to start servers only through an entry, never with
 `nohup` or `&`, and to create an entry when none fits. Servers started past Verity are still
@@ -157,8 +155,7 @@ detected and listed as not managed, with an offer to save them as an entry. The 
 - _Port collisions._ A stopped pair keeps its network reservation; eviction when the range is
   full is the only exception. If its sandbox port is taken by another process at start, Verity
   picks a new sandbox port silently. The network address does not change.
-- _Lifecycle._ Deleting a session stops its instances and releases both ports. Removing an
-  entry, by the agent or the operator, first stops every running instance of it. `update`
+- _Lifecycle._ Deleting a session stops its instances and releases both ports. Removing an entry, by the agent or the operator, first stops every running instance of it and then releases both ports of all its pairs. `update`
   applies on the next start; a running instance shows "Restart to apply changes".
 
 **Operator.** The operator switches entries on and off and deletes them in the app. Editing
