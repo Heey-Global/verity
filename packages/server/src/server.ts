@@ -3030,7 +3030,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : undefined;
     try {
       // Processes started for this session must not outlive its worktree.
-      await deps.managedDevServerManager?.stopSession(sessionId).catch(() => undefined);
+      try {
+        await deps.managedDevServerManager?.stopSession(sessionId);
+      } catch (error) {
+        // The delete goes on; the orphan sweep stops tagged processes left behind.
+        app.log.warn({ err: error, sessionId }, 'verity: could not stop managed dev servers');
+      }
       await deps.localPreviewManager?.stopSession(sessionId);
       // `.catch()` alone would only cover a REJECTED promise; an implementation that
       // throws before returning one would escape and fail the delete — the outcome the
@@ -9300,9 +9305,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                   await deps.previewShareManager?.revokeSessionShares(source.id, id);
                   // The instances belong to the source project; forget them so their
                   // network ports do not stay reserved for a session that left.
-                  await deps.managedDevServerManager
-                    ?.stopSession(id, { forget: true })
-                    .catch(() => undefined);
+                  try {
+                    await deps.managedDevServerManager?.stopSession(id, { forget: true });
+                  } catch (error) {
+                    app.log.warn(
+                      { err: error, sessionId: id },
+                      'verity: could not stop managed dev servers before the move',
+                    );
+                  }
                   await deps.localPreviewManager?.stopSession(id);
                   await deps.eventStore.commitSessionMove(
                     id,

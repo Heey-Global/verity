@@ -146,6 +146,9 @@ describe('agent status line', () => {
     expect(describeForAgent(view({ url: 'http://verity.local:8104' }))).toBe(
       'Curtis Demo: running at http://verity.local:8104',
     );
+    expect(describeForAgent(view({ url: 'http://localhost:8104' }))).toBe(
+      'Curtis Demo: running on port 8104 of your Verity server. Open it from the Preview button.',
+    );
     expect(describeForAgent(view({ awaitingApproval: true }))).toBe(
       'Curtis Demo: running, not shared yet: tap Open on network in the Preview list',
     );

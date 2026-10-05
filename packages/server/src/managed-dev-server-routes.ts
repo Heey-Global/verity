@@ -137,7 +137,15 @@ export function describeForAgent(server: ManagedServerView): string {
   if (instance.state === 'crashed')
     return `${server.name}: crashed. ${instance.detail ?? ''} Read the output with: verity-dev-server logs "${server.name}"`.trim();
   if (instance.state === 'starting') return `${server.name}: starting`;
-  if (instance.url) return `${server.name}: running at ${instance.url}`;
+  if (instance.url) {
+    // Without VERITY_LOCAL_PREVIEW_HOST the server only knows itself as
+    // localhost, which is wrong on the operator's devices; the app corrects the
+    // host, the agent names the port on the Verity server instead.
+    const url = new URL(instance.url);
+    if (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+      return `${server.name}: running on port ${url.port} of your Verity server. Open it from the Preview button.`;
+    return `${server.name}: running at ${url.origin}`;
+  }
   if (instance.awaitingApproval)
     return `${server.name}: running, not shared yet: tap Open on network in the Preview list`;
   return `${server.name}: running${instance.detail ? `. ${instance.detail}` : ''}`;

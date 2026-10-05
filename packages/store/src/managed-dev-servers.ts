@@ -312,6 +312,14 @@ export class ManagedDevServerStore {
         .forUpdate()
         .executeTakeFirst();
       if (!server) throw new ManagedDevServerInputError('server not found');
+      const session = await tx
+        .selectFrom('sessions')
+        .select('project_id')
+        .where('session_id', '=', input.sessionId)
+        .executeTakeFirst();
+      // An entry runs only in sessions of its own project.
+      if (session?.project_id !== server.project_id)
+        throw new ManagedDevServerInputError('session not found in this project');
       const existing = await tx
         .selectFrom('managed_dev_server_instances')
         .selectAll()

@@ -512,7 +512,13 @@ export class ManagedDevServerManager {
     const status = await this.options.runtime
       .managedServerStatus(project, instance.id)
       .catch(() => ({ alive: false, exitCode: null }));
-    if (status.alive && (instance.state === 'running' || instance.state === 'starting')) return;
+    if (status.alive && (instance.state === 'running' || instance.state === 'starting')) {
+      // Already up after a wake: drop the marker so supervision stops relaunching.
+      if (instance.detail === WAKING_DETAIL)
+        await this.servers.updateInstance(instance.id, { detail: null });
+      this.activeProjects.add(project.id);
+      return;
+    }
     if (status.alive) await this.options.runtime.stopManagedServer(project, instance.id);
     const holder = processes.find((process) => process.port === instance.sandboxPort);
     if (holder && holder.instanceId !== instance.id) {
@@ -544,6 +550,7 @@ export class ManagedDevServerManager {
       });
       return;
     }
+    this.activeProjects.add(project.id);
     await this.servers.updateInstance(instance.id, {
       desired: 'running',
       state: 'starting',
@@ -617,6 +624,9 @@ export class ManagedDevServerManager {
       return;
     const existing = this.shareFor(instance);
     if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
+    // A share close to its end is replaced on the same port; the local manager
+    // would otherwise hand the old one back unchanged.
+    if (existing) await this.options.localShares?.stop(existing.id).catch(() => false);
     if ((this.publishRetryAt.get(instance.id) ?? 0) > this.now()) return;
     const held = local.heldPorts();
     const externallyUsed = new Set(
@@ -685,11 +695,15 @@ export class ManagedDevServerManager {
     );
     if (tags.size === 0 || this.closed) return Promise.resolve();
     return this.locked(project.id, async () => {
-      const known = new Set(
-        (await this.servers.listInstances({ projectId: project.id })).map((value) => value.id),
+      // Anything tagged that should not run: deleted rows, and instances stopped
+      // while the sandbox was paused, whose processes survived the resume.
+      const wanted = new Set(
+        (await this.servers.listInstances({ projectId: project.id, desired: 'running' })).map(
+          (value) => value.id,
+        ),
       );
       for (const tag of tags)
-        if (!known.has(tag))
+        if (!wanted.has(tag))
           await this.options.runtime.stopManagedServer(project, tag).catch(() => undefined);
     }).catch(() => undefined);
   }
