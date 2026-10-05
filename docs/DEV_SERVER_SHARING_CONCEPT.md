@@ -193,15 +193,18 @@ the app. Editing stays with the agent, because typing a command on a phone is im
 its two access switches decide whether it runs.
 
 - _Local_ on starts the server if needed and publishes it on the operator's network. The first
-  time, or after a changed command, a confirmation shows the command and subdirectory, says that
+  time, or after a changed command or subdirectory, a confirmation shows the command and subdirectory, says that
   anyone on the network can open it without a PIN, and the tap approves them.
 - _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the public link with a PIN. If the command is not approved yet, the same confirmation as for Local comes first. Local stays off unless the operator turns it on; the switches, not the approval, decide which accesses exist.
+- Without entitlement the Shared online row shows a "Premium" hint with a link to settings
+  instead of the switch (2.8). While the Uplink is unreachable the switch is disabled and the
+  row reads "Temporarily unavailable"; an existing link keeps showing its address and expiry.
 - Turning Shared online off always asks first, because it ends a public link.
 - Whenever no access is left on, the server stops: turning off the last switch, either one,
   or a public link expiring while Local is off. It does not keep running unnoticed and keep
   the sandbox awake.
 - Every start, from a switch or a button, shows the confirmation first when the command it
-  would run is not approved, including after the agent changed it.
+  would run is not approved, including after the agent changed the command or the subdirectory.
 - A server the agent started without approval runs with both switches off. This is the one
   exception; the header reads "Running, not shared yet", and Local approves and publishes it.
 - The switches show what the operator wants, not what currently runs. A crash leaves them as
