@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.14.0](https://github.com/Heey-Global/verity/compare/v4.13.0...v4.14.0) (2026-10-05)
+
+
+### Features
+
+* **release:** allow manual native mobile release planning ([#1158](https://github.com/Heey-Global/verity/issues/1158)) ([9372243](https://github.com/Heey-Global/verity/commit/93722435260c4ee57d63ac29a1c17757b0bf55d8))
+
 ## [4.13.0](https://github.com/Heey-Global/verity/compare/v4.12.0...v4.13.0) (2026-10-05)
 
 
