@@ -76,7 +76,7 @@ export function propose(inputPath = process.argv[3] ?? '') {
     candidate.product === 'server'
       ? 'automation/promote-server-production'
       : 'automation/promote-mobile-production';
-  const product = candidate.product === 'server' ? 'Server' : 'Mobile';
+  const product = candidate.product === 'server' ? 'server' : 'mobile native';
   const tag =
     candidate.product === 'server' ? `v${candidate.version}` : `mobile-v${candidate.version}`;
   const recordPath = `${process.env.RUNNER_TEMP ?? '/tmp'}/production-candidate.json`;
@@ -194,7 +194,7 @@ export function propose(inputPath = process.argv[3] ?? '') {
       '-f',
       `expected=${head}`,
       '-f',
-      `message=chore(release): promote ${product} ${candidate.version}`,
+      `message=chore(release): production ${product} ${candidate.version}`,
       '-f',
       `path=${manifest}`,
       '-f',
@@ -207,7 +207,7 @@ export function propose(inputPath = process.argv[3] ?? '') {
     gh('pr', 'list', '--head', branch, '--state', 'open', '--json', 'number'),
   ) as { number: number }[];
   if (pulls.length > 1) throw new Error('Multiple production PRs');
-  const title = `chore(release): promote ${product} ${candidate.version}`;
+  const title = `chore(release): production ${product} ${candidate.version}`;
   const releases = (
     captureJson('gh', [
       'api',

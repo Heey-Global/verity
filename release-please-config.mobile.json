@@ -4,6 +4,7 @@
     "apps/mobile": {
       "release-type": "simple",
       "package-name": "mobile",
+      "pull-request-title-pattern": "chore(release): staging mobile native ${version}",
       "initial-version": "1.0.0",
       "versioning": "always-bump-minor",
       "include-component-in-tag": true,

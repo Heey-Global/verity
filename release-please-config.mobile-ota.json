@@ -14,7 +14,7 @@
       "tag-separator": "-",
       "skip-github-release": true,
       "draft-pull-request": false,
-      "pull-request-title-pattern": "chore(main): release staging OTA ${version}",
+      "pull-request-title-pattern": "chore(release): staging mobile OTA ${version}",
       "pull-request-header": "Merge this release PR to publish this fixed version to Staging. Production requires the separate promotion PR."
     }
   }
