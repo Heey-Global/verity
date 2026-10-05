@@ -514,6 +514,7 @@ export interface LinkCloneToGitHubResult {
 export interface ProvisionerOptions {
   /** EventStore the provisioner drives `projects.state` through. */
   store: EventStore;
+  stopProjectSessionSandboxes?: (projectId: string) => Promise<void>;
   /** Raw kysely handle (used for the `SELECT … FOR UPDATE` lock tx — the
    *  {@link EventStore} interface doesn't expose transactions, so the lock
    *  tx is composed here on the raw kysely connection). */
@@ -2886,6 +2887,11 @@ export class ProvisionerImpl implements Provisioner {
     const failures: unknown[] = [];
     for (const result of authorityResults) {
       if (result.status === 'rejected') failures.push(result.reason as unknown);
+    }
+    try {
+      await this.opts.stopProjectSessionSandboxes?.(project.id);
+    } catch (error) {
+      failures.push(error);
     }
     // Start Sandbox shutdown only after authority cleanup has settled. Even when
     // revocation failed, still attempt the stop and report every failure together.

@@ -26,6 +26,7 @@ describe.skipIf(!image || !fixtureRoot)(
       const root = await mkdtemp(join(fixtureRoot!, 'verity-isolation-'));
       const source = join(root, 'central');
       const created: string[] = [];
+      const volumes: string[] = [];
       try {
         await mkdir(source);
         await run('git', ['init', source]);
@@ -63,6 +64,10 @@ describe.skipIf(!image || !fixtureRoot)(
             { project, sessionId: randomUUID(), worktree: workspace },
           );
           spec.user = '0:0';
+          for (const mount of spec.volumeMounts ?? []) {
+            await docker.ensureVolume!(mount.volume);
+            volumes.push(mount.volume);
+          }
           const { id } = await docker.createContainer(spec);
           created.push(id);
           await docker.startContainer(id);
@@ -109,9 +114,15 @@ describe.skipIf(!image || !fixtureRoot)(
           await exec([
             'node',
             '-e',
-            "require('node:fs').writeFileSync('/work/package.json', JSON.stringify({name:'isolation-fixture',version:'1.0.0'}))",
+            "const fs=require('node:fs'); fs.mkdirSync('/work/vendor'); fs.writeFileSync('/work/vendor/package.json',JSON.stringify({name:'private-fixture-dependency',version:'1.0.0'})); fs.writeFileSync('/work/vendor/index.js','module.exports=42'); fs.writeFileSync('/work/package.json', JSON.stringify({name:'isolation-fixture',version:'1.0.0',dependencies:{'private-fixture-dependency':'file:./vendor'}}))",
           ]);
           await exec(['npm', 'install', '--ignore-scripts', '--offline', '--package-lock-only']);
+          await exec(['/usr/local/bin/verity-node-modules-install', '--wait']);
+          await exec([
+            'node',
+            '-e',
+            "if(require('/work/node_modules/private-fixture-dependency')!==42)process.exit(1)",
+          ]);
           await docker.stopContainer(id);
           await docker.startContainer(id);
           await exec(['/usr/bin/git', '-C', '/work', 'status', '--porcelain']);
@@ -125,6 +136,7 @@ describe.skipIf(!image || !fixtureRoot)(
           ).toBe('test: private commit');
       } finally {
         for (const id of created) await docker.removeContainer(id);
+        for (const volume of volumes) await docker.removeVolume!(volume);
         await rm(root, { recursive: true, force: true });
       }
     }, 60_000);

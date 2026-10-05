@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { PreviewEdge, hashPreviewSecret } from '@verity/preview-tunnel';
-import type { EventStore } from '@verity/store';
+import type { EventStore, ProjectRecord } from '@verity/store';
 import { DockerError } from './docker.js';
 import { projectNetworkName } from './provisioner.js';
 import { containerGenerationOf } from './project-relay-migration.js';
@@ -372,17 +372,18 @@ export class LocalPreviewManager {
         await this.stop(state.share.id);
         continue;
       }
-      const storedProject = await this.options.store.getProject(state.share.projectId);
-      const project =
-        storedProject && this.options.resolveSessionProject
-          ? await this.options.resolveSessionProject(state.share.sessionId, storedProject)
-          : storedProject;
-      const session = await this.options.store.getSession(state.share.sessionId);
-      if (!project || project.state !== 'active' || session?.projectId !== project.id) {
-        await this.stop(state.share.id);
-        continue;
-      }
+      let project: ProjectRecord | undefined;
       try {
+        const storedProject = await this.options.store.getProject(state.share.projectId);
+        project =
+          storedProject && this.options.resolveSessionProject
+            ? await this.options.resolveSessionProject(state.share.sessionId, storedProject)
+            : storedProject;
+        const session = await this.options.store.getSession(state.share.sessionId);
+        if (!project || project.state !== 'active' || session?.projectId !== project.id) {
+          await this.stop(state.share.id);
+          continue;
+        }
         const sandbox = await this.options.docker.inspectContainer(project.containerName);
         if (
           !sandbox.running ||
@@ -408,7 +409,7 @@ export class LocalPreviewManager {
         }
         delete state.missingSince;
       } catch {
-        if (state.share.targetPort !== null) {
+        if (project && state.share.targetPort !== null) {
           const processes = await this.options
             .listListeningProcesses?.(project)
             .catch(() => undefined);

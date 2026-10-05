@@ -25,8 +25,10 @@ settings refuse session startup instead of falling back to a shared workspace.
 Devcontainer post-create hooks initialize each private checkout before releasing
 the inherited post-start gate. Reusing a container retains its completed setup;
 recreating it runs initialization again. Hooks run under the fixed agent identity,
-including when checkout configuration requests a privileged remote user. Dependency installations stay in that
-session's writable workspace.
+including when checkout configuration requests a privileged remote user. Dependency installations use a
+private per-session volume. Project sleep stops private containers as well as the
+parent; wake starts them lazily. Parent rebuilds recreate owned outdated session
+containers while retaining their private checkout and dependency volume.
 
 Project knowledge remains an explicit shared exception: sources and shared
 knowledge are read-only, while `/knowledge/insights` remains writable project

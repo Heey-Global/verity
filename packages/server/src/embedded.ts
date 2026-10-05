@@ -3400,6 +3400,19 @@ export async function buildEmbeddedServer(
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
     provisioner = new ProvisionerImpl({
+      stopProjectSessionSandboxes: async (projectId) => {
+        const results = await Promise.allSettled(
+          (await eventStore.listSessions())
+            .filter((session) => session.projectId === projectId)
+            .map(async (session) => {
+              await sessionSandboxes?.stop(session.sessionId, projectId);
+            }),
+        );
+        const failures = results
+          .filter((result) => result.status === 'rejected')
+          .map((result) => result.reason as unknown);
+        if (failures.length) throw new AggregateError(failures, 'Private session shutdown failed');
+      },
       store: eventStore,
       db,
       docker,
@@ -3580,8 +3593,11 @@ export async function buildEmbeddedServer(
       throw new Error('Session isolation is unavailable');
     }
     await assertIndependentSessionClone(session.worktree);
-    const canonicalProject = await eventStore.getProject(project.id);
-    if (!canonicalProject) throw new Error('Project is unavailable');
+    const canonicalProject =
+      (await provisioner?.ensureProjectSandboxAwake?.(project.id)) ??
+      (await eventStore.getProject(project.id));
+    if (!canonicalProject || canonicalProject.state !== 'active')
+      throw new Error('Project is not active');
     return sessionSandboxes.ensure(
       canonicalProject.kind === 'control_plane'
         ? { ...canonicalProject, containerName: MANAGED_CONTROL_PLANE_RUNNER_NAME }

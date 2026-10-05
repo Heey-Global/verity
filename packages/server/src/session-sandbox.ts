@@ -13,6 +13,10 @@ export function sessionContainerName(sessionId: string): string {
   return `verity-session-${createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`;
 }
 
+export function sessionNodeModulesVolumeName(sessionId: string): string {
+  return `${sessionContainerName(sessionId)}-node-modules`;
+}
+
 export interface SessionSandboxInput {
   sessionId: string;
   project: ProjectRecord;
@@ -103,14 +107,19 @@ export function sessionSandboxSpec(
   } else binds.push(`${input.worktree}:/work`);
   binds.push(...(input.runtimeBinds ?? []));
   volumeMounts.push(...(input.runtimeMounts ?? []));
+  volumeMounts.push({
+    volume: sessionNodeModulesVolumeName(input.sessionId),
+    target: '/work/node_modules',
+  });
   const inheritedEnv = (parent.env ?? []).filter(
     (entry) =>
       !entry.startsWith('VERITY_SESSION_ID=') &&
       !entry.startsWith('VERITY_ISOLATED_SESSION_ID=') &&
       !entry.startsWith('VERITY_SIGNING_DOCKER_CONTAINER=') &&
-      !entry.startsWith('VERITY_GH_TOKEN_DOCKER_CONTAINER='),
+      !entry.startsWith('VERITY_GH_TOKEN_DOCKER_CONTAINER=') &&
+      !entry.startsWith('VERITY_NODE_MODULES_INSTALL='),
   );
-  return {
+  const spec: ContainerSpec = {
     name: sessionContainerName(input.sessionId),
     image: parent.image,
     binds,
@@ -152,6 +161,10 @@ export function sessionSandboxSpec(
     ...(parent.init !== undefined ? { init: parent.init } : {}),
     restartPolicy: 'unless-stopped',
   };
+  spec.labels!['verity.session-contract'] = createHash('sha256')
+    .update(JSON.stringify(spec))
+    .digest('hex');
+  return spec;
 }
 
 export interface SessionSandboxProvisionerOptions {
@@ -224,6 +237,10 @@ export class SessionSandboxProvisioner {
           }),
       ...(prepared.env ? { env: prepared.env } : {}),
     };
+    if (!this.docker.ensureVolume) throw new Error('Private dependency volumes are unavailable');
+    await this.docker.ensureVolume(sessionNodeModulesVolumeName(input.sessionId), {
+      labels: { [SESSION_SANDBOX_LABEL]: input.sessionId, 'verity.project-id': input.project.id },
+    });
     const parent = await this.docker.inspectContainer(input.project.containerName);
     const spec = sessionSandboxSpec(parent, isolatedInput);
     let freshContainer = false;
@@ -237,6 +254,13 @@ export class SessionSandboxProvisioner {
       }
       if (
         current.image !== spec.image ||
+        current.labels['verity.session-contract'] !== spec.labels!['verity.session-contract']
+      ) {
+        await this.docker.stopContainer(name);
+        await this.docker.removeContainer(name);
+        throw new DockerError({ kind: 'container_not_found', id: name });
+      }
+      if (
         current.privileged !== false ||
         current.deviceCount !== 0 ||
         !current.env?.includes(`VERITY_ISOLATED_SESSION_ID=${input.sessionId}`) ||
@@ -301,7 +325,25 @@ export class SessionSandboxProvisioner {
     });
     return runtime;
   }
+  async stop(sessionId: string, projectId: string): Promise<void> {
+    await this.pending.get(sessionId)?.catch(() => undefined);
+    const name = sessionContainerName(sessionId);
+    try {
+      const current = await this.docker.inspectContainer(name);
+      if (
+        current.labels?.[SESSION_SANDBOX_LABEL] !== sessionId ||
+        current.labels['verity.project-id'] !== projectId
+      )
+        throw new Error('Session sandbox ownership mismatch');
+      if (current.running) await this.docker.stopContainer(name);
+      if ((await this.docker.inspectContainer(name)).running)
+        throw new Error('Session sandbox did not stop');
+    } catch (error) {
+      if (!(error instanceof DockerError) || error.kind !== 'container_not_found') throw error;
+    }
+  }
   async remove(sessionId: string): Promise<void> {
+    await this.pending.get(sessionId)?.catch(() => undefined);
     const name = sessionContainerName(sessionId);
     try {
       const current = await this.docker.inspectContainer(name);
@@ -311,5 +353,6 @@ export class SessionSandboxProvisioner {
     } catch (error) {
       if (!(error instanceof DockerError) || error.kind !== 'container_not_found') throw error;
     }
+    await this.docker.removeVolume?.(sessionNodeModulesVolumeName(sessionId));
   }
 }

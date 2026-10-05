@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord } from '@verity/store';
 import { DockerError, type ContainerInspect, type DockerClient } from './docker.js';
-import { SessionSandboxProvisioner, sessionSandboxSpec } from './session-sandbox.js';
+import {
+  SessionSandboxProvisioner,
+  sessionSandboxSpec,
+  sessionNodeModulesVolumeName,
+} from './session-sandbox.js';
 
 const project = { id: 'project', containerName: 'project-container' } as ProjectRecord;
 const template: ContainerInspect = {
@@ -32,7 +36,9 @@ describe('isolated session launch contract', () => {
       worktree: '/data/sessions/session',
     });
     expect(spec.binds).toEqual(['/opt/toolkit:/opt/agent-seed:ro', '/data/sessions/session:/work']);
-    expect(spec.volumeMounts).toEqual([]);
+    expect(spec.volumeMounts).toEqual([
+      { volume: sessionNodeModulesVolumeName('session'), target: '/work/node_modules' },
+    ]);
     expect(spec.env).toContain('VERITY_ISOLATED_SESSION_ID=session');
     expect(spec.env).not.toContain('VERITY_SESSION_ID=other');
     expect(spec.capDrop).toEqual(['ALL']);
@@ -96,6 +102,7 @@ describe('isolated session launch contract', () => {
     });
     expect(spec.volumeMounts).toEqual([
       { volume: 'data', target: '/work', subpath: 'sessions/session' },
+      { volume: sessionNodeModulesVolumeName('session'), target: '/work/node_modules' },
     ]);
     expect(spec.binds).not.toContain('/data/project:/work');
   });
@@ -105,12 +112,18 @@ describe('existing session sandbox validation', () => {
   it('rejects a labelled container retaining the project workspace', async () => {
     const startContainer = vi.fn();
     const docker = {
+      ensureVolume: vi.fn(async () => ({ mountpoint: undefined })),
       inspectContainer: vi.fn(async (name: string) =>
         name === project.containerName
           ? template
           : {
               ...template,
-              labels: { 'verity.session-id': 'session', 'verity.project-id': project.id },
+              labels: sessionSandboxSpec(template, {
+                project,
+                sessionId: 'session',
+                worktree: '/data/private/session',
+                runtimeBinds: ['/data/runners/session-session:/run/verity-runner'],
+              }).labels,
               privileged: false,
               deviceCount: 0,
               capDrop: ['ALL'],
@@ -145,6 +158,7 @@ it('preserves inherited post-start and initializes the private gated workspace',
   const bootstrap = vi.fn(async () => undefined);
   const provisioner = new SessionSandboxProvisioner({
     docker: {
+      ensureVolume: vi.fn(async () => ({ mountpoint: undefined })),
       inspectContainer: vi.fn(async (name: string) => {
         if (name === project.containerName) return { ...template, command };
         throw new DockerError({ kind: 'container_not_found', id: name });
@@ -166,5 +180,46 @@ it('preserves inherited post-start and initializes the private gated workspace',
     expect.objectContaining({ containerName: expect.stringContaining('verity-session-') }),
     '/data/runners/session-session',
     { path: '/data/private/session', waitForPostCreate: true, freshContainer: true },
+  );
+});
+
+it('recreates an owned container after a project rebuild and preserves private storage', async () => {
+  const desired = sessionSandboxSpec(template, {
+    project,
+    sessionId: 'session',
+    worktree: '/data/private/session',
+  });
+  const docker = {
+    ensureVolume: vi.fn(async () => ({ mountpoint: undefined })),
+    inspectContainer: vi.fn(async (name: string) =>
+      name === project.containerName
+        ? template
+        : { ...template, image: 'old-image', labels: desired.labels },
+    ),
+    stopContainer: vi.fn(async () => undefined),
+    removeContainer: vi.fn(async () => undefined),
+    createContainer: vi.fn(async () => ({ id: 'new', warnings: [] })),
+    startContainer: vi.fn(async () => undefined),
+  };
+  const bootstrap = vi.fn(async () => undefined);
+  const provisioner = new SessionSandboxProvisioner({
+    docker,
+    dataVolumeRoot: '/data',
+    prepareRuntime: async () => ({}),
+    bootstrap,
+  });
+  await provisioner.ensure(project, { sessionId: 'session', worktree: '/data/private/session' });
+  expect(docker.stopContainer).toHaveBeenCalledOnce();
+  expect(docker.removeContainer).toHaveBeenCalledOnce();
+  expect(docker.createContainer).toHaveBeenCalledWith(
+    expect.objectContaining({
+      image: template.image,
+      binds: expect.arrayContaining(['/data/private/session:/work']),
+    }),
+  );
+  expect(bootstrap).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
+    expect.objectContaining({ freshContainer: true }),
   );
 });
