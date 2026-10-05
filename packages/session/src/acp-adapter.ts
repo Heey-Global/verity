@@ -206,7 +206,8 @@ export class AcpEventAdapter {
   private readonly snapshots = new Map<string, ToolCall | ToolCallUpdate>();
   private readonly pendingTerminal = new Set<string>();
   private readonly lifecycle = new StructuredLifecycleMapper();
-  private lastPlan: string | undefined;
+  /** Last plan snapshot per agent (`''` for the main one, else its dispatching tool). */
+  private readonly lastPlans = new Map<string, string>();
   private readonly metaNamespace: string;
   private readonly resolveToolName:
     ((tool: ToolCall | ToolCallUpdate) => string | undefined) | undefined;
@@ -257,6 +258,9 @@ export class AcpEventAdapter {
           ...(update.plan.type === 'items' ? this.plan(update.plan.entries, update._meta) : []),
         ];
       case 'plan_removed':
+        // A plan sent again after its removal is news, not a repeat.
+        this.lastPlans.clear();
+        return lifecycle;
       case 'available_commands_update':
       case 'current_mode_update':
       case 'config_option_update':
@@ -301,20 +305,21 @@ export class AcpEventAdapter {
    *  kind: app builds that predate plan rendering reject an unknown `t` and would
    *  then fail to load the session's whole history page, while a tool call renders
    *  everywhere. ACP sends the complete list on every update; an unchanged repeat
-   *  is dropped, and an empty list is not a checklist worth a row. */
+   *  from the same agent is dropped, and an empty list is not a checklist worth a
+   *  row. History a resumed session replays never reaches this adapter. */
   private plan(
     entries: readonly PlanEntry[],
     meta: { [key: string]: unknown } | null | undefined,
   ): AgentEvent[] {
     const todos = entries.map(({ content, status, priority }) => ({ content, status, priority }));
+    const parent = this.parent(meta);
     const fingerprint = JSON.stringify(todos);
-    if (fingerprint === this.lastPlan) return [];
-    this.lastPlan = fingerprint;
+    if (fingerprint === this.lastPlans.get(parent ?? '')) return [];
+    this.lastPlans.set(parent ?? '', fingerprint);
     if (todos.length === 0) return [];
     // Random rather than counted: the store keys tool messages by this id, and a
     // resumed session starts a fresh adapter.
     const id = `plan-${randomUUID()}`;
-    const parent = this.parent(meta);
     return [
       { t: 'tool_call_start', id, name: PLAN_TOOL_NAME, parentToolId: parent },
       { t: 'tool_call', id, name: PLAN_TOOL_NAME, input: { todos }, parentToolId: parent },

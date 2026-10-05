@@ -96,7 +96,13 @@ describe('AcpEventAdapter', () => {
     for (const event of events) expect(isAgentEvent(event)).toBe(true);
 
     // An unchanged resend is not another row; the next real change is.
-    expect(adapter.consume({ sessionUpdate: 'plan', entries: [...entries] })).toEqual([]);
+    expect(
+      adapter.consume({
+        sessionUpdate: 'plan',
+        entries: [...entries],
+        _meta: { claudeCode: { parentToolUseId: 'task-1' } },
+      }),
+    ).toEqual([]);
     const next = adapter.consume({
       sessionUpdate: 'plan_update',
       plan: {
@@ -110,6 +116,23 @@ describe('AcpEventAdapter', () => {
       input: { todos: [{ content: 'Fix it', priority: 'medium', status: 'completed' }] },
     });
     expect(next[1]).not.toMatchObject({ id: call?.t === 'tool_call' && call.id });
+  });
+
+  // One fingerprint for every agent would swallow a sub-agent plan that happens to
+  // match the main agent's, and a plan re-sent after its removal.
+  it('dedupes plan snapshots per agent and forgets them on removal', () => {
+    const adapter = new AcpEventAdapter();
+    const main: SessionUpdate = {
+      sessionUpdate: 'plan',
+      entries: [{ content: 'Check', priority: 'medium', status: 'pending' }],
+    };
+    const child: SessionUpdate = { ...main, _meta: { claudeCode: { parentToolUseId: 'task-1' } } };
+
+    expect(adapter.consume(main)).toHaveLength(3);
+    expect(adapter.consume(child)).toHaveLength(3);
+    expect(adapter.consume(child)).toEqual([]);
+    expect(adapter.consume({ sessionUpdate: 'plan_removed', planId: 'plan-1' })).toEqual([]);
+    expect(adapter.consume(main)).toHaveLength(3);
   });
 
   it('maps vendor-neutral Claude lifecycle metadata without rendering carrier updates', () => {
