@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.52.4",
+  "version": "1.52.5",
   "runtime": "1.52.0",
   "channel": "production",
-  "commit": "80db6d3929b7950080d7ca7b230132ccc81181f9",
-  "tag": "mobile-v1.52.4",
-  "branch": "staging-mobile-v1.52.4-80db6d3929b7950080d7ca7b230132ccc81181f9",
-  "baseline": "mobile-v1.52.3",
-  "group": "f6017a79-3c92-437e-a7ef-d080d9d9e7c8",
+  "commit": "4dd2510d27fafc9d2669b99024e7a322409c8987",
+  "tag": "mobile-v1.52.5",
+  "branch": "staging-mobile-v1.52.5-4dd2510d27fafc9d2669b99024e7a322409c8987",
+  "baseline": "mobile-v1.52.4",
+  "group": "358c761b-6c14-4af5-9f46-dc3785aa3e1f",
   "notes": [
-    "show subscription plan and usage on provider settings (#1142)",
-    "unify scoped approvals and prevent redundant prompts (#1139)"
+    "Breaking: exclude dev-server events from unread badges (#1149)",
+    "explain both preview tabs in plain words (#1144)"
   ]
 }
