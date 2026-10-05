@@ -163,7 +163,8 @@ describe('managed gateway foundation', () => {
         {
           host: '127.0.0.1',
           port: runtime.publicPort,
-          rejectUnauthorized: false,
+          ca: ca.caCertPem,
+          servername: 'core.local',
           path: '/secret/init/browser',
           method: 'POST',
           headers: { host: 'core.local:9443', 'x-forwarded-proto': 'http' },
