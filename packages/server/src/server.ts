@@ -5573,6 +5573,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
           return;
         }
+        // Gateway capabilities run outside the backend's read-only sandbox.
+        // Neither a standing grant nor a new approval may reopen them while planning.
+        if ((await deps.eventStore.getSession(sessionId))?.planning === 'active') {
+          throw new ControlPlaneSessionAuthorityError(
+            'External tools are unavailable in planning mode; use read-only local tools.',
+          );
+        }
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId) {

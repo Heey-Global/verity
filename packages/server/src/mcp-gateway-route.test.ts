@@ -86,6 +86,7 @@ function build(
     deferLinkedApproval?: boolean;
     /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
     authorizeCall?: McpGatewayDeps['authorizeCall'];
+    standing?: boolean;
   } = {},
 ): Harness {
   const cipher = createSealableSecretCipher();
@@ -118,6 +119,7 @@ function build(
         }
       : {}),
     resolveCaller: (input) => Promise.resolve(tokens.resolve(input)),
+    ...(options.standing ? { hasStandingAuthorization: async () => true } : {}),
     ...(options.authorizeCall === undefined ? {} : { authorizeCall: options.authorizeCall }),
     invokeTool: ({ sessionId, turnId, toolName, request: toolRequest }) => {
       invocations.push({ sessionId, turnId, toolName, request: toolRequest });
@@ -371,6 +373,52 @@ it('lets the agent start planning and present plans, but leaves ending it to the
     }),
   ]);
 });
+
+it.each([false, true])(
+  'blocks external calls during planning before authorization (standing=%s)',
+  async (standing) => {
+    const harness = build({ standing });
+    await harness.store.createProject({
+      id: 'p1',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'alpha',
+      cloneDir: '__local__-alpha',
+      containerName: 'verity-alpha',
+      state: 'active',
+    });
+    await harness.store.createSession({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree: '/wt/s1',
+      model: 'm',
+    });
+    await harness.store.setSessionPlanning('s1', 'active');
+    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+    await withListener(harness, async (socketPath) => {
+      // The external executor is outside the agent's sandbox, so local read-only
+      // permissions alone cannot prevent a standing grant from reopening writes.
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_http_request',
+          arguments: {
+            secretAlias: 'ATTENDEE_API_KEY',
+            method: 'POST',
+            url: 'https://example.com/write',
+            auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+          },
+        },
+      });
+      expect(JSON.parse(response.body)).toMatchObject({ result: { isError: true } });
+      expect(response.body).toContain('planning mode');
+    });
+    expect(harness.approvals).toEqual([]);
+    expect(harness.invocations).toEqual([]);
+  },
+);
 
 it('does not end planning when the operator declines the card', async () => {
   const harness = build({ planningTools: true, allow: false });
