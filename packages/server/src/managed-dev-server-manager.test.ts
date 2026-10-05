@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { ListeningProcess } from './listening-ports.js';
 import type { LocalPreviewShare } from './local-preview-manager.js';
 import {
+  MANAGED_SILENT_LIMIT_MS,
   MANAGED_STARTUP_DEADLINE_MS,
   ManagedDevServerManager,
   type ManagedDevServerRuntime,
@@ -267,6 +268,72 @@ describe('managed dev servers', () => {
     await manager.tick();
     expect(sandbox.started).toHaveLength(2);
     expect(sandbox.started[1]!.command).toBe('node server.mjs');
+  });
+
+  // A sleeping sandbox must not turn the switch into an error: the start is
+  // recorded, the sandbox wakes, and supervision starts the server afterwards.
+  it('wakes a sleeping sandbox and starts the server once it is up', async () => {
+    const wake = vi.fn(async () => {
+      await ctx.store.updateProjectState('p1', 'active');
+    });
+    manager.close();
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      localShares: shares.local,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project: ProjectRecord, worktree: string) => worktree,
+      wakeSandbox: wake,
+      now: () => now,
+    });
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await ctx.store.updateProjectState('p1', 'sleeping');
+    await manager.start('s1', 'Demo', 'agent');
+    expect(await instanceOf()).toMatchObject({ state: 'starting', detail: 'Waking sandbox…' });
+    expect(manager.hasRunningServers('p1')).toBe(true);
+    expect(wake).toHaveBeenCalledWith('p1', 's1');
+    expect(sandbox.started).toHaveLength(0);
+    await vi.waitFor(async () => expect((await ctx.store.getProject('p1'))?.state).toBe('active'));
+    now += 10_000;
+    await manager.tick();
+    expect(sandbox.started).toHaveLength(1);
+  });
+
+  // A parent process (npm, a watcher) can outlive its crashed server; the
+  // address must not keep pointing at nothing.
+  it('crashes a running server that stays off its port while processes live', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'npm run dev' });
+    await manager.start('s1', 'Demo', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    sandbox.listeners.splice(0);
+    await manager.tick();
+    expect((await instanceOf()).state).toBe('running');
+    now += MANAGED_SILENT_LIMIT_MS + 1;
+    await manager.tick();
+    expect(await instanceOf()).toMatchObject({
+      state: 'crashed',
+      detail: 'Stopped answering on its port',
+    });
+  });
+
+  it('refuses an operator restart of a changed command before stopping anything', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+    await expect(manager.restart('s1', 'Demo', 'operator')).rejects.toThrow(/approve/u);
+    expect(sandbox.stop).not.toHaveBeenCalled();
+  });
+
+  // A moved session leaves its instances behind in the source project, where
+  // they would hold network ports nobody can manage any more.
+  it('forgets a moved session’s instances after stopping them', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    await manager.stopSession('s1', { forget: true });
+    expect(sandbox.stop).toHaveBeenCalled();
+    expect(await ctx.store.managedDevServers.listInstances({ sessionId: 's1' })).toEqual([]);
   });
 
   it('gives sibling entries of the session their internal URLs', async () => {

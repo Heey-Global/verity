@@ -44,9 +44,12 @@ function brokerUrl() {
   if (direct) return direct;
   // Sandboxes provisioned before this command existed carry only the memory URL;
   // both routes live on the same project-bound broker.
-  const memory = process.env.VERITY_PROJECT_MEMORY_URL;
-  if (memory) return memory.replace(/\/internal\/project\/memory$/u, '/internal/dev-servers');
-  fail('verity-dev-server: the Verity broker is not configured for this sandbox');
+  const memory = process.env.VERITY_PROJECT_MEMORY_URL ?? '';
+  if (/\/internal\/project\/memory$/u.test(memory))
+    return memory.replace(/\/internal\/project\/memory$/u, '/internal/dev-servers');
+  fail(
+    'verity-dev-server: managed dev servers are unavailable in this sandbox. Start the server yourself and run: verity-dev-server announce --port <port> --name <name>',
+  );
 }
 
 function capability() {

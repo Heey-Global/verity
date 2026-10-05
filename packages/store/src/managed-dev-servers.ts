@@ -108,6 +108,12 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
+/** A deadlock or serialization failure: the transaction can simply be retried. */
+function isSerializationFailure(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === '40P01' || code === '40001';
+}
+
 function serverRecord(row: Selectable<ManagedDevServersTable>): ManagedDevServerRecord {
   return {
     id: row.id,
@@ -466,6 +472,8 @@ export class ManagedDevServerStore {
             .selectFrom('managed_dev_server_instances')
             .selectAll()
             .where('network_port', 'is not', null)
+            // One lock order for every reservation, so two cannot deadlock.
+            .orderBy('id', 'asc')
             .forUpdate()
             .execute();
           const held = new Set(holders.map((row) => row.network_port!));
@@ -508,10 +516,15 @@ export class ManagedDevServerStore {
           return { port, evictedInstanceId: victim.id };
         });
       } catch (error) {
-        if (!isUniqueViolation(error) || attempt === 2) throw error;
+        if (!(isUniqueViolation(error) || isSerializationFailure(error)) || attempt === 2)
+          throw error;
       }
     }
     throw new ManagedDevServerPortsFullError();
+  }
+
+  async deleteInstance(id: string): Promise<void> {
+    await this.db.deleteFrom('managed_dev_server_instances').where('id', '=', id).execute();
   }
 
   async releaseNetworkPort(id: string): Promise<void> {

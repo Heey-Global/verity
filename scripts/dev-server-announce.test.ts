@@ -95,3 +95,12 @@ describe('managed dev server commands', () => {
     }
   }, 30_000);
 });
+
+// The toolkit ships its own copy of the agent seed; a fix in one copy alone
+// would reach only some sandboxes.
+it('keeps the toolkit copy of verity-dev-server identical to the agent seed', async () => {
+  const { readFileSync: read } = await import('node:fs');
+  expect(
+    read(resolve('features/verity-sandbox-toolkit/agent-seed/bin/verity-dev-server'), 'utf8'),
+  ).toBe(read(resolve('agent-seed/bin/verity-dev-server'), 'utf8'));
+});

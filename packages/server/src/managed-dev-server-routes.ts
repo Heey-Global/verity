@@ -221,10 +221,7 @@ export function registerManagedDevServerAgentRoute(
         case 'stop':
           return { server: describeForAgent(await m.stop(body.sessionId, name)) };
         case 'status': {
-          const server = (await m.view(body.sessionId)).find(
-            (value) => value.name.toLowerCase() === name.toLowerCase() || value.id === name,
-          );
-          if (!server) return reply.code(404).send({ error: `no server named "${name}"` });
+          const server = await m.status(body.sessionId, name);
           return {
             server: describeForAgent(server),
             state: server.instance?.state ?? 'stopped',

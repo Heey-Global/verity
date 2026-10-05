@@ -3512,8 +3512,9 @@ export async function buildEmbeddedServer(
     config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
   let managedDevServerManager: ManagedDevServerManager | undefined;
   // `app.log` exists only once the control plane is built further down.
-  let managedDevServerLog:
-    ((message: string, detail?: Record<string, unknown>) => void) | undefined;
+  const managedDevServerLog: {
+    current?: (message: string, detail?: Record<string, unknown>) => void;
+  } = {};
   const localPreviewManager =
     projectDocker && localConnectorImage && config.hostCloneRoot
       ? new LocalPreviewManager({
@@ -3568,7 +3569,10 @@ export async function buildEmbeddedServer(
       sandboxWorktree: (project, worktree) =>
         containerPathFor(worktree, projectClonePath(hostCloneRoot, project)),
       refreshListeners: (project) => listenerDiscovery?.refreshProject(project),
-      log: (message, detail) => managedDevServerLog?.(message, detail),
+      wakeSandbox: (projectId, sessionId) =>
+        provisioner?.ensureProjectSandboxAwake(projectId, new Set([sessionId])) ??
+        Promise.reject(new Error('sandbox wake is unavailable')),
+      log: (message, detail) => managedDevServerLog.current?.(message, detail),
     });
   }
 
@@ -4951,7 +4955,7 @@ export async function buildEmbeddedServer(
     });
   }
   app.addHook('onClose', () => listenerDiscovery?.close());
-  managedDevServerLog = (message, detail) => app.log.info(detail ?? {}, message);
+  managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
   void listenerDiscovery?.reconcile();
   app.addHook('onClose', () => claudeCredentialSync.close());

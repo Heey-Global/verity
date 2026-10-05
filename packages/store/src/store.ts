@@ -1,4 +1,3 @@
-import { ManagedDevServerStore } from './managed-dev-servers.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
@@ -29,6 +28,7 @@ import type {
   QueuedTurnOpts,
   ScheduleConfig,
 } from './schema.js';
+import { ManagedDevServerStore } from './managed-dev-servers.js';
 
 /** A stored image blob: its media type and raw bytes (for serving). */
 export interface AttachmentBlob {

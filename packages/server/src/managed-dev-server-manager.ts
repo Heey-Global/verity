@@ -18,6 +18,8 @@ export const MANAGED_SANDBOX_PORTS: readonly number[] = Array.from(
 /** A server that has not answered on its port by then is reported crashed. */
 export const MANAGED_STARTUP_DEADLINE_MS = 60_000;
 const MONITOR_INTERVAL_MS = 2_000;
+/** A running server off its port this long, with its processes alive, is crashed. */
+export const MANAGED_SILENT_LIMIT_MS = 30_000;
 const MANAGED_SHARE_TTL_SECONDS = 30 * 86_400;
 
 export type StartedBy = 'agent' | 'operator' | 'recovery';
@@ -67,6 +69,8 @@ export interface ManagedDevServerManagerOptions {
   protectedInstances?: () => ReadonlySet<string>;
   /** Pushes a refreshed listener snapshot to the app. */
   refreshListeners?: (project: ProjectRecord) => Promise<void> | void;
+  /** Wakes a sleeping sandbox (ADR 0020) so a start does not fail on it. */
+  wakeSandbox?: (projectId: string, sessionId: string) => Promise<unknown>;
   now?: () => number;
   log?: (message: string, detail?: Record<string, unknown>) => void;
 }
@@ -79,6 +83,8 @@ export interface ManagedInstanceView {
   detail: string | null;
   /** The network address; set while the instance is published locally. */
   url: string | null;
+  /** Internal; the app uses it only as a share target and never displays it. */
+  sandboxPort: number;
   /** True while running without the operator's approval for local publishing. */
   awaitingApproval: boolean;
   /** The running command differs from the entry's current one. */
@@ -125,6 +131,14 @@ export class ManagedDevServerManager {
   private readonly timer: ReturnType<typeof setInterval>;
   private ticking: Promise<void> | undefined;
   private reserved = new Set<number>();
+  /** Publishing that failed waits before the next attempt instead of every tick. */
+  private readonly publishRetryAt = new Map<string, number>();
+  /** Running instances whose listener vanished while processes stayed alive. */
+  private readonly missingSince = new Map<string, number>();
+  /** Last periodic status check per running instance (log trimming). */
+  private readonly checkedAt = new Map<string, number>();
+  /** Projects with an instance that should be running; they must not sleep. */
+  private activeProjects = new Set<string>();
   private closed = false;
 
   constructor(private readonly options: ManagedDevServerManagerOptions) {
@@ -132,6 +146,11 @@ export class ManagedDevServerManager {
     this.timer = setInterval(() => void this.tick(), MONITOR_INTERVAL_MS);
     this.timer.unref?.();
     void this.refreshReserved();
+  }
+
+  /** Running entries keep the sandbox awake, as an active share does (ADR 0020). */
+  hasRunningServers(projectId: string): boolean {
+    return this.activeProjects.has(projectId);
   }
 
   /** Network ports reserved for instances; the ad hoc share allocator skips them. */
@@ -239,6 +258,7 @@ export class ManagedDevServerManager {
       desired: instance.desired,
       detail: instance.detail,
       url,
+      sandboxPort: instance.sandboxPort,
       awaitingApproval:
         instance.state === 'running' && url === null && !this.ranApproved(entry, instance),
       restartToApply:
@@ -340,6 +360,9 @@ export class ManagedDevServerManager {
   async restart(sessionId: string, idOrName: string, by: StartedBy): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
     const entry = await this.entry(context.project.id, idOrName);
+    // Refuse before stopping: a restart that cannot start must not kill what runs.
+    if (by === 'operator' && !entry.approved)
+      throw new ManagedDevServerError('Review and approve the command first', 409);
     const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
     if (instance) await this.stopInstance(context.project, instance, null);
     return this.start(sessionId, entry.id, by);
@@ -363,6 +386,13 @@ export class ManagedDevServerManager {
     return this.view(sessionId);
   }
 
+  /** One entry, resolved by id or by name the same way start and stop resolve it. */
+  async status(sessionId: string, idOrName: string): Promise<ManagedServerView> {
+    const { project } = await this.context(sessionId);
+    const entry = await this.entry(project.id, idOrName);
+    return this.viewOf(sessionId, entry.id);
+  }
+
   async logs(sessionId: string, idOrName: string, lines = 300): Promise<string> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
@@ -371,14 +401,21 @@ export class ManagedDevServerManager {
     return this.options.runtime.managedServerLogs(project, instance.id, lines);
   }
 
-  /** Called before a session is deleted: its processes must not outlive it. */
-  async stopSession(sessionId: string): Promise<void> {
+  /**
+   * Called before a session is deleted or moved: its processes must not outlive
+   * its worktree. A move also forgets the instances, which belong to the source
+   * project and would otherwise hold their network ports forever.
+   */
+  async stopSession(sessionId: string, options: { forget?: boolean } = {}): Promise<void> {
+    const instances = await this.servers.listInstances({ sessionId });
     const session = await this.options.store.getSession(sessionId);
-    if (!session?.projectId) return;
-    const project = await this.options.store.getProject(session.projectId);
-    if (!project) return;
-    for (const instance of await this.servers.listInstances({ sessionId }))
-      await this.stopInstance(project, instance, null).catch(() => undefined);
+    const project = session?.projectId
+      ? await this.options.store.getProject(session.projectId)
+      : undefined;
+    for (const instance of instances) {
+      if (project) await this.stopInstance(project, instance, null).catch(() => undefined);
+      if (options.forget) await this.servers.deleteInstance(instance.id);
+    }
     await this.refreshReserved();
   }
 
@@ -394,6 +431,32 @@ export class ManagedDevServerManager {
     by: StartedBy,
   ): Promise<void> {
     const { project, sessionId } = context;
+    if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
+      // Record the intent, wake the sandbox, and let supervision start the server
+      // once it is up: an instance that should run but has no process is started.
+      const instance = await this.servers.ensureInstance({
+        serverId: entry.id,
+        sessionId,
+        sandboxPorts: MANAGED_SANDBOX_PORTS,
+      });
+      await this.servers.updateInstance(instance.id, {
+        desired: 'running',
+        state: 'starting',
+        detail: 'Waking sandbox…',
+        lastRunCommand: entry.command,
+        lastRunWorkdir: entry.workdir,
+        startedAt: new Date(this.now()),
+      });
+      this.activeProjects.add(project.id);
+      void this.options.wakeSandbox(project.id, sessionId).catch(async (error: unknown) => {
+        await this.servers.updateInstance(instance.id, {
+          desired: 'stopped',
+          state: 'crashed',
+          detail: `The sandbox did not wake: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      });
+      return;
+    }
     if (project.state !== 'active' || !project.containerName)
       throw new ManagedDevServerError('the project sandbox is not running', 409);
     const processes = await this.options.runtime.listListeningProcesses(project).catch(() => []);
@@ -512,6 +575,7 @@ export class ManagedDevServerManager {
       return;
     const existing = this.shareFor(instance);
     if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
+    if ((this.publishRetryAt.get(instance.id) ?? 0) > this.now()) return;
     const held = local.heldPorts();
     const externallyUsed = new Set(
       [...held.entries()]
@@ -544,8 +608,17 @@ export class ManagedDevServerManager {
         ttlSeconds: MANAGED_SHARE_TTL_SECONDS,
         networkPort: reservation.port,
       });
+      this.publishRetryAt.delete(instance.id);
       if (instance.detail) await this.servers.updateInstance(instance.id, { detail: null });
     } catch (error) {
+      // Most likely an ad hoc share took the port in the same instant. Release
+      // it so the next attempt reserves a free one, and say why in the meantime.
+      await this.servers.releaseNetworkPort(instance.id);
+      await this.refreshReserved();
+      this.publishRetryAt.set(instance.id, this.now() + 30_000);
+      await this.servers.updateInstance(instance.id, {
+        detail: 'Could not open it on your network yet. Retrying shortly.',
+      });
       this.options.log?.('verity: managed dev server could not publish locally', {
         projectId: project.id,
         instanceId: instance.id,
@@ -580,6 +653,7 @@ export class ManagedDevServerManager {
     const byProject = new Map<string, ManagedDevServerInstanceRecord[]>();
     for (const instance of instances)
       byProject.set(instance.projectId, [...(byProject.get(instance.projectId) ?? []), instance]);
+    this.activeProjects = new Set(byProject.keys());
     for (const [projectId, group] of byProject) {
       try {
         await this.superviseProject(projectId, group);
@@ -606,6 +680,14 @@ export class ManagedDevServerManager {
       const tagged = processes.filter((process) => process.instanceId === instance.id);
       const onPort = tagged.find((process) => process.port === instance.sandboxPort);
       if (onPort) {
+        this.missingSince.delete(instance.id);
+        if (this.now() - (this.checkedAt.get(instance.id) ?? 0) > 60_000) {
+          // The status check also trims an oversized log; once a minute is enough.
+          this.checkedAt.set(instance.id, this.now());
+          await this.options.runtime
+            .managedServerStatus(project, instance.id)
+            .catch(() => undefined);
+        }
         if (instance.state !== 'running') {
           await this.servers.updateInstance(instance.id, { state: 'running', detail: null });
           changed = true;
@@ -636,15 +718,26 @@ export class ManagedDevServerManager {
       // Just launched: the launcher may not be visible yet.
       if (!status.alive && status.exitCode === null) continue;
       const timedOut = instance.state === 'starting' && elapsed > MANAGED_STARTUP_DEADLINE_MS;
-      if (status.alive && !timedOut) continue;
+      let silent = false;
+      if (instance.state === 'running' && status.alive) {
+        // A restarting server is briefly off its port; one that stays off while
+        // its processes live (a parent outliving its crashed child) is not running.
+        const since = this.missingSince.get(instance.id) ?? this.now();
+        this.missingSince.set(instance.id, since);
+        silent = this.now() - since > MANAGED_SILENT_LIMIT_MS;
+      }
+      if (status.alive && !timedOut && !silent) continue;
+      this.missingSince.delete(instance.id);
       const elsewhere = tagged[0];
       const detail = !status.alive
         ? status.exitCode === null
           ? 'The server exited'
           : `The server exited with code ${String(status.exitCode)}`
-        : elsewhere
-          ? `Did not answer on its port: it listens on ${String(elsewhere.port)} instead. Use $PORT or {port} in the command.`
-          : 'Did not answer on its port within 60 seconds';
+        : silent
+          ? 'Stopped answering on its port'
+          : elsewhere
+            ? `Did not answer on its port: it listens on ${String(elsewhere.port)} instead. Use $PORT or {port} in the command.`
+            : 'Did not answer on its port within 60 seconds';
       await this.unpublish(instance);
       if (status.alive)
         await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);

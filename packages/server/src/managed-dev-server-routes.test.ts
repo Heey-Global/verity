@@ -44,6 +44,7 @@ function view(
             awaitingApproval: false,
             restartToApply: false,
             startedAt: null,
+            sandboxPort: 41000,
             ...instance,
           },
     elsewhere: [],

@@ -649,7 +649,9 @@ export function managedStartScript(project: ProjectRecord, instanceId: string): 
     `mkdir -p "$(dirname ${log})"`,
     `rm -f ${exit}`,
     'command -v setsid >/dev/null 2>&1 || { echo "setsid is required" >&2; exit 1; }',
-    `setsid sh -c 'sh -lc "$1"; echo $? > "$2"' verity-managed "$3" ${exit} </dev/null >${log} 2>&1 &`,
+    // Appending lets the status check trim the log in place without a gap.
+    `: > ${log}`,
+    `setsid sh -c 'sh -lc "$1"; echo $? > "$2"' verity-managed "$3" ${exit} </dev/null >>${log} 2>&1 &`,
     'exit 0',
   ].join('\n');
 }
@@ -657,7 +659,7 @@ export function managedStartScript(project: ProjectRecord, instanceId: string): 
 function taggedPidsScript(): string[] {
   return [
     'tagged() { for d in /proc/[0-9]*; do',
-    '  tr "\\0" "\\n" < "$d/environ" 2>/dev/null | grep -qx "VERITY_DEV_SERVER_INSTANCE=$1" && echo "${d#/proc/}"',
+    '  tr "\\0" "\\n" < "$d/environ" 2>/dev/null | grep -Fqx "VERITY_DEV_SERVER_INSTANCE=$1" && echo "${d#/proc/}"',
     'done; }',
   ];
 }
@@ -679,8 +681,11 @@ export function managedStopScript(): string {
  *  `exit <code>` once the launcher recorded one. */
 export function managedStatusScript(project: ProjectRecord, instanceId: string): string {
   const exit = shellQuote(managedFile(project, instanceId, 'exit'));
+  const log = shellQuote(managedFile(project, instanceId, 'log'));
   return [
     ...taggedPidsScript(),
+    // Keep the log bounded: past 2 MB, keep its last megabyte.
+    `if [ -f ${log} ] && [ "$(wc -c < ${log})" -gt 2097152 ]; then tail -c 1048576 ${log} > ${log}.tmp && cat ${log}.tmp > ${log}; rm -f ${log}.tmp; fi`,
     '[ -n "$(tagged "$1")" ] && echo alive',
     `[ -s ${exit} ] && printf 'exit %s\\n' "$(cat ${exit})"`,
     'exit 0',

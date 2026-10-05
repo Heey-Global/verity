@@ -3535,7 +3535,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return projectHasPersistentSandboxActivity({
       project,
       listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
-      hasLocalShares: () => deps.localPreviewManager?.hasProjectShares(projectId) ?? false,
+      hasLocalShares: () =>
+        (deps.localPreviewManager?.hasProjectShares(projectId) ?? false) ||
+        (deps.managedDevServerManager?.hasRunningServers(projectId) ?? false),
     });
   };
   // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
@@ -9296,7 +9298,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                     `The old workspace ${session.worktree} and branch ${snapshot.branch} are retained. ` +
                     `Commits were not transferred. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
                   await deps.previewShareManager?.revokeSessionShares(source.id, id);
-                  await deps.managedDevServerManager?.stopSession(id);
+                  // The instances belong to the source project; forget them so their
+                  // network ports do not stay reserved for a session that left.
+                  await deps.managedDevServerManager
+                    ?.stopSession(id, { forget: true })
+                    .catch(() => undefined);
                   await deps.localPreviewManager?.stopSession(id);
                   await deps.eventStore.commitSessionMove(
                     id,
