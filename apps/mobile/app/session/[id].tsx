@@ -1189,10 +1189,20 @@ export function SessionChat({
   // not the one captured when the callback was created.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const transcriptSnapshot = {
+    messages: session.messages,
+    planning: { planning, planningPlan, planningRevision },
+    localMessageGroups: [localMeetingMessages, pendingEchoMessages],
+  };
+  const transcriptSnapshotRef = useRef(transcriptSnapshot);
+  transcriptSnapshotRef.current = transcriptSnapshot;
   const frozenTailRef = useRef<FrozenTranscriptTail | null>(null);
   frozenTailRef.current = frozenTail;
   const snapshotLiveTail = useCallback(() => {
-    setFrozenTail(freezeTranscriptTail(messagesRef.current));
+    const snapshot = transcriptSnapshotRef.current;
+    setFrozenTail(
+      freezeTranscriptTail(snapshot.messages, snapshot.planning, snapshot.localMessageGroups),
+    );
   }, []);
   // A snapshot whose boundary message is gone (the transcript was reloaded) no longer
   // describes this session: `frozenTranscriptRows` returned null and we are rendering
