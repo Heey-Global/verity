@@ -45,6 +45,14 @@ export function registerLocalPreviewRoutes(
       return reply.code(404).send({ error: 'session not found' });
     return { shares: deps.manager?.list(sessionId) ?? [] };
   });
+  // The session list marks every session with a live preview; one read per project
+  // keeps that from becoming one read per session on each poll.
+  app.get('/projects/:projectId/local-shares', async (request, reply) => {
+    const { projectId } = z.object({ projectId: z.string().min(1) }).parse(request.params);
+    if (!(await deps.eventStore.getProject(projectId)))
+      return reply.code(404).send({ error: 'project not found' });
+    return { shares: deps.manager?.listProject(projectId) ?? [] };
+  });
   app.post('/sessions/:sessionId/local-shares', async (request, reply) => {
     if (!deps.manager)
       return reply.code(503).send({ error: 'local preview runtime is unavailable' });
