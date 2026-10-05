@@ -122,7 +122,7 @@ only port anyone sees is the network port from the local range, shown as an addr
 `http://verity.local:8104`. Both ports stay bound to the pair until the session is deleted, so a bookmark keeps working across restarts, with the exceptions listed under edge cases: eviction of a non-running pair's network port when the range is full, a silent sandbox-port change on collision, and removal of the entry. A new session may get different ports. When the local range is full, the non-running pair (stopped or crashed) whose server ran least recently, with never-run pairs counted as oldest, loses its network reservation; its sandbox port is kept. Running and starting pairs are never evicted. If every reservation belongs to a running or starting server, the start fails with "All network ports are in use" and names the setting that enlarges the range.
 
 **Supervision.** Verity starts the entry as its own process and tracks one of four states:
-starting, running, stopped, crashed. "Running" requires the port to answer through the same path the share forwards to, including the loopback forwarder (2.4), and the listener must belong to the entry's own process group, which Verity starts each entry in a fresh session for, so daemonized children stay attributable and Stop reaches them; so a foreign process on the same port never marks an entry running. Verity keeps the last few hundred lines of output, readable in the
+starting, running, stopped, crashed. "Running" requires the port to answer through the same path the share forwards to, including the loopback forwarder (2.4), and the listener must belong to the entry's instance. Verity tags each instance with an environment variable that children inherit even when they daemonize, the same mechanism as session attribution (2.5). The running check and Stop both use that tag; so a foreign process on the same port never marks an entry running. Verity keeps the last few hundred lines of output, readable in the
 app and by the agent. Stopping ends the command and all its children so no orphan holds the
 port. A crashed server stays crashed and shows its error; there is no automatic restart,
 because a silent restart hides the fault. Running entries keep the sandbox awake as an active
@@ -133,7 +133,7 @@ share does (ADR 0020). When the sandbox is recreated, for example by an update, 
 which the agent may do anyway. Additions and changes appear in the chat as a small card. The
 agent-seed guidance tells the agent to start servers only through an entry, never with
 `nohup` or `&`, and to create an entry when none fits. Servers started past Verity are still
-detected and listed as not managed, with an offer to save them as an entry. The existing
+detected and listed as not managed, with an offer to save them as an entry. They keep the same Open and Share actions as before. The existing
 `announce` command stays for that case.
 
 **Edge cases.**
