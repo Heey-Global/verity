@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentTextMessage, Message, ToolCallMessage } from '../happy/message.js';
 import { freezeTranscriptTail, frozenTranscriptRows } from './transcriptFreeze.js';
-import { groupRows, rowKey } from './transcriptRows.js';
+import { groupRows, rowKey, withPlanningSnapshot } from './transcriptRows.js';
 
 function userText(id: string): Message {
   return { kind: 'user-text', id, localId: null, createdAt: 0, text: id };
@@ -31,6 +31,26 @@ function toolCall(id: string): ToolCallMessage {
 }
 
 describe('freezeTranscriptTail', () => {
+  it('keeps the persisted proposal in place when a reader leaves the live edge', () => {
+    const messages = [userText('recent')];
+    const planning = {
+      planning: 'active',
+      planningPlan: 'A persisted plan outside loaded history',
+      planningRevision: 7,
+    };
+    const liveRows = withPlanningSnapshot(groupRows(messages), planning);
+    const frozen = freezeTranscriptTail(messages, planning)!;
+    expect(frozen.rows).toEqual(liveRows);
+
+    planning.planningPlan = 'A newer plan';
+    planning.planningRevision = 8;
+    const pagedMessages = [userText('older'), ...messages, agentText('new', 'New output')];
+    expect(frozenTranscriptRows(pagedMessages, frozen)).toEqual([
+      ...groupRows([pagedMessages[0]!]),
+      ...liveRows,
+    ]);
+  });
+
   it('returns null for an empty transcript', () => {
     expect(freezeTranscriptTail([])).toBeNull();
   });

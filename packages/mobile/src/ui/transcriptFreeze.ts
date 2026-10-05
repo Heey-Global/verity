@@ -1,5 +1,5 @@
 import type { Message } from '../happy/message.js';
-import { groupRows, type Row } from './transcriptRows.js';
+import { groupRows, withPlanningSnapshot, type Row } from './transcriptRows.js';
 
 /**
  * Live-tail freeze for the inverted transcript (pure → unit-testable).
@@ -56,12 +56,16 @@ function cloneMessage(message: Message): Message {
 }
 
 /** Snapshot the currently loaded transcript. `null` when there is nothing to freeze. */
-export function freezeTranscriptTail(messages: readonly Message[]): FrozenTranscriptTail | null {
+export function freezeTranscriptTail(
+  messages: readonly Message[],
+  planningSnapshot: Parameters<typeof withPlanningSnapshot>[1] = {},
+): FrozenTranscriptTail | null {
   const boundary = messages[0];
   if (boundary === undefined) return null;
   return {
     boundaryMessageId: boundary.id,
-    rows: groupRows(messages.map(cloneMessage)),
+    // Dropping a persisted proposal on drag removes its height ahead of the viewport.
+    rows: withPlanningSnapshot(groupRows(messages.map(cloneMessage)), planningSnapshot),
   };
 }
 

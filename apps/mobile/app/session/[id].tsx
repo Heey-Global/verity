@@ -1189,10 +1189,12 @@ export function SessionChat({
   // not the one captured when the callback was created.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const planningSnapshotRef = useRef({ planning, planningPlan, planningRevision });
+  planningSnapshotRef.current = { planning, planningPlan, planningRevision };
   const frozenTailRef = useRef<FrozenTranscriptTail | null>(null);
   frozenTailRef.current = frozenTail;
   const snapshotLiveTail = useCallback(() => {
-    setFrozenTail(freezeTranscriptTail(messagesRef.current));
+    setFrozenTail(freezeTranscriptTail(messagesRef.current, planningSnapshotRef.current));
   }, []);
   // A snapshot whose boundary message is gone (the transcript was reloaded) no longer
   // describes this session: `frozenTranscriptRows` returned null and we are rendering
