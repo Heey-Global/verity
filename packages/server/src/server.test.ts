@@ -4851,6 +4851,29 @@ describe('GET /projects (#174)', () => {
     expect(unread.json()).toMatchObject({ eventCount: 2, lastSeenEventCount: 1 });
   });
 
+  it('rejects stale all-event read marks without hiding unread messages', async () => {
+    const sessionId = 's-stale-read-count';
+    await ctx.store.createSession({ sessionId, worktree: '/wt/stale', model: 'm' });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'read' });
+    await ctx.store.setSessionSeen(sessionId, 1);
+    await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'unread' });
+    const stale = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 3 },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    const valid = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 2 },
+    });
+    expect(valid.statusCode).toBe(200);
+    expect(valid.json()).toMatchObject({ lastSeenEventCount: 2 });
+  });
+
   it('returns 404 when marking an unknown session seen', async () => {
     const res = await app.inject({
       method: 'PATCH',
