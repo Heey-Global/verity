@@ -31,6 +31,23 @@ function toolCall(id: string): ToolCallMessage {
 }
 
 describe('freezeTranscriptTail', () => {
+  it('preserves the live proposal position before local meeting and pending messages', () => {
+    const messages = [userText('recent')];
+    const local = [agentText('meeting', 'Meeting transcript')];
+    const pending = [userText('pending')];
+    const planning = { planning: 'active', planningPlan: 'Persisted plan', planningRevision: 7 };
+    const liveRows = [
+      ...withPlanningSnapshot(groupRows(messages), planning),
+      ...groupRows(local),
+      ...groupRows(pending),
+    ];
+    const frozen = freezeTranscriptTail(messages, planning, [local, pending])!;
+    expect(frozen.rows).toEqual(liveRows);
+    expect(frozenTranscriptRows([...messages, ...local, ...pending], frozen)).toEqual(liveRows);
+    local[0]!.text = 'More meeting text';
+    expect(frozen.rows[2]).toMatchObject({ message: { text: 'Meeting transcript' } });
+  });
+
   it('keeps the persisted proposal in place when a reader leaves the live edge', () => {
     const messages = [userText('recent')];
     const planning = {

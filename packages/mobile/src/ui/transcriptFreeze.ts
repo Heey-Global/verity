@@ -59,13 +59,17 @@ function cloneMessage(message: Message): Message {
 export function freezeTranscriptTail(
   messages: readonly Message[],
   planningSnapshot: Parameters<typeof withPlanningSnapshot>[1] = {},
+  localMessageGroups: readonly (readonly Message[])[] = [],
 ): FrozenTranscriptTail | null {
-  const boundary = messages[0];
+  const boundary = messages[0] ?? localMessageGroups.find((group) => group.length > 0)?.[0];
   if (boundary === undefined) return null;
   return {
     boundaryMessageId: boundary.id,
     // Dropping a persisted proposal on drag removes its height ahead of the viewport.
-    rows: withPlanningSnapshot(groupRows(messages.map(cloneMessage)), planningSnapshot),
+    rows: [
+      ...withPlanningSnapshot(groupRows(messages.map(cloneMessage)), planningSnapshot),
+      ...localMessageGroups.flatMap((group) => groupRows(group.map(cloneMessage))),
+    ],
   };
 }
 
