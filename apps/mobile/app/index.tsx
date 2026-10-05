@@ -74,6 +74,13 @@ import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
+import {
+  localPreviewLinks,
+  mergeSessionPreviewUrls,
+  nextProjectPreviewLinks,
+  publicPreviewLinks,
+  type ProjectPreviewLinks,
+} from '../lib/sessionPreviewLinks';
 import { prefetchBranches } from '../lib/branchesPrefetch';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
@@ -835,14 +842,12 @@ function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const devServersByProject = new Map<string, DevServer[]>();
   const detectionsByProject = new Map<string, DevServerDetection>();
-  // Session id → the URL its preview icon opens (null while a public share has no
-  // origin yet). A local link wins over a public one: it stays on the operator's
-  // network and asks for no PIN.
+  // Session id → the URL its preview icon opens; see mergeSessionPreviewUrls.
   const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
   );
-  const publicPreviewUrls = useRef<ReadonlyMap<string, string | null>>(new Map());
-  const localPreviewUrls = useRef<ReadonlyMap<string, string>>(new Map());
+  const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
+  const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
@@ -877,43 +882,35 @@ function useProjects(client: VerityClient) {
       try {
         const nextProjects = await client.listProjects();
         const activeProjects = nextProjects.filter((project) => project.state === 'active');
+        const projectIds = activeProjects.map((project) => project.id);
         const [publicResults, localResults] = await Promise.all([
           Promise.allSettled(
-            activeProjects.map((project) => client.listPublicPreviewShares(project.id)),
+            projectIds.map((id) => client.listPublicPreviewShares(id).then(publicPreviewLinks)),
           ),
           Promise.allSettled(
-            activeProjects.map((project) => client.listProjectLocalPreviewShares(project.id)),
+            projectIds.map((id) =>
+              client.listProjectLocalPreviewShares(id).then(localPreviewLinks),
+            ),
           ),
         ]);
         if (generation !== loadGeneration.current) return;
-        // Each source keeps its last complete answer, so one failed poll does not
-        // blink its icons away — and a Core that never answers one source (no public
-        // sharing, or no project local-share route yet) still shows the other.
-        if (publicResults.every((result) => result.status === 'fulfilled')) {
-          const next = new Map<string, string | null>();
-          for (const result of publicResults) {
-            for (const share of result.value) {
-              if (
-                share.sessionId &&
-                share.targetKind === 'static-folder' &&
-                share.state === 'active' &&
-                new Date(share.expiresAt).getTime() > Date.now()
-              )
-                next.set(share.sessionId, share.publicOrigin);
-            }
-          }
-          publicPreviewUrls.current = next;
-        }
-        if (localResults.every((result) => result.status === 'fulfilled')) {
-          const next = new Map<string, string>();
-          for (const result of localResults) {
-            for (const share of result.value) {
-              if (share.expiresAt.getTime() > Date.now()) next.set(share.sessionId, share.url);
-            }
-          }
-          localPreviewUrls.current = next;
-        }
-        setPreviewUrls(new Map([...publicPreviewUrls.current, ...localPreviewUrls.current]));
+        publicPreviewLinksRef.current = nextProjectPreviewLinks(
+          publicPreviewLinksRef.current,
+          projectIds,
+          publicResults,
+        );
+        localPreviewLinksRef.current = nextProjectPreviewLinks(
+          localPreviewLinksRef.current,
+          projectIds,
+          localResults,
+        );
+        setPreviewUrls(
+          mergeSessionPreviewUrls(
+            publicPreviewLinksRef.current,
+            localPreviewLinksRef.current,
+            Date.now(),
+          ),
+        );
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -1800,8 +1797,9 @@ function SessionRow({
           {previewActive ? (
             <Pressable
               // openURL rejects only if no handler can open the URL; swallow it.
+              // Enabled even without a URL yet: a disabled Pressable lets the tap fall
+              // through to the row, which would open the session instead.
               onPress={() => previewUrl && void Linking.openURL(previewUrl).catch(() => undefined)}
-              disabled={!previewUrl}
               hitSlop={8}
               accessibilityRole="link"
               accessibilityLabel="Open preview"
