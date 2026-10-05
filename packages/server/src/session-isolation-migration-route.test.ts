@@ -56,6 +56,7 @@ it('requires an idle session, stops its processes and switches only after a back
       eventStore: ctx.store,
       conductor,
       backupRoot: join(temp, 'backups'),
+      projectRepoPath: () => source,
       privateCloneRoot: () => join(temp, '.verity-session-clones', project.id),
       stopSessionProcesses: stop,
       relocateSessionWorkspace: relocate,

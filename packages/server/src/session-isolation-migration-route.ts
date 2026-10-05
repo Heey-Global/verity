@@ -12,6 +12,7 @@ export function registerSessionIsolationMigrationRoute(
     eventStore: Pick<EventStore, 'getSession' | 'getProject'>;
     conductor: Pick<Conductor, 'tryRunExclusive'>;
     backupRoot: string;
+    projectRepoPath: (project: ProjectRecord) => string;
     privateCloneRoot: (project: ProjectRecord) => string;
     /** Stop session-owned development processes; never stop a shared project container. */
     stopSessionProcesses: (sessionId: string) => Promise<void>;
@@ -47,6 +48,7 @@ export function registerSessionIsolationMigrationRoute(
       await deps.stopSessionProcesses(id);
       const migration = await migrateLegacySessionClone({
         checkoutPath: session.worktree,
+        projectRepoPath: deps.projectRepoPath(project),
         destinationPath: destination,
         backupRoot: join(deps.backupRoot, id),
         stopped: true,

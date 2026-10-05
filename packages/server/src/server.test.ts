@@ -7150,6 +7150,7 @@ describe('DELETE /sessions/:id (worktree cleanup)', () => {
       removeSessionSandbox: removeContainer,
       sessionIsolationMigration: {
         backupRoot: join(worktreeRoot, 'backups'),
+        projectRepoPath: () => worktreeRoot,
         privateCloneRoot: () => root,
       },
     });

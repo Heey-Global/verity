@@ -1479,6 +1479,7 @@ export interface ServerDeps {
   resolveSessionSandbox?: (sessionId: string) => Promise<ProjectRecord>;
   sessionIsolationMigration?: {
     backupRoot: string;
+    projectRepoPath: (project: ProjectRecord) => string;
     privateCloneRoot: (project: ProjectRecord) => string;
   };
 
@@ -8578,6 +8579,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       eventStore: deps.eventStore,
       conductor,
       backupRoot: deps.sessionIsolationMigration.backupRoot,
+      projectRepoPath: deps.sessionIsolationMigration.projectRepoPath,
       privateCloneRoot: deps.sessionIsolationMigration.privateCloneRoot,
       stopSessionProcesses: async (sessionId) => {
         conductor.closeSession?.(sessionId);

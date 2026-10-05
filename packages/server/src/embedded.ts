@@ -4573,6 +4573,14 @@ export async function buildEmbeddedServer(
             ? {
                 sessionIsolationMigration: {
                   backupRoot: join(config.dataVolumeRoot, 'isolation-backups'),
+                  projectRepoPath: (project: ProjectRecord) => {
+                    if (project.kind === 'control_plane') {
+                      if (!config.repoDir)
+                        throw new Error('Control-plane repository is unavailable');
+                      return config.repoDir;
+                    }
+                    return projectClonePath(config.hostCloneRoot!, project);
+                  },
                   privateCloneRoot: (project: ProjectRecord) =>
                     project.kind === 'control_plane'
                       ? join(config.dataVolumeRoot!, '.verity-session-clones', project.id)

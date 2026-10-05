@@ -21,6 +21,8 @@ const exec = promisify(execFile);
 
 export interface SessionCloneMigrationOptions {
   checkoutPath: string;
+  /** Trusted project clone from server metadata, never a checkout-controlled pointer. */
+  projectRepoPath: string;
   backupRoot: string;
   /** Optional private destination; the original checkout then remains untouched. */
   destinationPath?: string;
@@ -50,6 +52,28 @@ export async function migrateLegacySessionClone(
   const checkout = resolve(opts.checkoutPath);
   if (realpathSync(checkout) !== checkout || !lstatSync(checkout).isDirectory())
     throw new Error('Migration requires a real checkout directory');
+  let gitFile = join(checkout, '.git');
+  let legacyStorage: { admin: string; common: string } | undefined;
+  if (lstatSync(gitFile).isFile()) {
+    const trustedCommonPath = join(resolve(opts.projectRepoPath), '.git');
+    const common = realpathSync(trustedCommonPath);
+    if (common !== trustedCommonPath || !lstatSync(common).isDirectory())
+      throw new Error('Trusted project Git storage is unavailable');
+    const link = readFileSync(gitFile, 'utf8');
+    if (!link.startsWith('gitdir:')) throw new Error('Invalid worktree Git link');
+    const admin = realpathSync(resolve(checkout, link.slice('gitdir:'.length).trim()));
+    if (resolve(admin, '..') !== join(common, 'worktrees'))
+      throw new Error('Worktree Git storage does not belong to the recorded project');
+    if (
+      realpathSync(resolve(admin, readFileSync(join(admin, 'commondir'), 'utf8').trim())) !==
+        common ||
+      resolve(admin, readFileSync(join(admin, 'gitdir'), 'utf8').trim()) !== gitFile
+    )
+      throw new Error('Worktree Git registration does not belong to this session');
+    legacyStorage = { admin, common };
+  } else {
+    await assertIndependentSessionClone(checkout);
+  }
   // Initialized submodules retain administrative links outside the private checkout.
   // Refuse before moving any recovery artifacts rather than severing those links.
   const listing = spawn(
@@ -112,7 +136,6 @@ export async function migrateLegacySessionClone(
     const recovery = mkdtempSync(join(resolve(destination, '..'), '.migration-recovery-'));
     renameSync(destination, join(recovery, 'checkout'));
   }
-  let gitFile = join(checkout, '.git');
   if (lstatSync(gitFile).isDirectory()) {
     await assertIndependentSessionClone(checkout);
     if (!opts.destinationPath || resolve(opts.destinationPath) === checkout)
@@ -147,12 +170,8 @@ export async function migrateLegacySessionClone(
   }
   if (!lstatSync(gitFile).isFile())
     throw new Error('Migration requires a regular worktree Git link');
-  const link = readFileSync(gitFile, 'utf8');
-  if (!link.startsWith('gitdir:')) throw new Error('Invalid worktree Git link');
-  const admin = realpathSync(resolve(checkout, link.slice('gitdir:'.length).trim()));
-  const common = realpathSync(
-    resolve(admin, readFileSync(join(admin, 'commondir'), 'utf8').trim()),
-  );
+  if (!legacyStorage) throw new Error('Trusted worktree Git storage is unavailable');
+  const { admin, common } = legacyStorage;
   assertNoMetadataSymlinks(common);
   assertNoMetadataSymlinks(admin);
   for (const marker of ['objects/info/alternates', 'objects/info/http-alternates']) {

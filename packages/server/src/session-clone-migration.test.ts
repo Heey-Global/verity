@@ -57,6 +57,7 @@ it('preserves staged-only objects, unstaged changes, branch and available operat
   writeFileSync(join(admin, 'rebase-merge', 'orig-head'), `${head}\n`);
   const { backupPath } = await migrateLegacySessionClone({
     checkoutPath: checkout,
+    projectRepoPath: source,
     backupRoot,
     stopped: true,
   });
@@ -74,19 +75,31 @@ it('preserves staged-only objects, unstaged changes, branch and available operat
   expect(existsSync(join(backupPath!, 'checkout', 'untracked'))).toBe(true);
   expect(git(source, 'rev-parse', 'HEAD')).toBe(head);
   expect(
-    (await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true }))
-      .backupPath,
+    (
+      await migrateLegacySessionClone({
+        checkoutPath: checkout,
+        projectRepoPath: source,
+        backupRoot,
+        stopped: true,
+      })
+    ).backupPath,
   ).toBeUndefined();
 });
 
 it('refuses running sessions and recursive backup locations without modifying the checkout', async () => {
   const original = readFileSync(join(checkout, '.git'), 'utf8');
   await expect(
-    migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: false }),
+    migrateLegacySessionClone({
+      checkoutPath: checkout,
+      projectRepoPath: source,
+      backupRoot,
+      stopped: false,
+    }),
   ).rejects.toThrow('Stop');
   await expect(
     migrateLegacySessionClone({
       checkoutPath: checkout,
+      projectRepoPath: source,
       backupRoot: join(checkout, 'backup'),
       stopped: true,
     }),
@@ -103,7 +116,12 @@ it('refuses migration when private Git validation fails and retains original lin
   );
   const original = readFileSync(join(checkout, '.git'), 'utf8');
   await expect(
-    migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true }),
+    migrateLegacySessionClone({
+      checkoutPath: checkout,
+      projectRepoPath: source,
+      backupRoot,
+      stopped: true,
+    }),
   ).rejects.toThrow();
   expect(readFileSync(join(checkout, '.git'), 'utf8')).toBe(original);
 });
@@ -114,6 +132,7 @@ it('relocates outside the shared project while preserving the original checkout'
   const destination = join(temp, 'private-sessions', 'session');
   await migrateLegacySessionClone({
     checkoutPath: checkout,
+    projectRepoPath: source,
     destinationPath: destination,
     backupRoot,
     stopped: true,
@@ -136,7 +155,12 @@ it('preserves upstreams, remotes, repository settings and reflog recovery commit
   const recoverable = git(checkout, 'rev-parse', 'HEAD');
   git(checkout, 'reset', '--hard', 'HEAD~1');
   const reflog = git(checkout, 'reflog', 'show', '--format=%H', 'session');
-  await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true });
+  await migrateLegacySessionClone({
+    checkoutPath: checkout,
+    projectRepoPath: source,
+    backupRoot,
+    stopped: true,
+  });
   expect(git(checkout, 'config', 'branch.session.remote')).toBe('origin');
   expect(git(checkout, 'config', 'branch.session.merge')).toBe('refs/heads/session');
   expect(git(checkout, 'remote', 'get-url', 'backup')).toBe('https://example.com/backup.git');
@@ -169,6 +193,7 @@ it.each(['linked', 'independent'])(
     const destination = join(temp, 'private', 'session');
     const migrated = await migrateLegacySessionClone({
       checkoutPath: checkout,
+      projectRepoPath: source,
       destinationPath: destination,
       backupRoot,
       stopped: true,
@@ -194,6 +219,7 @@ it('rejects initialized submodules before modifying the checkout or recovery art
   await expect(
     migrateLegacySessionClone({
       checkoutPath: checkout,
+      projectRepoPath: source,
       backupRoot,
       destinationPath: destination,
       stopped: true,
@@ -211,7 +237,12 @@ it('does not execute a checkout fsmonitor during server-side inspection', async 
   writeFileSync(hook, `#!/bin/sh\nprintf compromised > '${marker}'\n`);
   chmodSync(hook, 0o755);
   git(checkout, 'config', 'core.fsmonitor', hook);
-  await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true });
+  await migrateLegacySessionClone({
+    checkoutPath: checkout,
+    projectRepoPath: source,
+    backupRoot,
+    stopped: true,
+  });
   expect(existsSync(marker)).toBe(false);
 });
 
@@ -226,6 +257,49 @@ it('migrates indexes whose listing exceeds the default child-process output buff
   const admin = git(checkout, 'rev-parse', '--absolute-git-dir');
   expect(statSync(join(admin, 'index')).size).toBeGreaterThan(1024 * 1024);
   const index = readFileSync(join(admin, 'index'));
-  await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true });
+  await migrateLegacySessionClone({
+    checkoutPath: checkout,
+    projectRepoPath: source,
+    backupRoot,
+    stopped: true,
+  });
   expect(readFileSync(join(checkout, '.git', 'index'))).toEqual(index);
+});
+
+it('rejects forged administrative and common-directory pointers across projects', async () => {
+  const foreign = join(temp, 'foreign');
+  const foreignCheckout = join(temp, 'foreign-checkout');
+  mkdirSync(foreign);
+  git(foreign, 'init', '-b', 'main');
+  git(
+    foreign,
+    '-c',
+    'user.name=Test',
+    '-c',
+    'user.email=test@example.com',
+    'commit',
+    '--allow-empty',
+    '-m',
+    'private',
+  );
+  git(foreign, 'worktree', 'add', foreignCheckout, '-b', 'private-session');
+  const originalLink = readFileSync(join(checkout, '.git'), 'utf8');
+  const admin = git(checkout, 'rev-parse', '--absolute-git-dir');
+  const originalCommon = readFileSync(join(admin, 'commondir'), 'utf8');
+  writeFileSync(join(checkout, '.git'), readFileSync(join(foreignCheckout, '.git')));
+  const options = {
+    checkoutPath: checkout,
+    projectRepoPath: source,
+    backupRoot,
+    destinationPath: join(temp, 'private'),
+    stopped: true,
+  };
+  await expect(migrateLegacySessionClone(options)).rejects.toThrow('recorded project');
+  writeFileSync(join(checkout, '.git'), originalLink);
+  writeFileSync(join(admin, 'commondir'), join(foreign, '.git'));
+  await expect(migrateLegacySessionClone(options)).rejects.toThrow('this session');
+  writeFileSync(join(admin, 'commondir'), originalCommon);
+  expect(existsSync(backupRoot)).toBe(false);
+  expect(existsSync(options.destinationPath)).toBe(false);
+  expect(readFileSync(join(checkout, '.git'), 'utf8')).toBe(originalLink);
 });
