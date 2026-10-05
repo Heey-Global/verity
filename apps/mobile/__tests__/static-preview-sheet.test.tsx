@@ -1254,6 +1254,33 @@ describe('managed dev servers', () => {
     );
   });
 
+  it('conditionally stops if an online approval response is lost', async () => {
+    const server = demo({
+      approved: false,
+      instance: { ...demo().instance!, url: null, localOn: false, awaitingApproval: true },
+    });
+    const approveManagedDevServer = jest.fn(async () => {
+      throw new Error('response lost');
+    });
+    const controlManagedDevServer = jest.fn(async () => server);
+    const createSessionPortPreviewShare = jest.fn();
+    answer('1 hour', 'Share');
+    renderSheet(
+      managedClient([server], {
+        approveManagedDevServer,
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
   it('cleans up a running online-only instance when creating its link fails', async () => {
     const server = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
     const controlManagedDevServer = jest.fn(async () => server);

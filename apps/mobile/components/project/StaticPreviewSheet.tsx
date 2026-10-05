@@ -445,10 +445,10 @@ export function StaticPreviewSheet({
         );
         if (!confirmed) return;
       }
-      if (!(await approveManaged(server, 'Share', 'online'))) return;
       const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
       let share: PublicPreviewShare;
       try {
+        if (!(await approveManaged(server, 'Share', 'online'))) return;
         if (!running || server.instance?.restartToApply)
           await client.controlManagedDevServer(
             sessionId,
