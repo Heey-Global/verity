@@ -9,6 +9,8 @@ const projectRoot = __dirname;
 const workspaceRoot = path.resolve(projectRoot, '../..');
 
 const config = getDefaultConfig(projectRoot);
+// Expo SQLite's browser worker loads its database engine as a WebAssembly asset.
+config.resolver.assetExts.push('wasm');
 config.watchFolders = [workspaceRoot];
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),

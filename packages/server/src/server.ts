@@ -198,7 +198,14 @@ import {
   type UpdaterProbe,
 } from './attention.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
-import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
+import {
+  browserOriginAllowed,
+  cookieCredential,
+  setBrowserSession,
+  requestCredential,
+  wsOriginAllowed,
+  type AuthTokenRegistry,
+} from './auth.js';
 import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
@@ -236,6 +243,7 @@ import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
+import { registerWebAppRoutes, isWebAppRequest } from './web-app.js';
 import { registerPushTokenRoute } from './push-token-route.js';
 import { registerSecretLifecycleRoutes } from './secret-lifecycle-routes.js';
 import { registerGitHubAppRoutes } from './github-app-routes.js';
@@ -1045,6 +1053,7 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
+  webAppDir?: string | undefined;
   matrixConnectorToken?: string | (() => Promise<string | undefined>) | undefined;
   onMatrixConfigured?: (() => Promise<void>) | undefined;
   /** TLS termination for direct/non-managed deployments. Managed deployments
@@ -1052,6 +1061,7 @@ export interface ServerDeps {
   https?: HttpsServerOptions | undefined;
   /** Authenticated original-client identity supplied by the managed TLS gateway. */
   unlockClientIdentity?: ((request: FastifyRequest) => string | undefined) | undefined;
+  browserRequestOrigin?: ((request: FastifyRequest) => string | undefined) | undefined;
   eventStore: EventStore;
   /**
    * Verity's data root. The knowledge folders live under `<dataRoot>/knowledge`
@@ -3953,13 +3963,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return reply.code(404).send({ error: 'not found' });
     }
     const registry = deps.authRegistry;
-    if (registry === undefined || !registry.isEnabled()) return; // gate off
+    if (deps.webAppDir !== undefined && isWebAppRequest(request)) return;
+    if (
+      cookieCredential(request) !== undefined &&
+      !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
+      !browserOriginAllowed(request, deps.browserRequestOrigin?.(request))
+    ) {
+      return reply.code(403).send({ error: 'invalid origin' });
+    }
+    if (registry === undefined || !registry.isEnabled()) return;
     if (preAuthKeys.has(routeScopeKey(request.method, pathname))) return;
     const websocketStream =
       (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
       WS_STREAM_PATH.test(pathname);
-    const token = bearerToken(request.headers.authorization);
+    const cookieToken = cookieCredential(request);
+    if (cookieToken !== undefined && !registry.isBrowserToken(cookieToken)) {
+      if (websocketStream) return;
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const token = requestCredential(request);
     if (registry.verify(token)) {
+      if (cookieToken !== undefined && token !== undefined) setBrowserSession(reply, token);
       const userId = registry.resolveUserId(token);
       if (userId === undefined) return reply.code(401).send({ error: 'unauthorized' });
       request.localUserId = userId;
@@ -3998,12 +4022,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return reply.code(401).send({ error: 'unauthorized' });
   });
 
+  app.addHook('onClose', (_instance, done) => {
+    deps.authRegistry?.dispose?.();
+    done();
+  });
+
   // Record activity after the response, outside the authorization hook. `touch`
   // resolves the bearer token through the registry and ignores unknown values;
   // its per-device throttle keeps this universal lifecycle hook to at most one
   // database write every five minutes for each paired device.
   app.addHook('onResponse', (request, _reply, done) => {
-    deps.authRegistry?.touch(bearerToken(request.headers.authorization));
+    deps.authRegistry?.touch(requestCredential(request));
     done();
   });
 
@@ -4971,12 +5000,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // and verifies it after a restart (scrypt over the stored salt, checked
   // against the stored verifier before the key is trusted). A deployment
   // without a managed cipher reports 'unmanaged' and rejects init/unlock.
+  registerWebAppRoutes(app, deps.webAppDir);
   registerPairingRoutes(app, {
+    browserRequestOrigin: deps.browserRequestOrigin,
     ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
   });
 
   registerSecretLifecycleRoutes(app, {
+    browserRequestOrigin: deps.browserRequestOrigin,
     store: deps.eventStore,
     readStatus: readSecretStatus,
     recoverQueuedTurns,
@@ -6108,7 +6140,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     secretCipher: deps.secretCipher,
     isAuthenticated: (request) =>
       deps.authRegistry === undefined ||
-      deps.authRegistry.verify(bearerToken(request.headers.authorization)) === true,
+      deps.authRegistry.verify(requestCredential(request)) === true,
   });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
   registerAutomationRoutes(app, {
@@ -9415,13 +9447,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const parsed = sessionParams.safeParse(request.params);
       if (!parsed.success) return reply.code(400).send({ error: 'invalid session id' });
       const registry = deps.authRegistry;
-      const deviceId = registry?.resolveId(bearerToken(request.headers.authorization));
+      const deviceId = registry?.resolveId(requestCredential(request));
       if (registry?.isEnabled() && deviceId === undefined)
         return reply.code(401).send({ error: 'unauthorized' });
       return mintStreamTicket(parsed.data.id, deviceId);
     });
 
     instance.get('/sessions/:id/stream', { websocket: true }, (socket: WebSocket, request) => {
+      if (
+        cookieCredential(request) !== undefined &&
+        !browserOriginAllowed(request, deps.browserRequestOrigin?.(request))
+      ) {
+        socket.close(1008, 'origin not allowed');
+        return;
+      }
+      const browserCookie = cookieCredential(request);
+      if (
+        browserCookie !== undefined &&
+        deps.authRegistry?.isBrowserToken(browserCookie) !== true
+      ) {
+        socket.close(1008, 'unauthorized');
+        return;
+      }
+
       // Defence-in-depth against cross-site WebSocket hijacking: when an Origin
       // allowlist is configured, a browser-supplied Origin must match it. A
       // native client sends no Origin and passes.

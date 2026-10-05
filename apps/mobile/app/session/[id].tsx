@@ -1168,7 +1168,7 @@ export function SessionChat({
   useEffect(() => {
     if (frozenTail !== null && frozenRows === null) snapshotLiveTail();
   }, [frozenTail, frozenRows, snapshotLiveTail]);
-  // FlashList is fed NEWEST-FIRST and rendered inverted (styles.invertedList /
+  // FlashList is fed NEWEST-FIRST and rendered inverted (the list transform /
   // styles.invertedItem). That single decision is what removes the whole class of
   // prepend jumps: older pages append at the DATA END, behind the viewport, so no row
   // is ever inserted in front of what the operator is reading and there is nothing to
@@ -4060,12 +4060,13 @@ export function SessionChat({
                     drawDistance={500}
                     // Visual inversion: newest-first data flipped back the right way up.
                     // Each row is counter-flipped in renderItem (styles.invertedItem).
+                    // FlashList consumes plain styles; Unistyles metadata loses the web flip.
                     style={{
-                      ...styles.invertedList,
+                      transform: [{ scaleY: -1 }],
                       marginLeft: embedded ? 0 : insets.left,
                       marginRight: embedded ? 0 : insets.right,
                     }}
-                    contentContainerStyle={styles.listContent}
+                    contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
                     onScroll={onListScroll}
                     onContentSizeChange={onListContentSizeChange}
                     onTouchEnd={clearSearchHighlightAfterTouch}
@@ -10558,17 +10559,10 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
     textDecorationLine: 'underline',
   },
-  listContent: {
-    padding: theme.spacing.lg,
-    gap: theme.spacing.lg,
-  },
   // The transcript is stored newest-first and flipped: history then APPENDS at the
   // data end, behind the viewport, instead of being inserted in front of the reader.
   // FlashList 2 has no `inverted` prop, so the flip is a transform on the list plus a
   // counter-transform on every row (and on the footer spinner).
-  invertedList: {
-    transform: [{ scaleY: -1 }],
-  },
   invertedItem: {
     transform: [{ scaleY: -1 }],
   },

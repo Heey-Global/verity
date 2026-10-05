@@ -55,13 +55,13 @@ separately by `TRADEMARKS.md`.
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
 | BlueOak-1.0.0 | 7 |
 | BSD-2-Clause | 23 |
-| BSD-3-Clause | 27 |
+| BSD-3-Clause | 28 |
 | CC-BY-3.0 | 1 |
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 2 |
 | ISC | 66 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1032 |
+| MIT | 1043 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -626,7 +626,9 @@ separately by `TRADEMARKS.md`.
 | core-js-compat | MIT | [source](https://www.npmjs.com/package/core-js-compat) |
 | cors | MIT | [source](https://www.npmjs.com/package/cors) |
 | create-jest | MIT | [source](https://www.npmjs.com/package/create-jest) |
+| cross-fetch | MIT | [source](https://www.npmjs.com/package/cross-fetch) |
 | cross-spawn | MIT | [source](https://www.npmjs.com/package/cross-spawn) |
+| css-in-js-utils | MIT | [source](https://www.npmjs.com/package/css-in-js-utils) |
 | css-select | BSD-2-Clause | [source](https://www.npmjs.com/package/css-select) |
 | css-tree | MIT | [source](https://www.npmjs.com/package/css-tree) |
 | css-what | BSD-2-Clause | [source](https://www.npmjs.com/package/css-what) |
@@ -772,6 +774,8 @@ separately by `TRADEMARKS.md`.
 | fastq | ISC | [source](https://www.npmjs.com/package/fastq) |
 | fb-dotslash | (MIT OR Apache-2.0) | [source](https://www.npmjs.com/package/fb-dotslash) |
 | fb-watchman | Apache-2.0 | [source](https://www.npmjs.com/package/fb-watchman) |
+| fbjs-css-vars | MIT | [source](https://www.npmjs.com/package/fbjs-css-vars) |
+| fbjs | MIT | [source](https://www.npmjs.com/package/fbjs) |
 | fd-package-json | MIT | [source](https://www.npmjs.com/package/fd-package-json) |
 | fdir | MIT | [source](https://www.npmjs.com/package/fdir) |
 | fetch-nodeshim | MIT | [source](https://www.npmjs.com/package/fetch-nodeshim) |
@@ -832,6 +836,7 @@ separately by `TRADEMARKS.md`.
 | http-proxy-agent | MIT | [source](https://www.npmjs.com/package/http-proxy-agent) |
 | https-proxy-agent | MIT | [source](https://www.npmjs.com/package/https-proxy-agent) |
 | human-signals | Apache-2.0 | [source](https://www.npmjs.com/package/human-signals) |
+| hyphenate-style-name | BSD-3-Clause | [source](https://www.npmjs.com/package/hyphenate-style-name) |
 | iconv-lite | MIT | [source](https://www.npmjs.com/package/iconv-lite) |
 | ieee754 | BSD-3-Clause | [source](https://www.npmjs.com/package/ieee754) |
 | ignore | MIT | [source](https://www.npmjs.com/package/ignore) |
@@ -840,6 +845,7 @@ separately by `TRADEMARKS.md`.
 | indent-string | MIT | [source](https://www.npmjs.com/package/indent-string) |
 | inflight | ISC | [source](https://www.npmjs.com/package/inflight) |
 | inherits | ISC | [source](https://www.npmjs.com/package/inherits) |
+| inline-style-prefixer | MIT | [source](https://www.npmjs.com/package/inline-style-prefixer) |
 | invariant | MIT | [source](https://www.npmjs.com/package/invariant) |
 | ip-address | MIT | [source](https://www.npmjs.com/package/ip-address) |
 | ipaddr.js | MIT | [source](https://www.npmjs.com/package/ipaddr.js) |
@@ -1004,6 +1010,7 @@ separately by `TRADEMARKS.md`.
 | natural-compare | MIT | [source](https://www.npmjs.com/package/natural-compare) |
 | negotiator | MIT | [source](https://www.npmjs.com/package/negotiator) |
 | neo-async | MIT | [source](https://www.npmjs.com/package/neo-async) |
+| node-fetch | MIT | [source](https://www.npmjs.com/package/node-fetch) |
 | node-forge | (BSD-3-Clause OR GPL-2.0) | [source](https://www.npmjs.com/package/node-forge) |
 | node-html-parser | MIT | [source](https://www.npmjs.com/package/node-html-parser) |
 | node-int64 | MIT | [source](https://www.npmjs.com/package/node-int64) |
@@ -1066,6 +1073,7 @@ separately by `TRADEMARKS.md`.
 | pkg-dir | MIT | [source](https://www.npmjs.com/package/pkg-dir) |
 | plist | MIT | [source](https://www.npmjs.com/package/plist) |
 | pngjs | MIT | [source](https://www.npmjs.com/package/pngjs) |
+| postcss-value-parser | MIT | [source](https://www.npmjs.com/package/postcss-value-parser) |
 | postcss | MIT | [source](https://www.npmjs.com/package/postcss) |
 | postgres-array | MIT | [source](https://www.npmjs.com/package/postgres-array) |
 | postgres-bytea | MIT | [source](https://www.npmjs.com/package/postgres-bytea) |
@@ -1116,6 +1124,7 @@ separately by `TRADEMARKS.md`.
 | react-native-svg | MIT | [source](https://www.npmjs.com/package/react-native-svg) |
 | react-native-uitextview | MIT | [source](https://www.npmjs.com/package/react-native-uitextview) |
 | react-native-unistyles | MIT | [source](https://www.npmjs.com/package/react-native-unistyles) |
+| react-native-web | MIT | [source](https://www.npmjs.com/package/react-native-web) |
 | react-native-webview | MIT | [source](https://www.npmjs.com/package/react-native-webview) |
 | react-native-worklets | MIT | [source](https://www.npmjs.com/package/react-native-worklets) |
 | react-native | MIT | [source](https://www.npmjs.com/package/react-native) |
@@ -1173,6 +1182,7 @@ separately by `TRADEMARKS.md`.
 | server-only | MIT | [source](https://www.npmjs.com/package/server-only) |
 | set-blocking | ISC | [source](https://www.npmjs.com/package/set-blocking) |
 | set-cookie-parser | MIT | [source](https://www.npmjs.com/package/set-cookie-parser) |
+| setimmediate | MIT | [source](https://www.npmjs.com/package/setimmediate) |
 | setprototypeof | ISC | [source](https://www.npmjs.com/package/setprototypeof) |
 | sf-symbols-typescript | MIT | [source](https://www.npmjs.com/package/sf-symbols-typescript) |
 | shallowequal | MIT | [source](https://www.npmjs.com/package/shallowequal) |
@@ -1231,6 +1241,7 @@ separately by `TRADEMARKS.md`.
 | strip-json-comments | MIT | [source](https://www.npmjs.com/package/strip-json-comments) |
 | strnum | MIT | [source](https://www.npmjs.com/package/strnum) |
 | structured-headers | MIT | [source](https://www.npmjs.com/package/structured-headers) |
+| styleq | MIT | [source](https://www.npmjs.com/package/styleq) |
 | supports-color | MIT | [source](https://www.npmjs.com/package/supports-color) |
 | supports-hyperlinks | MIT | [source](https://www.npmjs.com/package/supports-hyperlinks) |
 | supports-preserve-symlinks-flag | MIT | [source](https://www.npmjs.com/package/supports-preserve-symlinks-flag) |
@@ -1265,6 +1276,7 @@ separately by `TRADEMARKS.md`.
 | type-is | MIT | [source](https://www.npmjs.com/package/type-is) |
 | typescript-eslint | MIT | [source](https://www.npmjs.com/package/typescript-eslint) |
 | typescript | Apache-2.0 | [source](https://www.npmjs.com/package/typescript) |
+| ua-parser-js | MIT | [source](https://www.npmjs.com/package/ua-parser-js) |
 | uglify-js | BSD-2-Clause | [source](https://www.npmjs.com/package/uglify-js) |
 | unbash | ISC | [source](https://www.npmjs.com/package/unbash) |
 | undici-types | MIT | [source](https://www.npmjs.com/package/undici-types) |

@@ -592,6 +592,8 @@ export interface EmbeddedServerConfig {
   /** TLS termination for a direct Server. Managed mode terminates at its Gateway. */
   https?: ServerDeps['https'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
+  webAppDir?: ServerDeps['webAppDir'];
+  browserRequestOrigin?: ServerDeps['browserRequestOrigin'];
   /** Optional installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
   /** Verified official release channel supplied by the managed deployment bootstrap. */
@@ -3969,6 +3971,10 @@ export async function buildEmbeddedServer(
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
+    ...(config.webAppDir !== undefined ? { webAppDir: config.webAppDir } : {}),
+    ...(config.browserRequestOrigin !== undefined
+      ? { browserRequestOrigin: config.browserRequestOrigin }
+      : {}),
     ...(config.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: config.unlockClientIdentity }
       : {}),

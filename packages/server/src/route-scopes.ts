@@ -107,6 +107,9 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   // trust-on-first-use is embedded/managed topologies that wire no pairing —
   // there the deployment must sit behind a trusted network on first boot. See
   // SECURITY.md.
+  declare('POST', '/secret/init/browser', 'onboarding', 'master password with pairing bootstrap'),
+  declare('POST', '/secret/unlock/browser', 'onboarding', 'master password with pairing bootstrap'),
+  declare('POST', '/pair/enroll/browser', 'device-pairing', 'single-use invitation'),
   declare('POST', '/secret/init', 'onboarding', 'master password (sets the first one)'),
   declare('POST', '/secret/unlock', 'onboarding', 'master password'),
   declare('GET', '/pair/identity', 'device-pairing', 'pairing code issued out of band'),
@@ -258,6 +261,9 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
 export const LOCKOUT_CRITICAL_KEYS: readonly string[] = [
   'GET /secret/status',
   'GET /onboarding/status',
+  'POST /secret/init/browser',
+  'POST /secret/unlock/browser',
+  'POST /pair/enroll/browser',
   'POST /secret/init',
   'POST /secret/unlock',
   'POST /pair/redeem',

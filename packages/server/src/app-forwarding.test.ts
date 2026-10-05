@@ -57,6 +57,13 @@ describe('buildControlPlane dependency forwarding', () => {
     expect(got.devicePairing).toBe(devicePairing);
   });
 
+  it('passes the browser export and authenticated public origin through', () => {
+    const browserRequestOrigin = vi.fn(() => 'https://core.local');
+    const got = forward({ webAppDir: '/srv/verity/web', browserRequestOrigin });
+    expect(got.webAppDir).toBe('/srv/verity/web');
+    expect(got.browserRequestOrigin).toBe(browserRequestOrigin);
+  });
+
   it('passes the managed release-channel resolver through', () => {
     const serverUpdateResolver = { resolve: vi.fn() };
     const got = forward({ serverUpdateResolver });

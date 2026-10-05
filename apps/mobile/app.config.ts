@@ -197,6 +197,7 @@ const config: ExpoConfig = {
     'expo-web-browser',
   ],
   experiments: {
+    baseUrl: '/app',
     typedRoutes: true,
     // Native iOS drop target for Finder/Desktop files. Expo discovers the Swift
     // view during prebuild and includes it in the generated app target.

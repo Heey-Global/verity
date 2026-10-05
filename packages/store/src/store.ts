@@ -757,6 +757,7 @@ export interface SecretKeyMetaRecord {
  *  until the device makes its first authenticated request after the server
  *  learned to stamp it. */
 export interface AuthTokenRecord {
+  expiresAt: number | null;
   id: string;
   userId: string;
   tokenHash: string;
@@ -7122,13 +7123,19 @@ export class EventStore implements EventSink {
 
   /** Persist a newly minted token (only its hash). */
   async insertAuthToken(record: {
+    expiresAt?: number | null;
     id: string;
     tokenHash: string;
     label?: string | null;
   }): Promise<string> {
     const row = await this.db
       .insertInto('auth_tokens')
-      .values({ id: record.id, token_hash: record.tokenHash, label: record.label ?? null })
+      .values({
+        id: record.id,
+        token_hash: record.tokenHash,
+        label: record.label ?? null,
+        expires_at: record.expiresAt == null ? null : new Date(record.expiresAt).toISOString(),
+      })
       .returning('user_id')
       .executeTakeFirstOrThrow();
     return row.user_id;
@@ -7146,13 +7153,14 @@ export class EventStore implements EventSink {
   async listAuthTokens(): Promise<AuthTokenRecord[]> {
     const rows = await this.db
       .selectFrom('auth_tokens')
-      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at'])
+      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at', 'expires_at'])
       .orderBy('created_at', 'desc')
       .execute();
     return rows.map((r) => ({
       id: r.id,
       userId: r.user_id,
       tokenHash: r.token_hash,
+      expiresAt: r.expires_at === null ? null : new Date(r.expires_at).getTime(),
       label: r.label,
       createdAt: new Date(r.created_at).getTime(),
       lastSeenAt: r.last_seen_at === null ? null : new Date(r.last_seen_at).getTime(),
@@ -7172,10 +7180,13 @@ export class EventStore implements EventSink {
 
   /** Stamp a device's last authenticated request. Called off the request's
    *  critical path and throttled by the registry, never per request. */
-  async touchAuthToken(id: string): Promise<void> {
+  async touchAuthToken(id: string, expiresAt?: number): Promise<void> {
     await this.db
       .updateTable('auth_tokens')
-      .set({ last_seen_at: new Date().toISOString() })
+      .set({
+        last_seen_at: new Date().toISOString(),
+        ...(expiresAt === undefined ? {} : { expires_at: new Date(expiresAt).toISOString() }),
+      })
       .where('id', '=', id)
       .execute();
   }

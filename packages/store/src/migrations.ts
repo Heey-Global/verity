@@ -3781,6 +3781,14 @@ const migrations: Record<string, Migration> = {
       );
     },
   },
+  '0136_browser_sessions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table auth_tokens add column expires_at timestamptz`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table auth_tokens drop column expires_at`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
