@@ -492,7 +492,8 @@ export class ManagedDevServerManager {
               const ended = await this.options.store.getPublicPreviewShare(shareId);
               if (
                 !ended ||
-                (current.startedAt && ended.updatedAt.getTime() < current.startedAt.getTime())
+                (current.startedAt &&
+                  (ended.revokedAt ?? ended.updatedAt).getTime() < current.startedAt.getTime())
               )
                 return;
             }
@@ -963,7 +964,7 @@ export class ManagedDevServerManager {
             link.managedInstanceId === instance.id &&
             (link.state === 'revoked' || link.state === 'expired' || link.state === 'failed') &&
             instance.startedAt &&
-            link.updatedAt.getTime() > instance.startedAt.getTime(),
+            (link.revokedAt ?? link.updatedAt).getTime() > instance.startedAt.getTime(),
         );
         if (!live && ended) {
           await this.stopInstance(project, instance, null);

@@ -832,6 +832,27 @@ describe('managed dev servers', () => {
       expect((await instanceOf()).state).toBe('starting');
     });
 
+    it('ignores old teardown completing after a newer online-only start', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      const began = new Date(now + 1);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoking', {
+        revokedAt: began,
+      });
+      await manager.stop('s1', 'Demo');
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await ctx.store.managedDevServers.updateInstance(id, { startedAt: new Date(now + 2) });
+      await ctx.store.transitionPublicPreviewShare(share.id, ['revoking'], 'revoked', {
+        revokedAt: began,
+      });
+      await manager.publicLinkEnded(id, share.id);
+      expect((await instanceOf()).state).toBe('starting');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });

@@ -662,6 +662,7 @@ export class PreviewShareManager {
         if (recovery) {
           await this.options.store.transitionPublicPreviewShare(shareId, ['creating'], 'revoking', {
             failure: safeFailure(error),
+            revokedAt: this.now(),
           });
         }
         throw new AggregateError(
@@ -784,7 +785,7 @@ export class PreviewShareManager {
           shareId,
           becameActive ? ['active'] : ['creating'],
           'revoking',
-          { failure: safeFailure(error) },
+          { failure: safeFailure(error), revokedAt: this.now() },
         );
         throw new AggregateError(
           [error, ...cleanupFailures],
@@ -929,7 +930,7 @@ export class PreviewShareManager {
             share.id,
             ['creating', 'active'],
             'revoking',
-            { failure: reason },
+            { failure: reason, revokedAt: this.now() },
           );
           const current = claimed ?? (await this.options.store.getPublicPreviewShare(share.id));
           if (!current || current.state !== 'revoking') return;
@@ -944,7 +945,7 @@ export class PreviewShareManager {
             'revoked',
             {
               connectorContainerId: null,
-              revokedAt: this.now(),
+              revokedAt: current.revokedAt ?? current.updatedAt,
               failure: current.failure,
             },
           );
@@ -968,6 +969,7 @@ export class PreviewShareManager {
       id,
       ['creating', 'active'],
       'revoking',
+      { revokedAt: this.now() },
     );
     const current = claimed ?? (await this.options.store.getPublicPreviewShare(id));
     if (!current || current.state === 'revoked' || current.state === 'expired') return true;
@@ -1014,7 +1016,7 @@ export class PreviewShareManager {
       current.expiresAt.getTime() <= this.now().getTime() ? 'expired' : terminal;
     await this.options.store.transitionPublicPreviewShare(id, ['revoking'], resolvedTerminal, {
       connectorContainerId: null,
-      revokedAt: this.now(),
+      revokedAt: current.revokedAt ?? current.updatedAt,
     });
     this.notifyEnded(current);
     return true;
@@ -1040,6 +1042,7 @@ export class PreviewShareManager {
       id,
       ['creating', 'active'],
       'revoking',
+      { revokedAt: this.now() },
     );
     const current = claimed ?? (await this.options.store.getPublicPreviewShare(id));
     if (!current || current.state !== 'revoking') return;
@@ -1050,7 +1053,7 @@ export class PreviewShareManager {
     );
     await this.options.store.transitionPublicPreviewShare(id, ['revoking'], 'expired', {
       connectorContainerId: null,
-      revokedAt: this.now(),
+      revokedAt: current.revokedAt ?? current.updatedAt,
     });
     this.notifyEnded(current);
   }

@@ -1186,6 +1186,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating', 'active'],
       'revoking',
+      { revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
     expect(store.transitionPublicPreviewShare).not.toHaveBeenCalledWith(
       'share-id',
@@ -1301,7 +1302,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating'],
       'revoking',
-      { failure: 'database interrupted' },
+      { failure: 'database interrupted', revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
   });
 
@@ -1466,6 +1467,25 @@ describe('PreviewShareManager', () => {
     store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
     await manager.disableAll('lease expired');
     expect(onShareEnded).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves revocation intent time when delayed cleanup finishes', async () => {
+    const { manager, store, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    const active = { ...record, state: 'active' as const };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({
+      ...active,
+      state: 'revoking',
+      revokedAt: began,
+    });
+    await manager.stop(record.id);
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['revoking'],
+      expect.any(String),
+      expect.objectContaining({ revokedAt: began }),
+    );
   });
 
   it('rejects root and hidden static publish paths before contacting Uplink', async () => {
