@@ -277,6 +277,23 @@ describe('settings index — app-level controls', () => {
     await waitFor(() => expect(toggle).toBeEnabled());
   });
 
+  it('shows the OTA failure details returned by the update checker', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    const message = 'Update download failed.\n\nNetwork lost\n\nTry again later.';
+    mockCheckForAppUpdate.mockResolvedValue({
+      status: 'failed',
+      phase: 'download',
+      timedOut: false,
+      message,
+    });
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    render(<SettingsIndexScreen />);
+
+    fireEvent(await screen.findByLabelText(/^Version /), 'longPress');
+
+    await waitFor(() => expect(alert).toHaveBeenCalledWith('Update failed', message));
+  });
+
   it('checks EAS Update when the version is long-pressed', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     mockCheckForAppUpdate.mockResolvedValue('current');
