@@ -22,10 +22,11 @@ export interface PlanView {
 
 const STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
 
-/** The checklist a call carries, or null when it is not a plan or its input does
- * not have the expected shape — the caller then renders an ordinary tool card. */
+/** The checklist a call carries, or null when it is not a plan, its input does
+ * not have the expected shape, or the call failed and the list never took effect
+ * — the caller then renders an ordinary tool card. */
 export function planView(tool: ToolCall): PlanView | null {
-  if (tool.name !== 'TodoWrite') return null;
+  if (tool.name !== 'TodoWrite' || tool.state === 'error') return null;
   const input = tool.input;
   if (typeof input !== 'object' || input === null) return null;
   const todos = (input as Record<string, unknown>).todos;
