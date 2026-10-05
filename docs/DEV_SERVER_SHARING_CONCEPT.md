@@ -227,6 +227,14 @@ the tab says "No servers yet. Ask the agent to set up your app as a server." The
 card and the green dot on the Preview icon keep showing running entries. On wide screens the
 sheet's content is capped at a readable width and centered.
 
+Visual conventions, settled with the operator on 2026-10-05: the state uses the shared
+StatusPill ("✓ Running", "! Crashed", spinner with "Starting…", muted "– Stopped"); the
+switches are the app's own toggle from Settings (`SettingsToggleRow`), not the platform
+switch; addresses are links in the primary colour and open on tap, so Local has no separate
+open icon; the share and copy actions are bare Feather icons in the primary colour with a
+44 pt touch area, never boxed; the PIN is bold and copies on tap or through the copy icon
+beside it.
+
 ### 2.7 Opening a local share from outside the home network
 
 A local share is reachable only from the Verity host's network or through a VPN into it. The
