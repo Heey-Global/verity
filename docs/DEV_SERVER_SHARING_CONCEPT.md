@@ -202,14 +202,19 @@ its two access switches decide whether it runs.
   running unnoticed and keep the sandbox awake.
 - A server the agent started without approval runs with both switches off. This is the one
   exception; the header reads "Running, not shared yet", and Local approves and publishes it.
-- A crashed server has both switches off; turning either on starts it again.
-- Restart and Start again in the detail view keep the accesses that were on, or turn Local on when none was. Stop turns both off, with the same confirmation when it ends a public link.
+- The switches show what the operator wants, not what currently runs. A crash leaves them as
+  they were: a public link stays valid and shows its offline page (user flow decisions above),
+  and the header reads "Crashed". Turning a switch off or on works as usual.
+- Start again and Restart in the detail view start the server with the switches as they are.
+  When both are off they turn Local on, and an unapproved command gets the confirmation
+  first, exactly as the Local switch does; neither button publishes an unapproved command.
+  Stop turns both switches off, with the same confirmation when it ends a public link.
 
 **Preview sheet.** The Dev server tab shows one block per entry. The block header holds the name,
 "Stopped" or the state as plain text ("Running", "Starting…", "Crashed", "Running, not shared yet"), and on
 the right "Details ›", or "View output ›" after a crash; the whole header opens the detail view.
 Below it a card with two rows, Local and Shared online, each with its icon, its switch, and,
-while on, its address. The Local address opens the browser when tapped and has an open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in; below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies it.
+while on, its address. The Local address opens the browser when tapped and has an open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in, which the edge exchanges for a session cookie and strips from the address (2.2); below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies it.
 
 The detail view shows the state and since when, Restart and Stop while it runs, Start again and Ask the agent after a crash, and Start when stopped, the output, the command with its subdirectory and the note that the agent
 changes it, and "Delete entry" at the bottom. 
@@ -270,6 +275,8 @@ stream the app already holds.
 
 ### 2.10 App flow: what first, then how
 
+This flow applies to static folders and to servers started past Verity. Managed entries (2.6) show their two accesses as switches directly in the list and use the same names, Local network and Shared online.
+
 The sheet asks two questions one after the other and never mixes them.
 
 **Step one, what.** Two tabs, because the two kinds of target behave differently.
@@ -286,16 +293,16 @@ The sheet opens on the server tab while a server or a port access exists, otherw
 static files. The default is decided once, when servers and accesses have loaded or after one
 second at the latest; a server that starts later only marks its tab and never switches the
 view. A Core without port detection shows the static files without tabs. Rows carry badges for
-their active accesses, "On network" and "Online until HH:MM".
+their active accesses, "Local" and "Shared online until HH:MM".
 
 **Step two, how.** Two cards, stacked, because both can be active at once and each owns its
 own state and actions. Each card names who can see the preview.
 
-- **On your network.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
+- **Local network.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
   the card says that anyone on that network can open it. "Open in browser" creates the local
   share on first use and hands reachability to the probe in 2.7, plus "Copy link". While a local
   share exists the card shows its URL and "Turn off".
-- **Over the internet.** A link through the Uplink, protected by a PIN, expiring automatically.
+- **Shared online.** A link through the Uplink, protected by a PIN, expiring automatically.
   Without entitlement the card stays visible with a "Premium" badge, one sentence, and a link to
   settings; no dead button. While the Uplink is offline it says "Temporarily unavailable"
   instead. With entitlement and no link it shows the expiry picker and "Create link with PIN" as
