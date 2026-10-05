@@ -240,3 +240,64 @@ it('enforces no-new-privileges even when the template contains an empty security
   );
   expect(spec.securityOpt).toContain('no-new-privileges:true');
 });
+
+it('accepts Docker-normalized capabilities and recreates a session with canonical names', () => {
+  const spec = sessionSandboxSpec(
+    { ...template, capAdd: ['CAP_CHOWN', 'CAP_SETUID', 'CAP_SETGID', 'CAP_KILL', 'CAP_SETPCAP'] },
+    { project, sessionId: 'one', worktree: '/data/one' },
+  );
+  expect(spec.capAdd).toEqual(['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP']);
+  expect(() =>
+    sessionSandboxSpec(
+      { ...template, capAdd: ['CAP_SYS_ADMIN'] },
+      { project, sessionId: 'one', worktree: '/data/one' },
+    ),
+  ).toThrow('cannot safely');
+});
+
+it('reuses a container reported with normalized Docker capability names', async () => {
+  const parent = { ...template, capAdd: ['CAP_CHOWN'] };
+  const spec = sessionSandboxSpec(parent, {
+    project,
+    sessionId: 'session',
+    worktree: '/data/private/session',
+    runtimeBinds: ['/data/runners/session-session:/run/verity-runner'],
+  });
+  const current = {
+    ...parent,
+    labels: spec.labels,
+    env: spec.env,
+    capAdd: ['CAP_CHOWN'],
+    capDrop: ['CAP_ALL'],
+    securityOpt: spec.securityOpt,
+    mounts: [
+      ...(spec.binds ?? []).map((bind) => {
+        const [source, destination, mode] = bind.split(':');
+        return { type: 'bind' as const, source, destination, readWrite: mode !== 'ro' };
+      }),
+      ...(spec.volumeMounts ?? []).map((mount) => ({
+        type: 'volume' as const,
+        name: mount.volume,
+        destination: mount.target,
+        subpath: mount.subpath,
+        readWrite: !mount.readOnly,
+      })),
+    ],
+  };
+  const createContainer = vi.fn();
+  const docker = {
+    ensureVolume: async () => ({ mountpoint: undefined }),
+    inspectContainer: async (name: string) => (name === project.containerName ? parent : current),
+    createContainer,
+    startContainer: vi.fn(),
+  } as unknown as DockerClient;
+  const bootstrap = vi.fn(async () => undefined);
+  await new SessionSandboxProvisioner({
+    docker,
+    dataVolumeRoot: '/data',
+    prepareRuntime: async () => ({}),
+    bootstrap,
+  }).ensure(project, { sessionId: 'session', worktree: '/data/private/session' });
+  expect(createContainer).not.toHaveBeenCalled();
+  expect(bootstrap).toHaveBeenCalledOnce();
+});

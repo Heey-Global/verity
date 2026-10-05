@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import {
   constants,
   cpSync,
@@ -52,20 +52,35 @@ export async function migrateLegacySessionClone(
     throw new Error('Migration requires a real checkout directory');
   // Initialized submodules retain administrative links outside the private checkout.
   // Refuse before moving any recovery artifacts rather than severing those links.
-  const { stdout: indexedFiles } = await exec('git', [
-    '-c',
-    'core.fsmonitor=false',
-    '-C',
-    checkout,
-    'ls-files',
-    '--stage',
-    '-z',
-  ]);
-  for (const entry of indexedFiles.split('\0')) {
-    if (!entry.startsWith('160000 ')) continue;
-    const submodule = entry.slice(entry.indexOf('\t') + 1);
-    if (existsSync(join(checkout, submodule, '.git')))
-      throw new Error('Initialized submodules require manual recovery before migration');
+  const listing = spawn(
+    'git',
+    ['-c', 'core.fsmonitor=false', '-C', checkout, 'ls-files', '--stage', '-z'],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const completed = new Promise<{ code: number | null; error?: Error }>((resolve) => {
+    listing.once('error', (error) => resolve({ code: null, error }));
+    listing.once('close', (code) => resolve({ code }));
+  });
+  listing.stdout.setEncoding('utf8');
+  let pending = '';
+  try {
+    for await (const chunk of listing.stdout) {
+      pending += String(chunk);
+      let boundary: number;
+      while ((boundary = pending.indexOf('\0')) !== -1) {
+        const entry = pending.slice(0, boundary);
+        pending = pending.slice(boundary + 1);
+        if (!entry.startsWith('160000 ')) continue;
+        const submodule = entry.slice(entry.indexOf('\t') + 1);
+        if (existsSync(join(checkout, submodule, '.git')))
+          throw new Error('Initialized submodules require manual recovery before migration');
+      }
+    }
+    const result = await completed;
+    if (result.code !== 0) throw new Error('Cannot inspect session index', { cause: result.error });
+  } finally {
+    listing.kill();
+    await completed;
   }
   if (
     opts.destinationPath &&

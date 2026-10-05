@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
   existsSync,
+  statSync,
   chmodSync,
   symlinkSync,
   readlinkSync,
@@ -212,4 +213,19 @@ it('does not execute a checkout fsmonitor during server-side inspection', async 
   git(checkout, 'config', 'core.fsmonitor', hook);
   await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true });
   expect(existsSync(marker)).toBe(false);
+});
+
+it('migrates indexes whose listing exceeds the default child-process output buffer', async () => {
+  const blob = git(checkout, 'rev-parse', 'HEAD:file');
+  const entries = Array.from(
+    { length: 16000 },
+    (_, index) =>
+      `100644 ${blob}\tlarge-index/${String(index).padStart(6, '0')}-${'x'.repeat(80)}\n`,
+  ).join('');
+  execFileSync('git', ['-C', checkout, 'update-index', '--index-info'], { input: entries });
+  const admin = git(checkout, 'rev-parse', '--absolute-git-dir');
+  expect(statSync(join(admin, 'index')).size).toBeGreaterThan(1024 * 1024);
+  const index = readFileSync(join(admin, 'index'));
+  await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true });
+  expect(readFileSync(join(checkout, '.git', 'index'))).toEqual(index);
 });

@@ -50,6 +50,8 @@ const READ_ONLY_TARGETS = new Set([
   '/home/dev/.ssh/id_ed25519.pub',
 ]);
 
+const capabilityName = (name: string): string => name.toUpperCase().replace(/^CAP_/, '');
+
 /** Inherit only reviewed read-only infrastructure; never inherit the parent workspace. */
 export function sessionSandboxSpec(
   parent: ContainerInspect,
@@ -61,7 +63,8 @@ export function sessionSandboxSpec(
     parent.privileged !== false ||
     parent.deviceCount !== 0 ||
     parent.capAdd?.some(
-      (capability) => !['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'].includes(capability),
+      (capability) =>
+        !['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'].includes(capabilityName(capability)),
     ) ||
     parent.networkMode === 'host' ||
     parent.networkMode?.startsWith('container:')
@@ -149,7 +152,7 @@ export function sessionSandboxSpec(
     ...(parent.sysctls ? { sysctls: parent.sysctls } : {}),
     capDrop: ['ALL'],
     ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
-    ...(parent.capAdd ? { capAdd: parent.capAdd } : {}),
+    ...(parent.capAdd ? { capAdd: parent.capAdd.map(capabilityName) } : {}),
     securityOpt: [...new Set([...(parent.securityOpt ?? []), 'no-new-privileges:true'])],
     ...(parent.groupAdd ? { groupAdd: parent.groupAdd } : {}),
     ...(parent.memoryBytes ? { memoryBytes: parent.memoryBytes } : {}),
@@ -265,8 +268,8 @@ export class SessionSandboxProvisioner {
         current.privileged !== false ||
         current.deviceCount !== 0 ||
         !current.env?.includes(`VERITY_ISOLATED_SESSION_ID=${input.sessionId}`) ||
-        !current.capDrop?.includes('ALL') ||
-        JSON.stringify([...(current.capAdd ?? [])].sort()) !==
+        !current.capDrop?.map(capabilityName).includes('ALL') ||
+        JSON.stringify([...(current.capAdd ?? [])].map(capabilityName).sort()) !==
           JSON.stringify([...(spec.capAdd ?? [])].sort()) ||
         JSON.stringify([...(current.securityOpt ?? [])].sort()) !==
           JSON.stringify([...(spec.securityOpt ?? [])].sort())
