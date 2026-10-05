@@ -2871,6 +2871,12 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     expect(await ctx.store.listRunningTurns()).toHaveLength(1); // marker held while running
     expect((await ctx.store.getEvents('s1')).map((e) => e.t)).not.toContain('interrupted');
 
+    // Recovery cannot establish the original permissions; never steer a fresh
+    // instruction into that unknown posture, even after planning was discarded.
+    await ctx.store.setSessionPlanning('s1', 'discarded');
+    expect(await conductor.dispatchTurn('s1', 'implement it')).toEqual({ queued: true });
+    await conductor.dequeue('s1', conductor.queuedItems('s1')[0]!.id);
+
     // Control reaches the reattached turn's live handle.
     const cancellation = conductor.cancelTurn('s1');
     expect(runner.cancelCount).toBe(1);

@@ -396,18 +396,20 @@ describe('AcpOpenCodeBackend', () => {
 
   it('never sends session/set_mode — OpenCode advertises no ACP modes block', async () => {
     const fake = acpSpawner();
-    await new AcpOpenCodeBackend().run({
+    const result = await new AcpOpenCodeBackend().run({
       store: ctx.store,
       storeSessionId: 'verity-opencode-2',
       worktree: '/work/project',
       cwd: '/work/project',
       prompt: 'Do it',
       permissionMode: 'plan',
+      planning: true,
       spawner: fake.spawner,
     });
     // The posture reaches the agent as a config option. Arming the shared loop's
     // `sessionMode` path instead would send a request this agent does not
     // implement, and the whole turn would fail on the error it answers with.
+    expect(result.exitCode).toBe(0);
     expect(write(fake.writes, 'session/set_mode')).toBeUndefined();
     expect(configOption(fake.writes, 'mode')).toMatchObject({
       params: { sessionId: 'opencode-session-1', configId: 'mode', value: 'plan' },

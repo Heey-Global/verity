@@ -30036,7 +30036,7 @@ async function runAcpTurn(opts, profile) {
           await writer.write({ t: "notice", text });
         }
       }, opts);
-      if (opts.planning === true && setMode === void 0) {
+      if (opts.planning === true && setMode === void 0 && profile.planningViaConfig !== true) {
         throw new Error("The agent does not support the required planning permission mode.");
       }
       if (setMode !== void 0) {
@@ -30380,7 +30380,7 @@ async function configureSession(setup, opts) {
       (value, current) => `OpenCode model "${value}" was not applied; this turn runs on "${current}".`
     );
   }
-  const mode = openCodeMode(opts.permissionMode);
+  const mode = opts.planning === true ? PLAN_MODE : openCodeMode(opts.permissionMode);
   const outcome = await applySelectOption(
     setup,
     MODE_CONFIG_ID,
@@ -30414,6 +30414,7 @@ var OPENCODE_ACP_PROFILE = {
   // name that reached the multi-purpose CLI would let the caller's argv pick the
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: "opencode-acp",
+  planningViaConfig: true,
   telemetryBackend: "opencode-acp",
   httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the

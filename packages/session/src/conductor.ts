@@ -3123,7 +3123,8 @@ export class Conductor {
       const hasFileAttachment = opts.attachments?.some((a) => a.kind === 'file') ?? false;
       const planning = (await this.deps.store.getSession(sessionId))?.planning === 'active';
       // A mode change needs a fresh turn; steering retains the live permissions.
-      const postureChanged = planning !== (this.runningPlanning.get(sessionId) ?? false);
+      const runningPlanning = this.runningPlanning.get(sessionId);
+      const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
       const turn =
         hasFileAttachment || postureChanged || dispatchOpts.queueBehindActiveTurn === true
           ? undefined

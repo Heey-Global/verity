@@ -149,6 +149,8 @@ export interface AcpBackendProfile {
    *  mode-carrying permission request asks which posture an approval implies.
    *  Agents that do not advertise the mode keep their own clamped current mode. */
   sessionMode?(opts: RunTurnOptions): string | undefined;
+  /** The profile verifies restrictive planning through configureSession instead. */
+  readonly planningViaConfig?: boolean;
   /** The one tool whose approval legitimately also picks a permission posture
    *  (Claude's `ExitPlanMode`). Profiles that name none never have a permission
    *  request read as a posture, whatever its options look like. */
@@ -989,7 +991,7 @@ export async function runAcpTurn(
         // it rather than trust it. Awaited, unlike the drift pull-back: the mode
         // has to hold before the prompt goes out, or the turn's first tool call
         // runs in a posture nobody chose.
-        if (opts.planning === true && setMode === undefined) {
+        if (opts.planning === true && setMode === undefined && profile.planningViaConfig !== true) {
           throw new Error('The agent does not support the required planning permission mode.');
         }
         if (setMode !== undefined) {
