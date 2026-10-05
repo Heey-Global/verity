@@ -128,8 +128,8 @@ port. A crashed server stays crashed and shows its error; there is no automatic 
 because a silent restart hides the fault. Running entries keep the sandbox awake as an active
 share does (ADR 0020). When the sandbox is recreated, for example by an update, Verity starts again what was running before, with the command that last ran; a pending `update` waits for the operator's next restart.
 
-**Agent.** `verity-dev-server` gains `add`, `update`, `remove`, `start`, `stop`, `status`,
-`logs`, and `list`. `start` replies with the network address once the entry is published locally, and the agent names only that address. While an entry is running but not yet approved for local publishing (see edge cases), `start` replies "Running, not shared yet: tap Open on network in the Preview list", and the Preview row shows the same state. None of these needs operator approval: an entry only runs a command in the sandbox,
+**Agent.** `verity-dev-server` gains `add`, `update`, `remove`, `start`, `stop`, `restart`,
+`status`, `logs`, and `list`. `start` replies with the network address once the entry is published locally, and the agent names only that address. While an entry is running but not yet approved for local publishing (see edge cases), `start` replies "Running, not shared yet: tap Open on network in the Preview list", and the Preview row shows the same state. None of these needs operator approval: an entry only runs a command in the sandbox,
 which the agent may do anyway. Additions and changes appear in the chat as a small card. The
 agent-seed guidance tells the agent to start servers only through an entry, never with
 `nohup` or `&`, and to create an entry when none fits. Servers started past Verity are still
@@ -155,6 +155,36 @@ detected and listed as not managed, with an offer to save them as an entry. They
   picks a new sandbox port silently. The network address does not change.
 - _Lifecycle._ Deleting a session stops its instances and releases both ports. Removing an entry, by the agent or the operator, first stops every running or starting instance of it and then releases both ports of all its pairs. `update`
   applies on the next start; a running instance shows "Restart to apply changes".
+
+**User flow decisions.** Settled with the operator on 2026-10-05 after walking the flows end
+to end.
+
+- _What counts as approval._ The operator switching an entry on, and "Open on network" on the
+  inline chat card, both approve local publishing, because both are the operator's own act.
+  Only a start requested by the agent needs the one-time tap.
+- _Instances in other sessions._ The list shows entries of the whole project, while the switch
+  acts on the current session. A row whose entry also runs in another session says so, for
+  example "Also running in ‘Yesterday's session'", and offers "Stop" for that instance.
+- _Archived sessions._ Archiving a session stops its instances. There is no idle timeout: a
+  server the operator or agent started keeps running until someone stops it.
+- _Public links survive restarts._ For managed entries a public link stays valid until it
+  expires, with the same address and PIN. While the server is stopped, starting, or crashed,
+  the link shows a "Currently offline" page instead of being revoked. Stopping the link itself
+  stays an explicit operator action.
+- _Several servers together._ Each instance receives the sandbox-internal URLs of the other
+  running entries of the same session as environment variables, such as
+  `VERITY_SERVER_API_URL`, derived from the entry name. Entries are not started together
+  automatically; a frontend whose API is off shows its own error.
+- _Open from the list._ Tapping the address in a running row opens the browser directly,
+  without going through the detail view.
+- _Restart._ `verity-dev-server restart <name>` complements the Restart button, for example
+  after new dependencies.
+- _Approval after changes._ The chat card for an `update` says "Needs your approval again
+  after the next restart".
+- _Waking the sandbox._ Switching an entry on while the sandbox sleeps first shows "Waking
+  sandbox…", then "Starting…".
+- _Fixing a crash._ The crashed detail view offers "Ask the agent", which sends the agent the
+  entry name and a pointer to its log.
 
 **Operator.** The operator switches entries on and off and deletes them in the app. Editing
 stays with the agent, because typing a command on a phone is impractical.
@@ -292,6 +322,8 @@ becomes "Open settings" and the text names Verity Premium.
    recreation; `verity-dev-server` entry commands and agent-seed guidance; Preview sheet
    rows with switches, detail view with logs, and the not-managed section.
    Local publishing follows the approval rule under edge cases.
+   Public links of managed entries stay valid across restarts with an offline page, and
+   instances receive the internal URLs of their sibling entries (user flow decisions).
 
 ## 5. Implementation details and verification boundaries
 
