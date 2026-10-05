@@ -161,7 +161,7 @@ to end.
 
 - _What counts as approval._ The operator switching an entry on, and "Open on network" on the
   inline chat card, both approve local publishing, because both are the operator's own act.
-  Only a start requested by the agent needs the one-time tap.
+  Only a start requested by the agent needs the one-time tap. Because a row does not show the command, the first approval of an entry, or of a changed command, opens a short confirmation that shows the command and subdirectory before anything is published.
 - _Instances in other sessions._ The list shows entries of the whole project, while the switch
   acts on the current session. A row whose entry also runs in another session says so, for
   example "Also running in ‘Yesterday's session'", and offers "Stop" for that instance.
@@ -170,10 +170,10 @@ to end.
 - _Public links survive restarts._ For managed entries a public link stays valid until it
   expires, with the same address and PIN. While the server is stopped, starting, or crashed,
   the link shows a "Currently offline" page instead of being revoked. Stopping the link itself
-  stays an explicit operator action.
+  stays an explicit operator action. The link belongs to the pair, not to a port: after a sandbox-port change the connector follows the new port, and a pair with a live public link is never evicted from the local range.
 - _Several servers together._ Each instance receives the sandbox-internal URLs of the other
   running entries of the same session as environment variables, such as
-  `VERITY_SERVER_API_URL`, derived from the entry name. Entries are not started together
+  `VERITY_SERVER_API_URL`, derived from the entry name. Names are unique per project after normalization to upper case letters, digits, and underscores; `add` rejects a name that collides with an existing one, such as `my-api` next to `my_api`. Entries are not started together
   automatically; a frontend whose API is off shows its own error.
 - _Open from the list._ Tapping the address in a running row opens the browser directly,
   without going through the detail view.
