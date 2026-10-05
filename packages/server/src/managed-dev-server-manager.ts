@@ -155,7 +155,7 @@ export class ManagedDevServerManager {
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
   private activeProjects = new Set<string>();
-  private readonly pendingLinkEnds = new Set<string>();
+  private readonly pendingLinkEnds = new Map<string, string | undefined>();
   private readonly pendingUnpublish = new Map<string, ManagedDevServerInstanceRecord>();
   private closed = false;
 
@@ -478,8 +478,8 @@ export class ManagedDevServerManager {
    * or removed by the Uplink. With Local off nothing is left that anyone can
    * open, so the server stops instead of running unnoticed.
    */
-  async publicLinkEnded(instanceId: string): Promise<void> {
-    this.pendingLinkEnds.add(instanceId);
+  async publicLinkEnded(instanceId: string, shareId?: string): Promise<void> {
+    this.pendingLinkEnds.set(instanceId, shareId);
     try {
       const instance = await this.servers.getInstance(instanceId);
       if (instance && !instance.localAccess && instance.desired === 'running') {
@@ -488,6 +488,14 @@ export class ManagedDevServerManager {
           await this.locked(project.id, async () => {
             const current = await this.servers.getInstance(instanceId);
             if (!current || current.localAccess || current.desired !== 'running') return;
+            if (shareId) {
+              const ended = await this.options.store.getPublicPreviewShare(shareId);
+              if (
+                !ended ||
+                (current.startedAt && ended.updatedAt.getTime() < current.startedAt.getTime())
+              )
+                return;
+            }
             if (await this.hasLivePublicLink(current)) return;
             await this.stopInstance(project, current, null);
           });
@@ -904,7 +912,7 @@ export class ManagedDevServerManager {
         await this.unpublish(current ?? instance);
       }).catch(() => undefined);
     }
-    for (const id of this.pendingLinkEnds) await this.publicLinkEnded(id);
+    for (const [id, shareId] of this.pendingLinkEnds) await this.publicLinkEnded(id, shareId);
     let instances: ManagedDevServerInstanceRecord[];
     try {
       instances = await this.servers.listInstances({ desired: 'running' });

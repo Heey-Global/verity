@@ -810,6 +810,28 @@ describe('managed dev servers', () => {
       expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), id);
     });
 
+    it('ignores a delayed old-link notification while a new online-only start awaits its link', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      const ended = await ctx.store.transitionPublicPreviewShare(
+        share.id,
+        ['creating', 'active'],
+        'revoked',
+        {},
+      );
+      await manager.stop('s1', 'Demo');
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await ctx.store.managedDevServers.updateInstance(id, {
+        startedAt: new Date(ended!.updatedAt.getTime() + 1),
+      });
+      await manager.publicLinkEnded(id, share.id);
+      expect((await instanceOf()).state).toBe('starting');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });

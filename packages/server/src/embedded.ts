@@ -2429,7 +2429,7 @@ export async function buildEmbeddedServer(
     return sandbox?.user || undefined;
   };
   // Filled once the managed dev server manager exists, further down.
-  const managedLinkEnded: { current?: (instanceId: string) => void } = {};
+  const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
   let previewShareManager: PreviewShareManager | undefined;
   const withPreviewProjectMutation = async <T>(
     projectId: string,
@@ -2484,7 +2484,7 @@ export async function buildEmbeddedServer(
     previewShareManager = new PreviewShareManager({
       store: eventStore,
       onShareEnded: (share) => {
-        if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId);
+        if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
       },
       docker: projectDocker,
       resolveConnectorImage: config.publicPreviews.resolveConnectorImage,
@@ -3586,8 +3586,8 @@ export async function buildEmbeddedServer(
     const managed = managedDevServerManager;
     // Fired from a share's teardown; a store error here must not become an
     // unhandled rejection in the Core.
-    managedLinkEnded.current = (instanceId) =>
-      void managed.publicLinkEnded(instanceId).catch(() => undefined);
+    managedLinkEnded.current = (instanceId, shareId) =>
+      void managed.publicLinkEnded(instanceId, shareId).catch(() => undefined);
   }
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised
@@ -5015,8 +5015,8 @@ export async function buildEmbeddedServer(
         const swept = await sweepOrphanedPreviewShares({
           store: eventStore,
           docker: projectDocker,
-          onShareEnded: ({ managedInstanceId }) => {
-            if (managedInstanceId) managedLinkEnded.current?.(managedInstanceId);
+          onShareEnded: ({ managedInstanceId, id }) => {
+            if (managedInstanceId) managedLinkEnded.current?.(managedInstanceId, id);
           },
         });
         if (swept > 0) {
