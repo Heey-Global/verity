@@ -303,6 +303,7 @@ export class SessionModel {
   // server-side git read (#110), so a slow tick must not let requests stack up.
   private _activityInFlight = false;
   private _activityRequest = 0;
+  private _planningDecisionAfterActivityRequest = 0;
   // Backward-pagination state: whether older history exists before the loaded
   // tail, and whether a fetch for it is in flight.
   private _hasOlder = false;
@@ -834,6 +835,8 @@ export class SessionModel {
     try {
       const rateLimitPruned = this.pruneExpiredRateLimit();
       const activity = await this.opts.client.getActivity(this.opts.sessionId);
+      // Ending planning keeps the same revision: an older poll must not reactivate it.
+      const acceptPlanning = activityRequest > this._planningDecisionAfterActivityRequest;
       if (activity.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
       }
@@ -891,8 +894,11 @@ export class SessionModel {
         activity.busy === this._busy &&
         terminationUnconfirmed === this._terminationUnconfirmed &&
         activity.branch === this._branch &&
-        (activity.planning === undefined || activity.planning === this._planning) &&
-        (activity.planningRevision === undefined ||
+        (!acceptPlanning ||
+          activity.planning === undefined ||
+          activity.planning === this._planning) &&
+        (!acceptPlanning ||
+          activity.planningRevision === undefined ||
           activity.planningRevision === this._planningRevision) &&
         sameItems(activity.queued, this._waiting) &&
         !nameChanged &&
@@ -909,8 +915,9 @@ export class SessionModel {
       this._branch = activity.branch;
       // Absent means "not reported" (an older server, or a poll whose session read
       // failed), not "never planned": keep the last known value then.
-      if (activity.planning !== undefined) this._planning = activity.planning;
+      if (acceptPlanning && activity.planning !== undefined) this._planning = activity.planning;
       if (
+        acceptPlanning &&
         activity.planningRevision !== undefined &&
         (this._planningRevision === undefined ||
           activity.planningRevision >= this._planningRevision)
@@ -1211,6 +1218,7 @@ export class SessionModel {
         planningRevision,
       );
       this._planning = result.planning;
+      this._planningDecisionAfterActivityRequest = this._activityRequest;
     } catch (error) {
       this._planningError =
         error instanceof VerityApiError && error.status === 409 && error.code === 'stalePlan'
