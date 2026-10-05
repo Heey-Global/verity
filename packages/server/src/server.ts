@@ -215,6 +215,7 @@ import { createSessionPrCache } from './session-pr-cache.js';
 import type { PushSender } from './push-sender.js';
 import {
   createScratchProvisioner,
+  createGitWorktreeProvisioner,
   RepositoryHasNoCommitsError,
   type WorktreeProvisioner,
 } from './worktree.js';
@@ -8632,12 +8633,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const project = await deps.eventStore.getProject(session.projectId);
           if (project !== undefined && !isControlPlaneProject(project)) {
             const projectClone = projectClonePath(deps.projectCloneRoot, project);
-            cleanupWorktrees =
-              deps.projectWorktrees?.(project, projectClone) ??
-              createSessionCloneProvisioner({
-                repoDir: projectClone,
-                worktreeRoot: join(dirname(projectClone), '.verity-session-clones', project.id),
-              });
+            const legacy = (
+              await lstat(join(session.worktree, '.git')).catch(() => undefined)
+            )?.isFile();
+            cleanupWorktrees = legacy
+              ? createGitWorktreeProvisioner({
+                  repoDir: projectClone,
+                  worktreeRoot: join(projectClone, '.verity-sessions'),
+                })
+              : (deps.projectWorktrees?.(project, projectClone) ??
+                createSessionCloneProvisioner({
+                  repoDir: projectClone,
+                  worktreeRoot: join(dirname(projectClone), '.verity-session-clones', project.id),
+                }));
           }
         }
         const deleted = await deleteSessionEverywhere(id);

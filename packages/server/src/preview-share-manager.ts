@@ -1,3 +1,4 @@
+import { sessionNodeModulesVolumeName } from './session-sandbox.js';
 import {
   STANDARD_MOUNTS,
   DEFAULT_AGENT_SEED_SOURCE,
@@ -1713,6 +1714,16 @@ async function assertEligibleSandbox(
         options.dataVolume,
         options.dataVolumeRoot,
       )
+    )
+      continue;
+    if (
+      isolatedSessionId &&
+      /^[a-zA-Z0-9_-]+$/.test(isolatedSessionId) &&
+      mount.type === 'volume' &&
+      mount.name === sessionNodeModulesVolumeName(isolatedSessionId) &&
+      mount.destination === '/work/node_modules' &&
+      mount.readWrite === true &&
+      !mount.subpath
     )
       continue;
     if (knownStandardPreviewMount(mount, projectId, workspaceSubpath, options)) continue;

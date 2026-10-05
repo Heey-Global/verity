@@ -2206,36 +2206,42 @@ export async function buildEmbeddedServer(
     config.repoDir || config.hostCloneRoot
       ? createGitBranchService({
           baseBranch: 'main',
-          git: async (args) => {
-            const index = args.indexOf('-C');
-            const path = index < 0 ? undefined : args[index + 1];
-            const session = (await eventStore.listSessions()).find((row) => row.worktree === path);
-            if (!session?.projectId || !projectDocker) {
-              throw new Error('Git operation has no isolated session context');
-            }
-            const project = await eventStore.getProject(session.projectId);
-            if (!project) throw new Error('Project is unavailable');
-            const readOnly = [
-              'rev-parse',
-              'for-each-ref',
-              'symbolic-ref',
-              'reflog',
-              'status',
-              'diff',
-              'log',
-              'show',
-              'merge-base',
-            ].includes(args[index + 2] ?? '');
-            const runtimeProject = readOnly
-              ? await resolveSessionProject(session.sessionId, project)
-              : await ensureSessionProject(session.sessionId, project);
-            return createSandboxGit({
-              containerName: runtimeProject.containerName,
-              hostRoot: session.worktree,
-              dockerBaseUrl: config.dockerBaseUrl,
-              inspect: () => projectDocker.inspectContainer(runtimeProject.containerName),
-            })(args);
-          },
+          ...(config.dockerBaseUrl && config.hostCloneRoot
+            ? {
+                git: async (args: readonly string[]) => {
+                  const index = args.indexOf('-C');
+                  const path = index < 0 ? undefined : args[index + 1];
+                  const session = (await eventStore.listSessions()).find(
+                    (row) => row.worktree === path,
+                  );
+                  if (!session?.projectId || !projectDocker) {
+                    throw new Error('Git operation has no isolated session context');
+                  }
+                  const project = await eventStore.getProject(session.projectId);
+                  if (!project) throw new Error('Project is unavailable');
+                  const readOnly = [
+                    'rev-parse',
+                    'for-each-ref',
+                    'symbolic-ref',
+                    'reflog',
+                    'status',
+                    'diff',
+                    'log',
+                    'show',
+                    'merge-base',
+                  ].includes(args[index + 2] ?? '');
+                  const runtimeProject = readOnly
+                    ? await resolveSessionProject(session.sessionId, project)
+                    : await ensureSessionProject(session.sessionId, project);
+                  return createSandboxGit({
+                    containerName: runtimeProject.containerName,
+                    hostRoot: session.worktree,
+                    dockerBaseUrl: config.dockerBaseUrl,
+                    inspect: () => projectDocker.inspectContainer(runtimeProject.containerName),
+                  })(args);
+                },
+              }
+            : {}),
         })
       : undefined;
   // Open-PR lookup for the header/PR strip (#125): built per SESSION WORKTREE, not

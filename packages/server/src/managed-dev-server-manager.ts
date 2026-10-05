@@ -784,17 +784,20 @@ export class ManagedDevServerManager {
       if (!instance || instance.desired !== 'running') continue;
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
-      const project =
-        (await this.options.resolveSessionProject?.(instance.sessionId, baseProject)) ??
-        baseProject;
-      // A sleeping parent must not hide active private runtimes, and a stopped
-      // sibling must not abort Docker inspection of later instances.
-      if (project.state !== 'active' || !project.containerName) continue;
-      const key = project.containerName;
-      let processes = scans.get(key);
-      if (!processes) {
-        processes = await this.options.runtime.listListeningProcesses(project);
-        scans.set(key, processes);
+      let project: ProjectRecord;
+      let processes: ListeningProcess[];
+      try {
+        project =
+          (await this.options.resolveSessionProject?.(instance.sessionId, baseProject)) ??
+          baseProject;
+        if (project.state !== 'active' || !project.containerName) continue;
+        const key = project.containerName;
+        const cached = scans.get(key);
+        processes = cached ?? (await this.options.runtime.listListeningProcesses(project));
+        if (!cached) scans.set(key, processes);
+      } catch {
+        // One unavailable private runtime must not hide healthy sibling servers.
+        continue;
       }
       if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {
         const session = await this.options.store.getSession(instance.sessionId);

@@ -201,38 +201,47 @@ describe('isolated managed server runtimes', () => {
     ).toBe('stopped');
   });
 
-  it('supervises active private siblings while the parent and another sibling sleep', async () => {
-    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
-    await manager.start('s1', 'Demo', 'agent');
-    await manager.start('s2', 'Demo', 'agent');
-    const active = sandbox.started[1]!;
-    sandbox.listen(active.instanceId, Number(active.env.PORT));
-    manager.close();
-    await ctx.store.updateProjectState('p1', 'sleeping');
-    const scanned = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
-    scanned.mockClear();
-    scanned.mockImplementation(async (project) => {
-      if (project.containerName !== 'private-s2') throw new Error('Container is stopped');
-      return sandbox.listeners;
-    });
-    manager = new ManagedDevServerManager({
-      store: ctx.store,
-      runtime: sandbox.runtime,
-      networkPorts: [8100, 8101],
-      sandboxWorktree: () => '/work',
-      resolveSessionProject: async (sessionId, project) => ({
-        ...project,
-        containerName: `private-${sessionId}`,
-        state: sessionId === 's2' ? 'active' : 'sleeping',
-      }),
-      now: () => now,
-    });
-    await manager.tick();
-    expect(scanned.mock.calls.map(([project]) => project.containerName)).toEqual(['private-s2']);
-    expect((await ctx.store.managedDevServers.getInstance(active.instanceId))?.state).toBe(
-      'running',
-    );
-  });
+  it.each(['sleeping', 'resolver-error', 'scan-error'])(
+    'supervises healthy siblings when the first runtime is %s',
+    async (failure) => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await manager.start('s1', 'Demo', 'agent');
+      await manager.start('s2', 'Demo', 'agent');
+      const active = sandbox.started[1]!;
+      sandbox.listen(active.instanceId, Number(active.env.PORT));
+      manager.close();
+      await ctx.store.updateProjectState('p1', 'sleeping');
+      const scanned = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
+      scanned.mockClear();
+      scanned.mockImplementation(async (project) => {
+        if (project.containerName !== 'private-s2') throw new Error('Container is stopped');
+        return sandbox.listeners;
+      });
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: () => '/work',
+        resolveSessionProject: async (sessionId, project) => {
+          if (sessionId === 's1' && failure === 'resolver-error')
+            throw new Error('Unmigrated checkout');
+          return {
+            ...project,
+            containerName: `private-${sessionId}`,
+            state: sessionId === 's2' || failure === 'scan-error' ? 'active' : 'sleeping',
+          };
+        },
+        now: () => now,
+      });
+      await manager.tick();
+      expect(scanned.mock.calls.map(([project]) => project.containerName)).toEqual(
+        failure === 'scan-error' ? ['private-s1', 'private-s2'] : ['private-s2'],
+      );
+      expect((await ctx.store.managedDevServers.getInstance(active.instanceId))?.state).toBe(
+        'running',
+      );
+    },
+  );
 
   it('prepares only explicit starts and targets each session container for supervision and stop', async () => {
     manager.close();

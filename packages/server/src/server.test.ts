@@ -7073,6 +7073,50 @@ describe('DELETE /sessions/:id', () => {
 });
 
 describe('DELETE /sessions/:id (worktree cleanup)', () => {
+  it('removes a legacy linked worktree with its Git registration and merged branch', async () => {
+    const root = join(worktreeRoot, 'legacy-project-root');
+    const repo = join(root, 'legacy-project');
+    const checkout = join(repo, '.verity-sessions', 'agent-legacy');
+    mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
+    git('init', '-b', 'main');
+    git(
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'initial',
+    );
+    git('worktree', 'add', '--lock', '-b', 'session-delete', checkout);
+    await ctx.store.upsertProject({
+      id: 'legacy-project',
+      owner: 'local',
+      repo: 'legacy-project',
+      cloneDir: 'legacy-project',
+      containerName: 'central',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'legacy-delete',
+      projectId: 'legacy-project',
+      worktree: checkout,
+      model: 'm',
+    });
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, projectCloneRoot: root });
+    try {
+      const response = await a.inject({ method: 'DELETE', url: '/sessions/legacy-delete' });
+      expect(response.statusCode).toBe(200);
+      expect(existsSync(checkout)).toBe(false);
+      expect(git('worktree', 'list', '--porcelain').toString()).not.toContain(checkout);
+      expect(() => git('rev-parse', '--verify', 'refs/heads/session-delete')).toThrow();
+    } finally {
+      await a.close();
+    }
+  });
   it('removes only the deleted private clone after its container is stopped', async () => {
     const root = join(worktreeRoot, 'private-clones');
     const own = join(root, 'own');

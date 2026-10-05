@@ -59,6 +59,8 @@ describe('private devcontainer lifecycle', () => {
       user: '1000:1000',
       workdir: '/work',
     });
+    for (const [request] of f.containerCommand.mock.calls.slice(1))
+      expect(request.user).toBe('1000:1000');
     expect(f.commands.slice(3)).toEqual(['touch /tmp/verity-post-create-complete', 'ready']);
     f.commands.length = 0;
     await f.provisioner.startSessionRuntime('private', f.runtime, f.workspace);

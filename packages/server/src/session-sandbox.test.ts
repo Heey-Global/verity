@@ -188,6 +188,7 @@ it('recreates an owned container after a project rebuild and preserves private s
     project,
     sessionId: 'session',
     worktree: '/data/private/session',
+    runtimeBinds: ['/data/runners/session-session:/run/verity-runner'],
   });
   const docker = {
     ensureVolume: vi.fn(async () => ({ mountpoint: undefined })),
