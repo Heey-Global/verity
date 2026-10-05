@@ -334,6 +334,10 @@ it('shows the live public link with its PIN on reopen and stops it after confirm
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
   expect(screen.getByText('123 456')).toBeTruthy();
   expect(screen.getByText(/^Live until/)).toBeTruthy();
+  // The badge already carries the expiry; a second countdown under the card
+  // read as a different deadline. One copy control per credential row, too.
+  expect(screen.queryByText(/ left$/)).toBeNull();
+  expect(screen.getAllByRole('button', { name: 'Copy preview link' })).toHaveLength(1);
 
   const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
   fireEvent.press(screen.getByRole('button', { name: 'Share link and PIN' }));

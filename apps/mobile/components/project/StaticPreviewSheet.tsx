@@ -42,18 +42,6 @@ function expiryLabel(expiresAt: string | Date, now = new Date()): string {
   return `until ${expiry.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${time}`;
 }
 
-function remainingLabel(expiresAt: string | Date, now = new Date()): string {
-  const minutes = Math.max(0, Math.round((new Date(expiresAt).getTime() - now.getTime()) / 60_000));
-  if (minutes >= 24 * 60) {
-    const days = Math.ceil(minutes / (24 * 60));
-    return `${days} ${days === 1 ? 'day' : 'days'} left`;
-  }
-  if (minutes < 60) return `${minutes} min left`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours} h left` : `${hours} h ${rest} min left`;
-}
-
 /** "482 913": groups of three are easier to read out and type. */
 function pinLabel(pin: string): string {
   return pin.replace(/(\d{3})(?=\d)/g, '$1 ');
@@ -535,7 +523,7 @@ export function StaticPreviewSheet({
     setTab(next);
   };
 
-  // Re-render while a link is shown so "N min left" counts down and an
+  // Re-render while a link is shown so the "Live until" badge stays current and an
   // expired link drops out of the sheet instead of staying on screen.
   const [, setTick] = useState(0);
   const ticking = shares.some(isLive) || localShares.some(localIsLive);
@@ -929,21 +917,21 @@ export function StaticPreviewSheet({
             accessibilityRole="button"
             accessibilityLabel="Open in browser"
             accessibilityState={{ disabled: busy !== undefined, busy: working }}
-            style={[styles.primaryButton, styles.actionGrow]}
+            style={[styles.primaryButton, styles.actionButton]}
           >
             {working ? (
               <ActivityIndicator size="small" color={theme.colors.onPrimary} />
             ) : (
               <Icon name="external-link" size={16} color={theme.colors.onPrimary} />
             )}
-            <Text style={styles.primaryText}>{working ? 'Opening…' : 'Open in browser'}</Text>
+            <Text style={styles.actionPrimaryText}>{working ? 'Opening…' : 'Open in browser'}</Text>
           </Pressable>
           <Pressable
             onPress={() => void copyLocal(selection)}
             disabled={busy !== undefined}
             accessibilityRole="button"
             accessibilityLabel="Copy local link"
-            style={styles.secondaryButton}
+            style={[styles.secondaryButton, styles.actionButton]}
           >
             <Icon
               name={copied === 'local-link' ? 'check' : 'copy'}
@@ -956,7 +944,7 @@ export function StaticPreviewSheet({
           </Pressable>
         </View>
         {share ? (
-          <View style={styles.cardFooter}>
+          <>
             <Text style={styles.linkMuted} numberOfLines={1}>
               {share.url}
             </Text>
@@ -965,13 +953,14 @@ export function StaticPreviewSheet({
               disabled={busy !== undefined}
               accessibilityRole="button"
               accessibilityLabel="Turn off local access"
-              hitSlop={8}
+              style={styles.dangerButton}
             >
+              <Icon name="slash" size={16} color={theme.colors.tone.danger} />
               <Text style={styles.dangerText}>
                 {busy === 'stop-local' ? 'Turning off…' : 'Turn off'}
               </Text>
             </Pressable>
-          </View>
+          </>
         ) : null}
       </View>
     );
@@ -1017,27 +1006,49 @@ export function StaticPreviewSheet({
           })}
           {share.publicOrigin ? (
             <View style={styles.linkBox}>
-              <Text style={styles.linkLabel}>LINK</Text>
-              <Pressable
-                disabled={stopping}
-                onPress={() => void Linking.openURL(share.publicOrigin!).catch(() => undefined)}
-                accessibilityRole="link"
-                accessibilityLabel={`Open preview link ${share.publicOrigin}`}
-              >
-                <Text style={styles.link} numberOfLines={2}>
-                  {share.publicOrigin}
-                </Text>
-              </Pressable>
+              <View style={styles.credentialRow}>
+                <Text style={styles.linkLabel}>LINK</Text>
+                <Pressable
+                  style={styles.credentialValue}
+                  disabled={stopping}
+                  onPress={() => void Linking.openURL(share.publicOrigin!).catch(() => undefined)}
+                  accessibilityRole="link"
+                  accessibilityLabel={`Open preview link ${share.publicOrigin}`}
+                >
+                  <Text style={styles.linkValue} numberOfLines={1} ellipsizeMode="middle">
+                    {share.publicOrigin}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() =>
+                    void Clipboard.setStringAsync(share.publicOrigin!).then(() =>
+                      setCopied('public-link'),
+                    )
+                  }
+                  disabled={stopping}
+                  hitSlop={14}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    copied === 'public-link' ? 'Link copied' : 'Copy preview link'
+                  }
+                >
+                  <Icon
+                    name={copied === 'public-link' ? 'check' : 'copy'}
+                    size={18}
+                    color={theme.colors.primary}
+                  />
+                </Pressable>
+              </View>
               {share.pinLocked ? (
-                <Text style={styles.error}>
+                <Text style={[styles.error, styles.credentialDivider, styles.lockedNote]}>
                   PIN access locked after too many failed attempts. Already signed-in visitors can
                   still use this link. Stop sharing, then create a new link to let new visitors in.
                 </Text>
               ) : (
-                <View style={styles.pinRow}>
+                <View style={[styles.credentialRow, styles.credentialDivider]}>
                   <Text style={styles.linkLabel}>PIN</Text>
                   <Text
-                    style={styles.pinValue}
+                    style={[styles.credentialValue, styles.pinValue]}
                     accessibilityLabel={`PIN ${share.pin.split('').join(' ')}`}
                   >
                     {pinLabel(share.pin)}
@@ -1047,9 +1058,9 @@ export function StaticPreviewSheet({
                       void Clipboard.setStringAsync(share.pin).then(() => setCopied('pin'))
                     }
                     disabled={stopping}
-                    hitSlop={10}
+                    hitSlop={14}
                     accessibilityRole="button"
-                    accessibilityLabel="Copy PIN"
+                    accessibilityLabel={copied === 'pin' ? 'PIN copied' : 'Copy PIN'}
                   >
                     <Icon
                       name={copied === 'pin' ? 'check' : 'copy'}
@@ -1063,57 +1074,37 @@ export function StaticPreviewSheet({
           ) : (
             <Text style={styles.caption}>The link starts working in a moment.</Text>
           )}
-          {share.publicOrigin ? (
+          {share.publicOrigin && !share.pinLocked ? (
             <View style={styles.actions}>
-              {!share.pinLocked ? (
-                <Pressable
-                  style={[styles.primaryButton, styles.actionGrow]}
-                  onPress={() =>
-                    void Share.share({ message: shareMessage(share) }).catch(() => undefined)
-                  }
-                  disabled={stopping}
-                  accessibilityRole="button"
-                  accessibilityLabel="Share link and PIN"
-                >
-                  <Icon name="share" size={16} color={theme.colors.onPrimary} />
-                  <Text style={styles.primaryText}>Send link and PIN</Text>
-                </Pressable>
-              ) : null}
               <Pressable
-                style={styles.secondaryButton}
+                style={[styles.primaryButton, styles.actionButton]}
                 onPress={() =>
-                  void Clipboard.setStringAsync(share.publicOrigin!).then(() =>
-                    setCopied('public-link'),
-                  )
+                  void Share.share({ message: shareMessage(share) }).catch(() => undefined)
                 }
                 disabled={stopping}
                 accessibilityRole="button"
-                accessibilityLabel="Copy preview link"
+                accessibilityLabel="Share link and PIN"
               >
-                <Icon
-                  name={copied === 'public-link' ? 'check' : 'copy'}
-                  size={16}
-                  color={theme.colors.text}
-                />
-                <Text style={styles.secondaryText}>
-                  {copied === 'public-link' ? 'Copied' : 'Copy link'}
-                </Text>
+                <Icon name="share" size={16} color={theme.colors.onPrimary} />
+                <Text style={styles.actionPrimaryText}>Send link and PIN</Text>
               </Pressable>
             </View>
           ) : null}
-          <View style={styles.cardFooter}>
-            <Text style={styles.caption}>{remainingLabel(share.expiresAt)}</Text>
-            <Pressable
-              onPress={() => stopPublic(share)}
-              disabled={busy !== undefined}
-              accessibilityRole="button"
-              accessibilityLabel="Stop sharing"
-              accessibilityState={{ disabled: busy !== undefined, busy: stopping }}
-              hitSlop={8}
-            >
-              <Text style={styles.dangerText}>{stopping ? 'Stopping…' : 'Stop sharing'}</Text>
-            </Pressable>
-          </View>
+          <Pressable
+            onPress={() => stopPublic(share)}
+            disabled={busy !== undefined}
+            accessibilityRole="button"
+            accessibilityLabel="Stop sharing"
+            accessibilityState={{ disabled: busy !== undefined, busy: stopping }}
+            style={styles.dangerButton}
+          >
+            {stopping ? (
+              <ActivityIndicator size="small" color={theme.colors.tone.danger} />
+            ) : (
+              <Icon name="slash" size={16} color={theme.colors.tone.danger} />
+            )}
+            <Text style={styles.dangerText}>{stopping ? 'Stopping…' : 'Stop sharing'}</Text>
+          </Pressable>
         </View>
       );
     }
@@ -1500,14 +1491,23 @@ const styles = StyleSheet.create((theme) => ({
   cardLocalActive: { borderColor: theme.colors.tone.done },
   cardPublicActive: { borderColor: theme.colors.primary },
   cardDimmed: { opacity: 0.7 },
-  cardFooter: {
+  actions: { flexDirection: 'row', gap: theme.spacing.sm },
+  // Buttons in a card row share the width evenly and use one text size, so the
+  // filled one stands out by colour rather than by being larger.
+  actionButton: { flex: 1, gap: theme.spacing.xs, paddingHorizontal: theme.spacing.sm },
+  actionPrimaryText: { color: theme.colors.onPrimary, fontWeight: '600', fontSize: theme.text.sm },
+  dangerButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    minHeight: 48,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.tone.danger,
+    backgroundColor: theme.colors.surface,
   },
-  actions: { flexDirection: 'row', gap: theme.spacing.sm },
-  actionGrow: { flex: 1 },
   primaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1534,22 +1534,35 @@ const styles = StyleSheet.create((theme) => ({
   },
   secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
   dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
-  link: { flex: 1, minWidth: 0, color: theme.colors.text, fontSize: theme.text.sm },
-  linkMuted: { flex: 1, minWidth: 0, color: theme.colors.textMuted, fontSize: theme.text.sm },
+  linkMuted: { color: theme.colors.textMuted, fontSize: theme.text.sm },
   linkBox: {
-    gap: theme.spacing.xs,
-    padding: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  linkLabel: { color: theme.colors.textFaint, fontSize: theme.text.xs, fontWeight: '600' },
-  pinRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  linkLabel: {
+    width: 36,
+    color: theme.colors.textFaint,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
+  },
+  // Link and PIN share one row layout: label column, value, copy icon. The
+  // value text has the same size in both rows so neither looks like an add-on.
+  credentialRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    minHeight: 48,
+  },
+  credentialDivider: { borderTopWidth: 1, borderTopColor: theme.colors.border },
+  credentialValue: { flex: 1, minWidth: 0 },
+  lockedNote: { paddingVertical: theme.spacing.md },
+  linkValue: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
   pinValue: {
-    flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
+    fontSize: theme.text.md,
     fontWeight: '700',
     letterSpacing: 2,
     fontVariant: ['tabular-nums'],
