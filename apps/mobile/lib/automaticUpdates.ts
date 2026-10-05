@@ -8,8 +8,8 @@ type UpdatesClient = Pick<
   'isEnabled' | 'checkForUpdateAsync' | 'fetchUpdateAsync' | 'reloadAsync'
 >;
 
-export type UpdatePhase = 'check' | 'download' | 'reload';
-export type UpdateFailure = {
+type UpdatePhase = 'check' | 'download' | 'reload';
+type UpdateFailure = {
   status: 'failed';
   phase: UpdatePhase;
   timedOut: boolean;
