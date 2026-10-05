@@ -12920,6 +12920,54 @@ describe('DELETE /projects/:id', () => {
     }
   });
 
+  // An accepted plan is also a turn: it must respect the deletion fence.
+  it('refuses plan implementation while the project teardown is running', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-plan-race',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-plan-race',
+      worktree: '/wt/plan-race',
+      model: 'm',
+      projectId: 'p-plan-race',
+    });
+    await ctx.store.setSessionPlanning('s-plan-race', 'active');
+    const base = fakeDeprovisioner();
+    let turnDuringTeardown: { statusCode: number; body: unknown } | undefined;
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      deprovisioner: {
+        deprovision: vi.fn(async (projectId: string): Promise<ProjectRecord> => {
+          const res = await a.inject({
+            method: 'POST',
+            url: '/sessions/s-plan-race/planning',
+            payload: { action: 'implement' },
+          });
+          turnDuringTeardown = { statusCode: res.statusCode, body: res.json() };
+          return base.deprovision(projectId);
+        }),
+      },
+    });
+    try {
+      const res = await a.inject({ method: 'DELETE', url: '/projects/p-plan-race' });
+      expect(res.statusCode).toBe(200);
+      expect(turnDuringTeardown).toEqual({
+        statusCode: 409,
+        body: { error: 'invalid request' },
+      });
+      expect(dispatchTurn).not.toHaveBeenCalled();
+      expect(await ctx.store.listSessions()).toEqual([]);
+    } finally {
+      await a.close();
+    }
+  });
+
   // Same window, from the other side: `hiddenAt` is only set after the
   // deprovision, so a spawn admitted before it would build its worktree inside
   // the clone root being purged.

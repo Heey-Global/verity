@@ -3182,8 +3182,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
   const sessionPlanning = createSessionPlanning({
     eventStore: deps.eventStore,
-    dispatchTurn: (sessionId, prompt, opts, dispatchOpts) =>
-      conductor.dispatchTurn(sessionId, prompt, opts, dispatchOpts),
+    dispatchTurn: (sessionId, prompt, opts, dispatchOpts) => {
+      // No await before dispatch: deletion must not reopen a quiesced worktree.
+      if (sessionsBeingReaped.has(sessionId)) {
+        throw Object.assign(new Error('session is being deleted with its project'), {
+          statusCode: 409,
+        });
+      }
+      return conductor.dispatchTurn(sessionId, prompt, opts, dispatchOpts);
+    },
   });
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
