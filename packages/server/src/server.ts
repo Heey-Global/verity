@@ -5885,6 +5885,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             note: 'The user approved. End your turn now; Verity starts the implementation as a new turn.',
           };
         }
+        // Planning can begin while an external approval card is pending.
+        if (await sessionPlanning.isPlanning(input.sessionId)) {
+          throw new ControlPlaneSessionAuthorityError(
+            'External tools are unavailable in planning mode; use read-only local tools.',
+          );
+        }
         if (input.toolName === 'verity_list_linked_sessions') {
           const links = await deps.eventStore.listSessionLinks(input.sessionId);
           const projects = await deps.eventStore.listProjects();

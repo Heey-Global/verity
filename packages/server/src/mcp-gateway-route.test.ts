@@ -87,6 +87,7 @@ function build(
     /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
     authorizeCall?: McpGatewayDeps['authorizeCall'];
     standing?: boolean;
+    planningOnApproval?: boolean;
   } = {},
 ): Harness {
   const cipher = createSealableSecretCipher();
@@ -190,6 +191,12 @@ function build(
           if (input.signal?.aborted) deny();
           else input.signal?.addEventListener('abort', deny, { once: true });
         });
+      }
+      if (options.planningOnApproval) {
+        return store.setSessionPlanning(input.sessionId, 'active').then(() => ({
+          decision: { behavior: 'allow' },
+          decidedBy: 'card',
+        }));
       }
       // `'card'`, not a free-form word: `decidedBy` is a `PermissionDecisionSource` and
       // reaches the audit record as its `decision`, where the schema admits `card` or `grant`
@@ -374,10 +381,14 @@ it('lets the agent start planning and present plans, but leaves ending it to the
   ]);
 });
 
-it.each([false, true])(
-  'blocks external calls during planning before authorization (standing=%s)',
-  async (standing) => {
-    const harness = build({ standing });
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+])(
+  'blocks external calls during planning before authorization (standing=%s, during approval=%s)',
+  async (standing, planningOnApproval) => {
+    const harness = build({ standing, planningOnApproval });
     await harness.store.createProject({
       id: 'p1',
       kind: 'local',
@@ -393,7 +404,7 @@ it.each([false, true])(
       worktree: '/wt/s1',
       model: 'm',
     });
-    await harness.store.setSessionPlanning('s1', 'active');
+    if (!planningOnApproval) await harness.store.setSessionPlanning('s1', 'active');
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
     await withListener(harness, async (socketPath) => {
       // The external executor is outside the agent's sandbox, so local read-only
@@ -415,7 +426,7 @@ it.each([false, true])(
       expect(JSON.parse(response.body)).toMatchObject({ result: { isError: true } });
       expect(response.body).toContain('planning mode');
     });
-    expect(harness.approvals).toEqual([]);
+    expect(harness.approvals).toHaveLength(planningOnApproval ? 1 : 0);
     expect(harness.invocations).toEqual([]);
   },
 );
