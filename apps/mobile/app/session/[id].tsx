@@ -145,6 +145,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { openLocalPreview } from '../../components/project/previewAccess';
+import { openFailureAlert, RunningServerCard } from '../../components/project/RunningServerCard';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
@@ -892,10 +893,8 @@ export function SessionChat({
         () => router.push('/settings/services'),
       );
     } catch (caught) {
-      Alert.alert(
-        'Could not open preview',
-        caught instanceof Error ? caught.message : 'Try again.',
-      );
+      const alert = openFailureAlert(server.name, caught instanceof Error ? caught.message : '');
+      Alert.alert(alert.title, alert.body);
     } finally {
       setPreviewOpening(null);
     }
@@ -3618,56 +3617,6 @@ export function SessionChat({
       keyboardVerticalOffset={0}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
-      {/* A running server gets one compact row with the two ways to reach it,
-          named by who can see it: you on your own network, or anyone over the
-          internet with a PIN. */}
-      {session.devServers
-        ?.filter((server) => server.scope !== 'project')
-        .map((server) => (
-          <View
-            key={server.port}
-            style={styles.detectedPreviewCard}
-            accessibilityLabel={`${server.name} is running on port ${String(server.port)}`}
-          >
-            <View style={styles.detectedPreviewTitle}>
-              <View style={styles.detectedPreviewDot} />
-              <Text style={styles.detectedPreviewName} numberOfLines={1}>
-                {server.name}
-                <Text style={styles.detectedPreviewPort}>{` :${String(server.port)} running`}</Text>
-              </Text>
-            </View>
-            <View style={styles.detectedPreviewActions}>
-              <Pressable
-                style={[styles.detectedPreviewButton, previewOpening !== null && { opacity: 0.5 }]}
-                disabled={previewOpening !== null}
-                onPress={() => void openDetectedLocally(server)}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${server.name} on your network`}
-              >
-                {previewOpening === server.port ? (
-                  <ActivityIndicator size="small" color={theme.colors.primary} />
-                ) : (
-                  <Icon name="wifi" size={14} color={theme.colors.primary} />
-                )}
-                <Text style={styles.headerPreviewActiveText}>
-                  {previewOpening === server.port ? 'Opening…' : 'Open on network'}
-                </Text>
-              </Pressable>
-              <Pressable
-                style={styles.detectedPreviewButton}
-                onPress={() => {
-                  setPreviewServer(server);
-                  setStaticPreviewOpen(true);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`Share ${server.name} over the internet`}
-              >
-                <Icon name="globe" size={14} color={theme.colors.primary} />
-                <Text style={styles.headerPreviewActiveText}>Share online</Text>
-              </Pressable>
-            </View>
-          </View>
-        ))}
       {workspaceFile !== null ? (
         <View style={styles.workspaceFileBar}>
           <Pressable
@@ -3781,6 +3730,23 @@ export function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {/* Below the connection bars (Docs, Gmail, Calendar, Contacts): those
+          describe the session itself, while a server comes and goes. */}
+      {session.devServers
+        ?.filter((server) => server.scope !== 'project')
+        .map((server) => (
+          <RunningServerCard
+            key={server.port}
+            server={server}
+            opening={previewOpening === server.port}
+            disabled={previewOpening !== null}
+            onOpen={() => void openDetectedLocally(server)}
+            onShare={() => {
+              setPreviewServer(server);
+              setStaticPreviewOpen(true);
+            }}
+          />
+        ))}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
       ) : null}
@@ -9756,68 +9722,6 @@ const styles = StyleSheet.create((theme) => ({
   headerBookmarkCount: {
     color: theme.colors.textMuted,
     fontSize: 11 * theme.fontScale,
-    fontWeight: '600',
-  },
-  detectedPreviewCard: {
-    marginHorizontal: theme.spacing.md,
-    marginVertical: theme.spacing.xs,
-    paddingVertical: theme.spacing.xs,
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.xs,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    columnGap: theme.spacing.md,
-    rowGap: theme.spacing.xs,
-  },
-  detectedPreviewTitle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    flexShrink: 1,
-    minWidth: 120,
-    minHeight: 40,
-  },
-  detectedPreviewDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.colors.tone.done,
-  },
-  detectedPreviewName: {
-    flexShrink: 1,
-    color: theme.colors.text,
-    fontSize: 13 * theme.fontScale,
-    fontWeight: '600',
-  },
-  detectedPreviewPort: { color: theme.colors.textMuted, fontWeight: '400' },
-  detectedPreviewActions: {
-    flexDirection: 'row',
-    gap: theme.spacing.xs,
-    flexGrow: 1,
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
-  },
-  detectedPreviewButton: {
-    flexDirection: 'row',
-    gap: 6,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  headerPreviewActiveText: {
-    color: theme.colors.primary,
-    fontSize: 13 * theme.fontScale,
     fontWeight: '600',
   },
   headerActions: {
