@@ -660,6 +660,44 @@ it('hides explicitly left rooms while preserving bindings, history and worker ou
       activatedAt: binding!.activatedAt,
     });
     expect(await store.getEvent(accountId, sourceId, event.eventId)).not.toBeNull();
+    await store.setSourcePaused(accountId, sourceId, false);
+    const { projectChatDay } = await import('./knowledge-projection.js');
+    const relative = await projectChatDay(store, root, {
+      accountId,
+      sourceId,
+      projectId,
+      displayName: 'Room',
+      activatedAt: binding!.activatedAt!,
+      day: event.occurredAt.toISOString().slice(0, 10),
+    });
+    // Leave reporting must not strand an accepted deletion before Knowledge projection finishes.
+    const ingest = store.ingestEvent.bind(store);
+    const spy = vi.spyOn(store, 'ingestEvent').mockImplementation(async (input) => {
+      const result = await ingest(input);
+      await store.markSourceLeft(accountId, sourceId);
+      return result;
+    });
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload: {
+          ...event,
+          occurredAt: event.occurredAt.toISOString(),
+          eventId: '$leave-delete',
+          targetEventId: event.eventId,
+          kind: 'redaction',
+          body: null,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      const text = await readFile(join(root, 'knowledge', projectId, relative), 'utf8');
+      expect(text).toContain('[Message deleted]');
+      expect(text).not.toContain(event.body);
+    } finally {
+      spy.mockRestore();
+    }
   } finally {
     await app.close();
   }

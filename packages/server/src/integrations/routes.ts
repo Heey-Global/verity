@@ -313,7 +313,7 @@ export function registerIntegrationRoutes(
         }
         const day = affectedChatDay(input, target);
         if (day) {
-          const binding = (await store.listSources(result.projectId)).find(
+          const binding = (await store.listSources(result.projectId, true)).find(
             (item) => item.accountId === input.accountId && item.sourceId === input.sourceId,
           );
           if (!binding?.activatedAt)
