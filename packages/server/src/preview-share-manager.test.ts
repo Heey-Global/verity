@@ -1797,6 +1797,25 @@ describe('sweepOrphanedPreviewShares', () => {
     });
   });
 
+  it('preserves the original revocation time during orphan cleanup', async () => {
+    const { store, docker, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      { ...record, state: 'revoking', revokedAt: began },
+    ]);
+    await sweepOrphanedPreviewShares({
+      store: store as unknown as EventStore,
+      docker: docker as unknown as DockerClient,
+      now: () => new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['creating', 'active', 'revoking'],
+      'revoked',
+      expect.objectContaining({ revokedAt: began }),
+    );
+  });
+
   it('closes out the remaining shares when one connector cannot be removed', async () => {
     const { store, docker, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([

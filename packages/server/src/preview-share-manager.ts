@@ -1495,7 +1495,7 @@ export async function sweepOrphanedPreviewShares(options: {
       );
       await options.store.transitionPublicPreviewShare(share.id, ACTIVE_STATES, 'revoked', {
         connectorContainerId: null,
-        revokedAt: now(),
+        revokedAt: share.revokedAt ?? now(),
       });
       try {
         options.onShareEnded?.({
