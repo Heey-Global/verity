@@ -779,10 +779,35 @@ describe('managed dev servers', () => {
           { local: false },
         ),
       ).rejects.toThrow('edge unavailable');
-      expect((await instanceOf()).state).toBe('running');
+      expect((await instanceOf()).state).toBe('stopped');
       await manager.tick();
       expect((await instanceOf()).state).toBe('stopped');
       expect(shares.shares).toHaveLength(0);
+    });
+
+    it('preserves stop intent across restart when Local teardown fails without a public link', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.setLocal('s1', 'Demo', false)).rejects.toThrow('edge unavailable');
+      expect(await ctx.store.managedDevServers.getInstance(id)).toMatchObject({
+        desired: 'stopped',
+        state: 'stopped',
+      });
+      manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: (_project, worktree) => worktree,
+        now: () => now,
+      });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      expect(sandbox.started).toHaveLength(1);
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), id);
     });
 
     it('conditional cleanup preserves access enabled by another client', async () => {

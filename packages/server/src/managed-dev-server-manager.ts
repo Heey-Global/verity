@@ -380,7 +380,8 @@ export class ManagedDevServerManager {
         try {
           await this.unpublish(instance);
         } catch (error) {
-          this.pendingLinkEnds.add(instance.id);
+          if (!(await this.hasLivePublicLink(instance)))
+            await this.stopInstance(project, instance, null);
           throw error;
         }
       }
@@ -459,11 +460,14 @@ export class ManagedDevServerManager {
       }
       if (!instance) return;
       await this.servers.updateInstance(instance.id, { localAccess: false });
-      this.pendingLinkEnds.add(instance.id);
-      await this.unpublish(instance);
-      if (!(await this.hasLivePublicLink(instance)))
+      if (!(await this.hasLivePublicLink(instance))) {
+        // Persist stop intent before attempting edge cleanup: a Core restart
+        // must not forget that switching off the last access stopped this run.
         await this.stopInstance(project, instance, null);
-      else this.refreshQuietly(project);
+      } else {
+        await this.unpublish(instance);
+        this.refreshQuietly(project);
+      }
       this.pendingLinkEnds.delete(instance.id);
     });
     return this.viewOf(sessionId, entry.id);
