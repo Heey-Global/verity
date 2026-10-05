@@ -8,6 +8,8 @@ import {
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
   MEMORY_SYSTEM_PROMPT,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
@@ -26,6 +28,7 @@ import {
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryEventBus } from './bus.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import {
   BackendTerminationUnconfirmedError,
   Conductor,
@@ -90,6 +93,7 @@ const ZERO_USAGE = {
 const RESUME_SET = [
   TERMINOLOGY_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
@@ -1071,6 +1075,29 @@ describe('Conductor.sendTurn', () => {
     });
     expect(fake.last().env?.VERITY_TEST).toBe('1');
     expect(seen.length).toBeGreaterThan(0); // events fanned out to the bus
+  });
+
+  it('runs every turn of a planning session in the planning mode, whatever the turn asked for', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    const fake = scriptedBackend({ text: 'hi' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      permissionMode: 'auto',
+      worktreeExists: async () => true,
+    });
+
+    // A per-turn posture must not reopen file changes while the operator is still
+    // refining the plan; only ending planning in Verity does that.
+    await conductor.sendTurn('s1', 'go', { permissionMode: 'acceptEdits' });
+    expect(fake.last().permissionMode).toBe(PLANNING_PERMISSION_MODE);
+    expect(fake.last().appendSystemPrompt).toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+
+    await ctx.store.setSessionPlanning('s1', 'implemented');
+    await conductor.sendTurn('s1', 'go on', { permissionMode: 'acceptEdits' });
+    expect(fake.last().permissionMode).toBe('acceptEdits');
+    expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
   });
 
   it('threads per-turn allow/deny tool lists into the turn options', async () => {
@@ -6395,6 +6422,32 @@ describe('Conductor mid-turn steering (#101)', () => {
     const prompts = (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt');
     expect(prompts.find((event) => event.text === 'first')?.steered).toBeUndefined();
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
+  });
+
+  it('queues a turn behind the live one when asked, even though it could steer', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.dispatchTurn('s1', 'plan it');
+    await waitFor(fake.ready);
+
+    // The implementation of an accepted plan must start as its own turn: steered
+    // into the planning turn, it would run under the planning posture it ends.
+    const res = await conductor.dispatchTurn('s1', 'implement', undefined, {
+      queueBehindActiveTurn: true,
+    });
+
+    expect(res).toEqual({ queued: true });
+    expect(fake.steered).toEqual([]);
+    expect(conductor.queuedItems('s1').map((i) => i.text)).toEqual(['implement']);
+
+    fake.release();
+    await waitFor(() => !conductor.isBusy('s1'));
   });
 
   it('falls back to queueing when the live turn has no writable steering channel', async () => {

@@ -53,6 +53,17 @@ export {
   parseAutomationProposal,
   type ParsedAutomationProposal,
 } from './automation.js';
+export {
+  END_PLANNING_TOOL,
+  IMPLEMENT_PLAN_DISPLAY,
+  IMPLEMENT_PLAN_PROMPT,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
+  PRESENT_PLAN_TOOL,
+  START_PLANNING_TOOL,
+  planningToolName,
+  type PlanningToolName,
+} from './planning.js';
 export { DELEGATION_SYSTEM_PROMPT } from './delegation.js';
 export { AUTONOMY_RESUME_SYSTEM_PROMPT, AUTONOMY_SYSTEM_PROMPT } from './autonomy.js';
 export { BREVITY_SYSTEM_PROMPT } from './brevity.js';

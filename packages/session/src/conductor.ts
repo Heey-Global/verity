@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   appendExternalPromptData,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   turnFailureErrorKind,
   type AgentEvent,
@@ -12,6 +13,7 @@ import {
   type AttachmentUpload,
 } from '@verity/events';
 import { isLocalProject } from '@verity/store';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import type {
   EventStore,
   QueuedTurnOpts,
@@ -684,6 +686,11 @@ export interface DispatchTurnOptions {
    * the next foreground; keyed dispatches dedupe so the replay returns the prior
    * result instead of dispatching a second turn. Omitted by in-app turns. */
   clientReplyId?: string;
+  /** Wait for the running turn instead of steering into it. A turn that must run
+   *  under different session state than the live one — the implementation that
+   *  follows an accepted plan — cannot be folded into the planning turn still
+   *  running under the old posture. */
+  queueBehindActiveTurn?: boolean;
 }
 
 interface QueuedConductorTurn {
@@ -3112,7 +3119,10 @@ export class Conductor {
       // it runs as a `--resume` turn that materializes the file correctly. Images
       // still steer into the running turn as before.
       const hasFileAttachment = opts.attachments?.some((a) => a.kind === 'file') ?? false;
-      const turn = hasFileAttachment ? undefined : this.turns.get(sessionId);
+      const turn =
+        hasFileAttachment || dispatchOpts.queueBehindActiveTurn === true
+          ? undefined
+          : this.turns.get(sessionId);
       if (
         turn &&
         (await turn.steer({
@@ -5382,8 +5392,17 @@ export class Conductor {
     includeRuntimePrompt: boolean,
     localProject: boolean,
   ): RunTurnOptions {
-    const permissionMode = opts.permissionMode ?? this.deps.permissionMode;
+    // Planning mode is the session's, not the request's: it overrides whatever
+    // posture the turn asked for, because a turn that could still change files is
+    // exactly what planning exists to prevent.
+    const planning = session.planning === 'active';
+    const permissionMode = planning
+      ? PLANNING_PERMISSION_MODE
+      : (opts.permissionMode ?? this.deps.permissionMode);
     const timeoutMs = opts.timeoutMs ?? this.deps.timeoutMs;
+    const systemPrompt = includeRuntimePrompt
+      ? turnSystemPrompt(localProject)
+      : RESUME_SYSTEM_PROMPT;
     // exactOptionalPropertyTypes: omit absent keys rather than assign undefined.
     return {
       store: this.deps.store,
@@ -5394,9 +5413,9 @@ export class Conductor {
       // Resumed contexts already carry the heavy runtime policy, but still receive
       // compact convergence directives that must affect existing long-lived
       // sessions: user-facing terminology and visible-media output contracts.
-      appendSystemPrompt: includeRuntimePrompt
-        ? turnSystemPrompt(localProject)
-        : RESUME_SYSTEM_PROMPT,
+      appendSystemPrompt: planning
+        ? `${systemPrompt}\n\n${PLANNING_ACTIVE_SYSTEM_PROMPT}`
+        : systemPrompt,
       model: opts.model ?? session.model,
       storeSessionId: sessionId,
       // Hold stdin open so a mid-turn operator message can be folded into THIS

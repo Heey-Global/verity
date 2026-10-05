@@ -59,7 +59,11 @@ interface Harness {
     sessionId: string;
     prompt: string;
     turnOpts: unknown;
-    dispatchOpts: { displayPrompt?: string; clientReplyId?: string };
+    dispatchOpts: {
+      displayPrompt?: string;
+      clientReplyId?: string;
+      queueBehindActiveTurn?: boolean;
+    };
   }>;
 }
 
@@ -78,6 +82,7 @@ function build(
     /** Advertise the control-plane session tools, as `embedded.ts` does for that project. */
     sessionTools?: boolean;
     linkedTools?: boolean;
+    planningTools?: boolean;
     deferLinkedApproval?: boolean;
     /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
     authorizeCall?: McpGatewayDeps['authorizeCall'];
@@ -97,7 +102,9 @@ function build(
         ? ['verity_http_request', 'verity_secret_run']
         : options.linkedTools === true
           ? ['verity_send_session_message', 'verity_list_linked_sessions']
-          : ['verity_http_request'],
+          : options.planningTools === true
+            ? ['verity_start_planning', 'verity_present_plan', 'verity_end_planning']
+            : ['verity_http_request'],
     ...(options.sessionTools === true
       ? {
           extraToolsForProject: () =>
@@ -196,7 +203,9 @@ function build(
     // live permission state, and `verity_session_handoff` delivers through the conductor.
     // Wired only when those tools are advertised, so every other test keeps the
     // absent-surface property above.
-    ...(options.sessionTools === true || options.linkedTools === true
+    ...(options.sessionTools === true ||
+    options.linkedTools === true ||
+    options.planningTools === true
       ? {
           pendingPermissions: () => [],
           isBusy: () => false,
@@ -310,6 +319,90 @@ async function withListener(
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+it('lets the agent start planning and present plans, but leaves ending it to the operator', async () => {
+  const harness = build({ planningTools: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    cloneDir: '__local__-alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-planning-s1',
+    model: 'claude-opus-5',
+  });
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    let id = 0;
+    const call = async (name: string, args: object) => {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: (id += 1),
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      return (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
+    };
+    // Outside planning mode there is no plan to show or end.
+    expect((await call('verity_present_plan', { plan: '1. Do it' })).isError).toBe(true);
+
+    expect((await call('verity_start_planning', {})).isError).toBeUndefined();
+    expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+    expect((await call('verity_present_plan', { plan: '1. Do it' })).isError).toBeUndefined();
+    // Starting and presenting only restrict the agent or show text: no card.
+    expect(harness.approvals).toEqual([]);
+
+    expect((await call('verity_end_planning', {})).isError).toBeUndefined();
+  });
+  // Ending planning would let the agent change files again, so it is the
+  // operator's decision even when the agent asks for it.
+  expect(harness.approvals.map((approval) => approval.toolName)).toEqual(['verity_end_planning']);
+  expect((await harness.store.getSession('s1'))?.planning).toBe('implemented');
+  expect(harness.dispatches).toEqual([
+    expect.objectContaining({
+      sessionId: 's1',
+      dispatchOpts: expect.objectContaining({ queueBehindActiveTurn: true }),
+    }),
+  ]);
+});
+
+it('does not end planning when the operator declines the card', async () => {
+  const harness = build({ planningTools: true, allow: false });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    cloneDir: '__local__-alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-planning-s1',
+    model: 'claude-opus-5',
+  });
+  await harness.store.setSessionPlanning('s1', 'active');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const response = await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'verity_end_planning', arguments: {} },
+    });
+    expect(response.status).toBe(200);
+  });
+  expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+  expect(harness.dispatches).toEqual([]);
+});
 
 it('delivers linked agent messages automatically until a renewal card is needed', async () => {
   const harness = build({ linkedTools: true });

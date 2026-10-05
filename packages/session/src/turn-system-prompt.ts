@@ -10,6 +10,7 @@ import {
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
   MEMORY_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
@@ -59,6 +60,8 @@ ${AUTONOMY_SYSTEM_PROMPT}
 
 ${CHOICES_SYSTEM_PROMPT}
 
+${PLANNING_SYSTEM_PROMPT}
+
 ${DELEGATION_SYSTEM_PROMPT}
 
 ${MEMORY_SYSTEM_PROMPT}
@@ -101,10 +104,15 @@ const LOCAL_PROJECT_TURN_SYSTEM_PROMPT = assembleTurnSystemPrompt(true);
  * contexts onto the current outcome and Quick-Action semantics without paying
  * the full fresh-context contracts on every turn. The automation contract also
  * reaches existing sessions so they can propose the current confirmation fence.
+ * The planning directive is here for the same reason: an operator asking a
+ * long-running session to plan first gets no enforced planning mode unless that
+ * session knows the tool that starts it.
  */
 export const RESUME_SYSTEM_PROMPT = `${TERMINOLOGY_SYSTEM_PROMPT}
 
 ${AUTONOMY_RESUME_SYSTEM_PROMPT}
+
+${PLANNING_SYSTEM_PROMPT}
 
 ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 

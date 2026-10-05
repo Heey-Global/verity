@@ -8,6 +8,7 @@ import {
 } from './acp-backend.js';
 import { toolNameFromKind } from './acp-adapter.js';
 import { applySelectOption } from './acp-session-config.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { CODEX_DEFAULT_MODEL, parseCodexModel } from './codex-model.js';
 
 /** codex-acp's own `_meta` key, distinct from the Claude adapter's `claudeCode`. */
@@ -25,6 +26,18 @@ const MODEL_CONFIG_ID = 'model';
  *  spawn broker sets the same value as `INITIAL_AGENT_MODE`; this is the
  *  in-session confirmation, not a second source of truth. */
 const CODEX_AGENT_MODE = 'agent-full-access';
+
+/** A planning turn runs in Codex's read-only sandbox instead: it can read the
+ *  workspace and run read-only commands, and anything further needs an approval
+ *  that a planning turn refuses (`acp-backend.ts`). */
+const CODEX_PLANNING_MODE = 'read-only';
+
+/** The only two modes this profile ever asks for. It reads `opts.permissionMode`
+ *  solely to tell a planning turn apart, so no caller-supplied string can become
+ *  the session's mode. */
+export function codexMode(permissionMode: string | undefined): string {
+  return permissionMode === PLANNING_PERMISSION_MODE ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
+}
 
 async function selectModel(setup: AcpSessionSetup, opts: RunTurnOptions): Promise<void> {
   const wanted = parseCodexModel(opts.model);
@@ -55,11 +68,11 @@ const CODEX_ACP_PROFILE: AcpBackendProfile = {
   sessionMeta: () => ({}),
   defaultModelLabel: () => CODEX_DEFAULT_MODEL,
   promptText: (opts) => promptWithSystemDirectives(opts),
-  sessionMode: () => CODEX_AGENT_MODE,
-  // No vocabulary, stated rather than omitted: `sessionMode` above ignores
-  // `opts.permissionMode` and returns a constant, so no caller-supplied string can
-  // become this session's mode and there is nothing for a §5b allowlist to bound.
-  // The day that arrow starts reading its options, this line has to change with it.
+  sessionMode: (opts) => codexMode(opts.permissionMode),
+  // No vocabulary, stated rather than omitted: `codexMode` maps every caller value
+  // onto one of two constants, so no caller-supplied string can become this
+  // session's mode and there is nothing for a §5b allowlist to bound. The day it
+  // starts passing a value through, this line has to change with it.
   permissionModes: undefined,
   configureSession: selectModel,
 };

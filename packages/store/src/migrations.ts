@@ -3648,6 +3648,19 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropIndex('secret_provider_permissions_brokered_v2_active_unique').execute();
     },
   },
+  // Planning mode is session state rather than a per-turn option: it has to hold
+  // across every message the operator exchanges while refining a plan, and the
+  // turn that starts it is not the one it first restricts.
+  '0133_session_planning': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column planning text check (planning in ('active', 'implemented', 'discarded'))`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column planning`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

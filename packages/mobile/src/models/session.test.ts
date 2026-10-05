@@ -2590,3 +2590,49 @@ it('keeps a session usable after a missing knowledge error', async () => {
     model.stop();
   }
 });
+
+describe('SessionModel — planning', () => {
+  it('follows planning mode from the poll and ends it on the operator decision', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    let planning: string | undefined = 'active';
+    client.getActivity = vi.fn(async () => ({ busy: false, queued: [], planning })) as never;
+    const decidePlanning = vi.fn(async () => {
+      planning = 'implemented';
+      return { planning: 'implemented' as const };
+    });
+    client.decidePlanning = decidePlanning;
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    try {
+      model.start();
+      await flush();
+      await flush();
+      // An agent can start planning mid-turn; only the poll tells the app.
+      expect(model.state.planning).toBe('active');
+
+      await model.decidePlanning('implement');
+      expect(decidePlanning).toHaveBeenCalledWith('s1', 'implement');
+      expect(model.state.planning).toBe('implemented');
+      expect(model.state.planningError).toBeUndefined();
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('explains a decision that lost to another one', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    client.decidePlanning = vi.fn(async () => {
+      throw new VerityApiError(409, 'this session is not in planning mode');
+    });
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    try {
+      model.start();
+      await model.decidePlanning('discard');
+      expect(model.state.planningError).toBe('Planning already ended.');
+      expect(model.state.decidingPlanning).toBe(false);
+    } finally {
+      model.stop();
+    }
+  });
+});

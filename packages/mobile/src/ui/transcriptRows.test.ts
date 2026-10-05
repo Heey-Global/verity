@@ -314,4 +314,34 @@ describe('plan rows', () => {
   it('leaves a TodoWrite call it cannot read as an ordinary tool', () => {
     expect(groupRows([toolCall('tool-x', { name: 'TodoWrite' })])[0]?.kind).toBe('tool-group');
   });
+
+  it('lifts presented plans out of tool runs and marks only the newest as latest', () => {
+    const presented = (id: string, name: string, plan: string): ToolCallMessage => {
+      const message = toolCall(id, { name });
+      message.tool.input = { plan };
+      return message;
+    };
+    const rows = groupRows([
+      toolCall('tool-a'),
+      presented('tool-v1', 'mcp__verity__verity_present_plan', '1. First draft'),
+      userText('u1'),
+      presented('tool-v2', 'verity_present_plan', '1. Revised'),
+      toolCall('tool-b'),
+    ]);
+    // The "Implement plan" decision refers to the newest plan only; an older one
+    // keeping its button would implement a plan the operator already revised.
+    expect(
+      rows.map((row) =>
+        row.kind === 'plan-proposal' ? `proposal:${rowKey(row)}:${String(row.latest)}` : row.kind,
+      ),
+    ).toEqual([
+      'tool-group',
+      'proposal:tool-v1:false',
+      'message',
+      'proposal:tool-v2:true',
+      'tool-group',
+    ]);
+    expect(rows[3]).toMatchObject({ markdown: '1. Revised' });
+    expect(rowRecycleType(rows[3]!)).toBe('plan-proposal:short');
+  });
 });

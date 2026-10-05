@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AcpCodexBackend } from './acp-codex-backend.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
@@ -551,6 +552,24 @@ describe('AcpCodexBackend', () => {
     });
     expect(write(fake.writes, 'session/set_mode')).toMatchObject({
       params: { modeId: 'agent-full-access' },
+    });
+  });
+
+  it('runs a planning turn in the read-only sandbox', async () => {
+    // Planning must not change files. Full access would leave that to the model's
+    // good behaviour; the read-only sandbox makes Codex itself refuse the write.
+    const fake = acpSpawner();
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-planning',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      spawner: fake.spawner,
+    });
+    expect(write(fake.writes, 'session/set_mode')).toMatchObject({
+      params: { modeId: 'read-only' },
     });
   });
 

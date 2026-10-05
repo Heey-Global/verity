@@ -1,6 +1,7 @@
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
@@ -1530,6 +1531,35 @@ describe('AcpClaudeBackend', () => {
     // Pulling that back to `auto` would turn a plan Verity declined to approve
     // into a turn that runs unattended.
     expect(fake.setModes).toEqual(['auto']);
+  });
+
+  it('refuses every request of a planning turn without raising a card', async () => {
+    // In Verity's planning mode the operator accepts a plan through Verity, the same
+    // way for every agent. A card here would let one tap carry out an unaccepted plan.
+    const fake = acpSpawner({ planPermission: true, modes: CLAUDE_MODES });
+    const asked: string[] = [];
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-planning',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      spawner: fake.spawner,
+      permissionControl: true,
+      onPermissionRequest: (request, respond) => {
+        asked.push(request.toolName);
+        respond({ behavior: 'allow' });
+      },
+    });
+    expect(asked).toEqual([]);
+    expect(fake.writes).toContainEqual(
+      expect.objectContaining({
+        id: 'permission-1',
+        result: { outcome: { outcome: 'selected', optionId: 'plan' } },
+      }),
+    );
+    expect(fake.setModes).toEqual(['plan']);
   });
 
   it('keeps the posture an approved plan chose instead of pulling the turn back into planning', async () => {

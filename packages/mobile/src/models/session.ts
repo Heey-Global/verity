@@ -7,6 +7,7 @@ import {
   type QueuedItem,
   type SessionDetail,
   type SessionHistoryPage,
+  type SessionPlanning,
   type TurnRequest,
 } from '../api.js';
 import type { SessionState } from '../reducer.js';
@@ -148,6 +149,13 @@ export interface SessionModelState {
    * (branch switching unconfigured / older server) — the header then falls back to
    * the load-once branch from `useBranches`. */
   branch: string | undefined;
+  /** Planning mode (`active`) or how the last planning round ended; `undefined`
+   * when the session never planned. Drives the planning bar and plan buttons. */
+  planning: SessionPlanning | undefined;
+  /** True while an "implement" / "discard" decision is in flight. */
+  decidingPlanning: boolean;
+  /** Why the last planning decision failed, if it did. */
+  planningError: string | undefined;
   /** True when older history exists before the loaded tail — the screen shows a
    * "load earlier" affordance / triggers {@link SessionModel.loadOlder} on scroll. */
   hasOlder: boolean;
@@ -280,6 +288,11 @@ export class SessionModel {
   // tracks an external/agent `git checkout` without a remount. undefined until the
   // first poll resolves (or when the server doesn't report it).
   private _branch: string | undefined;
+  // Planning mode from the session detail and the activity poll. undefined = the
+  // session never planned (or an older server).
+  private _planning: SessionPlanning | undefined;
+  private _decidingPlanning = false;
+  private _planningError: string | undefined;
   private _activityTimer: ReturnType<typeof setInterval> | undefined;
   // Guards against overlapping polls: the interval fires on a fixed cadence
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
@@ -422,6 +435,9 @@ export class SessionModel {
       // left it showing as a duplicate alongside the solid sent bubble.
       waitingMessages: this.subtractDeliveredWaiting(),
       branch: this._branch,
+      planning: this._planning,
+      decidingPlanning: this._decidingPlanning,
+      planningError: this._planningError,
       hasOlder: this._hasOlder,
       oldestHistorySeq: this.stream.oldestSeq,
       loadingOlder: this._loadingOlder,
@@ -869,6 +885,7 @@ export class SessionModel {
         activity.busy === this._busy &&
         terminationUnconfirmed === this._terminationUnconfirmed &&
         activity.branch === this._branch &&
+        activity.planning === this._planning &&
         sameItems(activity.queued, this._waiting) &&
         !nameChanged &&
         !modelSwitchPendingChanged &&
@@ -882,6 +899,7 @@ export class SessionModel {
       this._terminationUnconfirmed = terminationUnconfirmed;
       this._waiting = activity.queued;
       this._branch = activity.branch;
+      this._planning = activity.planning;
       if (nameChanged) this._name = activity.name;
       // A freshly reported queue entry may cover a local echo — reconcile before
       // emitting.
@@ -948,6 +966,8 @@ export class SessionModel {
       if (this._resumable === undefined) {
         this._resumable = detail.resumable;
       }
+      // Seed only: the activity poll and the operator's own decision are fresher.
+      if (!this._activityLoaded) this._planning = detail.planning;
       this.emit();
     } catch {
       // leave undefined; the send path's 410 handling is the backstop
@@ -1155,6 +1175,28 @@ export class SessionModel {
    * retryable. The `_decidingPermission` guard drops a double-tap so one intent never
    * double-POSTs.
    */
+  /** End planning mode from the app: implement the latest plan, or discard it. A
+   * 409 means another decision already ended planning; the next poll shows how. */
+  async decidePlanning(action: 'implement' | 'discard'): Promise<void> {
+    if (this._decidingPlanning) return;
+    this._decidingPlanning = true;
+    this._planningError = undefined;
+    this.emit();
+    try {
+      const result = await this.opts.client.decidePlanning(this.opts.sessionId, action);
+      this._planning = result.planning;
+    } catch (error) {
+      this._planningError =
+        error instanceof VerityApiError && error.status === 409
+          ? 'Planning already ended.'
+          : 'Could not end planning. Try again.';
+    } finally {
+      this._decidingPlanning = false;
+      this.emit();
+    }
+    void this.loadActivity();
+  }
+
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {
     if (this._decidingPermission !== undefined) return; // a decision is already in flight
     this._decidingPermission = toolUseId;

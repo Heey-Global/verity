@@ -1,3 +1,5 @@
+import { PRESENT_PLAN_TOOL, planningToolName } from '@verity/events';
+
 import type { ToolCall } from '../happy/message.js';
 
 /**
@@ -50,4 +52,21 @@ export function planView(tool: ToolCall): PlanView | null {
 /** "Plan · 2 of 5 done" — the card's headline. */
 export function planHeadline(plan: PlanView): string {
   return `Plan · ${String(plan.completed)} of ${String(plan.entries.length)} done`;
+}
+
+/**
+ * The Markdown plan a call presents for the operator's decision, or null when it
+ * presents none. Two sources: Verity's `verity_present_plan` gateway tool, which
+ * every agent uses in planning mode, and Claude's own `ExitPlanMode`, which Claude
+ * may still call there — refused, but its plan is the same plan. A presentation
+ * the gateway refused (outside planning mode) never reached the operator.
+ */
+export function planProposal(tool: ToolCall): string | null {
+  const presented = planningToolName(tool.name) === PRESENT_PLAN_TOOL;
+  if (!presented && tool.name !== 'ExitPlanMode') return null;
+  if (presented && tool.state === 'error') return null;
+  const input = tool.input;
+  if (typeof input !== 'object' || input === null) return null;
+  const plan = (input as Record<string, unknown>).plan;
+  return typeof plan === 'string' && plan.trim() !== '' ? plan : null;
 }

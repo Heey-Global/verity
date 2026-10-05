@@ -48,6 +48,15 @@ export interface SessionsTable {
    * Advanced monotonically by {@link EventStore.setSessionSeen}.
    */
   last_seen_event_count: ColumnType<number | null, number | null | undefined, number | null>;
+  /**
+   * Planning mode (see {@link SessionPlanning}). NULL = the session never planned.
+   * While `active`, every turn runs without permission to change files.
+   */
+  planning: ColumnType<
+    'active' | 'implemented' | 'discarded' | null,
+    'active' | 'implemented' | 'discarded' | null | undefined,
+    'active' | 'implemented' | 'discarded' | null
+  >;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 

@@ -27,7 +27,7 @@ import {
   type AcpEventAdapterOptions,
 } from './acp-adapter.js';
 import { SessionWriter } from './ingest.js';
-import { assertSafeArgs, nodeSpawner } from './runner.js';
+import { PLANNING_PERMISSION_MODE, assertSafeArgs, nodeSpawner } from './runner.js';
 
 const ZERO_USAGE: Usage = {
   inputTokens: 0,
@@ -695,7 +695,13 @@ export async function runAcpTurn(
       }
       return response;
     };
-    if (opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
+    // A planning turn refuses every request without asking. Whatever an agent asks
+    // for here is a step beyond reading — an edit, a command outside its read-only
+    // sandbox, Claude's own `ExitPlanMode` — and approving it would carry out part
+    // of a plan the operator has not accepted yet. The operator leaves planning
+    // through Verity instead, which ends it for every agent the same way.
+    const planning = opts.permissionMode === PLANNING_PERMISSION_MODE;
+    if (planning || opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
       // No approval UI is wired, so every request is refused. On a mode picker
       // the refusal IS "no, keep planning" and lands the session in `plan`;
       // pulling it back to the configured posture would turn a turn Verity

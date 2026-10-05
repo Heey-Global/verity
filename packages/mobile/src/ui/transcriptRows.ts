@@ -1,5 +1,5 @@
 import type { Message, ToolCallMessage } from '../happy/message.js';
-import { planView, type PlanView } from './plan.js';
+import { planProposal, planView, type PlanView } from './plan.js';
 
 /**
  * Transcript row grouping (pure → unit-testable). The session chat list renders
@@ -13,13 +13,17 @@ import { planView, type PlanView } from './plan.js';
  *  - collapse a run of `TaskCreate`/`TaskUpdate` calls into one `todo-group`;
  *  - lift a plan snapshot out of its tool run as a `plan` checklist. Snapshots
  *    with nothing between them collapse to the newest, and only the level's last
- *    plan is `latest` — the one the screen shows open.
+ *    plan is `latest` — the one the screen shows open;
+ *  - lift a plan presented for the operator's decision out of its tool run as a
+ *    `plan-proposal`. Only the newest is `latest`: the one an "Implement plan"
+ *    decision refers to.
  */
 export type Row =
   | { kind: 'message'; message: Message }
   | { kind: 'tool-group'; id: string; tools: ToolCallMessage[] }
   | { kind: 'todo-group'; id: string; tools: ToolCallMessage[] }
   | { kind: 'plan'; message: ToolCallMessage; plan: PlanView; latest: boolean }
+  | { kind: 'plan-proposal'; message: ToolCallMessage; markdown: string; latest: boolean }
   | {
       kind: 'delegated-agent';
       id: string;
@@ -135,8 +139,12 @@ function buildRows(
       });
       continue;
     }
+    const proposal = planProposal(m.tool);
     const plan = planView(m.tool);
-    if (plan !== null) {
+    if (proposal !== null) {
+      flushAll();
+      rows.push({ kind: 'plan-proposal', message: m, markdown: proposal, latest: false });
+    } else if (plan !== null) {
       flushAll();
       const row: Row = { kind: 'plan', message: m, plan, latest: false };
       if (rows[rows.length - 1]?.kind === 'plan') rows[rows.length - 1] = row;
@@ -150,14 +158,19 @@ function buildRows(
     }
   }
   flushAll();
+  markLatest(rows, 'plan');
+  markLatest(rows, 'plan-proposal');
+  return rows;
+}
+
+function markLatest(rows: Row[], kind: 'plan' | 'plan-proposal'): void {
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
-    if (row?.kind === 'plan') {
+    if (row?.kind === kind) {
       rows[i] = { ...row, latest: true };
-      break;
+      return;
     }
   }
-  return rows;
 }
 
 /** Group a flat message list into renderable rows (see {@link Row}). Order is
@@ -197,7 +210,8 @@ export function reconcileTranscriptRows(rows: Row[], previousRows: readonly Row[
       case 'message':
         return old.kind === 'message' && old.message === row.message ? old : row;
       case 'plan':
-        return old.kind === 'plan' && old.message === row.message && old.latest === row.latest
+      case 'plan-proposal':
+        return old.kind === row.kind && old.message === row.message && old.latest === row.latest
           ? old
           : row;
       case 'tool-group':
@@ -233,6 +247,7 @@ export function rowKey(row: Row): string {
       return row.id;
     case 'message':
     case 'plan':
+    case 'plan-proposal':
       return row.message.id;
   }
 }
@@ -269,6 +284,8 @@ function lengthBucket(length: number): string {
 export function rowRecycleType(row: Row): string {
   // The latest plan renders open, older ones as one line.
   if (row.kind === 'plan') return row.latest ? 'plan:open' : 'plan:closed';
+  // A proposal is Markdown of any length, bucketed like prose.
+  if (row.kind === 'plan-proposal') return `plan-proposal:${lengthBucket(row.markdown.length)}`;
   if (row.kind !== 'message') return row.kind;
   const message = row.message;
   if (message.kind === 'agent-text') {
