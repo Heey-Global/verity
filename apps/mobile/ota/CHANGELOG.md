@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.6](https://github.com/Heey-Global/verity/compare/mobile-v1.52.5...mobile-v1.52.6) (2026-10-05)
+
+
+### Features
+
+* **remote:** add correlated Core transport diagnostics ([#1150](https://github.com/Heey-Global/verity/issues/1150)) ([809a201](https://github.com/Heey-Global/verity/commit/809a201fe4553fdb8ea8da7183b2e9b844b9b220))
+
 ## [1.52.5](https://github.com/Heey-Global/verity/compare/mobile-v1.52.4...mobile-v1.52.5) (2026-10-05)
 
 
