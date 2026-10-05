@@ -200,7 +200,7 @@ export class SessionSandboxProvisioner {
     const name = sessionContainerName(input.sessionId);
     const runtimePath = this.runtimePath(input.sessionId, input.project.id);
     const prepared = await this.options.prepareRuntime(input.project, input.sessionId, runtimePath);
-    const runtime: ProjectRecord = { ...input.project, containerName: name };
+    const runtime: ProjectRecord = { ...input.project, containerName: name, state: 'active' };
     const toVolume = (source: string, target: string) => {
       const subpath = relative(this.options.dataVolumeRoot, source);
       if (subpath.startsWith('..') || subpath.startsWith('/'))

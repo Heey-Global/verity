@@ -156,7 +156,11 @@ it('preserves inherited post-start and initializes the private gated workspace',
     prepareRuntime: async () => ({}),
     bootstrap,
   });
-  await provisioner.ensure(project, { sessionId: 'session', worktree: '/data/private/session' });
+  const runtime = await provisioner.ensure(
+    { ...project, state: 'sleeping' },
+    { sessionId: 'session', worktree: '/data/private/session' },
+  );
+  expect(runtime.state).toBe('active');
   expect(createContainer.mock.calls[0]?.[0]).toMatchObject({ command });
   expect(bootstrap).toHaveBeenCalledWith(
     expect.objectContaining({ containerName: expect.stringContaining('verity-session-') }),

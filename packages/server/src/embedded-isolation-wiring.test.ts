@@ -29,6 +29,15 @@ function property(expression: ts.NewExpression, name: string): string | undefine
 }
 
 describe('production session isolation wiring', () => {
+  it('branch metadata polling resolves private state without waking a session', () => {
+    const branches = nodes(ts.isVariableDeclaration).find(
+      (node) => node.name.getText(source) === 'branches',
+    );
+    const text = branches?.initializer?.getText(source);
+    expect(text).toMatch(/readOnly\s*\? await resolveSessionProject/);
+    expect(text).toMatch(/'rev-parse'/);
+    expect(text).toMatch(/'for-each-ref'/);
+  });
   it('migration explicitly stops legacy managed processes before copying their workspace', () => {
     const serverSource = readFileSync(new URL('./server.ts', import.meta.url), 'utf8');
     const migration = serverSource.slice(

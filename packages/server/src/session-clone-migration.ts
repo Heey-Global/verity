@@ -114,7 +114,7 @@ export async function migrateLegacySessionClone(
   const privateGit = join(stage, '.git');
   // Transport clones omit unreachable objects, including staged-only blobs and rebase commits.
   // Copy the snapshot's complete object store and original refs with independent inodes.
-  for (const entry of ['objects', 'refs', 'packed-refs']) {
+  for (const entry of ['objects', 'refs', 'packed-refs', 'logs', 'config']) {
     const source = join(backup, 'common-git', entry);
     if (existsSync(source)) copy(source, join(privateGit, entry));
   }
@@ -124,16 +124,55 @@ export async function migrateLegacySessionClone(
     if (entry === 'gitdir' || entry === 'commondir' || entry === 'locked') continue;
     copy(join(backup, 'worktree-git', entry), join(privateGit, entry));
   }
-  let origin: string | undefined;
-  try {
-    origin = (
-      await exec('git', ['--git-dir', common, 'remote', 'get-url', 'origin'])
-    ).stdout.trim();
-  } catch {
-    /* An offline repository has no origin. */
+  // Worktree-specific settings override the common config, but storage and include
+  // paths cannot follow the checkout into a private container.
+  const worktreeConfig = join(privateGit, 'config.worktree');
+  if (existsSync(worktreeConfig)) {
+    const { stdout } = await exec('git', [
+      'config',
+      '--no-includes',
+      '--file',
+      worktreeConfig,
+      '--null',
+      '--list',
+    ]);
+    for (const entry of stdout.split('\0').filter(Boolean)) {
+      const separator = entry.indexOf('\n');
+      const key = separator < 0 ? entry : entry.slice(0, separator);
+      const value = separator < 0 ? 'true' : entry.slice(separator + 1);
+      await exec('git', [
+        'config',
+        '--file',
+        join(privateGit, 'config'),
+        '--replace-all',
+        key,
+        value,
+      ]);
+    }
+    rmSync(worktreeConfig);
   }
-  if (origin) await exec('git', ['-C', stage, 'remote', 'set-url', 'origin', origin]);
-  else await exec('git', ['-C', stage, 'remote', 'remove', 'origin']);
+  const configFile = join(privateGit, 'config');
+  const { stdout: configEntries } = await exec('git', [
+    'config',
+    '--no-includes',
+    '--file',
+    configFile,
+    '--null',
+    '--list',
+  ]);
+  const keys = new Set(
+    configEntries
+      .split('\0')
+      .filter(Boolean)
+      .map((entry) => entry.split('\n')[0]!),
+  );
+  for (const key of keys) {
+    if (/^(include\.path|includeif\..*\.path)$/i.test(key))
+      throw new Error('Git config includes require manual recovery before migration');
+    if (/^(core\.(worktree|hookspath|bare)|extensions\.worktreeconfig)$/i.test(key))
+      await exec('git', ['config', '--file', configFile, '--unset-all', key]);
+  }
+  await exec('git', ['config', '--file', configFile, 'core.bare', 'false']);
   await assertIndependentSessionClone(stage);
   // Rename on the checkout's filesystem; backups may live on another volume.
   const destination = opts.destinationPath ? resolve(opts.destinationPath) : checkout;

@@ -16,7 +16,7 @@ function fixture(failHook = false) {
   mkdirSync(runtime);
   writeFileSync(
     join(path, '.devcontainer/devcontainer.json'),
-    JSON.stringify({ remoteUser: 'dev', postCreateCommand: 'npm ci && echo private-hook' }),
+    JSON.stringify({ remoteUser: 'root', postCreateCommand: 'npm ci && echo private-hook' }),
   );
   const commands: string[] = [];
   const containerCommand = vi.fn<ContainerCommandRunner>(async ({ command }) => {
@@ -50,7 +50,7 @@ describe('private devcontainer lifecycle', () => {
     expect(f.commands[2]).toContain('npm ci && echo private-hook');
     expect(f.containerCommand.mock.calls[2]?.[0]).toMatchObject({
       containerName: 'private',
-      user: 'dev',
+      user: '1000:1000',
       workdir: '/work',
     });
     expect(f.commands.slice(3)).toEqual(['touch /tmp/verity-post-create-complete', 'ready']);

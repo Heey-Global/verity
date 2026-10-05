@@ -24,7 +24,8 @@ settings refuse session startup instead of falling back to a shared workspace.
 
 Devcontainer post-create hooks initialize each private checkout before releasing
 the inherited post-start gate. Reusing a container retains its completed setup;
-recreating it runs initialization again. Dependency installations stay in that
+recreating it runs initialization again. Hooks run under the fixed agent identity,
+including when checkout configuration requests a privileged remote user. Dependency installations stay in that
 session's writable workspace.
 
 Project knowledge remains an explicit shared exception: sources and shared
@@ -47,7 +48,9 @@ cannot resume through the isolated runner until it is migrated. An explicit
 session-owned processes, and preserves a complete backup of its working files and
 available Git metadata before preparing a private destination outside the shared
 project directory. Its index, staged-only objects, branch or detached HEAD, and
-available merge/rebase state are retained. Metadata symlinks or object alternates
+available merge/rebase state, repository settings, upstreams, and branch reflogs are
+retained. Shared workspace and hook paths are removed from the private config;
+external config includes require manual recovery. Metadata symlinks or object alternates
 require manual recovery rather than silently preserving shared Git storage.
 
 The session workspace record changes only after the destination passes validation.

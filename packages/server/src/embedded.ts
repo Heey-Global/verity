@@ -2215,7 +2215,20 @@ export async function buildEmbeddedServer(
             }
             const project = await eventStore.getProject(session.projectId);
             if (!project) throw new Error('Project is unavailable');
-            const runtimeProject = await ensureSessionProject(session.sessionId, project);
+            const readOnly = [
+              'rev-parse',
+              'for-each-ref',
+              'symbolic-ref',
+              'reflog',
+              'status',
+              'diff',
+              'log',
+              'show',
+              'merge-base',
+            ].includes(args[index + 2] ?? '');
+            const runtimeProject = readOnly
+              ? await resolveSessionProject(session.sessionId, project)
+              : await ensureSessionProject(session.sessionId, project);
             return createSandboxGit({
               containerName: runtimeProject.containerName,
               hostRoot: session.worktree,

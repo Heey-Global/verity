@@ -2318,7 +2318,7 @@ export class ProvisionerImpl implements Provisioner {
           await this.containerCommand({
             containerName,
             dockerHost: this.opts.dockerHostForBuild,
-            user: settings.remoteUser,
+            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
             workdir: '/work',
             command: underNodeModulesInstallLock(settings.postCreateCommand, NODE_MODULES_TARGET),
           });
@@ -2330,7 +2330,7 @@ export class ProvisionerImpl implements Provisioner {
       await this.containerCommand({
         containerName,
         dockerHost: this.opts.dockerHostForBuild,
-        user: settings.remoteUser,
+        user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
         workdir: '/work',
         command: `touch ${DEVCONTAINER_POST_CREATE_READY_FILE}`,
       });

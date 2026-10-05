@@ -112,3 +112,26 @@ it('relocates outside the shared project while preserving the original checkout'
   expect(readFileSync(join(destination, 'untracked'), 'utf8')).toBe('keep\n');
   expect(git(destination, 'branch', '--show-current')).toBe('session');
 });
+
+it('preserves upstreams, remotes, repository settings and reflog recovery commits', async () => {
+  git(source, 'remote', 'add', 'origin', 'https://example.com/project.git');
+  git(source, 'remote', 'add', 'backup', 'https://example.com/backup.git');
+  git(source, 'config', 'branch.session.remote', 'origin');
+  git(source, 'config', 'branch.session.merge', 'refs/heads/session');
+  git(source, 'config', 'core.autocrlf', 'false');
+  git(source, 'config', 'core.hooksPath', join(source, 'hooks'));
+  writeFileSync(join(checkout, 'file'), 'recoverable\n');
+  git(checkout, 'commit', '-am', 'recoverable');
+  const recoverable = git(checkout, 'rev-parse', 'HEAD');
+  git(checkout, 'reset', '--hard', 'HEAD~1');
+  const reflog = git(checkout, 'reflog', 'show', '--format=%H', 'session');
+  await migrateLegacySessionClone({ checkoutPath: checkout, backupRoot, stopped: true });
+  expect(git(checkout, 'config', 'branch.session.remote')).toBe('origin');
+  expect(git(checkout, 'config', 'branch.session.merge')).toBe('refs/heads/session');
+  expect(git(checkout, 'remote', 'get-url', 'backup')).toBe('https://example.com/backup.git');
+  expect(git(checkout, 'config', 'core.autocrlf')).toBe('false');
+  expect(() => git(checkout, 'config', 'core.hooksPath')).toThrow();
+  expect(git(checkout, 'reflog', 'show', '--format=%H', 'session')).toBe(reflog);
+  git(checkout, 'gc', '--prune=now');
+  expect(git(checkout, 'show', `${recoverable}:file`)).toBe('recoverable');
+});
