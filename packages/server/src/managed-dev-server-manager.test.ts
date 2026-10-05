@@ -765,6 +765,26 @@ describe('managed dev servers', () => {
       expect(shares.shares).toHaveLength(0);
     });
 
+    it('retries process cleanup if online-only approval cannot remove Local access', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(
+        manager.approve(
+          's1',
+          'Demo',
+          { command: 'node changed.mjs', workdir: '.' },
+          { local: false },
+        ),
+      ).rejects.toThrow('edge unavailable');
+      expect((await instanceOf()).state).toBe('running');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      expect(shares.shares).toHaveLength(0);
+    });
+
     it('conditional cleanup preserves access enabled by another client', async () => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });

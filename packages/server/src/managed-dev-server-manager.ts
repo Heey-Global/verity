@@ -377,7 +377,12 @@ export class ManagedDevServerManager {
         instance =
           (await this.servers.updateInstance(instance.id, { localAccess: false })) ?? instance;
         // Still published from an earlier approved run: that address goes too.
-        await this.unpublish(instance);
+        try {
+          await this.unpublish(instance);
+        } catch (error) {
+          this.pendingLinkEnds.add(instance.id);
+          throw error;
+        }
       }
       if (instance?.state === 'running') await this.publish(project, approved, instance);
     });
