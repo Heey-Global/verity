@@ -61,8 +61,8 @@ export class ManagedDevServerPortsFullError extends Error {
   }
 }
 
-export const MANAGED_DEV_SERVER_NAME_MAX = 60;
-export const MANAGED_DEV_SERVER_COMMAND_MAX = 2000;
+const MANAGED_DEV_SERVER_NAME_MAX = 60;
+const MANAGED_DEV_SERVER_COMMAND_MAX = 2000;
 
 /** `my-api` and `My API` both become `MY_API`; two names with the same key collide. */
 export function managedDevServerNameKey(name: string): string {

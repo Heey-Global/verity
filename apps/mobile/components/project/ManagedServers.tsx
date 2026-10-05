@@ -16,7 +16,7 @@ import { Icon } from '../Icon';
 // internal and never shown here; the only address is the network one.
 
 /** Whether the switch reads on: the server should run or is on its way. */
-export function managedSwitchOn(server: ManagedDevServer): boolean {
+function managedSwitchOn(server: ManagedDevServer): boolean {
   const instance = server.instance;
   return (
     instance !== null &&

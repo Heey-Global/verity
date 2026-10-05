@@ -3612,3 +3612,49 @@ describe('managed dev server client', () => {
     });
   });
 });
+
+describe('managed dev server actions', () => {
+  it.each(['start', 'stop', 'restart'] as const)(
+    'sends %s to the selected entry',
+    async (action) => {
+      const server = {
+        id: 'entry/1',
+        name: 'Web',
+        command: 'npm run dev',
+        workdir: '.',
+        approved: true,
+        instance: null,
+        elsewhere: [],
+      };
+      const { fetch, calls } = fakeFetch(json({ server }));
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      expect(await client.controlManagedDevServer('s/1', server.id, action)).toEqual(server);
+      expect(calls[0]?.url).toBe(
+        `http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/${action}`,
+      );
+      expect(calls[0]?.init?.method).toBe('POST');
+    },
+  );
+
+  it('approves the displayed command, reads logs, stops another instance, and deletes the entry', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ servers: [] }),
+      json({ logs: 'ready\n' }),
+      json({ servers: [] }),
+      new Response(null, { status: 204 }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const seen = { command: 'npm run dev', workdir: 'web' };
+    expect(await client.approveManagedDevServer('s/1', 'entry/1', seen)).toEqual([]);
+    expect(jsonBody(calls[0])).toEqual(seen);
+    expect(await client.managedDevServerLogs('s/1', 'entry/1')).toBe('ready\n');
+    expect(await client.stopManagedDevServerInstance('s/1', 'instance/2')).toEqual([]);
+    await client.deleteManagedDevServer('s/1', 'entry/1');
+    expect(calls.map(({ url, init }) => [url, init?.method])).toEqual([
+      ['http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/approve', 'POST'],
+      ['http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/logs', 'GET'],
+      ['http://host/sessions/s%2F1/managed-dev-server-instances/instance%2F2/stop', 'POST'],
+      ['http://host/sessions/s%2F1/managed-dev-servers/entry%2F1', 'DELETE'],
+    ]);
+  });
+});

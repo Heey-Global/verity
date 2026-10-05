@@ -11,7 +11,7 @@ import type { ListeningProcess } from './listening-ports.js';
 import type { LocalPreviewShare } from './local-preview-manager.js';
 
 /** Sandbox ports Verity hands out to managed instances. Internal only. */
-export const MANAGED_SANDBOX_PORTS: readonly number[] = Array.from(
+const MANAGED_SANDBOX_PORTS: readonly number[] = Array.from(
   { length: 1000 },
   (_, index) => 41_000 + index,
 );

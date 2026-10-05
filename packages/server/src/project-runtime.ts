@@ -668,7 +668,7 @@ function taggedPidsScript(): string[] {
 }
 
 /** Argument: $1 instance id. */
-export function managedStopScript(): string {
+function managedStopScript(): string {
   return [
     ...taggedPidsScript(),
     'pids=$(tagged "$1")',
@@ -682,7 +682,7 @@ export function managedStopScript(): string {
 
 /** Argument: $1 instance id. Prints `alive` when a tagged process exists, then
  *  `exit <code>` once the launcher recorded one. */
-export function managedStatusScript(project: ProjectRecord, instanceId: string): string {
+function managedStatusScript(project: ProjectRecord, instanceId: string): string {
   const exit = shellQuote(managedFile(project, instanceId, 'exit'));
   const log = shellQuote(managedFile(project, instanceId, 'log'));
   return [
@@ -695,7 +695,7 @@ export function managedStatusScript(project: ProjectRecord, instanceId: string):
   ].join('\n');
 }
 
-export function parseManagedStatus(output: string): { alive: boolean; exitCode: number | null } {
+function parseManagedStatus(output: string): { alive: boolean; exitCode: number | null } {
   const lines = output.split('\n').map((line) => line.trim());
   const exit = lines.find((line) => line.startsWith('exit '));
   const code = exit === undefined ? Number.NaN : Number(exit.slice(5));
