@@ -21,7 +21,20 @@ beforeEach(async () => {
   await truncateAll(ctx.db);
   store = new EventStore(ctx.db);
   await store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-  dispatchTurn = vi.fn<PlanningDeps['dispatchTurn']>(async () => ({ queued: true }));
+  dispatchTurn = vi.fn<PlanningDeps['dispatchTurn']>(
+    async (sessionId, prompt, _opts, dispatchOpts) => ({
+      queued: true,
+      accepted: await store.enqueuePlanImplementation(
+        {
+          id: crypto.randomUUID(),
+          sessionId,
+          prompt,
+          opts: { displayPrompt: dispatchOpts.displayPrompt! },
+        },
+        dispatchOpts.planningRevision!,
+      ),
+    }),
+  );
   app = Fastify();
   const planning = createSessionPlanning({ eventStore: store, dispatchTurn });
   registerPlanningRoutes(app, { eventStore: store, planning });
@@ -49,8 +62,56 @@ describe('planning routes', () => {
       's1',
       `${IMPLEMENT_PLAN_PROMPT}\n\nApproved plan (revision 1):\n1. Do it`,
       {},
-      { displayPrompt: IMPLEMENT_PLAN_DISPLAY, queueBehindActiveTurn: true },
+      { displayPrompt: IMPLEMENT_PLAN_DISPLAY, queueBehindActiveTurn: true, planningRevision: 1 },
     );
+  });
+
+  it('recovers an accepted implementation if dispatch is interrupted before the live queue update', async () => {
+    await store.startSessionPlanning('s1');
+    const revision = await store.presentSessionPlan('s1', 'Approved work');
+    dispatchTurn.mockImplementationOnce(async (sessionId, prompt, _opts, dispatchOpts) => {
+      await store.enqueuePlanImplementation(
+        {
+          id: 'accepted-plan',
+          sessionId,
+          prompt,
+          opts: { displayPrompt: dispatchOpts.displayPrompt! },
+        },
+        dispatchOpts.planningRevision!,
+      );
+      throw new Error('process interrupted after durable acceptance');
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/planning',
+      payload: { action: 'implement', planningRevision: revision },
+    });
+    expect(res.statusCode).toBe(500);
+    const recoveredStore = new EventStore(ctx.db);
+    expect((await recoveredStore.getSession('s1'))?.planning).toBe('implemented');
+    expect(await recoveredStore.listQueuedTurns()).toEqual([
+      expect.objectContaining({
+        id: 'accepted-plan',
+        sessionId: 's1',
+        prompt: expect.stringContaining('Approved work'),
+      }),
+    ]);
+    expect((await decide('implement')).statusCode).toBe(409);
+    expect(dispatchTurn).toHaveBeenCalledOnce();
+  });
+
+  it('keeps approval available if the durable implementation queue insert fails', async () => {
+    await store.startSessionPlanning('s1');
+    const revision = await store.presentSessionPlan('s1', 'Approved work');
+    await store.enqueueTurn({ id: 'duplicate-id', sessionId: 's1', prompt: 'existing', opts: {} });
+    await expect(
+      store.enqueuePlanImplementation(
+        { id: 'duplicate-id', sessionId: 's1', prompt: 'implementation', opts: {} },
+        revision!,
+      ),
+    ).rejects.toThrow();
+    expect((await store.getSession('s1'))?.planning).toBe('active');
+    expect((await store.listQueuedTurns()).map((turn) => turn.prompt)).toEqual(['existing']);
   });
 
   it('refuses an approval from a device that still shows the previous plan', async () => {
@@ -78,8 +139,8 @@ describe('planning routes', () => {
   it('checks the revision atomically when a newer plan arrives after the initial read', async () => {
     await store.startSessionPlanning('s1');
     const oldRevision = await store.presentSessionPlan('s1', 'Original plan');
-    const originalSet = store.setSessionPlanning.bind(store);
-    vi.spyOn(store, 'setSessionPlanning').mockImplementationOnce(async (...args) => {
+    const originalSet = store.enqueuePlanImplementation.bind(store);
+    vi.spyOn(store, 'enqueuePlanImplementation').mockImplementationOnce(async (...args) => {
       await store.presentSessionPlan('s1', 'Racing revision');
       return originalSet(...args);
     });
@@ -90,7 +151,7 @@ describe('planning routes', () => {
     });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ code: 'stalePlan' });
-    expect(dispatchTurn).not.toHaveBeenCalled();
+    expect(await store.listQueuedTurns()).toEqual([]);
     expect((await store.getSession('s1'))?.planning).toBe('active');
   });
 
@@ -124,7 +185,7 @@ describe('planning routes', () => {
     await store.presentSessionPlan('s1', '1. Do it');
     const results = await Promise.all([decide('implement'), decide('implement')]);
     expect(results.map((res) => res.statusCode).sort()).toEqual([200, 409]);
-    expect(dispatchTurn).toHaveBeenCalledOnce();
+    expect(await store.listQueuedTurns()).toHaveLength(1);
   });
 
   it('keeps planning active when the implementation turn cannot be dispatched', async () => {

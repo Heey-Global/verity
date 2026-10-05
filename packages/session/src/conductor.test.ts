@@ -2403,6 +2403,40 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('recovers the implementation accepted before a process interruption exactly once', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    await ctx.store.enqueuePlanImplementation(
+      {
+        id: 'plan-implementation',
+        sessionId: 's1',
+        prompt: 'Implement approved work',
+        opts: { displayPrompt: 'Implement plan' },
+      },
+      revision!,
+    );
+    const seenPrompts: string[] = [];
+    const backend: Backend = {
+      run: async (opts) => {
+        expect(opts.planning).not.toBe(true);
+        seenPrompts.push(opts.prompt ?? '');
+        return { sessionId: 's1', exitCode: 0, stderr: '', aborted: false };
+      },
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.recover();
+    await vi.waitFor(() => expect(seenPrompts).toEqual(['Implement approved work']));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(await ctx.store.listQueuedTurns()).toEqual([]);
+    await conductor.recover();
+    expect(seenPrompts).toHaveLength(1);
+  });
+
   it('recover is a no-op when the store has no queued turns or orphan tail prompts', async () => {
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
     await expect(conductor.recover()).resolves.toBeUndefined();
@@ -6491,6 +6525,45 @@ describe('Conductor mid-turn steering (#101)', () => {
       await waitFor(() => !conductor.isBusy('s1'));
     }
     expect(fake.last().planning).toBe(true);
+  });
+
+  it('durably accepts and dispatches a plan when the session is idle', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const enqueue = vi.spyOn(ctx.store, 'enqueuePlanImplementation');
+    try {
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement approved work',
+          {},
+          { planningRevision: revision! },
+        ),
+      ).toEqual({ queued: true });
+      await waitFor(fake.ready);
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
+      expect(fake.last().planning).not.toBe(true);
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement approved work',
+          {},
+          { planningRevision: revision! },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
   });
 
   it('queues a turn behind the live one when asked, even though it could steer', async () => {

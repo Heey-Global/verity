@@ -19,7 +19,7 @@ export interface PlanningDeps {
     prompt: string,
     opts: TurnOptions,
     dispatchOpts: DispatchTurnOptions,
-  ) => Promise<{ queued: boolean }>;
+  ) => Promise<{ queued: boolean; accepted?: boolean }>;
 }
 
 export interface SessionPlanningActions {
@@ -47,24 +47,15 @@ export function createSessionPlanning(deps: PlanningDeps): SessionPlanningAction
       const session = await store.getSession(sessionId);
       if (session?.planningRevision !== planningRevision || session.planningPlan == null)
         return false;
-      // Conditional on `active`: a tap and the approval of an agent's request can
-      // race, and only one of them may start an implementation.
-      if (!(await store.setSessionPlanning(sessionId, 'implemented', ['active'], planningRevision)))
-        return false;
-      try {
-        // Behind the live turn, never steered into it: the planning turn still runs
-        // under the read-only posture this decision just ended.
-        await deps.dispatchTurn(
-          sessionId,
-          `${IMPLEMENT_PLAN_PROMPT}\n\nApproved plan (revision ${planningRevision}):\n${session.planningPlan}`,
-          {},
-          { displayPrompt: IMPLEMENT_PLAN_DISPLAY, queueBehindActiveTurn: true },
-        );
-      } catch (error) {
-        // Nothing will implement the plan, so do not report planning as over.
-        await store.setSessionPlanning(sessionId, 'active', ['implemented'], planningRevision);
-        throw error;
-      }
+      // Acceptance and the implementation backlog entry share one transaction;
+      // recovery can resume it even if the server exits before updating its queue.
+      const result = await deps.dispatchTurn(
+        sessionId,
+        `${IMPLEMENT_PLAN_PROMPT}\n\nApproved plan (revision ${planningRevision}):\n${session.planningPlan}`,
+        {},
+        { displayPrompt: IMPLEMENT_PLAN_DISPLAY, queueBehindActiveTurn: true, planningRevision },
+      );
+      if (result.accepted === false) return false;
       return true;
     },
     async discard(sessionId) {

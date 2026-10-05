@@ -691,6 +691,8 @@ export interface DispatchTurnOptions {
    *  follows an accepted plan — cannot be folded into the planning turn still
    *  running under the old posture. */
   queueBehindActiveTurn?: boolean;
+  /** Atomically accept this plan revision with the durable implementation queue. */
+  planningRevision?: number;
 }
 
 interface QueuedConductorTurn {
@@ -1013,7 +1015,10 @@ export class Conductor {
   // a genuine retry can run; successes stay so a late re-flush is a no-op. Bounded
   // per session by {@link MAX_SEEN_REPLIES_PER_SESSION} — process-local, so a
   // restart at worst re-runs a mid-flight reply (still ordered by the durable queue).
-  private readonly seenReplies = new Map<string, Map<string, Promise<{ queued: boolean }>>>();
+  private readonly seenReplies = new Map<
+    string,
+    Map<string, Promise<{ queued: boolean; accepted?: boolean }>>
+  >();
   // Whether new turns run with the permission control loop on (#27). Default off.
   private readonly permissionControl: boolean;
   // The default backend each turn runs through (ADR 0001 / #143). Default: the
@@ -3058,7 +3063,7 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
-  ): Promise<{ queued: boolean }> {
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     const { clientReplyId } = dispatchOpts;
     if (clientReplyId === undefined) {
       return this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
@@ -3074,8 +3079,8 @@ export class Conductor {
   private dispatchIdempotent(
     sessionId: string,
     clientReplyId: string,
-    run: () => Promise<{ queued: boolean }>,
-  ): Promise<{ queued: boolean }> {
+    run: () => Promise<{ queued: boolean; accepted?: boolean }>,
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     let replies = this.seenReplies.get(sessionId);
     if (replies === undefined) {
       replies = new Map();
@@ -3107,7 +3112,7 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
-  ): Promise<{ queued: boolean }> {
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     const displayPrompt = dispatchOpts.displayPrompt ?? prompt;
     if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
     // Busy → first try to STEER the running turn (#101 Stage B): if it exposes a
@@ -3117,7 +3122,7 @@ export class Conductor {
     // check and the write) do we fall back to enqueueing behind it (#90 Stage A),
     // which runs the message as a fresh `--resume` turn the moment claude is free.
     // Validate the prompt here too so we never steer/queue a blank turn.
-    if (this.inFlight.has(sessionId)) {
+    if (this.inFlight.has(sessionId) || dispatchOpts.planningRevision !== undefined) {
       if (opts.requireStandalone === true) throw new SessionBusyError(sessionId);
       if (!turnHasContent(prompt, opts))
         throw new Error('turn must have a prompt or an attachment');
@@ -3132,7 +3137,10 @@ export class Conductor {
       const runningPlanning = this.runningPlanning.get(sessionId);
       const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
       const turn =
-        hasFileAttachment || postureChanged || dispatchOpts.queueBehindActiveTurn === true
+        hasFileAttachment ||
+        postureChanged ||
+        dispatchOpts.queueBehindActiveTurn === true ||
+        dispatchOpts.planningRevision !== undefined
           ? undefined
           : this.turns.get(sessionId);
       if (
@@ -3162,18 +3170,24 @@ export class Conductor {
       // stored content-addressed; the row carries refs (rehydrated by {@link recover}).
       // `id` is the store row key AND the operator's retract handle ({@link dequeue}).
       const id = randomUUID();
+      let accepted = true;
       const enqueue = (async (): Promise<void> => {
         const storedOpts = await this.toStorableOpts(
           opts,
           displayPrompt === prompt ? undefined : displayPrompt,
           dispatchOpts.peer,
         );
-        await this.deps.store.enqueueTurn({
-          id,
-          sessionId,
-          prompt,
-          opts: storedOpts,
-        });
+        const input = { id, sessionId, prompt, opts: storedOpts };
+        if (dispatchOpts.planningRevision !== undefined) {
+          if (
+            !(await this.deps.store.enqueuePlanImplementation(input, dispatchOpts.planningRevision))
+          ) {
+            accepted = false;
+            return;
+          }
+        } else {
+          await this.deps.store.enqueueTurn(input);
+        }
         // Re-fetch the live queue AFTER the await (a concurrent enqueue may have
         // created it meanwhile) and append — the in-memory queue stays authoritative
         // for the live drain.
@@ -3202,6 +3216,7 @@ export class Conductor {
       // If the in-flight turn settled DURING the persist await, its drain already ran
       // and found the queue empty (we hadn't pushed yet) — kick one now so the item
       // isn't stranded until the next turn. If it's still in flight, its settle drains.
+      if (!accepted) return { queued: false, accepted: false };
       if (!this.inFlight.has(sessionId)) this.drainNext(sessionId);
       return { queued: true };
     }

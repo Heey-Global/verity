@@ -4413,6 +4413,32 @@ export class EventStore implements EventSink {
       .execute();
   }
 
+  /** Accept a plan and its implementation backlog entry together. A restart
+   * between acceptance and the live queue update must still recover the work. */
+  async enqueuePlanImplementation(input: QueuedTurnInput, revision: number): Promise<boolean> {
+    return this.db.transaction().execute(async (tx) => {
+      const result = await tx
+        .updateTable('sessions')
+        .set({ planning: 'implemented' })
+        .where('session_id', '=', input.sessionId)
+        .where('planning', '=', 'active')
+        .where('planning_revision', '=', revision)
+        .where('planning_plan', 'is not', null)
+        .executeTakeFirst();
+      if (result.numUpdatedRows === 0n) return false;
+      await tx
+        .insertInto('queued_turns')
+        .values({
+          id: input.id,
+          session_id: input.sessionId,
+          prompt: input.prompt,
+          opts: JSON.stringify(input.opts),
+        })
+        .execute();
+      return true;
+    });
+  }
+
   /**
    * Remove one queued turn from the durable backlog by its `id` — called when the
    * turn dispatches (drained as the session goes idle) or the operator retracts it
