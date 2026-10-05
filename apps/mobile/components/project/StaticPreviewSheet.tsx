@@ -719,8 +719,8 @@ export function StaticPreviewSheet({
       accessibilityLabel="Dev servers"
     >
       <Text style={styles.caption}>
-        View an app the agent is running, like a website or an API, in your browser, or share it
-        with others through a link.
+        Make a server running in this session, like a website or an API, available on your network
+        or through a public link.
       </Text>
       {devServersLoading && devServers.length === 0 ? (
         <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
@@ -773,8 +773,8 @@ export function StaticPreviewSheet({
   const renderFolderTab = () => (
     <>
       <Text style={styles.caption}>
-        View a folder of finished files, like an HTML page or slides, as a website in your browser,
-        or share it with others through a link.
+        Make a folder of finished files, like an HTML page or slides, available as a website on your
+        network or through a public link.
       </Text>
       <View style={styles.browserHeader}>
         {path ? (

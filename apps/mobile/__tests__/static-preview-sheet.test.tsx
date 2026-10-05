@@ -117,11 +117,11 @@ it('separates running servers and static folders into two tabs', async () => {
 // tab was a bare file list and users could not tell the two paths apart.
 it('explains what each tab previews', async () => {
   renderSheet(makeClient());
-  expect(await screen.findByText(/View an app the agent is running/)).toBeTruthy();
-  expect(screen.queryByText(/View a folder of finished files/)).toBeNull();
+  expect(await screen.findByText(/Make a server running in this session/)).toBeTruthy();
+  expect(screen.queryByText(/Make a folder of finished files/)).toBeNull();
   fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
-  expect(await screen.findByText(/View a folder of finished files/)).toBeTruthy();
-  expect(screen.queryByText(/View an app the agent is running/)).toBeNull();
+  expect(await screen.findByText(/Make a folder of finished files/)).toBeTruthy();
+  expect(screen.queryByText(/Make a server running in this session/)).toBeNull();
 });
 
 it('opens on static files when no server runs in the session', async () => {
