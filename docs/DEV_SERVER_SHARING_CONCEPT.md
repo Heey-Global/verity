@@ -195,8 +195,7 @@ its two access switches decide whether it runs.
 - _Local_ on starts the server if needed and publishes it on the operator's network. The first
   time, or after a changed command, a confirmation shows the command and subdirectory and the
   tap approves them.
-- _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the
-  public link with a PIN. Local stays off unless the operator turns it on.
+- _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the public link with a PIN. If the command is not approved yet, the same confirmation as for Local comes first; approval covers running the command, not local publishing, so Local stays off. Local stays off unless the operator turns it on.
 - Turning one switch off ends only that access. Turning the last one off stops the server;
   when that also ends a public link, the operator confirms first.
 - When a public link expires while Local is off, the server stops as well, so it does not keep
@@ -204,17 +203,16 @@ its two access switches decide whether it runs.
 - A server the agent started without approval runs with both switches off. This is the one
   exception; the header reads "Running, not shared yet", and Local approves and publishes it.
 - A crashed server has both switches off; turning either on starts it again.
+- Restart and Start again in the detail view keep the accesses that were on, or turn Local on when none was. Stop turns both off, with the same confirmation when it ends a public link.
 
 **Preview sheet.** The Dev server tab shows one block per entry. The block header holds the name,
-the state as plain text ("Running", "Starting…", "Crashed", "Running, not shared yet"), and on
+"Stopped" or the state as plain text ("Running", "Starting…", "Crashed", "Running, not shared yet"), and on
 the right "Details ›", or "View output ›" after a crash; the whole header opens the detail view.
 Below it a card with two rows, Local and Shared online, each with its icon, its switch, and,
-while on, its address or expiry and PIN with an open or share button.
+while on, its address. The Local address opens the browser when tapped and has an open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in; below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies it.
 
-The detail view shows the state and since when, Restart and Stop (or Start again and Ask the
-agent after a crash), the output, the command with its subdirectory and the note that the agent
-changes it, and "Delete entry" at the bottom. Stop ends the server together with both accesses.
-
+The detail view shows the state and since when, Restart and Stop while it runs, Start again and Ask the agent after a crash, and Start when stopped, the output, the command with its subdirectory and the note that the agent
+changes it, and "Delete entry" at the bottom. 
 Servers started past Verity follow under "Not managed" with "Save as entry", which asks the
 agent to create the entry rather than copying the detected command line: that line usually
 hard-codes its port and may carry secrets. The section disappears when empty. With no entries
