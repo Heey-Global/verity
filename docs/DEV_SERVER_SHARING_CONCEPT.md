@@ -196,17 +196,20 @@ its two access switches decide whether it runs.
   time, or after a changed command, a confirmation shows the command and subdirectory and the
   tap approves them.
 - _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the public link with a PIN. If the command is not approved yet, the same confirmation as for Local comes first. Local stays off unless the operator turns it on; the switches, not the approval, decide which accesses exist.
-- Turning Shared online off always asks first, because it ends a public link. Turning Local off ends only local access; when it is the last switch on, the server stops too.
-- When a public link expires while Local is off, the server stops as well, so it does not keep
-  running unnoticed and keep the sandbox awake.
+- Turning Shared online off always asks first, because it ends a public link.
+- Whenever no access is left on, the server stops: turning off the last switch, either one,
+  or a public link expiring while Local is off. It does not keep running unnoticed and keep
+  the sandbox awake.
+- Every start, from a switch or a button, shows the confirmation first when the command it
+  would run is not approved, including after the agent changed it.
 - A server the agent started without approval runs with both switches off. This is the one
   exception; the header reads "Running, not shared yet", and Local approves and publishes it.
 - The switches show what the operator wants, not what currently runs. A crash leaves them as
   they were: a public link stays valid and shows its offline page (user flow decisions above),
   and the header reads "Crashed". Turning a switch off or on works as usual.
-- Start again and Restart in the detail view start the server with the switches as they are.
-  When both are off they turn Local on, and an unapproved command gets the confirmation
-  first, exactly as the Local switch does; neither button publishes an unapproved command.
+- Start, Start again and Restart in the detail view start the server with the switches as they
+  are, and turn Local on when both are off. Turning a switch on for a crashed server starts it
+  again, which is the intent of the switch.
   Stop turns both switches off, with the same confirmation when it ends a public link.
 
 **Preview sheet.** The Dev server tab shows one block per entry. The block header holds the name,
