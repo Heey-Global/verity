@@ -78,6 +78,30 @@ async function grantMember(permissions: { read: boolean; execute: boolean }): Pr
 }
 
 describe('tasks routes', () => {
+  it('blocks member assignment to an administrator-only projectless session', async () => {
+    const create = await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      headers: asMember,
+      payload: { title: 'Injected', sessionId: 'loose' },
+    });
+    expect(create.statusCode).toBe(404);
+    await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      headers: asMember,
+      payload: { title: 'Personal' },
+    });
+    const assign = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${T1}`,
+      headers: asMember,
+      payload: { sessionId: 'loose' },
+    });
+    expect(assign.statusCode).toBe(404);
+    expect(await store.tasks.listAssigned('loose')).toEqual([]);
+  });
+
   it('saves a capture idempotently and lists it by bucket', async () => {
     const first = await app.inject({
       method: 'PUT',
@@ -293,6 +317,27 @@ describe('executeTasksTool', () => {
       [T1, undefined],
       [T2, false],
     ]);
+  });
+
+  it('updates assigned tasks belonging to different users', async () => {
+    for (const [id, ownerUserId] of [
+      [T1, ADMIN],
+      [T2, MEMBER],
+    ]) {
+      await store.tasks.upsert({
+        id: id!,
+        ownerUserId: ownerUserId!,
+        origin: 'user',
+        title: 'Assigned',
+        projectId: 'p1',
+        sessionId: 's1',
+      });
+    }
+    await run('s1', { action: 'update', id: T2, status: 'in_progress' });
+    await run('s1', { action: 'complete', id: T2, result: 'Verified' });
+    await run('s1', { action: 'drop', id: T1, result: 'Superseded' });
+    expect((await store.tasks.get(T2, MEMBER))?.status).toBe('done');
+    expect((await store.tasks.get(T1, ADMIN))?.status).toBe('dropped');
   });
 
   it('updates, completes and drops only tasks assigned to the calling session', async () => {

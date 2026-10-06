@@ -45,6 +45,17 @@ function tasks(): TaskStore {
 }
 
 describe('TaskStore', () => {
+  it('serializes concurrent saves without losing revisions', async () => {
+    const input = { id: 'race', ownerUserId: ADMIN, origin: 'user' as const, title: 'Capture' };
+    const first = await Promise.all([tasks().upsert(input), tasks().upsert(input)]);
+    expect(first.map((task) => task.revision).sort()).toEqual([1, 2]);
+    const next = await Promise.all([tasks().upsert(input), tasks().upsert(input)]);
+    expect(next.map((task) => task.revision).sort()).toEqual([3, 4]);
+    await expect(tasks().patch('race', ADMIN, { title: 'Stale' }, 3)).rejects.toBeInstanceOf(
+      TaskRevisionConflictError,
+    );
+  });
+
   it('saves a capture and lists it by owner, project and General bucket', async () => {
     await tasks().upsert({ id: 't1', ownerUserId: ADMIN, origin: 'user', title: ' Fix badge ' });
     await tasks().upsert({

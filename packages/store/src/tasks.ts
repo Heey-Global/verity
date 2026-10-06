@@ -1,4 +1,4 @@
-import { type Kysely, type Selectable } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 
 import { createPassthroughCipher, type SecretCipher } from './crypto.js';
 import type { Database, TaskAttachment, TaskOrigin, TaskStatus, TasksTable } from './schema.js';
@@ -214,52 +214,45 @@ export class TaskStore {
     const detail = normalizeOptionalText(input.detail, TASK_DETAIL_MAX, 'detail');
     const attachments = JSON.stringify(normalizeAttachments(input.attachments));
     const status = input.status ?? 'open';
-    const existing = await this.db
-      .selectFrom('tasks')
-      .select(['owner_user_id', 'status', 'revision'])
-      .where('id', '=', input.id)
-      .executeTakeFirst();
-    if (existing !== undefined && existing.owner_user_id !== input.ownerUserId)
-      throw new TaskNotFoundError(input.id);
-    if (existing === undefined) {
-      const row = await this.db
-        .insertInto('tasks')
-        .values({
-          id: input.id,
-          owner_user_id: input.ownerUserId,
-          project_id: input.projectId ?? null,
-          session_id: input.sessionId ?? null,
-          source_session_id: input.sourceSessionId ?? null,
-          origin: input.origin,
-          title,
-          detail: detail === null ? null : this.cipher.encrypt(detail),
-          attachments,
-          status,
-          sort: input.sort ?? 0,
-          completed_at: isTerminal(status) ? new Date().toISOString() : null,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return this.record(row);
-    }
+    const now = new Date().toISOString();
     const row = await this.db
-      .updateTable('tasks')
-      .set({
+      .insertInto('tasks')
+      .values({
+        id: input.id,
+        owner_user_id: input.ownerUserId,
         project_id: input.projectId ?? null,
         session_id: input.sessionId ?? null,
+        source_session_id: input.sourceSessionId ?? null,
+        origin: input.origin,
         title,
         detail: detail === null ? null : this.cipher.encrypt(detail),
         attachments,
         status,
         sort: input.sort ?? 0,
-        revision: existing.revision + 1,
-        updated_at: new Date().toISOString(),
-        ...completedAtFor(existing.status, status),
+        completed_at: isTerminal(status) ? now : null,
       })
-      .where('id', '=', input.id)
-      .where('owner_user_id', '=', input.ownerUserId)
+      .onConflict((conflict) =>
+        conflict
+          .column('id')
+          .doUpdateSet({
+            project_id: input.projectId ?? null,
+            session_id: input.sessionId ?? null,
+            title,
+            detail: detail === null ? null : this.cipher.encrypt(detail),
+            attachments,
+            status,
+            sort: input.sort ?? 0,
+            revision: sql<number>`tasks.revision + 1`,
+            updated_at: now,
+            completed_at: isTerminal(status)
+              ? sql`coalesce(tasks.completed_at, ${now}::timestamptz)`
+              : null,
+          })
+          .where('tasks.owner_user_id', '=', input.ownerUserId),
+      )
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirst();
+    if (row === undefined) throw new TaskNotFoundError(input.id);
     return this.record(row);
   }
 

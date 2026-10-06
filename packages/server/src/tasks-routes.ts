@@ -122,7 +122,12 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     projectId: string | null,
     permission: 'read' | 'execute',
   ): Promise<boolean> {
-    if (projectId === null) return true;
+    if (projectId === null)
+      return (
+        permission === 'read' ||
+        userId === null ||
+        (await deps.eventStore.isActiveAdministrator(userId))
+      );
     const project = await deps.eventStore.getProject(projectId);
     if (project === undefined) return false;
     // No auth gate: the implicit administrator reaches every project.
@@ -382,7 +387,7 @@ export async function executeTasksTool(input: {
   const target = (await tasks.listAssigned(input.sessionId)).find((task) => task.id === request.id);
   if (target === undefined) throw new TaskNotFoundError(request.id);
   if (request.action === 'update') {
-    const task = await tasks.patch(target.id, owner, {
+    const task = await tasks.patch(target.id, target.ownerUserId, {
       title: request.title,
       detail: request.detail,
       status: request.status,
@@ -391,7 +396,7 @@ export async function executeTasksTool(input: {
     return { task: agentTaskView(task) };
   }
   const status = request.action === 'complete' ? 'done' : 'dropped';
-  const task = await tasks.patch(target.id, owner, { status, result: request.result });
+  const task = await tasks.patch(target.id, target.ownerUserId, { status, result: request.result });
   await notify([task.id], status === 'done' ? 'completed' : 'dropped');
   const remaining = await tasks.listAssigned(input.sessionId);
   return {
