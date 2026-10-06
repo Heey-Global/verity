@@ -136,6 +136,35 @@ describe('GitHub forge policy', () => {
       ).rejects.toThrow();
     expect(h.mint).not.toHaveBeenCalled();
   });
+  it('requires PR read authority for commit-associated PRs through fragments and aliases', async () => {
+    const query = graph(`query {
+      repository(owner:"acme",name:"app") {
+        defaultBranchRef { target { ...CommitReads } }
+      }
+    }
+    fragment CommitReads on Commit {
+      prs: associatedPullRequests(first:10) { nodes { title body } }
+    }`);
+    const h = harness();
+    await expect(
+      h.adapter.authorize(
+        query,
+        binding,
+        new Set<ForgeAction>(['git-read']),
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow();
+    expect(h.mint).not.toHaveBeenCalled();
+    expect(h.transport).not.toHaveBeenCalled();
+    await expect(
+      h.adapter.authorize(
+        query,
+        binding,
+        new Set<ForgeAction>(['git-read', 'pulls-read']),
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ authorization: 'Bearer server-token' });
+  });
   it('requires PR write authority for a comment on a pull request', async () => {
     const h = harness('acme/app', 'PullRequest');
     await expect(

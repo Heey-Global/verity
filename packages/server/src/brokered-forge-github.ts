@@ -315,7 +315,11 @@ export function createGitHubForgeAdapter(options: {
                   }
                   if (['issue', 'issues', 'issueTypes'].includes(child.name.value))
                     assertAction(actions, 'issues-read');
-                  if (['pullRequest', 'pullRequests'].includes(child.name.value))
+                  if (
+                    ['pullRequest', 'pullRequests', 'associatedPullRequests'].includes(
+                      child.name.value,
+                    )
+                  )
                     assertAction(actions, 'pulls-read');
                   if (child.selectionSet) checkReads(child.selectionSet, depth + 1);
                 }
