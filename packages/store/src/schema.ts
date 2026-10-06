@@ -991,6 +991,10 @@ export interface ManagedDevServerInstancesTable {
   last_run_workdir: ColumnType<string | null, string | null | undefined, string | null>;
   started_at: ColumnType<Date | null, string | null | undefined, string | null>;
   last_ran_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** Explicit access lifecycle start; automatic process recovery preserves it. */
+  access_started_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** The operator's Local switch: publish on the network while it runs. */
+  local_access: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }

@@ -15,6 +15,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { StatusPill } from '../StatusPill';
+import { Toggle } from '../Toggle';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useVeritySettings } from '../../lib/settingsStore';
 import { ApplyPendingBanner } from './ApplyPendingBanner';
@@ -272,9 +273,7 @@ export function SettingsToggleRow({
       accessibilityLabel={label}
     >
       <Text style={styles.toggleLabel}>{label}</Text>
-      <View style={[styles.toggleTrack, value ? styles.toggleTrackOn : null]}>
-        <View style={[styles.toggleKnob, value ? styles.toggleKnobOn : null]} />
-      </View>
+      <Toggle value={value} />
     </Pressable>
   );
 }

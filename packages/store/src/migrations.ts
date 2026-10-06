@@ -3843,7 +3843,24 @@ const migrations: Record<string, Migration> = {
       await sql`alter table public_preview_shares drop column managed_instance_id`.execute(db);
     },
   },
-  '0138_browser_sessions': {
+  '0138_managed_local_access': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The operator's Local switch. Starting through Shared online alone leaves
+      // it off, so the server runs without a network address.
+      await sql`alter table managed_dev_server_instances add column local_access boolean not null default true`.execute(
+        db,
+      );
+      await sql`alter table managed_dev_server_instances add column access_started_at timestamptz`.execute(
+        db,
+      );
+      await sql`update managed_dev_server_instances set access_started_at = started_at`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table managed_dev_server_instances drop column access_started_at`.execute(db);
+      await sql`alter table managed_dev_server_instances drop column local_access`.execute(db);
+    },
+  },
+  '0139_browser_sessions': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`alter table auth_tokens add column expires_at timestamptz`.execute(db);
     },

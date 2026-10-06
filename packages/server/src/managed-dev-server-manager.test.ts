@@ -415,6 +415,540 @@ describe('managed dev servers', () => {
     expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), 'gone');
   });
 
+  describe('access switches', () => {
+    const approvedDemo = async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await ctx.store.managedDevServers.approve(
+        (await ctx.store.managedDevServers.getByName('p1', 'Demo'))!.id,
+        { command: 'node server.mjs', workdir: '.' },
+      );
+    };
+    const listen = async () => {
+      const run = sandbox.started.at(-1)!;
+      sandbox.listen(run.instanceId, Number(run.env.PORT));
+      await manager.tick();
+      return run.instanceId;
+    };
+    const publicLink = (instanceId: string, expiresAt = new Date(now + 3_600_000)) =>
+      ctx.store.createPublicPreviewShare({
+        id: `share-${instanceId}`,
+        projectId: 'p1',
+        devServerId: null,
+        managedInstanceId: instanceId,
+        sessionId: 's1',
+        containerGeneration: 'g1',
+        targetPort: 41000,
+        publicOrigin: 'https://x.share.verity.build',
+        edgeUrl: 'wss://x.share.verity.build/__verity/connector',
+        pinHash: 'scrypt:salt:hash',
+        pin: '123456',
+        connectorToken: 'token',
+        sessionSecret: 'secret',
+        connectorContainerName: 'verity-preview-x',
+        expiresAt,
+      });
+
+    // Shared online alone must not also open the server on the local network.
+    it('runs without a network address when started for Shared online only', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+      expect(shares.create).not.toHaveBeenCalled();
+    });
+
+    it('stops the server when Local turns off and no public link is left', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      expect(await instanceOf()).toMatchObject({ localOn: true, url: 'http://verity.local:8100' });
+      await manager.setLocal('s1', 'Demo', false);
+      expect(await instanceOf()).toMatchObject({ state: 'stopped', localOn: false, url: null });
+    });
+
+    // With a public link still live, turning Local off ends only local access.
+    it('keeps the server running for a live public link when Local turns off', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const instanceId = await listen();
+      await publicLink(instanceId);
+      await manager.setLocal('s1', 'Demo', false);
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+    });
+
+    // An expired link with Local off leaves nothing anyone can open; the server
+    // must not keep running unnoticed and keep the sandbox awake.
+    it('stops when the last public link ends while Local is off', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const instanceId = await listen();
+      const share = await publicLink(instanceId);
+      await manager.publicLinkEnded(instanceId);
+      expect((await instanceOf()).state).toBe('running');
+      await ctx.store.transitionPublicPreviewShare(share.id, ['active', 'creating'], 'expired', {});
+      await manager.publicLinkEnded(instanceId);
+      expect((await instanceOf()).state).toBe('stopped');
+    });
+
+    it('keeps the server when a public link ends while Local is on', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const instanceId = await listen();
+      await manager.publicLinkEnded(instanceId);
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
+    // Approving from Shared online agrees to a public link, not to opening the
+    // agent's server on the network.
+    it('keeps Local off when an agent-started server is approved for Shared online', async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await manager.start('s1', 'Demo', 'agent');
+      await listen();
+      await manager.approve(
+        's1',
+        'Demo',
+        { command: 'node server.mjs', workdir: '.' },
+        { local: false },
+      );
+      await manager.tick();
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+      expect(shares.create).not.toHaveBeenCalled();
+    });
+
+    it('unpublishes an already running server when start disables Local', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      expect(shares.shares).toHaveLength(1);
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      expect(shares.shares).toHaveLength(0);
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: false, url: null });
+    });
+
+    // A crash keeps the switches; turning Local on again must start the server
+    // rather than mark a dead process as shared.
+    it('starts a crashed server again when Local turns on', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const instanceId = await listen();
+      sandbox.crash(instanceId, 1);
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('crashed');
+      await manager.setLocal('s1', 'Demo', true);
+      expect(sandbox.started).toHaveLength(2);
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
+    // Local off survives a stop; an agent start without it would run a server
+    // nobody can open and nothing stops, since no link will ever end.
+    it('turns Local on when the agent starts a server that had it off', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.stop('s1', 'Demo');
+      await manager.start('s1', 'Demo', 'agent');
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
+    // The operator chose Shared online only; an agent restart must not open the
+    // server on the network without a PIN while that link is live.
+    it('keeps Local off on an agent restart while a public link is live', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const instanceId = await listen();
+      await publicLink(instanceId);
+      await manager.restart('s1', 'Demo', 'agent');
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', url: null, localOn: false });
+      expect(shares.create).not.toHaveBeenCalled();
+    });
+
+    // Approving a changed command for Shared online must also end the network
+    // address the earlier run still has.
+    it('ends the network address of an older run when approved for Shared online', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      expect(shares.shares).toHaveLength(1);
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve(
+        's1',
+        'Demo',
+        { command: 'node changed.mjs', workdir: '.' },
+        { local: false },
+      );
+      expect(shares.shares).toHaveLength(0);
+      expect(await instanceOf()).toMatchObject({ url: null, localOn: false });
+    });
+
+    // Local on for a server still running an older command would set a flag the
+    // view cannot show; it restarts with the approved command instead.
+    it('restarts a server running an older command when Local turns on', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve('s1', 'Demo', { command: 'node changed.mjs', workdir: '.' });
+      await manager.setLocal('s1', 'Demo', true);
+      expect(sandbox.started.at(-1)!.command).toContain('changed.mjs');
+      await listen();
+      expect(await instanceOf()).toMatchObject({ state: 'running', localOn: true });
+    });
+
+    it('restarts an outdated starting command when Local turns on', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve('s1', 'Demo', { command: 'node changed.mjs', workdir: '.' });
+      await manager.setLocal('s1', 'Demo', true);
+      expect(sandbox.started).toHaveLength(2);
+      expect(sandbox.started.at(-1)!.command).toContain('changed.mjs');
+    });
+
+    it('starts the newly approved command before sharing an existing process', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      await manager.approve(
+        's1',
+        'Demo',
+        { command: 'node changed.mjs', workdir: '.' },
+        { local: false },
+      );
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      expect(sandbox.started).toHaveLength(2);
+      expect(sandbox.started.at(-1)!.command).toContain('changed.mjs');
+      expect((await instanceOf()).localOn).toBe(false);
+    });
+
+    it('retries failed Local teardown while online sharing keeps the process running', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      await publicLink(id);
+      const stop = vi
+        .spyOn(shares.local, 'stop')
+        .mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.setLocal('s1', 'Demo', false)).rejects.toThrow('edge unavailable');
+      expect(shares.shares).toHaveLength(1);
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+      expect(stop).toHaveBeenCalledTimes(2);
+      expect((await instanceOf()).state).toBe('running');
+    });
+
+    it('stops after failed Local teardown when no public link remains', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.setLocal('s1', 'Demo', false)).rejects.toThrow('edge unavailable');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      expect(shares.shares).toHaveLength(0);
+    });
+
+    it('stops the process even if edge teardown fails and retries edge cleanup', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.stop('s1', 'Demo')).rejects.toThrow('edge unavailable');
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), id);
+      expect((await instanceOf()).state).toBe('stopped');
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+    });
+
+    it('retries link-ended cleanup after a transient store failure', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      vi.spyOn(ctx.store, 'getProject').mockRejectedValueOnce(new Error('store unavailable'));
+      await manager.publicLinkEnded(id);
+      expect((await instanceOf()).state).toBe('running');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+    });
+
+    it('recovers terminal-link cleanup after the Core restarts', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoked', {});
+      manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: (_project, worktree) => worktree,
+        now: () => now,
+      });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const terminal = await ctx.store.getPublicPreviewShare(share.id);
+      await ctx.store.managedDevServers.updateInstance(id, {
+        startedAt: new Date(terminal!.updatedAt.getTime() + 1),
+        accessStartedAt: new Date(terminal!.updatedAt.getTime() + 1),
+      });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
+    it('does not apply completed Local cleanup to a new online-only start', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      await manager.setLocal('s1', 'Demo', false);
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
+    it('does not publish Local while online-only approval is being persisted', async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await manager.start('s1', 'Demo', 'agent');
+      await listen();
+      const original = ctx.store.managedDevServers.approve.bind(ctx.store.managedDevServers);
+      let release!: () => void;
+      let entered!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const persisted = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(ctx.store.managedDevServers, 'approve').mockImplementationOnce(async (...args) => {
+        const result = await original(...args);
+        entered();
+        await waiting;
+        return result;
+      });
+      const approval = manager.approve(
+        's1',
+        'Demo',
+        { command: 'node server.mjs', workdir: '.' },
+        { local: false },
+      );
+      await persisted;
+      const supervision = manager.tick();
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(shares.shares).toHaveLength(0);
+      } finally {
+        release();
+        await approval;
+        await supervision;
+      }
+      expect(shares.shares).toHaveLength(0);
+    });
+
+    it('records a startup timeout and stops its process despite edge cleanup failure', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      await ctx.store.managedDevServers.updateInstance(id, {
+        state: 'starting',
+        startedAt: new Date(now - 70_000),
+      });
+      sandbox.listeners.length = 0;
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await manager.tick();
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), id);
+      expect((await instanceOf()).state).toBe('crashed');
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+    });
+
+    it('retries process cleanup if online-only approval cannot remove Local access', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      await listen();
+      await manager.update('s1', 'Demo', { command: 'node changed.mjs' });
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(
+        manager.approve(
+          's1',
+          'Demo',
+          { command: 'node changed.mjs', workdir: '.' },
+          { local: false },
+        ),
+      ).rejects.toThrow('edge unavailable');
+      expect((await instanceOf()).state).toBe('stopped');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      expect(shares.shares).toHaveLength(0);
+    });
+
+    it('preserves stop intent across restart when Local teardown fails without a public link', async () => {
+      await approvedDemo();
+      await manager.setLocal('s1', 'Demo', true);
+      const id = await listen();
+      vi.spyOn(shares.local, 'stop').mockRejectedValueOnce(new Error('edge unavailable'));
+      await expect(manager.setLocal('s1', 'Demo', false)).rejects.toThrow('edge unavailable');
+      expect(await ctx.store.managedDevServers.getInstance(id)).toMatchObject({
+        desired: 'stopped',
+        state: 'stopped',
+      });
+      manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: (_project, worktree) => worktree,
+        now: () => now,
+      });
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('stopped');
+      expect(sandbox.started).toHaveLength(1);
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), id);
+    });
+
+    it('ignores a delayed old-link notification while a new online-only start awaits its link', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      const ended = await ctx.store.transitionPublicPreviewShare(
+        share.id,
+        ['creating', 'active'],
+        'revoked',
+        {},
+      );
+      await manager.stop('s1', 'Demo');
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await ctx.store.managedDevServers.updateInstance(id, {
+        startedAt: new Date(ended!.updatedAt.getTime() + 1),
+        accessStartedAt: new Date(ended!.updatedAt.getTime() + 1),
+      });
+      await manager.publicLinkEnded(id, share.id);
+      expect((await instanceOf()).state).toBe('starting');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
+    it('ignores old teardown completing after a newer online-only start', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      const began = new Date(now + 1);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoking', {
+        revokedAt: began,
+      });
+      await manager.stop('s1', 'Demo');
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await ctx.store.managedDevServers.updateInstance(id, {
+        startedAt: new Date(now + 2),
+        accessStartedAt: new Date(now + 2),
+      });
+      await ctx.store.transitionPublicPreviewShare(share.id, ['revoking'], 'revoked', {
+        revokedAt: began,
+      });
+      await manager.publicLinkEnded(id, share.id);
+      expect((await instanceOf()).state).toBe('starting');
+      await manager.tick();
+      expect((await instanceOf()).state).toBe('starting');
+    });
+
+    it('keeps link cleanup attached to the access lifecycle during automatic recovery', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      const initial = await ctx.store.managedDevServers.getInstance(id);
+      const began = new Date(initial!.accessStartedAt!.getTime() + 1);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoking', {
+        revokedAt: began,
+      });
+      sandbox.recreate();
+      const previous = now;
+      try {
+        now = began.getTime() + 6000;
+        await manager.tick();
+        expect(sandbox.started).toHaveLength(2);
+        const recovered = await ctx.store.managedDevServers.getInstance(id);
+        expect(recovered!.startedAt!.getTime()).toBeGreaterThan(began.getTime());
+        expect(recovered!.accessStartedAt).toEqual(initial!.accessStartedAt);
+        await ctx.store.transitionPublicPreviewShare(share.id, ['revoking'], 'revoked', {
+          revokedAt: began,
+        });
+        await manager.publicLinkEnded(id, share.id);
+        expect((await instanceOf()).state).toBe('stopped');
+      } finally {
+        now = previous;
+      }
+    });
+
+    it.each(['start', 'approve'] as const)(
+      'refreshes access intent when %s keeps an existing process running',
+      async (action) => {
+        await approvedDemo();
+        await manager.setLocal('s1', 'Demo', true);
+        const id = await listen();
+        const share = await publicLink(id);
+        const ended = await ctx.store.transitionPublicPreviewShare(
+          share.id,
+          ['creating', 'active'],
+          'revoked',
+          {},
+        );
+        const previous = now;
+        try {
+          now = ended!.updatedAt.getTime() + 1;
+          if (action === 'start') await manager.start('s1', 'Demo', 'operator', { local: false });
+          else
+            await manager.approve(
+              's1',
+              'Demo',
+              { command: 'node server.mjs', workdir: '.' },
+              { local: false },
+            );
+          await manager.publicLinkEnded(id, share.id);
+          await manager.tick();
+          expect((await instanceOf()).state).toBe('running');
+          expect(sandbox.started).toHaveLength(1);
+          expect(
+            (await ctx.store.managedDevServers.getInstance(id))!.accessStartedAt!.getTime(),
+          ).toBe(now);
+        } finally {
+          now = previous;
+        }
+      },
+    );
+
+    it('conditional cleanup preserves access enabled by another client', async () => {
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const id = await listen();
+      const share = await publicLink(id);
+      await manager.stop('s1', 'Demo', { onlyIfUnshared: true });
+      expect((await instanceOf()).state).toBe('running');
+      await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoked', {});
+      await manager.setLocal('s1', 'Demo', true);
+      await manager.stop('s1', 'Demo', { onlyIfUnshared: true });
+      expect((await instanceOf()).state).toBe('running');
+      await manager.setLocal('s1', 'Demo', false);
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      await listen();
+      await manager.stop('s1', 'Demo', { onlyIfUnshared: true });
+      expect((await instanceOf()).state).toBe('stopped');
+    });
+
+    it('refuses Local on for an unapproved command', async () => {
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await expect(manager.setLocal('s1', 'Demo', true)).rejects.toThrow(/approve/u);
+      expect(sandbox.started).toHaveLength(0);
+    });
+  });
+
   it('gives sibling entries of the session their internal URLs', async () => {
     await manager.add('s1', { name: 'Voice API', command: 'node api.mjs' });
     await manager.add('s1', { name: 'Web', command: 'vite --port {port}' });

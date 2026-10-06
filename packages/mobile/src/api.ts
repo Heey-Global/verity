@@ -537,6 +537,8 @@ const managedDevServerSchema = z.object({
   command: z.string(),
   workdir: z.string(),
   approved: z.boolean(),
+  /** Present on Cores with the Local and Shared online switches. */
+  accessSwitches: z.boolean().optional(),
   instance: z
     .object({
       id: z.string(),
@@ -549,6 +551,8 @@ const managedDevServerSchema = z.object({
       /** Internal; a share target only, never shown. */
       sandboxPort: z.number().int(),
       awaitingApproval: z.boolean(),
+      /** The Local switch. Absent from Cores before the access switches; derived then. */
+      localOn: z.boolean().optional(),
       restartToApply: z.boolean(),
       startedAt: z.string().nullable(),
     })
@@ -3512,10 +3516,37 @@ export class VerityClient {
     sessionId: string,
     serverId: string,
     action: 'start' | 'stop' | 'restart',
+    options: { local?: boolean; onlyIfUnshared?: boolean } = {},
   ): Promise<ManagedDevServer> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/${action}`,
-      { method: 'POST' },
+      options.local === undefined && options.onlyIfUnshared === undefined
+        ? { method: 'POST' }
+        : {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(options),
+          },
+    );
+    return this.resolveManaged(
+      z.object({ server: managedDevServerSchema }).parse(await res.json()).server,
+    );
+  }
+
+  /** The Local switch: on starts and publishes, off ends local access and stops
+   *  the server when no public link is left. */
+  async setManagedDevServerLocal(
+    sessionId: string,
+    serverId: string,
+    on: boolean,
+  ): Promise<ManagedDevServer> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/local`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ on }),
+      },
     );
     return this.resolveManaged(
       z.object({ server: managedDevServerSchema }).parse(await res.json()).server,
@@ -3527,13 +3558,16 @@ export class VerityClient {
     sessionId: string,
     serverId: string,
     seen: { command: string; workdir: string },
+    options: { local?: boolean } = {},
   ): Promise<ManagedDevServer[]> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/approve`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(seen),
+        body: JSON.stringify(
+          options.local === undefined ? seen : { ...seen, local: options.local },
+        ),
       },
     );
     return z
