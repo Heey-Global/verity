@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.54.3](https://github.com/Heey-Global/verity/compare/mobile-v1.54.2...mobile-v1.54.3) (2026-10-06)
+
+
+### Features
+
+* **tasks:** add durable task persistence and agent access ([#1226](https://github.com/Heey-Global/verity/issues/1226)) ([9f446ec](https://github.com/Heey-Global/verity/commit/9f446ec22f298a086db72803fca1403386075055))
+
+
+### Bug Fixes
+
+* **mobile:** match static folder breadcrumbs to explorer ([#1220](https://github.com/Heey-Global/verity/issues/1220)) ([31ced91](https://github.com/Heey-Global/verity/commit/31ced918a59f28a13fb54a3e4390943b4d2f79eb))
+
 ## [1.54.2](https://github.com/Heey-Global/verity/compare/mobile-v1.54.1...mobile-v1.54.2) (2026-10-06)
 
 
