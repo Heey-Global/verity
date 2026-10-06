@@ -79,6 +79,7 @@ const PRIMARY_FIELD: Record<string, string> = {
   TaskUpdate: 'subject',
   // A skill/slash-command invocation — headline reads "Skill code-review".
   Skill: 'skill',
+  verity_tasks: 'action',
   // Without this the fallback picks whichever string field comes first in the object, which
   // for a handoff could be the briefing — 80 squashed characters of a document, where the
   // title is the one field written to be read at a glance. The full briefing has its own
@@ -125,6 +126,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_secret_run: 'Verity Secret Run',
   verity_secret_job: 'Verity Secret Job',
   verity_knowledge: 'Verity Knowledge',
+  verity_tasks: 'Verity Tasks',
   verity_session_handoff: 'Verity Handoff',
   verity_send_session_message: 'Verity Session Message',
   verity_list_sessions: 'Verity Sessions',
@@ -138,22 +140,23 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_end_planning: 'Verity Implement Plan',
 };
 
-/** Strip a backend's MCP qualification (`mcp__verity__`, OpenCode's `verity_`) off a known
- * Verity tool, so per-tool tables match whichever backend ran the call. Other names pass
- * through untouched. */
+/** Strip only Verity's own backend qualification, including tools added by the platform. */
 function canonicalToolName(name: string): string {
-  if (Object.hasOwn(VERITY_TOOL_LABELS, name)) return name;
-  for (const bare of Object.keys(VERITY_TOOL_LABELS)) {
-    if (name === `mcp__verity__${bare}` || name === `verity_${bare}`) return bare;
-  }
+  if (name.startsWith('mcp__verity__verity_')) return name.slice('mcp__verity__'.length);
+  if (name.startsWith('verity_verity_')) return name.slice('verity_'.length);
   return name;
 }
 
-/** The human-facing name of a tool: a Verity tool's label, else the reported name. */
+/** New platform tools must remain readable before a client ships a dedicated label. */
 function toolDisplayName(name: string): string {
   const canonical = canonicalToolName(name);
   // Own-property check: a tool named `constructor` must not resolve to Object's.
-  return Object.hasOwn(VERITY_TOOL_LABELS, canonical) ? VERITY_TOOL_LABELS[canonical]! : name;
+  if (Object.hasOwn(VERITY_TOOL_LABELS, canonical)) return VERITY_TOOL_LABELS[canonical]!;
+  if (/^verity_[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(canonical)) {
+    const words = canonical.slice('verity_'.length).split('_');
+    return `Verity ${words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}`;
+  }
+  return name;
 }
 
 /** Agent-facing Verity CLIs, which run through Bash rather than the gateway. Without this a

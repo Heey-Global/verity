@@ -8673,7 +8673,7 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${pending.tool}`}
+          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionDeny,
@@ -8699,7 +8699,7 @@ function PermissionPrompt({
               ? knowledgeSummary?.replacesExisting
                 ? 'Save changes to Global Knowledge'
                 : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`
+              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8736,7 +8736,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8752,7 +8752,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8768,7 +8768,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? pending.tool} for ${httpSummary?.host ?? 'this destination'}`}
+              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? view.title} for ${httpSummary?.host ?? 'this destination'}`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
