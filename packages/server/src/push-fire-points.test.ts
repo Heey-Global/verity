@@ -1,7 +1,7 @@
 import { SANDBOX_NOT_READY_ERROR_KIND, type AgentEvent } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPushFirePoints } from './push-fire-points.js';
+import { createPushFirePoints, persistedTurnInitiator } from './push-fire-points.js';
 import type { PushRouter, SessionNotification } from './push-router.js';
 import type { PushLogger, PushSendResult, PushSender } from './push-sender.js';
 
@@ -563,4 +563,15 @@ describe('PushFirePoints', () => {
       await firePoints.close();
     });
   });
+});
+
+it('recovers the last identified turn owner while preserving anonymous follow-ups and steering', () => {
+  expect(
+    persistedTurnInitiator([
+      { t: 'prompt', text: 'first', initiatedBy: { userId: 'alice' } },
+      { t: 'prompt', text: 'second', initiatedBy: { userId: 'bob' } },
+      { t: 'prompt', text: 'steering', steered: true, initiatedBy: { userId: 'alice' } },
+      { t: 'prompt', text: 'follow-up' },
+    ]),
+  ).toBe('bob');
 });

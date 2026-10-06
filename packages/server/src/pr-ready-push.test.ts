@@ -106,7 +106,7 @@ describe('pull request ready push', () => {
     const router = { notify: vi.fn<PushRouter['notify']>().mockResolvedValue('suppressed') };
     const monitor = startPullRequestReadyMonitor({
       router,
-      initiatorOf: () => 'user-a',
+      initiatorOf: async () => 'user-a',
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
       wasSent: async (_sessionId, marker) => markers.has(marker),

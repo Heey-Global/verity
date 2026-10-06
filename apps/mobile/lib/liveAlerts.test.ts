@@ -1,6 +1,13 @@
 import * as Notifications from 'expo-notifications';
 import { presentLiveAlert } from './liveAlerts';
 
+jest.mock('expo-crypto', () => ({
+  CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
+  digestStringAsync: async (_algorithm: string, value: string) => {
+    const { createHash } = require('node:crypto') as typeof import('node:crypto');
+    return createHash('sha256').update(value).digest('hex');
+  },
+}));
 jest.mock('expo-notifications', () => ({
   setNotificationCategoryAsync: jest.fn().mockResolvedValue(undefined),
   scheduleNotificationAsync: jest.fn().mockResolvedValue('id'),
@@ -43,7 +50,7 @@ it("labels a question's buttons with its options and carries them for the answer
     title: 'Reply needed',
     body: 'A session is waiting for your answer.',
   });
-  expect(setCategory).toHaveBeenCalledWith('AGENT_QUESTION_CHOICES', [
+  expect(setCategory).toHaveBeenCalledWith(expect.stringMatching(/^AGENT_QUESTION_CHOICES_/), [
     expect.objectContaining({ identifier: 'VERITY_CHOICE_0', buttonTitle: 'Push + PR' }),
     expect.objectContaining({ identifier: 'VERITY_CHOICE_1', buttonTitle: 'Wait' }),
     expect.objectContaining({ identifier: 'VERITY_REPLY', buttonTitle: 'Reply' }),
@@ -55,9 +62,27 @@ it("labels a question's buttons with its options and carries them for the answer
   expect(schedule).toHaveBeenCalledWith(
     expect.objectContaining({
       content: expect.objectContaining({
-        categoryIdentifier: 'AGENT_QUESTION_CHOICES',
+        categoryIdentifier: setCategory.mock.calls[0]?.[0],
         data: { sessionId: 's1', kind: 'question', choices: ['Push + PR', 'Wait'] },
       }),
     }),
   );
+});
+
+it('keeps outstanding questions on categories with their own labels', async () => {
+  const question = {
+    sessionId: 's1',
+    kind: 'question' as const,
+    categoryId: 'AGENT_QUESTION' as const,
+    title: 'Reply',
+    body: 'Choose',
+  };
+  await presentLiveAlert({ ...question, choices: ['Push', 'Wait'] });
+  await presentLiveAlert({ ...question, sessionId: 's2', choices: ['Implement', 'Plan'] });
+  expect(setCategory.mock.calls[0]?.[0]).not.toBe(setCategory.mock.calls[1]?.[0]);
+  for (let i = 0; i < 2; i += 1) {
+    expect(schedule.mock.calls[i]?.[0].content.categoryIdentifier).toBe(
+      setCategory.mock.calls[i]?.[0],
+    );
+  }
 });

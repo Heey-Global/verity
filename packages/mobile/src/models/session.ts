@@ -298,6 +298,7 @@ export class SessionModel {
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
   // server-side git read (#110), so a slow tick must not let requests stack up.
   private _activityInFlight = false;
+  private _activityRefreshPending = false;
   private _activityRequest = 0;
   private _planningDecisionAfterActivityRequest = 0;
   // Backward-pagination state: whether older history exists before the loaded
@@ -591,6 +592,10 @@ export class SessionModel {
    * activity, status or pending requests changed. */
   refreshActivity(): void {
     if (!this._running || this._paused || !this._historyAttemptComplete) return;
+    if (this._activityInFlight) {
+      this._activityRefreshPending = true;
+      return;
+    }
     void this.loadActivity();
   }
 
@@ -943,6 +948,10 @@ export class SessionModel {
       // transient — keep the last values
     } finally {
       this._activityInFlight = false;
+      if (this._activityRefreshPending) {
+        this._activityRefreshPending = false;
+        this.refreshActivity();
+      }
     }
   }
 

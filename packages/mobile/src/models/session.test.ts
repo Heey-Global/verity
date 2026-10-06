@@ -1880,6 +1880,39 @@ describe('SessionModel — server activity + queued messages', () => {
     }
   });
 
+  it('coalesces live hints during an outstanding activity request', async () => {
+    vi.useFakeTimers();
+    try {
+      const { connect } = recordingConnect();
+      let resolveFirst: (v: { busy: boolean; queued: string[] }) => void = () => {};
+      const first = new Promise<{ busy: boolean; queued: string[] }>((r) => {
+        resolveFirst = r;
+      });
+      const getActivity = vi
+        .fn()
+        .mockReturnValueOnce(first) // first poll hangs (slow git read)
+        .mockResolvedValue({ busy: false, queued: [] });
+      const client = {
+        sendTurn: vi.fn(),
+        getSession: vi.fn().mockResolvedValue({ resumable: true }),
+        getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+        getActivity,
+      } as unknown as VerityClient;
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+      model.start();
+      await vi.advanceTimersByTimeAsync(0); // first poll starts, then hangs
+      model.refreshActivity();
+      model.refreshActivity();
+      expect(getActivity).toHaveBeenCalledTimes(1); // overlap guard held
+      resolveFirst({ busy: false, queued: [] }); // the slow poll finally resolves
+      await vi.advanceTimersByTimeAsync(0); // hints must refresh without waiting for a poll
+      expect(getActivity).toHaveBeenCalledTimes(2);
+      model.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps a queued send visible until its prompt event lands (duplicate-counted)', async () => {
     const { connect, sockets } = recordingConnect();
     const client = {

@@ -271,3 +271,38 @@ describe('push router', () => {
     router.close();
   });
 });
+
+it('does not notify a recorded initiator after project access is revoked', async () => {
+  const sender = fakeSender();
+  const presence = fakePresence({ foreground: { alice: ['alice-phone'] } });
+  const router = createPushRouter({
+    sender: senderOf(sender),
+    presence,
+    store: fakeStore({ listProjectUserIds: async () => ['bob'] }),
+  });
+  expect(await router.notify(permission())).toBe('undelivered');
+  expect(sender.send).not.toHaveBeenCalled();
+  expect(presence.deliverAlert).not.toHaveBeenCalled();
+  router.close();
+});
+
+it('rechecks project access before escalating a foreground alert', async () => {
+  vi.useFakeTimers();
+  let members = ['alice'];
+  const sender = fakeSender();
+  const router = createPushRouter({
+    sender: senderOf(sender),
+    presence: fakePresence({ foreground: { alice: ['alice-phone'] } }),
+    store: fakeStore({ listProjectUserIds: async () => members }),
+    escalationMs: 100,
+  });
+  try {
+    expect(await router.notify(permission())).toBe('delivered');
+    members = [];
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sender.send).not.toHaveBeenCalled();
+  } finally {
+    router.close();
+    vi.useRealTimers();
+  }
+});

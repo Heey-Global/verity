@@ -18,7 +18,7 @@ export interface PullRequestReadyMonitor {
 export interface PullRequestReadyMonitorOptions {
   router: Pick<PushRouter, 'notify'>;
   /** Whoever ran the session's last turn; the PR is their work. */
-  initiatorOf?(sessionId: string): string | undefined;
+  initiatorOf?(sessionId: string): string | undefined | Promise<string | undefined>;
   listSessions(): Promise<SessionRecord[]>;
   statusFor(session: SessionRecord): Promise<PullRequestStatus | null>;
   wasSent(sessionId: string, marker: string): Promise<boolean>;
@@ -78,7 +78,7 @@ export function startPullRequestReadyMonitor(
       const outcome = await options.router.notify({
         key: `pr-ready:${session.sessionId}`,
         sessionId: session.sessionId,
-        initiatorUserId: options.initiatorOf?.(session.sessionId),
+        initiatorUserId: await options.initiatorOf?.(session.sessionId),
         notification: buildPullRequestReadyNotification(session.sessionId, pr, context),
       });
       // A ready PR discovered before any device registers must remain eligible;

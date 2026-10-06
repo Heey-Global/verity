@@ -68,6 +68,20 @@ describe('LiveConnectionLifecycle', () => {
     expect(mockConnection.setForeground).toHaveBeenLastCalledWith(true);
   });
 
+  it('reauthenticates when an already loaded bearer changes', () => {
+    mockToken = 'first';
+    render(<LiveConnectionLifecycle />);
+    mockConnection.pause.mockClear();
+    mockConnection.resume.mockClear();
+    mockToken = 'second';
+    for (const listener of mockAuthListeners) listener();
+    expect(mockConnection.pause).toHaveBeenCalledTimes(1);
+    expect(mockConnection.resume).toHaveBeenCalledTimes(1);
+    expect(mockConnection.pause.mock.invocationCallOrder[0]).toBeLessThan(
+      mockConnection.resume.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it('leaves the server the moment the app goes to the background', () => {
     mockToken = 'bearer';
     render(<LiveConnectionLifecycle />);

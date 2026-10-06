@@ -33,6 +33,7 @@ export function LiveConnectionLifecycle(): null {
   useEffect(() => {
     let current: { baseUrl: string; connection: LiveConnection; detach: () => void } | undefined;
 
+    let bearer: string | null = null;
     const sync = (): void => {
       const baseUrl = getVerityBaseUrl();
       if (current !== undefined && current.baseUrl !== baseUrl) {
@@ -49,6 +50,11 @@ export function LiveConnectionLifecycle(): null {
         current = { baseUrl, connection, detach };
       }
       const { connection } = current;
+      const nextBearer = getAuthToken(baseUrl);
+      if (nextBearer !== bearer) {
+        connection.pause();
+        bearer = nextBearer;
+      }
       // The browser authenticates with its session cookie; a native device waits
       // for its bearer, and the demo needs none.
       const canAuthenticate =

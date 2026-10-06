@@ -7342,6 +7342,7 @@ export class EventStore implements EventSink {
     const rows = await this.db
       .selectFrom('device_push_tokens as t')
       .innerJoin('auth_tokens as a', 'a.id', 't.auth_token_id')
+      .innerJoin('users as u', 'u.id', 'a.user_id')
       .select([
         't.auth_token_id',
         't.expo_token',
@@ -7351,6 +7352,7 @@ export class EventStore implements EventSink {
         'a.user_id',
       ])
       .where('a.user_id', 'in', [...userIds])
+      .where('u.status', '=', 'active')
       .orderBy('t.created_at', 'asc')
       .execute();
     return rows.map((row) => ({

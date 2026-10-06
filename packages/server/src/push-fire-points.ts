@@ -1,4 +1,4 @@
-import { LIVE_ALERT_MAX_CHOICES } from '@verity/events';
+import { LIVE_ALERT_MAX_CHOICES, type AgentEvent } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
 import type { PushSessionContext } from './pr-ready-push.js';
 import type { PushRouter } from './push-router.js';
@@ -57,6 +57,14 @@ export interface PushFirePointOptions {
   logger?: PushLogger | undefined;
   debounceMs?: number | undefined;
   describeSession?: ((sessionId: string) => Promise<PushSessionContext>) | undefined;
+}
+
+/** Recover ownership without replaying notification fire points after a restart. */
+export function persistedTurnInitiator(events: readonly AgentEvent[]): string | undefined {
+  const prompt = events.findLast(
+    (event) => event.t === 'prompt' && event.steered !== true && event.initiatedBy !== undefined,
+  );
+  return prompt?.t === 'prompt' ? prompt.initiatedBy?.userId : undefined;
 }
 
 function pushHeading(context: PushSessionContext, purpose: string): string {

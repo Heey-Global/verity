@@ -77,12 +77,14 @@ export function createPushRouter(options: PushRouterOptions): PushRouter {
   let closed = false;
 
   const recipients = async (input: SessionNotification): Promise<string[]> => {
-    if (input.initiatorUserId !== undefined) return [input.initiatorUserId];
     const session = await options.store.getSession(input.sessionId);
     if (session === undefined) return [];
-    return session.projectId === null
+    const authorized = await (session.projectId === null
       ? options.store.listActiveAdministratorIds()
-      : options.store.listProjectUserIds(session.projectId, 'execute');
+      : options.store.listProjectUserIds(session.projectId, 'execute'));
+    return input.initiatorUserId === undefined
+      ? authorized
+      : authorized.filter((userId) => userId === input.initiatorUserId);
   };
 
   const push = async (
@@ -118,12 +120,16 @@ export function createPushRouter(options: PushRouterOptions): PushRouter {
           if (timers.length > 0) escalations.set(input.key, timers);
           else escalations.delete(input.key);
           if (closed || options.presence.isViewing(userId, input.sessionId)) return;
-          void push(input.notification, [userId], reached).catch(() => {
-            options.logger?.warn(
-              { component: 'push', kind: 'escalation' },
-              'verity: escalation push failed',
-            );
-          });
+          void recipients(input)
+            .then((authorized) =>
+              authorized.includes(userId) ? push(input.notification, [userId], reached) : undefined,
+            )
+            .catch(() => {
+              options.logger?.warn(
+                { component: 'push', kind: 'escalation' },
+                'verity: escalation push failed',
+              );
+            });
         }, escalationMs);
         timer.unref?.();
         remember(input.key, timer);

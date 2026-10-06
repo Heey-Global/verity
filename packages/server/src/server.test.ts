@@ -10356,6 +10356,41 @@ describe('GET /live (WebSocket)', () => {
     return conn;
   }
 
+  it('preserves the project on deletion hints without a cached session owner', async () => {
+    await ctx.store.createProject({
+      id: 'p-delete',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'delete',
+      cloneDir: 'delete',
+      containerName: 'delete',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-delete',
+      worktree: '/wt/s-delete',
+      model: 'm',
+      projectId: 'p-delete',
+    });
+    const conn = await connect(port, '/live');
+    try {
+      expect(await conn.next()).toMatchObject({ k: 'ready' });
+      conn.ws.send(JSON.stringify({ k: 'sub', ch: 'overview' }));
+      // Synchronize after the subscription without priming the session owner cache.
+      conn.ws.send(JSON.stringify({ k: 'ping', n: 1 }));
+      expect(await conn.next()).toMatchObject({ k: 'pong', n: 1 });
+      expect((await app.inject({ method: 'DELETE', url: '/sessions/s-delete' })).statusCode).toBe(
+        200,
+      );
+      expect(await conn.next()).toMatchObject({
+        k: 'hint',
+        hints: [{ sessionId: 's-delete', projectId: 'p-delete', deleted: true }],
+      });
+    } finally {
+      conn.ws.close();
+    }
+  });
+
   it('streams a subscribed session: backlog -> caught_up -> live', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const { seq: backlogSeq, ts: backlogTs } = await ctx.store.appendEvent('s1', {

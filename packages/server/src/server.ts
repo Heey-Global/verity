@@ -210,7 +210,11 @@ import {
 import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
-import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
+import {
+  createPushFirePoints,
+  persistedTurnInitiator,
+  type PushFirePoints,
+} from './push-fire-points.js';
 import { createPushRouter, type PushRouter } from './push-router.js';
 import { LiveHub, type SessionChangeFeed } from './live/live-hub.js';
 import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-ready-push.js';
@@ -3398,6 +3402,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     unsubscribeSessionChanges?.();
     liveHub.close();
   });
+  const deletedSessionProjects = new WeakMap<object, string | null>();
+  app.addHook('preHandler', async (request) => {
+    if (request.method !== 'DELETE' || request.routeOptions.url !== '/sessions/:id') return;
+    const { id } = request.params as { id: string };
+    const session = await deps.eventStore.getSession(id);
+    if (session !== undefined) deletedSessionProjects.set(request, session.projectId);
+  });
   // Session changes that are not events — a rename, a read marker, a queued or
   // retracted turn, a permission decision, a deletion — reach overview
   // subscribers as content-free hints. Every such change is an accepted mutation
@@ -3430,7 +3441,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     liveHub.notify({
       sessionId,
       topics: ['session', 'status', 'activity'],
-      ...(deleted ? { deleted: true } : {}),
+      ...(deleted ? { deleted: true, projectId: deletedSessionProjects.get(request) } : {}),
     });
     return payload;
   });
@@ -4512,7 +4523,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     (deps.branchPrStatus !== undefined || deps.branchPrStatusForBranches !== undefined)
       ? startPullRequestReadyMonitor({
           router: pushRouter,
-          initiatorOf: (sessionId) => pushFirePoints?.initiatorOf(sessionId),
+          initiatorOf: async (sessionId) => {
+            const observed = pushFirePoints?.initiatorOf(sessionId);
+            if (observed !== undefined) return observed;
+            // Persisted provenance survives a restart; anonymous follow-ups and
+            // steering preserve the last identified turn's owner.
+            const events = await deps.eventStore.getEvents(sessionId);
+            return persistedTurnInitiator(events);
+          },
           listSessions: async () => {
             if ((await deps.eventStore.listDevicePushTokens()).length === 0) return [];
             const sessions = await deps.eventStore.listSessions();

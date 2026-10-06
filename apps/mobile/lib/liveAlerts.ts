@@ -1,4 +1,5 @@
-import { choiceCategorySpec, PUSH_CATEGORY, type LiveAlert } from '@verity/mobile';
+import { choiceCategorySpec, type LiveAlert } from '@verity/mobile';
+import { CryptoDigestAlgorithm, digestStringAsync } from 'expo-crypto';
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import { Platform } from 'react-native';
@@ -36,10 +37,10 @@ export async function presentLiveAlert(alert: LiveAlert): Promise<void> {
   }
   let categoryIdentifier = alert.categoryId;
   if (alert.kind === 'question' && alert.choices !== undefined && alert.choices.length > 0) {
-    // Re-registered per alert: the buttons are this question's options.
+    // Each notification keeps its own category so later questions cannot replace its labels.
     const spec = choiceCategorySpec(alert.choices);
-    await Notifications.setNotificationCategoryAsync(spec.identifier, toExpoActions(spec));
-    categoryIdentifier = PUSH_CATEGORY.agentQuestionChoices;
+    categoryIdentifier = `${spec.identifier}_${await digestStringAsync(CryptoDigestAlgorithm.SHA256, JSON.stringify(spec.actions))}`;
+    await Notifications.setNotificationCategoryAsync(categoryIdentifier, toExpoActions(spec));
   }
   await Notifications.scheduleNotificationAsync({
     content: {
