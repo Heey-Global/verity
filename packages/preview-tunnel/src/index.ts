@@ -276,85 +276,126 @@ export class PreviewEdge {
       });
     });
     this.server.on('upgrade', (request, socket, head) => {
-      if (this.expired()) {
-        socket.write('HTTP/1.1 410 Gone\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      let url: URL;
-      try {
-        url = new URL(request.url ?? '/', this.options.publicOrigin);
-      } catch {
-        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      if (url.pathname === CONNECTOR_PATH) {
-        if (!this.connectorAuthorized(request)) {
-          socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-          socket.destroy();
-          return;
-        }
-        this.websocketServer.handleUpgrade(request, socket, head, (client) =>
-          this.attachConnector(client),
-        );
-        return;
-      }
-      // An application socket. A handshake cannot be answered with the login
-      // redirect an ordinary request gets, so an unauthenticated one is refused
-      // outright and the page that opened it sees a failed connection.
-      if (!this.sessionAuthorized(request)) {
+      // A peer reset during asynchronous PIN verification must not crash the edge.
+      socket.once('error', () => socket.destroy());
+      void this.handleUpgrade(request, socket, head).catch(() => {
+        if (!socket.destroyed)
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n', () =>
+            socket.destroy(),
+          );
+      });
+    });
+    if (options.expiresAt !== undefined && !this.expired()) this.scheduleExpiry();
+  }
+
+  private async handleUpgrade(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): Promise<void> {
+    if (this.expired()) {
+      socket.write('HTTP/1.1 410 Gone\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    let url: URL;
+    try {
+      url = new URL(request.url ?? '/', this.options.publicOrigin);
+    } catch {
+      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    if (url.pathname === CONNECTOR_PATH) {
+      if (!this.connectorAuthorized(request)) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
-      if (
-        this.options.accessMode !== 'local-open' &&
-        !previewBrowserOriginAllowed(request, this.options.publicOrigin)
-      ) {
-        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      const connector = this.connector;
-      if (!connector || connector.readyState !== WebSocket.OPEN) {
-        socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      // A WebSocket is long-lived by definition, so unlike an http exchange it
-      // never passes through the request pool at all.
-      if (this.activeStreams >= this.options.maxConcurrentStreams) {
-        socket.write(
-          'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n',
-        );
-        socket.destroy();
-        return;
-      }
-      const headers = websocketRequestHeaders(request.headers);
-      localRequestCookies(headers, request, this.options.accessMode);
-      if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
-        socket.write('HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      // An offer that is not a list of distinct tokens can never be completed:
-      // `ws` refuses it when this handshake is finally answered. Saying so now
-      // costs nothing, where letting it through spends a dial on the target for
-      // a socket that is already doomed.
-      if (!validSubprotocolOffer(request.headers['sec-websocket-protocol'])) {
-        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      this.openClientSocket(
-        { request, socket, head },
-        connector,
-        url.pathname + url.search,
-        headers,
+      this.websocketServer.handleUpgrade(request, socket, head, (client) =>
+        this.attachConnector(client),
       );
-    });
-    if (options.expiresAt !== undefined && !this.expired()) this.scheduleExpiry();
+      return;
+    }
+    if (
+      this.options.accessMode !== 'local-open' &&
+      !previewBrowserOriginAllowed(request, this.options.publicOrigin)
+    ) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const pin = url.searchParams.get('pin');
+    // Preview credentials belong to the edge, never to the application target.
+    if (url.searchParams.has('pin')) {
+      // Preserve application query bytes: reserialization can invalidate signed URLs.
+      const query = url.search
+        .slice(1)
+        .split('&')
+        .filter((parameter) => !new URLSearchParams(parameter).has('pin'))
+        .join('&');
+      url.search = query ? `?${query}` : '';
+    }
+    if (!this.sessionAuthorized(request)) {
+      if (pin === null) {
+        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () =>
+          socket.destroy(),
+        );
+        return;
+      }
+      const valid = await this.authorizePin(
+        request,
+        () => Promise.resolve(pin),
+        (status, _message, retryAfter) => {
+          const reason =
+            {
+              400: 'Bad Request',
+              401: 'Unauthorized',
+              403: 'Forbidden',
+              410: 'Gone',
+              429: 'Too Many Requests',
+              503: 'Service Unavailable',
+            }[status] ?? 'Error';
+          socket.end(
+            `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n${retryAfter ? `Retry-After: ${retryAfter}\r\n` : ''}\r\n`,
+            () => socket.destroy(),
+          );
+        },
+      );
+      if (!valid || socket.destroyed) return;
+    }
+    const connector = this.connector;
+    if (!connector || connector.readyState !== WebSocket.OPEN) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    // A WebSocket is long-lived by definition, so unlike an http exchange it
+    // never passes through the request pool at all.
+    if (this.activeStreams >= this.options.maxConcurrentStreams) {
+      socket.write(
+        'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n',
+      );
+      socket.destroy();
+      return;
+    }
+    const headers = websocketRequestHeaders(request.headers);
+    localRequestCookies(headers, request, this.options.accessMode);
+    if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
+      socket.write('HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    // An offer that is not a list of distinct tokens can never be completed:
+    // `ws` refuses it when this handshake is finally answered. Saying so now
+    // costs nothing, where letting it through spends a dial on the target for
+    // a socket that is already doomed.
+    if (!validSubprotocolOffer(request.headers['sec-websocket-protocol'])) {
+      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    this.openClientSocket({ request, socket, head }, connector, url.pathname + url.search, headers);
   }
 
   private scheduleExpiry(): void {
@@ -947,20 +988,65 @@ export class PreviewEdge {
       response.end();
       return;
     }
+    let returnPath = '/';
+    const valid = await this.authorizePin(
+      request,
+      async () => {
+        const form = linkCode
+          ? new URLSearchParams(linkCode)
+          : request.method === 'GET'
+            ? url.searchParams
+            : new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
+        const next = safeNext(form.get('next'), this.options.publicOrigin);
+        const cleanNext = new URL(next, this.options.publicOrigin);
+        if (request.method === 'GET') cleanNext.searchParams.delete('pin');
+        returnPath = cleanNext.pathname + cleanNext.search + cleanNext.hash;
+        return form.get('pin') ?? '';
+      },
+      (status, message, retryAfter) => {
+        if (status === 401) {
+          response.writeHead(401, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            'content-security-policy': PREVIEW_PAGE_CSP,
+            'x-frame-options': 'DENY',
+          });
+          response.end(loginPage(returnPath, message));
+        } else if (status === 410) sendPreviewExpired(response);
+        else sendPreviewError(response, status, message, retryAfter);
+      },
+    );
+    if (!valid) return;
+    response.writeHead(303, {
+      location: returnPath,
+      'set-cookie': `${COOKIE_NAME}=${this.sessionValue(Date.now() + SESSION_LIFETIME_SECONDS * 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_LIFETIME_SECONDS}`,
+      'cache-control': 'no-store',
+    });
+    response.end();
+  }
+
+  private async authorizePin(
+    request: IncomingMessage,
+    readPin: () => Promise<string>,
+    reject: (status: number, message: string, retryAfter?: string) => void,
+  ): Promise<boolean> {
+    const rejectBudget = (result: PinBudgetResult): void => {
+      if (result.state === 'cooldown')
+        reject(429, 'Too many code attempts. Try again later.', String(result.retryAfterSeconds));
+      else if (result.state === 'locked')
+        reject(403, 'Code entry is locked. Ask the person who shared this preview for a new link.');
+      else reject(503, 'Code verification is unavailable. Try again later.');
+    };
     if (this.loginVerifications >= 2) {
-      sendPreviewError(response, 429, 'Too many code attempts. Try again shortly.', '1');
-      return;
+      reject(429, 'Too many code attempts. Try again shortly.', '1');
+      return false;
     }
     this.loginVerifications += 1;
     try {
       const client = this.loginClientIdentity(request);
       if (!client) {
-        response.writeHead(400, {
-          'content-type': 'text/plain; charset=utf-8',
-          'cache-control': 'no-store',
-        });
-        response.end('A valid trusted forwarding chain is required.');
-        return;
+        reject(400, 'A valid trusted forwarding chain is required.');
+        return false;
       }
       const now = Date.now();
       for (const [identity, attempts] of this.loginFailures) {
@@ -968,28 +1054,20 @@ export class PreviewEdge {
         if (attempts.length === 0) this.loginFailures.delete(identity);
       }
       if (!this.loginFailures.has(client) && this.loginFailures.size >= MAX_LOGIN_IDENTITIES) {
-        sendPreviewError(response, 429, 'Code entry is busy. Try again in a minute.', '60');
-        return;
+        reject(429, 'Code entry is busy. Try again in a minute.', '60');
+        return false;
       }
       const failures = this.loginFailures.get(client) ?? [];
       if (failures.length >= 10) {
-        sendPreviewError(response, 429, 'Too many code attempts. Try again in a minute.', '60');
-        return;
+        reject(429, 'Too many code attempts. Try again in a minute.', '60');
+        return false;
       }
       failures.push(now);
       this.loginFailures.set(client, failures);
-      const form = linkCode
-        ? new URLSearchParams(linkCode)
-        : request.method === 'GET'
-          ? url.searchParams
-          : new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
-      const next = safeNext(form.get('next'), this.options.publicOrigin);
-      const cleanNext = new URL(next, this.options.publicOrigin);
-      if (request.method === 'GET') cleanNext.searchParams.delete('pin');
-      const returnPath = cleanNext.pathname + cleanNext.search + cleanNext.hash;
+      const pin = await readPin();
       if (this.expired()) {
-        sendPreviewExpired(response);
-        return;
+        reject(410, 'This link has expired.');
+        return false;
       }
       let attemptId: string | undefined;
       if (this.options.pinBudget) {
@@ -997,67 +1075,34 @@ export class PreviewEdge {
           .begin()
           .catch(() => ({ state: 'unavailable' as const }));
         if (begin.state !== 'allowed' || !('attemptId' in begin) || !begin.attemptId) {
-          this.rejectPinBudget(
-            response,
-            begin.state === 'allowed' ? { state: 'unavailable' } : begin,
-          );
-          return;
+          rejectBudget(begin.state === 'allowed' ? { state: 'unavailable' } : begin);
+          return false;
         }
         attemptId = begin.attemptId;
       }
-      const valid = await verifyPreviewPin(form.get('pin') ?? '', this.options.pinHash);
+      const valid = await verifyPreviewPin(pin, this.options.pinHash);
       if (this.options.pinBudget && attemptId) {
         // A correct code cannot grant access until its reservation is durably finished.
         const finish = await this.options.pinBudget
           .finish(attemptId, valid)
           .catch(() => ({ state: 'unavailable' as const }));
         if (finish.state !== 'allowed') {
-          this.rejectPinBudget(response, finish);
-          return;
+          rejectBudget(finish);
+          return false;
         }
       }
       if (!valid) {
-        response.writeHead(401, {
-          'content-type': 'text/html; charset=utf-8',
-          'cache-control': 'no-store',
-          'content-security-policy': PREVIEW_PAGE_CSP,
-          'x-frame-options': 'DENY',
-        });
-        response.end(loginPage(returnPath, 'Invalid code. Please try again.'));
-        return;
+        reject(401, 'Invalid code. Please try again.');
+        return false;
       }
       if (this.expired()) {
-        sendPreviewExpired(response);
-        return;
+        reject(410, 'This link has expired.');
+        return false;
       }
       this.loginFailures.delete(client);
-      response.writeHead(303, {
-        location: returnPath,
-        'set-cookie': `${COOKIE_NAME}=${this.sessionValue(Date.now() + SESSION_LIFETIME_SECONDS * 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_LIFETIME_SECONDS}`,
-        'cache-control': 'no-store',
-      });
-      response.end();
+      return true;
     } finally {
       this.loginVerifications -= 1;
-    }
-  }
-
-  private rejectPinBudget(response: ServerResponse, result: PinBudgetResult): void {
-    if (result.state === 'cooldown') {
-      sendPreviewError(
-        response,
-        429,
-        'Too many code attempts. Try again later.',
-        String(result.retryAfterSeconds),
-      );
-    } else if (result.state === 'locked') {
-      sendPreviewError(
-        response,
-        403,
-        'Code entry is locked. Ask the person who shared this preview for a new link.',
-      );
-    } else {
-      sendPreviewError(response, 503, 'Code verification is unavailable. Try again later.');
     }
   }
 
