@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.20.0](https://github.com/Heey-Global/verity/compare/v4.19.0...v4.20.0) (2026-10-06)
+
+
+### Features
+
+* **diagnostics:** expose local and historical runtime evidence ([#1234](https://github.com/Heey-Global/verity/issues/1234)) ([7e39988](https://github.com/Heey-Global/verity/commit/7e3998869cbd828ae355d0c2d72ad0ea77fa6faf))
+* **preview:** support PIN authentication for WebSocket upgrades ([#1232](https://github.com/Heey-Global/verity/issues/1232)) ([1099441](https://github.com/Heey-Global/verity/commit/10994411ffe05e9cad9acd6f6d0f3c561a76a27d))
+
+
+### Bug Fixes
+
+* **broker:** resolve entry-script project paths from the session worktree ([#1233](https://github.com/Heey-Global/verity/issues/1233)) ([d385d82](https://github.com/Heey-Global/verity/commit/d385d82ab5230eead3bd37254d625d457f05cea3))
+* **tasks:** preserve captures and secure assignments and attachments ([#1230](https://github.com/Heey-Global/verity/issues/1230)) ([3ab8790](https://github.com/Heey-Global/verity/commit/3ab87905b222d9513c40165d710afcf937195621))
+
 ## [4.19.0](https://github.com/Heey-Global/verity/compare/v4.18.0...v4.19.0) (2026-10-06)
 
 
