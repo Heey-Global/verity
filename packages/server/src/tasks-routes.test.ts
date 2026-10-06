@@ -132,6 +132,49 @@ describe('tasks routes', () => {
     expect((await app.inject({ method: 'GET', url: '/tasks' })).json().tasks).toHaveLength(2);
   });
 
+  it('blocks edits to assigned tasks after project access is revoked', async () => {
+    await grantMember({ read: true, execute: true });
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: MEMBER,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Assigned',
+    });
+    await ctx.db.deleteFrom('project_memberships').where('user_id', '=', MEMBER).execute();
+    for (const payload of [{ title: 'Injected' }, { detail: 'Injected' }, { status: 'done' }]) {
+      expect(
+        (await app.inject({ method: 'PATCH', url: `/tasks/${T1}`, headers: asMember, payload }))
+          .statusCode,
+      ).toBe(404);
+    }
+  });
+
+  it('rejects HTTP assignment when the task moves after validation', async () => {
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      origin: 'user',
+      title: 'Backlog',
+    });
+    const patch = store.tasks.patch.bind(store.tasks);
+    const spy = vi.spyOn(store.tasks, 'patch').mockImplementationOnce(async (...args) => {
+      await patch(T1, ADMIN, { projectId: null });
+      return patch(...args);
+    });
+    try {
+      expect(
+        (await app.inject({ method: 'PATCH', url: `/tasks/${T1}`, payload: { sessionId: 's1' } }))
+          .statusCode,
+      ).toBe(409);
+      expect((await store.tasks.get(T1, ADMIN))?.sessionId).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("keeps one user from touching another user's task by id", async () => {
     await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: { title: 'Mine' } });
     const list = await app.inject({ method: 'GET', url: '/tasks', headers: asMember });

@@ -247,10 +247,17 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     }
     const projectId = body.projectId === undefined ? previous.projectId : body.projectId;
     const sessionId = body.sessionId === undefined ? previous.sessionId : body.sessionId;
-    const needsExecute = sessionId !== null && sessionId !== previous.sessionId;
     if (
-      (body.projectId !== undefined || needsExecute) &&
-      !(await canUseProject(request.localUserId, projectId, needsExecute ? 'execute' : 'read'))
+      !(await canUseProject(
+        request.localUserId,
+        previous.projectId,
+        previous.sessionId === null ? 'read' : 'execute',
+      )) ||
+      !(await canUseProject(
+        request.localUserId,
+        projectId,
+        sessionId === null ? 'read' : 'execute',
+      ))
     ) {
       reply.code(404);
       return { error: 'project not found' };
@@ -271,7 +278,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
           ...patch,
           status: patch.status as TaskRecord['status'] | undefined,
         },
-        expectedRevision,
+        expectedRevision ?? previous.revision,
       );
       const change =
         task.status === previous.status
