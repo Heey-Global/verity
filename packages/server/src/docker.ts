@@ -404,6 +404,10 @@ export interface ContainerInspect {
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
   image?: string | undefined;
+  /** Per-process resource limits retained by session containers. */
+  ulimits?: Array<{ name: string; soft: number; hard: number }> | undefined;
+  /** Immutable image ID used by this container. */
+  imageId?: string | undefined;
   /** OpenContainers/custom labels recorded on the container config. */
   labels?: Record<string, string> | undefined;
   /** Docker networks attached to the container, keyed by network name. */
@@ -424,6 +428,8 @@ export interface ContainerInspect {
    *  `Restarting`, which is only true during the brief window of a restart. */
   restartCount?: number | undefined;
   healthStatus?: string | undefined;
+  extraHosts?: string[] | undefined;
+  sysctls?: Record<string, string> | undefined;
   networkMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
   tmpfs?: Record<string, string> | undefined;
@@ -1753,6 +1759,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       if (!res.ok) throw await toDockerError(res, id);
       const json = (await res.json()) as {
         Id?: unknown;
+        Image?: unknown;
         RestartCount?: unknown;
         State?: {
           Running?: unknown;
@@ -1770,9 +1777,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         };
         NetworkSettings?: { Networks?: unknown };
         HostConfig?: {
+          Ulimits?: unknown;
           PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
+          ExtraHosts?: unknown;
+          Sysctls?: unknown;
           ReadonlyRootfs?: unknown;
           Tmpfs?: unknown;
           CapDrop?: unknown;
@@ -1825,9 +1835,23 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
             )
           : undefined;
       return {
+        ...(Array.isArray(json.HostConfig?.Ulimits)
+          ? {
+              ulimits: json.HostConfig.Ulimits.flatMap((value: unknown) => {
+                if (typeof value !== 'object' || value === null) return [];
+                const limit = value as { Name?: unknown; Soft?: unknown; Hard?: unknown };
+                return typeof limit.Name === 'string' &&
+                  typeof limit.Soft === 'number' &&
+                  typeof limit.Hard === 'number'
+                  ? [{ name: limit.Name, soft: limit.Soft, hard: limit.Hard }]
+                  : [];
+              }),
+            }
+          : {}),
         id: json.Id,
         running: json.State?.Running === true,
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),
+        ...(typeof json.Image === 'string' ? { imageId: json.Image } : {}),
         ...(labels !== undefined ? { labels } : {}),
         ...(networks !== undefined ? { networks } : {}),
         ...(typeof json.Config?.User === 'string' ? { user: json.Config.User } : {}),
@@ -1846,6 +1870,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           ? { readOnlyRootfs: json.HostConfig.ReadonlyRootfs }
           : {}),
         ...(isStringRecord(json.HostConfig?.Tmpfs) ? { tmpfs: json.HostConfig.Tmpfs } : {}),
+        ...(isStringArray(json.HostConfig?.ExtraHosts)
+          ? { extraHosts: json.HostConfig.ExtraHosts }
+          : {}),
+        ...(parseDockerLabels(json.HostConfig?.Sysctls)
+          ? { sysctls: parseDockerLabels(json.HostConfig?.Sysctls) }
+          : {}),
         ...(isStringArray(json.HostConfig?.CapDrop) ? { capDrop: json.HostConfig.CapDrop } : {}),
         ...(isStringArray(json.HostConfig?.SecurityOpt)
           ? { securityOpt: json.HostConfig.SecurityOpt }

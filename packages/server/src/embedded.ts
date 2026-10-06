@@ -217,7 +217,7 @@ import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 import { containerNameFor } from './canonical.js';
 import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
-import { createSandboxGit } from './sandbox-git.js';
+import { createSleepingSessionGit, createSandboxGit } from './sandbox-git.js';
 import { projectSettingsEnv, type ProjectEnvironmentSettings } from './project-settings-env.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
@@ -2194,6 +2194,39 @@ export async function buildEmbeddedServer(
                     session.projectId ?? CONTROL_PLANE_PROJECT_ID,
                   );
                   if (!project) throw new Error('Project is unavailable');
+                  const readOnly =
+                    [
+                      'rev-parse',
+                      'for-each-ref',
+                      'symbolic-ref',
+                      'reflog',
+                      'status',
+                      'diff',
+                      'log',
+                      'show',
+                      'merge-base',
+                      'show-ref',
+                    ].includes(args[index + 2] ?? '') ||
+                    (args[index + 2] === 'worktree' && args[index + 3] === 'list');
+                  if (
+                    readOnly &&
+                    !(await projectDocker.inspectContainer(project.containerName)).running
+                  ) {
+                    if (config.dataVolume && !dataVolumeRoot)
+                      throw new Error('Data volume root is unavailable');
+                    return createSleepingSessionGit({
+                      docker: projectDocker,
+                      templateContainer: project.containerName,
+                      projectId: project.id,
+                      hostRoot: projectClonePath(config.hostCloneRoot!, project),
+                      ...(config.dataVolume
+                        ? {
+                            dataVolume: { name: config.dataVolume, root: dataVolumeRoot! },
+                          }
+                        : {}),
+                      dockerBaseUrl: config.dockerBaseUrl,
+                    })(args);
+                  }
                   return createSandboxGit({
                     containerName: project.containerName,
                     hostRoot: projectClonePath(config.hostCloneRoot!, project),
