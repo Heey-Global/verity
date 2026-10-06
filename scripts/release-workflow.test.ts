@@ -1293,7 +1293,10 @@ describe('release train concurrency', () => {
     // Removing the handoff must not turn every metadata invocation into a release.
     expect(backend.jobs['release-please']?.outputs?.['backend-release-created']).not.toBe('true');
     const callees = Object.values(backend.jobs).flatMap((job) => (job.uses ? [job.uses] : []));
-    expect(callees).toEqual(['./.github/workflows/self-update.yml']);
+    expect(callees).toEqual([
+      './.github/workflows/mobile-native-build.yml',
+      './.github/workflows/self-update.yml',
+    ]);
   });
 });
 

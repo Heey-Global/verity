@@ -115,58 +115,48 @@ describe('Staging finalization retries', () => {
         ?.run,
     ).toContain('VERITY_RELEASE_REVISION="$REVISION"');
   });
-  it('records native evidence and approval before clearing the draft-only retry boundary', () => {
+  // Separate artifact folders leave attestations present but make publication's flat paths fail.
+  it('merges Server evidence archives into the folder consumed by publication', () => {
+    const job = Object.values(workflow.jobs).find((job) =>
+      job.steps?.some(
+        (step) => step.name === 'Attach verified Sigstore evidence to the GitHub release',
+      ),
+    )!;
+    const download = job.steps.find((step) => step.uses?.startsWith('actions/download-artifact@'))!;
+    const publication = job.steps.find(
+      (step) => step.name === 'Attach verified Sigstore evidence to the GitHub release',
+    )!.run!;
+    expect(download.with?.['merge-multiple']).toBe(true);
+    const paths = [
+      ...publication.matchAll(/(?:payload|bundle|provenance|envelope)="([^"]+)"/g),
+    ].map((match) => match[1]!);
+    expect(paths.length).toBeGreaterThan(0);
+    const folder = download.with?.path;
+    expect(folder).toBeTypeOf('string');
+    expect(paths.every((path) => path.startsWith(`${folder as string}/`))).toBe(true);
+  });
+  it('publishes staging with only its own verified evidence', () => {
     const steps = workflow.jobs['finalize-mobile-staging']!.steps;
-    const approval = steps.findIndex((step) => step.name === 'Open native production approval');
+    const evidence = steps.findIndex((step) => step.name === 'Record verified staging build');
     const publication = steps.findIndex(
       (step) => step.name === 'Publish verified native GitHub release',
     );
-    expect(approval).toBeGreaterThanOrEqual(0);
-    expect(publication).toBeGreaterThan(approval);
-    expect(steps[approval]?.run).toContain('gh release upload');
-    expect(steps[approval]?.run).toContain('production-promotion.ts propose');
+    expect(evidence).toBeGreaterThanOrEqual(0);
+    expect(publication).toBeGreaterThan(evidence);
+    expect(steps[evidence]?.run).toContain('native-staging.json');
+    expect(steps[evidence]?.run).not.toContain('native-production.json');
     expect(publication).toBe(steps.length - 1);
   });
-  it('reuses recorded native evidence after a new build on recovery', () => {
-    const approval = workflow.jobs['finalize-mobile-staging']!.steps.find(
+  it('delegates archive reuse and expiry replacement to the production proposer', () => {
+    const production = parse(
+      readFileSync('.github/workflows/mobile-production-build.yml', 'utf8'),
+    ) as typeof workflow;
+    const approval = production.jobs['finalize-mobile-production']!.steps.find(
       (step) => step.name === 'Open native production approval',
     )!.run!;
-    const recovery = approval.slice(
-      approval.indexOf('if gh release view'),
-      approval.indexOf('node scripts/production-promotion.ts'),
-    );
-    const root = mkdtempSync(join(tmpdir(), 'verity-native-recovery-'));
-    try {
-      mkdirSync(join(root, 'bin'));
-      const gh = join(root, 'bin/gh');
-      writeFileSync(
-        gh,
-        `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1 $2" == 'release view' ]]; then printf 'production-candidate.json\\n';
-elif [[ "$1 $2" == 'release download' ]]; then cp "$RUNNER_TEMP/original.json" "$RUNNER_TEMP/mobile-production.json";
-else exit 22; fi
-`,
-      );
-      chmodSync(gh, 0o755);
-      writeFileSync(join(root, 'original.json'), '{"buildId":"approved-build"}');
-      writeFileSync(join(root, 'mobile-production.json'), '{"buildId":"rebuilt-build"}');
-      const result = spawnSync('bash', ['-c', `set -euo pipefail\n${recovery}`], {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${join(root, 'bin')}:${process.env.PATH}`,
-          RUNNER_TEMP: root,
-          MOBILE_TAG: 'mobile-v2.0.0',
-        },
-      });
-      expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(readFileSync(join(root, 'mobile-production.json'), 'utf8'))).toEqual({
-        buildId: 'approved-build',
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    expect(approval).toContain('node scripts/production-promotion.ts propose');
+    expect(approval).toContain('native-candidates/native-production.json');
+    expect(approval).not.toContain('gh release download');
   });
   it.each(['finalize-mobile-staging', 'finalize-backend-release'])(
     'fetches promotion branch merge bases in %s',

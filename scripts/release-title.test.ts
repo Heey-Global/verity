@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
@@ -84,9 +84,9 @@ it.each([
 
 // Title-based recovery must keep finding approvals after the naming migration.
 it('keeps workflow release lookups compatible with current and historical titles', () => {
-  const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
-  const lookups = workflow
-    .split('\n')
+  const lookups = readdirSync('.github/workflows')
+    .filter((file) => /\.ya?ml$/.test(file))
+    .flatMap((file) => readFileSync(`.github/workflows/${file}`, 'utf8').split('\n'))
     .filter((line) => line.includes('.title == "chore(main): release'));
   expect(lookups).toHaveLength(3);
   for (const lookup of lookups) {

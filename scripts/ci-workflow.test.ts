@@ -1028,25 +1028,60 @@ describe('native iOS compile gate', () => {
     expect(cache?.with?.['restore-keys']).toContain('mobile-ci-ccache-');
   });
 
-  it('builds native variants concurrently and finalizes only after both succeed', () => {
+  it('keeps production outside the staging lifecycle lock', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<
         string,
         {
-          strategy?: { 'max-parallel': number; matrix: { variant: string[] } };
-          needs?: string[];
+          with: { variant: string };
+          uses?: string;
+          needs: string | string[];
           if?: string;
+          steps: WorkflowStep[];
         }
       >;
+      concurrency: { group: string; 'cancel-in-progress': boolean };
     };
-    const strategy = release.jobs['publish-mobile-native']?.strategy;
-    const variants = strategy?.matrix.variant ?? [];
-    expect(variants).toEqual(['staging', 'production']);
-    // Serial matrix scheduling silently doubles the wait for production approval.
-    expect(strategy?.['max-parallel']).toBeGreaterThanOrEqual(variants.length);
+    const production = parse(
+      readFileSync('.github/workflows/mobile-production-build.yml', 'utf8'),
+    ) as {
+      jobs: Record<
+        string,
+        {
+          with: { variant: string };
+          uses?: string;
+          needs: string | string[];
+          if?: string;
+          steps: WorkflowStep[];
+        }
+      >;
+      concurrency: { group: string; 'cancel-in-progress': boolean };
+    };
+    const staging = release.jobs['publish-mobile-native'];
+    const dispatch = release.jobs['dispatch-mobile-production'];
+    expect(staging.with.variant).toBe('staging');
+    expect(production.jobs['publish-mobile-native'].with.variant).toBe('production');
+    expect(staging.uses).toBe(production.jobs['publish-mobile-native'].uses);
+    expect(staging.needs).toBe('release-please');
+    expect(dispatch.needs).toBe(staging.needs);
+    expect(dispatch.steps[0].run).toContain('gh workflow run mobile-production-build.yml');
+    expect(dispatch.steps[0].run).not.toContain('--wait');
+    // A nested production job would silently hold release-mobile until it ends.
+    expect(
+      Object.values(release.jobs).some(
+        (job: { with?: { variant?: string } }) => job.with?.variant === 'production',
+      ),
+    ).toBe(false);
+    expect(production.concurrency.group).not.toBe('release-mobile');
+    expect(production.concurrency['cancel-in-progress']).toBe(false);
     const finalization = release.jobs['finalize-mobile-staging'];
-    expect(finalization?.needs).toContain('publish-mobile-native');
-    expect(finalization?.if).toBe("needs.publish-mobile-native.result == 'success'");
+    expect(finalization.needs).toEqual(['release-please', 'publish-mobile-native']);
+    expect(finalization.if).toBe("needs.publish-mobile-native.result == 'success'");
+    expect(
+      finalization.steps.some((step: WorkflowStep) =>
+        step.run?.includes('production-promotion.ts'),
+      ),
+    ).toBe(false);
   });
 
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
@@ -1060,7 +1095,10 @@ describe('native iOS compile gate', () => {
         }
       >;
     };
-    const job = release.jobs['publish-mobile-native'];
+    const builder = parse(
+      readFileSync('.github/workflows/mobile-native-build.yml', 'utf8'),
+    ) as typeof release;
+    const job = builder.jobs.build;
     expect(job?.['runs-on']).toBe('xcode-27');
     expect(job?.permissions?.issues).toBe('write');
     // Recovery moves the release PR labels through the issues endpoint, which

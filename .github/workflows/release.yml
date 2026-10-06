@@ -851,9 +851,6 @@ jobs:
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
 
   publish-mobile-native:
-    # Not gated on the cutover: the native app is its own release train and
-    # carries no Server image, so a failing Server cutover has nothing to say
-    # about it.
     needs: release-please
     if: >-
       always() && inputs.train == 'mobile' &&
@@ -861,334 +858,34 @@ jobs:
       needs.release-please.outputs.mobile-already-published != 'true' &&
       (needs.release-please.outputs.mobile-release-created == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
-    # Public-repository GitHub-hosted runners are free. Keep the expensive macOS
-    # allocation scoped to the native release job only.
-    strategy:
-      fail-fast: false
-      # Separate app identities and runner-local build counters allow both
-      # variants to build together; finalization waits for the whole matrix.
-      max-parallel: 2
-      matrix:
-        variant: [staging, production]
-    runs-on: xcode-27
-    timeout-minutes: 120
-    env:
-      VERITY_APP_VARIANT: ${{ matrix.variant }}
-      EXPO_UPDATE_CHANNEL: ${{ matrix.variant }}
-      NATIVE_PROFILE: ${{ matrix.variant == 'staging' && 'staging' || 'testflight' }}
-      MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
+    uses: ./.github/workflows/mobile-native-build.yml
+    secrets: inherit
     permissions:
       contents: write
       issues: write
-      # The release PR labels below are moved through the issues endpoint, but
-      # GitHub authorizes labels on a pull request against this scope; with
-      # read access the move fails with 403 after every artifact is published.
       pull-requests: write
+    with:
+      mobile-tag: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
+      variant: staging
+
+  dispatch-mobile-production:
+    needs: release-please
+    if: >-
+      always() && inputs.train == 'mobile' &&
+      needs.release-please.result == 'success' &&
+      needs.release-please.outputs.mobile-already-published != 'true' &&
+      (needs.release-please.outputs.mobile-release-created == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    env:
+      MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
     steps:
-      - name: Resolve immutable native release source
-        id: native-source
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$MOBILE_TAG" =~ ^mobile-v[0-9]+\.[0-9]+\.0$ ]]
-          release="$(gh release view "$MOBILE_TAG" --json isDraft,targetCommitish)"
-          [[ "$(jq -r .isDraft <<< "$release")" == true ]]
-          sha="$(jq -r .targetCommitish <<< "$release")"
-          [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || {
-            echo '::error::Native draft must record an immutable source SHA.' >&2
-            exit 1
-          }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-
-      # renovate: datasource=github-actions depName=actions/checkout
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.native-source.outputs.sha }}
-          fetch-depth: 0
-
-      - name: Validate native release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$MOBILE_TAG" =~ ^mobile-v[0-9]+\.[0-9]+\.0$ ]]; then
-            echo "::error::Native release tag must match mobile-vX.Y.0, got '$MOBILE_TAG'." >&2
-            exit 1
-          fi
-          is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
-          if [[ "$is_draft" != "true" ]]; then
-            echo "::error::$MOBILE_TAG must still be a draft release before TestFlight publishing." >&2
-            exit 1
-          fi
-          configured_version="$(tr -d '[:space:]' < apps/mobile/version.txt)"
-          if [[ "mobile-v${configured_version}" != "$MOBILE_TAG" ]]; then
-            echo "::error::Checked-out mobile version $configured_version does not match $MOBILE_TAG." >&2
-            exit 1
-          fi
-
-      - name: Verify native tag still names the candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git show-ref --verify --quiet "refs/tags/${MOBILE_TAG}"; then
-            [[ "$(git rev-parse "${MOBILE_TAG}^{commit}")" == "$(git rev-parse HEAD)" ]] || {
-              echo '::error::Native tag differs from its recorded release source.' >&2
-              exit 1
-            }
-          fi
-
-      # The release job must not depend on the ambient Node.js installation.
-      # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24.21.0'
-
-      - name: Require App Store Connect credentials
-        env:
-          STAGING_ASC_APP_ID: ${{ secrets.STAGING_ASC_APP_ID }}
-          STAGING_GOOGLE_AUTH_ID: ${{ secrets.STAGING_GOOGLE_AUTH_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$VERITY_APP_VARIANT" = staging ] && [ -z "${STAGING_ASC_APP_ID:-}" ]; then
-            echo '::error::Register build.verity.app.staging and set STAGING_ASC_APP_ID before building.' >&2
-            exit 1
-          fi
-          if [ "$VERITY_APP_VARIANT" = staging ] && [ -z "${STAGING_GOOGLE_AUTH_ID:-}" ]; then
-            echo '::error::Register a Google iOS OAuth client for build.verity.app.staging and set STAGING_GOOGLE_AUTH_ID.' >&2
-            exit 1
-          fi
-          for name in ASC_ISSUER_ID ASC_KEY_ID ASC_KEY_P8 ASC_APP_ID APPLE_TEAM_ID EXPO_TOKEN; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error::$name is required for the native TestFlight release." >&2
-              exit 1
-            fi
-          done
-
-      - name: Require Google Drive OAuth client
-        env:
-          GOOGLE_AUTH_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "${GOOGLE_AUTH_ID:-}" =~ ^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$ ]]; then
-            echo "::error::GOOGLE_AUTH_ID must contain a Google iOS OAuth client ID." >&2
-            exit 1
-          fi
-
-      - name: Install mobile dependencies
-        run: npm ci
-
-      - name: Prepare mobile sources
-        run: |
-          npm run -w @verity/mobile-app patch:native
-          npm run -w @verity/mobile build
-
-      - name: Configure native compiler cache pilot
-        id: compiler-cache
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v ccache >/dev/null || brew install ccache
-          toolchain="$( { xcodebuild -version; ccache --version; } | shasum -a 256 | cut -d ' ' -f 1)"
-          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
-          {
-            echo "USE_CCACHE=1"
-            echo "CCACHE_DIR=$RUNNER_TEMP/verity-mobile-ccache"
-            echo "CCACHE_CONFIGPATH=$GITHUB_WORKSPACE/apps/mobile/build/ccache.conf"
-            echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/verity-eas-build"
-            echo "CCACHE_BASEDIR=$RUNNER_TEMP/verity-eas-build"
-          } >> "$GITHUB_ENV"
-
-      # Reuse only compiler objects, never credentials, IPAs, or EAS work directories.
-      # Restore across dependency updates only within the same toolchain and policy.
-      # app.config.ts contains the release version, which changes for every native
-      # release. ccache validates source content and compiler arguments itself;
-      # hashing that file here would discard reusable objects at every release.
-      # renovate: datasource=github-actions depName=actions/cache
-      - name: Restore native compiler cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/verity-mobile-ccache
-          key: mobile-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            mobile-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}-
-
-      - name: Reset native compiler cache statistics
-        run: ccache --zero-stats
-
-      - name: Build and upload native TestFlight release
-        working-directory: apps/mobile
-        env:
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          GOOGLE_AUTH_ID: ${{ matrix.variant == 'staging' && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          key_dir="$RUNNER_TEMP/app-store-connect"
-          key_path="$key_dir/AuthKey_${ASC_KEY_ID}.p8"
-          ipa="$RUNNER_TEMP/Verity.ipa"
-          mkdir -p "$key_dir"
-          printf '%s' "$ASC_KEY_P8" > "$key_path"
-          chmod 600 "$key_path"
-
-          mint_asc_jwt() {
-            ruby -ropenssl -rjson -rbase64 -e '
-              b64 = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
-              header = b64.call({ alg: "ES256", kid: ENV.fetch("ASC_KEY_ID"), typ: "JWT" }.to_json)
-              now = Time.now.to_i
-              claims = b64.call({ iss: ENV.fetch("ASC_ISSUER_ID"), iat: now - 60, exp: now + 1200, aud: "appstoreconnect-v1" }.to_json)
-              input = "#{header}.#{claims}"
-              der = OpenSSL::PKey.read(File.read(ARGV.fetch(0))).sign(OpenSSL::Digest::SHA256.new, input)
-              r, s = OpenSSL::ASN1.decode(der).value.map(&:value)
-              raw = [r, s].map { |part| [part.to_s(16).rjust(64, "0")].pack("H*") }.join
-              print "#{input}.#{b64.call(raw)}"
-            ' "$key_path"
-          }
-          asc_jwt="$(mint_asc_jwt)"
-          expected_bundle_id="$(npx expo config --type public --json \
-            | ruby -rjson -e 'print JSON.parse(STDIN.read).dig("ios", "bundleIdentifier")')"
-          app_json="$(curl --fail-with-body \
-            --retry 3 --retry-all-errors --max-time 30 \
-            --header "Authorization: Bearer $asc_jwt" \
-            "https://api.appstoreconnect.apple.com/v1/apps/$ASC_APP_ID")"
-          actual_bundle_id="$(ruby -rjson -e 'print JSON.parse(STDIN.read).dig("data", "attributes", "bundleId")' <<< "$app_json")"
-          if [[ "$actual_bundle_id" != "$expected_bundle_id" ]]; then
-            echo "::error::ASC_APP_ID $ASC_APP_ID belongs to '$actual_bundle_id', expected '$expected_bundle_id'." >&2
-            exit 1
-          fi
-
-          builds_json="$(curl --fail-with-body --get \
-            --retry 3 --retry-all-errors --max-time 30 \
-            --header "Authorization: Bearer $asc_jwt" \
-            --data-urlencode "filter[app]=$ASC_APP_ID" \
-            --data-urlencode 'sort=-uploadedDate' \
-            --data-urlencode 'limit=1' \
-            https://api.appstoreconnect.apple.com/v1/builds)"
-          latest_build="$(ruby -rjson -e 'data=JSON.parse(STDIN.read).fetch("data"); puts(data.empty? ? 0 : Integer(data.first.dig("attributes", "version")))' <<< "$builds_json")"
-          next_build="$((latest_build + 1))"
-          export VERITY_IOS_BUILD_NUMBER="$next_build"
-
-          # The repository normally lets EAS manage its remote counter. This
-          # release instead uses the next number observed in App Store Connect,
-          # so make only this runner's temporary EAS config use the local value.
-          ruby -rjson -e '
-            path = "eas.json"
-            config = JSON.parse(File.read(path))
-            config.fetch("cli")["appVersionSource"] = "local"
-            config.fetch("build").fetch(ENV.fetch("NATIVE_PROFILE"))["autoIncrement"] = false
-            File.write(path, JSON.pretty_generate(config) + "\n")
-          '
-
-          # Build on the GitHub macOS runner while EAS supplies the remote
-          # distribution certificate and provisioning profile. This does not
-          # consume an EAS cloud-build slot or its build minutes.
-          build_started="$(date +%s)"
-          npx --yes eas-cli@20.3.0 build \
-            --platform ios \
-            --profile "$NATIVE_PROFILE" \
-            --local \
-            --non-interactive \
-            --output "$ipa"
-
-          info_plist="$RUNNER_TEMP/Verity-Info.plist"
-          unzip -p "$ipa" 'Payload/*.app/Info.plist' > "$info_plist"
-          next_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist")"
-          if [[ "$next_build" != "$VERITY_IOS_BUILD_NUMBER" ]]; then
-            echo "::error::The locally built IPA has build number '$next_build', expected '$VERITY_IOS_BUILD_NUMBER'." >&2
-            exit 1
-          fi
-          echo "Built App Store build number $next_build locally on GitHub Actions."
-
-          mkdir -p "$HOME/.appstoreconnect/private_keys"
-          cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          echo "Native build and IPA verification: $(( $(date +%s) - build_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
-          upload_started="$(date +%s)"
-          xcrun altool --upload-app --type ios --file "$ipa" \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-
-          echo "Apple upload acceptance: $(( $(date +%s) - upload_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
-          processing_started="$(date +%s)"
-
-          # altool success means only that Apple accepted the upload. Keep the
-          # draft GitHub release closed until App Store Connect has processed
-          # this exact build and declared it valid.
-          for attempt in {1..60}; do
-            asc_jwt="$(mint_asc_jwt)"
-            if ! uploaded_builds="$(curl --fail-with-body --get \
-              --retry 3 --retry-all-errors --max-time 30 \
-              --header "Authorization: Bearer $asc_jwt" \
-              --data-urlencode "filter[app]=$ASC_APP_ID" \
-              --data-urlencode "filter[version]=$next_build" \
-              --data-urlencode 'limit=1' \
-              https://api.appstoreconnect.apple.com/v1/builds)"; then
-              if [[ "$attempt" == 60 ]]; then
-                echo "::error::App Store Connect remained unavailable while checking build $next_build." >&2
-                exit 1
-              fi
-              echo "App Store Connect check failed transiently; retrying ($attempt/60)."
-              sleep 30
-              continue
-            fi
-            processing_state="$(ruby -rjson -e '
-              data = JSON.parse(STDIN.read).fetch("data")
-              print(data.empty? ? "MISSING" : data.first.dig("attributes", "processingState"))
-            ' <<< "$uploaded_builds")"
-            case "$processing_state" in
-              VALID)
-                echo "App Store Connect processed build $next_build successfully."
-                echo "Apple processing: $(( $(date +%s) - processing_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
-                build_id="$(ruby -rjson -e 'print JSON.parse(STDIN.read).fetch("data").first.fetch("id")' <<< "$uploaded_builds")"
-                jq -n --arg version "${MOBILE_TAG#mobile-v}" --arg source "$(git rev-parse HEAD)" \
-                  --arg appId "$ASC_APP_ID" --arg buildId "$build_id" --arg buildNumber "$next_build" \
-                  '{schema:1,product:"mobile-native",version:$version,source:$source,appId:$appId,buildId:$buildId,buildNumber:$buildNumber}' > "$RUNNER_TEMP/native-${VERITY_APP_VARIANT}.json"
-                break
-                ;;
-              FAILED|INVALID)
-                echo "::error::App Store Connect rejected build $next_build during processing ($processing_state)." >&2
-                exit 1
-                ;;
-              MISSING|PROCESSING)
-                if [[ "$attempt" == 60 ]]; then
-                  echo "::error::Timed out waiting for App Store Connect to process build $next_build." >&2
-                  exit 1
-                fi
-                echo "Build $next_build is $processing_state; waiting for App Store Connect ($attempt/60)."
-                sleep 30
-                ;;
-              *)
-                echo "::error::Unexpected App Store Connect processing state '$processing_state'." >&2
-                exit 1
-                ;;
-            esac
-          done
-
-      - name: Record exact processed native build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-${{ matrix.variant }}-${{ env.MOBILE_TAG }}
-          path: ${{ runner.temp }}/native-${{ matrix.variant }}.json
-          if-no-files-found: error
-
-      - name: Report native compiler cache statistics
-        if: always() && steps.compiler-cache.outcome == 'success'
-        run: |
-          ccache --show-stats --verbose >> "$GITHUB_STEP_SUMMARY"
+      - name: Start independent production build
+        run: gh workflow run mobile-production-build.yml --ref main -f mobile-tag="$MOBILE_TAG"
 
   finalize-mobile-staging:
     needs: [release-please, publish-mobile-native]
@@ -1210,26 +907,12 @@ jobs:
           node-version: '24.21.0'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: native-*-${{ env.MOBILE_TAG }}
-          merge-multiple: true
+          name: native-staging-${{ env.MOBILE_TAG }}
           path: native-candidates
-      - name: Open native production approval
+      - name: Record verified staging build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          version="${MOBILE_TAG#mobile-v}"
-          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
-          [[ "$pr" =~ ^[0-9]+$ ]]
-          jq --argjson releasePr "$pr" '. + {releasePr:$releasePr}' native-candidates/native-production.json > "$RUNNER_TEMP/mobile-production.json"
-          if gh release view "$MOBILE_TAG" --json assets --jq '.assets[].name' | grep -Fxq production-candidate.json; then
-            # A full workflow retry can build new Apple IDs; approval keeps the
-            # original verified build, including when the PR creation failed.
-            gh release download "$MOBILE_TAG" --pattern production-candidate.json --output "$RUNNER_TEMP/mobile-production.json" --clobber
-          else
-            gh release upload "$MOBILE_TAG" native-candidates/native-staging.json native-candidates/native-production.json --clobber
-          fi
-          node scripts/production-promotion.ts propose "$RUNNER_TEMP/mobile-production.json"
+        run: gh release upload "$MOBILE_TAG" native-candidates/native-staging.json --clobber
 
       - name: Publish verified native GitHub release
         env:

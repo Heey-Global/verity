@@ -2,13 +2,26 @@
 
 A Release Please merge prepares a release candidate for Staging. Server candidates
 publish signed `staging` channel envelopes; native mobile candidates build both
-Verity Staging and the production app for TestFlight. Candidates appear on GitHub
-as prereleases. They do not advance the production Server channel or image aliases.
+Verity Staging for TestFlight and an unuploaded production archive. Candidates appear on GitHub
+as prereleases. Native Staging publishes as soon as its own processed build is
+ready. Production builds the same immutable release source in a separate workflow,
+without uploading it to Apple, so it does not hold the Mobile staging lifecycle lock or delay the next Staging
+release. Shared runner capacity can still cause scheduling waits. Production
+approval opens only after its archive and matching Staging evidence are ready.
+The signed IPA is retained as a GitHub Actions artifact for 90 days. Promotion
+checks the reviewed artifact ID and IPA SHA-256 before uploading that exact archive
+to Apple. Retrying the Production build preserves an available archive. If it has
+expired or been deleted, the retry records the replacement archive and requires
+fresh promotion approval; existing approvals cannot upload the replacement.
+A failed Production build can be retried through `verity-mobile-production-build`
+with the original `mobile-tag`; it does not require rebuilding Staging.
+
+Candidates do not advance the production Server channel or image aliases.
 
 The automation opens normal production promotion PRs with exact image digests,
-signed envelopes, Apple build identifiers, or EAS update groups. Merging the PR
+signed envelopes, native archive IDs and hashes, or EAS update groups. Merging the PR
 approves that candidate. Server promotion verifies both architecture envelopes
-before moving `stable` and the legacy image aliases. Native promotion verifies that the
+before moving `stable` and the legacy image aliases. Native promotion uploads the approved archive and verifies that the
 recorded production build is available for internal TestFlight testing, then marks
 the GitHub release as production. Existing TestFlight tester groups control access.
 Promotion does not create an App Store version or submit the app for review.
