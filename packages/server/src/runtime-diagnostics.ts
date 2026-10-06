@@ -12,7 +12,7 @@ export const runtimeWindowSchema = z
   .object({ since: timestamp.optional(), until: timestamp.optional() })
   .strict();
 export type RuntimeWindow = z.infer<typeof runtimeWindowSchema>;
-export const runtimeEvidenceSchema = z.object({
+const runtimeEvidenceSchema = z.object({
   at: timestamp,
   source: z.enum(['kernel', 'runtime', 'server', 'runner', 'updater', 'docker']),
   code: z.enum([

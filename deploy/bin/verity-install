@@ -951,7 +951,7 @@ VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" \
 # remain on the host, outside project containers and the Control tool surface.
 install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-diagnostics" \
   "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics"
-install -d -m 0755 -o root -g root /var/lib/verity/host-diagnostics
+install -d -m 0755 -o root -g root "${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}"
 if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
   for unit in verity-host-diagnostics.service verity-host-diagnostics.timer; do
     install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
