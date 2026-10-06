@@ -6,6 +6,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
+    "build:web": "expo export --platform web",
     "dev": "REACT_NATIVE_PACKAGER_HOSTNAME=dev-server expo start --dev-client --port 8083 --clear",
     "typecheck": "tsc --noEmit",
     "test": "jest",
@@ -58,6 +59,7 @@
     "react-native-svg": "15.15.5",
     "react-native-uitextview": "2.7.1",
     "react-native-unistyles": "3.3.0",
+    "react-native-web": "0.21.3",
     "react-native-webview": "13.16.1",
     "react-native-worklets": "0.10.4"
   },

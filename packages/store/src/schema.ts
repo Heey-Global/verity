@@ -536,6 +536,7 @@ export interface SecretKeyMetaTable {
  * {@link SecretKeyMetaTable}. `id` is an opaque public handle for revocation.
  */
 export interface AuthTokenTable {
+  expires_at: ColumnType<Date | null, string | null | undefined, string | null | undefined>;
   id: string;
   user_id: ColumnType<string, string | undefined, never>;
   token_hash: string;

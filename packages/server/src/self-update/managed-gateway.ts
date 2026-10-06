@@ -22,6 +22,11 @@ import {
   signManagedClientIdentity,
 } from '../managed-client-identity.js';
 
+import {
+  MANAGED_BROWSER_ORIGIN_HEADER,
+  signManagedBrowserOrigin,
+} from '../managed-browser-origin.js';
+
 interface Destroyable {
   destroy(error?: Error): void;
 }
@@ -252,6 +257,16 @@ function proxyHttp(
   const headers = { ...request.headers };
   for (const header of HOP_BY_HOP) delete headers[header];
   delete headers[MANAGED_CLIENT_IDENTITY_HEADER];
+  delete headers[MANAGED_BROWSER_ORIGIN_HEADER];
+  if (backendClientIdentitySecret !== undefined) {
+    const origin = `${(request.socket as TLSSocket).encrypted ? 'https' : 'http'}://${request.headers.host ?? ''}`;
+    const signedOrigin = signManagedBrowserOrigin(backendClientIdentitySecret, {
+      origin,
+      method: request.method ?? 'GET',
+      url: request.url ?? '/',
+    });
+    if (signedOrigin !== undefined) headers[MANAGED_BROWSER_ORIGIN_HEADER] = signedOrigin;
+  }
   if (backendClientIdentitySecret !== undefined) {
     headers[MANAGED_CLIENT_IDENTITY_HEADER] = signManagedClientIdentity(
       backendClientIdentitySecret,
@@ -337,6 +352,16 @@ function proxyUpgrade(
 ): void {
   const headers = { ...request.headers };
   delete headers[MANAGED_CLIENT_IDENTITY_HEADER];
+  delete headers[MANAGED_BROWSER_ORIGIN_HEADER];
+  if (backendClientIdentitySecret !== undefined) {
+    const origin = `${(request.socket as TLSSocket).encrypted ? 'https' : 'http'}://${request.headers.host ?? ''}`;
+    const signedOrigin = signManagedBrowserOrigin(backendClientIdentitySecret, {
+      origin,
+      method: request.method ?? 'GET',
+      url: request.url ?? '/',
+    });
+    if (signedOrigin !== undefined) headers[MANAGED_BROWSER_ORIGIN_HEADER] = signedOrigin;
+  }
   if (backendClientIdentitySecret !== undefined) {
     headers[MANAGED_CLIENT_IDENTITY_HEADER] = signManagedClientIdentity(
       backendClientIdentitySecret,

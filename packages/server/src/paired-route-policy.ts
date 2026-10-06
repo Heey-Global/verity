@@ -46,7 +46,11 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   ],
 ]);
 
-const activeUserRoutes = new Set([routeScopeKey('GET', '/projects')]);
+const activeUserRoutes = new Set([
+  routeScopeKey('GET', '/projects'),
+  routeScopeKey('GET', '/auth/session'),
+  routeScopeKey('POST', '/auth/logout'),
+]);
 
 function pairedRoutePolicy(method: string, routeUrl: string): PairedRoutePolicy {
   const key = routeScopeKey(method, routeUrl);

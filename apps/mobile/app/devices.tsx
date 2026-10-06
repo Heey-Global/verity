@@ -8,9 +8,9 @@
 // Retry, wherever the operator happens to be standing.
 import type { PairedDevice, VerityClient } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, Text, TextInput, View } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -27,6 +27,7 @@ import { StatusPill } from '../components/StatusPill';
 import { createVerityClient } from '../lib/client';
 import { deviceActivityLabel } from '../lib/deviceActivity';
 import { createPairingUri } from '../lib/pairing';
+import { getBrowserSession, logoutBrowser } from '../lib/browserSession';
 import { getServerProfile } from '../lib/serverProfile';
 import { setVeritySettingsError } from '../lib/settingsStore';
 
@@ -104,14 +105,31 @@ function DevicesView({ client }: { client: VerityClient }) {
   }, [pairingInvitation]);
 
   const createInvitation = (): void => {
-    const profile = getServerProfile();
+    const browserSession = Platform.OS === 'web' ? getBrowserSession() : null;
+    const profile = browserSession
+      ? {
+          serverId: browserSession.serverId,
+          identityKey: browserSession.identityKey,
+          activeUrl: window.location.origin,
+          endpoints: [
+            {
+              url: window.location.origin,
+              transport: 'direct' as const,
+              tlsPin: browserSession.tlsPin,
+            },
+          ],
+        }
+      : getServerProfile();
     const direct =
       profile?.endpoints.find(
         (endpoint) =>
           endpoint.url === profile.activeUrl && endpoint.transport === 'direct' && endpoint.tlsPin,
       ) ??
       profile?.endpoints.find((endpoint) => endpoint.transport === 'direct' && endpoint.tlsPin);
-    if (profile === null || profile === undefined || direct?.tlsPin === undefined) {
+    if (
+      Platform.OS !== 'web' &&
+      (profile === null || profile === undefined || direct?.tlsPin === undefined)
+    ) {
       setVeritySettingsError('A directly paired server profile is required to add another device.');
       return;
     }
@@ -125,16 +143,19 @@ function DevicesView({ client }: { client: VerityClient }) {
           throw new Error('The server returned an expired pairing code.');
         }
         setPairingInvitation({
-          link: createPairingUri({
-            version: 1,
-            kind: 'device',
-            serverId: profile.serverId,
-            identityKey: profile.identityKey,
-            tlsPin: direct.tlsPin!,
-            pairingCode: invitation.code,
-            suggestedUrl: direct.url,
-            expiresAt: invitation.expiresAt,
-          }),
+          link:
+            Platform.OS === 'web' && direct?.tlsPin === undefined
+              ? invitation.code
+              : createPairingUri({
+                  version: 1,
+                  kind: 'device',
+                  serverId: profile!.serverId,
+                  identityKey: profile!.identityKey,
+                  tlsPin: direct!.tlsPin!,
+                  pairingCode: invitation.code,
+                  suggestedUrl: direct!.url,
+                  expiresAt: invitation.expiresAt,
+                }),
           expiresAt,
         });
       })
@@ -219,9 +240,35 @@ function DevicesView({ client }: { client: VerityClient }) {
 
   return (
     <SettingsScaffold title="Devices" detail onRetry={load}>
+      {Platform.OS === 'web' && (
+        <SettingsGroup title="This browser">
+          <SettingsPanel>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Sign out"
+              onPress={() => {
+                void logoutBrowser()
+                  .then(() => router.replace('/web-connect'))
+                  .catch((caught: unknown) =>
+                    setVeritySettingsError(
+                      caught instanceof Error ? caught.message : 'Could not sign out.',
+                    ),
+                  );
+              }}
+              style={styles.primaryButton}
+            >
+              <Text style={styles.primaryButtonLabel}>Sign out</Text>
+            </Pressable>
+          </SettingsPanel>
+        </SettingsGroup>
+      )}
       <SettingsGroup
         title="Add a device"
-        description="Pair another phone, tablet, or the iPad app on a Mac. Each device receives its own revocable access token."
+        description={
+          Platform.OS === 'web'
+            ? 'Create an invitation code for another browser. Native devices use the installer or a native app pairing link.'
+            : 'Pair another phone, tablet, or the iPad app on a Mac. Each device receives its own revocable access token.'
+        }
       >
         <SettingsPanel>
           {pairingInvitation ? (
@@ -236,6 +283,7 @@ function DevicesView({ client }: { client: VerityClient }) {
               </View>
               <Text style={styles.footnote}>
                 This code expires after five minutes and works once.
+                {Platform.OS === 'web' ? ' Paste it into another browser on this Core.' : ''}
               </Text>
               <Pressable
                 style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}

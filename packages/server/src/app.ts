@@ -50,6 +50,8 @@ export interface ControlPlaneDeps {
   onMatrixConfigured?: ServerDeps['onMatrixConfigured'];
   /** TLS termination options for the public direct-server listener. */
   https?: ServerDeps['https'];
+  webAppDir?: ServerDeps['webAppDir'];
+  browserRequestOrigin?: ServerDeps['browserRequestOrigin'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
   /** Installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
@@ -308,6 +310,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { onMatrixConfigured: deps.onMatrixConfigured }
       : {}),
     ...(deps.https !== undefined ? { https: deps.https } : {}),
+    ...(deps.webAppDir !== undefined ? { webAppDir: deps.webAppDir } : {}),
+    ...(deps.browserRequestOrigin !== undefined
+      ? { browserRequestOrigin: deps.browserRequestOrigin }
+      : {}),
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }
       : {}),

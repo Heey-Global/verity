@@ -1,4 +1,6 @@
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
+import { browserFetch, getBrowserSession } from './browserSession';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VerityClient, normalizeServerUrl } from '@verity/mobile';
 import { fetch as expoFetch } from 'expo/fetch';
@@ -40,6 +42,11 @@ let lastDescriptorAttempt = 0;
 export async function hydrateVerityBaseUrl(): Promise<void> {
   await hydrateDemoMode();
   resetVeritySettingsStore();
+  if (Platform.OS === 'web') {
+    currentBaseUrl = window.location.origin;
+    configuredBaseUrl = true;
+    return;
+  }
   currentBaseUrl = null;
   configuredBaseUrl = false;
   try {
@@ -120,6 +127,19 @@ export function createVerityClient(): VerityClient | null {
   }
   const serverUrl = currentBaseUrl;
   if (!serverUrl) return null;
+  if (Platform.OS === 'web') {
+    const client = new VerityClient({
+      baseUrl: serverUrl,
+      fetch: browserFetch,
+      uploadFetch: browserFetch,
+      allowBackgroundUpload: false,
+    });
+    registerBranchesClientScope(
+      client,
+      () => `${serverUrl}:${getBrowserSession()?.tokenId ?? 'guest'}`,
+    );
+    return client;
+  }
   const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === serverUrl);
   const pinnedFetch =
     endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, true) : undefined;
