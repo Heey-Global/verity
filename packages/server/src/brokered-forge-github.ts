@@ -12,7 +12,7 @@ import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
 export type ForgeAction =
   'git-read' | 'git-write' | 'issues-read' | 'issues-write' | 'pulls-read' | 'pulls-write';
-export interface ForgeBinding {
+interface ForgeBinding {
   projectId: string;
   owner: string;
   repo: string;
@@ -24,7 +24,7 @@ export interface ForgeRequest {
   path: string;
   body?: Buffer;
 }
-export interface ForgeAuthorization {
+interface ForgeAuthorization {
   action: ForgeAction;
   authorization: string;
   credentials: readonly { value: string; alias: string }[];

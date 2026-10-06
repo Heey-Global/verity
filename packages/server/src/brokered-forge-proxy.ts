@@ -35,7 +35,7 @@ const ALL_ACTIONS: ReadonlySet<ForgeAction> = new Set([
   'pulls-write',
 ]);
 export const FORGE_PROXY_CA_FILE = '/run/verity/forge-proxy/ca.crt';
-export const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
+const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
 
 function capability(request: IncomingMessage): string | undefined {
   const value = request.headers.authorization;
