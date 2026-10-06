@@ -14,17 +14,28 @@ since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
 collect() {
   local source=$1
   shift
-  local state=available
+  local state=available byte_truncated=false pipeline_failed=false
   if ! command -v journalctl >/dev/null; then
     state=unavailable
     : >"$work_dir/$source.jsonl"
-  elif ! timeout 10s journalctl --no-pager --quiet --output=json \
-    --output-fields=__REALTIME_TIMESTAMP,MESSAGE,_BOOT_ID --since="$since" --until="$until" \
-    -n 2001 "$@" | head -c 1048576 >"$work_dir/$source.jsonl"; then
-    state=failed
-    : >"$work_dir/$source.jsonl"
+  else
+    # Retain one sentinel byte to distinguish a full response from a capped one.
+    # A producer's SIGPIPE at the cap must not erase earlier complete entries.
+    timeout 10s journalctl --no-pager --quiet --output=json \
+      --output-fields=__REALTIME_TIMESTAMP,MESSAGE,_BOOT_ID --since="$since" --until="$until" \
+      -n 2001 "$@" | head -c 1048577 >"$work_dir/$source.raw" || pipeline_failed=true
+    if [[ $(wc -c <"$work_dir/$source.raw") -gt 1048576 ]]; then
+      byte_truncated=true
+      # Drop the final line, which may be an incomplete JSON object at the cap.
+      head -n -1 "$work_dir/$source.raw" >"$work_dir/$source.jsonl"
+    elif [[ $pipeline_failed == true ]]; then
+      state=failed
+      : >"$work_dir/$source.jsonl"
+    else
+      mv "$work_dir/$source.raw" "$work_dir/$source.jsonl"
+    fi
   fi
-  jq -s --arg source "$source" --arg state "$state" '
+  jq -s --arg source "$source" --arg state "$state" --argjson byteTruncated "$byte_truncated" '
     def code:
       if test("out of memory|oom-kill|killed process"; "i") then "oom_kill"
       elif test("memory pressure|memory allocation failed"; "i") then "memory_pressure"
@@ -46,7 +57,7 @@ collect() {
       (if (._BOOT_ID // "" | test("^[a-f0-9]{32}$")) then {bootId: ._BOOT_ID} else {} end) +
       ((try (.MESSAGE | capture("(?:docker[-/]|container[ =])(?<id>[a-f0-9]{64})(?:[./ :]|$)") | {containerId: .id}) catch {}) // {})
     ] as $records |
-    {state: $state, truncated: (($input | length) >= 2001 or ($records | length) > 200), records: $records[-200:]}
+    {state: $state, truncated: ($byteTruncated or ($input | length) >= 2001 or ($records | length) > 200), records: $records[-200:]}
   ' "$work_dir/$source.jsonl" >"$work_dir/$source.json" || \
     printf '{"state":"failed","truncated":true,"records":[]}\n' >"$work_dir/$source.json"
 }
