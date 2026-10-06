@@ -158,7 +158,8 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_list_linked_sessions' ||
       toolName === 'verity_start_planning' ||
       toolName === 'verity_present_plan' ||
-      toolName === 'verity_end_planning'
+      toolName === 'verity_end_planning' ||
+      toolName === 'verity_tasks'
     ) {
       // Not served from here. Both need the conductor and the route's session projection,
       // neither of which exists in the composition that builds this executor, so `buildServer`

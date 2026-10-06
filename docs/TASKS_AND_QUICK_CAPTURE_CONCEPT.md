@@ -257,10 +257,16 @@ last turn.
 A prompt section beside the planning and memory rules, applied through
 `turnSystemPrompt`:
 
-- **When to add:** when three or more follow-up steps arise that will not be
-  finished in this turn (audit findings, review results, "later"), or when the
-  operator asks for a list. Small, immediate steps belong to the native turn
-  plan, not here.
+- **When to add:** persist agreed work, including accepted audit findings, agreed
+  follow-ups and actionable steps of a user-approved plan, even when there is
+  only one task. Unaccepted proposals remain in the conversation. Creating a
+  task does not authorize execution.
+- **Native checklist bridge:** the agent records these agreed outcomes through
+  `verity_tasks`; native TodoWrite / TaskCreate / ACP snapshots are not blindly
+  mirrored. File reads, test commands and other small implementation steps stay
+  in the native checklist. List existing tasks first and reuse matching tasks
+  when a plan is repeated, resumed or revised. Update the durable task as its
+  native implementation checklist progresses; complete only after verification.
 - **How to write:** each task self-contained, with the context needed to do it
   in a fresh session in `detail` — file, risk, proposed fix.
 - **Status:** `in_progress` when starting; `done` only after implementation and
@@ -387,5 +393,6 @@ agent side can be built in parallel:
   chat line, and the MCP tool. The bubble has no label.
 - The 1.5 s silence threshold and the 3 s countdown are fixed constants in one
   place for the first version, not settings. They are revisited after real use.
-- Open: whether a plan presented in planning mode should add its steps as tasks
-  automatically or only on request.
+- Approved plan steps become durable tasks through the agent tool without a
+  separate save request. Presenting a plan alone does not create tasks or grant
+  implementation authority.
