@@ -29,6 +29,18 @@ if [ -z "${REAL_GH:-}" ]; then
   exit 127
 fi
 
+if [ -n "${VERITY_FORGE_MODE:-}" ]; then
+  [ "$VERITY_FORGE_MODE" = "proxy-test" ] || exit 1
+  unset GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+  TOKEN="$(verity-gh-token)" || { echo "gh wrapper: forge broker test mode unavailable" >&2; exit 1; }
+  export GH_TOKEN="$TOKEN"
+  export HTTPS_PROXY="${VERITY_FORGE_PROXY_URL:?}"
+  export https_proxy="$HTTPS_PROXY"
+  export SSL_CERT_FILE="${VERITY_FORGE_PROXY_CA_FILE:?}"
+  export NO_PROXY= no_proxy=
+  exec "$REAL_GH" "$@"
+fi
+
 if TOKEN="$(verity-gh-token 2>/dev/null)" && [ -n "$TOKEN" ]; then
   export GH_TOKEN="$TOKEN"
 fi

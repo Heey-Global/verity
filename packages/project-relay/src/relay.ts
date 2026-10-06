@@ -6,12 +6,7 @@ import {
   type Server as HttpServer,
   type ServerResponse,
 } from 'node:http';
-import {
-  createConnection,
-  createServer as createNetServer,
-  type Server,
-  type Socket,
-} from 'node:net';
+import { createConnection, createServer as createNetServer, type Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 
 import { DOCKER_EMBEDDED_DNS, DNS_PORT, startDnsForwarder, type DnsForwarder } from './dns.js';
@@ -167,6 +162,7 @@ export const CLAUDE_RELAY_LIMITS: Readonly<ClaudeRelayLimits> = Object.freeze({
 
 export interface BrokerRelayOptions {
   socketPath?: string;
+  forgeProxy?: boolean;
   limits?: Partial<RelayLimits>;
 }
 
@@ -226,7 +222,56 @@ export function createBrokerRelayServer(options: BrokerRelayOptions = {}): HttpS
   server.headersTimeout = limits.headersTimeoutMs;
   server.keepAliveTimeout = Math.min(limits.idleTimeoutMs, limits.requestTimeoutMs);
   server.on('connection', (socket) => trackSocket(connections, socket, limits.idleTimeoutMs));
-  server.on('connect', (_request, socket) => rejectRawSocket(socket));
+  server.on('connect', (request, socket, head) => {
+    if (
+      options.forgeProxy !== true ||
+      !['github.com:443', 'api.github.com:443'].includes(request.url ?? '') ||
+      head.length ||
+      request.headers['transfer-encoding'] ||
+      (request.headers['content-length'] !== undefined && request.headers['content-length'] !== '0')
+    ) {
+      rejectRawSocket(socket);
+      return;
+    }
+    const upstream = httpRequest({
+      socketPath,
+      method: 'CONNECT',
+      path: request.url,
+      headers: { host: request.url ?? '' },
+      agent: false,
+    });
+    const deadline = setTimeout(() => {
+      upstream.destroy();
+      socket.destroy();
+    }, 10 * 60_000);
+    deadline.unref();
+    socket.once('close', () => {
+      clearTimeout(deadline);
+      upstream.destroy();
+    });
+    upstream.once('error', () => socket.destroy());
+    upstream.once('response', (response) => {
+      response.destroy();
+      socket.destroy();
+    });
+    upstream.once('connect', (response, tunnel, upstreamHead) => {
+      if (response.statusCode !== 200) {
+        tunnel.destroy();
+        socket.destroy();
+        return;
+      }
+      trackSocket(connections, tunnel, 60_000);
+      if (socket instanceof Socket) socket.setTimeout(60_000);
+      socket.once('close', () => tunnel.destroy());
+      tunnel.once('close', () => socket.destroy());
+      tunnel.once('error', () => socket.destroy());
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (upstreamHead.length) socket.write(upstreamHead);
+      socket.pipe(tunnel);
+      tunnel.pipe(socket);
+    });
+    upstream.end();
+  });
   server.on('upgrade', (_request, socket) => rejectRawSocket(socket));
   server.on('checkContinue', (_request, response) => {
     response.writeHead(417, { connection: 'close', 'content-type': 'application/json' });
@@ -259,6 +304,7 @@ export function createClaudeRelayServer(
 export async function startRelay(
   options: {
     host?: string;
+    forgeProxy?: boolean;
     brokerPort?: number;
     claudePort?: number;
     brokerSocketPath?: string;
@@ -270,9 +316,10 @@ export async function startRelay(
   } = {},
 ): Promise<StartedRelay> {
   const host = options.host ?? '0.0.0.0';
-  const broker = createBrokerRelayServer(
-    options.brokerSocketPath === undefined ? {} : { socketPath: options.brokerSocketPath },
-  );
+  const broker = createBrokerRelayServer({
+    ...(options.brokerSocketPath === undefined ? {} : { socketPath: options.brokerSocketPath }),
+    forgeProxy: options.forgeProxy ?? process.env.VERITY_FORGE_PROXY === 'github',
+  });
   const claude = createClaudeRelayServer(options.claudeSocketPath);
   const codex = createClaudeRelayServer(options.codexSocketPath ?? CODEX_SOCKET_PATH);
   let dns: DnsForwarder;

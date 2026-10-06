@@ -1717,6 +1717,7 @@ function isPreviewArtifactDestination(destination: string | undefined): boolean 
   return new Set([
     '/home/dev/.codex/auth.json',
     '/run/verity/gh-token-capability',
+    '/run/verity/forge-proxy/ca.crt',
     '/run/verity/ssh/signing_broker_token',
     '/run/verity/claude-egress/ca.crt',
     '/run/verity/claude-egress/client.crt',
@@ -1775,6 +1776,12 @@ async function knownPreviewArtifact(
 ): Promise<boolean> {
   if (mount.readWrite !== false || options.dataVolumeRoot === undefined) return false;
   const specs = [
+    {
+      destination: '/run/verity/forge-proxy/ca.crt',
+      relative: `secrets/git/forge_proxy_ca.${projectId}.crt`,
+      mode: 0o644,
+      kind: 'file' as const,
+    },
     {
       destination: '/run/verity/gh-token-capability',
       relative: `secrets/git/gh_token_capability.${projectId}`,

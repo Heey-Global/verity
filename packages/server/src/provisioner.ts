@@ -1,3 +1,4 @@
+import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import {
   createDevcontainerBuildSnapshot,
   DEVCONTAINER_BASE_IMAGE_ARG,
@@ -605,6 +606,7 @@ export interface ProvisionerOptions {
    *  wrapper redeem the capability at `POST /internal/github/token` for a
    *  repo-scoped token minted on demand — so no GitHub token lives at rest. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  forgeProxy?: { caCertPem: string; enabled(projectId: string): boolean } | undefined;
   /** Claude-egress mTLS projection (ADR 0006 D10). When set together with
    *  {@link claudeEgressGatewayUrl}, {@link claudeConnectorPort} and
    *  {@link gitSecretRoot}, the provisioner issues this project's client identity
@@ -5085,9 +5087,43 @@ export class ProvisionerImpl implements Provisioner {
         0o600,
       );
     }
+    const forgeProxy =
+      this.opts.forgeProxy?.enabled(project.id) === true &&
+      (project.kind === undefined || project.kind === 'github')
+        ? this.opts.forgeProxy
+        : undefined;
+    if (forgeProxy !== undefined && ghTokenCapabilityPath === undefined) {
+      throw new Error('forge proxy test mode requires a project-bound GitHub capability');
+    }
+    const forgeCaPath =
+      forgeProxy === undefined
+        ? undefined
+        : writeSecretFile(
+            this.opts.gitSecretRoot!,
+            `forge_proxy_ca.${project.id}.crt`,
+            forgeProxy.caCertPem,
+            'git',
+            0o644,
+          );
+    const forgeProxyUrl =
+      forgeProxy === undefined ? undefined : effectiveBrokerUrl.replace(/\/+$/, '');
+    const forgeProxyEnv =
+      forgeProxyUrl === undefined
+        ? []
+        : [
+            'VERITY_FORGE_MODE=proxy-test',
+            `VERITY_FORGE_PROXY_URL=${forgeProxyUrl}`,
+            `VERITY_FORGE_PROXY_CA_FILE=${FORGE_PROXY_CA_FILE}`,
+            'GIT_TERMINAL_PROMPT=0',
+            'NO_PROXY=',
+            'no_proxy=',
+          ];
     const ghTokenBrokerBinds =
       ghTokenCapabilityPath !== undefined
-        ? [`${ghTokenCapabilityPath}:${GH_BROKER_CAPABILITY_FILE}:ro`]
+        ? [
+            `${ghTokenCapabilityPath}:${GH_BROKER_CAPABILITY_FILE}:ro`,
+            ...(forgeCaPath === undefined ? [] : [`${forgeCaPath}:${FORGE_PROXY_CA_FILE}:ro`]),
+          ]
         : [];
     const ghTokenBrokerEnv =
       ghTokenCapabilityPath !== undefined
@@ -5234,10 +5270,20 @@ export class ProvisionerImpl implements Provisioner {
       // server/provisioner has moved to the broker capability model. Injecting
       // the helper here makes every git invocation in agent sessions work
       // immediately, including `docker exec` turns and interactive shells.
+      if (forgeProxyUrl !== undefined)
+        gitRuntimeConfig.push({ key: 'credential.https://github.com.helper', value: '' });
       gitRuntimeConfig.push({
         key: 'credential.https://github.com.helper',
         value: '/opt/agent-seed/bin/verity-gh-cred',
       });
+    }
+    if (forgeProxyUrl !== undefined) {
+      gitRuntimeConfig.push(
+        { key: 'http.https://github.com.proxy', value: forgeProxyUrl },
+        { key: 'http.https://github.com.sslCAInfo', value: FORGE_PROXY_CA_FILE },
+        { key: 'http.https://github.com.sslVerify', value: 'true' },
+        { key: 'credential.interactive', value: 'false' },
+      );
     }
     const gitRuntimeConfigEnv =
       gitRuntimeConfig.length === 0
@@ -5462,6 +5508,7 @@ export class ProvisionerImpl implements Provisioner {
         // path. The sandbox redeems the capability for a repo-scoped token; no
         // GitHub token is materialized into the container.
         ...ghTokenBrokerEnv,
+        ...forgeProxyEnv,
         // Loopback MCP gateway: endpoint URL only. The per-turn bearer arrives with
         // `session/new`, so nothing about this one is container-lifetime.
         ...mcpGatewayEnv,

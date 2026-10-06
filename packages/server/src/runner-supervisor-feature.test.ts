@@ -579,6 +579,28 @@ describe('verity-runner supervisor runtime', () => {
     expect(dockerfile).toContain('/usr/local/bin/verity-control-plane-runner-start');
   });
 
+  it.each(['codex-acp', 'claude-agent-acp', 'opencode-acp'] as const)(
+    'preserves forge transport in the actual %s launch environment',
+    (command) => {
+      const forge = {
+        VERITY_FORGE_MODE: 'proxy-test',
+        VERITY_FORGE_PROXY_URL: 'http://verity-project-relay:8080',
+        VERITY_FORGE_PROXY_CA_FILE: '/run/verity/forge-proxy/ca.crt',
+        GIT_TERMINAL_PROMPT: '0',
+      };
+      const spec = agentLaunchSpec(
+        { command, args: [], cwd: '/work/project' },
+        {
+          agentUid: 1000,
+          agentGid: 1000,
+          connectorUrl: 'http://127.0.0.1:47821',
+          env: { ...forge, GH_TOKEN: 'must-not-cross' },
+        },
+      );
+      expect(spec.spawnOptions.env).toMatchObject(forge);
+      expect(spec.spawnOptions.env).not.toHaveProperty('GH_TOKEN');
+    },
+  );
   it('passes only the local Claude connector coordinates through the root broker', () => {
     const spec = agentLaunchSpec(
       { command: 'claude-agent-acp', args: [], cwd: '/work/project' },

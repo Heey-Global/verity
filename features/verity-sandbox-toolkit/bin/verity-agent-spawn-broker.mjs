@@ -640,6 +640,10 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
         }
       : {}),
     ...copy('IS_SANDBOX'),
+    ...copy('VERITY_FORGE_MODE'),
+    ...copy('VERITY_FORGE_PROXY_URL'),
+    ...copy('VERITY_FORGE_PROXY_CA_FILE'),
+    ...copy('GIT_TERMINAL_PROMPT'),
     ...copy('GIT_CONFIG_COUNT'),
     ...Object.fromEntries(
       Object.entries(source).filter(([name]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/u.test(name)),
