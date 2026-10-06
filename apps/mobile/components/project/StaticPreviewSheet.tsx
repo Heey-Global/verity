@@ -1742,7 +1742,8 @@ export function StaticPreviewSheet({
   ) => {
     const local = localShareFor(selection);
     const online = publicShareFor(selection);
-    const disabled = busy !== undefined;
+    const disabled =
+      busy !== undefined || managedPending !== undefined || managedSwitch !== undefined;
     const toggleLocal = async () => {
       if (local) return stopLocal(local);
       if (busy) return;
@@ -1846,7 +1847,11 @@ export function StaticPreviewSheet({
             onPress={() => void toggleLocal()}
             disabled={disabled}
             accessibilityRole="switch"
-            accessibilityLabel="Local"
+            accessibilityLabel={
+              overview
+                ? `Local for ${selection.server.name} on port ${String(selection.server.port)}`
+                : 'Local'
+            }
             accessibilityState={{ checked: !!local, disabled }}
             style={styles.accessSwitch}
           >
@@ -1942,7 +1947,11 @@ export function StaticPreviewSheet({
               onPress={() => void toggleOnline()}
               disabled={disabled || (!online && publicSharing !== 'available')}
               accessibilityRole="switch"
-              accessibilityLabel="Shared online"
+              accessibilityLabel={
+                overview
+                  ? `Shared online for ${selection.server.name} on port ${String(selection.server.port)}`
+                  : 'Shared online'
+              }
               accessibilityState={{
                 checked: !!online,
                 disabled: disabled || (!online && publicSharing !== 'available'),

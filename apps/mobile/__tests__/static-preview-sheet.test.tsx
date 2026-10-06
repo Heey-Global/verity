@@ -184,18 +184,45 @@ it('controls detected access directly from the server overview', async () => {
   const createSessionLocalPreviewShare = jest.fn(async () => localShare);
   const createSessionPortPreviewShare = jest.fn();
   renderSheet(makeClient({ createSessionLocalPreviewShare, createSessionPortPreviewShare }));
-  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local for Vite on port 5173' }));
   await waitFor(() =>
     expect(createSessionLocalPreviewShare).toHaveBeenCalledWith('session-one', {
       targetPort: 5173,
     }),
   );
-  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
   expect(
-    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+    screen.getByRole('switch', { name: 'Local for Vite on port 5173' }).props.accessibilityState
+      .checked,
+  ).toBe(true);
+  expect(
+    screen.getByRole('switch', { name: 'Shared online for Vite on port 5173' }).props
+      .accessibilityState.checked,
   ).toBe(false);
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   expect(openLocalPreview).not.toHaveBeenCalled();
+});
+
+it('identifies each detected server in overview switch labels', async () => {
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(async () => [
+        vite,
+        { ...vite, port: 3000, pid: 41, name: 'API' },
+      ]),
+    }),
+  );
+  for (const server of [vite, { name: 'API', port: 3000 }]) {
+    expect(
+      await screen.findByRole('switch', {
+        name: `Local for ${server.name} on port ${String(server.port)}`,
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('switch', {
+        name: `Shared online for ${server.name} on port ${String(server.port)}`,
+      }),
+    ).toBeTruthy();
+  }
 });
 
 // A failed revoke must leave the switch on so access can be retried.
@@ -1349,6 +1376,10 @@ describe('managed dev servers', () => {
     fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
     const other = screen.getByRole('switch', { name: 'Local for API' });
     expect(other.props.accessibilityState.disabled).toBe(true);
+    expect(
+      screen.getByRole('switch', { name: 'Local for API on port 3000' }).props.accessibilityState
+        .disabled,
+    ).toBe(true);
     fireEvent.press(other);
     expect(setManagedDevServerLocal).toHaveBeenCalledTimes(1);
     await act(async () => complete(first));
