@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.53.2](https://github.com/Heey-Global/verity/compare/mobile-v1.53.1...mobile-v1.53.2) (2026-10-06)
+
+
+### Features
+
+* **dev-servers:** control server lifetime with Local and Shared online ([#1186](https://github.com/Heey-Global/verity/issues/1186)) ([3e5f978](https://github.com/Heey-Global/verity/commit/3e5f9785bf9415bca531381142fd91133236fd6f))
+
+
+### Bug Fixes
+
+* **mobile:** allow slower interactive OTA update checks ([#1182](https://github.com/Heey-Global/verity/issues/1182)) ([20cfef4](https://github.com/Heey-Global/verity/commit/20cfef453ec8e78dc41795a2dac9f058267b3ebb))
+* **mobile:** attach session row icons to the model name ([#1181](https://github.com/Heey-Global/verity/issues/1181)) ([38c98ea](https://github.com/Heey-Global/verity/commit/38c98ea0331631fc5f6cf5e6720f6542594775e8))
+* **mobile:** prevent chat scroll jumps with persisted plans ([#1180](https://github.com/Heey-Global/verity/issues/1180)) ([9f7efbc](https://github.com/Heey-Global/verity/commit/9f7efbcec98d0dc02ba281977def2ec8cefc674e))
+
 ## [1.53.1](https://github.com/Heey-Global/verity/compare/mobile-v1.53.0...mobile-v1.53.1) (2026-10-05)
 
 
