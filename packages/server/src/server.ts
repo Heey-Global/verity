@@ -1,5 +1,6 @@
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
+import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { googleAppClient } from './google-app-client.js';
 import {
   googleDriveRequestSchema,
@@ -1118,6 +1119,7 @@ export interface ServerDeps {
     | undefined;
   previewShareManager?: PreviewShareManager | undefined;
   remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
+  runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics> | undefined;
   uplinkDiagnostics?:
     | (() => import('./uplink-control-client.js').UplinkDiagnostics & {
         remoteStreams?: import('./remote-control-connector.js').RemoteStreamRecord[];
@@ -5747,6 +5749,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           projectId,
           selectedEvent,
         ),
+      authorizeDiagnosticProject: (projectId) =>
+        controlPlaneSessionTools.authorizeDiagnosticProject(projectId),
+      ...(deps.runtimeDiagnostics === undefined
+        ? {}
+        : {
+            readRuntimeDiagnostics: async (projectId, window) => {
+              const project =
+                projectId === undefined ? undefined : await deps.eventStore.getProject(projectId);
+              return deps.runtimeDiagnostics!({
+                projectId,
+                window,
+                containerName: project?.containerName,
+              });
+            },
+          }),
       version: SERVER_VERSION,
       pushEnabled: deps.pushEnabled === true,
       publicPreviewsEnabled: () => deps.previewShareManager?.isAvailable() === true,
