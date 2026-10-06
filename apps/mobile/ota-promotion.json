@@ -1,18 +1,14 @@
 {
   "schema": 1,
-  "version": "1.53.1",
-  "runtime": "1.53.0",
+  "version": "1.56.1",
+  "runtime": "1.56.0",
   "channel": "production",
-  "commit": "6295153442b688218c2d7bc33aec341a255331ba",
-  "tag": "mobile-v1.53.1",
-  "branch": "staging-mobile-v1.53.1-6295153442b688218c2d7bc33aec341a255331ba",
-  "baseline": "mobile-v1.53.0",
-  "group": "3cc94933-6a59-4f0e-ae0c-ce7a9ae192fe",
+  "commit": "3c0651d8d291d5c10adbb42b779aa57fa9d5efed",
+  "tag": "mobile-v1.56.1",
+  "branch": "staging-mobile-v1.56.1-3c0651d8d291d5c10adbb42b779aa57fa9d5efed",
+  "baseline": "mobile-v1.56.0",
+  "group": "c604639c-c31e-4636-b6ff-7a96aeb27a0f",
   "notes": [
-    "manage session servers from Preview and chat (#1175)",
-    "keep chat-enabled Google services scoped to the session (#1171)",
-    "add persistent planning with synchronized plan approvals (#1163)",
-    "even out preview cards and name running servers by state (#1167)",
-    "pin session row icons to the row's right edge (#1166)"
+    "display readable names for all Verity tools (#1236)"
   ]
 }
