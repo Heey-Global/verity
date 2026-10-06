@@ -16,6 +16,11 @@ export function browserCanPresentAlerts(): boolean {
   );
 }
 
+/** Native foreground alerts use local notifications and require presentation permission. */
+export async function nativeCanPresentAlerts(): Promise<boolean> {
+  return (await Notifications.getPermissionsAsync()).granted;
+}
+
 /**
  * Show a live alert — something the user has to act on, sent to this device
  * because it is the one in front of them. On iOS it is a local notification with

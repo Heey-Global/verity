@@ -278,6 +278,24 @@ describe('LiveConnection', () => {
     h.connection.stop();
   });
 
+  it('resets stream replay batching before an overflow resubscription', async () => {
+    const h = await harness();
+    const session = sink(5);
+    h.connection.subscribeSession('s1', session, true);
+    h.sockets[0]!.ready();
+    h.sockets[0]!.serve({ k: 'caught_up', id: 's1', seq: 5 });
+    h.sockets[0]!.serve({ k: 'ended', id: 's1', reason: 'overflow' });
+    expect(session.disconnected).toHaveBeenCalledTimes(1);
+    expect(h.sockets[0]!.sent.at(-1)).toEqual({
+      k: 'sub',
+      ch: 'session',
+      id: 's1',
+      sinceSeq: 5,
+      view: true,
+    });
+    h.connection.stop();
+  });
+
   it('shares one server subscription between two screens of a session', async () => {
     const h = await harness();
     h.sockets[0]?.ready();

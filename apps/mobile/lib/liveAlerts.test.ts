@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import { presentLiveAlert } from './liveAlerts';
+import { presentLiveAlert, nativeCanPresentAlerts } from './liveAlerts';
 
 jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
@@ -9,6 +9,7 @@ jest.mock('expo-crypto', () => ({
   },
 }));
 jest.mock('expo-notifications', () => ({
+  getPermissionsAsync: jest.fn(),
   setNotificationCategoryAsync: jest.fn().mockResolvedValue(undefined),
   scheduleNotificationAsync: jest.fn().mockResolvedValue('id'),
 }));
@@ -85,4 +86,11 @@ it('keeps outstanding questions on categories with their own labels', async () =
       setCategory.mock.calls[i]?.[0],
     );
   }
+});
+
+it('reports whether local notifications can present native live alerts', async () => {
+  const permissions = Notifications.getPermissionsAsync as jest.Mock;
+  permissions.mockResolvedValueOnce({ granted: false }).mockResolvedValueOnce({ granted: true });
+  expect(await nativeCanPresentAlerts()).toBe(false);
+  expect(await nativeCanPresentAlerts()).toBe(true);
 });

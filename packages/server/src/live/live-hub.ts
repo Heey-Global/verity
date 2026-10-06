@@ -260,7 +260,8 @@ class LiveConnection {
     // Registered before the first await so a quick `unsub` or `view` finds it.
     this.subscriptions.set(sessionId, sub);
     const ended = (reason: LiveEndedReason): void => {
-      if (this.subscriptions.get(sessionId) === sub) this.subscriptions.delete(sessionId);
+      if (sub.cancelled || this.subscriptions.get(sessionId) !== sub) return;
+      this.subscriptions.delete(sessionId);
       this.cancel(sub);
       this.send({ k: 'ended', id: sessionId, reason });
     };
@@ -354,6 +355,8 @@ class LiveConnection {
   async recheck(scope: { projectId?: string | undefined; sessionId?: string } = {}): Promise<void> {
     if (this.closed) return;
     const { userId } = this.identity;
+    const scopedSubscription =
+      scope.sessionId === undefined ? undefined : this.subscriptions.get(scope.sessionId);
     try {
       if (userId !== undefined && this.hub.deps.access.isActiveUser !== undefined) {
         if (!(await this.hub.deps.access.isActiveUser(userId))) {
@@ -368,6 +371,7 @@ class LiveConnection {
         if (sub.cancelled) continue;
         const allowed =
           session !== undefined && (await this.hub.deps.access.canReadSession(userId, session));
+        if (sub.cancelled || this.subscriptions.get(sub.sessionId) !== sub) continue;
         if (allowed) {
           sub.projectId = session.projectId;
           continue;
@@ -381,7 +385,11 @@ class LiveConnection {
         });
       }
     } catch (error) {
-      if (scope.sessionId !== undefined) {
+      if (
+        scope.sessionId !== undefined &&
+        scopedSubscription !== undefined &&
+        this.subscriptions.get(scope.sessionId) === scopedSubscription
+      ) {
         this.unsubscribe(scope.sessionId);
         this.send({ k: 'ended', id: scope.sessionId, reason: 'error' });
       }

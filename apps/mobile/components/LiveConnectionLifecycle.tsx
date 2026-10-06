@@ -2,9 +2,13 @@ import type { LiveConnection } from '@verity/mobile';
 import { useEffect } from 'react';
 import { AppState, Platform } from 'react-native';
 import { getAuthToken, subscribeAuthToken } from '../lib/authToken';
-import { getVerityBaseUrl } from '../lib/client';
+import { getVerityBaseUrl, subscribeVerityBaseUrl } from '../lib/client';
 import { isDemoMode } from '../lib/demoMode';
-import { browserCanPresentAlerts, presentLiveAlert } from '../lib/liveAlerts';
+import {
+  browserCanPresentAlerts,
+  nativeCanPresentAlerts,
+  presentLiveAlert,
+} from '../lib/liveAlerts';
 import { liveConnectionFor, stopLiveConnection } from '../lib/liveConnection';
 
 /** Whether the user is looking at the app right now. A browser tab counts only
@@ -34,6 +38,9 @@ export function LiveConnectionLifecycle(): null {
     let current: { baseUrl: string; connection: LiveConnection; detach: () => void } | undefined;
 
     let bearer: string | null = null;
+    let disposed = false;
+    let nativePresentation = false;
+    let presentationRequest = 0;
     const sync = (): void => {
       const baseUrl = getVerityBaseUrl();
       if (current !== undefined && current.baseUrl !== baseUrl) {
@@ -63,18 +70,36 @@ export function LiveConnectionLifecycle(): null {
         connection.pause();
         return;
       }
-      connection.start();
       if (Platform.OS !== 'web' && AppState.currentState === 'background') {
         connection.pause();
         return;
       }
+      connection.start();
       connection.resume();
-      connection.setForeground(inForeground());
+      connection.setForeground(inForeground() && (Platform.OS === 'web' || nativePresentation));
     };
 
+    const refreshPresentation = (): void => {
+      if (Platform.OS === 'web') return;
+      const request = ++presentationRequest;
+      nativePresentation = false;
+      sync();
+      void nativeCanPresentAlerts()
+        .catch(() => false)
+        .then((allowed) => {
+          if (disposed || request !== presentationRequest) return;
+          nativePresentation = allowed;
+          sync();
+        });
+    };
     sync();
+    refreshPresentation();
+    const unsubscribeBaseUrl = subscribeVerityBaseUrl(sync);
     const unsubscribeAuth = subscribeAuthToken(sync);
-    const appState = AppState.addEventListener('change', sync);
+    const appState = AppState.addEventListener('change', () => {
+      sync();
+      refreshPresentation();
+    });
     const web = Platform.OS === 'web' && typeof window !== 'undefined';
     if (web) {
       document.addEventListener('visibilitychange', sync);
@@ -82,6 +107,8 @@ export function LiveConnectionLifecycle(): null {
       window.addEventListener('blur', sync);
     }
     return () => {
+      disposed = true;
+      unsubscribeBaseUrl();
       unsubscribeAuth();
       appState.remove();
       if (web) {

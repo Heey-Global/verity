@@ -232,6 +232,50 @@ describe('LiveHub', () => {
       w.hub.close();
     });
 
+    it('ignores a stale initial denial after a replacement subscription is authorized', async () => {
+      const w = world();
+      const socket = connect(w, 'alice', 'd1');
+      let deny!: (allowed: boolean) => void;
+      const access = vi.spyOn(w.hub.deps.access, 'canReadSession');
+      access.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            deny = resolve;
+          }),
+      );
+      await socket.client({ k: 'sub', ch: 'session', id: 's1' });
+      await socket.client({ k: 'sub', ch: 'session', id: 's1' });
+      deny(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      w.bus.publish('s1', seqd(9));
+      expect(socket.of('ended')).toEqual([]);
+      expect(socket.of('event')).toHaveLength(1);
+      w.hub.close();
+    });
+
+    it('does not end a replacement subscription after a stale authorization check resolves', async () => {
+      const w = world();
+      const socket = connect(w, 'alice', 'd1');
+      await socket.client({ k: 'sub', ch: 'session', id: 's1' });
+      let deny!: (allowed: boolean) => void;
+      const access = vi.spyOn(w.hub.deps.access, 'canReadSession');
+      access.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            deny = resolve;
+          }),
+      );
+      const recheck = w.hub.recheckSession('s1');
+      await vi.waitFor(() => expect(deny).toBeDefined());
+      await socket.client({ k: 'sub', ch: 'session', id: 's1' });
+      deny(false);
+      await recheck;
+      w.bus.publish('s1', seqd(9));
+      expect(socket.of('ended')).toEqual([]);
+      expect(socket.of('event')).toHaveLength(1);
+      w.hub.close();
+    });
+
     it('ends a subscription whose access was withdrawn while the socket stayed open', async () => {
       const w = world();
       const socket = connect(w, 'alice', 'd1');

@@ -379,7 +379,8 @@ export class LiveConnection implements LiveSessionTransport {
   private onEnded(sessionId: string, reason: LiveEndedReason): void {
     if (!this.sessions.has(sessionId)) return;
     if (reason === 'overflow') {
-      // The socket fell behind; nothing is lost, resume from the cursor.
+      // Reset replay batching before resuming from the cursor.
+      for (const entry of this.sessions.get(sessionId) ?? []) entry.sink.disconnected();
       this.sendSubscription(sessionId);
       return;
     }
