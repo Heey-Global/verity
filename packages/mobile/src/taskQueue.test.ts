@@ -251,6 +251,11 @@ it('can move a rejected capture to General and retry its original id', async () 
 
 it('preserves earlier offline edits when repairing a rejected capture', async () => {
   const s = setup();
+  s.api.updateTask.mockImplementation(async (_id, patch) => {
+    const saved = { ...task, ...patch, revision: patch.expectedRevision + 1 };
+    s.remote[0] = saved;
+    return saved;
+  });
   await s.queue.create(
     { ...task, projectId: 'missing' },
     { title: task.title, projectId: 'missing' },
