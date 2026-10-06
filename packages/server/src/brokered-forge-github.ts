@@ -364,6 +364,72 @@ export function createGitHubForgeAdapter(options: {
                     )
                   )
                     assertAction(actions, 'pulls-read');
+                  if (child.selectionSet && depth > 0) {
+                    // Only relationships used by the supported CLI reads may inherit scope.
+                    // Discovery via projects, timelines, actors, or new schema fields fails closed.
+                    if (
+                      ['author', 'mergedBy', 'actor', 'headRepositoryOwner'].includes(
+                        child.name.value,
+                      )
+                    ) {
+                      scalarFields(child.selectionSet, [
+                        'id',
+                        'login',
+                        'name',
+                        'url',
+                        'avatarUrl',
+                        '__typename',
+                      ]);
+                      continue;
+                    }
+                    if (
+                      ![
+                        'nodes',
+                        'edges',
+                        'node',
+                        'pageInfo',
+                        'labels',
+                        'assignees',
+                        'milestone',
+                        'comments',
+                        'reviews',
+                        'reviewRequests',
+                        'requestedReviewer',
+                        'commits',
+                        'commit',
+                        'statusCheckRollup',
+                        'contexts',
+                        'checkSuite',
+                        'workflowRun',
+                        'workflow',
+                        'headRepository',
+                        'baseRepository',
+                        'repository',
+                        'owner',
+                        'defaultBranchRef',
+                        'target',
+                        'headRef',
+                        'baseRef',
+                        'autoMergeRequest',
+                        'mergeQueueEntry',
+                        'latestReviews',
+                        'latestOpinionatedReviews',
+                        'reviewDecision',
+                        'participants',
+                        'issueType',
+                      ].includes(child.name.value)
+                    )
+                      rejected();
+                    if (
+                      ['repository', 'headRepository', 'baseRepository'].includes(child.name.value)
+                    ) {
+                      for (const metadata of fields(child.selectionSet)) {
+                        if (!REPOSITORY_METADATA_FIELDS.has(metadata.name.value)) rejected();
+                        metadataSelection(metadata);
+                      }
+                      continue;
+                    }
+                  }
                   if (child.selectionSet) checkReads(child.selectionSet, depth + 1);
                 }
               };
