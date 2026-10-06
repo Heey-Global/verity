@@ -4,9 +4,9 @@ import { z } from 'zod';
  *  (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §6). */
 export const TASKS_TOOL = 'verity_tasks';
 
-export const TASK_TITLE_MAX = 2_000;
-export const TASK_DETAIL_MAX = 20_000;
-export const TASK_RESULT_MAX = 2_000;
+const TASK_TITLE_MAX = 2_000;
+const TASK_DETAIL_MAX = 20_000;
+const TASK_RESULT_MAX = 2_000;
 /** Most tasks one `add` call may create; an audit rarely yields more. */
 export const TASKS_ADD_MAX = 30;
 

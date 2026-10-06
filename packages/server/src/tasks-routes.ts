@@ -87,7 +87,7 @@ export interface TasksRouteDeps {
   publish: (sessionId: string, event: AgentEvent) => Promise<void>;
 }
 
-export function taskResponse(task: TaskRecord): Record<string, unknown> {
+function taskResponse(task: TaskRecord): Record<string, unknown> {
   return {
     id: task.id,
     projectId: task.projectId,
