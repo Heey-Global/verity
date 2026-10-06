@@ -8,6 +8,7 @@ import {
   CONNECTOR_MAX_RECONNECT_ATTEMPTS,
   PreviewConnector,
   PreviewEdge,
+  type PreviewEdgeOptions,
   generatePreviewSecret,
   hashPreviewPin,
   hashPreviewSecret,
@@ -304,6 +305,87 @@ describe('preview session cookie expiry', () => {
     const response = await rawUpgrade(edgePort, cookie, handshakeKey());
     expect(response).toContain('401 Unauthorized');
     expect(connections).toBe(1);
+  });
+});
+
+describe('WebSocket PIN query authentication', () => {
+  async function refused(url: string, headers?: Record<string, string>): Promise<number> {
+    const client = new WebSocket(url, { headers });
+    cleanups.push(() => client.terminate());
+    return new Promise((resolve, reject) => {
+      client.once('unexpected-response', (_request, response) => {
+        response.resume();
+        client.terminate();
+        resolve(response.statusCode!);
+      });
+      client.once('error', () => {});
+      client.once('open', () => reject(new Error('unauthorized socket opened')));
+    });
+  }
+
+  it('authenticates without cookies and strips all PIN parameters while preserving application queries and duplex audio', async () => {
+    const paths: string[] = [];
+    const targetPort = await wsTarget((socket, request) => {
+      paths.push(request.url!);
+      socket.on('message', (data: WebSocket.RawData) => socket.send(data));
+    });
+    const { edgePort } = await bridge('ws-pin-query', targetPort);
+    const client = new WebSocket(
+      `ws://127.0.0.1:${edgePort}/attendee?pin=123456&token=audio&pin=secret`,
+    );
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    const echo = new Promise<string>((resolve) =>
+      client.once('message', (data: WebSocket.RawData) => resolve(rawText(data))),
+    );
+    client.send('audio chunk');
+    expect(await echo).toBe('audio chunk');
+    expect(paths).toEqual(['/attendee?token=audio']);
+  });
+
+  it('shares the failed-attempt limit with HTTP and rejects foreign browser origins', async () => {
+    const reached = vi.fn();
+    const targetPort = await wsTarget(reached);
+    const { edgePort } = await bridge('ws-pin-limits', targetPort);
+    const base = `ws://127.0.0.1:${edgePort}/attendee`;
+    expect(await refused(`${base}?pin=123456`, { origin: 'https://hostile.example.test' })).toBe(
+      403,
+    );
+    expect(await refused(base)).toBe(401);
+    expect(await refused(`${base}?pin=bad`)).toBe(401);
+    for (let i = 0; i < 9; i++) {
+      const response = await fetch(`http://127.0.0.1:${edgePort}/__verity/login?pin=000000`, {
+        redirect: 'manual',
+      });
+      expect(response.status).toBe(401);
+      await response.arrayBuffer();
+    }
+    expect(await refused(`${base}?pin=123456`)).toBe(429);
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('requires durable PIN budget completion before opening a target socket', async () => {
+    const reached = vi.fn();
+    const targetPort = await wsTarget(reached);
+    const begin = vi.fn().mockResolvedValue({ state: 'allowed', attemptId: 'attempt' });
+    const finish = vi.fn().mockResolvedValue({ state: 'allowed' });
+    const { edgePort } = await bridge('ws-pin-budget', targetPort, {
+      pinBudget: { begin, finish },
+    });
+    begin.mockClear();
+    finish.mockClear();
+    const url = `ws://127.0.0.1:${edgePort}/attendee?pin=123456`;
+    finish.mockResolvedValueOnce({ state: 'unavailable' });
+    expect(await refused(url)).toBe(503);
+    expect(begin).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledWith('attempt', true);
+    begin.mockResolvedValueOnce({ state: 'cooldown', retryAfterSeconds: 60 });
+    expect(await refused(url)).toBe(429);
+    begin.mockResolvedValueOnce({ state: 'locked' });
+    expect(await refused(url)).toBe(403);
+    begin.mockRejectedValueOnce(new Error('offline'));
+    expect(await refused(url)).toBe(503);
+    expect(reached).not.toHaveBeenCalled();
   });
 });
 
@@ -2085,6 +2167,7 @@ async function bridge(
   shareId: string,
   targetPort: number,
   options: Partial<{
+    pinBudget: NonNullable<PreviewEdgeOptions['pinBudget']>;
     expiresAt: string;
     maxConcurrentStreams: number;
     requestTimeoutMs: number;
