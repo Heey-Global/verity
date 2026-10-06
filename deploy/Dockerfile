@@ -1,8 +1,8 @@
 # Verity Server image — the standalone control-plane an operator installs to run
-# Verity on any host (ADR 0003, Phase A). API-only: the compiled Fastify server
-# (packages/server -> dist) on a minimal Node 24 base, plus the `docker` CLI and
+# Verity on any host (ADR 0003, Phase A). The compiled Fastify server
+# (packages/server -> dist) and static browser client on a minimal Node 24 base, plus the `docker` CLI and
 # `git` the runtime needs to clone repos and spawn sibling project containers.
-# The Expo mobile app is the client; no web build ships here.
+# The shared Expo client is exported for the browser and served under /app/.
 #
 # Multi-stage:
 #   builder    -> npm ci (whole monorepo) + tsc -b  => packages/*/dist
@@ -68,6 +68,13 @@ COPY features features
 # Force project-reference emission even if a persistent BuildKit cache restores
 # stale incremental metadata from an older source layer.
 RUN npm run build -- --force
+
+# Export only browser assets; Expo dependencies stay out of the runtime image.
+FROM builder-deps AS web-builder
+COPY packages/events packages/events
+COPY packages/mobile packages/mobile
+COPY apps/mobile apps/mobile
+RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app -- --max-workers 1
 
 # ---------------------------------------------------------------------------
 # Stage 2: deps — production-only node_modules, scoped to the server workspace.
@@ -307,6 +314,7 @@ COPY --from=builder --chown=node:node /app/packages/preview-tunnel/dist ./packag
 COPY --from=builder --chown=node:node /app/packages/server/dist ./packages/server/dist
 COPY --from=builder --chown=node:node /app/packages/server/package.json ./packages/server/package.json
 COPY --from=builder --chown=node:node /app/package.json ./package.json
+COPY --from=web-builder --chown=node:node /app/apps/mobile/dist ./web
 
 # The shared release version, injected by release.yml (semantic-release) as a
 # build-arg, immutable file, and compatibility environment variable. The Server
@@ -385,6 +393,7 @@ ENV GOOGLE_STAGING_CLIENT_ID_DEFAULT=${STAGING_GOOGLE_AUTH_ID}
 # deployment default per ADR 0003 R2.
 ENV NODE_ENV=production
 ENV PORT=8082
+ENV VERITY_WEB_APP_DIR=/app/web
 EXPOSE 8082
 
 # Data root (VERITY_ROOT). The control-plane DB is an external PostgreSQL
