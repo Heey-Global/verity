@@ -201,12 +201,23 @@ describe('isolated managed server runtimes', () => {
     ).toBe('stopped');
   });
 
-  it.each(['sleeping', 'resolver-error', 'scan-error'])(
+  it.each(['sleeping', 'resolver-error', 'scan-error', 'expired-resolver-error'])(
     'supervises healthy siblings when the first runtime is %s',
     async (failure) => {
       await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
       await manager.start('s1', 'Demo', 'agent');
       await manager.start('s2', 'Demo', 'agent');
+      if (failure === 'expired-resolver-error') {
+        const first = sandbox.started[0]!;
+        await ctx.store.managedDevServers.updateInstance(first.instanceId, { localAccess: false });
+        vi.spyOn(ctx.store, 'listPublicPreviewShares').mockResolvedValueOnce([
+          {
+            managedInstanceId: first.instanceId,
+            state: 'expired',
+            updatedAt: new Date(now + 1),
+          } as Awaited<ReturnType<typeof ctx.store.listPublicPreviewShares>>[number],
+        ]);
+      }
       const active = sandbox.started[1]!;
       sandbox.listen(active.instanceId, Number(active.env.PORT));
       manager.close();
@@ -223,7 +234,10 @@ describe('isolated managed server runtimes', () => {
         networkPorts: [8100, 8101],
         sandboxWorktree: () => '/work',
         resolveSessionProject: async (sessionId, project) => {
-          if (sessionId === 's1' && failure === 'resolver-error')
+          if (
+            sessionId === 's1' &&
+            (failure === 'resolver-error' || failure === 'expired-resolver-error')
+          )
             throw new Error('Unmigrated checkout');
           return {
             ...project,

@@ -1006,7 +1006,12 @@ export class ManagedDevServerManager {
               (instance.accessStartedAt ?? instance.startedAt)!.getTime(),
         );
         if (!live && ended) {
-          await this.stopInstance(baseProject, instance, null);
+          try {
+            await this.stopInstance(baseProject, instance, null);
+          } catch {
+            // Unavailable private runtimes must not block sibling supervision.
+            continue;
+          }
           changed = true;
           continue;
         }
