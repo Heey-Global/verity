@@ -31,6 +31,7 @@ export interface SessionSandboxInput {
 const READ_ONLY_TARGETS = new Set([
   '/run/verity-control-identity',
   '/run/verity/gh-token-capability',
+  '/run/verity/forge-proxy/ca.crt',
   '/run/verity/ssh/signing_broker_token',
   '/run/verity/claude-egress/ca.crt',
   '/run/verity/claude-egress/client.crt',

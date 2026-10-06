@@ -1,3 +1,7 @@
+import { createBrokeredForgeProxy } from './brokered-http-tool.js';
+import { createGitHubForgeAdapter } from './brokered-forge-github.js';
+import { brokeredHttpStreamTransport } from './brokered-http-stream.js';
+import { loadForgeProxyIdentity } from './brokered-forge-identity.js';
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import {
   createSessionCloneProvisioner,
@@ -3089,6 +3093,20 @@ export async function buildEmbeddedServer(
   };
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
+  const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
+  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
+  const forgeProxy =
+    forgeIdentity === undefined
+      ? undefined
+      : createBrokeredForgeProxy({
+          certificate: forgeIdentity.certificate,
+          capabilities: ghTokenCapabilities,
+          adapter: createGitHubForgeAdapter({
+            mint: cachedProjectTokenMint,
+            transport: brokeredHttpStreamTransport,
+          }),
+          enabled: forgeProxyEnabled,
+        });
   if (
     config.dockerBaseUrl !== undefined &&
     config.hostCloneRoot !== undefined &&
@@ -3507,6 +3525,10 @@ export async function buildEmbeddedServer(
       // resolves against. The provisioner issues a per-container capability into it
       // instead of writing a gh-token file, so the sandbox mints tokens on demand.
       ghTokenCapabilities,
+      forgeProxy:
+        forgeIdentity === undefined
+          ? undefined
+          : { caCertPem: forgeIdentity.ca.caCertPem, enabled: forgeProxyEnabled },
       projectRelay: projectRelayControl!,
       claudeEgressGatewayUrl: config.claudeEgressGatewayUrl!,
       codexEgressGatewayUrl: config.codexEgressGatewayUrl!,
@@ -5466,6 +5488,8 @@ export async function buildEmbeddedServer(
       docker,
       signingCapabilities,
       githubCapabilities: ghTokenCapabilities,
+      forgeProxy,
+      forgeProxyEnabled,
       image: config.projectRelayImage!,
       dataVolume: config.dataVolume,
       dataVolumeRoot: config.dataVolumeRoot,

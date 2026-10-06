@@ -5633,88 +5633,109 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
-  it('issues a per-project capability + mounts it (broker URL env) when the token broker is wired', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-ghcap-clone-'));
-    const secretRoot = mkdtempSync(join(tmpdir(), 'verity-ghcap-secret-'));
-    try {
-      const id = await seedProject('absent');
-      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
-      const { client: docker, calls: dockerCalls } = fakeDocker({
-        inspectContainer: vi.fn(async (container: string) => ({
-          id: container,
-          running: true,
-          networks: { 'verity-net': { ipAddress: '172.19.0.4' } },
-        })),
-      });
-      const capabilities = createGhTokenCapabilityRegistry(ctx.db);
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        defaultImageRef: 'default',
-        hostCloneRoot: root,
-        gitSecretRoot: secretRoot,
-        ghTokenCapabilities: capabilities,
-        projectRelay: {
-          async start(binding) {
-            const githubCapability = await capabilities.issue({
-              projectId: binding.projectId,
-              owner: 'example-org',
-              repo: 'example-repo',
-              containerGeneration: binding.containerGeneration,
-            });
-            return {
-              identity: {
+  it.each([false, true])(
+    'issues a per-project capability + mounts it (proxy test mode: %s)',
+    async (proxyTest) => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-ghcap-clone-'));
+      const secretRoot = mkdtempSync(join(tmpdir(), 'verity-ghcap-secret-'));
+      try {
+        const id = await seedProject('absent');
+        const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+        const { client: docker, calls: dockerCalls } = fakeDocker({
+          inspectContainer: vi.fn(async (container: string) => ({
+            id: container,
+            running: true,
+            networks: { 'verity-net': { ipAddress: '172.19.0.4' } },
+          })),
+        });
+        const capabilities = createGhTokenCapabilityRegistry(ctx.db);
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          defaultImageRef: 'default',
+          hostCloneRoot: root,
+          gitSecretRoot: secretRoot,
+          ghTokenCapabilities: capabilities,
+          forgeProxy: proxyTest
+            ? { caCertPem: 'public-forge-ca', enabled: (projectId) => projectId === id }
+            : undefined,
+          projectRelay: {
+            async start(binding) {
+              const githubCapability = await capabilities.issue({
                 projectId: binding.projectId,
+                owner: 'example-org',
+                repo: 'example-repo',
                 containerGeneration: binding.containerGeneration,
-              },
-              signingCapability: 'test-signing-capability',
-              githubCapability,
-            };
+              });
+              return {
+                identity: {
+                  projectId: binding.projectId,
+                  containerGeneration: binding.containerGeneration,
+                },
+                signingCapability: 'test-signing-capability',
+                githubCapability,
+              };
+            },
+            async stop() {},
+            brokerUrl: () => 'http://relay:8080',
+            claudeGatewayUrl: () => 'https://relay:8443',
           },
-          async stop() {},
-          brokerUrl: () => 'http://relay:8080',
-          claudeGatewayUrl: () => 'https://relay:8443',
-        },
-        projectTokenMint: async () => 'server-side-token',
-        git,
-        isDirectory: () => false,
-      });
+          projectTokenMint: async () => 'server-side-token',
+          git,
+          isDirectory: () => false,
+        });
 
-      await provisioner.provision(id);
+        await provisioner.provision(id);
 
-      const created = dockerCalls.find((c) => c.method === 'createContainer');
-      const spec = created?.payload as ContainerSpec;
-      // The capability is materialized as a read-only file and mounted (never env).
-      const capPath = join(secretRoot, 'git', `gh_token_capability.${id}`);
-      expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
-      expect(statSync(capPath).mode & 0o777).toBe(0o600);
-      // The endpoint URL is non-secret env; no gh-token file anywhere.
-      expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
-      expect(spec.env).toContain(`VERITY_GH_TOKEN_DOCKER_CONTAINER=${spec.name}`);
-      expect(spec.env).toContain(
-        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
-      );
-      // The memory broker (ADR 0008) rides the same capability + broker URL.
-      expect(spec.env).toContain(
-        'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
-      );
-      expect(spec.env).toContain('GIT_CONFIG_COUNT=1');
-      expect(spec.env).toContain('GIT_CONFIG_KEY_0=credential.https://github.com.helper');
-      expect(spec.env).toContain('GIT_CONFIG_VALUE_0=/opt/agent-seed/bin/verity-gh-cred');
-      expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
-      // The materialized capability resolves back to THIS project's binding.
-      expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
-        projectId: id,
-        owner: 'example-org',
-        repo: 'example-repo',
-        containerGeneration: expect.any(String),
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-      rmSync(secretRoot, { recursive: true, force: true });
-    }
-  });
+        const created = dockerCalls.find((c) => c.method === 'createContainer');
+        const spec = created?.payload as ContainerSpec;
+        // The capability is materialized as a read-only file and mounted (never env).
+        const capPath = join(secretRoot, 'git', `gh_token_capability.${id}`);
+        expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
+        expect(statSync(capPath).mode & 0o777).toBe(0o600);
+        // The endpoint URL is non-secret env; no gh-token file anywhere.
+        expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
+        expect(spec.env).toContain(`VERITY_GH_TOKEN_DOCKER_CONTAINER=${spec.name}`);
+        expect(spec.env).toContain(
+          'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
+        );
+        // The memory broker (ADR 0008) rides the same capability + broker URL.
+        expect(spec.env).toContain(
+          'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
+        );
+        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
+        if (proxyTest) {
+          const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
+          expect(spec.binds).toContain(`${caPath}:/run/verity/forge-proxy/ca.crt:ro`);
+          expect(readFileSync(caPath, 'utf8').trim()).toBe('public-forge-ca');
+          expect(statSync(caPath).mode & 0o777).toBe(0o644);
+          expect(spec.env).toContain('VERITY_FORGE_MODE=proxy-test');
+          expect(spec.env).toContain('VERITY_FORGE_PROXY_URL=http://relay:8080');
+          expect(spec.env).toContain('GIT_TERMINAL_PROMPT=0');
+          expect(spec.env).toContain('GIT_CONFIG_KEY_2=http.https://github.com.proxy');
+          expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
+          expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
+        } else
+          expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
+        expect(spec.env).toContain('GIT_CONFIG_KEY_0=credential.https://github.com.helper');
+        expect(spec.env).toContain(
+          `GIT_CONFIG_VALUE_${proxyTest ? 1 : 0}=/opt/agent-seed/bin/verity-gh-cred`,
+        );
+        expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
+        // The materialized capability resolves back to THIS project's binding.
+        expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
+          projectId: id,
+          owner: 'example-org',
+          repo: 'example-repo',
+          containerGeneration: expect.any(String),
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+        rmSync(secretRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('mounts per-project data as named-volume subpaths (M16) while keeping deploy binds', async () => {
     // The data volume is mounted at <vol> inside the server; clones + secrets live

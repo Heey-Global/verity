@@ -61,7 +61,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 2 |
 | ISC | 66 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1032 |
+| MIT | 1033 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -809,6 +809,7 @@ separately by `TRADEMARKS.md`.
 | glob | ISC | [source](https://www.npmjs.com/package/glob) |
 | gopd | MIT | [source](https://www.npmjs.com/package/gopd) |
 | graceful-fs | ISC | [source](https://www.npmjs.com/package/graceful-fs) |
+| graphql | MIT | [source](https://www.npmjs.com/package/graphql) |
 | handlebars | MIT | [source](https://www.npmjs.com/package/handlebars) |
 | hard-rejection | MIT | [source](https://www.npmjs.com/package/hard-rejection) |
 | has-flag | MIT | [source](https://www.npmjs.com/package/has-flag) |

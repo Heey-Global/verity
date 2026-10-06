@@ -25,6 +25,7 @@ function harness(
     containers?: DockerContainerSummary[];
     log?: { warn: (obj: unknown, msg?: string) => void };
     relayGid?: number;
+    forgeProxyEnabled?: (projectId: string) => boolean;
   } = {},
 ) {
   const createContainer = vi.fn(async (spec: ContainerSpec) => {
@@ -50,6 +51,7 @@ function harness(
   } satisfies DockerClient;
   const start = createDockerProjectRelayStarter({
     docker,
+    forgeProxyEnabled: options.forgeProxyEnabled,
     ...(options.log === undefined ? {} : { log: options.log }),
     image: `ghcr.io/heey-global/verity/verity-project-relay@sha256:${'a'.repeat(64)}`,
     dataVolume: 'verity-data',
@@ -82,6 +84,16 @@ const context = {
 };
 
 describe('Docker project relay adapter', () => {
+  it('enables forge CONNECT only for explicitly selected projects', async () => {
+    const selected = harness({
+      forgeProxyEnabled: (projectId) => projectId === identity.projectId,
+    });
+    await selected.start(context);
+    expect(selected.createContainer.mock.calls[0]?.[0].env).toContain('VERITY_FORGE_PROXY=github');
+    const other = harness({ forgeProxyEnabled: () => false });
+    await other.start(context);
+    expect(other.createContainer.mock.calls[0]?.[0].env).not.toContain('VERITY_FORGE_PROXY=github');
+  });
   it('creates one hardened, un-published relay on the project network', async () => {
     const h = harness();
     await h.start(context);

@@ -45,6 +45,49 @@ describe('isolated session launch contract', () => {
     expect(spec.env).not.toContain('VERITY_SESSION_ID=other');
     expect(spec.capDrop).toEqual(['ALL']);
   });
+  it('inherits the explicit forge test mode and only its public CA', () => {
+    const spec = sessionSandboxSpec(
+      {
+        ...template,
+        mounts: [
+          ...template.mounts!,
+          {
+            type: 'bind',
+            source: '/data/public-forge-ca',
+            destination: '/run/verity/forge-proxy/ca.crt',
+            readWrite: false,
+          },
+        ],
+        env: [
+          ...template.env!,
+          'VERITY_FORGE_MODE=proxy-test',
+          'VERITY_FORGE_PROXY_URL=http://relay:8080',
+          'VERITY_FORGE_PROXY_CA_FILE=/run/verity/forge-proxy/ca.crt',
+        ],
+      },
+      { project, sessionId: 'session', worktree: '/data/sessions/session' },
+    );
+    expect(spec.env).toContain('VERITY_FORGE_MODE=proxy-test');
+    expect(spec.env).toContain('VERITY_FORGE_PROXY_URL=http://relay:8080');
+    expect(spec.binds).toContain('/data/public-forge-ca:/run/verity/forge-proxy/ca.crt:ro');
+    expect(() =>
+      sessionSandboxSpec(
+        {
+          ...template,
+          mounts: [
+            ...template.mounts!,
+            {
+              type: 'bind',
+              source: '/data/ca.key',
+              destination: '/run/verity/forge-proxy/ca.key',
+              readWrite: false,
+            },
+          ],
+        },
+        { project, sessionId: 'session', worktree: '/data/sessions/session' },
+      ),
+    ).toThrow('Unsupported shared sandbox mount');
+  });
   it('preserves additional infrastructure networks without repeating the primary network', () => {
     const spec = sessionSandboxSpec(
       {

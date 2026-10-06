@@ -1043,3 +1043,66 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   throw new Error('condition was not reached');
 }
+
+describe('explicit forge proxy relay', () => {
+  it('tunnels only provider CONNECT targets to the fixed project socket with binary streaming', async () => {
+    const socketPath = join(temporaryDirectory(), 'broker.sock');
+    const upstream = createHttpServer();
+    let calls = 0;
+    upstream.on('connect', (req, socket) => {
+      calls += 1;
+      expect(req.url).toBe('github.com:443');
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      socket.pipe(socket);
+    });
+    servers.push(upstream);
+    await listenUnix(upstream, socketPath);
+    const port = await listenTcp(createBrokerRelayServer({ socketPath, forgeProxy: true }));
+    const data = Buffer.alloc(RELAY_LIMITS.maxBodyBytes + 100, 0x92);
+    const echoed = await new Promise<Buffer>((done, reject) => {
+      const req = request({
+        hostname: '127.0.0.1',
+        port,
+        method: 'CONNECT',
+        path: 'github.com:443',
+      });
+      req.on('error', reject);
+      req.on('connect', (response, socket) => {
+        expect(response.statusCode).toBe(200);
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        socket.on('error', reject);
+        socket.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+          bytes += chunk.length;
+          if (bytes === data.length) {
+            socket.destroy();
+            done(Buffer.concat(chunks));
+          }
+        });
+        socket.write(data);
+      });
+      req.end();
+    });
+    expect(echoed).toEqual(data);
+    for (const target of [
+      'example.com:443',
+      'github.com:80',
+      'github.com.evil:443',
+      'github.com:443/anything',
+    ]) {
+      expect(
+        await rawCall(port, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
+      ).toContain('405 Method Not Allowed');
+    }
+    expect(calls).toBe(1);
+    const disabledPort = await listenTcp(createBrokerRelayServer({ socketPath }));
+    expect(
+      await rawCall(
+        disabledPort,
+        'CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n',
+      ),
+    ).toContain('405 Method Not Allowed');
+    expect(calls).toBe(1);
+  });
+});

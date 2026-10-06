@@ -10,7 +10,16 @@ set -euo pipefail
 
 [ "${1:-}" = "get" ] || exit 0
 
-token="$(verity-gh-token 2>/dev/null)" || exit 0
+if [ -n "${VERITY_FORGE_MODE:-}" ]; then
+  protocol=""; host=""
+  while IFS='=' read -r key value; do
+    case "$key" in protocol) protocol="$value" ;; host) host="$value" ;; esac
+  done
+  [ "$protocol" = "https" ] && { [ "$host" = "github.com" ] || [ "$host" = "github.com:443" ]; } || exit 1
+  token="$(verity-gh-token)" || exit 1
+else
+  token="$(verity-gh-token 2>/dev/null)" || exit 0
+fi
 [ -n "$token" ] || exit 0
 
 printf 'username=x-access-token\n'

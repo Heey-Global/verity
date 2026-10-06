@@ -37,6 +37,7 @@ const CONTAINER_GENERATION_LABEL = 'verity.container-generation';
 
 export interface DockerProjectRelayOptions {
   docker: DockerClient;
+  forgeProxyEnabled?: ((projectId: string) => boolean) | undefined;
   image: string;
   dataVolume: string;
   dataVolumeRoot: string;
@@ -144,7 +145,12 @@ export function createDockerProjectRelayStarter(
       memoryBytes: RELAY_MEMORY_BYTES,
       nanoCpus: 250_000_000,
       // See RELAY_MEMORY_BYTES: the heap cap is only meaningful next to the ceiling.
-      env: [`NODE_OPTIONS=--max-old-space-size=${String(RELAY_HEAP_LIMIT_MIB)}`],
+      env: [
+        `NODE_OPTIONS=--max-old-space-size=${String(RELAY_HEAP_LIMIT_MIB)}`,
+        ...(options.forgeProxyEnabled?.(context.identity.projectId) === true
+          ? ['VERITY_FORGE_PROXY=github']
+          : []),
+      ],
       labels: {
         [COMPONENT_LABEL]: RELAY_COMPONENT,
         [PROJECT_ID_LABEL]: context.identity.projectId,
