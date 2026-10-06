@@ -27,6 +27,15 @@ it('resolves project and session reads while keeping undeclared routes administr
     'allow',
   );
   expect(await authorizePairedRoute(store, 'disabled', 'GET', '/tasks', {})).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'member', 'GET', '/tasks/:id/attachments/:hash', {}),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(store, 'disabled', 'GET', '/tasks/:id/attachments/:hash', {}),
+  ).toBe('forbidden');
+  expect(await authorizePairedRoute(store, 'member', 'GET', '/attachments/:hash', {})).toBe(
+    'forbidden',
+  );
   expect(await authorizePairedRoute(store, 'disabled', 'GET', '/projects', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'admin', 'GET', '/settings', {})).toBe('allow');
 });

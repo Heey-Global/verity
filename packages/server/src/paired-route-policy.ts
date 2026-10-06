@@ -55,6 +55,7 @@ const activeUserRoutes = new Set([
   routeScopeKey('POST', '/auth/logout'),
   // Tasks are owner-scoped inside the handler (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §7.2).
   routeScopeKey('GET', '/tasks'),
+  routeScopeKey('GET', '/tasks/:id/attachments/:hash'),
   routeScopeKey('PUT', '/tasks/:id'),
   routeScopeKey('PATCH', '/tasks/:id'),
   routeScopeKey('DELETE', '/tasks/:id'),

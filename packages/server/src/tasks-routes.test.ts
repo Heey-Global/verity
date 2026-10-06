@@ -122,7 +122,7 @@ describe('tasks routes', () => {
       payload: { title: 'Fix badge on iPad', projectId: 'p1' },
     });
     expect(again.statusCode).toBe(200);
-    expect(again.json().task).toMatchObject({ title: 'Fix badge on iPad', revision: 2 });
+    expect(again.json().task).toMatchObject({ title: 'Fix badge', revision: 1 });
 
     await app.inject({ method: 'PUT', url: `/tasks/${T2}`, payload: { title: 'General idea' } });
     const general = await app.inject({ method: 'GET', url: '/tasks?projectId=general' });
@@ -201,65 +201,86 @@ describe('tasks routes', () => {
     ).toEqual([T2]);
   });
 
-  it.each(['PUT', 'DELETE'] as const)(
-    'rejects stale %s authorization after a concurrent move',
-    async (method) => {
-      await store.tasks.upsert({ id: T1, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
-      const name = method === 'PUT' ? 'upsert' : 'delete';
-      const original = store.tasks[name].bind(store.tasks);
-      // Move after the route authorized its snapshot but before its mutation.
-      const spy =
-        method === 'PUT'
-          ? vi.spyOn(store.tasks, 'upsert').mockImplementationOnce(async (...args) => {
-              await store.tasks.patch(T1, MEMBER, { projectId: 'p1', sessionId: 's1' });
-              return (original as typeof store.tasks.upsert)(...args);
-            })
-          : vi.spyOn(store.tasks, 'delete').mockImplementationOnce(async (...args) => {
-              await store.tasks.patch(T1, MEMBER, { projectId: 'p1', sessionId: 's1' });
-              return (original as typeof store.tasks.delete)(...args);
-            });
-      try {
-        expect(
-          (
-            await app.inject({
-              method,
-              url: `/tasks/${T1}`,
-              headers: asMember,
-              ...(method === 'PUT' ? { payload: { title: 'Replacement' } } : {}),
-            })
-          ).statusCode,
-        ).toBe(409);
-        expect((await store.tasks.get(T1, MEMBER))?.sessionId).toBe('s1');
-        expect(published).toEqual([]);
-      } finally {
-        spy.mockRestore();
-      }
-    },
-  );
-
-  it('does not resurrect a task deleted during PUT authorization', async () => {
+  it('rejects stale deletion authorization after a concurrent move', async () => {
     await store.tasks.upsert({ id: T1, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
-    const upsert = store.tasks.upsert.bind(store.tasks);
-    const spy = vi.spyOn(store.tasks, 'upsert').mockImplementationOnce(async (...args) => {
-      await store.tasks.delete(T1, MEMBER);
-      return upsert(...args);
+    const original = store.tasks.delete.bind(store.tasks);
+    const spy = vi.spyOn(store.tasks, 'delete').mockImplementationOnce(async (...args) => {
+      await store.tasks.patch(T1, MEMBER, { projectId: 'p1', sessionId: 's1' });
+      return original(...args);
     });
     try {
       expect(
-        (
-          await app.inject({
-            method: 'PUT',
-            url: `/tasks/${T1}`,
-            headers: asMember,
-            payload: { title: 'Replacement' },
-          })
-        ).statusCode,
-      ).toBe(404);
-      expect(await store.tasks.get(T1, MEMBER)).toBeUndefined();
+        (await app.inject({ method: 'DELETE', url: `/tasks/${T1}`, headers: asMember })).statusCode,
+      ).toBe(409);
+      expect((await store.tasks.get(T1, MEMBER))?.sessionId).toBe('s1');
       expect(published).toEqual([]);
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('capture retries preserve agent completion and edits without writing', async () => {
+    const payload = { title: 'Original capture', projectId: 'p1', sessionId: 's1' };
+    expect((await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload })).statusCode).toBe(
+      201,
+    );
+    const blob = await store.putAttachment('text/plain', Buffer.from('context').toString('base64'));
+    await store.tasks.patch(T1, ADMIN, {
+      status: 'done',
+      detail: 'Updated',
+      result: 'Verified',
+      attachments: [{ hash: blob, filename: 'context.txt', mimeType: 'text/plain' }],
+    });
+    const saved = await store.tasks.get(T1, ADMIN);
+    const writes = vi.spyOn(store.tasks, 'upsert');
+    try {
+      const response = await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().task).toMatchObject({
+        status: 'done',
+        detail: 'Updated',
+        result: 'Verified',
+        revision: saved?.revision,
+        attachments: saved?.attachments,
+      });
+      expect(writes).not.toHaveBeenCalled();
+      expect(await store.tasks.get(T1, ADMIN)).toEqual(saved);
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
+  it('serves task attachments only to their owner with current project access', async () => {
+    await grantMember({ read: true, execute: true });
+    const hash = await store.putAttachment('text/plain', Buffer.from('context').toString('base64'));
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: MEMBER,
+      projectId: 'p1',
+      origin: 'user',
+      title: 'With file',
+      attachments: [{ hash, filename: 'a.txt', mimeType: 'text/plain' }],
+    });
+    const url = `/tasks/${T1}/attachments/${hash}`;
+    const response = await app.inject({ method: 'GET', url, headers: asMember });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe('context');
+    expect(response.headers['content-type']).toBe('text/plain');
+    expect(response.headers['cache-control']).toContain('private');
+    expect((await app.inject({ method: 'GET', url })).statusCode).toBe(404);
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: `/tasks/${T1}/attachments/${'0'.repeat(64)}`,
+          headers: asMember,
+        })
+      ).statusCode,
+    ).toBe(404);
+    await ctx.db.deleteFrom('project_memberships').where('user_id', '=', MEMBER).execute();
+    expect((await app.inject({ method: 'GET', url, headers: asMember })).statusCode).toBe(404);
+    await store.tasks.patch(T1, MEMBER, { projectId: null });
+    expect((await app.inject({ method: 'GET', url, headers: asMember })).statusCode).toBe(200);
   });
 
   it('cannot substitute a future revision for the authorized HTTP snapshot', async () => {
@@ -491,6 +512,62 @@ describe('executeTasksTool', () => {
       [T1, undefined],
       [T2, false],
     ]);
+  });
+
+  it('rejects assignments when the session moves after the route check', async () => {
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      origin: 'user',
+      title: 'Backlog',
+    });
+    const patch = store.tasks.patch.bind(store.tasks);
+    const spy = vi.spyOn(store.tasks, 'patch').mockImplementationOnce(async (...args) => {
+      await ctx.db
+        .updateTable('sessions')
+        .set({ project_id: null })
+        .where('session_id', '=', 's1')
+        .execute();
+      return patch(...args);
+    });
+    try {
+      expect(
+        (await app.inject({ method: 'PATCH', url: `/tasks/${T1}`, payload: { sessionId: 's1' } }))
+          .statusCode,
+      ).toBe(400);
+      expect((await store.tasks.get(T1, ADMIN))?.sessionId).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('rejects agent status writes when the session moves after assigned-task lookup', async () => {
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Work',
+    });
+    const patch = store.tasks.patch.bind(store.tasks);
+    const spy = vi.spyOn(store.tasks, 'patch').mockImplementationOnce(async (...args) => {
+      await ctx.db
+        .updateTable('sessions')
+        .set({ project_id: null })
+        .where('session_id', '=', 's1')
+        .execute();
+      return patch(...args);
+    });
+    try {
+      await expect(run('s1', { action: 'complete', id: T1, result: 'Verified' })).rejects.toThrow(
+        /session is not/,
+      );
+      expect((await store.tasks.get(T1, ADMIN))?.status).toBe('open');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('does not expose or update source-project tasks after a session move', async () => {

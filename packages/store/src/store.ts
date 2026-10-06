@@ -2474,6 +2474,13 @@ export class EventStore implements EventSink {
         .set({ project_id: move.target_project_id, worktree: move.target_worktree })
         .where('session_id', '=', sessionId)
         .execute();
+      // Assigned work stays in its source project; moving the session revokes
+      // the assignment and invalidates updates authorized before the move.
+      await tx
+        .updateTable('tasks')
+        .set({ session_id: null, revision: sql`revision + 1`, updated_at: sql`now()` })
+        .where('session_id', '=', sessionId)
+        .execute();
       // The operator confirmed a check script against the source project. In the
       // target it would run against another repository and other secrets without
       // anyone having seen it there, so it waits until they resume it.
