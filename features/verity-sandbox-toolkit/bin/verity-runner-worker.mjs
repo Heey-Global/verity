@@ -29877,7 +29877,7 @@ async function runAcpTurn(opts, profile) {
       return response;
     };
     const planning = opts.planning === true;
-    if (planning && planningToolName(name2) !== void 0) {
+    if (planningToolName(name2) !== void 0) {
       const allow = request2.options.find((option) => option.kind === "allow_once");
       if (allow !== void 0)
         return { outcome: { outcome: "selected", optionId: allow.optionId } };

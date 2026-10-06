@@ -1566,7 +1566,11 @@ describe('AcpClaudeBackend', () => {
   });
 
   /** Answer one permission request for `toolName` inside a planning turn. */
-  async function planningAnswer(toolName: string, storeSessionId: string): Promise<unknown> {
+  async function planningAnswer(
+    toolName: string,
+    storeSessionId: string,
+    planning = true,
+  ): Promise<unknown> {
     const fake = acpSpawner({
       permission: true,
       permissionToolName: toolName,
@@ -1575,11 +1579,11 @@ describe('AcpClaudeBackend', () => {
     await new AcpClaudeBackend().run({
       store: ctx.store,
       storeSessionId,
-      worktree: '/work/project',
+      worktree: `/work/${storeSessionId}`,
       cwd: '/work/project',
       prompt: 'Plan it',
-      permissionMode: PLANNING_PERMISSION_MODE,
-      planning: true,
+      permissionMode: planning ? PLANNING_PERMISSION_MODE : 'default',
+      planning,
       spawner: fake.spawner,
       permissionControl: true,
       onPermissionRequest: (_request, respond) => respond({ behavior: 'deny', message: 'no' }),
@@ -1594,6 +1598,21 @@ describe('AcpClaudeBackend', () => {
     expect(
       await planningAnswer('mcp__verity__verity_present_plan', 'verity-session-plan-tool'),
     ).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+  });
+
+  it('does not ask again for planning tools when planning starts during the turn', async () => {
+    // The turn snapshot stays non-planning after start_planning updates the session.
+    // An extra runner card here blocks presentation before the gateway can handle it.
+    for (const tool of ['verity_start_planning', 'verity_present_plan', 'verity_end_planning']) {
+      for (const name of [tool, `mcp__verity__${tool}`, `verity_${tool}`]) {
+        expect(await planningAnswer(name, `mid-turn-${name}`, false)).toEqual({
+          outcome: { outcome: 'selected', optionId: 'allow' },
+        });
+      }
+    }
+    expect(await planningAnswer('Bash', 'mid-turn-bash', false)).toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject' },
+    });
   });
 
   it('refuses any other tool in a planning turn', async () => {

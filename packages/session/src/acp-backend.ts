@@ -703,11 +703,10 @@ export async function runAcpTurn(
     // of a plan the operator has not accepted yet. The operator leaves planning
     // through Verity instead, which ends it for every agent the same way.
     const planning = opts.planning === true;
-    // Except Verity's own planning tools: a read-only posture may gate any MCP call
-    // behind a request, and refusing these would leave the agent no way to present
-    // its plan. The gateway still decides them itself — ending planning raises the
-    // operator's card there.
-    if (planning && planningToolName(name) !== undefined) {
+    // Planning may start mid-turn, before opts.planning reflects the new posture.
+    // Let these calls reach the gateway in either posture: presenting only shows
+    // text, and ending planning still requires the gateway's implementation approval.
+    if (planningToolName(name) !== undefined) {
       const allow = request.options.find((option) => option.kind === 'allow_once');
       if (allow !== undefined)
         return { outcome: { outcome: 'selected', optionId: allow.optionId } };
