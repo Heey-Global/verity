@@ -1,6 +1,15 @@
 import { releaseChannelFromEnv } from './release-channel.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, realpath, rename, rm, type FileHandle } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  type FileHandle,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   parseServerDeploymentSpec,
@@ -108,6 +117,28 @@ async function writeExclusive(path: string, value: unknown): Promise<void> {
     await directory.sync();
   } finally {
     await directory.close();
+  }
+}
+
+/** Publish a durable complete backup without replacing an earlier authority. */
+async function writeAtomicExclusive(
+  directory: string,
+  name: string,
+  value: unknown,
+): Promise<void> {
+  const temporary = join(directory, `${name}.tmp`);
+  await rm(temporary, { force: true });
+  try {
+    await writeExclusive(temporary, value);
+    await link(temporary, join(directory, name));
+    const handle = await open(directory, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    await rm(temporary, { force: true });
   }
 }
 
@@ -323,7 +354,7 @@ export async function migrateManagedHostDiagnostics(options: {
     // recoverable before introducing it, without overwriting an earlier backup.
     const backup = await readJson(join(pinnedRoot, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE));
     if (backup === undefined)
-      await writeExclusive(join(pinnedRoot, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE), existing.spec);
+      await writeAtomicExclusive(pinnedRoot, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE, existing.spec);
     else if (parseServerDeploymentSpec(backup)?.deploymentId !== existing.spec.deploymentId)
       throw new Error('host diagnostic authority backup is invalid');
     await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);
