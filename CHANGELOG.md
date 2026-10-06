@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.16.0](https://github.com/Heey-Global/verity/compare/v4.15.0...v4.16.0) (2026-10-06)
+
+
+### Features
+
+* **dev-servers:** control server lifetime with Local and Shared online ([#1186](https://github.com/Heey-Global/verity/issues/1186)) ([3e5f978](https://github.com/Heey-Global/verity/commit/3e5f9785bf9415bca531381142fd91133236fd6f))
+* **web:** add local browser client with cookie sessions ([#1183](https://github.com/Heey-Global/verity/issues/1183)) ([29f8e70](https://github.com/Heey-Global/verity/commit/29f8e701df3263fe8ad575903fe87456ea61c4ff))
+
+
+### Bug Fixes
+
+* **push:** alert audibly when the agent waits on the operator ([#1200](https://github.com/Heey-Global/verity/issues/1200)) ([58a9b13](https://github.com/Heey-Global/verity/commit/58a9b138929e0c84c85018855185db6d8e74fcfa))
+* **session:** remove missing-image warning ([#1184](https://github.com/Heey-Global/verity/issues/1184)) ([841eb82](https://github.com/Heey-Global/verity/commit/841eb822fe17a4781d161afc25249f616db10ca0))
+* **sessions:** isolate session workspaces and Git state ([0d83513](https://github.com/Heey-Global/verity/commit/0d835134034a39ceb47b0f95f450863339385580))
+
 ## [4.15.0](https://github.com/Heey-Global/verity/compare/v4.14.0...v4.15.0) (2026-10-05)
 
 
