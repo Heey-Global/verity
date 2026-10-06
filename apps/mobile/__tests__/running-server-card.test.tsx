@@ -68,3 +68,27 @@ it('shows the managed recipe and never announces its internal port to screen rea
   expect(screen.getByLabelText('Curtis Demo is running')).toBeTruthy();
   expect(screen.queryByLabelText(/41000/)).toBeNull();
 });
+
+// Polling the same listener must not bring back a hint the user ignored.
+it('dismisses only the hint and keeps it hidden when the listener refreshes', () => {
+  const onOpen = jest.fn();
+  const onShare = jest.fn();
+  const card = (pid: number) => (
+    <RunningServerCard
+      server={{ ...server, pid }}
+      opening={false}
+      disabled={false}
+      onOpen={onOpen}
+      onShare={onShare}
+    />
+  );
+  const { rerender } = render(card(1));
+  fireEvent.press(
+    screen.getByRole('button', { name: 'Dismiss the running server hint for Curtis Demo' }),
+  );
+  expect(screen.queryByText(/Server running/)).toBeNull();
+  rerender(card(2));
+  expect(screen.queryByText(/Server running/)).toBeNull();
+  expect(onOpen).not.toHaveBeenCalled();
+  expect(onShare).not.toHaveBeenCalled();
+});
