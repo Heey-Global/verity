@@ -165,7 +165,12 @@ when using a non-default directory. A bare local Server can read the snapshot
 from its host path using `VERITY_HOST_DIAGNOSTIC_SNAPSHOT`.
 
 Each report includes source availability, snapshot time, covered interval and
-truncation. A snapshot older than five minutes, or more than one minute ahead of
+truncation. When no snapshot is used, `host.reason` says why: `directory_missing`
+means the Server cannot see the snapshot directory, so its read-only mount has
+not been applied yet (rerun the installer and apply the pending Server update);
+`snapshot_missing` means the mount exists but the host exporter has not written a
+snapshot (check the exporter and its timer); `invalid` means the file could not
+be read or parsed; `not_configured` means no snapshot path is set. A snapshot older than five minutes, or more than one minute ahead of
 the Server clock, is marked stale. Unavailable, failed, stale, partial or truncated
 host evidence cannot exclude OOM or a runtime crash. Reading an old interval
 does not extend the exporter's 24-hour collection window. Use these diagnostics
