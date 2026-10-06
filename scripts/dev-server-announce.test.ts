@@ -46,7 +46,12 @@ describe('managed dev server commands', () => {
       process.execPath,
       [resolve('agent-seed/bin/verity-dev-server'), 'list'],
       {
-        env: { ...process.env, VERITY_DEV_SERVER_URL: '', VERITY_PROJECT_MEMORY_URL: '' },
+        env: {
+          ...process.env,
+          VERITY_SESSION_ID: 'session-1',
+          VERITY_DEV_SERVER_URL: '',
+          VERITY_PROJECT_MEMORY_URL: '',
+        },
         encoding: 'utf8',
       },
     );
