@@ -30368,6 +30368,9 @@ var AcpCodexBackend = class {
 };
 
 // packages/session/dist/acp-opencode-backend.js
+function openCodeToolName(tool) {
+  return tool.title === "todowrite" ? PLAN_TOOL_NAME : toolNameFromKind(tool);
+}
 var MODEL_CONFIG_ID2 = "model";
 var MODE_CONFIG_ID = "mode";
 var BUILD_MODE = "build";
@@ -30439,7 +30442,7 @@ var OPENCODE_ACP_PROFILE = {
   loadSessionUnsupported: "This OpenCode version does not support persistent session loading",
   // opencode-acp sets no tool `name`, only ACP's `kind` and a `title` that is the
   // command line for an execution and the file path once a read resolves.
-  adapter: { resolveToolName: toolNameFromKind },
+  adapter: { resolveToolName: openCodeToolName },
   // No session-level options: both knobs Verity sets are session config options,
   // applied once the session has answered with what this account can serve.
   sessionMeta: () => ({}),
