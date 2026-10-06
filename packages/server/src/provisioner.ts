@@ -2204,6 +2204,7 @@ export class ProvisionerImpl implements Provisioner {
    *  `provision` calls now coalesce onto the running attempt's promise. */
   private readonly inFlightProvisions = new Map<string, Promise<ProjectRecord>>();
   private readonly retiringSandboxes = new Set<string>();
+  private readonly sandboxReplacementGenerations = new Map<string, number>();
   /** Per-project tail promises serialize managed-checkout fetch/reset operations.
    *  Unlike provisioning single-flight, every queued synchronization must run:
    *  a later request may correspond to a newer merge that was not visible when
@@ -2456,6 +2457,7 @@ export class ProvisionerImpl implements Provisioner {
             this.isDir(join(runtimeRoot, 'runners', project.id));
           if (!hasRunnerRuntime && !connectorEnabled) return undefined;
           if (this.retiringSandboxes.has(project.id)) return undefined;
+          const replacementGeneration = this.sandboxReplacementGenerations.get(project.id);
           // A replacement stops and removes the old sandbox while the row still
           // reads `active` (it only moves to `container_starting` once the new
           // container phase begins), and starts the stack itself in the new one.
@@ -2478,7 +2480,9 @@ export class ProvisionerImpl implements Provisioner {
           } catch (error) {
             // The same race from the other side: the replacement began while
             // this exec was already in flight.
-            if (this.retiringSandboxes.has(project.id)) return undefined;
+            if (this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration) {
+              return undefined;
+            }
             return error;
           }
         }),
@@ -3995,6 +3999,10 @@ export class ProvisionerImpl implements Provisioner {
       await this.ensureSandboxRuntime(project);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
+      this.sandboxReplacementGenerations.set(
+        project.id,
+        (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
+      );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
 
       // ADR 0004 — "Update & restart" actively fetched the target image in the

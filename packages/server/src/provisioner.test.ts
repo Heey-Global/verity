@@ -2854,6 +2854,44 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
+  it('drops a Runner watchdog failure received after an overlapping replacement completed', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    const project = await provisioner.provision(id);
+
+    containerCommand.mockImplementationOnce(async () => {
+      await provisioner.recreateContainer(id);
+      throw new Error('OCI runtime exec failed: connection refused');
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    // The completed replacement must release the watchdog for subsequent passes.
+    const execsBefore = containerCommand.mock.calls.length;
+    await provisioner.reconcileRunnerSupervisors(await ctx.store.listProjects());
+    expect(containerCommand.mock.calls.length).toBe(execsBefore + 1);
+  });
+
   describe('per-project node_modules volume', () => {
     const MOUNTPOINT = '/var/lib/docker/volumes/verity-node-modules-x/_data';
 
