@@ -1,3 +1,4 @@
+import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
@@ -34,6 +35,8 @@ import {
   UNAVAILABLE_PROJECT_BADGE,
   UNTRACKED_PROJECT_BADGE,
   type ProjectBadge,
+  type RepoIdentity,
+  parseBranchIssue,
 } from '@verity/mobile';
 import { Link, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -1404,6 +1407,7 @@ function ProjectGroup({
                     unread={unread.has(session.sessionId)}
                     previewActive={previewUrls.has(session.sessionId)}
                     previewUrl={previewUrls.get(session.sessionId) ?? null}
+                    repo={group.project?.kind === 'github' ? group.project : undefined}
                     selected={selectedId === session.sessionId}
                     renaming={renamingId === session.sessionId}
                   />
@@ -1703,6 +1707,7 @@ function SessionRow({
   unread,
   previewActive,
   previewUrl,
+  repo,
   selected,
   renaming,
 }: {
@@ -1714,6 +1719,8 @@ function SessionRow({
   previewActive?: boolean;
   /** Where the preview icon leads; null while a public share has no origin yet. */
   previewUrl?: string | null;
+  /** The GitHub repo the issue number links into; absent for local projects. */
+  repo?: RepoIdentity | undefined;
   selected?: boolean;
   renaming?: boolean;
 }) {
@@ -1743,6 +1750,7 @@ function SessionRow({
   // this list re-measures on every poll.
   const notice = attentionNotice(session.attention);
   const automationActive = session.automation?.status === 'enabled';
+  const hasIssue = parseBranchIssue(session.branch) !== null;
   // Accent wash marking the row whose rename sheet is open. Driven by an animated
   // value so that on close it lingers a beat and fades out (rather than vanishing)
   // as the sheet dismisses; on open it snaps in.
@@ -1813,11 +1821,12 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {automationActive || previewActive ? (
+          {hasIssue || automationActive || previewActive ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
+              <SessionIssueRef branch={session.branch} repo={repo} />
               {automationActive ? (
                 <View accessible accessibilityLabel="Automation active">
                   <Icon name="repeat" size={14} color={theme.colors.primary} />

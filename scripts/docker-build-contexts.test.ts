@@ -2,6 +2,29 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('selective Docker build contexts', () => {
+  it('ships the browser export at the configured server path', () => {
+    const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
+    const webStage = dockerfile.split('FROM builder-deps AS web-builder\n')[1]?.split('FROM ')[0];
+    expect(webStage).toBeDefined();
+    for (const source of ['apps/mobile', 'packages/mobile', 'packages/events'])
+      expect(webStage).toContain(`COPY ${source} ${source}`);
+    const manifest = JSON.parse(readFileSync('apps/mobile/package.json', 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    const exportScript = Object.entries(manifest.scripts).find(([, command]) =>
+      command.includes('expo export --platform web'),
+    )?.[0];
+    expect(exportScript).toBeDefined();
+    expect(webStage).toContain(`npm run ${exportScript} --workspace @verity/mobile-app`);
+    const runtime = dockerfile.split(' AS runtime\n')[1]!;
+    const directory = runtime.match(/^ENV VERITY_WEB_APP_DIR=(\S+)$/mu)?.[1];
+    expect(directory).toBeDefined();
+    // Exporting successfully is insufficient if the runtime never receives the assets.
+    expect(runtime).toContain(
+      `COPY --from=web-builder --chown=node:node /app/apps/mobile/dist .${directory!.slice('/app'.length)}`,
+    );
+  });
+
   it('ships production dependencies nested below workspace packages', () => {
     for (const dockerfilePath of ['deploy/Dockerfile', 'deploy/secret-job-worker.Dockerfile']) {
       const dockerfile = readFileSync(dockerfilePath, 'utf8');

@@ -115,6 +115,25 @@ export {
   type ManagedDevServerInstancePatch,
 } from './managed-dev-servers.js';
 export {
+  TaskStore,
+  TaskNotFoundError,
+  TaskRevisionConflictError,
+  TaskInputError,
+  TASK_STATUSES,
+  OPEN_TASK_STATUSES,
+  TASK_TITLE_MAX,
+  TASK_DETAIL_MAX,
+  TASK_RESULT_MAX,
+  TASK_ATTACHMENTS_MAX,
+  type TaskRecord,
+  type TaskInput,
+  type TaskPatch,
+  type TaskListFilter,
+  type TaskAttachment,
+  type TaskOrigin,
+  type TaskStatus,
+} from './tasks.js';
+export {
   LiveMeetingStore,
   type LiveMeetingSyncRecord,
   type LiveMeetingNoteSyncRecord,

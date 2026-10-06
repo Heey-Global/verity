@@ -905,6 +905,39 @@ describe('PreviewShareManager', () => {
     expect(inspectArtifact).toHaveBeenCalledWith('/data/secrets/git/gh_token_capability.p1', false);
   });
 
+  it('allows the forge proxy public CA only at its reviewed source and destination', async () => {
+    const inspectArtifact = vi.fn(async () => ({
+      uid: 1000,
+      gid: process.getgid?.() ?? 1000,
+      mode: 0o644,
+      kind: 'file' as const,
+    }));
+    const { manager, docker, inspect } = fixture({ inspectArtifact });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      env: [
+        'VERITY_FORGE_MODE=proxy-test',
+        'VERITY_FORGE_PROXY_URL=http://relay:8080',
+        'VERITY_FORGE_PROXY_CA_FILE=/run/verity/forge-proxy/ca.crt',
+      ],
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          source: '/var/lib/docker/volumes/verity-data/_data/secrets/git/forge_proxy_ca.p1.crt',
+          subpath: 'secrets/git/forge_proxy_ca.p1.crt',
+          destination: '/run/verity/forge-proxy/ca.crt',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+    expect(inspectArtifact).toHaveBeenCalledWith('/data/secrets/git/forge_proxy_ca.p1.crt', false);
+  });
+
   it('allows the agent-gateway identity only with its exact paths and permissions', async () => {
     const inspectArtifact = vi.fn(async (path: string) => ({
       uid: 1000,

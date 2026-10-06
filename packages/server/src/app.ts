@@ -1,4 +1,5 @@
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
+import { renderAssignedTasksPrompt } from '@verity/events';
 import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -479,6 +480,19 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
                   (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
                   ? VERITY_CONTROL_SYSTEM_PROMPT
                   : '',
+            }
+          : {}),
+        ...(deps.conductor?.assignedTasksPrompt === undefined
+          ? {
+              assignedTasksPrompt: async (session) =>
+                renderAssignedTasksPrompt(
+                  (await deps.eventStore.tasks.listAssigned(session.sessionId)).map((task) => ({
+                    id: task.id,
+                    title: task.title,
+                    status: task.status === 'in_progress' ? 'in_progress' : 'open',
+                    attachments: task.attachments.length,
+                  })),
+                ),
             }
           : {}),
         onTurnError: (sessionId, error) => {

@@ -143,7 +143,7 @@ function isForbiddenIpv4(address: string): boolean {
   );
 }
 
-function isForbiddenAddress(address: string): boolean {
+export function isForbiddenAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return isForbiddenIpv4(address);
   if (family !== 6) return true;
@@ -382,7 +382,7 @@ type RedactionNeedle = { needle: string; marker: string; caseInsensitive: boolea
  * A colluding upstream can still echo a transformed credential; that residual
  * risk is accepted (ADR 0011) in exchange for a usable response channel.
  */
-function redactionOrder(credentials: readonly RedactedCredential[]): RedactionNeedle[] {
+export function redactionOrder(credentials: readonly RedactedCredential[]): RedactionNeedle[] {
   const needles: RedactionNeedle[] = [];
   for (const { value, alias } of credentials) {
     if (value.length === 0) continue;
@@ -412,7 +412,7 @@ function redactionOrder(credentials: readonly RedactedCredential[]): RedactionNe
   return needles.sort((left, right) => right.needle.length - left.needle.length);
 }
 
-function redactAllSecretForms(
+export function redactAllSecretForms(
   text: string,
   credentials: readonly RedactedCredential[],
   needles: readonly RedactionNeedle[],

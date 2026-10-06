@@ -3868,7 +3868,42 @@ const migrations: Record<string, Migration> = {
       await sql`alter table auth_tokens drop column expires_at`.execute(db);
     },
   },
-  '0140_session_automation_sponsor': {
+  '0140_tasks': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // One durable task list per user (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md).
+      // `project_id` null is the General bucket; a deleted project turns its
+      // tasks into General rather than losing them, and a deleted session only
+      // unassigns. `title`, `detail` and `result` are user content and travel
+      // through the store cipher like other secrets, so they are plain text here.
+      await sql`create table tasks (
+        id text primary key,
+        owner_user_id text not null references users(id),
+        project_id text references projects(id) on delete set null,
+        session_id text references sessions(session_id) on delete set null,
+        source_session_id text,
+        origin text not null check (origin in ('user', 'agent')),
+        title text not null,
+        detail text,
+        attachments jsonb not null default '[]'::jsonb,
+        status text not null default 'open'
+          check (status in ('open', 'in_progress', 'done', 'dropped')),
+        result text,
+        sort integer not null default 0,
+        revision integer not null default 1,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        completed_at timestamptz
+      )`.execute(db);
+      await sql`create index tasks_owner_idx on tasks (owner_user_id, status)`.execute(db);
+      await sql`create index tasks_session_idx on tasks (session_id) where session_id is not null`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table tasks`.execute(db);
+    },
+  },
+  '0141_session_automation_sponsor': {
     async up(db: Kysely<unknown>): Promise<void> {
       // The local user who confirmed the automation (ADR 0023 §2: scheduled work
       // has an explicit sponsoring user). Its turns run for, and notify, that user.

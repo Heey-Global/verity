@@ -468,6 +468,25 @@ it('browses into a nested folder and uses it as the target', async () => {
   );
 });
 
+// Reusing the explorer breadcrumb must keep ancestor jumps wired to the folder list.
+it('navigates static folders through the explorer breadcrumb', async () => {
+  const listSessionStaticPreviewEntries = jest.fn(async (_sessionId: string, path: string) => ({
+    directories: path === '' ? ['docs'] : path === 'docs' ? ['slides'] : [],
+    files: [],
+  }));
+  renderSheet(makeClient({ listSessionStaticPreviewEntries }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  expect(screen.queryByLabelText('Back to Repository')).toBeNull();
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs/slides' }));
+  expect(await screen.findByLabelText('slides')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Back to docs' }));
+  expect(await screen.findByRole('button', { name: 'Open folder docs/slides' })).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Back to Repository' }));
+  expect(await screen.findByRole('button', { name: 'Open folder docs' })).toBeTruthy();
+  expect(screen.queryByLabelText('Back to docs')).toBeNull();
+});
+
 it('does not offer folders from the previous location when navigation fails', async () => {
   const listSessionStaticPreviewEntries = jest.fn(async (_sessionId: string, path: string) => {
     if (path === '') return { directories: ['docs'], files: [] };
@@ -600,7 +619,7 @@ it('decides the default tab after the timeout when a list hangs', async () => {
 it('keeps the folder explorer open when a server starts during browsing', async () => {
   const view = renderSheet(makeClient(), { detectedServers: [] });
   fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
-  await screen.findByRole('button', { name: 'Back to parent folder' });
+  await screen.findByRole('button', { name: 'Back to Repository' });
   view.rerender(
     <StaticPreviewSheet
       client={makeClient()}
@@ -611,7 +630,7 @@ it('keeps the folder explorer open when a server starts during browsing', async 
     />,
   );
   expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Back to parent folder' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Back to Repository' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
 });
 
@@ -695,7 +714,7 @@ it('steps back from the access step and out of nested folders on Android back', 
   expect(onClose).not.toHaveBeenCalled();
   fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
   fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
-  expect(await screen.findByRole('button', { name: 'Back to parent folder' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'Back to Repository' })).toBeTruthy();
   act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
   expect(await screen.findByRole('button', { name: 'Preview the whole worktree' })).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled();

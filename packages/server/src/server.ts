@@ -98,6 +98,7 @@ import {
   RECENT_SESSION_MESSAGES_DEFAULT,
   recentSessionMessagesRequestSchema,
   publishSessionProgressRequestSchema,
+  tasksRequestSchema,
   aggregateUsage,
   appendExternalPromptData,
   attachmentUploadSchema,
@@ -293,6 +294,7 @@ import { meetingKnowledgeExcerpts } from './live-meeting-knowledge.js';
 import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerAttachmentRoute } from './attachment-route.js';
+import { executeTasksTool, registerTasksRoutes } from './tasks-routes.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
@@ -1932,6 +1934,17 @@ function meetingTranscriptFailureMessage(fileName: string, reason: string): stri
   return `Could not transcribe meeting audio\n${fileName}\n\n${reason}`;
 }
 
+/** Store an event on a session and fan it out to its live stream. */
+async function emitSessionEvent(
+  eventStore: EventStore,
+  bus: EventBus,
+  sessionId: string,
+  event: AgentEvent,
+): Promise<void> {
+  const { seq, ts } = await eventStore.appendEvent(sessionId, event);
+  bus.publish(sessionId, { seq, ts, event });
+}
+
 async function emitNotice(input: {
   eventStore: EventStore;
   bus: EventBus;
@@ -2802,6 +2815,10 @@ export interface SessionSummary extends SessionRecord {
   /** Compact PR status for the current branch (#387). `null` = looked up, no open
    * PR; ABSENT = GitHub not configured (no `branchPrStatus`) or not yet resolved. */
   pr?: SessionPrSummary | null;
+  /** The worktree's current branch, from the branch-label cache, so the overview
+   * can show the session's issue (`<type>/<issue>-<slug>`). ABSENT while the label
+   * is cold, the worktree is gone, or branch switching is not configured. */
+  branch?: string;
   /** Persisted events excluding dev-server snapshots; compared against the synced
    * read marker to show the overview unread dot. */
   eventCount: number;
@@ -3202,6 +3219,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // background-failure sink can log through it (chicken/egg: the conductor is
   // built before the routes, but the logger exists once `app` does).
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
+  const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
+    emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
   const sessionPlanning = createSessionPlanning({
     eventStore: deps.eventStore,
     dispatchTurn: (sessionId, prompt, opts, dispatchOpts) => {
@@ -4395,6 +4414,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       });
     return token.read;
   };
+  /**
+   * The branch for the session LIST, answered from {@link branchCache} only.
+   *
+   * The overview derives a session's issue chip from it, but the list is polled
+   * every 2 s for every session at once, so unlike the header it never awaits
+   * git: a cold or stale entry schedules {@link readBranch} in the background and
+   * the label fills in a poll later. A cold read that FAILS leaves an empty label
+   * behind, stamped, so a broken worktree costs one git call per TTL rather than
+   * one per poll. The app reads an empty branch as "no branch" in both places
+   * (the header falls back to its branch list), and the next read replaces it.
+   */
+  const listBranchFor = (session: SessionRecord, exists: boolean): string | undefined => {
+    const { worktree } = session;
+    // A gone worktree has no branch to read; asking git would fail on every poll.
+    if (!exists || deps.branches === undefined) return undefined;
+    if (deps.projectWorktreeBranchesOnly === true && session.projectId === null) return undefined;
+    const cached = branchCache.get(worktree);
+    if (cached === undefined || Date.now() - cached.at >= branchTtlMs) {
+      void branchesForSession(session)
+        .then((branches) => {
+          // A project without branch reads (control plane) is stamped empty too,
+          // so it is not asked for its project record on every poll either.
+          if (branches === undefined) branchCache.set(worktree, { branch: '', at: Date.now() });
+          else return readBranch(branches, worktree);
+        })
+        .catch(() => {
+          // `readBranch` re-stamps an existing entry on failure; only a cold one is left.
+          if (!branchCache.has(worktree)) branchCache.set(worktree, { branch: '', at: Date.now() });
+        });
+    }
+    return cached?.branch || undefined;
+  };
   /** Evict labels for worktrees that no longer exist, so a long-lived server does
    *  not keep one entry per session ever created — and a recreated worktree can
    *  never be answered from the deleted one's label. Same lifecycle and same call
@@ -4852,6 +4903,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<SessionSummary> => {
     const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
+    const resumable = await worktreeExists(session.worktree);
+    const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
     // the store reads the newest one per window separately. See
     // `SessionProjectionFacts.rateLimitEvents`.
@@ -4901,7 +4954,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       lastActivityAt: facts.lastActivityAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
-      resumable: await worktreeExists(session.worktree),
+      resumable,
+      ...(branch !== undefined ? { branch } : {}),
       eventCount: facts.eventCount,
       eventCountVersion: 'dev-servers-excluded-v1',
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
@@ -5924,7 +5978,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request,
         invocationId,
       }) => {
-        if (toolName === 'verity_list_linked_sessions') {
+        // The tasks tool writes only to the calling session's own list and cannot
+        // delete, so it runs without a card like the planning tools do.
+        if (toolName === 'verity_list_linked_sessions' || toolName === 'verity_tasks') {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
@@ -6060,6 +6116,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             planning: 'implemented',
             note: 'The user approved. End your turn now; Verity starts the implementation as a new turn.',
           };
+        }
+        if (input.toolName === 'verity_tasks') {
+          const session = await deps.eventStore.getSession(input.sessionId);
+          if (session === undefined || session.projectId !== input.projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          return executeTasksTool({
+            eventStore: deps.eventStore,
+            publish: publishSessionEvent,
+            sessionId: input.sessionId,
+            projectId: session.projectId,
+            request: tasksRequestSchema.parse(input.request),
+          });
         }
         // Planning can begin while an external approval card is pending.
         if (
@@ -6254,6 +6322,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.authRegistry.verify(requestCredential(request)) === true,
   });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
+  registerTasksRoutes(app, { eventStore: deps.eventStore, publish: publishSessionEvent });
   registerAutomationRoutes(app, {
     eventStore: deps.eventStore,
     checkScript: (automation) => automationExecutor.checkScript(automation),

@@ -14,6 +14,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { BrokeredForgeProxy } from './brokered-forge-proxy.js';
 
 /**
  * Network-level isolation for the `/internal/*` control-plane routes (audit H1
@@ -90,6 +91,7 @@ export interface ProjectInternalUnixListenerOptions {
   readonly ownerUid: number;
   /** Dedicated relay group; group members may connect but cannot replace files. */
   readonly relayGid: number;
+  readonly forgeProxy?: BrokeredForgeProxy | undefined;
 }
 
 /** Remove a socket path only while it still names the inode this lifecycle
@@ -240,6 +242,10 @@ export async function startProjectInternalUnixListener(
       return;
     }
     app.routing(req, res);
+  });
+  server.on('connect', (request, socket, head) => {
+    if (options.forgeProxy === undefined) socket.destroy();
+    else options.forgeProxy.connect(request, socket, head, identity);
   });
   markInternalConnections(server, identity);
   server.on('connection', (socket) => {

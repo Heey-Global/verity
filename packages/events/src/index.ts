@@ -107,6 +107,18 @@ export {
   publishSessionProgressRequestSchema,
   sessionProgressRequestSchema,
 } from './session-observation-tool.js';
+export {
+  ASSIGNED_TASKS_PROMPT_MAX,
+  TASKS_ADD_MAX,
+  TASKS_RESUME_SYSTEM_PROMPT,
+  TASKS_SYSTEM_PROMPT,
+  TASKS_TOOL,
+  TASKS_TOOL_DESCRIPTION,
+  renderAssignedTasksPrompt,
+  tasksRequestSchema,
+  type AssignedTaskSummary,
+  type TasksRequest,
+} from './tasks-tool.js';
 export { SESSION_PROJECTION_EVENT_TYPES, sessionProjectionEvents } from './projection.js';
 export {
   aggregateUsage,

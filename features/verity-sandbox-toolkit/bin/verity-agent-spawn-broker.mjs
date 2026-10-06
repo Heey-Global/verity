@@ -588,6 +588,10 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     // approval and their allowance. Session links are the only agent-to-agent
     // channel. Never accept this value from a request.
     ...(isClaude ? { CLAUDE_CODE_HARBOR_KITE: '0' } : {}),
+    // The Claude CLI offers its task-list tools (TaskCreate/TaskUpdate, which the
+    // ACP adapter reports as a plan) only to models on its own allowlist. Newer
+    // models silently lose them, and the app never receives a checklist.
+    ...(isClaude ? { CLAUDE_CODE_ENABLE_TODO_TOOLS: '1' } : {}),
     // ADR 0006 D10: derive auth only from one validated local connector URL.
     // Never copy an inherited OAuth/API token; the placeholder is fixed here.
     ...connectorEnv,
@@ -640,6 +644,10 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
         }
       : {}),
     ...copy('IS_SANDBOX'),
+    ...copy('VERITY_FORGE_MODE'),
+    ...copy('VERITY_FORGE_PROXY_URL'),
+    ...copy('VERITY_FORGE_PROXY_CA_FILE'),
+    ...copy('GIT_TERMINAL_PROMPT'),
     ...copy('GIT_CONFIG_COUNT'),
     ...Object.fromEntries(
       Object.entries(source).filter(([name]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/u.test(name)),

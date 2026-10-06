@@ -1,3 +1,4 @@
+import type { ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
 import type { Backend } from './backend.js';
 import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import {
@@ -6,8 +7,13 @@ import {
   type AcpBackendProfile,
   type AcpSessionSetup,
 } from './acp-backend.js';
-import { toolNameFromKind } from './acp-adapter.js';
+import { PLAN_TOOL_NAME, toolNameFromKind } from './acp-adapter.js';
 import { applySelectOption } from './acp-session-config.js';
+
+/** OpenCode sends todo snapshots under a lowercase title, without a tool name. */
+export function openCodeToolName(tool: ToolCall | ToolCallUpdate): string | undefined {
+  return tool.title === 'todowrite' ? PLAN_TOOL_NAME : toolNameFromKind(tool);
+}
 
 /** opencode-acp exposes BOTH the model and the session mode as ACP session config
  *  options on the `session/new` answer — it advertises no ACP `modes` block, so the
@@ -150,7 +156,7 @@ const OPENCODE_ACP_PROFILE: AcpBackendProfile = {
   loadSessionUnsupported: 'This OpenCode version does not support persistent session loading',
   // opencode-acp sets no tool `name`, only ACP's `kind` and a `title` that is the
   // command line for an execution and the file path once a read resolves.
-  adapter: { resolveToolName: toolNameFromKind },
+  adapter: { resolveToolName: openCodeToolName },
   // No session-level options: both knobs Verity sets are session config options,
   // applied once the session has answered with what this account can serve.
   sessionMeta: () => ({}),

@@ -10,6 +10,7 @@ import {
   MEMORY_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
+  TASKS_RESUME_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
@@ -94,6 +95,7 @@ const RESUME_SET = [
   TERMINOLOGY_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
+  TASKS_RESUME_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
@@ -111,12 +113,13 @@ const RESUME_SET = [
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
  * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 6500 - 3100 = 3400 characters. If they grow past that,
+ * members sum to under 6800 - 3100 = 3700 characters. If they grow past that,
  * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
  * the fix is to raise this one after reading what actually grew, not to derive
- * either number from the other.
+ * either number from the other. Last raised for the compact tasks reminder
+ * (`TASKS_RESUME_SYSTEM_PROMPT`, about 260 characters).
  */
-const RESUME_SET_BUDGET = 6500;
+const RESUME_SET_BUDGET = 6800;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -1100,6 +1103,29 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().permissionMode).toBe('acceptEdits');
     expect(fake.last().planning).toBeUndefined();
     expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+  });
+
+  it('appends the assigned-tasks section on fresh and resumed turns alike', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = scriptedBackend({ sessionId: 'thread' });
+    let assigned = '# Assigned tasks (verity_tasks)\n- #t1 Rotate tokens';
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      assignedTasksPrompt: () => assigned,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.sendTurn('s1', 'first');
+    expect(fake.last().resumeSessionId).toBeUndefined();
+    expect(fake.last().appendSystemPrompt).toContain('- #t1 Rotate tokens');
+
+    // The list is rebuilt from the store each turn: a resumed context sees the
+    // current state, and an empty list leaves no stale section behind.
+    assigned = '';
+    await conductor.sendTurn('s1', 'second');
+    expect(fake.last().resumeSessionId).toBe('thread');
+    expect(fake.last().appendSystemPrompt).not.toContain('# Assigned tasks');
   });
 
   it('threads per-turn allow/deny tool lists into the turn options', async () => {

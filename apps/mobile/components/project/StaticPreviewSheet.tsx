@@ -30,6 +30,7 @@ import {
   managedStatus,
 } from './ManagedServers';
 import { Icon } from '../Icon';
+import { FileBreadcrumb } from '../files/FileBreadcrumb';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
 
@@ -1237,29 +1238,26 @@ export function StaticPreviewSheet({
         Make a folder of finished files, like an HTML page or slides, available as a website on your
         network or through a public link.
       </Text>
-      <View style={styles.browserHeader}>
-        {path ? (
-          <Pressable
-            onPress={() => navigate(parentFolder(path))}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Back to parent folder"
-            style={styles.browserBack}
-          >
-            <Icon name="chevron-left" size={20} color={theme.colors.primary} />
-          </Pressable>
-        ) : (
-          <Icon name="folder" size={18} color={theme.colors.textMuted} />
-        )}
-        <View style={styles.rowText}>
-          <Text style={styles.browserTitle} numberOfLines={1}>
-            {path ? folderTitle(path) : 'Worktree'}
-          </Text>
-          <Text style={styles.rowDetail} numberOfLines={1}>
-            {path ? `Worktree / ${path}` : 'Root of this session’s files'}
-          </Text>
-        </View>
-      </View>
+      {path ? (
+        <FileBreadcrumb
+          rootIcon="folder"
+          rootLabel="Repository"
+          segments={path.split('/').map((name, index, parts) => ({
+            key: parts.slice(0, index + 1).join('/'),
+            name,
+          }))}
+          onNavigate={(index) =>
+            navigate(
+              index < 0
+                ? ''
+                : path
+                    .split('/')
+                    .slice(0, index + 1)
+                    .join('/'),
+            )
+          }
+        />
+      ) : null}
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.browserList}
@@ -1986,16 +1984,7 @@ const styles = StyleSheet.create((theme) => ({
   badgeText: { color: theme.colors.text, fontSize: theme.text.xs, fontWeight: '600' },
   inlineAction: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   inlineActionText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
-  browserHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    minHeight: 40,
-    paddingHorizontal: theme.spacing.xs,
-  },
-  browserBack: { width: 22, alignItems: 'center' },
   browserList: { paddingBottom: theme.spacing.md },
-  browserTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
   fileRow: {
     flexDirection: 'row',
     alignItems: 'center',

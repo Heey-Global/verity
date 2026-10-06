@@ -575,6 +575,15 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     blocker: z.string().min(1).max(500).optional(),
     requiredDecision: z.string().min(1).max(500).optional(),
   }),
+  // The user's durable task list changed for this session (tasks assigned to it,
+  // or written by its agent), so an open panel and the badge refresh live and
+  // the chat can show a compact line linking to the panel.
+  z.object({
+    t: z.literal('tasks_updated'),
+    origin: z.enum(['user', 'agent']),
+    change: z.enum(['added', 'updated', 'completed', 'dropped', 'deleted']),
+    taskIds: z.array(z.string().min(1).max(128)).min(1).max(100),
+  }),
   z.object({
     t: z.literal('raw'),
     backend: z.string().min(1),
