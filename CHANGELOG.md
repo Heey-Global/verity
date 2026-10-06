@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.20.1](https://github.com/Heey-Global/verity/compare/v4.20.0...v4.20.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **preview:** unify detected server controls and require managed starts ([#1237](https://github.com/Heey-Global/verity/issues/1237)) ([98498d1](https://github.com/Heey-Global/verity/commit/98498d17d851cd342a4c8d69fd9796f25be8d838))
+
 ## [4.20.0](https://github.com/Heey-Global/verity/compare/v4.19.0...v4.20.0) (2026-10-06)
 
 
