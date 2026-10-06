@@ -2752,6 +2752,57 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
+  it('keeps the Runner watchdog active while replacement image preparation is pending', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    await provisioner.provision(id);
+
+    let enterPull!: () => void;
+    let releasePull!: () => void;
+    const pullEntered = new Promise<void>((resolve) => (enterPull = resolve));
+    const pullReleased = new Promise<void>((resolve) => (releasePull = resolve));
+    docker.pullImage = async () => {
+      enterPull();
+      await pullReleased;
+    };
+    const recreate = provisioner.recreateContainer(id);
+    await pullEntered;
+
+    try {
+      const projects = await ctx.store.listProjects({ includeHidden: true });
+      expect(projects.find((project) => project.id === id)?.state).toBe('active');
+      const execsBefore = containerCommand.mock.calls.length;
+      await provisioner.reconcileRunnerSupervisors(projects);
+      // Image preparation must not disable recovery in the serving sandbox.
+      expect(containerCommand.mock.calls.length).toBe(execsBefore + 1);
+    } finally {
+      releasePull();
+      await recreate;
+    }
+  });
+
   it('drops a Runner watchdog failure when a replacement began during the exec', async () => {
     const id = await seedProject();
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
@@ -2779,16 +2830,20 @@ describe('ProvisionerImpl (#174)', () => {
     });
     const project = await provisioner.provision(id);
 
+    let enterStop!: () => void;
+    const stopEntered = new Promise<void>((resolve) => (enterStop = resolve));
     let releaseStop!: () => void;
     const stopReleased = new Promise<void>((resolve) => (releaseStop = resolve));
     const stopContainer = docker.stopContainer.bind(docker);
     docker.stopContainer = async (name) => {
+      enterStop();
       await stopReleased;
       return stopContainer(name);
     };
     let recreate: Promise<ProjectRecord> | undefined;
     containerCommand.mockImplementationOnce(async () => {
       recreate = provisioner.recreateContainer(id);
+      await stopEntered;
       throw new Error('OCI runtime exec failed: connection refused');
     });
     try {

@@ -2203,6 +2203,7 @@ export class ProvisionerImpl implements Provisioner {
    *  freshly started container, and both surfaced misleading errors. Concurrent
    *  `provision` calls now coalesce onto the running attempt's promise. */
   private readonly inFlightProvisions = new Map<string, Promise<ProjectRecord>>();
+  private readonly retiringSandboxes = new Set<string>();
   /** Per-project tail promises serialize managed-checkout fetch/reset operations.
    *  Unlike provisioning single-flight, every queued synchronization must run:
    *  a later request may correspond to a newer merge that was not visible when
@@ -2454,7 +2455,7 @@ export class ProvisionerImpl implements Provisioner {
             runtimeRoot !== undefined &&
             this.isDir(join(runtimeRoot, 'runners', project.id));
           if (!hasRunnerRuntime && !connectorEnabled) return undefined;
-          if (this.inFlightProvisions.has(project.id)) return undefined;
+          if (this.retiringSandboxes.has(project.id)) return undefined;
           // A replacement stops and removes the old sandbox while the row still
           // reads `active` (it only moves to `container_starting` once the new
           // container phase begins), and starts the stack itself in the new one.
@@ -2477,7 +2478,7 @@ export class ProvisionerImpl implements Provisioner {
           } catch (error) {
             // The same race from the other side: the replacement began while
             // this exec was already in flight.
-            if (this.inFlightProvisions.has(project.id)) return undefined;
+            if (this.retiringSandboxes.has(project.id)) return undefined;
             return error;
           }
         }),
@@ -3993,6 +3994,7 @@ export class ProvisionerImpl implements Provisioner {
       this.resolveRelayClaudeGateway(project);
       await this.ensureSandboxRuntime(project);
       replacementStarted = true;
+      this.retiringSandboxes.add(project.id);
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
 
       // ADR 0004 — "Update & restart" actively fetched the target image in the
@@ -4022,6 +4024,8 @@ export class ProvisionerImpl implements Provisioner {
         );
       }
       throw cause;
+    } finally {
+      this.retiringSandboxes.delete(project.id);
     }
   }
 
