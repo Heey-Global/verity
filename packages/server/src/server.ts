@@ -543,6 +543,13 @@ export function startProjectRelayMigrationScheduler(
             { projectId, attempts: info.attempts },
             'giving up on an env-drifted sandbox: recreating it did not restore the missing env block',
           ),
+        // Not another recreate away either: the sandbox was rebuilt and still runs
+        // behind its target, so whatever builds it does not build FROM that target.
+        onImageUpdateUnresolved: (projectId, info) =>
+          log.error(
+            { projectId, attempts: info.attempts },
+            'giving up on a sandbox image update: recreating it did not bring the sandbox onto the target image',
+          ),
         // The pass stopped short on purpose. Logged so a fleet still half-drifted
         // after a tick reads as a throttle doing its job rather than as a repair
         // that silently missed those projects.

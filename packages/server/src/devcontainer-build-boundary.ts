@@ -16,6 +16,7 @@ import {
   realpathSync,
   symlinkSync,
   writeSync,
+  writeFileSync,
   type Stats,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -463,4 +464,38 @@ export async function createDevcontainerBuildSnapshot(
     await rm(snapshot, { recursive: true, force: true });
     throw cause;
   }
+}
+
+/** Build argument through which a project Dockerfile accepts the Server's pinned base. */
+export const DEVCONTAINER_BASE_IMAGE_ARG = 'VERITY_SANDBOX_IMAGE';
+
+/**
+ * Hand the snapshot's Dockerfile the base image this Server pins to its release,
+ * when that Dockerfile declares `ARG VERITY_SANDBOX_IMAGE`.
+ *
+ * The update checker measures the derived image against that pinned base, so a
+ * layer built FROM anything else — typically the Dockerfile's own `:latest`
+ * default, which lags a staging release — comes back still "behind". The
+ * reconciler then recreates the project container, and every session sandbox
+ * in it, on every tick.
+ *
+ * Written into the snapshot rather than substituted from the environment: the
+ * project's configuration may not use `${…}` at all (see `validate`), and the
+ * value here is chosen by the Server, after validation, as a literal. Dockerfiles
+ * that do not declare the argument are left untouched.
+ */
+export function pinDevcontainerBaseImage(snapshot: DevcontainerBuildSnapshot, image: string): void {
+  const config = parseJsonc(readFileSync(snapshot.configFile, 'utf8'));
+  if (!('build' in config)) return;
+  const build = object(config['build'], 'build');
+  const dockerfile = build['dockerfile'] ?? build['dockerFile'];
+  if (typeof dockerfile !== 'string') return;
+  // Resolved like the CLI does, against the config directory; `validate` has
+  // already confined it to the snapshot.
+  const source = readFileSync(resolve(dirname(snapshot.configFile), dockerfile), 'utf8');
+  if (!new RegExp(`^\\s*ARG\\s+${DEVCONTAINER_BASE_IMAGE_ARG}(?:=|\\s|$)`, 'mu').test(source))
+    return;
+  const args = 'args' in build ? object(build['args'], 'build.args') : {};
+  config['build'] = { ...build, args: { ...args, [DEVCONTAINER_BASE_IMAGE_ARG]: image } };
+  writeFileSync(snapshot.configFile, JSON.stringify(config, null, 2));
 }

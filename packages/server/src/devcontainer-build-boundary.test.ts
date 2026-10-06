@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createDevcontainerBuildSnapshot,
+  DEVCONTAINER_BASE_IMAGE_ARG,
+  pinDevcontainerBaseImage,
   trackedBuildInputs,
 } from './devcontainer-build-boundary.js';
 
@@ -290,5 +292,69 @@ describe('devcontainer build filesystem boundary', () => {
       expect(existsSync(join(result.workspaceFolder, 'app.js'))).toBe(true);
       expect(existsSync(join(result.workspaceFolder, '.verity-sessions'))).toBe(false);
     });
+  });
+});
+
+describe('pinDevcontainerBaseImage', () => {
+  const pinned = `ghcr.io/heey-global/verity/verity-sandbox:v4.16.0@sha256:${'a'.repeat(64)}`;
+  const buildArgs = (configFile: string): Record<string, string> | undefined =>
+    (JSON.parse(readFileSync(configFile, 'utf8')) as { build?: { args?: Record<string, string> } })
+      .build?.args;
+
+  it('hands a Dockerfile that declares the argument the pinned base, keeping its other args', async () => {
+    // Without it the Dockerfile's own default (`:latest`) wins, the sandbox lags
+    // the Server's release, and the reconciler recreates it every minute.
+    const root = fixture({ build: { dockerfile: 'Dockerfile', args: { OTHER: 'kept' } } });
+    writeFileSync(
+      join(root, '.devcontainer', 'Dockerfile'),
+      `ARG ${DEVCONTAINER_BASE_IMAGE_ARG}=example/base:latest\nFROM \${${DEVCONTAINER_BASE_IMAGE_ARG}}\n`,
+    );
+    const copy = await snapshot(root);
+    pinDevcontainerBaseImage(copy, pinned);
+    expect(buildArgs(copy.configFile)).toEqual({
+      OTHER: 'kept',
+      [DEVCONTAINER_BASE_IMAGE_ARG]: pinned,
+    });
+    // Only the private copy is rewritten; the clone keeps what its hash covers.
+    expect(buildArgs(join(root, '.devcontainer', 'devcontainer.json'))).toEqual({ OTHER: 'kept' });
+  });
+
+  it('leaves a Dockerfile that does not declare the argument alone', async () => {
+    const root = fixture({ build: { dockerfile: 'Dockerfile' } });
+    const copy = await snapshot(root);
+    const before = readFileSync(copy.configFile, 'utf8');
+    pinDevcontainerBaseImage(copy, pinned);
+    expect(readFileSync(copy.configFile, 'utf8')).toBe(before);
+  });
+
+  it('leaves an image-only configuration alone', async () => {
+    const root = fixture({ image: 'alpine' });
+    const copy = await snapshot(root);
+    const before = readFileSync(copy.configFile, 'utf8');
+    pinDevcontainerBaseImage(copy, pinned);
+    expect(readFileSync(copy.configFile, 'utf8')).toBe(before);
+  });
+
+  it("pins this repository's own devcontainer", async () => {
+    // The repo Dockerfile is the one that looped: a Server on a staging release
+    // pinned v4.16.0 while `:latest` was still v4.15.0. Run against the real
+    // files, so renaming the ARG or dropping it fails here rather than in the
+    // fleet.
+    const repoDevcontainer = join(import.meta.dirname, '..', '..', '..', '.devcontainer');
+    const root = mkdtempSync(join(tmpdir(), 'verity-boundary-repo-'));
+    roots.push(root);
+    mkdirSync(join(root, '.devcontainer'));
+    for (const name of ['devcontainer.json', 'Dockerfile']) {
+      writeFileSync(
+        join(root, '.devcontainer', name),
+        readFileSync(join(repoDevcontainer, name), 'utf8'),
+      );
+    }
+    const copy = await snapshot(root);
+    pinDevcontainerBaseImage(copy, pinned);
+    expect(buildArgs(copy.configFile)?.[DEVCONTAINER_BASE_IMAGE_ARG]).toBe(pinned);
+    expect(readFileSync(join(repoDevcontainer, 'Dockerfile'), 'utf8')).toMatch(
+      new RegExp(`^FROM \\$\\{${DEVCONTAINER_BASE_IMAGE_ARG}\\}$`, 'mu'),
+    );
   });
 });
