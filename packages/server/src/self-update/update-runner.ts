@@ -317,15 +317,25 @@ export async function recoverManagedUpdater(
 ): Promise<ManagedUpdaterRecovery> {
   const runner = createUpdateRunner(options);
   const verdict = (result: ManagedServerReconcileResult): ManagedServerReconcileVerdict =>
-    result.drift === undefined || result.drift.length === 0
+    (result.drift === undefined || result.drift.length === 0) &&
+    result.diagnosticMountPending !== true
       ? { status: 'ok' }
-      : { status: 'drift', environment: result.drift };
+      : {
+          status: 'drift',
+          environment: result.drift ?? [],
+          ...(result.diagnosticMountPending ? { diagnosticMountPending: true } : {}),
+        };
   // `'unknown'` until a reconcile actually returns one. The catch below swallows
   // the failure when an operation is unfinished, and claiming `'ok'` there would
   // report a verdict nothing reached.
   let reconcile: ManagedServerReconcileVerdict = { status: 'unknown' };
   const reportDrift = (result: ManagedServerReconcileVerdict): void => {
     if (result.status !== 'drift') return;
+    if (result.diagnosticMountPending)
+      (options.log ?? defaultLog)(
+        'the running Server predates the diagnostic mount; its next guarded replacement will apply it',
+      );
+    if (result.environment.length === 0) return;
     // The Server is up and serving on values the spec now resolves differently.
     // Names only: these are secrets, and the log is not the place to widen the
     // blast radius of a configuration mistake.
@@ -385,6 +395,7 @@ export async function recoverManagedUpdater(
       }
       const reconciled = await reconcileManagedServer({
         managedRoot: options.managedRoot,
+        allowDiagnosticMountMigration: pending === null,
         docker: options.docker,
         ...(options.environment === undefined ? {} : { environment: options.environment }),
         ...(options.readFile === undefined ? {} : { readFile: options.readFile }),

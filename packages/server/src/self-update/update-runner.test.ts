@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { dockerUpdatePreparation } from './docker-update-preparation.js';
-import { advanceManagedDeploymentImage, readManagedDeployment } from './managed-deployment.js';
+import {
+  advanceManagedDeploymentImage,
+  readManagedDeployment,
+  migrateManagedHostDiagnostics,
+} from './managed-deployment.js';
 import { MANAGED_SERVER_NAME, reconcileManagedServer } from './managed-server-owner.js';
 import { createUpdateJournalCutoverStore } from './update-cutover.js';
 import { beginUpdate, readUpdateJournal } from './update-journal.js';
@@ -68,6 +72,32 @@ const runner = (root: string, daemon: FakeDaemon, log: string[] = []) =>
   createUpdateRunner(options(root, daemon, log));
 
 describe('update runner', () => {
+  it('keeps the migrated Server recoverable and applies its mount through guarded cutover', async () => {
+    const { root, daemon, oldContainerId } = await adoptedDeployment('diagnostics-migration');
+    await migrateManagedHostDiagnostics({
+      root,
+      deploymentId: DEPLOYMENT_ID,
+      image: oldImage,
+      hostPath: '/var/lib/verity/host-diagnostics',
+    });
+    const recovery = await recoverManagedUpdater(options(root, daemon));
+    expect(recovery.reconcile).toEqual({
+      status: 'drift',
+      environment: [],
+      diagnosticMountPending: true,
+    });
+    expect(daemon.status(MANAGED_SERVER_NAME)).toBe('running');
+    expect(daemon.find(MANAGED_SERVER_NAME)).toBe(oldContainerId);
+    await journalled(root);
+    await runner(root, daemon).run();
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
+    expect(daemon.spec('verity-managed-server-g1')?.binds).toContain(
+      '/var/lib/verity/host-diagnostics:/run/verity-host-diagnostics:ro',
+    );
+    expect(daemon.status('verity-managed-server-g1')).toBe('running');
+    expect(daemon.names()).toEqual(['verity-managed-server-g1']);
+  });
+
   it('serializes companion Docker work and keeps the queue usable after failure', async () => {
     const { root, daemon } = await adoptedDeployment('matrix-runner-queue');
     const update = runner(root, daemon);

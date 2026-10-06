@@ -134,7 +134,12 @@ exporter and timer and apply the Server mount. A Server image update alone does
 not install a host service. Managed bootstrap seals the same read-only bind into
 new deployments and migrates existing specifications on an installer rerun.
 Other sealed fields and absent resource-limit fields are preserved; an already
-sealed diagnostic host path cannot be relocated implicitly. Older releases that
+sealed diagnostic host path cannot be relocated implicitly. A running Server
+that exactly matches its recorded pre-migration authority keeps serving and is
+reported as having a pending diagnostic mount. The next normal guarded Server
+update applies the bind; a stopped pre-migration Server is recreated with it.
+Other structural mismatches remain fatal. Host evidence is unavailable in the
+running Server until this replacement occurs. Older releases that
 predate this mount cannot parse the migrated specification. The migration keeps
 the previous sealed authority as `server-deployment.before-host-diagnostics.json`
 in the updater-owned deployment root, without overwriting it on retries. A

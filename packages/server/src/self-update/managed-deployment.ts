@@ -81,6 +81,20 @@ export async function readManagedDeployment(root: string): Promise<ManagedDeploy
   }
 }
 
+/** Read the pre-migration authority through the same owned-directory boundary. */
+export async function readManagedHostDiagnosticBackup(
+  rootPath: string,
+): Promise<ServerDeploymentSpec | null> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    return parseServerDeploymentSpec(
+      await readJson(join(`/proc/self/fd/${root.fd}`, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE)),
+    );
+  } finally {
+    await root.close();
+  }
+}
+
 async function writeExclusive(path: string, value: unknown): Promise<void> {
   const file = await open(path, 'wx', 0o600);
   try {
