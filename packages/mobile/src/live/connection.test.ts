@@ -49,11 +49,18 @@ interface Harness {
   now: { value: number };
 }
 
-async function harness(overrides: Partial<LiveConnectionOptions> = {}): Promise<Harness> {
+async function harness(
+  overrides: Omit<Partial<LiveConnectionOptions>, 'getTicket'> & {
+    getTicket?: LiveConnectionOptions['getTicket'];
+  } = {},
+): Promise<Harness> {
   const sockets: FakeSocket[] = [];
   const retries: { run: () => void; delayMs: number }[] = [];
   const now = { value: 0 };
   let keepalive: (() => void) | undefined;
+  const { getTicket, ...options } = overrides;
+  const ticketProvider =
+    'getTicket' in overrides ? getTicket : async () => `ticket-${String(sockets.length + 1)}`;
   const connection = new LiveConnection({
     baseUrl: 'https://core.example/',
     connect: (url, protocols) => {
@@ -61,7 +68,7 @@ async function harness(overrides: Partial<LiveConnectionOptions> = {}): Promise<
       sockets.push(socket);
       return socket;
     },
-    getTicket: async () => `ticket-${String(sockets.length + 1)}`,
+    ...(ticketProvider ? { getTicket: ticketProvider } : {}),
     scheduleReconnect: (run, delayMs) => retries.push({ run, delayMs }),
     setInterval: (callback) => {
       keepalive = callback;
@@ -71,7 +78,7 @@ async function harness(overrides: Partial<LiveConnectionOptions> = {}): Promise<
       keepalive = undefined;
     },
     now: () => now.value,
-    ...overrides,
+    ...options,
   });
   connection.start();
   await flush();

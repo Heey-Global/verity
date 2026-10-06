@@ -110,7 +110,7 @@ const PROJECTION_TYPES: ReadonlySet<string> = new Set(SESSION_PROJECTION_EVENT_T
 
 /** The overview topics an event touches. Every event counts toward a session's
  * unread count, so each one at least hints `events`. */
-export function hintTopicsFor(event: AgentEvent): LiveHintTopic[] {
+function hintTopicsFor(event: AgentEvent): LiveHintTopic[] {
   if (event.t === 'permission') return ['events', 'status', 'permission'];
   if (PROJECTION_TYPES.has(event.t)) return ['events', 'status'];
   return ['events'];

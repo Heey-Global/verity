@@ -5,7 +5,7 @@ import type { PushLogger, PushNotification, PushSendResult, PushSender } from '.
 /** How long an actionable alert shown on a foreground device waits for an answer
  * before the user's other devices are told as well. The foreground device may
  * be lying on a desk; a request that blocks the agent must not wait for it. */
-export const DEFAULT_ESCALATION_MS = 60_000;
+const DEFAULT_ESCALATION_MS = 60_000;
 
 /** What the router needs to know about open live connections. */
 export interface PushPresence {
