@@ -107,6 +107,20 @@ async function performDispatch(tasks: Task[], targetSessionId?: string): Promise
   const currentTasks = await client.listTasks();
   guard();
   const submitted = dispatch.tasks;
+  for (const task of submitted) {
+    const current = currentTasks.find((item) => item.id === task.id);
+    if (!current || current.projectId !== task.projectId) await stale();
+    if (!current) throw new Error('Task no longer exists');
+    if (dispatch.sending && current.sessionId === dispatch.sessionId) continue;
+    // A lost PATCH response can leave the assignment saved but the turn unsent.
+    if (
+      current.sessionId === dispatch.sessionId &&
+      current.status === 'in_progress' &&
+      current.revision === task.revision + 1
+    )
+      continue;
+    if (current.revision !== task.revision) await stale();
+  }
   const attachments: AttachmentUpload[] = [];
   let totalBytes = 0;
   for (const task of submitted) {

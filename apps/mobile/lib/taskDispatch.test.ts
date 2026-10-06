@@ -147,3 +147,18 @@ it('coalesces concurrent taps into one dispatch attempt', async () => {
   expect(mockClient.sendTurn).toHaveBeenCalledTimes(1);
   expect(createSessionConfirmingWarnings).toHaveBeenCalledTimes(1);
 });
+
+it('recovers after oversized attachments are removed and the task is refreshed', async () => {
+  const large = {
+    ...task,
+    attachments: [{ hash: 'large', filename: 'large.txt', mimeType: 'text/plain' }],
+  };
+  remote = [large];
+  mockClient.readTaskAttachment.mockResolvedValueOnce(new ArrayBuffer(25_000_001));
+  await expect(dispatchTasks([large])).rejects.toThrow('size limit');
+  remote = [{ ...task, revision: 3 }];
+  await expect(dispatchTasks(remote)).rejects.toThrow('Task changed');
+  await dispatchTasks(remote);
+  expect(mockClient.readTaskAttachment).toHaveBeenCalledTimes(1);
+  expect(mockClient.sendTurn).toHaveBeenCalledTimes(1);
+});

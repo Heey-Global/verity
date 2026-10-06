@@ -77,7 +77,13 @@ export class TaskQueue {
         (op) => op.id === id && op.kind === 'create' && this.state.conflicts.includes(id),
       );
       if (rejectedCapture?.kind === 'create') {
-        const capture = taskCaptureSchema.parse({ ...rejectedCapture.body, ...body });
+        const edits = this.state.pending.reduce<Record<string, unknown>>(
+          (merged, op) =>
+            op.id === id && op.kind === 'patch' ? { ...merged, ...op.body } : merged,
+          {},
+        );
+        const patch = { ...edits, ...body, expectedRevision: 0 };
+        const capture = taskCaptureSchema.parse({ ...rejectedCapture.body, ...patch });
         await this.commit({
           ...this.state,
           tasks: this.state.tasks.map((task) =>
@@ -86,7 +92,7 @@ export class TaskQueue {
           pending: [
             ...this.state.pending.filter((op) => op.id !== id),
             { ...rejectedCapture, body: capture },
-            { kind: 'patch', id, body: { ...body, expectedRevision: 0 } },
+            { kind: 'patch', id, body: taskPatchSchema.parse(patch) },
           ],
           conflicts: this.state.conflicts.filter((item) => item !== id),
         });

@@ -248,3 +248,31 @@ it('can move a rejected capture to General and retry its original id', async () 
   expect(s.api.saveTask).toHaveBeenCalledWith(task.id, { title: task.title, projectId: null });
   expect(s.snapshot().conflicts).toHaveLength(0);
 });
+
+it('preserves earlier offline edits when repairing a rejected capture', async () => {
+  const s = setup();
+  await s.queue.create(
+    { ...task, projectId: 'missing' },
+    { title: task.title, projectId: 'missing' },
+  );
+  await s.queue.patch(task.id, {
+    title: 'Edited offline',
+    detail: 'Keep detail',
+    expectedRevision: 0,
+  });
+  s.api.saveTask.mockRejectedValueOnce(
+    Object.assign(new Error('project not found'), { status: 404 }),
+  );
+  await s.queue.sync();
+  await s.queue.patch(task.id, { projectId: null, sessionId: null, expectedRevision: 0 });
+  await s.queue.sync();
+  expect(s.api.saveTask).toHaveBeenLastCalledWith(
+    task.id,
+    expect.objectContaining({ title: 'Edited offline', detail: 'Keep detail', projectId: null }),
+  );
+  expect(s.api.updateTask).toHaveBeenLastCalledWith(
+    task.id,
+    expect.objectContaining({ title: 'Edited offline', detail: 'Keep detail', projectId: null }),
+  );
+  expect(s.snapshot().tasks[0]?.title).toBe('Edited offline');
+});
