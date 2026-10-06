@@ -3,6 +3,7 @@ import type { EventStore, ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import type { ServerDeps } from './server.js';
+import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 
 // Capture what buildControlPlane hands to buildServer. The control plane forwards
 // its dependencies key by key rather than spreading them, so a dep the route layer
@@ -41,6 +42,11 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('keeps runtime evidence available through the production composition seam', () => {
+    const runtimeDiagnostics = createRuntimeDiagnostics({});
+    expect(forward({ runtimeDiagnostics }).runtimeDiagnostics).toBe(runtimeDiagnostics);
+  });
+
   it('passes the Knowledge data root through to the session file routes', () => {
     const got = forward({ dataRoot: '/srv/verity' });
     expect(got.dataRoot).toBe('/srv/verity');

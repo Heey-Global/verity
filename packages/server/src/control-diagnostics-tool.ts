@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  resolveRuntimeWindow,
+  runtimeWindowSchema,
+  runtimeDiagnosticSnapshotSchema,
+  type RuntimeWindow,
+} from './runtime-diagnostics.js';
 import { importDiagnosticSchema } from './integrations/routes.js';
 import type { createControlPlaneSessionTools } from './session-handoff-tool.js';
 
@@ -10,6 +16,7 @@ export const diagnosticsRequestSchema = z
   .object({
     sessionId: z.string().min(1).max(128).optional(),
     projectId: z.string().min(1).max(128).optional(),
+    runtime: runtimeWindowSchema.optional(),
     matrixEvent: z
       .object({
         accountId: z.string().min(1).max(255),
@@ -26,7 +33,7 @@ export const diagnosticsRequestSchema = z
   );
 
 export const DIAGNOSTICS_TOOL_DESCRIPTION =
-  'Read a bounded Control-only diagnostic snapshot of server version, runtime readiness and Uplink state. Select projectId for safe Matrix import failure codes, event IDs and retry state, with optional matrixEvent {accountId,sourceId,eventId} for a content-free persisted event receipt; optionally select one project session by sessionId for structured technical failures. Returns no secrets, configuration values or messages. Unknown data is explicit; status codes alone do not prove a cause. Use on demand, never poll. Changes belong in a project-session handoff; verify the affected state after remediation.';
+  'Read a bounded Control-only diagnostic snapshot of server version, runtime readiness and Uplink state, plus local resources, scoped container lifecycle, memory/health, recent Docker events, classified infrastructure errors and exported historical host kernel/runtime evidence. Optional runtime {since,until} uses ISO timestamps with offsets, defaults to the last hour and accepts at most 24 hours. Source availability, coverage, stale timestamps and truncation are explicit; never infer OOM from exit code 137 or current RAM alone. Select projectId for safe Matrix import failure codes, event IDs and retry state, with optional matrixEvent {accountId,sourceId,eventId} for a content-free persisted event receipt; optionally select one project session by sessionId for structured technical failures. Returns no secrets, environment values or message contents. Unknown data is explicit; status codes alone do not prove a cause. Use on demand, never poll. Changes belong in a project-session handoff; verify the affected state after remediation.';
 
 export const controlDiagnosticRecordSchema = z.object({
   seq: z.number().int(),
@@ -61,6 +68,10 @@ export function createControlDiagnosticsTool(deps: {
         event?: { accountId: string; sourceId: string; eventId: string },
       ) => Promise<unknown>)
     | undefined;
+  readRuntimeDiagnostics?:
+    | ((projectId: string | undefined, window: RuntimeWindow | undefined) => Promise<unknown>)
+    | undefined;
+  authorizeDiagnosticProject?: ((projectId: string) => Promise<void>) | undefined;
   version: string;
   pushEnabled: boolean;
   publicPreviewsEnabled: () => boolean;
@@ -70,6 +81,7 @@ export function createControlDiagnosticsTool(deps: {
   return async (input: ControlPlaneSessionCall) => {
     await deps.authorizeCaller(input);
     const request = diagnosticsRequestSchema.parse(input.request);
+    resolveRuntimeWindow(request.runtime);
     let runtime: 'ready' | 'not_ready' | 'unknown' = 'unknown';
     if (deps.runtimeReadiness !== undefined) {
       try {
@@ -129,6 +141,27 @@ export function createControlDiagnosticsTool(deps: {
                 .default(null),
             })
             .parse(await deps.readMatrixDiagnostics(request.projectId, request.matrixEvent));
+    const runtimeProjectId = request.projectId ?? session?.projectId;
+    if (runtimeProjectId !== undefined && deps.readRuntimeDiagnostics !== undefined) {
+      if (deps.authorizeDiagnosticProject === undefined)
+        throw new Error('Project diagnostic authorization unavailable');
+      await deps.authorizeDiagnosticProject(runtimeProjectId);
+    }
+    let infrastructure:
+      z.infer<typeof runtimeDiagnosticSnapshotSchema> | { state: 'unavailable' | 'failed' } = {
+      state: 'unavailable',
+    };
+    if (deps.readRuntimeDiagnostics !== undefined) {
+      try {
+        infrastructure = runtimeDiagnosticSnapshotSchema.parse(
+          await deps.readRuntimeDiagnostics(runtimeProjectId, request.runtime),
+        );
+      } catch {
+        infrastructure = { state: 'failed' };
+      }
+    }
+    if (runtimeProjectId !== undefined && deps.readRuntimeDiagnostics !== undefined)
+      await deps.authorizeDiagnosticProject!(runtimeProjectId);
     await deps.authorizeCaller(input);
     return {
       schemaVersion: 1,
@@ -139,13 +172,14 @@ export function createControlDiagnosticsTool(deps: {
       uplink,
       session,
       matrix,
+      infrastructure,
       limitations: [
         'Capability flags do not prove delivery or dependency health.',
         'Session diagnostics cover at most the latest 2000 events and 20 technical records.',
         'Stored records alone do not prove Knowledge projection; missing retries alone do not prove successful import. Snapshot timestamps identify stale evidence.',
         'Matrix diagnostics contain at most 20 sources and the connector reports at most 20 active failed imports; additional failures may be omitted.',
-        'Free-form errors, messages, backend labels and configuration values are omitted.',
-        'Job inventory, queue depth, GitOps comparison, component versions and cross-component correlation are unavailable.',
+        'Free-form errors, message contents, backend labels and environment values are omitted.',
+        'Job inventory, queue depth and GitOps comparison are unavailable. Runtime timestamps support correlation but do not establish causality.',
         'No root cause is inferred from state or status codes; corroborate with other evidence.',
       ],
     };

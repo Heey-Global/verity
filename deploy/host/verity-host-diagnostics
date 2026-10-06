@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Export classified host evidence without granting the Server access to raw journals.
+# This read-only collector never changes containers or runtime registrations.
+set -euo pipefail
+umask 0077
+state_dir="${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}"
+[[ ! -L $state_dir ]] || { echo 'Host diagnostic directory must not be a symlink' >&2; exit 1; }
+mkdir -p "$state_dir"
+chmod 0755 "$state_dir"
+work_dir="$(mktemp -d "$state_dir/.collect.XXXXXX")"
+trap 'rm -rf "$work_dir"' EXIT
+until="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+collect() {
+  local source=$1
+  shift
+  local state=available byte_truncated=false pipeline_failed=false
+  if ! command -v journalctl >/dev/null; then
+    state=unavailable
+    : >"$work_dir/$source.jsonl"
+  else
+    # Retain one sentinel byte to distinguish a full response from a capped one.
+    # A producer's SIGPIPE at the cap must not erase earlier complete entries.
+    timeout 10s journalctl --no-pager --quiet --output=json \
+      --output-fields=__REALTIME_TIMESTAMP,MESSAGE,_BOOT_ID --since="$since" --until="$until" \
+      -n 2001 "$@" | head -c 1048577 >"$work_dir/$source.raw" || pipeline_failed=true
+    if [[ $(wc -c <"$work_dir/$source.raw") -gt 1048576 ]]; then
+      byte_truncated=true
+      # Drop the final line, which may be an incomplete JSON object at the cap.
+      head -n -1 "$work_dir/$source.raw" >"$work_dir/$source.jsonl"
+    elif [[ $pipeline_failed == true ]]; then
+      state=failed
+      : >"$work_dir/$source.jsonl"
+    else
+      mv "$work_dir/$source.raw" "$work_dir/$source.jsonl"
+    fi
+  fi
+  jq -s --arg source "$source" --arg state "$state" --argjson byteTruncated "$byte_truncated" '
+    def code:
+      if test("out of memory|oom-kill|killed process"; "i") then "oom_kill"
+      elif test("memory pressure|memory allocation failed"; "i") then "memory_pressure"
+      elif test("segfault|general protection fault|kernel panic"; "i") then "kernel_fault"
+      elif test("no space left on device|ENOSPC"; "i") then "disk_pressure"
+      elif test("too many open files|EMFILE|resource temporarily unavailable|pids limit"; "i") then "resource_limit"
+      elif test("daemon has completed initialization|starting docker application container engine"; "i") then "runtime_started"
+      elif test("daemon shutdown complete|processing signal.*(terminated|SIGTERM)|stopping docker application container engine"; "i") then "runtime_stopped"
+      elif test("WaitPID.*EOF|containerManager.*EOF|sandbox.*(disconnect|connection.*closed)"; "i") then "runtime_disconnect"
+      elif test("runner.*reconcil.*(fail|error)|(fail|error).*runner.*reconcil"; "i") then "runner_reconcile_failed"
+      elif test("(runsc|sandbox runtime|containerd).*(panic|fatal|crash|failed)"; "i") then "runtime_failure"
+      elif test("\\b(error|failed|fatal|panic)\\b"; "i") then "runtime_error"
+      else null end;
+    . as $input |
+    [ .[] | select((.MESSAGE | type) == "string") |
+      (.MESSAGE | code) as $code | select($code != null) |
+      select(.__REALTIME_TIMESTAMP | type == "string") |
+      {at: ((.__REALTIME_TIMESTAMP | tonumber / 1000000) | floor | strftime("%Y-%m-%dT%H:%M:%SZ")), source: $source, code: $code} +
+      (if (._BOOT_ID // "" | test("^[a-f0-9]{32}$")) then {bootId: ._BOOT_ID} else {} end) +
+      ((try (.MESSAGE | capture("(?:docker[-/]|container[ =])(?<id>[a-f0-9]{64})(?:[./ :]|$)") | {containerId: .id}) catch {}) // {})
+    ] as $records |
+    {state: $state, truncated: ($byteTruncated or ($input | length) >= 2001 or ($records | length) > 200), records: $records[-200:]}
+  ' "$work_dir/$source.jsonl" >"$work_dir/$source.json" || \
+    printf '{"state":"failed","truncated":true,"records":[]}\n' >"$work_dir/$source.json"
+}
+collect kernel _TRANSPORT=kernel
+collect runtime -u docker.service -u containerd.service -u verity-host-runtime.service
+jq -n --arg observedAt "$until" --arg since "$since" --arg until "$until" \
+  --slurpfile kernel "$work_dir/kernel.json" --slurpfile runtime "$work_dir/runtime.json" '
+    {schemaVersion: 1, observedAt: $observedAt, since: $since, until: $until,
+     sources: {kernel: $kernel[0].state, runtime: $runtime[0].state},
+     truncated: ($kernel[0].truncated or $runtime[0].truncated),
+     records: (($kernel[0].records + $runtime[0].records) | sort_by(.at))}
+  ' >"$work_dir/snapshot.json"
+chmod 0644 "$work_dir/snapshot.json"
+mv -f "$work_dir/snapshot.json" "$state_dir/snapshot.json"

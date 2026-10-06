@@ -1,6 +1,15 @@
 import { releaseChannelFromEnv } from './release-channel.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, realpath, rename, rm, type FileHandle } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  type FileHandle,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   parseServerDeploymentSpec,
@@ -13,6 +22,7 @@ export const MANAGED_DEPLOYMENT_ROOT = '/var/lib/verity/updater/managed-deployme
 
 const MANAGED_DEPLOYMENT_MARKER_VERSION = 1 as const;
 export const MANAGED_DEPLOYMENT_SPEC_FILE = 'server-deployment.json';
+export const MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE = 'server-deployment.before-host-diagnostics.json';
 export const MANAGED_DEPLOYMENT_MARKER_FILE = 'managed-deployment.json';
 
 interface ManagedDeploymentMarker {
@@ -80,6 +90,20 @@ export async function readManagedDeployment(root: string): Promise<ManagedDeploy
   }
 }
 
+/** Read the pre-migration authority through the same owned-directory boundary. */
+export async function readManagedHostDiagnosticBackup(
+  rootPath: string,
+): Promise<ServerDeploymentSpec | null> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    return parseServerDeploymentSpec(
+      await readJson(join(`/proc/self/fd/${root.fd}`, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE)),
+    );
+  } finally {
+    await root.close();
+  }
+}
+
 async function writeExclusive(path: string, value: unknown): Promise<void> {
   const file = await open(path, 'wx', 0o600);
   try {
@@ -93,6 +117,28 @@ async function writeExclusive(path: string, value: unknown): Promise<void> {
     await directory.sync();
   } finally {
     await directory.close();
+  }
+}
+
+/** Publish a durable complete backup without replacing an earlier authority. */
+async function writeAtomicExclusive(
+  directory: string,
+  name: string,
+  value: unknown,
+): Promise<void> {
+  const temporary = join(directory, `${name}.tmp`);
+  await rm(temporary, { force: true });
+  try {
+    await writeExclusive(temporary, value);
+    await link(temporary, join(directory, name));
+    const handle = await open(directory, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    await rm(temporary, { force: true });
   }
 }
 
@@ -252,10 +298,76 @@ export async function migrateManagedControlPlaneRunner(
   }
 }
 
+/** Add the installer's read-only diagnostic bind without changing other sealed authority.
+ * Old specs remain parseable without it; only an explicit bootstrap rerun opts them in. */
+export async function migrateManagedHostDiagnostics(options: {
+  root: string;
+  deploymentId: string;
+  image: string;
+  hostPath: string;
+}): Promise<ManagedDeploymentState> {
+  const root = await openUpdaterOwnedRoot(options.root);
+  try {
+    const pinnedRoot = `/proc/self/fd/${root.fd}`;
+    const existing = await readManagedDeploymentFiles(pinnedRoot);
+    if (!existing.managed) throw new Error(existing.reason);
+    if (
+      existing.spec.deploymentId !== options.deploymentId ||
+      existing.spec.image !== options.image
+    )
+      throw new Error('managed deployment authority changed before diagnostic migration');
+    const current = existing.spec.mounts.find(
+      (mount) => mount.target === '/run/verity-host-diagnostics',
+    );
+    if (current !== undefined) {
+      if (
+        current.source.kind !== 'bind' ||
+        current.source.path !== options.hostPath ||
+        !current.readOnly
+      )
+        throw new Error('host diagnostic mount differs from sealed authority');
+      return existing;
+    }
+    const body: ServerDeploymentSpecBody = {
+      schemaVersion: existing.spec.schemaVersion,
+      deploymentId: existing.spec.deploymentId,
+      image: existing.spec.image,
+      environment: existing.spec.environment,
+      mounts: [
+        ...existing.spec.mounts,
+        {
+          source: { kind: 'bind', path: options.hostPath },
+          target: '/run/verity-host-diagnostics',
+          readOnly: true,
+        },
+      ],
+      user: existing.spec.user,
+      restart: existing.spec.restart,
+      network: existing.spec.network,
+      platform: existing.spec.platform,
+      security: existing.spec.security,
+      ...(existing.spec.resources === undefined ? {} : { resources: existing.spec.resources }),
+    };
+    const validated = parseServerDeploymentSpec(sealDeploymentSpec(body));
+    if (validated === null) throw new Error('host diagnostic deployment mount is not allowlisted');
+    // Older releases cannot parse the new bind. Keep the original sealed authority
+    // recoverable before introducing it, without overwriting an earlier backup.
+    const backup = await readJson(join(pinnedRoot, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE));
+    if (backup === undefined)
+      await writeAtomicExclusive(pinnedRoot, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE, existing.spec);
+    else if (parseServerDeploymentSpec(backup)?.deploymentId !== existing.spec.deploymentId)
+      throw new Error('host diagnostic authority backup is invalid');
+    await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);
+    return { managed: true, marker: existing.marker, spec: validated };
+  } finally {
+    await root.close();
+  }
+}
+
 /**
  * Move the sealed authority to a new image, changing nothing else.
  *
- * This is the only supported mutation of an adopted spec, and it is what makes
+ * This is the supported image-only mutation of an adopted spec, and it is what makes
  * an update durable: once this returns, a reconcile — after a crash, after a
  * host reboot, from any Updater — rebuilds the Server on the new image without
  * needing the journal to tell it so.

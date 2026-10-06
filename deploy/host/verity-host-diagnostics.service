@@ -1,0 +1,13 @@
+[Unit]
+Description=Export bounded Verity host diagnostic evidence
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/verity/verity-host-diagnostics
+TimeoutStartSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+StateDirectory=verity/host-diagnostics
+ReadWritePaths=/var/lib/verity/host-diagnostics

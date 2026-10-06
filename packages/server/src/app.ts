@@ -100,6 +100,7 @@ export interface ControlPlaneDeps {
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
+  runtimeDiagnostics?: ServerDeps['runtimeDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
   /** Invalidate cached access tokens after shared Google OAuth credentials change. */
@@ -369,6 +370,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.remoteControlDescriptor !== undefined
       ? { remoteControlDescriptor: deps.remoteControlDescriptor }
+      : {}),
+    ...(deps.runtimeDiagnostics !== undefined
+      ? { runtimeDiagnostics: deps.runtimeDiagnostics }
       : {}),
     ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
