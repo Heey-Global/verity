@@ -214,6 +214,23 @@ export class TaskStore {
    * the row's revision counter moving so other devices notice the change.
    */
   async upsert(input: TaskInput, expectedRevision?: number): Promise<TaskRecord> {
+    // A replacement must not recreate a task another device deleted.
+    if (expectedRevision !== undefined && expectedRevision > 0) {
+      return this.patch(
+        input.id,
+        input.ownerUserId,
+        {
+          projectId: input.projectId ?? null,
+          sessionId: input.sessionId ?? null,
+          title: input.title,
+          detail: input.detail ?? null,
+          attachments: input.attachments ?? [],
+          status: input.status ?? 'open',
+          sort: input.sort ?? 0,
+        },
+        expectedRevision,
+      );
+    }
     const title = this.cipher.encrypt(normalizeTitle(input.title));
     const detail = normalizeOptionalText(input.detail, TASK_DETAIL_MAX, 'detail');
     const attachments = JSON.stringify(normalizeAttachments(input.attachments));

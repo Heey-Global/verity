@@ -237,6 +237,31 @@ describe('tasks routes', () => {
     },
   );
 
+  it('does not resurrect a task deleted during PUT authorization', async () => {
+    await store.tasks.upsert({ id: T1, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
+    const upsert = store.tasks.upsert.bind(store.tasks);
+    const spy = vi.spyOn(store.tasks, 'upsert').mockImplementationOnce(async (...args) => {
+      await store.tasks.delete(T1, MEMBER);
+      return upsert(...args);
+    });
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url: `/tasks/${T1}`,
+            headers: asMember,
+            payload: { title: 'Replacement' },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(await store.tasks.get(T1, MEMBER)).toBeUndefined();
+      expect(published).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('cannot substitute a future revision for the authorized HTTP snapshot', async () => {
     await store.tasks.upsert({ id: T1, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
     const patch = vi.spyOn(store.tasks, 'patch');
