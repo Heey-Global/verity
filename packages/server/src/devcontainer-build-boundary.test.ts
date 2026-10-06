@@ -307,7 +307,8 @@ describe('pinDevcontainerBaseImage', () => {
     const root = fixture({ build: { dockerfile: 'Dockerfile', args: { OTHER: 'kept' } } });
     writeFileSync(
       join(root, '.devcontainer', 'Dockerfile'),
-      `ARG ${DEVCONTAINER_BASE_IMAGE_ARG}=example/base:latest\nFROM \${${DEVCONTAINER_BASE_IMAGE_ARG}}\n`,
+      // Instruction keywords are case-insensitive in a Dockerfile.
+      `arg ${DEVCONTAINER_BASE_IMAGE_ARG}=example/base:latest\nFROM \${${DEVCONTAINER_BASE_IMAGE_ARG}}\n`,
     );
     const copy = await snapshot(root);
     pinDevcontainerBaseImage(copy, pinned);

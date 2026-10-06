@@ -514,6 +514,9 @@ function baseImageBuild(
   // Resolved like the CLI does, against the config directory; `validate` has
   // already confined it to the snapshot and proved it exists.
   const source = readFileSync(resolve(dirname(snapshot.configFile), dockerfile), 'utf8');
-  const declared = new RegExp(`^\\s*ARG\\s+${DEVCONTAINER_BASE_IMAGE_ARG}(?:=|\\s|$)`, 'mu');
+  const declared = new RegExp(
+    `^\\s*[Aa][Rr][Gg]\\s+${DEVCONTAINER_BASE_IMAGE_ARG}(?:=|\\s|$)`,
+    'mu',
+  );
   return declared.test(source) ? build : undefined;
 }
