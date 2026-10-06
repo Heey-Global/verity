@@ -173,6 +173,7 @@ import {
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
+import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
 import {
   purgeSessionArtifacts as purgeSessionArtifactFiles,
   type SessionArtifactScope,
@@ -2406,6 +2407,19 @@ export async function buildEmbeddedServer(
           ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
         })
       : undefined;
+  if (projectDocker !== undefined) {
+    // Per-session sandboxes from a Server that ran sessions in private containers
+    // have no owner here; see removeRetiredSessionSandboxes.
+    void removeRetiredSessionSandboxes(projectDocker)
+      .then((result) => {
+        if (result.containers + result.volumes + result.failed > 0) {
+          console.info(`verity: removed retired session sandboxes ${JSON.stringify(result)}`);
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn('verity: could not remove retired session sandboxes', error);
+      });
+  }
   const runtimeDocker = config.dockerBaseUrl
     ? (projectDocker ??
       createDockerClient({
