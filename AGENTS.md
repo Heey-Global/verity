@@ -107,6 +107,20 @@ tests for changed behavior, and run verification proportional to the change.
 Never push directly to the protected default branch. Work on a branch and open
 a review-ready pull request.
 
+## Public communication
+
+Verity is an open-source project. Write repository artifacts and GitHub content
+for its public users and contributors, using professional language and
+self-contained explanations. This applies to contributor instructions as well
+as commits, issues, pull requests, comments, documentation, and release notes.
+Focus on the project problem, resulting behavior, and relevant verification.
+
+Exclude private operational details, internal coordination, and information
+about individual development sessions. Describe compatibility requirements,
+limitations, and recovery procedures in general terms relevant to users of the
+project. Preserve information needed to assess or use a change without
+including private context or conversational history.
+
 ## Tests
 
 Derive expectations from the artifact under guard instead of restating it.
