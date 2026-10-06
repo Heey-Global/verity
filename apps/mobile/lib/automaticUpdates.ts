@@ -1,6 +1,8 @@
 import * as Updates from 'expo-updates';
 
-const CHECK_TIMEOUT_MS = 5_000;
+const STARTUP_CHECK_TIMEOUT_MS = 5_000;
+// Interactive checks must tolerate slow connections without delaying app launch.
+const INTERACTIVE_CHECK_TIMEOUT_MS = 30_000;
 const FETCH_TIMEOUT_MS = 30_000;
 
 type UpdatesClient = Pick<
@@ -56,11 +58,18 @@ function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
 export async function applyStartupUpdate(
   client: UpdatesClient = Updates,
 ): Promise<StartupUpdateResult> {
+  return applyUpdate(client, STARTUP_CHECK_TIMEOUT_MS);
+}
+
+async function applyUpdate(
+  client: UpdatesClient,
+  checkTimeoutMs: number,
+): Promise<StartupUpdateResult> {
   if (!client.isEnabled) return 'disabled';
 
   let phase: UpdatePhase = 'check';
   try {
-    const check = await withTimeout(client.checkForUpdateAsync(), CHECK_TIMEOUT_MS);
+    const check = await withTimeout(client.checkForUpdateAsync(), checkTimeoutMs);
     if (!check.isAvailable && !check.isRollBackToEmbedded) return 'current';
 
     phase = 'download';
@@ -81,7 +90,7 @@ async function downloadForegroundUpdate(client: UpdatesClient): Promise<SerialUp
   if (!client.isEnabled) return 'disabled';
   let phase: UpdatePhase = 'check';
   try {
-    const check = await withTimeout(client.checkForUpdateAsync(), CHECK_TIMEOUT_MS);
+    const check = await withTimeout(client.checkForUpdateAsync(), INTERACTIVE_CHECK_TIMEOUT_MS);
     if (!check.isAvailable && !check.isRollBackToEmbedded) return 'current';
     phase = 'download';
     const fetched = await withTimeout(client.fetchUpdateAsync(), FETCH_TIMEOUT_MS);
@@ -105,7 +114,9 @@ export function createSerialUpdateChecker(
     if (inFlight) return 'busy';
     inFlight = true;
     try {
-      return reload ? await applyStartupUpdate(client) : await downloadForegroundUpdate(client);
+      return reload
+        ? await applyUpdate(client, INTERACTIVE_CHECK_TIMEOUT_MS)
+        : await downloadForegroundUpdate(client);
     } finally {
       inFlight = false;
     }
