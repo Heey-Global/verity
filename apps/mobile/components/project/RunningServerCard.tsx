@@ -26,8 +26,9 @@ export function RunningServerCard({
   onShare: () => void;
 }) {
   const { theme } = useUnistyles();
-  const [dismissed, setDismissed] = useState(false);
-  if (dismissed) return null;
+  const identity = JSON.stringify([server.port, server.pid, server.managedInstanceId]);
+  const [dismissed, setDismissed] = useState<string>();
+  if (dismissed === identity) return null;
   return (
     <View
       style={styles.card}
@@ -46,7 +47,7 @@ export function RunningServerCard({
       </View>
       <Pressable
         style={styles.dismiss}
-        onPress={() => setDismissed(true)}
+        onPress={() => setDismissed(identity)}
         accessibilityRole="button"
         accessibilityLabel={`Dismiss the running server hint for ${server.name}`}
       >

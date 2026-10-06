@@ -87,8 +87,10 @@ it('dismisses only the hint and keeps it hidden when the listener refreshes', ()
     screen.getByRole('button', { name: 'Dismiss the running server hint for Curtis Demo' }),
   );
   expect(screen.queryByText(/Server running/)).toBeNull();
-  rerender(card(2));
+  rerender(card(1));
   expect(screen.queryByText(/Server running/)).toBeNull();
+  rerender(card(2));
+  expect(screen.getByText(/Server running/)).toBeTruthy();
   expect(onOpen).not.toHaveBeenCalled();
   expect(onShare).not.toHaveBeenCalled();
 });
