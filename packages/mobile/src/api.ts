@@ -118,6 +118,10 @@ export const sessionSummarySchema = z.object({
    * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
    * token/remote) — both render as "no PR marker". */
   pr: sessionPrSchema.nullable().optional(),
+  /** The worktree's current branch, so the overview can show the session's issue
+   * (`<type>/<issue>-<slug>`). ABSENT on an older server, while the server's label
+   * is cold, or once the worktree is gone — all read as "no issue". */
+  branch: z.string().optional(),
   /** Persisted events excluding dev-server snapshots — the overview compares this
    * against the server-persisted "last seen" mark for the unread dot. OPTIONAL on
    * the wire: an OLDER server omits it on the list, and absent simply reads as "no

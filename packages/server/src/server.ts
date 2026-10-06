@@ -2801,6 +2801,10 @@ export interface SessionSummary extends SessionRecord {
   /** Compact PR status for the current branch (#387). `null` = looked up, no open
    * PR; ABSENT = GitHub not configured (no `branchPrStatus`) or not yet resolved. */
   pr?: SessionPrSummary | null;
+  /** The worktree's current branch, from the branch-label cache, so the overview
+   * can show the session's issue (`<type>/<issue>-<slug>`). ABSENT while the label
+   * is cold, the worktree is gone, or branch switching is not configured. */
+  branch?: string;
   /** Persisted events excluding dev-server snapshots; compared against the synced
    * read marker to show the overview unread dot. */
   eventCount: number;
@@ -4306,6 +4310,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       });
     return token.read;
   };
+  /**
+   * The branch for the session LIST, answered from {@link branchCache} only.
+   *
+   * The overview derives a session's issue chip from it, but the list is polled
+   * every 2 s for every session at once, so unlike the header it never awaits
+   * git: a cold or stale entry schedules {@link readBranch} in the background and
+   * the label fills in a poll later. A cold read that FAILS leaves an empty label
+   * behind, stamped, so a broken worktree costs one git call per TTL rather than
+   * one per poll. The app reads an empty branch as "no branch" in both places
+   * (the header falls back to its branch list), and the next read replaces it.
+   */
+  const listBranchFor = (session: SessionRecord, exists: boolean): string | undefined => {
+    const { worktree } = session;
+    // A gone worktree has no branch to read; asking git would fail on every poll.
+    if (!exists || deps.branches === undefined) return undefined;
+    if (deps.projectWorktreeBranchesOnly === true && session.projectId === null) return undefined;
+    const cached = branchCache.get(worktree);
+    if (cached === undefined || Date.now() - cached.at >= branchTtlMs) {
+      void branchesForSession(session)
+        .then((branches) => {
+          // A project without branch reads (control plane) is stamped empty too,
+          // so it is not asked for its project record on every poll either.
+          if (branches === undefined) branchCache.set(worktree, { branch: '', at: Date.now() });
+          else return readBranch(branches, worktree);
+        })
+        .catch(() => {
+          // `readBranch` re-stamps an existing entry on failure; only a cold one is left.
+          if (!branchCache.has(worktree)) branchCache.set(worktree, { branch: '', at: Date.now() });
+        });
+    }
+    return cached?.branch || undefined;
+  };
   /** Evict labels for worktrees that no longer exist, so a long-lived server does
    *  not keep one entry per session ever created — and a recreated worktree can
    *  never be answered from the deleted one's label. Same lifecycle and same call
@@ -4764,6 +4800,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<SessionSummary> => {
     const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
+    const resumable = await worktreeExists(session.worktree);
+    const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
     // the store reads the newest one per window separately. See
     // `SessionProjectionFacts.rateLimitEvents`.
@@ -4813,7 +4851,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       lastActivityAt: facts.lastActivityAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
-      resumable: await worktreeExists(session.worktree),
+      resumable,
+      ...(branch !== undefined ? { branch } : {}),
       eventCount: facts.eventCount,
       eventCountVersion: 'dev-servers-excluded-v1',
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
