@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.18.0](https://github.com/Heey-Global/verity/compare/v4.17.0...v4.18.0) (2026-10-06)
+
+
+### Features
+
+* **tasks:** add durable task persistence and agent access ([#1226](https://github.com/Heey-Global/verity/issues/1226)) ([9f446ec](https://github.com/Heey-Global/verity/commit/9f446ec22f298a086db72803fca1403386075055))
+
+
+### Bug Fixes
+
+* **session:** restore Claude and OpenCode task checklists ([#1222](https://github.com/Heey-Global/verity/issues/1222)) ([47bdd2c](https://github.com/Heey-Global/verity/commit/47bdd2cb2774ee7e754d3e54303dab4a2c7d54fe))
+
 ## [4.17.0](https://github.com/Heey-Global/verity/compare/v4.16.2...v4.17.0) (2026-10-06)
 
 
