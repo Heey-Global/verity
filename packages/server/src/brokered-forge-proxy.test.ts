@@ -171,6 +171,7 @@ async function call(
   auth = `Bearer verity-broker-${cap}`,
   host = 'api.github.com',
   body?: string,
+  connection?: string,
 ): Promise<{ status: number; body: string }> {
   return await new Promise((done, reject) => {
     const outer = request({ hostname: '127.0.0.1', port, method: 'CONNECT', path: `${host}:443` });
@@ -191,6 +192,7 @@ async function call(
           headers: {
             host,
             authorization: auth,
+            ...(connection === undefined ? {} : { connection }),
             ...(body === undefined
               ? {}
               : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }),
@@ -261,6 +263,35 @@ describe('brokered forge TLS boundary', () => {
     expect(result.stdout).toEqual(binary);
     expect(h.received[0]?.auth).toBe(`Bearer ${token}`);
     expect(h.received[0]?.body).toEqual(Buffer.alloc(0));
+  });
+  it('parses long Connection headers and rejects unknown hop-by-hop options', async () => {
+    const h = await harness((_req, res) => res.end('ok'));
+    const padding = ' '.repeat(6000);
+    expect(
+      (
+        await call(
+          h.port,
+          '/repos/acme/app/pulls',
+          undefined,
+          undefined,
+          undefined,
+          `keep-alive,${padding}close`,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call(
+          h.port,
+          '/repos/acme/app/pulls',
+          undefined,
+          undefined,
+          undefined,
+          `${padding}x-forbidden`,
+        )
+      ).status,
+    ).toBe(403);
+    expect(h.received).toHaveLength(1);
   });
   it('rejects absent/foreign capabilities, generations, repositories, targets and disabled projects before minting', async () => {
     const h = await harness((_req, res) => res.end('ok'));

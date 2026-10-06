@@ -1,3 +1,4 @@
+import { parse } from 'graphql';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 import type { IncomingMessage } from 'node:http';
 import { Readable } from 'node:stream';
@@ -137,10 +138,12 @@ describe('GitHub forge policy', () => {
     expect(h.mint).not.toHaveBeenCalled();
   });
   it.each([
+    'query{repository(owner:"acme",name:"app"){issue(number:1){author{... on User{issues(first:10){nodes{title body}}}}}}}',
     'query{repository(owner:"acme",name:"app"){parent{defaultBranchRef{target{... on Commit{history(first:10){nodes{message}}}}}}}}',
     'query{repository(owner:"acme",name:"app"){owner{... on User{issues(first:1){nodes{body}}}}}}',
     'mutation{closeIssue(input:{issueId:"I_1"}){issue{repository{defaultBranchRef{target{... on Commit{history(first:10){nodes{message}}}}}}}}}',
   ])('rejects metadata and mutation response discovery before minting: %s', async (query) => {
+    parse(query);
     const h = harness();
     await expect(
       h.adapter.authorize(graph(query), binding, actions, new AbortController().signal),

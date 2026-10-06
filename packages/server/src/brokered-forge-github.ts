@@ -335,6 +335,19 @@ export function createGitHubForgeAdapter(options: {
               const checkReads = (set: SelectionSetNode, depth = 0): void => {
                 if (depth > 32) rejected();
                 for (const child of fields(set)) {
+                  if (
+                    depth > 0 &&
+                    [
+                      'issue',
+                      'issues',
+                      'issueOrPullRequest',
+                      'pullRequest',
+                      'pullRequests',
+                      'issueTypes',
+                      'associatedPullRequests',
+                    ].includes(child.name.value)
+                  )
+                    rejected();
                   if (child.name.value === 'issueOrPullRequest') {
                     assertAction(actions, 'issues-read');
                     assertAction(actions, 'pulls-read');
@@ -448,6 +461,20 @@ export function createGitHubForgeAdapter(options: {
         // Block nested cross-repository discovery surfaces, including fragment-hidden ones.
         visit(document, {
           Field(node) {
+            if (
+              ['author', 'committer', 'mergedBy', 'closedBy', 'actor', 'user'].includes(
+                node.name.value,
+              )
+            ) {
+              scalarFields(node.selectionSet, [
+                'login',
+                'id',
+                'name',
+                'url',
+                'avatarUrl',
+                '__typename',
+              ]);
+            }
             if (['owner', 'defaultBranchRef'].includes(node.name.value)) metadataSelection(node);
             if (
               ['parent', 'headRepository', 'baseRepository'].includes(node.name.value) ||

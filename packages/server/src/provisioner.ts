@@ -5134,6 +5134,8 @@ export class ProvisionerImpl implements Provisioner {
             `VERITY_FORGE_PROXY_URL=${forgeProxyUrl}`,
             `VERITY_FORGE_PROXY_CA_FILE=${FORGE_PROXY_CA_FILE}`,
             'GIT_TERMINAL_PROMPT=0',
+            'NO_PROXY=',
+            'no_proxy=',
           ];
     const ghTokenBrokerBinds =
       ghTokenCapabilityPath !== undefined

@@ -137,7 +137,8 @@ export function createBrokeredForgeProxy(options: {
           if (
             inner.headers.connection
               ?.toLowerCase()
-              .split(/\s*,\s*/)
+              .split(',')
+              .map((name) => name.trim())
               .some((name) => name !== 'close' && name !== 'keep-alive') ||
             inner.headers.expect ||
             inner.headers.upgrade
