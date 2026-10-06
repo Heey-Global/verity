@@ -419,11 +419,13 @@ async function validateSpawnRequest(raw, options) {
       if (digest !== raw.entryScript.sha256) {
         throw new Error('trusted CLI entry script content hash changed after approval');
       }
-      const worktreeRoot = [...worktreeRoots]
-        .sort((left, right) => right.length - left.length)
-        .find((root) => withinAgentWorktreeRoots(canonical, [root]));
-      if (worktreeRoot === undefined) throw new Error('trusted CLI entry script has no worktree');
-      if (!withinAgentWorktreeRoots(cwd, [worktreeRoot])) {
+      // The turn's cwd is its session worktree, which is usually NESTED in a
+      // configured root (`/work/.verity-sessions/<agent>`). Measuring from the
+      // configured root would demand a session-specific project path the agent
+      // cannot know and no grant could carry across sessions, and would hand a
+      // dynamic script every sibling session as its tree.
+      const worktreeRoot = cwd;
+      if (!withinAgentWorktreeRoots(canonical, [worktreeRoot])) {
         throw new Error('trusted CLI cwd and entry script must share one worktree root');
       }
       const projectPath = canonical.slice(worktreeRoot.length + 1);
@@ -1580,7 +1582,6 @@ const TRUSTED_CLI_VALIDATION_CODES = new Map([
   ['trusted CLI entry script escaped the worktree root', 'validation_entry_outside_worktree'],
   ['trusted CLI entry script must be a regular file', 'validation_entry_not_regular_file'],
   ['trusted CLI entry script content hash changed after approval', 'validation_entry_hash_changed'],
-  ['trusted CLI entry script has no worktree', 'validation_entry_missing_worktree'],
   [
     'trusted CLI cwd and entry script must share one worktree root',
     'validation_entry_worktree_mismatch',
