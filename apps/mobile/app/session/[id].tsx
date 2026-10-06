@@ -3629,9 +3629,9 @@ export function SessionChat({
             </Pressable>
           </View>
         )}
-        {/* Title block: the session name with the branch underneath as quiet context.
-            The branch stays tappable (opens the switcher, #91) but no longer competes
-            with the actions — it is information first. A long-press on a header action
+        {/* Title block: the session name with quiet context underneath — the branch
+            as a bare glyph that opens the switcher (#91, where its full name is
+            shown) and the issue as a bare `#123`. A long-press on a header action
             briefly swaps this line for the action's name. */}
         <View style={styles.headerTitleBlock}>
           <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
@@ -3650,14 +3650,9 @@ export function SessionChat({
                 accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
                 style={styles.headerBranchBtn}
               >
-                <Icon name="git-branch" size={11} color={theme.colors.textFaint} />
-                <Text style={styles.headerBranch} numberOfLines={1}>
-                  {currentLabel}
-                </Text>
+                <Icon name="git-branch" size={13} color={theme.colors.textFaint} />
               </Pressable>
-              {issueNumber !== null ? (
-                <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
-              ) : null}
+              {issueNumber !== null ? <IssueRef number={issueNumber} url={issueUrl} /> : null}
             </View>
           )}
         </View>
@@ -4508,13 +4503,19 @@ function HeaderActionButton({
   );
 }
 
-// A header Issue context chip (#125). Tappable when `url` is a string (opens the
-// GitHub issue via `Linking.openURL`, announced as a link); when `url` is null —
-// owner/repo unknown (no GitHub remote / older server) — it renders as the plain,
-// non-tappable chip it always was, never linking to a broken URL (#161).
-function MetaChip({ label, url }: { label: string; url: string | null }) {
+// The header's issue reference (#125): a bare `#123`. Tappable when `url` is a
+// string (opens the GitHub issue via `Linking.openURL`, announced as a link) and
+// then tinted like the app's other tappable meta; when `url` is null — owner/repo
+// unknown (no GitHub remote / older server) — it stays plain, faint text and never
+// links to a broken URL (#161).
+function IssueRef({ number, url }: { number: number; url: string | null }) {
+  const label = `#${String(number)}`;
   if (url === null) {
-    return <Text style={styles.headerMetaChip}>{label}</Text>;
+    return (
+      <Text style={styles.headerBranch} accessibilityLabel={`Issue ${String(number)}`}>
+        {label}
+      </Text>
+    );
   }
   return (
     <Pressable
@@ -4523,9 +4524,9 @@ function MetaChip({ label, url }: { label: string; url: string | null }) {
       // so it never surfaces as an unhandled rejection.
       onPress={() => void Linking.openURL(url).catch(() => undefined)}
       accessibilityRole="link"
-      accessibilityLabel={`${label}. Tap to open on GitHub.`}
+      accessibilityLabel={`Issue ${String(number)}. Tap to open on GitHub.`}
     >
-      <Text style={styles.headerMetaChip}>{label}</Text>
+      <Text style={[styles.headerBranch, styles.headerIssueLink]}>{label}</Text>
     </Pressable>
   );
 }
@@ -10074,8 +10075,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  // The branch under the title: muted and caption-sized so it reads as status, while
-  // staying tappable for the switcher.
+  // The branch glyph under the title: muted so it reads as status, while staying
+  // tappable for the switcher. `headerBranch` is the caption text style that line
+  // (and the action hint replacing it) uses.
   headerBranchBtn: {
     flexShrink: 1,
     flexDirection: 'row',
@@ -10088,6 +10090,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 12 * theme.fontScale,
     fontWeight: '400',
   },
+  headerIssueLink: { color: theme.colors.primary },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
     fontSize: 11 * theme.fontScale,

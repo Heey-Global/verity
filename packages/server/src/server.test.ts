@@ -3541,6 +3541,55 @@ describe('GET /sessions', () => {
     expect(summary?.eventCount).toBe(written.length);
   });
 
+  it('carries the cached branch on each summary without awaiting git', async () => {
+    let release: (branch: string) => void = () => undefined;
+    const current = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const branches = {
+      current,
+      switchable: vi.fn(async () => [] as string[]),
+      previewable: vi.fn(async () => [] as string[]),
+      switch: vi.fn(),
+    };
+    const branchApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: branches as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchCacheTtlMs: 60_000,
+    });
+    try {
+      const live = join(worktreeRoot, 'live');
+      mkdirSync(live, { recursive: true });
+      await ctx.store.createSession({ sessionId: 's1', worktree: live, model: 'm' });
+      await ctx.store.createSession({ sessionId: 's2', worktree: '/wt/gone', model: 'm' });
+      // The list is polled every 2 s for every session: a git read that never
+      // settles must not hold it up, so the cold answer simply has no branch.
+      type Listed = { sessionId: string; branch?: string };
+      const cold = await branchApp.inject({ method: 'GET', url: '/sessions' });
+      expect(cold.statusCode).toBe(200);
+      expect(cold.json<Listed[]>().find((s) => s.sessionId === 's1')?.branch).toBeUndefined();
+      release('feat/122-preview-branches');
+      await vi.waitFor(async () => {
+        const res = await branchApp.inject({ method: 'GET', url: '/sessions' });
+        const byId = new Map(res.json<Listed[]>().map((s) => [s.sessionId, s]));
+        expect(byId.get('s1')?.branch).toBe('feat/122-preview-branches');
+        expect(byId.get('s2')?.branch).toBeUndefined();
+      });
+      // A gone worktree is never asked: git would fail for it on every poll.
+      expect(current).not.toHaveBeenCalledWith('/wt/gone');
+      // Within the TTL the label comes from memory, not another git read per poll.
+      expect(current).toHaveBeenCalledTimes(1);
+    } finally {
+      await branchApp.close();
+    }
+  });
+
   it('enriches each summary with a compact `pr` once resolved (stale-while-revalidate)', async () => {
     const branchPrStatus = vi.fn(async () => ({
       number: 7,
