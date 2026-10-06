@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.55.0](https://github.com/Heey-Global/verity/compare/mobile-v1.54.0...mobile-v1.55.0) (2026-10-06)
+
+
+### Features
+
+* **live:** use one connection per device and route notifications per user ([#1225](https://github.com/Heey-Global/verity/issues/1225)) ([4b7b173](https://github.com/Heey-Global/verity/commit/4b7b173517c3a62cb7edf33fcb1192d1f4774fe4))
+* **mobile:** compact issue and branch refs in header and overview ([#1215](https://github.com/Heey-Global/verity/issues/1215)) ([e50cf97](https://github.com/Heey-Global/verity/commit/e50cf975272444bf7aeb6e958a756baafb8885cc))
+* **web:** ship browser client in Core Docker image ([#1216](https://github.com/Heey-Global/verity/issues/1216)) ([63bb411](https://github.com/Heey-Global/verity/commit/63bb411ecedce8c687a7025f43f9c1af57db2d4e))
+
+
+### Bug Fixes
+
+* **mobile:** allow dismissing running server hints ([#1209](https://github.com/Heey-Global/verity/issues/1209)) ([35d3e90](https://github.com/Heey-Global/verity/commit/35d3e907b8d2c8f5ef08c1911c713ba6f79971a9))
+* **mobile:** match static folder breadcrumbs to explorer ([#1220](https://github.com/Heey-Global/verity/issues/1220)) ([31ced91](https://github.com/Heey-Global/verity/commit/31ced918a59f28a13fb54a3e4390943b4d2f79eb))
+* **planning:** avoid redundant tool approval for plan presentation ([#1205](https://github.com/Heey-Global/verity/issues/1205)) ([dd64496](https://github.com/Heey-Global/verity/commit/dd644967a88e63d431339724e27c84d2fd63ea54))
+
 ## [1.54.0](https://github.com/Heey-Global/verity/compare/mobile-v1.53.0...mobile-v1.54.0) (2026-10-06)
 
 
