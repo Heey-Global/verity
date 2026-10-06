@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({
   candidate: {
     schema: 1,
+    artifact: undefined as { id: number; sha256: string } | undefined,
     product: 'mobile-native',
     version: '2.0.0',
     source: 'a'.repeat(40),
@@ -11,6 +12,12 @@ const fixture = vi.hoisted(() => ({
     buildNumber: '12',
     releasePr: 42,
   },
+  recorded: undefined as Record<string, unknown> | undefined,
+  expired: false,
+  missing: false,
+  replacementExpired: false,
+  apiFailure: false,
+  prerelease: true,
   same: false,
   merged: false,
   deleted: false,
@@ -45,8 +52,11 @@ vi.mock('node:child_process', () => ({
     }
     if (args[0] === 'release')
       return args[1] === 'view'
-        ? JSON.stringify({ assets: [{ name: 'production-candidate.json' }] })
-        : JSON.stringify(fixture.candidate);
+        ? JSON.stringify({
+            assets: [{ name: 'production-candidate.json' }],
+            isPrerelease: fixture.prerelease,
+          })
+        : JSON.stringify(fixture.recorded ?? fixture.candidate);
     if (args[0] === 'pr' && args[1] === 'list' && args.includes('merged'))
       return fixture.merged
         ? JSON.stringify([
@@ -66,6 +76,15 @@ vi.mock('node:child_process', () => ({
         : '';
     if (args[0] === 'workflow') return '';
     const endpoint = args.find((arg) => arg.startsWith('repos/'));
+    if (endpoint?.includes('/actions/artifacts/')) {
+      if (fixture.apiFailure || (fixture.missing && endpoint.endsWith('/1')))
+        throw Object.assign(new Error('Artifact API failure'), {
+          stderr: fixture.apiFailure ? 'HTTP 403' : 'HTTP 404',
+        });
+      return JSON.stringify({
+        expired: endpoint.endsWith('/1') ? fixture.expired : fixture.replacementExpired,
+      });
+    }
     if (endpoint?.endsWith('/releases?per_page=100')) {
       writeSync(
         options!.stdio![1] as number,
@@ -84,7 +103,9 @@ vi.mock('node:child_process', () => ({
     }
     if (endpoint?.includes('/contents/'))
       return JSON.stringify({
-        content: Buffer.from(JSON.stringify(fixture.candidate)).toString('base64'),
+        content: Buffer.from(JSON.stringify(fixture.recorded ?? fixture.candidate)).toString(
+          'base64',
+        ),
       });
     if (endpoint?.endsWith('/heads/main'))
       return JSON.stringify({ object: { sha: 'c'.repeat(40) } });
@@ -101,10 +122,20 @@ vi.mock('node:child_process', () => ({
 import { writeFileSync } from 'node:fs';
 import { propose } from './production-promotion.js';
 afterEach(() => {
+  vi.clearAllMocks();
   fixture.calls = [];
   fixture.same = false;
   fixture.merged = false;
   fixture.deleted = false;
+  fixture.candidate.schema = 1;
+  fixture.candidate.artifact = undefined;
+  fixture.candidate.buildNumber = '12';
+  fixture.recorded = undefined;
+  fixture.expired = false;
+  fixture.missing = false;
+  fixture.replacementExpired = false;
+  fixture.apiFailure = false;
+  fixture.prerelease = true;
   vi.unstubAllEnvs();
 });
 describe('rolling production proposals', () => {
@@ -156,4 +187,71 @@ describe('rolling production proposals', () => {
     );
     expect(fixture.calls.some((call) => call.args.includes('graphql'))).toBe(false);
   });
+});
+
+function replacement() {
+  vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+  fixture.candidate.schema = 2;
+  fixture.candidate.buildNumber = '13';
+  fixture.candidate.artifact = { id: 2, sha256: 'b'.repeat(64) };
+  fixture.recorded = {
+    ...fixture.candidate,
+    buildNumber: '12',
+    artifact: { id: 1, sha256: 'c'.repeat(64) },
+  };
+}
+describe('archive expiry recovery', () => {
+  it('retains an available archive on a build retry', () => {
+    replacement();
+    fixture.merged = true;
+    propose('candidate.json');
+    expect(
+      fixture.calls.some((call) => call.args[0] === 'release' && call.args[1] === 'upload'),
+    ).toBe(false);
+    expect(
+      fixture.calls.some(
+        (call) => call.args[0] === 'pr' && ['create', 'edit'].includes(call.args[1]!),
+      ),
+    ).toBe(false);
+  });
+  it.each(['expired', 'deleted'])(
+    'replaces an unavailable archive and requires a fresh promotion head (%s)',
+    (state) => {
+      replacement();
+      fixture.expired = state === 'expired';
+      fixture.missing = state === 'deleted';
+      fixture.merged = true;
+      propose('candidate.json');
+      const upload = fixture.calls.findIndex(
+        (call) => call.args[0] === 'release' && call.args[1] === 'upload',
+      );
+      expect(upload).toBeGreaterThanOrEqual(0);
+      expect(fixture.calls[upload]!.args).toContain('--clobber');
+      const commit = fixture.calls.findIndex((call) => call.args.includes('graphql'));
+      expect(commit).toBeGreaterThan(upload);
+      expect(writeFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('production-candidate.json'),
+        JSON.stringify(fixture.candidate, null, 2) + '\n',
+      );
+      expect(fixture.calls.some((call) => call.args[0] === 'pr' && call.args[1] === 'edit')).toBe(
+        true,
+      );
+    },
+  );
+  it.each(['published', 'api-failure', 'replacement-expired', 'different-source'])(
+    'never replaces evidence when recovery is unsafe (%s)',
+    (state) => {
+      replacement();
+      fixture.expired = true;
+      if (state === 'published') fixture.prerelease = false;
+      if (state === 'api-failure') fixture.apiFailure = true;
+      if (state === 'replacement-expired') fixture.replacementExpired = true;
+      if (state === 'different-source') fixture.recorded!.source = 'd'.repeat(40);
+      expect(() => propose('candidate.json')).toThrow();
+      expect(
+        fixture.calls.some((call) => call.args[0] === 'release' && call.args[1] === 'upload'),
+      ).toBe(false);
+      expect(fixture.calls.some((call) => call.args.includes('graphql'))).toBe(false);
+    },
+  );
 });

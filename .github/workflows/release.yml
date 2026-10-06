@@ -2161,6 +2161,7 @@ jobs:
         with:
           pattern: server-release-evidence-v${{ env.VERSION }}-*
           path: evidence
+          merge-multiple: true
       - name: Attach verified Sigstore evidence to the GitHub release
         shell: bash
         run: |

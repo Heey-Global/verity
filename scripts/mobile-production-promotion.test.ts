@@ -14,6 +14,7 @@ const fixture = vi.hoisted(() => ({
     buildNumber: '12',
     releasePr: 42,
   },
+  recorded: undefined as Record<string, unknown> | undefined,
   approved: true,
   expired: false,
   root: '',
@@ -34,7 +35,7 @@ vi.mock('node:child_process', () => ({
     if (command === 'git') return 'a'.repeat(40);
     if (args[0] === 'release')
       return args[1] === 'download'
-        ? JSON.stringify(fixture.candidate)
+        ? JSON.stringify(fixture.recorded ?? fixture.candidate)
         : args[1] === 'view'
           ? 'false'
           : '';
@@ -78,6 +79,7 @@ afterEach(() => {
   fixture.calls = [];
   fixture.candidate.schema = 1;
   fixture.candidate.artifact = undefined;
+  fixture.recorded = undefined;
   fixture.approved = true;
   fixture.expired = false;
   if (fixture.root) rmSync(fixture.root, { recursive: true, force: true });
@@ -206,6 +208,13 @@ describe('unuploaded native archives', () => {
     preparedCandidate();
     await expect(promoteNative()).rejects.toThrow('Apple rejected');
     expect(fixture.calls.some((call) => call.includes('release edit'))).toBe(false);
+  });
+  it('refuses an old merged approval after its archive has been replaced', async () => {
+    setup();
+    preparedCandidate();
+    fixture.recorded = { ...fixture.candidate, artifact: { id: 100, sha256: 'b'.repeat(64) } };
+    await expect(promoteNative()).rejects.toThrow('differs from recorded release evidence');
+    expect(fixture.calls.some((call) => call.startsWith('xcrun '))).toBe(false);
   });
   it('resumes an accepted upload without submitting the binary twice', async () => {
     setup({ existing: 'true' });

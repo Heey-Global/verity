@@ -80,11 +80,4 @@ jobs:
           pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
           [[ "$pr" =~ ^[0-9]+$ ]]
           jq --argjson releasePr "$pr" '. + {releasePr:$releasePr}' native-candidates/native-production.json > "$RUNNER_TEMP/mobile-production.json"
-          if gh release view "$MOBILE_TAG" --json assets --jq '.assets[].name' | grep -Fxq production-candidate.json; then
-            # A full workflow retry can create a new signed archive; approval keeps the
-            # original verified build, including when the PR creation failed.
-            gh release download "$MOBILE_TAG" --pattern production-candidate.json --output "$RUNNER_TEMP/mobile-production.json" --clobber
-          else
-            gh release upload "$MOBILE_TAG" native-candidates/native-production.json --clobber
-          fi
           node scripts/production-promotion.ts propose "$RUNNER_TEMP/mobile-production.json"

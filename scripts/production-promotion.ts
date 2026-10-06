@@ -66,9 +66,30 @@ const repo = () => {
 const manifest = 'releases/server-production.json';
 const branch = 'automation/promote-server-production';
 
+function nativeArtifactExpired(id: number): boolean {
+  try {
+    const metadata = JSON.parse(
+      execFileSync('gh', ['api', `repos/${repo()}/actions/artifacts/${id}`], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    ) as { expired: boolean };
+    if (typeof metadata.expired !== 'boolean')
+      throw new Error('Invalid artifact availability response');
+    return metadata.expired;
+  } catch (error) {
+    // GitHub deletes archives after their retention window; other API failures
+    // must not silently authorize replacing an existing candidate.
+    const stderr = (error as { stderr?: string | Buffer }).stderr;
+    if (stderr && /HTTP 404/.test(typeof stderr === 'string' ? stderr : stderr.toString('utf8')))
+      return true;
+    throw error;
+  }
+}
+
 export function propose(inputPath = process.argv[3] ?? '') {
   const raw = JSON.parse(readFileSync(inputPath, 'utf8')) as { product?: string };
-  const candidate =
+  let candidate =
     raw.product === 'mobile-native' ? validateNativePromotion(raw) : validateServerPromotion(raw);
   const manifest =
     candidate.product === 'server'
@@ -82,9 +103,9 @@ export function propose(inputPath = process.argv[3] ?? '') {
   const tag =
     candidate.product === 'server' ? `v${candidate.version}` : `mobile-v${candidate.version}`;
   const recordPath = `${process.env.RUNNER_TEMP ?? '/tmp'}/production-candidate.json`;
-  writeFileSync(recordPath, JSON.stringify(candidate, null, 2) + '\n');
-  const release = JSON.parse(gh('release', 'view', tag, '--json', 'assets')) as {
+  const release = JSON.parse(gh('release', 'view', tag, '--json', 'assets,isPrerelease')) as {
     assets: { name: string }[];
+    isPrerelease: boolean;
   };
   if (release.assets.some((asset) => asset.name === 'production-candidate.json')) {
     const recorded = gh(
@@ -96,9 +117,36 @@ export function propose(inputPath = process.argv[3] ?? '') {
       '--output',
       '-',
     );
-    if (JSON.stringify(JSON.parse(recorded)) !== JSON.stringify(candidate))
-      throw new Error('Release candidate already has different production evidence');
-  } else gh('release', 'upload', tag, recordPath);
+    const previous = JSON.parse(recorded) as ServerPromotion | NativePromotion;
+    if (JSON.stringify(previous) !== JSON.stringify(candidate)) {
+      if (candidate.product !== 'mobile-native' || previous.product !== 'mobile-native')
+        throw new Error('Release candidate already has different production evidence');
+      validateNativePromotion(previous);
+      const incoming = candidate;
+      if (
+        ['version', 'source', 'appId', 'releasePr'].some(
+          (field) =>
+            previous[field as keyof NativePromotion] !== incoming[field as keyof NativePromotion],
+        )
+      )
+        throw new Error('Replacement archive differs from the immutable native release');
+      if (previous.schema === 1 || !nativeArtifactExpired(previous.artifact!.id)) {
+        // A normal retry must preserve bytes that may already have been reviewed.
+        candidate = previous;
+      } else {
+        if (!release.isPrerelease)
+          throw new Error('Cannot replace an already published production release');
+        if (candidate.schema !== 2 || nativeArtifactExpired(candidate.artifact!.id))
+          throw new Error('Replacement archive is unavailable');
+        // Recorded evidence changes first: old merged approvals cannot upload it.
+        writeFileSync(recordPath, JSON.stringify(candidate, null, 2) + '\n');
+        gh('release', 'upload', tag, recordPath, '--clobber');
+      }
+    }
+  } else {
+    writeFileSync(recordPath, JSON.stringify(candidate, null, 2) + '\n');
+    gh('release', 'upload', tag, recordPath);
+  }
 
   const repository = repo();
   const approvals = JSON.parse(

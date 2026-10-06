@@ -10,7 +10,9 @@ release. Shared runner capacity can still cause scheduling waits. Production
 approval opens only after its archive and matching Staging evidence are ready.
 The signed IPA is retained as a GitHub Actions artifact for 90 days. Promotion
 checks the reviewed artifact ID and IPA SHA-256 before uploading that exact archive
-to Apple. An expired artifact requires preparing and reviewing a new candidate.
+to Apple. Retrying the Production build preserves an available archive. If it has
+expired or been deleted, the retry records the replacement archive and requires
+fresh promotion approval; existing approvals cannot upload the replacement.
 A failed Production build can be retried through `verity-mobile-production-build`
 with the original `mobile-tag`; it does not require rebuilding Staging.
 
