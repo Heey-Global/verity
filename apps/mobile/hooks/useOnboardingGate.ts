@@ -12,10 +12,15 @@ import {
 } from '@verity/mobile';
 import { useGlobalSearchParams, usePathname, useSegments } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 import { getAuthToken, hasStoredAuthToken } from '../lib/authToken';
 import { createVerityClient, getVerityBaseUrl, hasConfiguredVerityBaseUrl } from '../lib/client';
+import {
+  getBrowserSession,
+  refreshBrowserSession,
+  subscribeBrowserSession,
+} from '../lib/browserSession';
 import { isDemoMode } from '../lib/demoMode';
 
 export type OnboardingGateState = { status: 'checking' } | { status: 'done'; redirectTo?: string };
@@ -45,6 +50,7 @@ export function useOnboardingGate(): OnboardingGateState {
   const pathname = usePathname();
   const searchParams = useGlobalSearchParams<Record<string, string | string[]>>();
   const inOnboarding = segments[0] === 'onboarding';
+  const inWebConnect = Platform.OS === 'web' && segments[0] === 'web-connect';
   const inUnlockDevice = segments[0] === 'unlock-device';
   // The standalone GitHub reconnect screen is exempt from the "setup incomplete"
   // redirect: disconnecting GitHub there flips `status.complete` false, and bouncing
@@ -88,6 +94,33 @@ export function useOnboardingGate(): OnboardingGateState {
             return;
           }
           setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
+          return;
+        }
+
+        if (Platform.OS === 'web') {
+          if (inWebConnect) {
+            setState({ status: 'done' });
+            return;
+          }
+          const session = await refreshBrowserSession();
+          if (!active) return;
+          if (session === null) {
+            setState({ status: 'done', redirectTo: '/web-connect' });
+            return;
+          }
+          const client = createVerityClient()!;
+          if ((await client.getSecretStatus()) === 'sealed') {
+            if (active) setState({ status: 'done', redirectTo: '/web-connect?unlock=1' });
+            return;
+          }
+          const status = await client.fetchOnboardingStatus();
+          if (!active) return;
+          setState({
+            status: 'done',
+            ...(!inOnboarding && !inGithubConnect && !isCoreOnboardingComplete(status)
+              ? { redirectTo: onboardingRoute(status) }
+              : {}),
+          });
           return;
         }
 
@@ -182,6 +215,16 @@ export function useOnboardingGate(): OnboardingGateState {
 
         setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
       } catch (error) {
+        if (Platform.OS === 'web') {
+          if (active)
+            setState({
+              status: 'done',
+              ...(getBrowserSession() === null && !inWebConnect
+                ? { redirectTo: '/web-connect' }
+                : {}),
+            });
+          return;
+        }
         // A race can seal the store between the first probe and a failed richer
         // status read. Recheck before preserving the gate's fail-open behavior.
         try {
@@ -210,6 +253,8 @@ export function useOnboardingGate(): OnboardingGateState {
       }
     };
 
+    const unsubscribeBrowser =
+      Platform.OS === 'web' ? subscribeBrowserSession(() => void check()) : undefined;
     void check();
     interval = setInterval(() => void check(), SERVER_SECRET_CHECK_INTERVAL_MS);
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -218,10 +263,11 @@ export function useOnboardingGate(): OnboardingGateState {
 
     return () => {
       active = false;
+      unsubscribeBrowser?.();
       if (interval !== undefined) clearInterval(interval);
       subscription.remove();
     };
-  }, [inOnboarding, inUnlockDevice, inGithubConnect]);
+  }, [inOnboarding, inUnlockDevice, inGithubConnect, inWebConnect]);
 
   return state;
 }

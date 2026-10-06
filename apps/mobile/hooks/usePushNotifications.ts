@@ -1,11 +1,12 @@
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import { useEffect } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import type { VerityClient } from '@verity/mobile';
 import {
   createPushOutboxForClient,
   ensurePushRegistration,
+  foregroundPushBehavior,
   handlePushResponse,
 } from '../lib/pushNotifications';
 import { getAuthTokenId, getStoredAuthTokenId } from '../lib/authToken';
@@ -25,7 +26,7 @@ import { isDemoMode } from '../lib/demoMode';
  */
 export function usePushNotifications(client: VerityClient | null, baseUrl: string | null): void {
   useEffect(() => {
-    if (client === null || isDemoMode()) return;
+    if (client === null || isDemoMode() || Platform.OS === 'web') return;
     let active = true;
     // A cold-start response can also arrive through the live listener on some Expo
     // versions; dedup by notification id so a reply is never enqueued twice (the
@@ -59,6 +60,11 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
       await handlePushResponse(response, outbox, navigateToSession, deviceId, navigateToSettings);
     };
 
+    Notifications.setNotificationHandler({
+      handleNotification: (notification) =>
+        Promise.resolve(foregroundPushBehavior(notification.request.content.data)),
+    });
+
     void attemptRegistration();
     void outbox.flush().catch(() => undefined);
 
@@ -82,6 +88,7 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
 
     return () => {
       active = false;
+      Notifications.setNotificationHandler(null);
       responseSub.remove();
       appStateSub.remove();
     };

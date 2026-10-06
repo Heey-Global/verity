@@ -96,6 +96,7 @@ describe('PushFirePoints', () => {
       categoryId: 'PERMISSION_PROMPT',
       data: { sessionId: 'session-1', kind: 'permission', toolUseId: 'tool-use-1' },
       priority: 'high',
+      sound: 'default',
     });
     expect(JSON.stringify(sender.send.mock.calls)).not.toContain('sensitive command');
     await firePoints.close();
@@ -362,6 +363,7 @@ describe('PushFirePoints', () => {
       categoryId: 'AGENT_QUESTION',
       data: { sessionId: 'session-1', kind: 'question' },
       priority: 'high',
+      sound: 'default',
     });
     await firePoints.close();
   });

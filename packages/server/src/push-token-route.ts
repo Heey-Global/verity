@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bearerToken, type AuthTokenRegistry } from './auth.js';
+import { requestCredential, type AuthTokenRegistry } from './auth.js';
 
 interface PushTokenStore {
   upsertDevicePushToken(input: {
@@ -33,7 +33,7 @@ export function registerPushTokenRoute(app: FastifyInstance, deps: PushTokenRout
       return reply.code(503).send({ error: 'Push notifications are not configured' });
     }
     const registry = deps.authRegistry;
-    const rawToken = bearerToken(request.headers.authorization);
+    const rawToken = requestCredential(request);
     const authTokenId = registry?.resolveId(rawToken);
     if (registry === undefined || !registry.isEnabled() || authTokenId === undefined) {
       return reply.code(401).send({ error: 'unauthorized' });

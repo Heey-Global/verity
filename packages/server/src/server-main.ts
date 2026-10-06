@@ -67,6 +67,10 @@ import { createReleaseChannelVerifier } from './self-update/release-channel-veri
 import { createSelectableReleaseChannelResolver } from './self-update/selectable-release-channel.js';
 import { releaseChannelMetadataFromEnv } from './self-update/release-channel-publish.js';
 import {
+  MANAGED_BROWSER_ORIGIN_HEADER,
+  verifyManagedBrowserOrigin,
+} from './managed-browser-origin.js';
+import {
   MANAGED_CLIENT_IDENTITY_HEADER,
   verifyManagedClientIdentity,
 } from './managed-client-identity.js';
@@ -816,6 +820,12 @@ async function main(): Promise<void> {
       ...(managedTls === undefined
         ? {}
         : {
+            browserRequestOrigin: (request) =>
+              verifyManagedBrowserOrigin(
+                managedClientIdentitySecret(managedTls.key),
+                request.headers[MANAGED_BROWSER_ORIGIN_HEADER],
+                { method: request.method, url: request.raw.url ?? '/' },
+              ),
             unlockClientIdentity: (request) =>
               verifyManagedClientIdentity(
                 managedClientIdentitySecret(managedTls.key),
@@ -824,6 +834,9 @@ async function main(): Promise<void> {
               ),
           }),
       ...(https === undefined ? {} : { https }),
+      ...(process.env.VERITY_WEB_APP_DIR?.trim()
+        ? { webAppDir: process.env.VERITY_WEB_APP_DIR.trim() }
+        : {}),
       ...(devicePairing === undefined ? {} : { devicePairing }),
       ...(controlPlane === undefined ? {} : { controlPlaneFence: controlPlane.held }),
       ...(adoptedSecretKeyMaterial === undefined ? {} : { adoptedSecretKeyMaterial }),

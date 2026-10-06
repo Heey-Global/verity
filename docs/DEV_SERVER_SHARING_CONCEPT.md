@@ -186,15 +186,56 @@ to end.
 - _Fixing a crash._ The crashed detail view offers "Ask the agent", which sends the agent the
   entry name and a pointer to its log.
 
-**Operator.** The operator switches entries on and off and deletes them in the app. Editing
-stays with the agent, because typing a command on a phone is impractical.
+**Operator.** The operator controls entries with two switches per entry and deletes them in
+the app. Editing stays with the agent, because typing a command on a phone is impractical.
 
-**Preview sheet.** The Dev server tab lists "Your servers" first, one row per entry with a
-switch, the state, and the network address while it runs. A crashed row is marked and links
-to its logs. The arrow opens the detail view: state, address, and logs at the top, then the
-two access cards ("On your network", "Over the internet"), then "Delete entry". Servers started past Verity follow under "Not managed" with "Save as entry", which asks the agent to create the entry rather than copying the detected command line: that line usually hard-codes its port and may carry secrets. The section disappears when empty. With no entries the tab says "No servers yet. Ask the agent to set up your app as
-a server." The inline chat card and the green dot on the Preview icon keep showing running
-entries.
+**Switches.** Revised with the operator on 2026-10-05. An entry has no run switch of its own;
+its two access switches decide whether it runs.
+
+- _Local_ on starts the server if needed and publishes it on the operator's network. The first
+  time, or after a changed command or subdirectory, a confirmation shows the command and subdirectory, says that
+  anyone on the network can open it without a PIN, and the tap approves them.
+- _Shared online_ on asks for the link's lifetime, starts the server if needed, and creates the public link with a PIN. If the command is not approved yet, a confirmation shows the command and subdirectory first and says that the server becomes reachable through a public link with PIN. Local stays off unless the operator turns it on; the switches, not the approval, decide which accesses exist.
+- Without entitlement the Shared online row shows a "Premium" hint with a link to settings
+  instead of the switch (2.8). While the Uplink is unreachable the switch is disabled and the
+  row reads "Temporarily unavailable"; an existing link keeps showing its address and expiry.
+- Turning Shared online off always asks first, because it ends a public link.
+- Whenever no access is left on, the server stops: turning off the last switch, either one,
+  or a public link expiring while Local is off. An expired link turns the Shared online switch off. The one exception is a server the agent started without approval, described below. It does not keep running unnoticed and keep
+  the sandbox awake.
+- Every start, from a switch or a button, shows the confirmation first when the command it
+  would run is not approved, including after the agent changed the command or the subdirectory.
+- A server the agent started without approval runs with both switches off. This is the one
+  exception; the header reads "Running, not shared yet", and Local approves and publishes it.
+- The switches show what the operator wants, not what currently runs. A crash leaves them as
+  they were: a public link stays valid and shows its offline page (user flow decisions above),
+  and the header reads "Crashed". Turning a switch off or on works as usual.
+- Start, Start again and Restart in the detail view start the server with the switches as they
+  are, and turn Local on when both are off. Turning a switch on for a crashed server starts it
+  again, which is the intent of the switch.
+  Stop turns both switches off, with the same confirmation when it ends a public link.
+
+**Preview sheet.** The Dev server tab shows one block per entry. The block header holds the name,
+the state as a StatusPill ("✓ Running", spinner with "Starting…", "! Crashed"; a stopped entry shows muted "– Stopped" and an unapproved running one "✓ Running" followed by muted "not shared yet"), and on the right "Details ›", or "View output ›" after a crash; the whole header opens the detail view.
+Below it a card with two rows, Local and Shared online, each with its icon, its switch, and,
+while on, its address. The Local address opens the browser when tapped; there is no separate open button. The Shared online address, shortened in the middle, opens the link with the PIN filled in, which the edge exchanges for a session cookie and strips from the address (2.2); below it the expiry and PIN, and a share button that sends link and PIN. A long press on either address copies the address only; the PIN is never part of a copied or displayed address.
+
+The detail view shows the state and since when, Restart and Stop while it runs, Start again and Ask the agent after a crash, and Start when stopped, the output, the command with its subdirectory and the note that the agent
+changes it, and "Delete entry" at the bottom. 
+Servers started past Verity follow under "Not managed" with "Save as entry", which asks the
+agent to create the entry rather than copying the detected command line: that line usually
+hard-codes its port and may carry secrets. The section disappears when empty. With no entries
+the tab says "No servers yet. Ask the agent to set up your app as a server." The inline chat
+card and the green dot on the Preview icon keep showing running entries. On wide screens the
+sheet's content is capped at a readable width and centered.
+
+Visual conventions, settled with the operator on 2026-10-05: the state uses the shared
+StatusPill ("✓ Running", "! Crashed", spinner with "Starting…", muted "– Stopped"); the
+switches are the app's own toggle from Settings (`SettingsToggleRow`), not the platform
+switch; addresses are links in the primary colour and open on tap, so Local has no separate
+open icon; the share and copy actions are bare Feather icons in the primary colour with a
+44 pt touch area, never boxed; the PIN is bold and copies on tap or through the copy icon
+beside it.
 
 ### 2.7 Opening a local share from outside the home network
 
@@ -217,7 +258,7 @@ serve only the phone while the app is in the foreground. It stays noted as an id
 ### 2.8 Gating in the app
 
 The Preview button always opens and lists every detected listener of the session and the
-project. Each listener has two actions. "Open locally" is always active. "Share publicly" is
+project. Each listener has two actions. "Open on network" is always active. "Share online" is
 visible for everyone, active only with entitlement, otherwise it shows a premium hint and a link
 to settings. If the Uplink is temporarily unreachable the action reads "temporarily unavailable",
 not "premium".
@@ -246,6 +287,8 @@ stream the app already holds.
 
 ### 2.10 App flow: what first, then how
 
+This flow applies to static folders and to servers started past Verity. Managed entries (2.6) show their two accesses as switches directly in the list and use the same two names, Local and Shared online.
+
 The sheet asks two questions one after the other and never mixes them.
 
 **Step one, what.** Two tabs, because the two kinds of target behave differently.
@@ -262,16 +305,16 @@ The sheet opens on the server tab while a server or a port access exists, otherw
 static files. The default is decided once, when servers and accesses have loaded or after one
 second at the latest; a server that starts later only marks its tab and never switches the
 view. A Core without port detection shows the static files without tabs. Rows carry badges for
-their active accesses, "On network" and "Online until HH:MM".
+their active accesses, "Local" and "Shared online until HH:MM".
 
 **Step two, how.** Two cards, stacked, because both can be active at once and each owns its
 own state and actions. Each card names who can see the preview.
 
-- **On your network.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
+- **Local.** Straight from the Verity server, at home or over VPN. No PIN and no TLS:
   the card says that anyone on that network can open it. "Open in browser" creates the local
   share on first use and hands reachability to the probe in 2.7, plus "Copy link". While a local
   share exists the card shows its URL and "Turn off".
-- **Over the internet.** A link through the Uplink, protected by a PIN, expiring automatically.
+- **Shared online.** A link through the Uplink, protected by a PIN, expiring automatically.
   Without entitlement the card stays visible with a "Premium" badge, one sentence, and a link to
   settings; no dead button. While the Uplink is offline it says "Temporarily unavailable"
   instead. With entitlement and no link it shows the expiry picker and "Create link with PIN" as

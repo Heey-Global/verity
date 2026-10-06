@@ -3860,6 +3860,14 @@ const migrations: Record<string, Migration> = {
       await sql`alter table managed_dev_server_instances drop column local_access`.execute(db);
     },
   },
+  '0139_browser_sessions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table auth_tokens add column expires_at timestamptz`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table auth_tokens drop column expires_at`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

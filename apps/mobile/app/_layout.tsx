@@ -4,6 +4,7 @@
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
 // Component styles use StyleSheet.create.
 import '../unistyles';
+import { installBrowserAlerts } from '../lib/browserAlerts';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -46,7 +47,9 @@ import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windo
 // regardless of the device's system setting. This takes effect immediately (no
 // native rebuild), complementing the `userInterfaceStyle: 'dark'` build-time config
 // in app.config.ts (which only applies to freshly built binaries).
-Appearance.setColorScheme('dark');
+if (Platform.OS !== 'web') Appearance.setColorScheme('dark');
+
+installBrowserAlerts();
 
 const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
@@ -89,7 +92,7 @@ export default function RootLayout() {
       // the old server; keeping the app behind onboarding is the safe fallback.
       if (installationReady) {
         await hydrateVerityBaseUrl().catch(() => undefined);
-        if (!isDemoMode()) {
+        if (!isDemoMode() && Platform.OS !== 'web') {
           await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
         }
       }
@@ -102,7 +105,7 @@ export default function RootLayout() {
 
   if (!hydrated) {
     return (
-      <GestureHandlerRootView style={styles.root}>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <View
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking for updates"
@@ -117,7 +120,7 @@ export default function RootLayout() {
 }
 
 function HydratedRoot() {
-  useEffect(() => (isDemoMode() ? undefined : startLiveMeetingSync()), []);
+  useEffect(() => (isDemoMode() || Platform.OS === 'web' ? undefined : startLiveMeetingSync()), []);
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();
@@ -153,7 +156,7 @@ function HydratedRoot() {
 
   if (gate.status === 'checking') {
     return (
-      <GestureHandlerRootView style={styles.root}>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <View
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking setup"
@@ -169,8 +172,10 @@ function HydratedRoot() {
   }
 
   return (
+    // These wrappers forward styles outside the Unistyles Babel transform.
+    // Plain values keep their flex layout intact in the browser.
     <KeyCommands
-      style={styles.root}
+      style={{ flex: 1, backgroundColor: theme.colors.background }}
       onZoom={adjustFontScale}
       onSearch={handleSearchShortcut}
       onVoice={() => {
@@ -178,7 +183,7 @@ function HydratedRoot() {
       }}
     >
       {!isDemoMode() ? <ForegroundUpdateSync /> : null}
-      <GestureHandlerRootView style={styles.root}>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <SafeAreaProvider>
           {/*
             Every keyboard-aware view in the app reads this provider's context,
@@ -446,7 +451,6 @@ function AppHeader({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  root: { flex: 1, backgroundColor: theme.colors.background },
   gateOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
