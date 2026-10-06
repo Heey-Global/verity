@@ -151,6 +151,34 @@ describe('tasks routes', () => {
     }
   });
 
+  it('blocks replacement and deletion after assigned-project access is revoked', async () => {
+    await grantMember({ read: true, execute: true });
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: MEMBER,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Assigned',
+    });
+    await ctx.db.deleteFrom('project_memberships').where('user_id', '=', MEMBER).execute();
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: `/tasks/${T1}`,
+          headers: asMember,
+          payload: { title: 'General replacement' },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (await app.inject({ method: 'DELETE', url: `/tasks/${T1}`, headers: asMember })).statusCode,
+    ).toBe(404);
+    expect((await store.tasks.get(T1, MEMBER))?.sessionId).toBe('s1');
+    expect(published).toEqual([]);
+  });
+
   it('rejects HTTP assignment when the task moves after validation', async () => {
     await store.tasks.upsert({
       id: T1,

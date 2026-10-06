@@ -212,6 +212,17 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     }
     const owner = ownerId(request);
     const previous = await tasks.get(id, owner);
+    if (
+      previous !== undefined &&
+      !(await canUseProject(
+        request.localUserId,
+        previous.projectId,
+        previous.sessionId === null ? 'read' : 'execute',
+      ))
+    ) {
+      reply.code(404);
+      return { error: 'task not found' };
+    }
     try {
       const task = await tasks.upsert({
         id,
@@ -301,7 +312,15 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     const { id } = taskParams.parse(request.params);
     const owner = ownerId(request);
     const previous = await tasks.get(id, owner);
-    if (previous === undefined || !(await tasks.delete(id, owner))) {
+    if (
+      previous === undefined ||
+      !(await canUseProject(
+        request.localUserId,
+        previous.projectId,
+        previous.sessionId === null ? 'read' : 'execute',
+      )) ||
+      !(await tasks.delete(id, owner))
+    ) {
       reply.code(404);
       return { error: 'task not found' };
     }
