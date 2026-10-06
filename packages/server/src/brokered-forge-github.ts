@@ -345,6 +345,10 @@ export function createGitHubForgeAdapter(options: {
                       'pullRequests',
                       'issueTypes',
                       'associatedPullRequests',
+                      // Timeline events can expose entities from unbound repositories.
+                      'timelineItems',
+                      'timeline',
+                      'source',
                     ].includes(child.name.value)
                   )
                     rejected();

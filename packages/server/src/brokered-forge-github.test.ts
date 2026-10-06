@@ -138,6 +138,7 @@ describe('GitHub forge policy', () => {
     expect(h.mint).not.toHaveBeenCalled();
   });
   it.each([
+    'query{repository(owner:"acme",name:"app"){issue(number:1){timelineItems(first:10){nodes{... on CrossReferencedEvent{source{... on PullRequest{title body}}}}}}}}',
     'query{repository(owner:"acme",name:"app"){issue(number:1){author{... on User{issues(first:10){nodes{title body}}}}}}}',
     'query{repository(owner:"acme",name:"app"){parent{defaultBranchRef{target{... on Commit{history(first:10){nodes{message}}}}}}}}',
     'query{repository(owner:"acme",name:"app"){owner{... on User{issues(first:1){nodes{body}}}}}}',
