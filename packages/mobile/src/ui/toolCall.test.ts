@@ -111,6 +111,20 @@ describe('toolCallView', () => {
     expect(handoff.subtitle).toBeNull();
   });
 
+  it('uses readable planning labels under every backend qualification', () => {
+    for (const [toolName, label] of [
+      ['verity_start_planning', 'Verity Planning Mode'],
+      ['verity_present_plan', 'Verity Plan'],
+      ['verity_end_planning', 'Verity Implement Plan'],
+    ]) {
+      for (const name of [toolName!, `mcp__verity__${toolName}`, `verity_${toolName}`]) {
+        const view = toolCallView(tool({ name, state: 'running', input: {} }));
+        expect(view.title).toBe(label);
+        expect(view.headline).toBe(label);
+      }
+    }
+  });
+
   it('names a Verity CLI run through Bash by the CLI, not the agent-written description', () => {
     const headline = (command: string) =>
       toolCallView(
