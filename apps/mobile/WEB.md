@@ -7,7 +7,11 @@ from the repository root:
 npm run build:web --workspace @verity/mobile-app -- --max-workers 1
 ```
 
-Configure the Core with `VERITY_WEB_APP_DIR` pointing to the absolute path of
+Official Core Docker images include the browser export and serve it at
+`https://<core-address>:8082/app/` by default, on the same port as the API.
+Existing installations need an updated image to receive it.
+
+For a source installation, configure the Core with `VERITY_WEB_APP_DIR` pointing to the absolute path of
 `apps/mobile/dist`, then open `https://<core-address>/app/`. The Core serves the
 web client and API on the same origin. Static exports must retain the `/app`
 base path; standalone hosting on another origin is not the authenticated flow.
