@@ -351,7 +351,7 @@ class LiveConnection {
 
   /** Re-evaluate what this connection may see. Membership can change while a
    * socket stays open; a read granted at subscribe time is not granted forever. */
-  async recheck(scope: { projectId?: string | undefined } = {}): Promise<void> {
+  async recheck(scope: { projectId?: string | undefined; sessionId?: string } = {}): Promise<void> {
     if (this.closed) return;
     const { userId } = this.identity;
     try {
@@ -363,6 +363,7 @@ class LiveConnection {
       }
       for (const sub of [...this.subscriptions.values()]) {
         if (scope.projectId !== undefined && sub.projectId !== scope.projectId) continue;
+        if (scope.sessionId !== undefined && sub.sessionId !== scope.sessionId) continue;
         const session = await this.hub.deps.store.getSession(sub.sessionId);
         if (sub.cancelled) continue;
         const allowed =
@@ -380,6 +381,10 @@ class LiveConnection {
         });
       }
     } catch (error) {
+      if (scope.sessionId !== undefined) {
+        this.unsubscribe(scope.sessionId);
+        this.send({ k: 'ended', id: scope.sessionId, reason: 'error' });
+      }
       this.hub.deps.logger?.warn({ err: error }, 'verity: live access recheck failed');
     }
   }
@@ -459,6 +464,12 @@ export class LiveHub {
    * {@link hintDelayMs}, so a streaming turn costs a handful of frames rather
    * than one per token, and they carry no content — only which row to refetch.
    */
+  /** Reauthorize a moved session before its move fence permits destination turns. */
+  async recheckSession(sessionId: string): Promise<void> {
+    this.forgetSession(sessionId);
+    await Promise.all([...this.connections].map((connection) => connection.recheck({ sessionId })));
+  }
+
   notify(change: {
     sessionId: string;
     projectId?: string | null | undefined;

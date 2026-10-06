@@ -210,11 +210,7 @@ import {
 import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
-import {
-  createPushFirePoints,
-  persistedTurnInitiator,
-  type PushFirePoints,
-} from './push-fire-points.js';
+import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
 import { createPushRouter, type PushRouter } from './push-router.js';
 import { LiveHub, type SessionChangeFeed } from './live/live-hub.js';
 import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-ready-push.js';
@@ -3438,6 +3434,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // A session can change project (a move); forget its cached owner. A deleted
     // one keeps it, so its members still hear that it is gone.
     if (!deleted) liveHub.forgetSession(sessionId);
+    if (route === '/sessions/:id/project') await liveHub.recheckSession(sessionId);
     liveHub.notify({
       sessionId,
       topics: ['session', 'status', 'activity'],
@@ -3465,6 +3462,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           router: pushRouter,
           logger: app.log,
           describeSession: describePushSessionById,
+          getEvents: (sessionId) => deps.eventStore.getEvents(sessionId),
           ...(deps.pushFirePointDebounceMs === undefined
             ? {}
             : { debounceMs: deps.pushFirePointDebounceMs }),
@@ -4523,14 +4521,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     (deps.branchPrStatus !== undefined || deps.branchPrStatusForBranches !== undefined)
       ? startPullRequestReadyMonitor({
           router: pushRouter,
-          initiatorOf: async (sessionId) => {
-            const observed = pushFirePoints?.initiatorOf(sessionId);
-            if (observed !== undefined) return observed;
-            // Persisted provenance survives a restart; anonymous follow-ups and
-            // steering preserve the last identified turn's owner.
-            const events = await deps.eventStore.getEvents(sessionId);
-            return persistedTurnInitiator(events);
-          },
+          initiatorOf: (sessionId) => pushFirePoints?.initiatorOf(sessionId),
           listSessions: async () => {
             if ((await deps.eventStore.listDevicePushTokens()).length === 0) return [];
             const sessions = await deps.eventStore.listSessions();
@@ -9469,6 +9460,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                     notice,
                     JSON.stringify(result),
                   );
+                  await liveHub.recheckSession(id);
                   invalidateBranchCache(session.worktree);
                   return result;
                 } catch (error) {

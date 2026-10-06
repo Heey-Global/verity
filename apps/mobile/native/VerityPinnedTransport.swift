@@ -279,8 +279,8 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       let id = UUID().uuidString
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
       delegate.onOpen = { [weak self] in self?.sendEvent("onWebSocketEvent", ["id": id, "type": "open"]) }
-      delegate.onClose = { [weak self] reason in
-        self?.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "data": reason ?? ""])
+      delegate.onClose = { [weak self] code, reason in
+        self?.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "code": code, "data": reason ?? ""])
         self?.removeSocket(id)?.0.finishTasksAndInvalidate()
       }
       let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
@@ -334,7 +334,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         guard let self, let (session, _, _) = self.removeSocket(id) else { return }
         session.finishTasksAndInvalidate()
         self.sendEvent("onWebSocketEvent", ["id": id, "type": "error", "data": error.localizedDescription])
-        self.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "data": error.localizedDescription])
+        self.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "code": task.closeCode.rawValue, "data": error.localizedDescription])
       }
     }
   }

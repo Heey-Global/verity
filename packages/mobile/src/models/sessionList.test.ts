@@ -1126,6 +1126,37 @@ describe('SessionListModel polling', () => {
     model.stop();
   });
 
+  it('does not restore a deleted session from a stale outstanding list response', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValueOnce([session('s1', 'idle')]);
+    let poll = (): void => undefined;
+    const model = new SessionListModel({
+      client,
+      pollIntervalMs: 5000,
+      schedule: (callback, interval) => {
+        if (interval === 5000) poll = callback;
+        return () => undefined;
+      },
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      )
+      .mockRejectedValue(new Error('offline'));
+    poll();
+    model.applyHints([{ sessionId: 's1', topics: ['session'], deleted: true }]);
+    resolve([session('s1', 'idle')]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(3));
+    expect(model.state.sessions).toEqual([]);
+    model.stop();
+  });
+
   it('ignores hints while stopped', () => {
     const { client, listSessions } = makeClient();
     listSessions.mockResolvedValue([]);

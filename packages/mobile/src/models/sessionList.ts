@@ -336,6 +336,13 @@ export class SessionListModel {
   applyHints(hints: readonly LiveHint[]): void {
     for (const hint of hints) {
       if (hint.deleted === true) {
+        const deletion = this.pendingDeletes.get(hint.sessionId) ?? {
+          active: 0,
+          removed: this._sessions.find((session) => session.sessionId === hint.sessionId),
+          succeeded: true,
+        };
+        deletion.succeeded = true;
+        this.pendingDeletes.set(hint.sessionId, deletion);
         this._sessions = this._sessions.filter((s) => s.sessionId !== hint.sessionId);
       }
     }

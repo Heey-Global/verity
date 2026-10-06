@@ -1,3 +1,11 @@
+const mockSocketListener = jest.fn();
+const mockOpenWebSocket = jest.fn().mockResolvedValue('socket-1');
+const mockAddSocketListener = jest.fn(
+  (_event: string, listener: (event: { id: string; type: string; code?: number }) => void) => {
+    mockSocketListener.mockImplementation(listener);
+    return { remove: jest.fn() };
+  },
+);
 const mockRequest = jest.fn();
 const mockRequestV2 = jest.fn();
 let mockRequestV2Enabled = false;
@@ -34,9 +42,9 @@ jest.mock('expo-modules-core', () => ({
     download: mockDownload,
     cancelRequest: mockCancelRequest,
     verifyIdentity: jest.fn(),
-    openWebSocket: jest.fn(),
+    openWebSocket: mockOpenWebSocket,
     closeWebSocket: jest.fn(),
-    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    addListener: mockAddSocketListener,
   }),
 }));
 
@@ -66,7 +74,7 @@ Object.defineProperty(globalThis, 'fetch', {
   value: jest.fn(),
 });
 
-import { createPinnedFetch, downloadPinnedFile } from './pinnedTransport';
+import { createPinnedFetch, downloadPinnedFile, createPinnedWebSocket } from './pinnedTransport';
 
 describe('pinned native file transport', () => {
   beforeEach(() => {
@@ -766,4 +774,15 @@ describe('pinned native file transport', () => {
       }),
     ).rejects.toThrow('status 401');
   });
+});
+
+it('forwards native policy close codes to the live connection', async () => {
+  mockOpenWebSocket.mockResolvedValue('socket-1');
+  const socket = createPinnedWebSocket('wss://core.example/live', 'pin');
+  const closed = jest.fn();
+  socket.addEventListener('close', closed);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  mockSocketListener({ id: 'socket-1', type: 'close', code: 1008 });
+  expect(closed).toHaveBeenCalledWith(expect.objectContaining({ code: 1008 }));
+  socket.close();
 });

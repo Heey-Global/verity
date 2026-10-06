@@ -459,7 +459,7 @@ describe('PushFirePoints', () => {
           alert: expect.objectContaining({ kind: 'permission', toolUseId: 'p1' }),
         }),
       );
-      expect(firePoints.initiatorOf('session-1')).toBe('user-a');
+      expect(await firePoints.initiatorOf('session-1')).toBe('user-a');
       await firePoints.close();
     });
 
@@ -574,4 +574,59 @@ it('recovers the last identified turn owner while preserving anonymous follow-up
       { t: 'prompt', text: 'follow-up' },
     ]),
   ).toBe('bob');
+});
+
+it('recovers ownership for permission alerts following an anonymous post-restart prompt', async () => {
+  vi.useFakeTimers();
+  const router = routerFor(fakeSender());
+  const firePoints = createPushFirePoints({
+    router,
+    debounceMs: 10,
+    getEvents: async () => [
+      { t: 'prompt', text: 'original', initiatedBy: { userId: 'alice' } },
+      { t: 'prompt', text: 'follow-up' },
+    ],
+  });
+  try {
+    firePoints.observe('s1', event({ t: 'prompt', text: 'follow-up' }));
+    firePoints.observe(
+      's1',
+      event({ t: 'permission', id: 'p1', tool: 'Bash', input: {}, riskClass: 'ask' }, 2),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    expect(router.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ initiatorUserId: 'alice' }),
+    );
+  } finally {
+    await firePoints.close();
+    vi.useRealTimers();
+  }
+});
+
+it('does not route a permission resolved while ownership recovery is pending', async () => {
+  vi.useFakeTimers();
+  let resolve!: (events: AgentEvent[]) => void;
+  const router = routerFor(fakeSender());
+  const firePoints = createPushFirePoints({
+    router,
+    debounceMs: 10,
+    getEvents: () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  });
+  try {
+    firePoints.observe(
+      's1',
+      event({ t: 'permission', id: 'p1', tool: 'Bash', input: {}, riskClass: 'ask' }),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    firePoints.permissionResolved('s1', 'p1');
+    resolve([{ t: 'prompt', text: 'original', initiatedBy: { userId: 'alice' } }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.notify).not.toHaveBeenCalled();
+  } finally {
+    await firePoints.close();
+    vi.useRealTimers();
+  }
 });

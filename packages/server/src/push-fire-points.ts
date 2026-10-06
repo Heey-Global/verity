@@ -48,11 +48,12 @@ export interface PushFirePoints {
   observe(sessionId: string, event: SequencedEvent): void;
   permissionResolved(sessionId: string, toolUseId: string): void;
   /** The user the session's current (or last) turn runs for, if known. */
-  initiatorOf(sessionId: string): string | undefined;
+  initiatorOf(sessionId: string): Promise<string | undefined>;
   close(): Promise<void>;
 }
 
 export interface PushFirePointOptions {
+  getEvents?: ((sessionId: string) => Promise<AgentEvent[]>) | undefined;
   router: Pick<PushRouter, 'notify' | 'cancel'>;
   logger?: PushLogger | undefined;
   debounceMs?: number | undefined;
@@ -84,6 +85,7 @@ class DefaultPushFirePoints implements PushFirePoints {
   private readonly initiators = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly active = new Set<Promise<void>>();
+  private readonly pendingSends = new Map<string, Set<{ cancelled: boolean }>>();
   private closed = false;
 
   constructor(private readonly options: PushFirePointOptions) {
@@ -148,14 +150,16 @@ class DefaultPushFirePoints implements PushFirePoints {
       if (state.handledPermissions.has(event.id)) return;
       state.handledPermissions.add(event.id);
       const key = `permission:${sessionId}:${event.id}`;
-      this.schedule(key, sessionId, 'permission', async () => {
+      this.schedule(key, sessionId, 'permission', async (current) => {
         const context = await this.describeSession(sessionId);
+        const initiatorUserId = await this.initiatorOf(sessionId);
+        if (!current()) return;
         const title = pushHeading(context, 'Permission needed');
         const body = `${pushSessionName(context)} requests permission to continue.`;
         return this.options.router.notify({
           key,
           sessionId,
-          initiatorUserId: this.initiators.get(sessionId),
+          initiatorUserId,
           notification: {
             title,
             body,
@@ -205,8 +209,13 @@ class DefaultPushFirePoints implements PushFirePoints {
     this.state(sessionId).handledPermissions.add(toolUseId);
   }
 
-  initiatorOf(sessionId: string): string | undefined {
-    return this.initiators.get(sessionId);
+  async initiatorOf(sessionId: string): Promise<string | undefined> {
+    const observed = this.initiators.get(sessionId);
+    if (observed !== undefined || this.options.getEvents === undefined) return observed;
+    const persisted = persistedTurnInitiator(await this.options.getEvents(sessionId));
+    const current = this.initiators.get(sessionId) ?? persisted;
+    if (current !== undefined) this.initiators.set(sessionId, current);
+    return current;
   }
 
   async close(): Promise<void> {
@@ -260,9 +269,10 @@ class DefaultPushFirePoints implements PushFirePoints {
     this.cancelPermissions(sessionId, state);
     this.scheduleStateCleanup(sessionId, state);
     const choices = state.choices?.labels;
-    this.schedule(`terminal:${sessionId}`, sessionId, outcome, async () => {
+    this.schedule(`terminal:${sessionId}`, sessionId, outcome, async (current) => {
       const context = await this.describeSession(sessionId);
-      const initiatorUserId = this.initiators.get(sessionId);
+      const initiatorUserId = await this.initiatorOf(sessionId);
+      if (!current()) return;
       if (outcome === 'question') {
         const title = pushHeading(context, 'Reply needed');
         const body = `${pushSessionName(context)} is waiting for your answer.`;
@@ -317,20 +327,27 @@ class DefaultPushFirePoints implements PushFirePoints {
     key: string,
     sessionId: string,
     kind: 'permission' | 'completed' | 'crashed' | 'question',
-    send: () => Promise<unknown>,
+    send: (current: () => boolean) => Promise<unknown>,
   ): void {
     if (this.timers.has(key)) return;
     const timer = setTimeout(() => {
       this.timers.delete(key);
       // Whether anyone is looking is decided per user by the router.
       if (this.closed) return;
-      const task = send()
+      const delivery = { cancelled: false };
+      const pending = this.pendingSends.get(key) ?? new Set<{ cancelled: boolean }>();
+      pending.add(delivery);
+      this.pendingSends.set(key, pending);
+      const task = send(() => !this.closed && !delivery.cancelled)
         .then(() => undefined)
         .catch(() => {
           this.options.logger?.warn({ component: 'push', kind }, 'verity: push fire point failed');
         })
         .finally(() => {
           this.active.delete(task);
+          pending.delete(delivery);
+          if (pending.size === 0 && this.pendingSends.get(key) === pending)
+            this.pendingSends.delete(key);
         });
       this.active.add(task);
     }, this.debounceMs);
@@ -339,6 +356,8 @@ class DefaultPushFirePoints implements PushFirePoints {
   }
 
   private cancel(key: string): void {
+    for (const delivery of this.pendingSends.get(key) ?? []) delivery.cancelled = true;
+    this.pendingSends.delete(key);
     const timer = this.timers.get(key);
     if (timer !== undefined) clearTimeout(timer);
     this.timers.delete(key);

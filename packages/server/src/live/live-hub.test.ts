@@ -217,6 +217,21 @@ describe('LiveHub', () => {
       w.hub.close();
     });
 
+    it('reauthorizes moved sessions before destination events reach old project members', async () => {
+      const w = world();
+      const alice = connect(w, 'alice', 'd1');
+      const bob = connect(w, 'bob', 'd2');
+      await alice.client({ k: 'sub', ch: 'session', id: 's1' });
+      await bob.client({ k: 'sub', ch: 'session', id: 's1' });
+      w.sessions.set('s1', { sessionId: 's1', projectId: 'p2' });
+      await w.hub.recheckSession('s1');
+      w.bus.publish('s1', seqd(9));
+      expect(alice.of('ended')).toEqual([{ k: 'ended', id: 's1', reason: 'forbidden' }]);
+      expect(alice.of('event')).toEqual([]);
+      expect(bob.of('event')).toHaveLength(1);
+      w.hub.close();
+    });
+
     it('ends a subscription whose access was withdrawn while the socket stayed open', async () => {
       const w = world();
       const socket = connect(w, 'alice', 'd1');

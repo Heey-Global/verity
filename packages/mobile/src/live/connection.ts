@@ -241,8 +241,8 @@ export class LiveConnection implements LiveSessionTransport {
     const entries = this.sessions.get(sessionId) ?? [];
     entries.push(entry);
     this.sessions.set(sessionId, entries);
-    // Two screens on one session share the server subscription; the newest
-    // drives the cursor. One subscription per session keeps the server's count
+    // Two screens on one session share the server subscription; the oldest
+    // required cursor drives replay. One subscription per session keeps the server's count
     // honest and its replay single.
     this.sendSubscription(sessionId);
     return {
@@ -276,9 +276,8 @@ export class LiveConnection implements LiveSessionTransport {
 
   private sendSubscription(sessionId: string): void {
     const entries = this.sessions.get(sessionId);
-    const newest = entries?.at(-1);
-    if (newest === undefined) return;
-    const sinceSeq = newest.sink.cursor();
+    if (entries === undefined || entries.length === 0) return;
+    const sinceSeq = Math.min(...entries.map((entry) => entry.sink.cursor()));
     this.sendFrame({
       k: 'sub',
       ch: 'session',

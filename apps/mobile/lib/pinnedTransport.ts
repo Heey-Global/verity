@@ -64,6 +64,7 @@ interface NativePinnedTransport {
       id: string;
       type: 'open' | 'message' | 'error' | 'close';
       data?: string;
+      code?: number;
     }) => void,
   ): { remove(): void };
 }
@@ -445,7 +446,7 @@ export async function verifyPairedIdentity(input: {
   }
 }
 
-type SocketListener = (event: { data: unknown }) => void;
+type SocketListener = (event: { data: unknown; code?: number }) => void;
 
 export function createPinnedWebSocket(
   url: string,
@@ -464,7 +465,8 @@ export function createPinnedWebSocket(
       event.type === 'close' ||
       event.type === 'error'
     ) {
-      for (const listener of listeners.get(event.type) ?? []) listener({ data: event.data });
+      for (const listener of listeners.get(event.type) ?? [])
+        listener({ data: event.data, ...(event.code !== undefined ? { code: event.code } : {}) });
     }
     if (event.type === 'close') subscription.remove();
   });

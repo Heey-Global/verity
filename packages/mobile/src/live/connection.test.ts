@@ -250,6 +250,34 @@ describe('LiveConnection', () => {
     expect(h.sockets[1]?.sent.filter((frame) => frame.k === 'sub')).toEqual([]);
   });
 
+  it('resumes shared subscriptions from the lowest required cursor', async () => {
+    const h = await harness();
+    const first = sink(10);
+    h.connection.subscribeSession('s1', first, false);
+    h.sockets[0]!.ready();
+    h.sockets[0]!.drop();
+    h.connection.subscribeSession('s1', sink(20), true);
+    h.runRetry();
+    await flush();
+    h.sockets[1]!.ready();
+    expect(h.sockets[1]!.sent).toContainEqual({
+      k: 'sub',
+      ch: 'session',
+      id: 's1',
+      sinceSeq: 10,
+      view: true,
+    });
+    h.sockets[1]!.serve({
+      k: 'event',
+      id: 's1',
+      seq: 11,
+      ts: 0,
+      event: { t: 'text', delta: 'missing' },
+    });
+    expect(first.events).toContain(11);
+    h.connection.stop();
+  });
+
   it('shares one server subscription between two screens of a session', async () => {
     const h = await harness();
     h.sockets[0]?.ready();

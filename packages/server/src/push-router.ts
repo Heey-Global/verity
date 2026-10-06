@@ -74,6 +74,15 @@ export interface PushRouterOptions {
 export function createPushRouter(options: PushRouterOptions): PushRouter {
   const escalationMs = options.escalationMs ?? DEFAULT_ESCALATION_MS;
   const escalations = new Map<string, NodeJS.Timeout[]>();
+  type Delivery = { cancelled: boolean; pending: number };
+  const deliveries = new Map<string, Set<Delivery>>();
+  const release = (key: string, delivery: Delivery): void => {
+    delivery.pending -= 1;
+    if (delivery.pending > 0) return;
+    const active = deliveries.get(key);
+    active?.delete(delivery);
+    if (active?.size === 0) deliveries.delete(key);
+  };
   let closed = false;
 
   const recipients = async (input: SessionNotification): Promise<string[]> => {
@@ -90,12 +99,13 @@ export function createPushRouter(options: PushRouterOptions): PushRouter {
   const push = async (
     notification: PushNotification,
     userIds: readonly string[],
+    delivery: Delivery,
     exclude: ReadonlySet<string> = new Set(),
   ): Promise<PushSendResult | undefined> => {
     const tokens = (await options.store.listDevicePushTokensForUsers(userIds)).filter(
       (token) => !exclude.has(token.authTokenId),
     );
-    if (tokens.length === 0) return undefined;
+    if (closed || delivery.cancelled || tokens.length === 0) return undefined;
     return options.sender.send(notification, tokens);
   };
 
@@ -108,65 +118,88 @@ export function createPushRouter(options: PushRouterOptions): PushRouter {
   const notifyUser = async (
     input: SessionNotification,
     userId: string,
+    delivery: Delivery,
   ): Promise<PushRouteOutcome> => {
+    if (closed || delivery.cancelled) return 'suppressed';
     if (options.presence.isViewing(userId, input.sessionId)) return 'suppressed';
     const foreground = options.presence.foregroundDevices(userId);
     if (foreground.size > 0) {
       if (input.alert === undefined) return 'suppressed';
       const reached = options.presence.deliverAlert(userId, input.alert);
       if (reached.size > 0) {
+        delivery.pending += 1;
         const timer = setTimeout(() => {
           const timers = escalations.get(input.key)?.filter((entry) => entry !== timer) ?? [];
           if (timers.length > 0) escalations.set(input.key, timers);
           else escalations.delete(input.key);
-          if (closed || options.presence.isViewing(userId, input.sessionId)) return;
+          if (closed || delivery.cancelled || options.presence.isViewing(userId, input.sessionId)) {
+            release(input.key, delivery);
+            return;
+          }
           void recipients(input)
             .then((authorized) =>
-              authorized.includes(userId) ? push(input.notification, [userId], reached) : undefined,
+              authorized.includes(userId)
+                ? push(input.notification, [userId], delivery, reached)
+                : undefined,
             )
             .catch(() => {
               options.logger?.warn(
                 { component: 'push', kind: 'escalation' },
                 'verity: escalation push failed',
               );
-            });
+            })
+            .finally(() => release(input.key, delivery));
         }, escalationMs);
         timer.unref?.();
         remember(input.key, timer);
         return 'delivered';
       }
     }
-    const result = await push(input.notification, [userId]);
+    const result = await push(input.notification, [userId], delivery);
     return result !== undefined && result.ticketsAccepted > 0 ? 'delivered' : 'undelivered';
   };
 
   return {
     async notify(input) {
       if (closed) return 'undelivered';
-      const userIds = await recipients(input);
-      const outcomes = await Promise.all(
-        userIds.map((userId) =>
-          notifyUser(input, userId).catch((): PushRouteOutcome => {
-            options.logger?.warn(
-              { component: 'push', kind: input.notification.data['kind'] },
-              'verity: push routing failed',
-            );
-            return 'undelivered';
-          }),
-        ),
-      );
-      if (outcomes.includes('delivered')) return 'delivered';
-      if (outcomes.length > 0 && outcomes.every((outcome) => outcome === 'suppressed')) {
-        return 'suppressed';
+      const delivery: Delivery = { cancelled: false, pending: 1 };
+      const active = deliveries.get(input.key) ?? new Set<Delivery>();
+      active.add(delivery);
+      deliveries.set(input.key, active);
+      try {
+        const userIds = await recipients(input);
+        if (delivery.cancelled || closed) return 'suppressed';
+        const outcomes = await Promise.all(
+          userIds.map((userId) =>
+            notifyUser(input, userId, delivery).catch((): PushRouteOutcome => {
+              options.logger?.warn(
+                { component: 'push', kind: input.notification.data['kind'] },
+                'verity: push routing failed',
+              );
+              return 'undelivered';
+            }),
+          ),
+        );
+        if (outcomes.includes('delivered')) return 'delivered';
+        if (outcomes.length > 0 && outcomes.every((outcome) => outcome === 'suppressed')) {
+          return 'suppressed';
+        }
+        return 'undelivered';
+      } finally {
+        release(input.key, delivery);
       }
-      return 'undelivered';
     },
     cancel(key) {
+      for (const delivery of deliveries.get(key) ?? []) delivery.cancelled = true;
+      deliveries.delete(key);
       for (const timer of escalations.get(key) ?? []) clearTimeout(timer);
       escalations.delete(key);
     },
     close() {
       closed = true;
+      for (const active of deliveries.values())
+        for (const delivery of active) delivery.cancelled = true;
+      deliveries.clear();
       for (const timers of escalations.values()) for (const timer of timers) clearTimeout(timer);
       escalations.clear();
     },

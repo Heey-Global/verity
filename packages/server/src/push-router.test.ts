@@ -306,3 +306,27 @@ it('rechecks project access before escalating a foreground alert', async () => {
     vi.useRealTimers();
   }
 });
+
+it('cancels an alert while its recipient lookup is still outstanding', async () => {
+  let resolve!: (members: string[]) => void;
+  const sender = fakeSender();
+  const presence = fakePresence({ foreground: { alice: ['alice-phone'] } });
+  const router = createPushRouter({
+    sender: senderOf(sender),
+    presence,
+    store: fakeStore({
+      listProjectUserIds: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    }),
+  });
+  const pending = router.notify(permission());
+  await vi.waitFor(() => expect(resolve).toBeDefined());
+  router.cancel(permission().key);
+  resolve(['alice']);
+  expect(await pending).toBe('suppressed');
+  expect(presence.deliverAlert).not.toHaveBeenCalled();
+  expect(sender.send).not.toHaveBeenCalled();
+  router.close();
+});
