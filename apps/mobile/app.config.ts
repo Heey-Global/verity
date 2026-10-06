@@ -158,6 +158,14 @@ const config: ExpoConfig = {
     // Hermes' Intl returns a UI-language + region combo (e.g. en-DE) that isn't a
     // valid recognition locale.
     'expo-localization',
+    [
+      'expo-media-library',
+      {
+        photosPermission: 'Allow Verity to offer your recent screenshot when capturing a task.',
+        savePhotosPermission: false,
+        granularPermissions: ['photo'],
+      },
+    ],
     // Live voice dictation (§6) via the OS speech recognizer. Sets the iOS
     // NSMicrophoneUsageDescription + NSSpeechRecognitionUsageDescription, and
     // declares Google's recognition service so Android can bind to it.

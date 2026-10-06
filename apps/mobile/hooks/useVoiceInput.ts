@@ -4,6 +4,17 @@ import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-spe
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isDemoMode } from '../lib/demoMode';
 
+let recognitionOwner: symbol | null = null;
+let abandonedRecognition = false;
+// Native cancellation finishes asynchronously. Hold ownership through its final
+// end event so that event cannot accidentally end a newly mounted recorder.
+ExpoSpeechRecognitionModule.addListener('end', () => {
+  if (abandonedRecognition) {
+    recognitionOwner = null;
+    abandonedRecognition = false;
+  }
+});
+
 export type VoiceState = 'idle' | 'recording';
 
 export interface UseVoiceInput {
@@ -25,6 +36,8 @@ export interface UseVoiceInput {
    * when not recording.
    */
   abort: () => void;
+  level: number;
+  onDevice: boolean | null;
 }
 
 /** The device's preferred language tags, most-preferred first, used only as INPUT
@@ -110,7 +123,19 @@ export function useVoiceInput(
   value: string,
   onChangeText: (next: string) => void,
   onAutoSend?: (text: string) => Promise<boolean>,
+  options?: { silenceMs?: number },
 ): UseVoiceInput {
+  const owner = useRef(Symbol('voice-input'));
+  const nativeStarted = useRef(false);
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [level, setLevel] = useState(0);
+  const [onDevice, setOnDevice] = useState<boolean | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const clearSilence = () => {
+    if (silenceTimer.current) clearTimeout(silenceTimer.current);
+    silenceTimer.current = null;
+  };
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string | undefined>(undefined);
   const [autoMode, setAutoMode] = useState(false);
@@ -181,14 +206,14 @@ export function useVoiceInput(
       onChangeRef.current('');
       void send(submitted)
         .then((accepted) => {
-          if (disposedRef.current) return;
+          if (disposedRef.current || !listeningRef.current) return;
           if (!accepted && !editedDuringSendRef.current) {
             baseRef.current = composeTranscript(submitted, baseRef.current);
             onChangeRef.current(baseRef.current);
           }
         })
         .catch(() => {
-          if (disposedRef.current) return;
+          if (disposedRef.current || !listeningRef.current) return;
           if (!editedDuringSendRef.current) {
             baseRef.current = composeTranscript(submitted, baseRef.current);
             onChangeRef.current(baseRef.current);
@@ -201,7 +226,45 @@ export function useVoiceInput(
     }, 1800);
   }, [cancelCountdown]);
 
+  useSpeechRecognitionEvent('speechstart', () => {
+    if (recognitionOwner === owner.current) clearSilence();
+  });
+  useSpeechRecognitionEvent('speechend', () => {
+    if (
+      recognitionOwner !== owner.current ||
+      !listeningRef.current ||
+      !optionsRef.current?.silenceMs ||
+      stoppingRef.current
+    )
+      return;
+    clearSilence();
+    silenceTimer.current = setTimeout(() => {
+      if (recognitionOwner !== owner.current || !listeningRef.current) return;
+      stoppingRef.current = true;
+      utteranceOpenAtStopRef.current = interimActiveRef.current;
+      ExpoSpeechRecognitionModule.stop();
+    }, optionsRef.current.silenceMs);
+  });
+  useSpeechRecognitionEvent('volumechange', (event) => {
+    if (recognitionOwner !== owner.current || !listeningRef.current) return;
+    setLevel(Math.max(0, Math.min(1, (event.value + 2) / 12)));
+    if (event.value > 0) clearSilence();
+    else if (
+      (baseRef.current.trim() || interimActiveRef.current) &&
+      !silenceTimer.current &&
+      optionsRef.current?.silenceMs
+    ) {
+      silenceTimer.current = setTimeout(() => {
+        silenceTimer.current = null;
+        if (recognitionOwner !== owner.current || !listeningRef.current) return;
+        stoppingRef.current = true;
+        utteranceOpenAtStopRef.current = interimActiveRef.current;
+        ExpoSpeechRecognitionModule.stop();
+      }, optionsRef.current.silenceMs);
+    }
+  });
   useSpeechRecognitionEvent('result', (event) => {
+    if (recognitionOwner !== owner.current) return;
     if (!listeningRef.current) return; // ignore stray/late results after stop
     const transcript = event.results[0]?.transcript ?? '';
     if (ignoreCurrentUtteranceRef.current) {
@@ -258,6 +321,10 @@ export function useVoiceInput(
   });
 
   useSpeechRecognitionEvent('end', () => {
+    if (recognitionOwner !== owner.current) return;
+    recognitionOwner = null;
+    nativeStarted.current = false;
+    clearSilence();
     listeningRef.current = false;
     autoModeRef.current = false;
     setAutoMode(false);
@@ -266,6 +333,8 @@ export function useVoiceInput(
   });
 
   useSpeechRecognitionEvent('error', (event) => {
+    if (recognitionOwner !== owner.current) return;
+    clearSilence();
     listeningRef.current = false;
     autoModeRef.current = false;
     setAutoMode(false);
@@ -288,13 +357,21 @@ export function useVoiceInput(
     // request can't kick off a parallel start() (which would emit `busy`). Cleared
     // on a denied/failed start, and on end/error once a real session finishes.
     if (listeningRef.current) return;
+    if (recognitionOwner !== null) {
+      setError('Another voice recording is active');
+      autoModeRef.current = false;
+      setAutoMode(false);
+      return;
+    }
+    recognitionOwner = owner.current;
     listeningRef.current = true;
     setError(undefined);
     void (async () => {
       try {
         const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-        if (disposedRef.current) return;
+        if (disposedRef.current || !listeningRef.current) return;
         if (!permission.granted) {
+          recognitionOwner = null;
           listeningRef.current = false;
           autoModeRef.current = false;
           setAutoMode(false);
@@ -314,8 +391,11 @@ export function useVoiceInput(
         // the device has no on-device models at all, fall back to the network
         // recognizer for the first preferred tag.
         const { lang, onDevice } = await resolveRecognitionLocale();
-        if (disposedRef.current) return;
+        if (disposedRef.current || !listeningRef.current) return;
+        setOnDevice(onDevice);
+        nativeStarted.current = true;
         ExpoSpeechRecognitionModule.start({
+          volumeChangeEventOptions: { enabled: true, intervalMillis: 100 },
           lang,
           // Stream partial results so the field fills in live as we speak.
           interimResults: true,
@@ -325,6 +405,7 @@ export function useVoiceInput(
         });
         setState('recording');
       } catch {
+        if (recognitionOwner === owner.current) recognitionOwner = null;
         listeningRef.current = false;
         autoModeRef.current = false;
         setAutoMode(false);
@@ -387,7 +468,9 @@ export function useVoiceInput(
     cancelCountdown();
     if (!listeningRef.current) return;
     listeningRef.current = false;
-    ExpoSpeechRecognitionModule.abort();
+    clearSilence();
+    if (!nativeStarted.current && recognitionOwner === owner.current) recognitionOwner = null;
+    if (nativeStarted.current) ExpoSpeechRecognitionModule.abort();
     setState('idle');
   }, [cancelCountdown]);
 
@@ -400,16 +483,22 @@ export function useVoiceInput(
     return () => {
       disposedRef.current = true;
       autoModeRef.current = false;
-      if (listeningRef.current) {
-        listeningRef.current = false;
-        ExpoSpeechRecognitionModule.abort();
+      clearSilence();
+      if (recognitionOwner === owner.current) {
+        if (nativeStarted.current) {
+          abandonedRecognition = true;
+          ExpoSpeechRecognitionModule.abort();
+        } else recognitionOwner = null;
       }
+      listeningRef.current = false;
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
 
   return {
     state,
+    level,
+    onDevice,
     error,
     autoMode,
     countdown,

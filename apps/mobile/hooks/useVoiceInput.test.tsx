@@ -5,22 +5,46 @@ import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
 
 const handlers: Record<
   string,
-  (event: { results?: { transcript: string }[]; isFinal?: boolean }) => void
+  (event: { results?: { transcript: string }[]; isFinal?: boolean; value?: number }) => void
 > = {};
 
 jest.mock('expo-localization', () => ({ getLocales: () => [{ languageTag: 'en-US' }] }));
-jest.mock('expo-speech-recognition', () => ({
-  useSpeechRecognitionEvent: (name: string, handler: (event: never) => void) => {
-    handlers[name] = handler as unknown as (typeof handlers)[string];
-  },
-  ExpoSpeechRecognitionModule: {
-    requestPermissionsAsync: jest.fn().mockResolvedValue({ granted: true }),
-    getSupportedLocales: jest.fn().mockResolvedValue({ installedLocales: ['en-US'] }),
-    start: jest.fn(),
-    stop: jest.fn(),
-    abort: jest.fn(),
-  },
-}));
+jest.mock('expo-speech-recognition', () => {
+  const React = jest.requireActual<typeof import('react')>('react');
+  const listeners: Record<string, Set<(event: never) => void>> = {};
+  const nativeListeners: Record<string, Set<(event: never) => void>> = {};
+  return {
+    useSpeechRecognitionEvent: (name: string, handler: (event: never) => void) => {
+      const latest = React.useRef(handler);
+      latest.current = handler;
+      handlers[name] = (event) => {
+        for (const listener of nativeListeners[name] ?? []) listener(event as never);
+        for (const listener of listeners[name] ?? []) listener(event as never);
+      };
+      React.useEffect(() => {
+        const listener = (event: never) => latest.current(event);
+        (listeners[name] ??= new Set()).add(listener);
+        return () => {
+          listeners[name]?.delete(listener);
+        };
+      }, [name]);
+    },
+    ExpoSpeechRecognitionModule: {
+      requestPermissionsAsync: jest.fn().mockResolvedValue({ granted: true }),
+      getSupportedLocales: jest.fn().mockResolvedValue({ installedLocales: ['en-US'] }),
+      start: jest.fn(),
+      stop: jest.fn(),
+      abort: jest.fn(() => {
+        for (const listener of nativeListeners.end ?? []) listener({} as never);
+        handlers.end?.({});
+      }),
+      addListener: (name: string, listener: (event: never) => void) => {
+        (nativeListeners[name] ??= new Set()).add(listener);
+        return { remove: () => nativeListeners[name]?.delete(listener) };
+      },
+    },
+  };
+});
 
 it('stops continuous dictation on a second long press', async () => {
   jest.useFakeTimers();
@@ -302,4 +326,58 @@ it('keeps new speech after stop that starts like the committed final', async () 
   act(() => handlers.result({ results: [{ transcript: ' Yes' }], isFinal: true }));
   act(() => handlers.end({}));
   expect(onChangeText).toHaveBeenLastCalledWith('Yes I agree Yes');
+});
+
+it('keeps another mounted voice input from stealing recognition or reacting to its end', async () => {
+  const composerText = jest.fn();
+  const captureText = jest.fn();
+  const { result } = renderHook(() => ({
+    composer: useVoiceInput('', composerText),
+    capture: useVoiceInput('', captureText),
+  }));
+  act(() => result.current.composer.toggle());
+  await waitFor(() => expect(result.current.composer.state).toBe('recording'));
+  act(() => result.current.capture.startAuto());
+  expect(result.current.capture.error).toBe('Another voice recording is active');
+  expect(result.current.capture.autoMode).toBe(false);
+  act(() => handlers.result({ results: [{ transcript: 'Composer only' }], isFinal: true }));
+  expect(composerText).toHaveBeenCalledWith('Composer only');
+  expect(captureText).not.toHaveBeenCalled();
+  act(() => handlers.end({}));
+  expect(result.current.composer.state).toBe('idle');
+});
+
+it('stops capture after silence and accepts the final result before end', async () => {
+  jest.useFakeTimers();
+  const change = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', change, undefined, { silenceMs: 1500 }));
+  act(() => result.current.toggle());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  const before = jest.mocked(ExpoSpeechRecognitionModule.stop).mock.calls.length;
+  act(() => handlers.result({ results: [{ transcript: 'Partial' }], isFinal: false }));
+  act(() => handlers.volumechange({ value: -1 }));
+  act(() => jest.advanceTimersByTime(1499));
+  expect(ExpoSpeechRecognitionModule.stop).toHaveBeenCalledTimes(before);
+  act(() => jest.advanceTimersByTime(1));
+  expect(ExpoSpeechRecognitionModule.stop).toHaveBeenCalledTimes(before + 1);
+  expect(result.current.state).toBe('recording');
+  act(() => handlers.result({ results: [{ transcript: 'Final capture' }], isFinal: true }));
+  expect(change).toHaveBeenLastCalledWith('Final capture');
+  act(() => handlers.end({}));
+  expect(result.current.state).toBe('idle');
+  jest.useRealTimers();
+});
+
+it('holds recognition ownership until cancellation finishes after unmount', async () => {
+  const first = renderHook(() => useVoiceInput('', jest.fn()));
+  act(() => first.result.current.toggle());
+  await waitFor(() => expect(first.result.current.state).toBe('recording'));
+  jest.mocked(ExpoSpeechRecognitionModule.abort).mockImplementationOnce(() => undefined);
+  first.unmount();
+  const second = renderHook(() => useVoiceInput('', jest.fn()));
+  act(() => second.result.current.toggle());
+  expect(second.result.current.error).toBe('Another voice recording is active');
+  act(() => handlers.end({}));
+  act(() => second.result.current.toggle());
+  await waitFor(() => expect(second.result.current.state).toBe('recording'));
 });
