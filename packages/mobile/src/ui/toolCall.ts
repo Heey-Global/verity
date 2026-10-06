@@ -136,6 +136,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_start_planning: 'Verity Planning Mode',
   verity_present_plan: 'Verity Plan',
   verity_end_planning: 'Verity Implement Plan',
+  verity_tasks: 'Verity Tasks',
 };
 
 /** Strip a backend's MCP qualification (`mcp__verity__`, OpenCode's `verity_`) off a known

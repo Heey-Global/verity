@@ -29,6 +29,7 @@ import type {
   ScheduleConfig,
 } from './schema.js';
 import { ManagedDevServerStore } from './managed-dev-servers.js';
+import { TaskStore } from './tasks.js';
 
 /** A stored image blob: its media type and raw bytes (for serving). */
 export interface AttachmentBlob {
@@ -1323,11 +1324,13 @@ export class EventStore implements EventSink {
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db);
     this.managedDevServers = new ManagedDevServerStore(db);
+    this.tasks = new TaskStore(db, cipher);
   }
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
+  readonly tasks: TaskStore;
   readonly managedDevServers: ManagedDevServerStore;
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();

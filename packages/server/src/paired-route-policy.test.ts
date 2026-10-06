@@ -22,6 +22,11 @@ it('resolves project and session reads while keeping undeclared routes administr
   expect(await authorizePairedRoute(store, 'member', 'GET', '/sessions/:id', {})).toBe('not_found');
   expect(await authorizePairedRoute(store, 'member', 'GET', '/settings', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'member', 'GET', '/projects', {})).toBe('allow');
+  // Tasks are scoped by owner inside the handler, so any active user reaches the routes.
+  expect(await authorizePairedRoute(store, 'member', 'PUT', '/tasks/:id', { id: 't' })).toBe(
+    'allow',
+  );
+  expect(await authorizePairedRoute(store, 'disabled', 'GET', '/tasks', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'disabled', 'GET', '/projects', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'admin', 'GET', '/settings', {})).toBe('allow');
 });

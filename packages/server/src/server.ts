@@ -98,6 +98,7 @@ import {
   RECENT_SESSION_MESSAGES_DEFAULT,
   recentSessionMessagesRequestSchema,
   publishSessionProgressRequestSchema,
+  tasksRequestSchema,
   aggregateUsage,
   appendExternalPromptData,
   attachmentUploadSchema,
@@ -295,6 +296,7 @@ import { meetingKnowledgeExcerpts } from './live-meeting-knowledge.js';
 import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerAttachmentRoute } from './attachment-route.js';
+import { executeTasksTool, registerTasksRoutes } from './tasks-routes.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
@@ -1931,6 +1933,17 @@ function meetingTranscriptFailureMessage(fileName: string, reason: string): stri
   return `Could not transcribe meeting audio\n${fileName}\n\n${reason}`;
 }
 
+/** Store an event on a session and fan it out to its live stream. */
+async function emitSessionEvent(
+  eventStore: EventStore,
+  bus: EventBus,
+  sessionId: string,
+  event: AgentEvent,
+): Promise<void> {
+  const { seq, ts } = await eventStore.appendEvent(sessionId, event);
+  bus.publish(sessionId, { seq, ts, event });
+}
+
 async function emitNotice(input: {
   eventStore: EventStore;
   bus: EventBus;
@@ -3216,6 +3229,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // background-failure sink can log through it (chicken/egg: the conductor is
   // built before the routes, but the logger exists once `app` does).
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
+  const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
+    emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
   const sessionPlanning = createSessionPlanning({
     eventStore: deps.eventStore,
     dispatchTurn: (sessionId, prompt, opts, dispatchOpts) => {
@@ -5875,7 +5890,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request,
         invocationId,
       }) => {
-        if (toolName === 'verity_list_linked_sessions') {
+        // The tasks tool writes only to the calling session's own list and cannot
+        // delete, so it runs without a card like the planning tools do.
+        if (toolName === 'verity_list_linked_sessions' || toolName === 'verity_tasks') {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
@@ -6011,6 +6028,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             planning: 'implemented',
             note: 'The user approved. End your turn now; Verity starts the implementation as a new turn.',
           };
+        }
+        if (input.toolName === 'verity_tasks') {
+          const session = await deps.eventStore.getSession(input.sessionId);
+          if (session === undefined || session.projectId !== input.projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          return executeTasksTool({
+            eventStore: deps.eventStore,
+            publish: publishSessionEvent,
+            sessionId: input.sessionId,
+            projectId: session.projectId,
+            request: tasksRequestSchema.parse(input.request),
+          });
         }
         // Planning can begin while an external approval card is pending.
         if (
@@ -6205,6 +6234,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.authRegistry.verify(requestCredential(request)) === true,
   });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
+  registerTasksRoutes(app, { eventStore: deps.eventStore, publish: publishSessionEvent });
   registerAutomationRoutes(app, {
     eventStore: deps.eventStore,
     checkScript: (automation) => automationExecutor.checkScript(automation),

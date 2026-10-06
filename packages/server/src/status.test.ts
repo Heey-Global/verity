@@ -240,6 +240,7 @@ const SAMPLES: Record<AgentEventType, AgentEvent> = {
   status: running,
   text,
   notice: { t: 'notice', text: 'transcribing…' },
+  tasks_updated: { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['t1'] },
   prompt: { t: 'prompt', text: 'do the thing' },
   thinking: { t: 'thinking', blockId: 'b1', delta: 'hmm' },
   skill: { t: 'skill', text: '/code-review' },

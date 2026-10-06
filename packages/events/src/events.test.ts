@@ -14,6 +14,7 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
   text: { t: 'text', delta: 'hello' },
   dev_servers_changed: { t: 'dev_servers_changed', devServers: [] },
   notice: { t: 'notice', text: 'Meeting transcript saved', role: 'agent' },
+  tasks_updated: { t: 'tasks_updated', origin: 'agent', change: 'added', taskIds: ['t1'] },
   prompt: { t: 'prompt', text: 'do the thing' },
   thinking: { t: 'thinking', blockId: 'b1', signature: 'sig', delta: 'pondering' },
   skill: { t: 'skill', text: '# /code-review\nRun before push.' },

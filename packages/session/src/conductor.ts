@@ -449,6 +449,10 @@ export interface ConductorDeps {
    * Evaluated whenever a fresh backend context starts, so an empty session can
    * receive hidden capabilities on its first real turn without a synthetic turn. */
   sessionSystemPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
+  /** The "Assigned tasks" section for a session (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md
+   * §6.2). Rebuilt on EVERY turn, resumed contexts included, so compaction or a
+   * backend switch cannot lose the list; empty when nothing is assigned. */
+  assignedTasksPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
   /** Secret alias NAMES eligible for `verity_http_request` / `verity_secret_run` in a
    * project (ADR 0011 D3); best-effort — failures or absence simply omit the list from
    * the turn context. Backend-independent: the names reach every ACP backend that can
@@ -1329,6 +1333,7 @@ export class Conductor {
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
     runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+    runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
@@ -4693,6 +4698,7 @@ export class Conductor {
           if (session !== undefined) {
             runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
             runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+            runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
             contextProjectId = session.projectId;
           }
         }
@@ -5377,6 +5383,12 @@ export class Conductor {
     const memory = settings?.memory?.trim();
     if (memory === undefined || memory.length === 0) return '';
     return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
+  }
+
+  /** The per-turn "Assigned tasks" section, framed like the other appended blocks. */
+  private async assignedTasksPrompt(session: SessionRecord): Promise<string> {
+    const prompt = (await this.deps.assignedTasksPrompt?.(session))?.trim();
+    return prompt ? `\n\n${prompt}` : '';
   }
 
   private projectKnowledgePrompt(session: SessionRecord): string {

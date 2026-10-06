@@ -50,6 +50,11 @@ const activeUserRoutes = new Set([
   routeScopeKey('GET', '/projects'),
   routeScopeKey('GET', '/auth/session'),
   routeScopeKey('POST', '/auth/logout'),
+  // Tasks are owner-scoped inside the handler (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §7.2).
+  routeScopeKey('GET', '/tasks'),
+  routeScopeKey('PUT', '/tasks/:id'),
+  routeScopeKey('PATCH', '/tasks/:id'),
+  routeScopeKey('DELETE', '/tasks/:id'),
 ]);
 
 function pairedRoutePolicy(method: string, routeUrl: string): PairedRoutePolicy {
