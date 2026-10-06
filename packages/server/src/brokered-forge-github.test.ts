@@ -136,7 +136,18 @@ describe('GitHub forge policy', () => {
       ).rejects.toThrow();
     expect(h.mint).not.toHaveBeenCalled();
   });
-  it('requires PR read authority for commit-associated PRs through fragments and aliases', async () => {
+  it.each([
+    'query{repository(owner:"acme",name:"app"){parent{defaultBranchRef{target{... on Commit{history(first:10){nodes{message}}}}}}}}',
+    'query{repository(owner:"acme",name:"app"){owner{... on User{issues(first:1){nodes{body}}}}}}',
+    'mutation{closeIssue(input:{issueId:"I_1"}){issue{repository{defaultBranchRef{target{... on Commit{history(first:10){nodes{message}}}}}}}}}',
+  ])('rejects metadata and mutation response discovery before minting: %s', async (query) => {
+    const h = harness();
+    await expect(
+      h.adapter.authorize(graph(query), binding, actions, new AbortController().signal),
+    ).rejects.toThrow();
+    expect(h.mint).not.toHaveBeenCalled();
+  });
+  it('rejects commit-associated PR discovery through fragments and aliases', async () => {
     const query = graph(`query {
       repository(owner:"acme",name:"app") {
         defaultBranchRef { target { ...CommitReads } }
@@ -156,14 +167,6 @@ describe('GitHub forge policy', () => {
     ).rejects.toThrow();
     expect(h.mint).not.toHaveBeenCalled();
     expect(h.transport).not.toHaveBeenCalled();
-    await expect(
-      h.adapter.authorize(
-        query,
-        binding,
-        new Set<ForgeAction>(['git-read', 'pulls-read']),
-        new AbortController().signal,
-      ),
-    ).resolves.toMatchObject({ authorization: 'Bearer server-token' });
   });
   it('requires PR write authority for a comment on a pull request', async () => {
     const h = harness('acme/app', 'PullRequest');

@@ -275,6 +275,32 @@ export function createGitHubForgeAdapter(options: {
           const arg = field.arguments?.find((entry) => entry.name.value === name);
           return arg ? valueFromASTUntyped(arg.value, graph.variables) : undefined;
         };
+        const scalarFields = (
+          set: SelectionSetNode | undefined,
+          allowed: readonly string[],
+        ): void => {
+          if (
+            !set ||
+            fields(set).some((child) => !allowed.includes(child.name.value) || child.selectionSet)
+          )
+            rejected();
+        };
+        const metadataSelection = (node: FieldNode): void => {
+          if (node.name.value === 'owner') {
+            scalarFields(node.selectionSet, ['login', 'id', 'name', '__typename']);
+          } else if (node.name.value === 'defaultBranchRef') {
+            if (!node.selectionSet) rejected();
+            for (const child of fields(node.selectionSet)) {
+              if (child.name.value === 'target')
+                scalarFields(child.selectionSet, ['oid', '__typename']);
+              else if (
+                !['name', 'prefix', 'id', '__typename'].includes(child.name.value) ||
+                child.selectionSet
+              )
+                rejected();
+            }
+          } else if (node.selectionSet) rejected();
+        };
         const roots = fields(operation.selectionSet);
         if (!roots.length || roots.length > 8) rejected();
         // Side channels such as search, organization, arbitrary nodes, and introspection
@@ -392,6 +418,24 @@ export function createGitHubForgeAdapter(options: {
                 !/^[a-f0-9]{40}$/.test(input.expectedHeadOid))
             )
               rejected();
+            // Mutation payloads return identifiers; they must not become an unrelated read channel.
+            if (!field.selectionSet) rejected();
+            for (const child of fields(field.selectionSet)) {
+              if (['issue', 'pullRequest'].includes(child.name.value)) {
+                scalarFields(child.selectionSet, ['id', 'url', 'number', '__typename']);
+              } else if (child.name.value === 'commentEdge') {
+                if (!child.selectionSet) rejected();
+                for (const edge of fields(child.selectionSet)) {
+                  if (edge.name.value === 'node')
+                    scalarFields(edge.selectionSet, ['id', 'url', '__typename']);
+                  else if (edge.name.value !== '__typename' || edge.selectionSet) rejected();
+                }
+              } else if (
+                !['clientMutationId', '__typename'].includes(child.name.value) ||
+                child.selectionSet
+              )
+                rejected();
+            }
             assertAction(actions, rule.action);
             pendingNodes.push({
               id: input[rule.id],
@@ -404,6 +448,7 @@ export function createGitHubForgeAdapter(options: {
         // Block nested cross-repository discovery surfaces, including fragment-hidden ones.
         visit(document, {
           Field(node) {
+            if (['owner', 'defaultBranchRef'].includes(node.name.value)) metadataSelection(node);
             if (
               ['parent', 'headRepository', 'baseRepository'].includes(node.name.value) ||
               (node.name.value === 'repository' && !node.arguments?.length)
@@ -415,6 +460,7 @@ export function createGitHubForgeAdapter(options: {
                 )
               )
                 rejected();
+              for (const child of fields(node.selectionSet)) metadataSelection(child);
             }
             if (
               node.name.value === 'repository' &&
