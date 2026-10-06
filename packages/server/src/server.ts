@@ -3999,7 +3999,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     const token = requestCredential(request);
     if (registry.verify(token)) {
-      if (cookieToken !== undefined && token !== undefined) setBrowserSession(reply, token);
+      if (cookieToken !== undefined && token === cookieToken) setBrowserSession(reply, cookieToken);
       const userId = registry.resolveUserId(token);
       if (userId === undefined) return reply.code(401).send({ error: 'unauthorized' });
       request.localUserId = userId;

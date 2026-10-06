@@ -131,6 +131,17 @@ describe('browser authentication through the Core', () => {
           })
         ).statusCode,
       ).toBe(200);
+      // Mixed credentials must not replace the browser cookie with a native token.
+      const mixed = await app.inject({
+        url: '/devices',
+        headers: { cookie: cookie(browser.token), authorization: `Bearer ${native.token}` },
+      });
+      expect(mixed.statusCode).toBe(200);
+      expect(mixed.headers['set-cookie']).toBeUndefined();
+      expect(
+        (await app.inject({ url: '/devices', headers: { cookie: cookie(browser.token) } }))
+          .statusCode,
+      ).toBe(200);
       expect(
         (
           await app.inject({
