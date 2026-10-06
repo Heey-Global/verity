@@ -2179,6 +2179,30 @@ export async function buildEmbeddedServer(
       ? createGitBranchService({
           ...(config.repoDir ? { repoDir: config.repoDir } : {}),
           baseBranch: 'main',
+          ...(config.dockerBaseUrl && config.hostCloneRoot
+            ? {
+                git: async (args: readonly string[]) => {
+                  // Repository helpers must run with the same privileges as the agent.
+                  const index = args.indexOf('-C');
+                  const path = index < 0 ? undefined : args[index + 1];
+                  const session = (await eventStore.listSessions()).find(
+                    (row) => row.worktree === path,
+                  );
+                  if (!session || !projectDocker)
+                    throw new Error('Git operation has no project session context');
+                  const project = await eventStore.getProject(
+                    session.projectId ?? CONTROL_PLANE_PROJECT_ID,
+                  );
+                  if (!project) throw new Error('Project is unavailable');
+                  return createSandboxGit({
+                    containerName: project.containerName,
+                    hostRoot: projectClonePath(config.hostCloneRoot!, project),
+                    dockerBaseUrl: config.dockerBaseUrl,
+                    inspect: () => projectDocker.inspectContainer(project.containerName),
+                  })(args);
+                },
+              }
+            : {}),
         })
       : undefined;
   // Open-PR lookup for the header/PR strip (#125): built per SESSION WORKTREE, not
