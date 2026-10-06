@@ -68,7 +68,14 @@ export function credentialSafeStream(
   credentials: readonly { value: string; alias: string }[],
 ): Transform {
   const needles = redactionOrder(credentials);
-  const retained = Math.max(1, ...needles.map(({ needle }) => Buffer.byteLength(needle))) - 1;
+  // Each of the redactor's eight percent-decoding rounds can shrink bytes 3:1.
+  // Literal-length retention would flush an encoded prefix before the echo is complete.
+  const retained =
+    Math.max(
+      1,
+      ...needles.map(({ needle }) => Buffer.byteLength(needle)),
+      ...credentials.map(({ value }) => Buffer.byteLength(value) * 3 ** 8),
+    ) - 1;
   let tail = Buffer.alloc(0);
   const check = (chunk: Buffer): void => {
     const text = chunk.toString('latin1');
