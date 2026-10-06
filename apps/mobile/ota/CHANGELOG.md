@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.54.1](https://github.com/Heey-Global/verity/compare/mobile-v1.54.0...mobile-v1.54.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **mobile:** allow dismissing running server hints ([#1209](https://github.com/Heey-Global/verity/issues/1209)) ([35d3e90](https://github.com/Heey-Global/verity/commit/35d3e907b8d2c8f5ef08c1911c713ba6f79971a9))
+* **planning:** avoid redundant tool approval for plan presentation ([#1205](https://github.com/Heey-Global/verity/issues/1205)) ([dd64496](https://github.com/Heey-Global/verity/commit/dd644967a88e63d431339724e27c84d2fd63ea54))
+
 ## [1.53.1](https://github.com/Heey-Global/verity/compare/mobile-v1.53.0...mobile-v1.53.1) (2026-10-05)
 
 
