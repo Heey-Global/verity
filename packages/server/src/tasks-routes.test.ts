@@ -2,7 +2,7 @@ import type { AgentEvent } from '@verity/events';
 import { EventStore } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 
 import { executeTasksTool, registerTasksRoutes } from './tasks-routes.js';
@@ -317,6 +317,41 @@ describe('executeTasksTool', () => {
       [T1, undefined],
       [T2, false],
     ]);
+  });
+
+  it('does not expose the project creator backlog to an unassigned session', async () => {
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      origin: 'user',
+      title: 'Private backlog',
+    });
+    expect(await run('s1', { action: 'list', scope: 'project' })).toEqual({ tasks: [] });
+  });
+
+  it('rejects agent completion if assignment changes after the authorization read', async () => {
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Assigned',
+    });
+    const patch = store.tasks.patch.bind(store.tasks);
+    const spy = vi.spyOn(store.tasks, 'patch').mockImplementationOnce(async (...args) => {
+      await patch(T1, ADMIN, { sessionId: null });
+      return patch(...args);
+    });
+    try {
+      await expect(run('s1', { action: 'complete', id: T1, result: 'Verified' })).rejects.toThrow(
+        /at revision/,
+      );
+      expect((await store.tasks.get(T1, ADMIN))?.status).toBe('open');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('updates assigned tasks belonging to different users', async () => {

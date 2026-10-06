@@ -333,11 +333,12 @@ export async function executeTasksTool(input: {
   const owner = await tasks.agentTaskOwner(input.sessionId, input.projectId);
   if (input.request.action === 'list') {
     const assigned = await tasks.listAssigned(input.sessionId);
-    if (input.request.scope !== 'project' || owner === undefined || input.projectId === null)
+    const backlogOwner = await tasks.assignedOwner(input.sessionId);
+    if (input.request.scope !== 'project' || backlogOwner === undefined || input.projectId === null)
       return { tasks: assigned.map(agentTaskView) };
     const backlog = (
       await tasks.list({
-        ownerUserId: owner,
+        ownerUserId: backlogOwner,
         projectId: input.projectId,
         statuses: OPEN_TASK_STATUSES,
       })
@@ -387,16 +388,26 @@ export async function executeTasksTool(input: {
   const target = (await tasks.listAssigned(input.sessionId)).find((task) => task.id === request.id);
   if (target === undefined) throw new TaskNotFoundError(request.id);
   if (request.action === 'update') {
-    const task = await tasks.patch(target.id, target.ownerUserId, {
-      title: request.title,
-      detail: request.detail,
-      status: request.status,
-    });
+    const task = await tasks.patch(
+      target.id,
+      target.ownerUserId,
+      {
+        title: request.title,
+        detail: request.detail,
+        status: request.status,
+      },
+      target.revision,
+    );
     await notify([task.id], 'updated');
     return { task: agentTaskView(task) };
   }
   const status = request.action === 'complete' ? 'done' : 'dropped';
-  const task = await tasks.patch(target.id, target.ownerUserId, { status, result: request.result });
+  const task = await tasks.patch(
+    target.id,
+    target.ownerUserId,
+    { status, result: request.result },
+    target.revision,
+  );
   await notify([task.id], status === 'done' ? 'completed' : 'dropped');
   const remaining = await tasks.listAssigned(input.sessionId);
   return {
