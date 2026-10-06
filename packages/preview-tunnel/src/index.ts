@@ -278,7 +278,9 @@ export class PreviewEdge {
     this.server.on('upgrade', (request, socket, head) => {
       void this.handleUpgrade(request, socket, head).catch(() => {
         if (!socket.destroyed)
-          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n', () =>
+            socket.destroy(),
+          );
       });
     });
     if (options.expiresAt !== undefined && !this.expired()) this.scheduleExpiry();
@@ -333,7 +335,9 @@ export class PreviewEdge {
     }
     if (!this.sessionAuthorized(request)) {
       if (pin === null) {
-        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () =>
+          socket.destroy(),
+        );
         return;
       }
       const valid = await this.authorizePin(
@@ -351,6 +355,7 @@ export class PreviewEdge {
             }[status] ?? 'Error';
           socket.end(
             `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n${retryAfter ? `Retry-After: ${retryAfter}\r\n` : ''}\r\n`,
+            () => socket.destroy(),
           );
         },
       );

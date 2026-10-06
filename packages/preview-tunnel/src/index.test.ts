@@ -355,6 +355,56 @@ describe('WebSocket PIN query authentication', () => {
     expect(paths).toEqual(['/socket?signature=a%20~&value=%2f']);
   });
 
+  it.each(['', '?pin=000000'])(
+    'releases rejected sockets even when clients withhold FIN (%s)',
+    async (query) => {
+      const edge = new PreviewEdge({
+        shareId: 'ws-half-open',
+        pinHash: hashPreviewPin('123456'),
+        connectorTokenHash: hashPreviewSecret('connector'),
+        sessionSecretHash,
+        publicOrigin: 'https://ws-half-open.preview.example.test',
+      });
+      const port = await edge.listen();
+      const client = connect({ port, host: '127.0.0.1', allowHalfOpen: true });
+      client.on('error', () => {});
+      const ended = new Promise<string>((resolve) => {
+        let response = '';
+        client.on('data', (chunk: Buffer) => {
+          response += chunk.toString();
+        });
+        client.once('end', () => resolve(response));
+      });
+      client.write(
+        `GET /attendee${query} HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n${handshakeKey()}\r\n`,
+      );
+      let closing: Promise<void> | undefined;
+      try {
+        expect(await ended).toContain('401 Unauthorized');
+        // An unclosed upgrade can keep server shutdown waiting for the client's FIN.
+        closing = edge.close();
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            closing,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('rejected socket retained by server')),
+                1000,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        expect(client.writableEnded).toBe(false);
+      } finally {
+        client.destroy();
+        await (closing ?? edge.close());
+      }
+    },
+  );
+
   it('shares the failed-attempt limit with HTTP and rejects foreign browser origins', async () => {
     const reached = vi.fn();
     const targetPort = await wsTarget(reached);
