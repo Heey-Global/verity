@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
-import type { ContainerSpec, DockerClient } from '../docker.js';
+import { DockerError, type ContainerSpec, type DockerClient } from '../docker.js';
 import type { UpdateJournal } from './update-journal.js';
 import { localPreviewIngressMigration } from './local-preview-ingress.js';
 import { readAgentSeedStamp } from './agent-seed-stamp.js';
@@ -252,6 +252,25 @@ async function waitForHandoffOrFailure(
  * and is the only process allowed to mark the journal complete.
  */
 export async function reconcileManagedCompanions(
+  options: ReconcileManagedCompanionsOptions,
+): Promise<void> {
+  // The handoff starts the successor before deleting the predecessor. A snapshot
+  // can therefore lose a container during discovery or subsequent readiness work.
+  // Re-enter reconciliation with fresh discovery rather than strand the journal
+  // until another Updater restart; persistent failures still reach the caller.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await reconcileManagedCompanionsOnce(options);
+      return;
+    } catch (error) {
+      if (!(error instanceof DockerError) || error.kind !== 'container_not_found' || attempt >= 2)
+        throw error;
+      await (options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(500);
+    }
+  }
+}
+
+async function reconcileManagedCompanionsOnce(
   options: ReconcileManagedCompanionsOptions,
 ): Promise<void> {
   if (options.docker.listContainers === undefined)

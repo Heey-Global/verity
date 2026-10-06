@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+import { DockerError } from '../docker.js';
 import type {
   ContainerInspect,
   ContainerSpec,
@@ -423,6 +424,105 @@ describe('managed companion reconciliation', () => {
         sleep: async () => undefined,
       }),
     ).rejects.toThrow(/did not become healthy/);
+  });
+
+  it.each(['updater', 'gateway'])(
+    'rediscovers a %s predecessor removed after listing',
+    async (role) => {
+      const state = fake({ gateway: targetImage, updater: targetImage });
+      const predecessor = state.summaries.find(
+        (item) =>
+          item.labels['com.docker.compose.service'] ===
+          (role === 'updater' ? 'verity-updater' : 'verity-managed-gateway'),
+      )!;
+      const successor = service(
+        '9'.repeat(64),
+        `${role}-replacement`,
+        predecessor.labels['com.docker.compose.service']!,
+      );
+      successor.labels['verity.replacement-for'] = predecessor.id;
+      state.summaries.push(successor);
+      state.inspect.set(successor.id, { ...state.inspect.get(predecessor.id)!, id: successor.id });
+      const inspect = state.docker.inspectContainer;
+      state.docker.inspectContainer = vi.fn(async (id: string) => {
+        if (id === predecessor.id) {
+          state.summaries.splice(state.summaries.indexOf(predecessor), 1);
+          throw new DockerError({ kind: 'container_not_found', id });
+        }
+        return inspect(id);
+      });
+      await reconcileManagedCompanions({
+        managedRoot: '/managed',
+        docker: state.docker,
+        journal,
+        reconcileRunner: async () => undefined,
+        sleep: async () => undefined,
+      });
+      expect(state.docker.listContainers).toHaveBeenCalledTimes(3);
+      expect(state.replacements).toEqual([]);
+      expect(state.specs).toEqual([]);
+    },
+  );
+
+  it('rediscovers a gateway removed after successful service discovery', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const predecessor = state.summaries.find(
+      (item) => item.labels['com.docker.compose.service'] === 'verity-managed-gateway',
+    )!;
+    const successor = service('9'.repeat(64), 'gateway-replacement', 'verity-managed-gateway');
+    const inspect = state.docker.inspectContainer;
+    let gatewayInspections = 0;
+    state.docker.inspectContainer = vi.fn(async (id: string) => {
+      if (id === predecessor.id && ++gatewayInspections === 2) {
+        state.inspect.set(successor.id, { ...state.inspect.get(id)!, id: successor.id });
+        state.summaries.splice(state.summaries.indexOf(predecessor), 1, successor);
+        throw new DockerError({ kind: 'container_not_found', id });
+      }
+      return inspect(id);
+    });
+    await reconcileManagedCompanions({
+      managedRoot: '/managed',
+      docker: state.docker,
+      journal,
+      reconcileRunner: async () => undefined,
+      sleep: async () => undefined,
+    });
+    expect(state.docker.inspectContainer).toHaveBeenCalledWith(successor.id);
+    expect(state.docker.listContainers).toHaveBeenCalledTimes(3);
+  });
+
+  it('bounds rediscovery when a listed container remains missing', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const error = new DockerError({ kind: 'container_not_found', id: 'gone' });
+    state.docker.inspectContainer = vi.fn(async () => {
+      throw error;
+    });
+    await expect(
+      reconcileManagedCompanions({
+        managedRoot: '/managed',
+        docker: state.docker,
+        journal,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toBe(error);
+    expect(state.docker.listContainers).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry unrelated Docker errors', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const error = new DockerError({ kind: 'network', cause: new Error('unavailable') });
+    state.docker.inspectContainer = vi.fn(async () => {
+      throw error;
+    });
+    await expect(
+      reconcileManagedCompanions({
+        managedRoot: '/managed',
+        docker: state.docker,
+        journal,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toBe(error);
+    expect(state.docker.listContainers).toHaveBeenCalledTimes(1);
   });
 
   it('resumes replacement while predecessor and prepared successor both exist', async () => {
