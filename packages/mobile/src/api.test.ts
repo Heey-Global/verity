@@ -550,13 +550,13 @@ describe('VerityClient auth (bearer token)', () => {
     expect(authHeader(calls[1])).toBe('Bearer second');
   });
 
-  it('mints a stream ticket over authenticated HTTP', async () => {
+  it('mints a live ticket over authenticated HTTP', async () => {
     const expiresAt = '2026-08-30T18:00:00.000Z';
     const ticket = 'A'.repeat(43);
     const { fetch, calls } = fakeFetch(json({ ticket, expiresAt }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch, getToken: () => 'device' });
-    await expect(client.createStreamTicket('session/1')).resolves.toEqual({ ticket, expiresAt });
-    expect(calls[0]?.url).toBe('http://host/sessions/session%2F1/stream-ticket');
+    await expect(client.createLiveTicket()).resolves.toEqual({ ticket, expiresAt });
+    expect(calls[0]?.url).toBe('http://host/live/ticket');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(authHeader(calls[0])).toBe('Bearer device');
   });

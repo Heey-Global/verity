@@ -39,6 +39,7 @@ import type { SandboxUpdateChecker } from './sandbox-updates.js';
 import type { ClaudeOAuthTokenProvider } from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import type { PushSender } from './push-sender.js';
+import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
@@ -301,8 +302,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
         }
       : undefined;
 
+  const sessionChanges = createSessionChangeFeed();
   return buildServer({
     eventStore: deps.eventStore,
+    sessionChanges,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { matrixConnectorToken: deps.matrixConnectorToken }
@@ -463,6 +466,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       new Conductor({
         store: deps.eventStore,
         bus: deps.bus,
+        onSessionChanged: (sessionId, change) => sessionChanges.emit(sessionId, change),
         ...deps.conductor,
         ...(deps.conductor?.sessionBackend === undefined &&
         derivedProjectSessionBackend !== undefined

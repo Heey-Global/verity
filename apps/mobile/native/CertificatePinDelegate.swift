@@ -10,7 +10,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
   private var storedPhase = "NO_AUTH_CHALLENGE"
   private var storedMetrics = "tx0,proxy0,connect0,tls0,response0"
   var onOpen: (() -> Void)?
-  var onClose: ((String?) -> Void)?
+  var onClose: ((Int, String?) -> Void)?
 
   var failure: String? {
     failureLock.lock()
@@ -236,7 +236,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     webSocketTask: URLSessionWebSocketTask,
     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
     reason: Data?
-  ) { onClose?(reason.flatMap { String(data: $0, encoding: .utf8) }) }
+  ) { onClose?(closeCode.rawValue, reason.flatMap { String(data: $0, encoding: .utf8) }) }
 }
 
 enum CertificatePinError: Error { case invalidPin }

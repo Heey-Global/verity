@@ -12,11 +12,8 @@ import {
 } from '../api.js';
 import type { SessionState } from '../reducer.js';
 import { SessionReducer } from '../reducer.js';
-import {
-  SessionStream,
-  type SessionStreamConnectionState,
-  type StreamSocketFactory,
-} from '../stream.js';
+import type { LiveSessionTransport } from '../live/connection.js';
+import { SessionStream, type SessionStreamConnectionState } from '../stream.js';
 import { engineLabel } from '../ui/modelPicker.js';
 
 /** How many of the most recent events to open a session from (the tail). One turn
@@ -25,6 +22,7 @@ import { engineLabel } from '../ui/modelPicker.js';
  * turns load on scroll-up. Stays within the server's 200 page cap. */
 const HISTORY_PAGE = 150;
 const HISTORY_VISIBLE_SCAN_MAX_PAGES = 5;
+export const DEFAULT_ACTIVITY_POLL_MS = 10_000;
 
 /**
  * An operator message shown IMMEDIATELY on send, before the server has echoed it
@@ -194,12 +192,12 @@ export interface RestoredQueuedTurn {
 export interface SessionModelOptions {
   client: VerityClient;
   sessionId: string;
-  /** Control-plane base URL (http/https); the stream switches it to ws/wss. */
-  baseUrl: string;
-  /** Opens the WS socket (inject the platform `WebSocket` / a fake). */
-  connect: StreamSocketFactory;
-  /** Mints a one-use stream ticket over the authenticated API. */
-  getStreamTicket?: () => Promise<string>;
+  /** The app's live connection; the session subscribes to it. */
+  transport: LiveSessionTransport;
+  /** Safety-net interval for the activity snapshot. Live hints refresh it at
+   * once ({@link SessionModel.refreshActivity}); the poll only covers a change
+   * that produced no hint. */
+  activityPollMs?: number;
   /** Notified with a fresh state snapshot on every change. */
   onChange?: (state: SessionModelState) => void;
   /** Lets sibling overview state retire the same permission id immediately.
@@ -207,8 +205,6 @@ export interface SessionModelOptions {
   onPermissionSettled?: (toolUseId: string, accepted: boolean) => void;
   /** Notifies sibling overview state only when an active turn was actually stopped. */
   onTurnCancelled?: () => void;
-  /** Reconnect scheduler passed through to {@link SessionStream}. */
-  scheduleReconnect?: (retry: () => void, delayMs: number) => void;
   /**
    * Gates every server call on the session actually existing, for a screen that
    * renders the chat BEFORE `POST /sessions` has answered: the operator taps "+",
@@ -302,6 +298,7 @@ export class SessionModel {
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
   // server-side git read (#110), so a slow tick must not let requests stack up.
   private _activityInFlight = false;
+  private _activityRefreshPending = false;
   private _activityRequest = 0;
   private _planningDecisionAfterActivityRequest = 0;
   // Backward-pagination state: whether older history exists before the loaded
@@ -336,10 +333,8 @@ export class SessionModel {
 
   constructor(private readonly opts: SessionModelOptions) {
     this.stream = new SessionStream({
-      baseUrl: opts.baseUrl,
       sessionId: opts.sessionId,
-      connect: opts.connect,
-      ...(opts.getStreamTicket ? { getStreamTicket: opts.getStreamTicket } : {}),
+      transport: opts.transport,
       onUpdate: (session) => {
         this._session = session;
         // The canonical message may have just landed — hand the bubble over from the
@@ -359,7 +354,6 @@ export class SessionModel {
         this._connectionState = state;
         this.emit();
       },
-      ...(opts.scheduleReconnect ? { scheduleReconnect: opts.scheduleReconnect } : {}),
     });
     this._session = this.stream.state; // empty transcript until the stream opens
     this._ready =
@@ -588,7 +582,24 @@ export class SessionModel {
     void this.loadDetail();
   }
 
-  /** Suspend the socket + activity poll while the app is backgrounded. */
+  /** Whether the session is on screen (focused). While it is, the server sends
+   * this user no notification about it. */
+  setView(view: boolean): void {
+    this.stream.setView(view);
+  }
+
+  /** Refresh the activity snapshot now — on a live hint that the session's
+   * activity, status or pending requests changed. */
+  refreshActivity(): void {
+    if (!this._running || this._paused || !this._historyAttemptComplete) return;
+    if (this._activityInFlight) {
+      this._activityRefreshPending = true;
+      return;
+    }
+    void this.loadActivity();
+  }
+
+  /** Leave the live subscription + stop the activity poll while backgrounded. */
   pause(): void {
     this._paused = true;
     this.stream.pause();
@@ -639,9 +650,13 @@ export class SessionModel {
     if (this._activityTimer !== undefined) return;
     // Poll the lightweight activity endpoint so the working indicator + waiting
     // messages are server-authoritative (reliable + survive navigation). Fetch
-    // once immediately, then every 1.5s while open.
+    // once immediately; live hints refresh it as things change, and the interval
+    // is only the safety net for a change that produced no hint.
     void this.loadActivity();
-    this._activityTimer = setInterval(() => void this.loadActivity(), 1500);
+    this._activityTimer = setInterval(
+      () => void this.loadActivity(),
+      this.opts.activityPollMs ?? DEFAULT_ACTIVITY_POLL_MS,
+    );
   }
 
   private stopActivityPoll(): void {
@@ -659,7 +674,6 @@ export class SessionModel {
    * On any failure before a snapshot is seeded, fall back to a full replay.
    */
   private async openStreamFromTail(): Promise<void> {
-    this.stream.prepareConnection();
     try {
       let page = await this.opts.client.getHistory(this.opts.sessionId, { limit: HISTORY_PAGE });
       const pages = [page.events];
@@ -934,6 +948,10 @@ export class SessionModel {
       // transient — keep the last values
     } finally {
       this._activityInFlight = false;
+      if (this._activityRefreshPending) {
+        this._activityRefreshPending = false;
+        this.refreshActivity();
+      }
     }
   }
 

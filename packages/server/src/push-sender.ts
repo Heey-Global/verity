@@ -72,7 +72,12 @@ export interface PushLogger {
 }
 
 export interface PushSender {
-  send(notification: PushNotification): Promise<PushSendResult>;
+  /** Send to the given devices, or to every registered device when `tokens` is
+   * omitted (announcements that belong to no session). */
+  send(
+    notification: PushNotification,
+    tokens?: readonly DevicePushTokenRecord[],
+  ): Promise<PushSendResult>;
   processDueReceipts(): Promise<PushReceiptResult>;
   start(): void;
   close(): Promise<void>;
@@ -110,8 +115,11 @@ class DefaultPushSender implements PushSender {
     this.maxReceiptAttempts = options.maxReceiptAttempts ?? DEFAULT_MAX_RECEIPT_ATTEMPTS;
   }
 
-  async send(notification: PushNotification): Promise<PushSendResult> {
-    const tokens = await this.options.store.listDevicePushTokens();
+  async send(
+    notification: PushNotification,
+    targets?: readonly DevicePushTokenRecord[],
+  ): Promise<PushSendResult> {
+    const tokens = targets ?? (await this.options.store.listDevicePushTokens());
     const result: PushSendResult = {
       targets: tokens.length,
       ticketsAccepted: 0,

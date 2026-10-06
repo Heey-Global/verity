@@ -81,6 +81,7 @@ export function registerAutomationRoutes(
           prompt: body.prompt,
           script,
           model,
+          ...(request.localUserId ? { sponsorUserId: request.localUserId } : {}),
         },
         new Date(),
         session,

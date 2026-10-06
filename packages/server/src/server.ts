@@ -102,6 +102,7 @@ import {
   aggregateUsage,
   appendExternalPromptData,
   attachmentUploadSchema,
+  LIVE_TICKET_PROTOCOL_PREFIX,
   type AgentEvent,
   type Attachment,
   type RateLimitState,
@@ -210,12 +211,9 @@ import {
 import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
-import {
-  createPushFirePoints,
-  createPushForegroundPresence,
-  type PushFirePoints,
-  type PushForegroundPresence,
-} from './push-fire-points.js';
+import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
+import { createPushRouter, type PushRouter } from './push-router.js';
+import { LiveHub, type SessionChangeFeed } from './live/live-hub.js';
 import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-ready-push.js';
 import { createSessionPrCache } from './session-pr-cache.js';
 import type { PushSender } from './push-sender.js';
@@ -1170,6 +1168,11 @@ export interface ServerDeps {
   /** Foreground reconnect debounce for push fire points. Production uses the
    * default; tests may shorten it without sleeping. */
   pushFirePointDebounceMs?: number | undefined;
+  /** Conductor-side session changes no event records; hinted to live overviews. */
+  sessionChanges?: SessionChangeFeed | undefined;
+  /** How long an in-app alert waits for an answer before the user's other
+   * devices are pushed. Tests shorten it. */
+  pushEscalationMs?: number | undefined;
   /** PR-ready background refresh cadence. Production defaults to 30 seconds;
    * tests may shorten it. */
   pullRequestPushPollMs?: number | undefined;
@@ -1578,8 +1581,6 @@ interface ModelList {
   /** The id a fresh spawn defaults to. Omitted when no model is currently usable. */
   default?: string | undefined;
 }
-
-const streamQuery = z.object({ sinceSeq: z.coerce.number().int().nonnegative().optional() });
 
 // Resource limits on per-turn attachments so a client can't push an unbounded
 // base64 blob through the control plane. Files get a larger allowance because
@@ -2970,10 +2971,10 @@ export function redactScrollDiagnosticData(data: Record<string, unknown>): Recor
  * Returns the Fastify instance (not yet listening) so callers own the lifecycle
  * and tests can use `inject()`.
  */
-/** The one `{ websocket: true }` route (`GET /sessions/:id/stream`). The auth gate
- * lets a genuine upgrade reach the handler, which consumes its one-use stream
- * ticket; `:id` never contains a slash. Keep in sync with the route below. */
-const WS_STREAM_PATH = /^\/sessions\/[^/]+\/stream$/;
+/** The one `{ websocket: true }` route (`GET /live`). The auth gate lets a
+ * genuine upgrade reach the handler, which consumes its one-use live ticket.
+ * Keep in sync with the route below. */
+const WS_LIVE_PATH = /^\/live$/;
 
 /** The routes that stream a request body straight to disk without ever
  *  interpreting its media type. Route patterns, matched against
@@ -2984,48 +2985,37 @@ const BINARY_UPLOAD_ROUTES = new Set([
 ]);
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
-  const streamTickets = new Map<
-    string,
-    { sessionId: string; expiresAt: number; deviceId: string | undefined }
-  >();
-  const streamTicketTtlMs = 30_000;
-  const streamTicketProtocolPrefix = 'verity-stream-ticket.';
-  const deviceStreams = new Map<string, Set<WebSocket>>();
-  const mintStreamTicket = (
-    sessionId: string,
-    deviceId: string | undefined,
+  const liveTickets = new Map<string, { expiresAt: number; deviceId: string; userId: string }>();
+  const liveTicketTtlMs = 30_000;
+  const mintLiveTicket = (
+    deviceId: string,
+    userId: string,
   ): { ticket: string; expiresAt: string } => {
     const now = Date.now();
-    for (const [ticket, record] of streamTickets) {
-      if (record.expiresAt <= now) streamTickets.delete(ticket);
+    for (const [ticket, record] of liveTickets) {
+      if (record.expiresAt <= now) liveTickets.delete(ticket);
     }
-    while (streamTickets.size >= 1024) streamTickets.delete(streamTickets.keys().next().value!);
+    while (liveTickets.size >= 1024) liveTickets.delete(liveTickets.keys().next().value!);
     const ticket = randomBytes(32).toString('base64url');
-    const expiresAt = now + streamTicketTtlMs;
-    streamTickets.set(ticket, { sessionId, expiresAt, deviceId });
+    const expiresAt = now + liveTicketTtlMs;
+    liveTickets.set(ticket, { expiresAt, deviceId, userId });
     return { ticket, expiresAt: new Date(expiresAt).toISOString() };
   };
-  const consumeStreamTicket = (
-    sessionId: string,
+  const consumeLiveTicket = (
     protocolHeader: string | undefined,
-  ): { deviceId: string } | undefined => {
+  ): { deviceId: string; userId: string } | undefined => {
     const offered = (protocolHeader ?? '')
       .split(',')
       .map((value) => value.trim())
-      .find((value) => value.startsWith(streamTicketProtocolPrefix));
+      .find((value) => value.startsWith(LIVE_TICKET_PROTOCOL_PREFIX));
     if (offered === undefined) return undefined;
-    const ticket = offered.slice(streamTicketProtocolPrefix.length);
-    const record = streamTickets.get(ticket);
+    const ticket = offered.slice(LIVE_TICKET_PROTOCOL_PREFIX.length);
+    const record = liveTickets.get(ticket);
     if (record === undefined) return undefined;
-    streamTickets.delete(ticket);
-    if (
-      record.expiresAt <= Date.now() ||
-      record.sessionId !== sessionId ||
-      record.deviceId === undefined ||
-      !deps.authRegistry?.isKnownId?.(record.deviceId)
-    )
+    liveTickets.delete(ticket);
+    if (record.expiresAt <= Date.now() || !deps.authRegistry?.isKnownId?.(record.deviceId))
       return undefined;
-    return { deviceId: record.deviceId };
+    return { deviceId: record.deviceId, userId: record.userId };
   };
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
@@ -3386,16 +3376,112 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const session = await deps.eventStore.getSession(sessionId);
     return session ? describePushSession(session) : {};
   };
-  const pushPresence: PushForegroundPresence | undefined =
-    pushSender === undefined ? undefined : createPushForegroundPresence();
+  const liveHub = new LiveHub({
+    bus: deps.bus,
+    store: {
+      getSession: async (sessionId) => {
+        const session = await deps.eventStore.getSession(sessionId);
+        return session === undefined
+          ? undefined
+          : { sessionId: session.sessionId, projectId: session.projectId };
+      },
+      getEventsAfter: (sessionId, afterSeq, limit) =>
+        deps.eventStore.getEventsAfter(sessionId, afterSeq, limit),
+    },
+    access: {
+      // Without the auth gate there is one operator and no identity to scope by.
+      canReadSession: async (userId, session) =>
+        userId === undefined ||
+        (await authorizePairedRoute(deps.eventStore, userId, 'GET', '/sessions/:id', {
+          id: session.sessionId,
+        })) === 'allow',
+      overviewScope: async (userId) => {
+        if (userId === undefined) return { all: true };
+        const [projectIds, administrator] = await Promise.all([
+          deps.eventStore.listReadableProjectIds(userId),
+          deps.eventStore.isActiveAdministrator(userId),
+        ]);
+        return { all: false, projectIds: new Set(projectIds), unassigned: administrator };
+      },
+      isActiveUser: (userId) => deps.eventStore.isActiveLocalUser(userId),
+    },
+    logger: app.log,
+  });
+  const unsubscribeSessionChanges = deps.sessionChanges?.subscribe((sessionId, change) => {
+    liveHub.notify({
+      sessionId,
+      topics: change === 'name' ? ['session'] : ['activity', 'status'],
+    });
+  });
+  app.addHook('onClose', () => {
+    unsubscribeSessionChanges?.();
+    liveHub.close();
+  });
+  const deletedSessionProjects = new WeakMap<object, string | null>();
+  app.addHook('preHandler', async (request) => {
+    if (request.method !== 'DELETE' || request.routeOptions.url !== '/sessions/:id') return;
+    const { id } = request.params as { id: string };
+    const session = await deps.eventStore.getSession(id);
+    if (session !== undefined) deletedSessionProjects.set(request, session.projectId);
+  });
+  // Session changes that are not events — a rename, a read marker, a queued or
+  // retracted turn, a permission decision, a deletion — reach overview
+  // subscribers as content-free hints. Every such change is an accepted mutation
+  // on a `/sessions/:id…` route, so one hook covers them all, including routes
+  // added later; session events themselves are hinted from the bus.
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (reply.statusCode < 200 || reply.statusCode >= 300) return payload;
+    if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') {
+      return payload;
+    }
+    const route = request.routeOptions.url ?? '';
+    if (route === '/sessions' && request.method === 'POST' && typeof payload === 'string') {
+      try {
+        const created = JSON.parse(payload) as { sessionId?: unknown };
+        if (typeof created.sessionId === 'string') {
+          liveHub.notify({ sessionId: created.sessionId, topics: ['session', 'status'] });
+        }
+      } catch {
+        // Not JSON: nothing to announce.
+      }
+      return payload;
+    }
+    if (!route.startsWith('/sessions/:id')) return payload;
+    const sessionId = (request.params as { id?: unknown } | undefined)?.id;
+    if (typeof sessionId !== 'string') return payload;
+    const deleted = route === '/sessions/:id' && request.method === 'DELETE';
+    // A session can change project (a move); forget its cached owner. A deleted
+    // one keeps it, so its members still hear that it is gone.
+    if (!deleted) liveHub.forgetSession(sessionId);
+    if (route === '/sessions/:id/project') await liveHub.recheckSession(sessionId);
+    liveHub.notify({
+      sessionId,
+      topics: ['session', 'status', 'activity'],
+      ...(deleted ? { deleted: true, projectId: deletedSessionProjects.get(request) } : {}),
+    });
+    return payload;
+  });
+  const pushRouter: PushRouter | undefined =
+    pushSender === undefined
+      ? undefined
+      : createPushRouter({
+          sender: pushSender,
+          presence: liveHub,
+          store: deps.eventStore,
+          logger: app.log,
+          ...(deps.pushEscalationMs === undefined ? {} : { escalationMs: deps.pushEscalationMs }),
+        });
+  app.addHook('onClose', () => {
+    pushRouter?.close();
+  });
   const pushFirePoints: PushFirePoints | undefined =
-    pushSender === undefined || pushPresence === undefined
+    pushRouter === undefined
       ? undefined
       : createPushFirePoints({
-          sender: pushSender,
-          presence: pushPresence,
+          router: pushRouter,
           logger: app.log,
           describeSession: describePushSessionById,
+          getEvents: (sessionId) => deps.eventStore.getEvents(sessionId),
           ...(deps.pushFirePointDebounceMs === undefined
             ? {}
             : { debounceMs: deps.pushFirePointDebounceMs }),
@@ -3436,11 +3522,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   pushSender?.start();
   serverUpdateNotifier?.start();
   const detachStreamRevocation = deps.authRegistry?.onRevoke((deviceId) => {
-    for (const [ticket, record] of streamTickets) {
-      if (record.deviceId === deviceId) streamTickets.delete(ticket);
+    for (const [ticket, record] of liveTickets) {
+      if (record.deviceId === deviceId) liveTickets.delete(ticket);
     }
-    for (const socket of deviceStreams.get(deviceId) ?? []) socket.close(1008, 'unauthorized');
-    deviceStreams.delete(deviceId);
+    liveHub.revokeDevice(deviceId);
   });
   app.addHook('onClose', (_instance, done) => {
     detachStreamRevocation?.();
@@ -3524,7 +3609,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     appendNotice: async (sessionId, text) => {
       await deps.eventStore.appendEvent(sessionId, { t: 'notice', text, role: 'agent' });
     },
-    dispatchTurnWhenIdle: async (sessionId, prompt, { model, displayPrompt, validateSession }) =>
+    dispatchTurnWhenIdle: async (
+      sessionId,
+      prompt,
+      { model, displayPrompt, validateSession, initiatedBy },
+    ) =>
       // A run that fires while the session's project is being torn down would
       // start a turn against a worktree the purge is removing. Report it as not
       // accepted; by the next slot the session is gone or usable again.
@@ -3533,6 +3622,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         : conductor.dispatchTurnWhenIdle(sessionId, prompt, model ? { model } : {}, {
             displayPrompt,
             validateSession,
+            ...(initiatedBy ? { initiatedBy } : {}),
           }),
     isModelAllowed: async (model, session) =>
       session.projectId === null
@@ -4016,8 +4106,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (registry === undefined || !registry.isEnabled()) return;
     if (preAuthKeys.has(routeScopeKey(request.method, pathname))) return;
     const websocketStream =
-      (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
-      WS_STREAM_PATH.test(pathname);
+      (request.headers.upgrade ?? '').toLowerCase() === 'websocket' && WS_LIVE_PATH.test(pathname);
     const cookieToken = cookieCredential(request);
     if (cookieToken !== undefined && !registry.isBrowserToken(cookieToken)) {
       if (websocketStream) return;
@@ -4042,10 +4131,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (access === 'forbidden') return reply.code(403).send({ error: 'forbidden' });
       return;
     }
-    // A genuine WebSocket upgrade to the live-stream route cannot take a normal HTTP
+    // A genuine WebSocket upgrade to the live route cannot take a normal HTTP
     // 401 from here — reply.send() on an in-flight `@fastify/websocket` handshake
     // does not abort it cleanly (it hangs). That ONE route's handler enforces the
-    // same token check itself (1008 close; see GET /sessions/:id/stream), so let it
+    // same token check itself (1008 close; see GET /live), so let it
     // through. Scoped to the actual WS path AND a real upgrade so a spoofed
     // `Upgrade: websocket` header on any other route still gets the 401 below.
     if (websocketStream) {
@@ -4082,10 +4171,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // pattern and status so bearer tokens and single-use tickets never enter logs.
   app.addHook('onResponse', (request, reply, done) => {
     const route = request.routeOptions.url;
-    if (route === '/sessions/:id/stream-ticket' || route === '/api/remote-control/descriptor') {
+    if (route === '/live/ticket' || route === '/api/remote-control/descriptor') {
       request.log.info(
         {
-          stage: route === '/sessions/:id/stream-ticket' ? 'stream_ticket' : 'descriptor',
+          stage: route === '/live/ticket' ? 'live_ticket' : 'descriptor',
           statusCode: reply.statusCode,
           elapsedMs: reply.elapsedTime,
         },
@@ -4478,13 +4567,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   app.addHook('onClose', () => unsubscribePrChanges());
   const pullRequestReadyMonitor =
-    pushSender !== undefined &&
-    pushPresence !== undefined &&
+    pushRouter !== undefined &&
     deps.branches !== undefined &&
     (deps.branchPrStatus !== undefined || deps.branchPrStatusForBranches !== undefined)
       ? startPullRequestReadyMonitor({
-          sender: pushSender,
-          presence: pushPresence,
+          router: pushRouter,
+          initiatorOf: (sessionId) => pushFirePoints?.initiatorOf(sessionId),
           listSessions: async () => {
             if ((await deps.eventStore.listDevicePushTokens()).length === 0) return [];
             const sessions = await deps.eventStore.listSessions();
@@ -8871,13 +8959,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       let queued: boolean;
       try {
-        // Only quick replies carry an idempotency key; keep the ordinary in-app turn
-        // on the 3-arg call so it dispatches exactly as before.
+        // The authenticated caller is the turn's initiator (ADR 0023 §2) and the
+        // recipient of its notifications. Taken from the auth gate, never the body.
+        // Quick replies add their idempotency key; with neither, the turn keeps the
+        // plain 3-arg dispatch.
+        const dispatchOpts = {
+          ...(body.clientReplyId !== undefined ? { clientReplyId: body.clientReplyId } : {}),
+          ...(request.localUserId ? { initiatedBy: { userId: request.localUserId } } : {}),
+        };
         ({ queued } =
-          body.clientReplyId !== undefined
-            ? await conductor.dispatchTurn(id, prompt, opts, {
-                clientReplyId: body.clientReplyId,
-              })
+          Object.keys(dispatchOpts).length > 0
+            ? await conductor.dispatchTurn(id, prompt, opts, dispatchOpts)
             : await conductor.dispatchTurn(id, prompt, opts));
       } catch (error) {
         if (error instanceof UnknownSessionError) {
@@ -9437,6 +9529,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                     notice,
                     JSON.stringify(result),
                   );
+                  await liveHub.recheckSession(id);
                   invalidateBranchCache(session.worktree);
                   return result;
                 } catch (error) {
@@ -9561,23 +9654,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  // Live event stream (M3-2). One WS per session: subscribe FIRST (buffer),
-  // send the backlog from `sinceSeq`, a `caught_up` watermark, then the live
-  // tail — deduped by seq so an event persisted during the backlog read isn't
-  // sent twice (the backlog-vs-tail race).
+  // The app-wide live connection: one WebSocket per paired device carrying the
+  // multiplexed session streams, overview hints, foreground presence and
+  // in-app alerts (`packages/server/src/live/live-hub.ts`).
   app.register(websocketPlugin);
   app.register((instance, _opts, done) => {
-    instance.post('/sessions/:id/stream-ticket', async (request, reply) => {
-      const parsed = sessionParams.safeParse(request.params);
-      if (!parsed.success) return reply.code(400).send({ error: 'invalid session id' });
+    instance.post('/live/ticket', async (request, reply) => {
       const registry = deps.authRegistry;
-      const deviceId = registry?.resolveId(requestCredential(request));
-      if (registry?.isEnabled() && deviceId === undefined)
+      if (registry === undefined || !registry.isEnabled()) {
+        // Without the auth gate the socket needs no ticket; answer one anyway so
+        // the client has a single connect path.
+        return {
+          ticket: randomBytes(32).toString('base64url'),
+          expiresAt: new Date().toISOString(),
+        };
+      }
+      const deviceId = registry.resolveId(requestCredential(request));
+      if (deviceId === undefined || !request.localUserId) {
         return reply.code(401).send({ error: 'unauthorized' });
-      return mintStreamTicket(parsed.data.id, deviceId);
+      }
+      return mintLiveTicket(deviceId, request.localUserId);
     });
 
-    instance.get('/sessions/:id/stream', { websocket: true }, (socket: WebSocket, request) => {
+    instance.get('/live', { websocket: true }, (socket: WebSocket, request) => {
       if (
         cookieCredential(request) !== undefined &&
         !browserOriginAllowed(request, deps.browserRequestOrigin?.(request))
@@ -9593,7 +9692,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         socket.close(1008, 'unauthorized');
         return;
       }
-
       // Defence-in-depth against cross-site WebSocket hijacking: when an Origin
       // allowlist is configured, a browser-supplied Origin must match it. A
       // native client sends no Origin and passes.
@@ -9601,79 +9699,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         socket.close(1008, 'origin not allowed');
         return;
       }
-      const parsedId = sessionParams.safeParse(request.params);
-      if (!parsedId.success) {
-        socket.close(1008, 'invalid session id');
+      const registry = deps.authRegistry;
+      if (registry?.isEnabled() !== true) {
+        liveHub.attach(socket, {});
         return;
       }
-      const sessionId = parsedId.data.id;
-      const registry = deps.authRegistry;
-      const identity = registry?.isEnabled()
-        ? consumeStreamTicket(sessionId, request.headers['sec-websocket-protocol'])
-        : undefined;
-      if (registry?.isEnabled() && identity === undefined) {
+      const identity = consumeLiveTicket(request.headers['sec-websocket-protocol']);
+      if (identity === undefined) {
         socket.close(1008, 'unauthorized');
         return;
       }
-      if (identity !== undefined) {
-        const sockets = deviceStreams.get(identity.deviceId) ?? new Set<WebSocket>();
-        sockets.add(socket);
-        deviceStreams.set(identity.deviceId, sockets);
-        socket.once('close', () => {
-          sockets.delete(socket);
-          if (sockets.size === 0 && deviceStreams.get(identity.deviceId) === sockets) {
-            deviceStreams.delete(identity.deviceId);
-          }
-        });
-      }
-      const detachPresence = pushPresence?.attach(sessionId);
-      const parsedQuery = streamQuery.safeParse(request.query);
-      const sinceSeq = parsedQuery.success ? (parsedQuery.data.sinceSeq ?? 0) : 0;
-
-      let live = false;
-      let lastSentSeq = sinceSeq;
-      const buffered: SequencedEvent[] = [];
-
-      const WS_OPEN = 1; // WebSocket.OPEN — numeric to avoid instance-constant gaps
-      const send = (frame: unknown): void => {
-        if (socket.readyState === WS_OPEN) socket.send(JSON.stringify(frame));
-      };
-      const sendEvent = (se: SequencedEvent): void => {
-        if (se.seq <= lastSentSeq) return; // dedup / monotonic
-        send({ k: 'event', seq: se.seq, ts: se.ts, event: se.event });
-        lastSentSeq = se.seq;
-      };
-
-      const unsubscribe = deps.bus.subscribe(sessionId, (se) => {
-        if (live) sendEvent(se);
-        else buffered.push(se);
-      });
-      let cleanedUp = false;
-      const cleanup = (): void => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        unsubscribe();
-        detachPresence?.();
-      };
-      socket.on('close', () => {
-        cleanup();
-      });
-
-      void (async () => {
-        try {
-          for (const se of await deps.eventStore.getEventsAfter(sessionId, sinceSeq)) sendEvent(se);
-          send({ k: 'caught_up', seq: lastSentSeq });
-          // Flush events buffered during the backlog read (seq-guarded dedup),
-          // then go live — synchronous, so no event can slip between the two.
-          for (const se of buffered) sendEvent(se);
-          buffered.length = 0;
-          live = true;
-        } catch {
-          send({ k: 'error', message: 'failed to load backlog' });
-          cleanup();
-          socket.close(1011);
-        }
-      })();
+      liveHub.attach(socket, identity);
     });
     done();
   });

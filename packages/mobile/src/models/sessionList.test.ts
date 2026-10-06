@@ -1010,8 +1010,9 @@ describe('SessionListModel polling', () => {
     const cancelled: boolean[] = [];
     const model = new SessionListModel({
       client,
+      pollIntervalMs: 5_000,
       schedule: (p, intervalMs) => {
-        if (intervalMs === 2000) poll = p;
+        if (intervalMs === 5_000) poll = p;
         if (intervalMs === 30_000) tick = p;
         const idx = cancelled.length;
         cancelled.push(false);
@@ -1076,20 +1077,21 @@ describe('SessionListModel polling', () => {
     }
   });
 
-  it('coalesces interval ticks while a slow poll is still in flight', async () => {
+  it('coalesces requests while a slow poll is in flight, then answers the latest once', async () => {
     const { client, listSessions } = makeClient();
-    let resolve!: (sessions: SessionSummary[]) => void;
+    const resolvers: ((sessions: SessionSummary[]) => void)[] = [];
     listSessions.mockImplementation(
       () =>
         new Promise<SessionSummary[]>((done) => {
-          resolve = done;
+          resolvers.push(done);
         }),
     );
     let poll: () => void = () => undefined;
     const model = new SessionListModel({
       client,
+      pollIntervalMs: 5_000,
       schedule: (scheduled, intervalMs) => {
-        if (intervalMs === 2000) poll = scheduled;
+        if (intervalMs === 5_000) poll = scheduled;
         return () => undefined;
       },
     });
@@ -1097,14 +1099,70 @@ describe('SessionListModel polling', () => {
     model.start();
     expect(listSessions).toHaveBeenCalledTimes(1);
     poll();
-    poll();
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
     expect(listSessions).toHaveBeenCalledTimes(1);
 
-    resolve([]);
+    // The change announced mid-request gets exactly one fresh request.
+    resolvers[0]?.([]);
     await new Promise<void>((done) => setTimeout(done, 0));
-    poll();
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    resolvers[1]?.([]);
+    await new Promise<void>((done) => setTimeout(done, 0));
     expect(listSessions).toHaveBeenCalledTimes(2);
     model.stop();
+  });
+
+  it('refetches on a live hint and drops a deleted session at once', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValue([session('s1', 'idle'), session('s2', 'idle')]);
+    const model = new SessionListModel({ client, schedule: () => () => undefined });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(2));
+    listSessions.mockResolvedValue([session('s1', 'idle')]);
+
+    model.applyHints([{ sessionId: 's2', topics: ['session'], deleted: true }]);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['s1']);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.stop();
+  });
+
+  it('does not restore a deleted session from a stale outstanding list response', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValueOnce([session('s1', 'idle')]);
+    let poll = (): void => undefined;
+    const model = new SessionListModel({
+      client,
+      pollIntervalMs: 5000,
+      schedule: (callback, interval) => {
+        if (interval === 5000) poll = callback;
+        return () => undefined;
+      },
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      )
+      .mockRejectedValue(new Error('offline'));
+    poll();
+    model.applyHints([{ sessionId: 's1', topics: ['session'], deleted: true }]);
+    resolve([session('s1', 'idle')]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(3));
+    expect(model.state.sessions).toEqual([]);
+    model.stop();
+  });
+
+  it('ignores hints while stopped', () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValue([]);
+    const model = new SessionListModel({ client, schedule: () => () => undefined });
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    expect(listSessions).not.toHaveBeenCalled();
   });
 
   it('re-emits on the time tick so expired provider windows disappear without a network poll', async () => {

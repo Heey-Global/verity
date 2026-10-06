@@ -1,3 +1,4 @@
+import type { LiveHint } from '@verity/events';
 import {
   VerityApiError,
   type AttentionSignal,
@@ -64,8 +65,9 @@ export interface SessionListModelOptions {
   };
   /** Notified with a fresh state snapshot on every change. */
   onChange?: (state: SessionListState) => void;
-  /** Poll interval for the live list; default 2s. Kept short so auto-generated
-   * session names (which land without a live event on the list) surface quickly. */
+  /** Safety-net poll interval; default 30s. Changes arrive as live hints
+   * ({@link SessionListModel.applyHints}); the poll only catches what produced
+   * none, and keeps time-derived fields fresh. */
   pollIntervalMs?: number;
   /** Time-only recompute interval; default 30s. Lets reset windows disappear even
    * when the network poll is paused/stale. */
@@ -90,6 +92,8 @@ export class SessionListModel {
   private _loading = false;
   private _error: string | undefined;
   private cancelPoll: CancelPoll | undefined;
+  /** The running model's coalescing refresh; undefined while stopped. */
+  private poll: (() => void) | undefined;
   private cancelTimeTick: CancelPoll | undefined;
   // Monotonic request id: a slower earlier load must not overwrite a newer one.
   private reqSeq = 0;
@@ -323,23 +327,55 @@ export class SessionListModel {
     this._sessions = this._sessions.map((s) => (s.sessionId === sessionId ? { ...s, name } : s));
   }
 
+  /**
+   * Live hints from the server: these sessions changed. Refetches the list (the
+   * hint carries no content), coalescing a burst into one request; a hint that
+   * lands while a request is in flight queues exactly one more, so the change it
+   * announced is never answered by a response that predates it.
+   */
+  applyHints(hints: readonly LiveHint[]): void {
+    for (const hint of hints) {
+      if (hint.deleted === true) {
+        const deletion = this.pendingDeletes.get(hint.sessionId) ?? {
+          active: 0,
+          removed: this._sessions.find((session) => session.sessionId === hint.sessionId),
+          succeeded: true,
+        };
+        deletion.succeeded = true;
+        this.pendingDeletes.set(hint.sessionId, deletion);
+        this._sessions = this._sessions.filter((s) => s.sessionId !== hint.sessionId);
+      }
+    }
+    if (hints.some((hint) => hint.deleted === true)) this.emit();
+    this.poll?.();
+  }
+
   /** Initial load + start polling. Idempotent: cancels any existing poll first
    * so a double `start()` can't leak a timer. */
   start(): void {
     this.stop();
-    const intervalMs = this.opts.pollIntervalMs ?? 2000;
-    // Coalesce interval ticks while the previous poll is still in flight. Without
-    // this guard, a slow /sessions response (> intervalMs) is superseded by every
-    // following request and therefore never reaches state — the UI can remain on
-    // the same PR/check count indefinitely while requests pile up.
+    const intervalMs = this.opts.pollIntervalMs ?? 30_000;
+    // Coalesce requests while one is in flight. Without this guard, a slow
+    // /sessions response is superseded by every following request and therefore
+    // never reaches state — the UI can remain on the same PR/check count
+    // indefinitely while requests pile up.
     let inFlight = false;
+    let again = false;
     const poll = (): void => {
-      if (inFlight) return;
+      if (inFlight) {
+        again = true;
+        return;
+      }
       inFlight = true;
       void this.refresh({ silent: true }).finally(() => {
         inFlight = false;
+        if (again && this.poll === poll) {
+          again = false;
+          poll();
+        }
       });
     };
+    this.poll = poll;
     poll();
     this.cancelPoll = this.opts.schedule
       ? this.opts.schedule(poll, intervalMs)
@@ -353,6 +389,7 @@ export class SessionListModel {
 
   /** Stop polling. Idempotent. */
   stop(): void {
+    this.poll = undefined;
     this.cancelPoll?.();
     this.cancelTimeTick?.();
     this.cancelPoll = undefined;

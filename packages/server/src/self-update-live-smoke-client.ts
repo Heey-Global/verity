@@ -12,7 +12,7 @@
  * the way the app does, its internal one the way a sandbox's broker wrapper does —
  * and holds, across a real generation change:
  *
- *   - long-lived WebSockets on `/sessions/:id/stream`, the one upgraded route,
+ *   - long-lived WebSockets on `/live`, the one upgraded route,
  *     authenticated the way a device authenticates (a device bearer exchanged over
  *     HTTP for a one-use ticket carried as a WebSocket subprotocol);
  *   - HTTP requests whose bodies are still being written when maintenance begins,
@@ -216,31 +216,31 @@ interface StreamCursor {
 }
 
 /**
- * One long-lived stream, held open through the Gateway for as long as this
- * process wants it. `/sessions/:id/stream` accepts any well-formed session id and
- * answers with a backlog and a `caught_up` watermark, so no session has to exist
- * for the connection to be a real, authenticated, Server-terminated WebSocket.
+ * One long-lived live connection, held open through the Gateway for as long as
+ * this process wants it. `/live` greets every authenticated socket with `ready`,
+ * so no session has to exist for the connection to be a real, authenticated,
+ * Server-terminated WebSocket; with a session, the socket subscribes to it and
+ * its `caught_up` watermark is the catch-up signal.
  */
 async function hold(label: string, token: string, cursor: StreamCursor = {}): Promise<HeldSocket> {
-  const sessionId = cursor.sessionId ?? `live-smoke-${label}`;
-  const ticketResponse = await fetch(
-    `${BASE_URL}/sessions/${encodeURIComponent(sessionId)}/stream-ticket`,
-    { method: 'POST', headers: { authorization: `Bearer ${token}` } },
-  );
+  const ticketResponse = await fetch(`${BASE_URL}/live/ticket`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
   const ticketBody = (await ticketResponse.json()) as { ticket?: unknown };
   if (!ticketResponse.ok || typeof ticketBody.ticket !== 'string') {
-    fail(`the Gateway would not mint a stream ticket (${String(ticketResponse.status)})`);
+    fail(`the Gateway would not mint a live ticket (${String(ticketResponse.status)})`);
   }
-  const since = cursor.sinceSeq === undefined ? '' : `?sinceSeq=${String(cursor.sinceSeq)}`;
-  const url = `ws://${GATEWAY_HOST}:${String(GATEWAY_PORT)}/sessions/${sessionId}/stream${since}`;
-  const socket = new WebSocket(url, `verity-stream-ticket.${ticketBody.ticket}`);
+  const url = `ws://${GATEWAY_HOST}:${String(GATEWAY_PORT)}/live`;
+  const socket = new WebSocket(url, `verity-live-ticket.${ticketBody.ticket}`);
   const received: number[] = [];
   let announceCaughtUp: (seq: number) => void = () => undefined;
   const caughtUp = new Promise<number>((resolve) => {
     announceCaughtUp = resolve;
   });
+  let pings = 0;
   const keepalive = setInterval(() => {
-    if (socket.readyState === WS_OPEN) socket.send('{"k":"live-smoke-keepalive"}');
+    if (socket.readyState === WS_OPEN) socket.send(JSON.stringify({ k: 'ping', n: (pings += 1) }));
   }, KEEPALIVE_INTERVAL_MS);
   const closed = new Promise<ClosedSocket>((resolve) => {
     socket.addEventListener('close', (event) => {
@@ -255,6 +255,20 @@ async function hold(label: string, token: string, cursor: StreamCursor = {}): Pr
     // them — including a seq the client had already seen, which is the failure.
     if (frame.k === 'event' && typeof frame.seq === 'number') received.push(frame.seq);
     if (frame.k === 'caught_up') announceCaughtUp(typeof frame.seq === 'number' ? frame.seq : -1);
+    if (frame.k === 'ready') {
+      if (cursor.sessionId === undefined) {
+        announceCaughtUp(-1);
+      } else {
+        socket.send(
+          JSON.stringify({
+            k: 'sub',
+            ch: 'session',
+            id: cursor.sessionId,
+            ...(cursor.sinceSeq === undefined ? {} : { sinceSeq: cursor.sinceSeq }),
+          }),
+        );
+      }
+    }
   });
   // A socket the Gateway destroys surfaces as an error AND a close; the close is
   // what the contract is about, so the error only has to not be fatal here.

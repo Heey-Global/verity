@@ -3,7 +3,12 @@ import { VerityApiError } from '../api.js';
 import { subscribeSessionStatusMutations } from '../liveStatusMutation.js';
 import { subscribeSettledPermissions } from '../permissionSettlement.js';
 import { subscribePullRequestStatusMutations } from '../pullRequestStatusMutation.js';
-import { PUSH_ACTION } from './categories.js';
+import {
+  PUSH_ACTION,
+  PUSH_CATEGORY,
+  PUSH_CHOICE_ACTIONS,
+  choiceCategorySpec,
+} from './categories.js';
 import {
   DEFAULT_ACTION_IDENTIFIER,
   createPushReplyPerformer,
@@ -261,5 +266,46 @@ describe('createPushReplyPerformer', () => {
     expect(await perform(action, 'r3')).toBe('stale');
     expect(mutations).toHaveBeenCalledTimes(2);
     unsubscribe();
+  });
+
+  describe('choice actions', () => {
+    const question = {
+      sessionId: 's1',
+      kind: 'question' as const,
+      choices: ['Push + PR', 'Wait'],
+    };
+
+    it('answers with the label of the tapped option', () => {
+      expect(
+        resolvePushResponse({ actionIdentifier: PUSH_CHOICE_ACTIONS[1], payload: question }),
+      ).toEqual({ type: 'send-turn', sessionId: 's1', prompt: 'Wait' });
+    });
+
+    it('drops an option the payload does not carry', () => {
+      expect(
+        resolvePushResponse({ actionIdentifier: PUSH_CHOICE_ACTIONS[3], payload: question }),
+      ).toBeNull();
+      expect(
+        resolvePushResponse({
+          actionIdentifier: PUSH_CHOICE_ACTIONS[0],
+          payload: { sessionId: 's1', kind: 'completed', choices: ['x'] },
+        }),
+      ).toBeNull();
+    });
+
+    it('labels the in-app category with the options and keeps a free-text reply', () => {
+      const spec = choiceCategorySpec(['Push + PR', 'Wait']);
+      expect(spec.identifier).toBe(PUSH_CATEGORY.agentQuestionChoices);
+      expect(spec.actions.map((action) => action.buttonTitle)).toEqual([
+        'Push + PR',
+        'Wait',
+        'Reply',
+      ]);
+      expect(spec.actions.map((action) => action.identifier)).toEqual([
+        PUSH_CHOICE_ACTIONS[0],
+        PUSH_CHOICE_ACTIONS[1],
+        PUSH_ACTION.reply,
+      ]);
+    });
   });
 });

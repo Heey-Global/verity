@@ -3903,6 +3903,19 @@ const migrations: Record<string, Migration> = {
       await sql`drop table tasks`.execute(db);
     },
   },
+  '0141_session_automation_sponsor': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The local user who confirmed the automation (ADR 0023 §2: scheduled work
+      // has an explicit sponsoring user). Its turns run for, and notify, that user.
+      // Rows confirmed before this column existed stay unattributed (NULL).
+      await sql`alter table session_automations add column sponsor_user_id text references users(id) on delete set null`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table session_automations drop column sponsor_user_id`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

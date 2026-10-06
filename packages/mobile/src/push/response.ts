@@ -2,7 +2,8 @@ import { VerityApiError, type VerityClient, type PermissionDecision } from '../a
 import { publishSessionStatusMutation } from '../liveStatusMutation.js';
 import { publishPullRequestStatusMutation } from '../pullRequestStatusMutation.js';
 import { publishSettledPermission } from '../permissionSettlement.js';
-import { PUSH_ACTION } from './categories.js';
+import { formatChoiceAnswer } from '@verity/events';
+import { PUSH_ACTION, PUSH_CHOICE_ACTIONS } from './categories.js';
 import type { PushPayload } from './payload.js';
 
 /** The reserved `actionIdentifier` expo reports for a plain notification tap
@@ -69,6 +70,13 @@ export function resolvePushResponse(input: PushResponseInput): PushReplyAction |
     const prompt = userText?.trim();
     if (prompt === undefined || prompt.length === 0) return null;
     return { type: 'send-turn', sessionId: payload.sessionId, prompt };
+  }
+
+  const choice = (PUSH_CHOICE_ACTIONS as readonly string[]).indexOf(actionIdentifier);
+  if (choice !== -1) {
+    const label = payload.kind === 'question' ? payload.choices?.[choice] : undefined;
+    if (label === undefined) return null;
+    return { type: 'send-turn', sessionId: payload.sessionId, prompt: formatChoiceAnswer([label]) };
   }
 
   if (actionIdentifier === PUSH_ACTION.mergePullRequest) {

@@ -26,12 +26,19 @@ export {
   subscribeServerUpdateStatusMutations,
   type DevServerStatusMutation,
 } from './liveStatusMutation.js';
+export { SessionStream, type SessionStreamOptions } from './stream.js';
 export {
-  SessionStream,
-  type SessionStreamOptions,
-  type StreamSocket,
-  type StreamSocketFactory,
-} from './stream.js';
+  LiveConnection,
+  type LiveConnectionOptions,
+  type LiveConnectionState,
+  type LiveSessionHandle,
+  type LiveSessionSink,
+  type LiveSessionTransport,
+  type LiveSocket,
+  type LiveSocketFactory,
+} from './live/connection.js';
+export type { LiveAlert, LiveHint, LiveHintTopic, LiveServerFrame } from '@verity/events';
+export { decodeLiveServerFrame } from '@verity/events';
 export {
   needsAttention,
   sessionBadge,
@@ -485,6 +492,8 @@ export {
   PUSH_ACTION,
   PUSH_CATEGORY,
   PUSH_NOTIFICATION_CATEGORIES,
+  PUSH_CHOICE_ACTIONS,
+  choiceCategorySpec,
   type PushActionId,
   type PushCategoryId,
   type PushCategoryAction,
