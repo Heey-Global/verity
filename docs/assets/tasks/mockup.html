@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --bg: #000000; --surface: #0a0b16; --surfaceAlt: #15132b; --border: #2a2552;
+    --text: #eef0ff; --muted: #9a9ec9; --faint: #5d6090; --primary: #2ab0ff;
+    --onPrimary: #00111f; --accent: #ff35da; --done: #28e6a4; --danger: #ff5c8a;
+    --scrim: rgba(21,19,43,0.82);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #1b1b22; font-family: -apple-system, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif; color: var(--text); padding: 24px; display: flex; flex-wrap: wrap; gap: 28px; }
+  .shot { display: flex; flex-direction: column; gap: 10px; }
+  .caption { color: #d8d8e8; font-size: 15px; font-weight: 600; padding-left: 6px; }
+  .caption small { display: block; color: #9a9aae; font-weight: 400; font-size: 12px; margin-top: 2px; }
+  .phone { width: 393px; height: 852px; background: var(--bg); border-radius: 54px; border: 10px solid #2c2c33; position: relative; overflow: hidden; }
+  .ipad { width: 1180px; height: 820px; background: var(--bg); border-radius: 36px; border: 12px solid #2c2c33; position: relative; overflow: hidden; display: flex; }
+  .island { position: absolute; top: 11px; left: 50%; transform: translateX(-50%); width: 122px; height: 35px; background: #000; border-radius: 20px; z-index: 50; border: 1px solid #111; }
+  .status { height: 54px; display: flex; justify-content: space-between; align-items: center; padding: 6px 32px 0 40px; font-size: 16px; font-weight: 600; }
+  .header { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+  .header .back { color: var(--primary); font-size: 26px; line-height: 1; }
+  .header .title { font-weight: 600; font-size: 16px; flex: 1; }
+  .header .sub { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .header .more { color: var(--muted); font-size: 20px; }
+  .transcript { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; font-size: 14px; line-height: 1.45; }
+  .msg { max-width: 88%; }
+  .msg.agent { color: var(--text); }
+  .msg.user { align-self: flex-end; background: var(--surfaceAlt); border: 1px solid var(--border); padding: 9px 12px; border-radius: 16px 16px 4px 16px; }
+  .msg code { background: var(--surfaceAlt); color: var(--primary); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+  .tool { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; background: var(--surface); }
+  .tool b { color: var(--done); font-weight: 600; }
+  .composer { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 12px 34px; background: var(--bg); border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .composer .input { flex: 1; height: 42px; border-radius: 21px; background: var(--surface); border: 1px solid var(--border); color: var(--faint); font-size: 14px; display: flex; align-items: center; padding: 0 16px; }
+  .iconbtn { width: 38px; height: 38px; border-radius: 19px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  .iconbtn.send { background: var(--primary); color: var(--onPrimary); }
+  svg { display: block; }
+
+  /* ---- Bubble ---- */
+  .bubble { position: absolute; right: -22px; top: 430px; width: 52px; height: 52px; border-radius: 26px; background: rgba(21,19,43,0.72); border: 1px solid rgba(255,53,218,0.55); box-shadow: 0 0 0 1px rgba(0,0,0,.6), 0 6px 18px rgba(255,53,218,0.18); display: flex; align-items: center; padding-left: 9px; color: var(--accent); z-index: 30; backdrop-filter: blur(8px); }
+  .bubble.out { right: 10px; padding-left: 0; justify-content: center; }
+  .bubble.rec { background: var(--danger); border-color: #ffb3c8; color: #fff; box-shadow: 0 0 0 7px rgba(255,92,138,0.25), 0 0 0 15px rgba(255,92,138,0.10), 0 6px 22px rgba(255,92,138,0.45); }
+  .badge { position: absolute; top: -6px; left: -8px; min-width: 21px; height: 21px; border-radius: 11px; background: var(--primary); color: var(--onPrimary); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; padding: 0 5px; border: 2px solid var(--bg); }
+  .hint { position: absolute; z-index: 31; font-size: 11.5px; color: #d0d0e4; background: rgba(40,40,60,.92); border: 1px dashed #6b6b8f; border-radius: 10px; padding: 7px 9px; line-height: 1.4; }
+  .hint b { color: var(--accent); }
+  .ghost { position: absolute; width: 44px; height: 44px; border-radius: 22px; border: 2px dashed rgba(255,53,218,.45); z-index: 29; }
+  .arrow { position: absolute; z-index: 29; color: rgba(255,53,218,.6); font-size: 22px; }
+
+  /* ---- Capture card ---- */
+  .dim { position: absolute; inset: 0; background: rgba(0,0,0,0.35); z-index: 20; }
+  .card { position: absolute; left: 10px; right: 10px; bottom: 30px; background: var(--surface); border: 1px solid var(--border); border-radius: 22px; padding: 14px 14px 14px; z-index: 40; box-shadow: 0 -8px 40px rgba(0,0,0,.6), 0 0 0 1px rgba(255,53,218,0.10); }
+  .card .row { display: flex; align-items: center; gap: 8px; }
+  .recdot { width: 9px; height: 9px; border-radius: 5px; background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+  .reclabel { font-size: 13px; color: var(--danger); font-weight: 600; }
+  .ctxlabel { font-size: 12px; color: var(--muted); margin-left: auto; }
+  .ctxlabel b { color: var(--text); font-weight: 600; }
+  .wave { display: flex; gap: 3px; align-items: center; height: 22px; margin-left: 4px; }
+  .wave i { width: 3px; border-radius: 2px; background: var(--danger); display: block; }
+  .stop { width: 40px; height: 40px; border-radius: 20px; background: var(--surfaceAlt); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }
+  .stop span { width: 13px; height: 13px; border-radius: 3px; background: var(--danger); }
+  .transcriptText { font-size: 17px; line-height: 1.4; margin: 10px 2px 12px; color: var(--text); }
+  .transcriptText .live { color: var(--muted); }
+  .caret { display: inline-block; width: 2px; height: 19px; background: var(--accent); vertical-align: -3px; margin-left: 1px; }
+  .chips { display: flex; gap: 7px; flex-wrap: wrap; }
+  .chip { height: 32px; border-radius: 16px; padding: 0 13px; display: flex; align-items: center; gap: 6px; font-size: 13.5px; border: 1px solid var(--border); background: var(--surfaceAlt); color: var(--text); white-space: nowrap; }
+  .chip.sel { background: rgba(42,176,255,0.16); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 4px; background: var(--primary); }
+  .chip.muted { color: var(--muted); }
+  .countdown { height: 4px; border-radius: 2px; background: var(--surfaceAlt); margin-top: 13px; overflow: hidden; }
+  .countdown i { display: block; height: 100%; width: 62%; background: linear-gradient(90deg, var(--primary), var(--accent)); border-radius: 2px; }
+  .cdlabel { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--faint); margin-top: 6px; }
+  .grab { width: 38px; height: 5px; border-radius: 3px; background: var(--border); margin: -4px auto 10px; }
+
+  /* attachments */
+  .attachRow { display: flex; gap: 8px; align-items: center; margin: 0 0 12px; }
+  .thumb { width: 52px; height: 74px; border-radius: 9px; border: 1px solid var(--border); position: relative; overflow: hidden; background: linear-gradient(180deg, #11122a 0%, #0a0b16 100%); flex: none; }
+  .thumb .mini { position: absolute; inset: 6px 5px; display: flex; flex-direction: column; gap: 3px; }
+  .thumb .mini i { display: block; height: 3px; border-radius: 2px; background: #3b3770; }
+  .thumb .mini i.a { background: var(--primary); width: 60%; opacity: .8; }
+  .thumb .mini i.b { background: var(--accent); width: 40%; opacity: .7; }
+  .thumb .x { position: absolute; top: 3px; right: 3px; width: 17px; height: 17px; border-radius: 9px; background: rgba(0,0,0,.75); color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center; }
+  .addAttach { width: 52px; height: 74px; border-radius: 9px; border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center; color: var(--muted); flex: none; }
+  .suggest { display: flex; align-items: center; gap: 10px; background: rgba(255,53,218,0.08); border: 1px solid rgba(255,53,218,0.4); border-radius: 14px; padding: 7px 10px 7px 7px; margin: 0 0 12px; }
+  .suggest .thumb { width: 34px; height: 48px; border-radius: 6px; }
+  .suggest .txt { font-size: 13px; line-height: 1.3; flex: 1; }
+  .suggest .txt small { display: block; color: var(--muted); font-size: 11.5px; }
+  .suggest .plus { height: 30px; border-radius: 15px; padding: 0 12px; background: var(--accent); color: #1a0016; font-weight: 700; font-size: 13px; display: flex; align-items: center; }
+  .tools { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .tool-btn { height: 34px; border-radius: 17px; padding: 0 12px; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); border: 1px solid var(--border); }
+
+  /* toast */
+  .toast { position: absolute; left: 14px; right: 14px; bottom: 100px; z-index: 40; background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.6); }
+  .toast .ok { width: 22px; height: 22px; border-radius: 11px; background: rgba(40,230,164,.16); color: var(--done); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; }
+  .toast .undo { margin-left: auto; color: var(--primary); font-weight: 600; }
+  .toast .sub { color: var(--muted); font-size: 12.5px; }
+
+  /* panel */
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; height: 640px; background: var(--surface); border-top: 1px solid var(--border); border-radius: 24px 24px 0 0; z-index: 40; padding: 12px 0 0; box-shadow: 0 -10px 50px rgba(0,0,0,.7); }
+  .panelHead { display: flex; align-items: center; padding: 0 18px 10px; gap: 10px; }
+  .panelHead h3 { margin: 0; font-size: 20px; font-weight: 700; flex: 1; }
+  .micBtn { width: 40px; height: 40px; border-radius: 20px; background: rgba(255,53,218,0.14); border: 1px solid rgba(255,53,218,0.55); color: var(--accent); display: flex; align-items: center; justify-content: center; }
+  .sec { display: flex; align-items: center; gap: 8px; padding: 12px 18px 6px; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .sec .count { background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 9px; padding: 0 7px; font-size: 11.5px; color: var(--text); letter-spacing: 0; }
+  .sec .ctxTag { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 11.5px; color: var(--primary); }
+  .sec.closed { color: var(--text); text-transform: none; letter-spacing: 0; font-size: 15px; font-weight: 500; padding: 12px 18px; border-top: 1px solid var(--border); }
+  .sec.closed .chev { color: var(--faint); }
+  .idea { display: flex; gap: 10px; padding: 10px 18px; align-items: flex-start; }
+  .idea .circle { width: 18px; height: 18px; border-radius: 9px; border: 1.5px solid var(--faint); margin-top: 2px; flex: none; }
+  .idea .body { flex: 1; min-width: 0; }
+  .idea .t { font-size: 15px; line-height: 1.35; }
+  .idea .m { font-size: 12px; color: var(--faint); margin-top: 3px; display: flex; gap: 8px; align-items: center; }
+  .idea .m .att { color: var(--muted); display: flex; align-items: center; gap: 3px; }
+  .idea .mini-thumb { width: 26px; height: 36px; border-radius: 5px; flex: none; }
+  .play { height: 32px; border-radius: 16px; padding: 0 11px; background: rgba(42,176,255,0.14); border: 1px solid rgba(42,176,255,0.5); color: var(--primary); font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 5px; flex: none; }
+  .doneLink { padding: 14px 18px; color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--border); }
+  .swipeHint { display: flex; margin: 2px 0; }
+  .swipeHint .slid { flex: 1; display: flex; gap: 10px; padding: 10px 18px; transform: translateX(-150px); background: var(--surface); }
+  .swipeActs { position: absolute; right: 0; display: flex; height: 100%; }
+  .swipeActs div { width: 50px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-direction: column; gap: 2px; }
+
+  /* iPad */
+  .side { width: 330px; border-right: 1px solid var(--border); background: var(--surface); padding-top: 24px; }
+  .side .h { padding: 10px 18px; font-size: 22px; font-weight: 700; }
+  .side .p { padding: 9px 18px; font-size: 14px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .side .p.sel { background: var(--surfaceAlt); color: var(--text); border-left: 3px solid var(--primary); }
+  .side .s { padding: 7px 18px 7px 34px; font-size: 13px; color: var(--faint); }
+  .side .s.sel { color: var(--text); background: rgba(42,176,255,.08); }
+  .main { flex: 1; position: relative; }
+  .popover { position: absolute; right: 56px; top: 150px; width: 400px; height: 640px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; z-index: 40; padding: 14px 0 0; box-shadow: 0 20px 60px rgba(0,0,0,.75), 0 0 0 1px rgba(255,53,218,.12); overflow: hidden; }
+
+  .menuDim { position:absolute; inset:0; background:rgba(0,0,0,.45); z-index:45; }
+  .menu { position:absolute; right:22px; top:410px; width:300px; z-index:46; background:var(--surfaceAlt); border:1px solid var(--border); border-radius:16px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.8); }
+  .menu .mi { padding:13px 16px; display:flex; gap:12px; align-items:center; border-top:1px solid var(--border); font-size:15px; }
+  .menu .mi:first-child { border-top:0; }
+  .menu .mi small { display:block; color:var(--muted); font-size:12px; margin-top:2px; }
+  .menu .mi .ic { width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex:none; font-weight:700; }
+  .menu .mi.primary .ic { background:rgba(42,176,255,.18); color:var(--primary); }
+  .menu .mi.second .ic { background:rgba(255,53,218,.14); color:var(--accent); }
+  .menu .mi.primary { background:rgba(42,176,255,.06); }
+  .menu .rec { margin-left:auto; font-size:10.5px; color:var(--primary); border:1px solid rgba(42,176,255,.5); border-radius:8px; padding:1px 6px; }
+
+  .idea .m { justify-content: space-between; }
+  .acts, .actsRow { display:flex; gap:8px; }
+  .actsRow { justify-content:flex-end; margin-top:8px; }
+  .actsRow:empty { display:none; }
+  .act { height:28px; padding:0 10px; border-radius:14px; font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:4px; white-space:nowrap; }
+  .act.here { background: rgba(42,176,255,.14); border:1px solid rgba(42,176,255,.5); color: var(--primary); }
+  .act.new { background: rgba(255,53,218,.10); border:1px solid rgba(255,53,218,.45); color: var(--accent); }
+  .circle.done { background: var(--done); border-color: var(--done); color:#00281a; font-size:12px; font-weight:800; display:flex; align-items:center; justify-content:center; }
+  .t.done { color: var(--faint); text-decoration: line-through; }
+  .sec .cur { width:8px; height:8px; border-radius:4px; background: var(--primary); box-shadow:0 0 8px var(--primary); }
+  .sec .pick { margin-left:auto; text-transform:none; letter-spacing:0; font-weight:500; font-size:11.5px; color: var(--faint); }
+  .finger { position:absolute; z-index:35; width:34px; height:34px; border-radius:17px; background: rgba(255,255,255,.18); border:2px solid rgba(255,255,255,.7); }
+  .trail { position:absolute; z-index:28; border-top:2px dashed rgba(255,53,218,.5); border-radius:50%; }
+  .hideZone { position:absolute; left:50%; transform:translateX(-50%); bottom:110px; width:150px; height:56px; border-radius:28px; border:2px dashed rgba(255,92,138,.7); background: rgba(255,92,138,.10); color: var(--danger); font-weight:700; font-size:14px; display:flex; align-items:center; justify-content:center; gap:8px; z-index:28; }
+  .legend { display:flex; gap:14px; padding:10px 18px 12px; font-size:11.5px; color: var(--muted); border-top:1px solid var(--border); }
+  .legend b { color: var(--text); font-weight:600; }
+
+  .picker { position:absolute; left:14px; right:14px; bottom:40px; z-index:48; background:var(--surfaceAlt); border:1px solid var(--border); border-radius:18px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.8); }
+  .picker .ph { padding:14px 16px 10px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--border); }
+  .picker .ph b { display:block; color:var(--text); font-size:15px; margin-bottom:3px; }
+  .picker .pi { padding:14px 16px; font-size:16px; display:flex; align-items:center; gap:10px; border-top:1px solid var(--border); }
+  .picker .pi:first-of-type { border-top:0; }
+  .picker .pi .d { width:10px; height:10px; border-radius:5px; background:var(--primary); }
+  .picker .pi .o { width:10px; height:10px; border-radius:5px; border:1.5px solid var(--faint); }
+  .picker .pi small { margin-left:auto; color:var(--faint); font-size:12px; }
+  .picker .cancel { padding:14px; text-align:center; color:var(--primary); font-weight:600; border-top:1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<!-- helpers -->
+<template id="mic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></template>
+
+<!-- Session background (shared) -->
+<template id="session">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span>▮▮▮ 85%</span></div>
+  <div class="header"><span class="back">‹</span><div class="title">Auth-Refactor<div class="sub">Verity · Claude</div></div><span class="more">⋯</span></div>
+  <div class="transcript">
+    <div class="msg user">Can you cover the token rotation with a test?</div>
+    <div class="tool">✓ <b>vitest</b> packages/server/src/auth.test.ts — 24 passed</div>
+    <div class="msg agent">Done. The new test covers a rotated token still being accepted inside the grace period. I also made <code>rotateToken()</code> idempotent.</div>
+    <div class="msg user">Great, push it please.</div>
+    <div class="tool">✓ <b>git push</b> origin feat/412-token-rotation</div>
+    <div class="msg agent">Pushed. Want me to open a PR?</div>
+  </div>
+  <div class="composer">
+    <div class="iconbtn"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></div>
+    <div class="input">Message…</div>
+    <div class="iconbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></div>
+    <div class="iconbtn send"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+  </div>
+</template>
+
+<template id="shotThumb"><div class="thumb"><div class="mini"><i class="a"></i><i></i><i></i><i class="b"></i><i></i><i></i><i class="a"></i><i></i></div></div></template>
+
+<!-- 1 Idle -->
+<div class="shot" id="s1">
+  <div class="caption">1 · Klein (Ruhezustand)<small>Blase halb im Rand · Badge = offene Notizen für Verity</small></div>
+  <div class="phone" data-session>
+    <div class="bubble"><span data-mic></span><div class="badge">2</div></div>
+    <div class="hint" style="right:46px; top:560px; width:190px">
+      <b>Tap</b> → record<br><b>Hold</b> or badge → notes<br><b>Grab &amp; drag</b> → move
+    </div>
+  </div>
+</div>
+
+<!-- 1b Drag -->
+<div class="shot" id="s1b">
+  <div class="caption">1b · Verschieben<small>Einfach anfassen und ziehen, kein langes Drücken · loslassen = rastet am Rand ein</small></div>
+  <div class="phone" data-session>
+    <div class="dim" style="background:rgba(0,0,0,.25)"></div>
+    <div class="trail" style="right:30px; top:430px; width:140px; height:160px; border-right:2px dashed rgba(255,53,218,.5); border-top:0; border-radius:0 0 60% 0;"></div>
+    <div class="bubble out" style="right:150px; top:580px; transform:scale(1.12); box-shadow:0 10px 30px rgba(255,53,218,.4), 0 0 0 1px rgba(0,0,0,.6)"><span data-mic></span><div class="badge">2</div></div>
+    <div class="finger" style="right:156px; top:596px"></div>
+    <div class="ghost" style="right:-10px; top:584px"></div>
+    <div class="hint" style="left:24px; top:500px; width:170px">On release it snaps to the <b>nearest edge</b> (left or right) and stays there, also after a restart.</div>
+    <div class="hideZone">✕ Hide</div>
+    <div class="hint" style="left:24px; top:700px; width:200px">Drag down onto <b>✕</b> → hidden until the next app start. Permanently off: Settings.</div>
+  </div>
+</div>
+
+<!-- 2 Recording -->
+<div class="shot" id="s2">
+  <div class="caption">2 · Aufnahme läuft<small>Ein Tipp – sofort live · endet von selbst, wenn du aufhörst zu sprechen</small></div>
+  <div class="phone" data-session>
+    <div class="dim"></div>
+    <div class="bubble rec"><span data-mic></span></div>
+    <div class="card">
+      <div class="row">
+        <div class="recdot"></div><span class="reclabel">Recording</span>
+        <div class="wave"><i style="height:6px"></i><i style="height:12px"></i><i style="height:18px"></i><i style="height:9px"></i><i style="height:20px"></i><i style="height:14px"></i><i style="height:7px"></i><i style="height:16px"></i><i style="height:10px"></i><i style="height:5px"></i></div>
+        <span class="ctxlabel">→ <b>Verity</b></span>
+      </div>
+      <div class="transcriptText">The badge in the session list is cut off on iPad <span class="live">when the sidebar is</span><span class="caret"></span></div>
+      <div class="suggest">
+        <span data-thumb></span>
+        <div class="txt">Screenshot from just now<small>12 seconds ago</small></div>
+        <div class="plus">+ Attach</div>
+      </div>
+      <div class="row">
+        <div class="tool-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>Photo / File</div>
+        <span style="margin-left:auto; font-size:12px; color:var(--faint)">stops after 1.5 s of silence</span>
+        <div class="stop"><span></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 Done -->
+<div class="shot" id="s3">
+  <div class="caption">3 · Aufnahme fertig<small>Projekt per Tipp ändern · nichts tun = speichert in 3 s</small></div>
+  <div class="phone" data-session>
+    <div class="dim"></div>
+    <div class="bubble"><span data-mic></span></div>
+    <div class="card">
+      <div class="grab"></div>
+      <div class="transcriptText" style="margin-top:0">The badge in the session list is cut off on iPad when the sidebar is collapsed.</div>
+      <div class="attachRow">
+        <div style="position:relative"><span data-thumb></span><div style="position:absolute;top:3px;right:3px;width:17px;height:17px;border-radius:9px;background:rgba(0,0,0,.75);font-size:11px;display:flex;align-items:center;justify-content:center">✕</div></div>
+        <div class="addAttach"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></div>
+        <span style="font-size:12px; color:var(--faint); margin-left:4px; line-height:1.4">1 screenshot attached<br>✕ remove · + add more</span>
+      </div>
+      <div class="chips">
+        <div class="chip sel"><span class="dot"></span>Verity</div>
+        <div class="chip">General</div>
+        <div class="chip">Docs</div>
+        <div class="chip">Website</div>
+        <div class="chip muted">Other…</div>
+      </div>
+      <div class="countdown"><i></i></div>
+      <div class="cdlabel"><span>Saving to Verity automatically</span><span>↓ swipe to discard</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 Saved -->
+<div class="shot" id="s4">
+  <div class="caption">4 · Gespeichert<small>Weiterarbeiten – Badge zählt hoch</small></div>
+  <div class="phone" data-session>
+    <div class="bubble"><span data-mic></span><div class="badge">3</div></div>
+    <div class="toast"><div class="ok">✓</div><div>Saved · <b>Verity</b><div class="sub">with 1 screenshot</div></div><span class="undo">Undo</span></div>
+  </div>
+</div>
+
+<!-- 5 Panel in session -->
+<div class="shot" id="s5">
+  <div class="caption">5 · Notizen in einer Session<small>Kreis antippen = erledigt · Projekt-Notizen: This Session / New Session · General: kein Button</small></div>
+  <div class="phone" data-session>
+    <div class="dim" style="background:rgba(0,0,0,.6)"></div>
+    <div class="sheet">
+      <div class="grab"></div>
+      <div class="panelHead"><h3>Notes</h3><div class="micBtn"><span data-mic></span></div></div>
+      <div class="sec"><span class="cur"></span>Verity <span class="count">3</span></div>
+      <div class="idea"><div class="circle"></div><div class="body"><div class="t">Badge in the session list is cut off on iPad</div><div class="m"><span>just now · 🖼 1</span></div><div class="actsRow"><span class="act here">↳ This Session</span><span class="act new">+ New Session</span></div></div></div>
+      <div class="idea"><div class="circle"></div><div class="body"><div class="t">Sync ideas from the inbox to Linear later</div><div class="m"><span>2 h ago</span></div><div class="actsRow"><span class="act here">↳ This Session</span><span class="act new">+ New Session</span></div></div></div>
+      <div class="idea"><div class="circle done">✓</div><div class="body"><div class="t done">Retry on 502 from the runner</div><div class="m"><span>done · <span style="color:var(--primary)">Undo</span></span></div><div class="actsRow"></div></div></div>
+      <div class="sec">General <span class="count">1</span></div>
+      <div class="idea"><div class="circle"></div><div class="body"><div class="t">Try whether sessions can start from a Shortcut</div><div class="m"><span>3 days ago</span></div><div class="actsRow"></div></div></div>
+      <div class="sec closed"><span class="chev">▸</span> Docs <span class="count">3</span></div>
+      <div class="sec closed"><span class="chev">▸</span> Website <span class="count">1</span></div>
+      
+    </div>
+    <div class="hint" style="left:14px; top:560px; width:120px">tap → <b>done</b></div>
+  </div>
+</div>
+
+<!-- 7 Panel outside -->
+<div class="shot" id="s7">
+  <div class="caption">6 · Notizen außerhalb einer Session (Home)<small>General-Notizen haben keinen Session-Button – erst in ein Projekt verschieben (Wischen → Move)</small></div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span>▮▮▮ 85%</span></div>
+    <div class="header"><div class="title" style="font-size:22px">Verity</div></div>
+    <div class="transcript" style="gap:8px">
+      <div class="tool" style="font-size:14px; padding:12px">● <b>Verity</b> · 3 sessions</div>
+      <div class="tool" style="font-size:14px; padding:12px">○ Docs · 1 session</div>
+    </div>
+    <div class="dim" style="background:rgba(0,0,0,.6)"></div>
+    <div class="sheet">
+      <div class="grab"></div>
+      <div class="panelHead"><h3>Notes</h3><div class="micBtn"><span data-mic></span></div></div>
+      <div class="sec"><span class="cur"></span>General <span class="count">2</span></div>
+      <div class="idea"><div class="circle"></div><div class="body"><div class="t">Try whether sessions can start from a Shortcut</div><div class="m"><span>3 days ago</span></div><div class="actsRow"></div></div></div>
+      <div class="idea"><div class="circle"></div><div class="body"><div class="t">Check dark mode in the sheet</div><div class="m"><span>yesterday</span></div><div class="actsRow"></div></div></div>
+      <div class="sec">Verity <span class="count">2</span></div>
+      <div class="idea"><div class="circle"></div><div class="body"><div class="t">Badge in the session list is cut off on iPad</div><div class="m"><span>just now · 🖼 1</span></div><div class="actsRow"></div></div></div>
+      <div class="idea"><div class="circle"></div><div class="body"><div class="t">Sync ideas from the inbox to Linear later</div><div class="m"><span>2 h ago</span></div><div class="actsRow"></div></div></div>
+      <div class="sec closed"><span class="chev">▸</span> Docs <span class="count">3</span></div>
+      <div class="sec closed"><span class="chev">▸</span> Website <span class="count">1</span></div>
+      
+    </div>
+  </div>
+</div>
+
+<!-- 6 iPad -->
+<div class="shot" id="s6">
+  <div class="caption">7 · iPad<small>Panel schwebt neben der Blase – Session bleibt sichtbar</small></div>
+  <div class="ipad">
+    <div class="side">
+      <div class="h">Verity</div>
+      <div class="p sel">● Verity</div>
+      <div class="s sel">Auth-Refactor</div>
+      <div class="s">iPad Layout Fixes</div>
+      <div class="s">Release 4.17</div>
+      <div class="p">○ Docs</div>
+      <div class="p">○ Website</div>
+    </div>
+    <div class="main">
+      <div class="header" style="margin-top:24px"><div class="title">Auth-Refactor<div class="sub">Verity · Claude</div></div><span class="more">⋯</span></div>
+      <div class="transcript" data-transcript></div>
+      <div class="bubble out" style="top:110px; right:14px"><span data-mic></span><div class="badge">3</div></div>
+      <div class="popover">
+        <div class="panelHead"><h3>Notes</h3><div class="micBtn"><span data-mic></span></div></div>
+        <div class="sec"><span class="cur"></span>Verity <span class="count">3</span></div>
+        <div class="idea"><div class="circle"></div><div class="body"><div class="t">Badge in the session list is cut off on iPad</div><div class="m"><span>just now · 🖼 1</span></div><div class="actsRow"><span class="act here">↳ This Session</span><span class="act new">+ New Session</span></div></div></div>
+        <div class="idea"><div class="circle"></div><div class="body"><div class="t">Sync ideas from the inbox to Linear later</div><div class="m"><span>2 h ago</span></div><div class="actsRow"><span class="act here">↳ This Session</span><span class="act new">+ New Session</span></div></div></div>
+        <div class="idea"><div class="circle"></div><div class="body"><div class="t">Retry on 502 from the runner</div><div class="m"><span>yesterday</span></div><div class="actsRow"><span class="act here">↳ This Session</span><span class="act new">+ New Session</span></div></div></div>
+        <div class="sec">General <span class="count">1</span></div>
+        <div class="idea"><div class="circle"></div><div class="body"><div class="t">Start sessions from a Shortcut</div><div class="m"><span>3 days ago</span></div><div class="actsRow"></div></div></div>
+        <div class="sec closed"><span class="chev">▸</span> Docs <span class="count">3</span></div>
+        <div class="sec closed"><span class="chev">▸</span> Website <span class="count">1</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const session = document.getElementById('session').innerHTML;
+  document.querySelectorAll('[data-session]').forEach((el) => el.insertAdjacentHTML('afterbegin', session));
+  const tr = document.createElement('div');
+  tr.innerHTML = session;
+  document.querySelectorAll('[data-transcript]').forEach((el) => (el.innerHTML = tr.querySelector('.transcript').innerHTML));
+  const mic = document.getElementById('mic').innerHTML;
+  document.querySelectorAll('[data-mic]').forEach((el) => (el.outerHTML = mic));
+  const thumb = document.getElementById('shotThumb').innerHTML;
+  document.querySelectorAll('[data-thumb]').forEach((el) => (el.outerHTML = thumb));
+</script>
+</body>
+</html>
