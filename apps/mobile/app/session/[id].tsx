@@ -146,7 +146,6 @@ import {
   type StyleProp,
   Text,
   TextInput,
-  type TextInputKeyPressEventData,
   type TextStyle,
   useWindowDimensions,
   View,
@@ -190,6 +189,7 @@ import {
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
 import { ImageLightbox } from '../../components/ImageLightbox';
+import { PromptComposerInput } from '../../components/PromptComposerInput';
 import { WorkingDot } from '../../components/WorkingDot';
 import {
   hardwareKeyboardDetection,
@@ -414,16 +414,6 @@ function shouldAlertMeetingUploadApiError(error: VerityApiError): boolean {
 // its `offsetY` measures something else, so it is repositioned by row identity alone
 // (`migratedAnchorOffset`).
 const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequests.v1');
-
-function isSingleInsertedNewline(previous: string, next: string): boolean {
-  if (next.length !== previous.length + 1) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (next[index] !== previous[index]) {
-      return next[index] === '\n' && next.slice(index + 1) === previous.slice(index);
-    }
-  }
-  return false;
-}
 
 // Half-height of the 3-item message-nav stack, incl. the backdrop's vertical padding:
 // 3 btns·(icon 22 + 6·2) + 2 gaps·8 + container 6·2 = 130; half = 65. Used to
@@ -9243,29 +9233,6 @@ function InputBar({
   const [dropActive, setDropActive] = useState(false);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
-  const suppressReturnChangeRef = useRef(false);
-  const returnSubmitValueRef = useRef('');
-  const onComposerChangeText = useCallback(
-    (next: string) => {
-      if (suppressReturnChangeRef.current) {
-        suppressReturnChangeRef.current = false;
-        if (isSingleInsertedNewline(returnSubmitValueRef.current, next)) return;
-      }
-      onChangeText(next);
-    },
-    [onChangeText],
-  );
-  const onComposerKeyPress = useCallback(
-    (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
-      if (dead || Platform.OS !== 'ios' || !Platform.isPad || event.nativeEvent.key !== 'Enter')
-        return;
-      if (!shouldSubmitOnReturn(keyboardHeight)) return;
-      suppressReturnChangeRef.current = true;
-      returnSubmitValueRef.current = value;
-      onSend();
-    },
-    [dead, keyboardHeight, onSend, value],
-  );
   // Auto-grow: let the native multiline TextInput size to its content (it grows up
   // to `maxHeight`, then scrolls). We deliberately do NOT set an explicit `height`
   // from `onContentSizeChange` — on Fabric that event only fires once at mount
@@ -9327,13 +9294,15 @@ function InputBar({
           dropActive ? styles.inputCardDropActive : null,
         ]}
       >
-        <TextInput
+        <PromptComposerInput
           key={sendNonce}
           ref={inputRef}
           style={[styles.input, compact && styles.inputCompact]}
           value={value}
-          onChangeText={onComposerChangeText}
-          onKeyPress={onComposerKeyPress}
+          onChangeText={onChangeText}
+          containerStyle={compact ? styles.inputContainerCompact : undefined}
+          submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
+          onSend={onSend}
           onFocus={onFocus}
           onBlur={onBlur}
           placeholder={
@@ -9345,7 +9314,6 @@ function InputBar({
           }
           placeholderTextColor={theme.colors.textFaint}
           editable={!dead}
-          multiline
           keyboardAppearance="dark"
           accessibilityLabel="Message input"
         />
@@ -11716,9 +11684,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 2,
     textAlignVertical: 'top',
   },
-  inputCompact: {
+  inputContainerCompact: {
     flex: 1,
     minWidth: 80,
+  },
+  inputCompact: {
     maxHeight: 21 * 3,
   },
   // Action-slot + attach buttons share one clear circular footprint; the visible
