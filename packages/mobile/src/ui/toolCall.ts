@@ -126,7 +126,6 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_secret_run: 'Verity Secret Run',
   verity_secret_job: 'Verity Secret Job',
   verity_knowledge: 'Verity Knowledge',
-  verity_tasks: 'Verity Tasks',
   verity_session_handoff: 'Verity Handoff',
   verity_send_session_message: 'Verity Session Message',
   verity_list_sessions: 'Verity Sessions',
@@ -138,6 +137,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_start_planning: 'Verity Planning Mode',
   verity_present_plan: 'Verity Plan',
   verity_end_planning: 'Verity Implement Plan',
+  verity_tasks: 'Verity Tasks',
 };
 
 /** Strip only Verity's own backend qualification, including tools added by the platform. */
