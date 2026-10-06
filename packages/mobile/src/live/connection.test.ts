@@ -112,6 +112,29 @@ function sink(cursor = 0): Omit<LiveSessionSink, 'caughtUp' | 'ended' | 'disconn
 }
 
 describe('LiveConnection', () => {
+  it.each([true, false])(
+    'retries a synchronous socket construction failure with tickets=%s',
+    async (tickets) => {
+      let attempts = 0;
+      let replacement: FakeSocket | undefined;
+      const h = await harness({
+        getTicket: tickets ? async () => 'ticket' : undefined,
+        connect: (url, protocols) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error('Socket unavailable');
+          replacement = new FakeSocket(url, protocols);
+          return replacement;
+        },
+      });
+      expect(h.retries).toHaveLength(1);
+      h.runRetry();
+      await flush();
+      replacement?.ready();
+      expect(h.connection.connectionState).toBe('connected');
+      h.connection.stop();
+    },
+  );
+
   it('connects to /live with the ticket as a subprotocol, never in the URL', async () => {
     const h = await harness();
     expect(h.sockets[0]?.url).toBe('wss://core.example/live');

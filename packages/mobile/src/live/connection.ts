@@ -300,21 +300,26 @@ export class LiveConnection implements LiveSessionTransport {
     if (this.stopped || this.paused || this.socket !== null) return;
     this.setState('connecting');
     const generation = ++this.generation;
-    const ticket = this.opts.getTicket?.();
-    if (ticket === undefined) {
-      this.openSocket(generation);
-      return;
+    const failed = (error: unknown): void => {
+      if (generation !== this.generation) return;
+      const message = liveConnectionFailure(error);
+      for (const entry of this.allSessions()) entry.sink.disconnected(message);
+      this.scheduleReconnect();
+    };
+    try {
+      const ticket = this.opts.getTicket?.();
+      if (ticket === undefined) {
+        this.openSocket(generation);
+        return;
+      }
+      void ticket
+        .then((value) => {
+          if (generation === this.generation) this.openSocket(generation, value);
+        })
+        .catch(failed);
+    } catch (error) {
+      failed(error);
     }
-    ticket
-      .then((value) => {
-        if (generation === this.generation) this.openSocket(generation, value);
-      })
-      .catch((error: unknown) => {
-        if (generation !== this.generation) return;
-        const message = liveConnectionFailure(error);
-        for (const entry of this.allSessions()) entry.sink.disconnected(message);
-        this.scheduleReconnect();
-      });
   }
 
   private openSocket(generation: number, ticket?: string): void {

@@ -4,7 +4,7 @@
 
 **Related:** [ADR 0008](0008-push-notifications-quick-reply.md),
 [ADR 0023](0023-multi-user-projects-and-turn-identity.md),
-[live protocol](../packages/events/src/live.ts)
+[live protocol](../../packages/events/src/live.ts)
 
 ## Context
 
