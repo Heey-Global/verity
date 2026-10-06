@@ -405,6 +405,53 @@ describe('WebSocket PIN query authentication', () => {
     },
   );
 
+  it('survives a peer reset while the PIN budget verification is pending', async () => {
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const beginning = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const edge = new PreviewEdge({
+      shareId: 'ws-reset',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret('connector'),
+      sessionSecretHash,
+      publicOrigin: 'https://ws-reset.preview.example.test',
+      pinBudget: {
+        begin: async () => {
+          started();
+          await pending;
+          return { state: 'allowed', attemptId: 'attempt' };
+        },
+        finish: async () => ({ state: 'allowed' }),
+      },
+    });
+    const port = await edge.listen();
+    cleanups.push(() => edge.close());
+    const client = connect({ port, host: '127.0.0.1' });
+    cleanups.push(() => {
+      release();
+      client.destroy();
+    });
+    client.on('error', () => {});
+    client.write(
+      `GET /attendee?pin=123456 HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n${handshakeKey()}\r\n`,
+    );
+    await beginning;
+    const closed = new Promise<void>((resolve) => client.once('close', () => resolve()));
+    client.resetAndDestroy();
+    await closed;
+    // Allow the reset to reach the edge while verification remains suspended.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    const response = await fetch(`http://127.0.0.1:${port}/__verity/login`);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+  });
+
   it('shares the failed-attempt limit with HTTP and rejects foreign browser origins', async () => {
     const reached = vi.fn();
     const targetPort = await wsTarget(reached);

@@ -276,6 +276,8 @@ export class PreviewEdge {
       });
     });
     this.server.on('upgrade', (request, socket, head) => {
+      // A peer reset during asynchronous PIN verification must not crash the edge.
+      socket.once('error', () => socket.destroy());
       void this.handleUpgrade(request, socket, head).catch(() => {
         if (!socket.destroyed)
           socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n', () =>
