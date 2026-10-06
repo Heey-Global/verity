@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.16.1](https://github.com/Heey-Global/verity/compare/v4.16.0...v4.16.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **planning:** avoid redundant tool approval for plan presentation ([#1205](https://github.com/Heey-Global/verity/issues/1205)) ([dd64496](https://github.com/Heey-Global/verity/commit/dd644967a88e63d431339724e27c84d2fd63ea54))
+* **sandbox:** stop image-update recreate loop for devcontainer projects ([#1210](https://github.com/Heey-Global/verity/issues/1210)) ([34a9429](https://github.com/Heey-Global/verity/commit/34a9429b51884792530b1789d27dbf0e302e35ce))
+
 ## [4.16.0](https://github.com/Heey-Global/verity/compare/v4.15.0...v4.16.0) (2026-10-06)
 
 
