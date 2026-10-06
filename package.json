@@ -53,7 +53,7 @@
     "@vitest/coverage-v8": "5.0.3",
     "esbuild": "0.28.2",
     "eslint": "10.11.0",
-    "ignore": "7.0.11",
+    "ignore": "7.0.12",
     "knip": "6.39.0",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
