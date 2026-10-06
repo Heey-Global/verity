@@ -14,8 +14,6 @@ export function createMcpGatewayToolExecutor(options: {
   trustedCliTool: TrustedCliTool;
   /** Root containing one supervisor runtime directory per project. */
   runnerRoot?: string | undefined;
-  resolveSessionRuntime?:
-    ((projectId: string, sessionId: string) => string | Promise<string>) | undefined;
   runTrustedCli?: typeof runSupervisorTrustedCli | undefined;
   googleSlides?:
     | ((input: {
@@ -95,18 +93,13 @@ export function createMcpGatewayToolExecutor(options: {
     approvedByCard,
   }) => {
     if (toolName === 'verity_secret_run') {
-      if (runnerRoot === undefined && options.resolveSessionRuntime === undefined)
-        throw new Error('trusted CLI execution is unavailable');
-      const runtime =
-        options.resolveSessionRuntime === undefined
-          ? join(runnerRoot!, projectId)
-          : await options.resolveSessionRuntime(projectId, sessionId);
+      if (runnerRoot === undefined) throw new Error('trusted CLI execution is unavailable');
       return await options.trustedCliTool(
         projectId,
         sessionId,
         turnId,
         { id: callId, name: 'verity_secret_run', input: request },
-        (input) => runTrustedCli(runtime, input),
+        (input) => runTrustedCli(join(runnerRoot, projectId), input),
       );
     }
     if (toolName === 'verity_http_request') {
@@ -197,14 +190,12 @@ export const SCRIPT_ISOLATION_UNAVAILABLE_MESSAGE =
  */
 export function createTrustedCliPreflight(options: {
   runnerRoot: string;
-  resolveSessionRuntime?:
-    ((projectId: string, sessionId: string) => string | Promise<string>) | undefined;
   requestStatus?: (socketPath: string) => Promise<Record<string, unknown>>;
 }): NonNullable<McpGatewayDeps['authorizeCall']> {
   const requestStatus =
     options.requestStatus ??
     ((socketPath: string) => requestRunnerSupervisor(socketPath, { kind: 'status' }));
-  return async ({ projectId, sessionId, toolName, request }) => {
+  return async ({ projectId, toolName, request }) => {
     if (toolName !== 'verity_secret_run') return;
     if (
       typeof request !== 'object' ||
@@ -213,13 +204,9 @@ export function createTrustedCliPreflight(options: {
     ) {
       return;
     }
-    const runtime =
-      options.resolveSessionRuntime === undefined
-        ? join(options.runnerRoot, projectId)
-        : await options.resolveSessionRuntime(projectId, sessionId);
     let status: Record<string, unknown>;
     try {
-      status = await requestStatus(join(runtime, 'supervisor.sock'));
+      status = await requestStatus(join(options.runnerRoot, projectId, 'supervisor.sock'));
     } catch {
       return;
     }

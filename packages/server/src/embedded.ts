@@ -1,10 +1,4 @@
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
-import {
-  createSessionCloneProvisioner,
-  assertIndependentSessionWorkspace,
-  reconcileSessionOrigin,
-} from './session-clone.js';
-import { SessionSandboxProvisioner, sessionContainerName } from './session-sandbox.js';
 import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
@@ -60,7 +54,7 @@ import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
-import { dirname, join, relative, sep } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
@@ -95,6 +89,7 @@ import { createGoogleSheetsTool } from './google-sheets-tool.js';
 import { createGoogleDriveAgentTool } from './google-drive-agent-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import {
+  createGitWorktreeProvisioner,
   repairAdminGitdirs,
   repairProjectAdminGitdirs,
   type WorktreeProvisioner,
@@ -179,6 +174,7 @@ import {
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
+import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
 import {
   purgeSessionArtifacts as purgeSessionArtifactFiles,
   type SessionArtifactScope,
@@ -221,8 +217,8 @@ import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 import { containerNameFor } from './canonical.js';
-import { DockerExecBackend, dockerHostFor } from './project-backend.js';
-import { createSandboxGit, createSleepingSessionGit } from './sandbox-git.js';
+import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
+import { createSleepingSessionGit, createSandboxGit } from './sandbox-git.js';
 import { projectSettingsEnv, type ProjectEnvironmentSettings } from './project-settings-env.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
@@ -1032,17 +1028,6 @@ export function buildRunnerConductorWiring(deps: {
    *  When absent, project-less sessions retain the legacy loopback behavior. */
   controlPlaneProjectId?: string | undefined;
   isControlPlaneProject?: ((projectId: string) => Promise<boolean>) | undefined;
-  /** Host runtime for a persisted isolated session; failure never falls back. */
-  resolveSessionRuntime?:
-    ((sessionId: string, projectId: string) => string | Promise<string>) | undefined;
-  /** Disposable private runtime for a query that has no persisted session. */
-  prepareEphemeralRuntime?:
-    | ((
-        projectId: string,
-      ) => Promise<{ sessionId: string; runtimeDir: string; cleanup: () => Promise<void> }>)
-    | undefined;
-  /** Map an isolated checkout into its session container. */
-  resolveSandboxCwd?: ((worktree: string) => string) | undefined;
   hostCloneRoot?: string | undefined;
   containerProjectRoot?: string | undefined;
   store: SupervisorRunnerClientOptions['store'];
@@ -1078,9 +1063,6 @@ export function buildRunnerConductorWiring(deps: {
       serverManagedTranscript: true,
       runnerRecovery: new SupervisorRunnerRecovery({
         dataVolumeRoot,
-        ...(deps.resolveSessionRuntime === undefined
-          ? {}
-          : { resolveSessionRuntime: deps.resolveSessionRuntime }),
         getSession: async (sessionId) => {
           const session = await deps.getSession(sessionId);
           if (
@@ -1140,32 +1122,9 @@ export function buildRunnerConductorWiring(deps: {
         // without one and now declares `opencode-acp` — so this is the fallback for a
         // backend that declares no supervisor protocol, including a test double.
         if (backend.runnerSupervisorBackend === undefined) {
-          if (deps.resolveSessionRuntime !== undefined) {
-            throw new Error('An isolated session requires a supervised backend.');
-          }
           return new LoopbackRunnerClient(backend);
         }
-        const isolated = deps.resolveSessionRuntime !== undefined;
-        if (
-          isolated &&
-          context.sessionId === null &&
-          (deps.prepareEphemeralRuntime === undefined || context.ephemeralEventSink === undefined)
-        ) {
-          throw new Error(
-            'An isolated runner requires a persisted session identity or a private ephemeral runtime.',
-          );
-        }
-        const ephemeralRuntime =
-          isolated && context.sessionId === null
-            ? await deps.prepareEphemeralRuntime!(runnerProjectId)
-            : undefined;
-        const runtimeDir =
-          ephemeralRuntime?.runtimeDir ??
-          (isolated
-            ? await deps.resolveSessionRuntime!(context.sessionId!, runnerProjectId)
-            : join(dataVolumeRoot, 'runners', runnerProjectId));
-        const turnSandboxPath =
-          isolated && deps.resolveSandboxCwd !== undefined ? deps.resolveSandboxCwd : sandboxPath;
+        const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
         // Provisioning can deliberately disable the Sandbox supervisor for a project
         // when its container boundary is not safe for Stage 5c. Native backends may
         // still use the legacy in-process loopback, but ACP must never do so:
@@ -1191,10 +1150,9 @@ export function buildRunnerConductorWiring(deps: {
             socketPath: supervisorSocket,
             reason,
           });
-          if (isAcpBackend || isolated) {
-            await ephemeralRuntime?.cleanup();
+          if (isAcpBackend) {
             throw new Error(
-              `${isAcpBackend ? 'ACP' : 'Isolated session'} requires a reachable project supervisor; ${reason}. Repair the project before sending another message.`,
+              `ACP requires a reachable project supervisor; ${reason}. Repair the project before sending another message.`,
             );
           }
           return new LoopbackRunnerClient(
@@ -1306,11 +1264,8 @@ export function buildRunnerConductorWiring(deps: {
                 : undefined,
           mapTurnOptions: (opts) => ({
             ...opts,
-            ...(ephemeralRuntime
-              ? { storeSessionId: ephemeralRuntime.sessionId, toolless: true }
-              : {}),
-            worktree: turnSandboxPath(opts.worktree),
-            cwd: turnSandboxPath(opts.cwd),
+            worktree: sandboxPath(opts.worktree),
+            cwd: sandboxPath(opts.cwd),
             ...(projectHttpMcpServers.length === 0
               ? {}
               : {
@@ -1363,31 +1318,21 @@ export function buildRunnerConductorWiring(deps: {
         const ephemeralClient: RunnerClient = {
           startTurn: (opts, hooks) => {
             let backendSessionId: string | undefined;
-            let turn: ReturnType<SupervisorRunnerClient['startTurn']>;
-            try {
-              turn = supervisorClient.startTurn(opts, {
-                ...hooks,
-                onSession: async (id) => {
-                  backendSessionId = id;
-                  await hooks.onSession?.(id);
-                },
-              });
-            } catch (error) {
-              void ephemeralRuntime?.cleanup().catch(() => undefined);
-              throw error;
-            }
+            const turn = supervisorClient.startTurn(opts, {
+              ...hooks,
+              onSession: async (id) => {
+                backendSessionId = id;
+                await hooks.onSession?.(id);
+              },
+            });
             const cleanup = async (): Promise<void> => {
-              if (ephemeralRuntime) {
-                await ephemeralRuntime.cleanup();
-                return;
-              }
               const paths: string[] = [];
               if (opts.turnId !== undefined) paths.push(join(runtimeDir, 'turns', opts.turnId));
               if (backendSessionId !== undefined) {
                 if (backend.runnerSupervisorBackend === 'claude-acp') {
                   paths.push(
                     transcriptPath({
-                      cwd: turnSandboxPath(opts.cwd),
+                      cwd: sandboxPath(opts.cwd),
                       sessionId: backendSessionId,
                       claudeHome: join(runtimeDir, 'claude'),
                     }),
@@ -2069,10 +2014,6 @@ export async function buildEmbeddedServer(
       ? {
           authorizeCall: createTrustedCliPreflight({
             runnerRoot: join(config.dataVolumeRoot, 'runners'),
-            resolveSessionRuntime: (projectId, sessionId) => {
-              if (!sessionSandboxes) throw new Error('Session isolation is unavailable');
-              return sessionSandboxes.runtimePath(sessionId, projectId);
-            },
           }),
         }
       : {}),
@@ -2083,13 +2024,7 @@ export async function buildEmbeddedServer(
       brokeredHttpTool: brokeredHttpTool,
       trustedCliTool,
       ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
-        ? {
-            runnerRoot: join(config.dataVolumeRoot, 'runners'),
-            resolveSessionRuntime: (projectId: string, sessionId: string) => {
-              if (!sessionSandboxes) throw new Error('Session isolation is unavailable');
-              return sessionSandboxes.runtimePath(sessionId, projectId);
-            },
-          }
+        ? { runnerRoot: join(config.dataVolumeRoot, 'runners') }
         : {}),
       googleSlides: invokeGoogleSlides,
       googleDocs: invokeGoogleDocs,
@@ -2243,22 +2178,27 @@ export async function buildEmbeddedServer(
   const branches =
     config.repoDir || config.hostCloneRoot
       ? createGitBranchService({
+          ...(config.repoDir ? { repoDir: config.repoDir } : {}),
           baseBranch: 'main',
           ...(config.dockerBaseUrl && config.hostCloneRoot
             ? {
                 git: async (args: readonly string[]) => {
+                  // Repository helpers must run with the same privileges as the agent.
                   const index = args.indexOf('-C');
                   const path = index < 0 ? undefined : args[index + 1];
                   const session = (await eventStore.listSessions()).find(
                     (row) => row.worktree === path,
                   );
-                  if (!session || !projectDocker) {
-                    throw new Error('Git operation has no isolated session context');
-                  }
+                  if (!session || !projectDocker)
+                    throw new Error('Git operation has no project session context');
                   const project = await eventStore.getProject(
                     session.projectId ?? CONTROL_PLANE_PROJECT_ID,
                   );
                   if (!project) throw new Error('Project is unavailable');
+                  const containerName =
+                    project.kind === 'control_plane' && config.controlPlaneRunner === true
+                      ? MANAGED_CONTROL_PLANE_RUNNER_NAME
+                      : project.containerName;
                   const readOnly =
                     [
                       'rev-parse',
@@ -2271,34 +2211,29 @@ export async function buildEmbeddedServer(
                       'show',
                       'merge-base',
                       'show-ref',
-                      'worktree',
-                    ].includes(args[index + 2] ?? '') &&
-                    (args[index + 2] !== 'worktree' || args[index + 3] === 'list');
-                  const runtimeProject = readOnly
-                    ? await resolveSessionProject(session.sessionId, project)
-                    : await ensureSessionProject(session.sessionId, project);
-                  if (readOnly && runtimeProject.state !== 'active') {
+                    ].includes(args[index + 2] ?? '') ||
+                    (args[index + 2] === 'worktree' && args[index + 3] === 'list');
+                  if (readOnly && !(await projectDocker.inspectContainer(containerName)).running) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({
                       docker: projectDocker,
-                      templateContainer:
-                        project.kind === 'control_plane'
-                          ? MANAGED_CONTROL_PLANE_RUNNER_NAME
-                          : project.containerName,
+                      templateContainer: containerName,
                       projectId: project.id,
-                      hostRoot: session.worktree,
+                      hostRoot: projectClonePath(config.hostCloneRoot!, project),
                       ...(config.dataVolume
-                        ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot! } }
+                        ? {
+                            dataVolume: { name: config.dataVolume, root: dataVolumeRoot! },
+                          }
                         : {}),
                       dockerBaseUrl: config.dockerBaseUrl,
                     })(args);
                   }
                   return createSandboxGit({
-                    containerName: runtimeProject.containerName,
-                    hostRoot: session.worktree,
+                    containerName: containerName,
+                    hostRoot: projectClonePath(config.hostCloneRoot!, project),
                     dockerBaseUrl: config.dockerBaseUrl,
-                    inspect: () => projectDocker.inspectContainer(runtimeProject.containerName),
+                    inspect: () => projectDocker.inspectContainer(containerName),
                   })(args);
                 },
               }
@@ -2414,13 +2349,9 @@ export async function buildEmbeddedServer(
   // deployments intentionally do not carry a broad `.gh-token`; without this header
   // `git fetch origin main` fails before the Verity Control session can be created.
   const worktrees = config.repoDir
-    ? createSessionCloneProvisioner({
+    ? createGitWorktreeProvisioner({
         repoDir: config.repoDir,
-        worktreeRoot: join(
-          config.dataVolumeRoot ?? dirname(config.repoDir),
-          '.verity-session-clones',
-          CONTROL_PLANE_RUNNER_PROJECT_ID,
-        ),
+        worktreeRoot: config.workspacesDir ?? join(tmpdir(), 'verity-sessions'),
         baseBranch: 'main',
         // Fetch `main` from origin before branching so each spawn starts from
         // the latest integration tip, not the clone's last-synced `main`.
@@ -2535,6 +2466,19 @@ export async function buildEmbeddedServer(
           ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
         })
       : undefined;
+  if (projectDocker !== undefined) {
+    // Per-session sandboxes from a Server that ran sessions in private containers
+    // have no owner here; see removeRetiredSessionSandboxes.
+    void removeRetiredSessionSandboxes(projectDocker)
+      .then((result) => {
+        if (result.containers + result.volumes + result.failed > 0) {
+          console.info(`verity: removed retired session sandboxes ${JSON.stringify(result)}`);
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn('verity: could not remove retired session sandboxes', error);
+      });
+  }
   const runtimeDocker = config.dockerBaseUrl
     ? (projectDocker ??
       createDockerClient({
@@ -2614,8 +2558,6 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
-      resolveSessionProject: (sessionId, project) => resolveSessionProject(sessionId, project),
-      sandboxWorktree: () => '/work',
       onShareEnded: (share) => {
         if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
       },
@@ -3472,28 +3414,6 @@ export async function buildEmbeddedServer(
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
     provisioner = new ProvisionerImpl({
-      stopProjectSessionSandboxes: async (projectId) => {
-        const ids = new Set(
-          (await eventStore.listSessions())
-            .filter((session) => session.projectId === projectId)
-            .map((session) => session.sessionId),
-        );
-        // Disposable queries have no store row; stopped-server recovery still owns
-        // their labelled containers and must quiesce them before revoking authority.
-        for (const container of (await docker?.listContainers?.()) ?? []) {
-          const id = container.labels?.['verity.session-id'];
-          if (id && container.labels?.['verity.project-id'] === projectId) ids.add(id);
-        }
-        const results = await Promise.allSettled(
-          [...ids].map(async (sessionId) => {
-            await sessionSandboxes?.stop(sessionId, projectId);
-          }),
-        );
-        const failures = results
-          .filter((result) => result.status === 'rejected')
-          .map((result) => result.reason as unknown);
-        if (failures.length) throw new AggregateError(failures, 'Private session shutdown failed');
-      },
       store: eventStore,
       db,
       docker,
@@ -3647,103 +3567,6 @@ export async function buildEmbeddedServer(
     );
   }
 
-  const sessionSandboxes =
-    projectDocker && config.dataVolumeRoot && provisioner
-      ? new SessionSandboxProvisioner({
-          docker: projectDocker,
-          dataVolumeRoot: config.dataVolumeRoot,
-          ...(config.dataVolume ? { dataVolumeName: config.dataVolume } : {}),
-          prepareRuntime: (_project, sessionId, runtimePath) => {
-            if (provisioner.prepareSessionRuntime(sessionId) !== runtimePath) {
-              throw new Error('Session runtime path mismatch');
-            }
-            return Promise.resolve({});
-          },
-          bootstrap: (project, runtimePath, workspace) =>
-            project.kind === 'control_plane'
-              ? provisioner.awaitSessionRuntime(runtimePath)
-              : provisioner.startSessionRuntime(project.containerName, runtimePath, workspace),
-        })
-      : undefined;
-  const ensureSessionProject = async (
-    sessionId: string,
-    project: ProjectRecord,
-  ): Promise<ProjectRecord> => {
-    const session = await eventStore.getSession(sessionId);
-    if (
-      !session ||
-      (session.projectId ?? CONTROL_PLANE_PROJECT_ID) !== project.id ||
-      !sessionSandboxes
-    ) {
-      throw new Error('Session isolation is unavailable');
-    }
-    await assertIndependentSessionWorkspace(
-      session.worktree,
-      project.kind === 'control_plane'
-        ? (config.workspacesDir ?? join(tmpdir(), 'verity-sessions'))
-        : undefined,
-    );
-    const canonicalProject =
-      (await provisioner?.ensureProjectSandboxAwake?.(project.id)) ??
-      (await eventStore.getProject(project.id));
-    if (!canonicalProject || canonicalProject.state !== 'active')
-      throw new Error('Project is not active');
-    const runtimeProject = await sessionSandboxes.ensure(
-      canonicalProject.kind === 'control_plane'
-        ? { ...canonicalProject, containerName: MANAGED_CONTROL_PLANE_RUNNER_NAME }
-        : canonicalProject,
-      session,
-    );
-    if (project.kind === 'github' || project.kind === undefined) {
-      if (!projectDocker) throw new Error('Session Git isolation is unavailable');
-      await reconcileSessionOrigin(
-        createSandboxGit({
-          containerName: runtimeProject.containerName,
-          hostRoot: session.worktree,
-          dockerBaseUrl: config.dockerBaseUrl,
-          inspect: () => projectDocker.inspectContainer(runtimeProject.containerName),
-        }),
-        session.worktree,
-        `https://github.com/${project.owner}/${project.repo}.git`,
-      );
-    }
-    return runtimeProject;
-  };
-  const resolveSessionProject = async (
-    sessionId: string,
-    project: ProjectRecord,
-  ): Promise<ProjectRecord> => {
-    const session = await eventStore.getSession(sessionId);
-    if (
-      !session ||
-      (session.projectId ?? CONTROL_PLANE_PROJECT_ID) !== project.id ||
-      !sessionSandboxes ||
-      !projectDocker
-    ) {
-      throw new Error('Session isolation is unavailable');
-    }
-    await assertIndependentSessionWorkspace(
-      session.worktree,
-      project.kind === 'control_plane'
-        ? (config.workspacesDir ?? join(tmpdir(), 'verity-sessions'))
-        : undefined,
-    );
-    const containerName = sessionContainerName(sessionId);
-    try {
-      const inspected = await projectDocker.inspectContainer(containerName);
-      if (
-        inspected.labels?.['verity.session-id'] !== sessionId ||
-        inspected.labels['verity.project-id'] !== project.id
-      ) {
-        throw new Error('Session sandbox ownership mismatch');
-      }
-      return { ...project, containerName, state: inspected.running ? 'active' : 'sleeping' };
-    } catch (error) {
-      if (!(error instanceof DockerError) || error.kind !== 'container_not_found') throw error;
-      return { ...project, containerName, state: 'sleeping' };
-    }
-  };
-
   // Hoisted so the runner-transport factory (ADR 0006 Stage 2.2-prep) can close
   // over the SAME bus instance the control plane's WS subscribers/Conductor use —
   // events the FileTailRunnerClient republishes off the tailed event file must
@@ -3759,8 +3582,6 @@ export async function buildEmbeddedServer(
           hostCloneRoot: config.hostCloneRoot,
           dockerBaseUrl: config.dockerBaseUrl,
           resolveUser: resolvePreviewUser,
-          resolveSessionProject,
-          sandboxWorktree: () => '/work',
           onScan: (project, processes) => {
             void managedDevServerManager?.sweepOrphans(project, processes);
           },
@@ -3796,8 +3617,6 @@ export async function buildEmbeddedServer(
             }).listListeningProcesses(project),
           listSessionServers: (sessionId) =>
             listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
-          resolveSessionProject,
-          sandboxWorktree: () => '/work',
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
@@ -3822,6 +3641,7 @@ export async function buildEmbeddedServer(
       : undefined;
   // Dev servers the agent sets up and Verity runs (concept 2.6).
   if (projectDocker && config.hostCloneRoot) {
+    const hostCloneRoot = config.hostCloneRoot;
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       runtime: new DockerProjectRuntime({
@@ -3830,15 +3650,12 @@ export async function buildEmbeddedServer(
       }),
       ...(localPreviewManager ? { localShares: localPreviewManager } : {}),
       networkPorts: localPreviewPorts(process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE),
-      resolveSessionProject,
-      prepareSessionProject: ensureSessionProject,
-      sandboxWorktree: () => '/work',
+      sandboxWorktree: (project, worktree) =>
+        containerPathFor(worktree, projectClonePath(hostCloneRoot, project)),
       refreshListeners: (project) => listenerDiscovery?.refreshProject(project),
-      wakeSandbox: async (projectId, sessionId) => {
-        const project = await eventStore.getProject(projectId);
-        if (!project) throw new Error('Project is unavailable');
-        return ensureSessionProject(sessionId, project);
-      },
+      wakeSandbox: (projectId, sessionId) =>
+        provisioner?.ensureProjectSandboxAwake(projectId, new Set([sessionId])) ??
+        Promise.reject(new Error('sandbox wake is unavailable')),
       log: (message, detail) => managedDevServerLog.current?.(message, detail),
     });
     const managed = managedDevServerManager;
@@ -4052,9 +3869,7 @@ export async function buildEmbeddedServer(
    * unmapped path.
    */
   const sessionSandboxCwd = (worktree: string): string =>
-    sessionSandboxes
-      ? '/work'
-      : runnerSandboxPath(worktree, config.hostCloneRoot, RUNNER_CONTAINER_PROJECT_ROOT);
+    runnerSandboxPath(worktree, config.hostCloneRoot, RUNNER_CONTAINER_PROJECT_ROOT);
   const purgeRunnerArtifacts =
     dataVolumeRoot === undefined
       ? undefined
@@ -4098,7 +3913,6 @@ export async function buildEmbeddedServer(
                 controlPlaneRunner,
               }),
             );
-            if (sessionSandboxes) runnerProjectIds.add(`session-${sessionId}`);
             if (runnerProjectIds.size === 0) return;
 
             const sandboxCwd = sessionSandboxCwd(session.worktree);
@@ -4586,54 +4400,14 @@ export async function buildEmbeddedServer(
       : {}),
     ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
       ? {
-          projectBackend: (_project: ProjectRecord, selected) => selected,
-          resolveSessionSandbox: async (sessionId: string) => {
-            const session = await eventStore.getSession(sessionId);
-            const project = session?.projectId
-              ? await eventStore.getProject(session.projectId)
-              : undefined;
-            if (!project) throw new Error('Session project is unavailable');
-            return ensureSessionProject(sessionId, project);
-          },
-          ...(sessionSandboxes && config.dataVolumeRoot
-            ? {
-                sessionIsolationMigration: {
-                  backupRoot: join(config.dataVolumeRoot, 'isolation-backups'),
-                  projectRepoPath: (project: ProjectRecord) => {
-                    if (project.kind === 'control_plane') {
-                      if (!config.repoDir)
-                        throw new Error('Control-plane repository is unavailable');
-                      return config.repoDir;
-                    }
-                    return projectClonePath(config.hostCloneRoot!, project);
-                  },
-                  privateCloneRoot: (project: ProjectRecord) =>
-                    project.kind === 'control_plane'
-                      ? join(config.dataVolumeRoot!, '.verity-session-clones', project.id)
-                      : join(
-                          dirname(projectClonePath(config.hostCloneRoot!, project)),
-                          '.verity-session-clones',
-                          project.id,
-                        ),
-                },
-              }
-            : {}),
-          sessionSandboxGit: async (
-            sessionId: string,
-            project: ProjectRecord,
-            worktree: string,
-          ) => {
-            const runtimeProject = await ensureSessionProject(sessionId, project);
-            return createSandboxGit({
-              containerName: runtimeProject.containerName,
-              hostRoot: worktree,
+          projectBackend: (project: ProjectRecord, selected, settings) =>
+            new DockerExecBackend({
+              containerName: project.containerName,
+              hostProjectRoot: projectClonePath(config.hostCloneRoot as string, project),
               dockerBaseUrl: config.dockerBaseUrl,
-              inspect: () => projectDocker!.inspectContainer(runtimeProject.containerName),
-            });
-          },
-          removeSessionSandbox: async (sessionId: string) => {
-            await sessionSandboxes?.remove(sessionId);
-          },
+              backend: selected,
+              containerEnv: projectSettingsEnv(settings),
+            }),
           // Git for the GitHub-free merge, run inside the project's own container.
           // Same shape as the backend above on purpose: the merge touches a clone the
           // session owns, so it must execute where the session's own code executes.
@@ -4774,64 +4548,6 @@ export async function buildEmbeddedServer(
         },
         hostCloneRoot: config.hostCloneRoot,
         containerProjectRoot: RUNNER_CONTAINER_PROJECT_ROOT,
-        resolveSessionRuntime: (sessionId, projectId) => {
-          if (!sessionSandboxes) throw new Error('Session isolation is unavailable');
-          return sessionSandboxes.runtimePath(sessionId, projectId);
-        },
-        prepareEphemeralRuntime: async (projectId) => {
-          if (!sessionSandboxes || !config.dataVolumeRoot)
-            throw new Error('Ephemeral isolation is unavailable');
-          const project =
-            (await eventStore.getProject(projectId)) ??
-            (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
-              ? (await eventStore.listProjects()).find((record) => record.kind === 'control_plane')
-              : undefined);
-          if (!project) throw new Error('Query project is unavailable');
-          const active = (await provisioner?.ensureProjectSandboxAwake?.(project.id)) ?? project;
-          if (active.state !== 'active') throw new Error('Query project is not active');
-          if (!provisioner?.tryBeginProjectSandboxActivity?.(project.id))
-            throw new Error('Query project is changing');
-          let released = false;
-          const release = () => {
-            if (!released) {
-              released = true;
-              provisioner.endProjectSandboxActivity?.(project.id);
-            }
-          };
-          const sessionId = `query-${randomUUID()}`;
-          const worktree = join(config.dataVolumeRoot, 'query-workspaces', sessionId);
-          const runtimeDir = sessionSandboxes.runtimePath(sessionId, project.id);
-          const cleanup = async () => {
-            try {
-              await sessionSandboxes.remove(sessionId);
-              await rm(worktree, { recursive: true, force: true });
-              // Runner-owned children can outlive the server's traverse-only runtime
-              // directory. Remove what the server owns; orphan sweeping handles the rest.
-              await chmod(runtimeDir, 0o700).catch(() => undefined);
-              await rm(runtimeDir, { recursive: true, force: true }).catch(() => undefined);
-              await rm(`${runtimeDir}.workspace-post-create-complete`, { force: true });
-            } finally {
-              release();
-            }
-          };
-          try {
-            if ((await eventStore.getProject(project.id))?.state !== 'active')
-              throw new Error('Query project stopped');
-            mkdirSync(worktree, { recursive: true });
-            await chmod(worktree, 0o777);
-            await sessionSandboxes.ensure(
-              active.kind === 'control_plane'
-                ? { ...active, containerName: MANAGED_CONTROL_PLANE_RUNNER_NAME }
-                : active,
-              { sessionId, worktree },
-            );
-            return { sessionId, runtimeDir, cleanup };
-          } catch (error) {
-            await cleanup();
-            throw error;
-          }
-        },
-        resolveSandboxCwd: () => '/work',
         // ADR 0014 D1: the ACP tool gateway bearer registry. The
         // registry is the Server's half of the gateway bearer — the runner client
         // mints one per ACP turn and retires it when the turn settles.
@@ -4928,22 +4644,6 @@ export async function buildEmbeddedServer(
             );
           }
           await synchronizeAgentGatewayForTurn();
-          if (!sessionSandboxes) throw new Error('Control-plane session isolation is unavailable');
-          await assertIndependentSessionWorkspace(
-            session.worktree,
-            config.workspacesDir ?? join(tmpdir(), 'verity-sessions'),
-          );
-          const controlProject =
-            session.projectId === null
-              ? await ensureControlPlaneProject(eventStore)
-              : await eventStore.getProject(session.projectId);
-          if (!controlProject || controlProject.kind !== 'control_plane') {
-            throw new Error('Control-plane session project is unavailable');
-          }
-          await sessionSandboxes.ensure(
-            { ...controlProject, containerName: MANAGED_CONTROL_PLANE_RUNNER_NAME },
-            session,
-          );
           return sessionSelected;
         };
         const acpControlPlaneBackend = isRunnerSupervisorBackend(selected.runnerSupervisorBackend)
@@ -5004,6 +4704,7 @@ export async function buildEmbeddedServer(
           return undefined;
         }
         const dockerBaseUrl = config.dockerBaseUrl;
+        const hostCloneRoot = config.hostCloneRoot;
         return serializeProjectTurnPreparation(
           project.id,
           preparation.sessionId,
@@ -5091,10 +4792,9 @@ export async function buildEmbeddedServer(
               isClaudeSession,
               egressActive: claudeEgressActive,
             });
-            const runtimeProject = await ensureSessionProject(session.sessionId, project);
             return new DockerExecBackend({
-              containerName: runtimeProject.containerName,
-              hostProjectRoot: session.worktree,
+              containerName: project.containerName,
+              hostProjectRoot: projectClonePath(hostCloneRoot, project),
               dockerBaseUrl,
               backend: sessionSelected,
               containerEnv: {
@@ -5190,14 +4890,7 @@ export async function buildEmbeddedServer(
         // claude's own naming rule, applied to the cwd as the SANDBOX saw it — the same
         // derivation the delete path uses, so the two agree on which directory belongs
         // to which session.
-        liveCwdDirs: new Set(
-          worktrees.flatMap((worktree) => [
-            encodeCwd(sessionSandboxCwd(worktree)),
-            encodeCwd(
-              runnerSandboxPath(worktree, config.hostCloneRoot, RUNNER_CONTAINER_PROJECT_ROOT),
-            ),
-          ]),
-        ),
+        liveCwdDirs: new Set(worktrees.map((worktree) => encodeCwd(sessionSandboxCwd(worktree)))),
         dryRun,
         signal: sweepAbort.signal,
       });
@@ -5770,10 +5463,10 @@ export function createProjectWorktreeFactory(mint: GitHubProjectTokenMint): (
   worktreeOpts?: Pick<GitWorktreeOptions, 'baseBranch' | 'refreshBase' | 'git'>,
 ) => WorktreeProvisioner {
   return (project, projectClone, worktreeOpts) =>
-    createSessionCloneProvisioner({
+    createGitWorktreeProvisioner({
       ...worktreeOpts,
       repoDir: projectClone,
-      worktreeRoot: join(dirname(projectClone), '.verity-session-clones', project.id),
+      worktreeRoot: join(projectClone, '.verity-sessions'),
       fetchAuthHeader: async () => {
         // On-demand mint only — no project-clone `.gh-token` file exists anymore
         // (it would sit in the sandbox's /work; the sandbox uses the token broker).

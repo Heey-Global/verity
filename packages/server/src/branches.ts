@@ -307,7 +307,7 @@ export interface GitBranchService {
   mergeIntoLocalBase(
     worktreePath: string,
     basePath: string,
-    opts: { git: GitOutput; sessionGit?: GitOutput; mergeRef?: string },
+    opts: { git: GitOutput },
   ): Promise<{
     base: string;
     branch: string;
@@ -899,11 +899,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
   async function mergeIntoLocalBase(
     worktreePath: string,
     basePath: string,
-    {
-      git: run,
-      sessionGit = run,
-      mergeRef,
-    }: { git: GitOutput; sessionGit?: GitOutput; mergeRef?: string },
+    { git: run }: { git: GitOutput },
   ): Promise<{ base: string; branch: string; mergedTip: string; baseTip: string }> {
     // Serialize per base checkout: two sessions of the same project merging at once
     // would collide on git's index lock, and the loser's `merge --abort` could roll
@@ -918,7 +914,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       // local branch happens to point at the same commit (that is what the #122 preview
       // UI wants). Merging on that label would let a detached session merge — and the
       // cleanup delete — a branch it is not on. Only a real attached branch qualifies.
-      const branch = await attachedBranch(worktreePath, sessionGit);
+      const branch = await attachedBranch(worktreePath, run);
       if (branch === undefined) throw new BranchNotFoundError('HEAD');
       if (branch === base) throw new NothingToMergeError(branch, base);
       // Both names come out of a repository the sandbox can write and go straight into
@@ -931,26 +927,16 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       // first commit), which has no ref to merge. Resolved through the SESSION worktree,
       // not `opts.repoDir`: a dev checkout can configure both a global repo root and a
       // project clone root, and this branch only exists in the project's repository.
-      if (!(await branchExistsInWorktree(worktreePath, branch, sessionGit))) {
+      if (!(await branchExistsInWorktree(worktreePath, branch, run))) {
         throw new BranchNotFoundError(branch);
       }
       // Uncommitted work on either side would be swept up by the merge or destroyed by
       // the post-merge reset. Refuse before touching anything.
-      if (await hasTrackedChanges(worktreePath, sessionGit))
-        throw new DirtyWorktreeError(worktreePath);
+      if (await hasTrackedChanges(worktreePath, run)) throw new DirtyWorktreeError(worktreePath);
       if (await hasTrackedChanges(basePath, run)) {
         throw new BaseCheckoutUnavailableError(basePath, 'it has uncommitted changes');
       }
-      const mergeTarget = mergeRef ?? branch;
-      assertPlainRef(mergeTarget);
-      const alreadyMerged = await run([
-        '-C',
-        basePath,
-        'merge-base',
-        '--is-ancestor',
-        mergeTarget,
-        base,
-      ])
+      const alreadyMerged = await run(['-C', basePath, 'merge-base', '--is-ancestor', branch, base])
         .then(() => true)
         .catch((error: unknown) => {
           if (error instanceof SandboxUnavailableError) throw error;
@@ -960,9 +946,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       // The exact commit this merge absorbs. Handed back so the deferred cleanup can
       // tell whether the session has committed more work on the branch since, in which
       // case deleting it would strand those commits (see `resetToLocalBase`).
-      const mergedTip = (
-        await run(['-C', basePath, 'rev-parse', mergeRef ?? `refs/heads/${branch}`])
-      ).trim();
+      const mergedTip = (await run(['-C', basePath, 'rev-parse', `refs/heads/${branch}`])).trim();
       try {
         // `--no-ff` keeps the session's work visible as one merge point, so a local
         // project's history reads like the pull-request one. The identity is pinned the
@@ -989,7 +973,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
           '--no-ff',
           '--no-edit',
           '--', // belt and braces with assertPlainRef: nothing after this is an option
-          mergeTarget,
+          branch,
         ]);
       } catch (error) {
         // The daemon says the container is not there. That is not the same as "the merge
