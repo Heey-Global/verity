@@ -158,11 +158,13 @@ export class TaskStore {
   async listAssigned(sessionId: string): Promise<TaskRecord[]> {
     const rows = await this.db
       .selectFrom('tasks')
-      .selectAll()
-      .where('session_id', '=', sessionId)
+      .innerJoin('sessions', 'sessions.session_id', 'tasks.session_id')
+      .where(sql<boolean>`tasks.project_id is not distinct from sessions.project_id`)
+      .selectAll('tasks')
+      .where('tasks.session_id', '=', sessionId)
       .where('status', 'in', [...OPEN_TASK_STATUSES])
       .orderBy('sort', 'asc')
-      .orderBy('created_at', 'asc')
+      .orderBy('tasks.created_at', 'asc')
       .execute();
     return rows.map((row) => this.record(row));
   }
@@ -172,9 +174,11 @@ export class TaskStore {
   async assignedOwner(sessionId: string): Promise<string | undefined> {
     const rows = await this.db
       .selectFrom('tasks')
+      .innerJoin('sessions', 'sessions.session_id', 'tasks.session_id')
+      .where(sql<boolean>`tasks.project_id is not distinct from sessions.project_id`)
       .select('owner_user_id')
       .distinct()
-      .where('session_id', '=', sessionId)
+      .where('tasks.session_id', '=', sessionId)
       .execute();
     return rows.length === 1 ? rows[0]?.owner_user_id : undefined;
   }

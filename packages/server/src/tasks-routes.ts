@@ -289,6 +289,8 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     }
     const { expectedRevision, ...patch } = body;
     try {
+      if (expectedRevision !== undefined && expectedRevision !== previous.revision)
+        throw new TaskRevisionConflictError(id, previous.revision);
       const task = await tasks.patch(
         id,
         owner,
@@ -296,7 +298,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
           ...patch,
           status: patch.status as TaskRecord['status'] | undefined,
         },
-        expectedRevision ?? previous.revision,
+        previous.revision,
       );
       const change =
         task.status === previous.status

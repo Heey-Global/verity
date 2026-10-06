@@ -237,6 +237,26 @@ describe('tasks routes', () => {
     },
   );
 
+  it('cannot substitute a future revision for the authorized HTTP snapshot', async () => {
+    await store.tasks.upsert({ id: T1, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
+    const patch = vi.spyOn(store.tasks, 'patch');
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: `/tasks/${T1}`,
+            headers: asMember,
+            payload: { title: 'Replacement', expectedRevision: 2 },
+          })
+        ).statusCode,
+      ).toBe(409);
+      expect(patch).not.toHaveBeenCalled();
+    } finally {
+      patch.mockRestore();
+    }
+  });
+
   it('rejects HTTP assignment when the task moves after validation', async () => {
     await store.tasks.upsert({
       id: T1,
@@ -446,6 +466,27 @@ describe('executeTasksTool', () => {
       [T1, undefined],
       [T2, false],
     ]);
+  });
+
+  it('does not expose or update source-project tasks after a session move', async () => {
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: MEMBER,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Source task',
+    });
+    await ctx.db
+      .updateTable('sessions')
+      .set({ project_id: null })
+      .where('session_id', '=', 's1')
+      .execute();
+    expect(await store.tasks.listAssigned('s1')).toEqual([]);
+    expect(await store.tasks.assignedOwner('s1')).toBeUndefined();
+    expect(await run('s1', { action: 'list' })).toEqual({ tasks: [] });
+    await expect(run('s1', { action: 'complete', id: T1, result: 'No' })).rejects.toThrow();
+    expect((await store.tasks.get(T1, MEMBER))?.status).toBe('open');
   });
 
   it('does not expose the project creator backlog to an unassigned session', async () => {

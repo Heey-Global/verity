@@ -144,6 +144,7 @@ describe('TaskStore', () => {
       ownerUserId: ADMIN,
       origin: 'user',
       title: 'A',
+      projectId: 'p1',
       sessionId: 's1',
       sort: 2,
     });
@@ -152,6 +153,7 @@ describe('TaskStore', () => {
       ownerUserId: ADMIN,
       origin: 'agent',
       title: 'B',
+      projectId: 'p1',
       sessionId: 's1',
       sort: 1,
     });
@@ -160,6 +162,7 @@ describe('TaskStore', () => {
       ownerUserId: ADMIN,
       origin: 'user',
       title: 'C',
+      projectId: 'p1',
       sessionId: 's1',
       status: 'done',
     });
@@ -213,6 +216,7 @@ describe('TaskStore', () => {
       ownerUserId: OTHER,
       origin: 'user',
       title: 'T',
+      projectId: 'p1',
       sessionId: 's1',
     });
     expect(await tasks().agentTaskOwner('s1', 'p1')).toBe(OTHER);
