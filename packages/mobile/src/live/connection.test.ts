@@ -336,6 +336,26 @@ describe('LiveConnection', () => {
     expect(h.retries).toHaveLength(1);
   });
 
+  it('resets replay batching when reconnecting explicitly', async () => {
+    const h = await harness();
+    const session = sink(5);
+    h.connection.subscribeSession('s1', session, true);
+    h.sockets[0]!.ready();
+    h.sockets[0]!.serve({ k: 'caught_up', id: 's1', seq: 5 });
+    h.connection.reconnect();
+    expect(session.disconnected).toHaveBeenCalledTimes(1);
+    await flush();
+    h.sockets[1]!.ready();
+    expect(h.sockets[1]!.sent).toContainEqual({
+      k: 'sub',
+      ch: 'session',
+      id: 's1',
+      sinceSeq: 5,
+      view: true,
+    });
+    h.connection.stop();
+  });
+
   it('tells subscribers why it could not connect, without server detail', async () => {
     const h = await harness({
       getTicket: async () => {

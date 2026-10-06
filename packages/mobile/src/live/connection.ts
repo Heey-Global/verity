@@ -436,6 +436,7 @@ export class LiveConnection implements LiveSessionTransport {
   /** Reconnect now — for example when the app learns it is online again. */
   reconnect(): void {
     if (this.stopped || this.paused) return;
+    for (const entry of this.allSessions()) entry.sink.disconnected();
     this.teardown();
     this.attempt = 0;
     this.open();
