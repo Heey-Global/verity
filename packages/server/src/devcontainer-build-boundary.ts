@@ -16,6 +16,7 @@ import {
   realpathSync,
   symlinkSync,
   writeSync,
+  writeFileSync,
   type Stats,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -463,4 +464,59 @@ export async function createDevcontainerBuildSnapshot(
     await rm(snapshot, { recursive: true, force: true });
     throw cause;
   }
+}
+
+/** Build argument through which a project Dockerfile accepts the Server's pinned base. */
+export const DEVCONTAINER_BASE_IMAGE_ARG = 'VERITY_SANDBOX_IMAGE';
+
+/**
+ * Hand the snapshot's Dockerfile the base image this Server pins to its release,
+ * when that Dockerfile declares `ARG VERITY_SANDBOX_IMAGE`.
+ *
+ * The update checker measures the derived image against that pinned base, so a
+ * layer built FROM anything else — typically the Dockerfile's own `:latest`
+ * default, which lags a staging release — comes back still "behind". The
+ * reconciler then recreates the project container, and every session sandbox
+ * in it, on every tick.
+ *
+ * Written into the snapshot rather than substituted from the environment: the
+ * project's configuration may not use `${…}` at all (see `validate`), and the
+ * value here is chosen by the Server, after validation, as a literal. Dockerfiles
+ * that do not declare the argument are left untouched.
+ */
+export function pinDevcontainerBaseImage(snapshot: DevcontainerBuildSnapshot, image: string): void {
+  const config = parseJsonc(readFileSync(snapshot.configFile, 'utf8'));
+  const build = baseImageBuild(snapshot, config);
+  if (build === undefined) return;
+  const args = 'args' in build ? object(build['args'], 'build.args') : {};
+  config['build'] = { ...build, args: { ...args, [DEVCONTAINER_BASE_IMAGE_ARG]: image } };
+  writeFileSync(snapshot.configFile, JSON.stringify(config, null, 2));
+}
+
+/** Whether {@link pinDevcontainerBaseImage} will hand this snapshot's build the
+ *  pinned base. Mixed into the derived-image hash, so an image cached before the
+ *  pin existed — built on the Dockerfile's default under the very same tag — is
+ *  not reused for a build that would now come out different. */
+export function declaresDevcontainerBaseImageArg(snapshot: DevcontainerBuildSnapshot): boolean {
+  return (
+    baseImageBuild(snapshot, parseJsonc(readFileSync(snapshot.configFile, 'utf8'))) !== undefined
+  );
+}
+
+function baseImageBuild(
+  snapshot: DevcontainerBuildSnapshot,
+  config: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!('build' in config)) return undefined;
+  const build = object(config['build'], 'build');
+  const dockerfile = build['dockerfile'] ?? build['dockerFile'];
+  if (typeof dockerfile !== 'string') return undefined;
+  // Resolved like the CLI does, against the config directory; `validate` has
+  // already confined it to the snapshot and proved it exists.
+  const source = readFileSync(resolve(dirname(snapshot.configFile), dockerfile), 'utf8');
+  const declared = new RegExp(
+    `^\\s*[Aa][Rr][Gg]\\s+${DEVCONTAINER_BASE_IMAGE_ARG}(?:=|\\s|$)`,
+    'mu',
+  );
+  return declared.test(source) ? build : undefined;
 }
