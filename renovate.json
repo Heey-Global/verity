@@ -133,6 +133,7 @@
         "react-native-svg",
         "react-native-uitextview",
         "react-native-unistyles",
+        "react-native-web",
         "react-native-webview",
         "react-native-worklets"
       ],
