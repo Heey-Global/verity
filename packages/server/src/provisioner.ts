@@ -2454,6 +2454,12 @@ export class ProvisionerImpl implements Provisioner {
             runtimeRoot !== undefined &&
             this.isDir(join(runtimeRoot, 'runners', project.id));
           if (!hasRunnerRuntime && !connectorEnabled) return undefined;
+          if (this.inFlightProvisions.has(project.id)) return undefined;
+          // A replacement stops and removes the old sandbox while the row still
+          // reads `active` (it only moves to `container_starting` once the new
+          // container phase begins), and starts the stack itself in the new one.
+          // An exec landing in that window hits a sandbox that is going away and
+          // fails with a runtime error that says nothing about the Runner.
           try {
             await this.containerCommand({
               containerName: project.containerName,
@@ -2469,6 +2475,9 @@ export class ProvisionerImpl implements Provisioner {
             });
             return undefined;
           } catch (error) {
+            // The same race from the other side: the replacement began while
+            // this exec was already in flight.
+            if (this.inFlightProvisions.has(project.id)) return undefined;
             return error;
           }
         }),
