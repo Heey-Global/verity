@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.19.0](https://github.com/Heey-Global/verity/compare/v4.18.0...v4.19.0) (2026-10-06)
+
+
+### Features
+
+* **live:** use one connection per device and route notifications per user ([#1225](https://github.com/Heey-Global/verity/issues/1225)) ([4b7b173](https://github.com/Heey-Global/verity/commit/4b7b173517c3a62cb7edf33fcb1192d1f4774fe4))
+
 ## [4.18.0](https://github.com/Heey-Global/verity/compare/v4.17.0...v4.18.0) (2026-10-06)
 
 
