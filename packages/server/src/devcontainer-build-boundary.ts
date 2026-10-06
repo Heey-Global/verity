@@ -486,16 +486,34 @@ export const DEVCONTAINER_BASE_IMAGE_ARG = 'VERITY_SANDBOX_IMAGE';
  */
 export function pinDevcontainerBaseImage(snapshot: DevcontainerBuildSnapshot, image: string): void {
   const config = parseJsonc(readFileSync(snapshot.configFile, 'utf8'));
-  if (!('build' in config)) return;
-  const build = object(config['build'], 'build');
-  const dockerfile = build['dockerfile'] ?? build['dockerFile'];
-  if (typeof dockerfile !== 'string') return;
-  // Resolved like the CLI does, against the config directory; `validate` has
-  // already confined it to the snapshot.
-  const source = readFileSync(resolve(dirname(snapshot.configFile), dockerfile), 'utf8');
-  if (!new RegExp(`^\\s*ARG\\s+${DEVCONTAINER_BASE_IMAGE_ARG}(?:=|\\s|$)`, 'mu').test(source))
-    return;
+  const build = baseImageBuild(snapshot, config);
+  if (build === undefined) return;
   const args = 'args' in build ? object(build['args'], 'build.args') : {};
   config['build'] = { ...build, args: { ...args, [DEVCONTAINER_BASE_IMAGE_ARG]: image } };
   writeFileSync(snapshot.configFile, JSON.stringify(config, null, 2));
+}
+
+/** Whether {@link pinDevcontainerBaseImage} will hand this snapshot's build the
+ *  pinned base. Mixed into the derived-image hash, so an image cached before the
+ *  pin existed — built on the Dockerfile's default under the very same tag — is
+ *  not reused for a build that would now come out different. */
+export function declaresDevcontainerBaseImageArg(snapshot: DevcontainerBuildSnapshot): boolean {
+  return (
+    baseImageBuild(snapshot, parseJsonc(readFileSync(snapshot.configFile, 'utf8'))) !== undefined
+  );
+}
+
+function baseImageBuild(
+  snapshot: DevcontainerBuildSnapshot,
+  config: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!('build' in config)) return undefined;
+  const build = object(config['build'], 'build');
+  const dockerfile = build['dockerfile'] ?? build['dockerFile'];
+  if (typeof dockerfile !== 'string') return undefined;
+  // Resolved like the CLI does, against the config directory; `validate` has
+  // already confined it to the snapshot and proved it exists.
+  const source = readFileSync(resolve(dirname(snapshot.configFile), dockerfile), 'utf8');
+  const declared = new RegExp(`^\\s*ARG\\s+${DEVCONTAINER_BASE_IMAGE_ARG}(?:=|\\s|$)`, 'mu');
+  return declared.test(source) ? build : undefined;
 }

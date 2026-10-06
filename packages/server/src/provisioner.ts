@@ -1,5 +1,7 @@
 import {
   createDevcontainerBuildSnapshot,
+  DEVCONTAINER_BASE_IMAGE_ARG,
+  declaresDevcontainerBaseImageArg,
   pinDevcontainerBaseImage,
 } from './devcontainer-build-boundary.js';
 import {
@@ -2608,7 +2610,9 @@ export class ProvisionerImpl implements Provisioner {
    *  as {@link envDriftRecreates}, and cleared only by a pass in which the update
    *  checker answered and no longer reports the update for this sandbox. In-memory:
    *  a restart hands back one budget, which is a bounded number of recreates per
-   *  Server start rather than one per minute. */
+   *  Server start rather than one per minute. Keyed by project alone because the
+   *  target is: a released Server pins one sandbox image for its whole life, so a
+   *  newer target arrives only with a new Server process and a fresh budget. */
   private readonly imageUpdateRecreates = new Map<string, number>();
 
   /** Projects whose exhausted image-update budget has already been reported. */
@@ -5943,10 +5947,14 @@ export class ProvisionerImpl implements Provisioner {
             'Verity currently builds devcontainer images but starts them through its own Docker create path.',
         );
       }
+      const pinsBase = declaresDevcontainerBaseImageArg(snapshot);
       const hash = devcontainerContentHash(
         snapshotDevcontainerDir,
         baseImageRef,
-        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}`,
+        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}` +
+          // Only for Dockerfiles the pin applies to, so every other project keeps
+          // its cached image across this change.
+          (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
       );
       const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
       // Cache check: the derived tag on the daemon means an identical
@@ -5984,9 +5992,9 @@ export class ProvisionerImpl implements Provisioner {
       }
       // Build the derived image onto the target daemon. A non-zero exit rejects
       // with the build stderr, which the caller truncates into provision_error.
-      // After the cache check: the derived tag already hashes `baseImageRef`, and
-      // the project's own configuration stays what the hash was computed over.
-      pinDevcontainerBaseImage(snapshot, baseImageRef);
+      // After the cache check, into the private copy only: the hash above was
+      // computed over the project's own configuration.
+      if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
       await build({
         workspaceFolder: snapshot.workspaceFolder,
         imageName: derivedTag,

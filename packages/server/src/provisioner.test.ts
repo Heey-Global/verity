@@ -7744,12 +7744,25 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         seenArgs.push(config.build.args);
         return { stdout: 'built', stderr: '' };
       });
-      const { client: docker } = fakeDocker({ imageExists: vi.fn(async () => false) });
+      const base = 'ghcr.io/heey-global/dev-base:v1.2.3@sha256:' + 'b'.repeat(64);
+      // The tag an earlier Server cached this exact checkout under, built on the
+      // Dockerfile's default. Reusing it would keep the stale image forever.
+      const staleTag = devcontainerImageTag(
+        'example-org',
+        'example-repo',
+        devcontainerContentHash(
+          dir,
+          base,
+          `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '24' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        ),
+      );
+      const imageExists = vi.fn(async (tag: string) => tag === staleTag);
+      const { client: docker } = fakeDocker({ imageExists });
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
         docker,
-        defaultImageRef: 'ghcr.io/heey-global/dev-base:v1.2.3@sha256:' + 'b'.repeat(64),
+        defaultImageRef: base,
         hostCloneRoot: root,
         devcontainerBuild: build,
         dockerHostForBuild: 'unix:///var/run/docker.sock',
@@ -7758,9 +7771,9 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
 
       await provisioner.provision(id);
 
-      expect(seenArgs).toEqual([
-        { VERITY_SANDBOX_IMAGE: 'ghcr.io/heey-global/dev-base:v1.2.3@sha256:' + 'b'.repeat(64) },
-      ]);
+      expect(imageExists).toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalledWith(staleTag);
+      expect(seenArgs).toEqual([{ VERITY_SANDBOX_IMAGE: base }]);
       // The clone itself is never rewritten.
       expect(readFileSync(join(dir, 'devcontainer.json'), 'utf8')).not.toContain('args');
     } finally {
