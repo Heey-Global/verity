@@ -94,7 +94,9 @@ container ID, path or unrestricted log query.
 
 Infrastructure containers are selected using the running Server's managed
  deployment or Compose project labels and an allowlist of component roles.
-Without a verified deployment identity, the tool does not enumerate unrelated
+For managed Servers created outside Compose, the attached control network's
+verified Docker ID and Compose ownership identify companion services in the
+same stack. Without a verified deployment identity, the tool does not enumerate unrelated
 host containers. At most 12 containers, 256 Docker events and 200 log lines per
 infrastructure container are read. Docker calls have five-second timeouts within
 an overall 30-second Docker collection deadline and bounded response bodies.

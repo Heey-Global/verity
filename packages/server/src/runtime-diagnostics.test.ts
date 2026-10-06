@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import {
   classifyRuntimeLog,
   createDiagnosticDockerRead,
@@ -159,6 +160,115 @@ describe('runtime diagnostics', () => {
       'verity.project-id=project',
     );
   });
+  it.each([true, false])(
+    'verifies managed Compose companions through the attached network (%s)',
+    async (verified) => {
+      const compose = parse(await readFile('deploy/docker-compose.yml', 'utf8')) as {
+        services: Record<string, unknown>;
+        networks: { default: { name: string } };
+      };
+      const services = [
+        'verity-updater',
+        'verity-agent-gateway',
+        'verity-managed-gateway',
+        'postgres',
+      ];
+      for (const service of services) expect(compose.services).toHaveProperty(service);
+      const companions = services.map((service, index) => ({
+        Id: String(index + 1).repeat(64),
+        Labels: { 'com.docker.compose.project': 'stack', 'com.docker.compose.service': service },
+      }));
+      const server = {
+        Id: id,
+        Labels: { 'verity.managed-deployment-id': 'deployment', 'verity.managed-role': 'server' },
+      };
+      const networkId = 'e'.repeat(64);
+      const base = fixture();
+      const readDocker = vi.fn(async (path: string) => {
+        const response = (value: unknown) => ({
+          bytes: Buffer.from(JSON.stringify(value)),
+          truncated: false,
+        });
+        if (path.startsWith('/networks/'))
+          return response({
+            Id: verified ? networkId : 'f'.repeat(64),
+            Name: compose.networks.default.name,
+            Labels: {
+              'com.docker.compose.project': 'stack',
+              'com.docker.compose.network': 'default',
+            },
+          });
+        if (path.startsWith('/containers/json'))
+          return response(
+            decodeURIComponent(path).includes('verity.managed-deployment-id=')
+              ? [server]
+              : [
+                  ...companions,
+                  {
+                    Id: 'f'.repeat(64),
+                    Labels: {
+                      'com.docker.compose.project': 'unrelated',
+                      'com.docker.compose.service': 'postgres',
+                    },
+                  },
+                ],
+          );
+        if (path.startsWith('/events?')) {
+          const scoped = decodeURIComponent(path).includes('com.docker.compose.project=');
+          return {
+            bytes: Buffer.from(
+              JSON.stringify({
+                Type: 'container',
+                Action: 'die',
+                time: now / 1000,
+                Actor: {
+                  ID: scoped ? companions[0]!.Id : id,
+                  Attributes: scoped ? companions[0]!.Labels : server.Labels,
+                },
+              }) + '\n',
+            ),
+            truncated: false,
+          };
+        }
+        if (path.endsWith('/json')) {
+          const original = await base.readDocker(path);
+          const value = JSON.parse(original.bytes.toString()) as Record<string, unknown>;
+          const target = [server, ...companions].find((entry) => path.includes(entry.Id))!;
+          return response({
+            ...value,
+            Id: target.Id,
+            Config: { Labels: target.Labels },
+            ...(target.Id === id
+              ? {
+                  NetworkSettings: {
+                    Networks: { [compose.networks.default.name]: { NetworkID: networkId } },
+                  },
+                }
+              : {}),
+          });
+        }
+        return base.readDocker(path);
+      });
+      const result = await createRuntimeDiagnostics({ ...base, readDocker })({});
+      expect(result.docker.containers.map((container) => container.role)).toEqual(
+        verified ? ['server', 'updater', 'gateway', 'gateway', 'database'] : ['server'],
+      );
+      expect(result.docker.events.records.map((record) => record.containerId)).toEqual(
+        verified ? [id, companions[0]!.Id] : [id],
+      );
+      expect(
+        result.docker.containers.every(
+          (container) =>
+            container.stats.state === 'available' && container.logs.state === 'available',
+        ),
+      ).toBe(true);
+      expect(
+        readDocker.mock.calls.some(([path]) =>
+          decodeURIComponent(path).includes('com.docker.compose.project=stack'),
+        ),
+      ).toBe(verified);
+    },
+  );
   it('does not enumerate an unrelated host fleet when deployment identity is unavailable', async () => {
     const deps = fixture();
     const result = await createRuntimeDiagnostics({ readDocker: deps.readDocker, now: deps.now })(

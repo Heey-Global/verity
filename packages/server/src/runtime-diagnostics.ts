@@ -500,6 +500,7 @@ export function createRuntimeDiagnostics(deps: {
       docker.state = 'available';
       let labels: Record<string, unknown> = {};
       let ownId: string | undefined;
+      let controlNetworkId: string | undefined;
       try {
         const version = object(await json('/version'));
         const parsed = z
@@ -517,6 +518,11 @@ export function createRuntimeDiagnostics(deps: {
           );
           labels = object(object(self.Config).Labels);
           if (containerId.safeParse(self.Id).success) ownId = String(self.Id);
+          const controlNetwork = object(
+            object(object(self.NetworkSettings).Networks)['verity-net'],
+          );
+          if (containerId.safeParse(controlNetwork.NetworkID).success)
+            controlNetworkId = String(controlNetwork.NetworkID);
         } catch {
           docker.state = 'failed';
         }
@@ -527,10 +533,31 @@ export function createRuntimeDiagnostics(deps: {
         typeof labels['verity.managed-deployment-id'] === 'string'
           ? labels['verity.managed-deployment-id']
           : undefined;
-      const compose =
+      let compose =
         typeof labels['com.docker.compose.project'] === 'string'
           ? labels['com.docker.compose.project']
           : undefined;
+      // Managed Servers are created outside Compose. Verify the attached control
+      // network's identity before using its owning Compose project as another scope.
+      if (deployment && !compose && controlNetworkId) {
+        try {
+          const network = object(await json(`/networks/${controlNetworkId}`));
+          const networkLabels = object(network.Labels);
+          if (
+            network.Id === controlNetworkId &&
+            network.Name === 'verity-net' &&
+            networkLabels['com.docker.compose.network'] === 'default' &&
+            typeof networkLabels['com.docker.compose.project'] === 'string'
+          )
+            compose = networkLabels['com.docker.compose.project'];
+        } catch {
+          docker.state = 'failed';
+        }
+      }
+      const scopes = [
+        ...(deployment ? [`verity.managed-deployment-id=${deployment}`] : []),
+        ...(compose ? [`com.docker.compose.project=${compose}`] : []),
+      ];
       const roleFor = (raw: unknown): z.infer<typeof containerSchema>['role'] | undefined => {
         const roles: Record<string, z.infer<typeof containerSchema>['role']> = {
           server: 'server',
@@ -552,39 +579,35 @@ export function createRuntimeDiagnostics(deps: {
         };
         return typeof raw === 'string' ? roles[raw] : undefined;
       };
-      if (deployment || compose) {
-        try {
-          const filters = {
-            label: [
-              deployment
-                ? `verity.managed-deployment-id=${deployment}`
-                : `com.docker.compose.project=${compose}`,
-            ],
-          };
-          const list = z
-            .array(z.unknown())
-            .parse(
-              await json(
-                `/containers/json?all=true&filters=${encodeURIComponent(JSON.stringify(filters))}`,
-              ),
-            );
-          for (const value of list) {
-            const item = object(value);
-            const ownLabels = object(item.Labels);
-            if (
-              deployment
-                ? ownLabels['verity.managed-deployment-id'] !== deployment
-                : ownLabels['com.docker.compose.project'] !== compose
-            )
-              continue;
-            const role = roleFor(
-              ownLabels['verity.managed-role'] ?? ownLabels['com.docker.compose.service'],
-            );
-            if (role && containerId.safeParse(item.Id).success)
-              selected.push({ id: String(item.Id), role });
+      if (scopes.length > 0) {
+        for (const scope of scopes) {
+          try {
+            const filters = { label: [scope] };
+            const list = z
+              .array(z.unknown())
+              .parse(
+                await json(
+                  `/containers/json?all=true&filters=${encodeURIComponent(JSON.stringify(filters))}`,
+                ),
+              );
+            for (const value of list) {
+              const item = object(value);
+              const ownLabels = object(item.Labels);
+              const separator = scope.indexOf('=');
+              if (ownLabels[scope.slice(0, separator)] !== scope.slice(separator + 1)) continue;
+              const role = roleFor(
+                ownLabels['verity.managed-role'] ?? ownLabels['com.docker.compose.service'],
+              );
+              if (
+                role &&
+                containerId.safeParse(item.Id).success &&
+                !selected.some((entry) => entry.id === item.Id)
+              )
+                selected.push({ id: String(item.Id), role });
+            }
+          } catch {
+            docker.state = 'failed';
           }
-        } catch {
-          docker.state = 'failed';
         }
       } else if (ownId !== undefined) selected.push({ id: ownId, role: 'server' });
       if (request.containerName && request.projectId) {
@@ -701,82 +724,89 @@ export function createRuntimeDiagnostics(deps: {
           docker.state = 'failed';
         }
       }
-      const eventLabels = request.projectId
-        ? [`verity.project-id=${request.projectId}`]
-        : deployment
-          ? [`verity.managed-deployment-id=${deployment}`]
-          : compose
-            ? [`com.docker.compose.project=${compose}`]
-            : [];
-      if (eventLabels.length > 0) {
-        try {
-          const query = new URLSearchParams({
-            since: String(Math.floor(Date.parse(window.since) / 1000)),
-            until: String(Math.floor(Date.parse(window.until) / 1000)),
-            filters: JSON.stringify({
-              type: ['container'],
-              label: eventLabels,
-              event: [
-                'create',
-                'start',
-                'die',
-                'destroy',
-                'oom',
-                'kill',
-                'stop',
-                'restart',
-                'pause',
-                'unpause',
-                'health_status',
-              ],
-            }),
-          });
-          const output = await readDocker(`/events?${query.toString()}`);
-          const lines = output.bytes.toString('utf8').trim().split('\n').filter(Boolean);
-          const records: Evidence[] = [];
-          for (const line of lines.slice(-256)) {
-            const event = object(JSON.parse(line));
-            if (event.Type !== 'container') continue;
-            const actor = object(event.Actor);
-            const attributes = object(actor.Attributes);
-            const [label, expected] = eventLabels[0]!.split('=');
-            if (attributes[label!] !== expected) continue;
-            const rawCode =
-              typeof event.Action === 'string' ? event.Action.split(':')[0] : event.status;
-            const seconds = numeric(event.time);
-            const id = containerId.safeParse(actor.ID ?? event.id);
-            const code = runtimeEvidenceSchema.shape.code.safeParse(rawCode);
-            if (seconds === null || !id.success || !code.success) continue;
-            const at = new Date(seconds * 1000).toISOString();
-            if (
-              Date.parse(at) < Date.parse(window.since) ||
-              Date.parse(at) > Date.parse(window.until)
-            )
-              continue;
-            const exit =
-              typeof attributes.exitCode === 'string' && /^-?\d+$/u.test(attributes.exitCode)
-                ? Number(attributes.exitCode)
-                : undefined;
-            const signal =
-              typeof attributes.signal === 'string' && /^\d+$/u.test(attributes.signal)
-                ? Number(attributes.signal)
-                : undefined;
-            records.push({
-              at,
-              source: 'docker',
-              code: code.data,
-              containerId: id.data,
-              ...(exit !== undefined ? { exitCode: exit } : {}),
-              ...(signal !== undefined ? { signal } : {}),
+      const eventScopes = request.projectId ? [`verity.project-id=${request.projectId}`] : scopes;
+      if (eventScopes.length > 0) {
+        docker.events.state = 'available';
+        for (const eventScope of eventScopes) {
+          const eventLabels = [eventScope];
+          try {
+            const query = new URLSearchParams({
+              since: String(Math.floor(Date.parse(window.since) / 1000)),
+              until: String(Math.floor(Date.parse(window.until) / 1000)),
+              filters: JSON.stringify({
+                type: ['container'],
+                label: eventLabels,
+                event: [
+                  'create',
+                  'start',
+                  'die',
+                  'destroy',
+                  'oom',
+                  'kill',
+                  'stop',
+                  'restart',
+                  'pause',
+                  'unpause',
+                  'health_status',
+                ],
+              }),
             });
+            const output = await readDocker(`/events?${query.toString()}`);
+            const lines = output.bytes.toString('utf8').trim().split('\n').filter(Boolean);
+            const records: Evidence[] = [];
+            for (const line of lines.slice(-256)) {
+              const event = object(JSON.parse(line));
+              if (event.Type !== 'container') continue;
+              const actor = object(event.Actor);
+              const attributes = object(actor.Attributes);
+              const [label, expected] = eventLabels[0]!.split('=');
+              if (attributes[label!] !== expected) continue;
+              const rawCode =
+                typeof event.Action === 'string' ? event.Action.split(':')[0] : event.status;
+              const seconds = numeric(event.time);
+              const id = containerId.safeParse(actor.ID ?? event.id);
+              const code = runtimeEvidenceSchema.shape.code.safeParse(rawCode);
+              if (seconds === null || !id.success || !code.success) continue;
+              const at = new Date(seconds * 1000).toISOString();
+              if (
+                Date.parse(at) < Date.parse(window.since) ||
+                Date.parse(at) > Date.parse(window.until)
+              )
+                continue;
+              const exit =
+                typeof attributes.exitCode === 'string' && /^-?\d+$/u.test(attributes.exitCode)
+                  ? Number(attributes.exitCode)
+                  : undefined;
+              const signal =
+                typeof attributes.signal === 'string' && /^\d+$/u.test(attributes.signal)
+                  ? Number(attributes.signal)
+                  : undefined;
+              records.push({
+                at,
+                source: 'docker',
+                code: code.data,
+                containerId: id.data,
+                ...(exit !== undefined ? { exitCode: exit } : {}),
+                ...(signal !== undefined ? { signal } : {}),
+              });
+            }
+            const combined = [...docker.events.records, ...records]
+              .filter(
+                (record, index, all) =>
+                  all.findIndex(
+                    (other) =>
+                      other.at === record.at &&
+                      other.containerId === record.containerId &&
+                      other.code === record.code,
+                  ) === index,
+              )
+              .sort((a, b) => a.at.localeCompare(b.at));
+            docker.events.truncated ||=
+              output.truncated || lines.length >= 256 || combined.length > 256;
+            docker.events.records = combined.slice(-256);
+          } catch {
+            docker.events.state = 'failed';
           }
-          docker.events = {
-            state: 'available',
-            truncated: output.truncated || lines.length >= 256,
-            records,
-          };
-        } catch {
-          docker.events.state = 'failed';
         }
       }
     }
