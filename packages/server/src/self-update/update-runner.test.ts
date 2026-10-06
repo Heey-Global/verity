@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DockerError } from '../docker.js';
 import { dockerUpdatePreparation } from './docker-update-preparation.js';
 import {
   advanceManagedDeploymentImage,
@@ -72,6 +73,30 @@ const runner = (root: string, daemon: FakeDaemon, log: string[] = []) =>
   createUpdateRunner(options(root, daemon, log));
 
 describe('update runner', () => {
+  it('logs the missing companion ID while keeping post-cutover failures resumable', async () => {
+    const { root, daemon } = await adoptedDeployment('update-runner');
+    await journalled(root);
+    const log: string[] = [];
+    await createUpdateRunner({
+      ...options(root, daemon, log),
+      reconcileCompanions: async () => {
+        throw new DockerError({ kind: 'container_not_found', id: 'missing-predecessor' });
+      },
+    }).run();
+    expect(log).toContain(
+      'update operation failed: container_not_found (kind=container_not_found, container=missing-predecessor)',
+    );
+    expect(
+      log.some((entry) =>
+        entry.includes('update operation failure stack: DockerError: container_not_found'),
+      ),
+    ).toBe(true);
+    expect(await readUpdateJournal(root)).toMatchObject({
+      phase: 'reconciling-companions',
+      failure: null,
+    });
+  });
+
   it('keeps the migrated Server recoverable and applies its mount through guarded cutover', async () => {
     const { root, daemon, oldContainerId } = await adoptedDeployment('diagnostics-migration');
     await migrateManagedHostDiagnostics({

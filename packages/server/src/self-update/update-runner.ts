@@ -1,4 +1,4 @@
-import type { DockerClient } from '../docker.js';
+import { DockerError, type DockerClient } from '../docker.js';
 import {
   dockerStandbyPromotion,
   type DockerStandbyPromotionOptions,
@@ -69,8 +69,17 @@ function isPreparingPhase(
   return PREPARING.includes(phase);
 }
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+const describe = (error: unknown): string => {
+  if (error instanceof DockerError) {
+    const context = [
+      `kind=${error.kind}`,
+      ...(error.id === undefined ? [] : [`container=${error.id}`]),
+      ...(error.status === undefined ? [] : [`status=${String(error.status)}`]),
+    ];
+    return `${error.message} (${context.join(', ')})`;
+  }
+  return error instanceof Error ? error.message : String(error);
+};
 
 const defaultLog = (message: string): void => {
   console.log(`[self-update] ${message}`);
@@ -263,6 +272,8 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
       await execute();
     } catch (error) {
       log(`update operation failed: ${describe(error)}`);
+      if (error instanceof Error && error.stack !== undefined)
+        log(`update operation failure stack: ${error.stack}`);
       await recordStuckFailure();
     }
   };
