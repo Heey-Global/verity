@@ -6,6 +6,7 @@ import type { VerityClient } from '@verity/mobile';
 import {
   createPushOutboxForClient,
   ensurePushRegistration,
+  foregroundPushBehavior,
   handlePushResponse,
 } from '../lib/pushNotifications';
 import { getAuthTokenId, getStoredAuthTokenId } from '../lib/authToken';
@@ -59,6 +60,11 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
       await handlePushResponse(response, outbox, navigateToSession, deviceId, navigateToSettings);
     };
 
+    Notifications.setNotificationHandler({
+      handleNotification: (notification) =>
+        Promise.resolve(foregroundPushBehavior(notification.request.content.data)),
+    });
+
     void attemptRegistration();
     void outbox.flush().catch(() => undefined);
 
@@ -82,6 +88,7 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
 
     return () => {
       active = false;
+      Notifications.setNotificationHandler(null);
       responseSub.remove();
       appStateSub.remove();
     };

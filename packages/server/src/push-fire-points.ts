@@ -145,6 +145,7 @@ class DefaultPushFirePoints implements PushFirePoints {
           categoryId: 'PERMISSION_PROMPT',
           data: { sessionId, kind: 'permission', toolUseId: event.id },
           priority: 'high',
+          sound: 'default',
         });
       });
       return;
@@ -234,6 +235,7 @@ class DefaultPushFirePoints implements PushFirePoints {
               categoryId: 'AGENT_QUESTION',
               data: { sessionId, kind: 'question' },
               priority: 'high',
+              sound: 'default',
             }
           : {
               title: pushHeading(

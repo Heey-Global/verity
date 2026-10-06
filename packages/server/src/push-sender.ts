@@ -17,6 +17,10 @@ export interface PushNotification {
   categoryId: string;
   data: Record<string, unknown>;
   priority?: 'default' | 'normal' | 'high';
+  /** iOS plays no sound and no haptic for an alert without one: a push that
+   * leaves it out lands silently in Notification Center. Set it for the pushes
+   * that block on the operator. */
+  sound?: 'default';
   ttl?: number;
 }
 
@@ -126,6 +130,7 @@ class DefaultPushSender implements PushSender {
       // re-pairing to another Verity server.
       data: { ...notification.data, deviceId: token.authTokenId },
       priority: notification.priority ?? 'high',
+      ...(notification.sound === undefined ? {} : { sound: notification.sound }),
       ...(notification.ttl === undefined ? {} : { ttl: notification.ttl }),
     }));
 
