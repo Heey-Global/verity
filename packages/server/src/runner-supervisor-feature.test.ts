@@ -629,6 +629,9 @@ describe('verity-runner supervisor runtime', () => {
       // Without it every session of the project opens an inbox any sibling session
       // can write to, and agents message each other past session links unseen.
       CLAUDE_CODE_HARBOR_KITE: '0',
+      // Without it the CLI withholds its task-list tools from models outside its
+      // allowlist, and no plan checklist ever reaches the app.
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
       CLAUDE_CONFIG_DIR: '/run/verity-runner/claude',
       CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_EGRESS_PLACEHOLDER,
       // Both Claude transports are marked, so an in-Sandbox helper never has to
