@@ -214,6 +214,10 @@ export class TaskStore {
    * the row's revision counter moving so other devices notice the change.
    */
   async upsert(input: TaskInput, expectedRevision?: number): Promise<TaskRecord> {
+    if (!this.db.isTransaction)
+      return this.db
+        .transaction()
+        .execute((tx) => new TaskStore(tx, this.cipher).upsert(input, expectedRevision));
     // A replacement must not recreate a task another device deleted.
     if (expectedRevision !== undefined && expectedRevision > 0) {
       return this.patch(
@@ -231,6 +235,7 @@ export class TaskStore {
         expectedRevision,
       );
     }
+    await this.lockSession(input.sessionId ?? null, input.projectId ?? null);
     const title = this.cipher.encrypt(normalizeTitle(input.title));
     const detail = normalizeOptionalText(input.detail, TASK_DETAIL_MAX, 'detail');
     const attachments = JSON.stringify(normalizeAttachments(input.attachments));
@@ -296,15 +301,29 @@ export class TaskStore {
     patch: TaskPatch,
     expectedRevision?: number,
   ): Promise<TaskRecord> {
+    if (!this.db.isTransaction)
+      return this.db
+        .transaction()
+        .execute((tx) =>
+          new TaskStore(tx, this.cipher).patch(id, ownerUserId, patch, expectedRevision),
+        );
     const existing = await this.db
       .selectFrom('tasks')
-      .select(['status', 'revision'])
+      .select(['status', 'revision', 'session_id', 'project_id'])
       .where('id', '=', id)
       .where('owner_user_id', '=', ownerUserId)
       .executeTakeFirst();
     if (existing === undefined) throw new TaskNotFoundError(id);
     if (expectedRevision !== undefined && existing.revision !== expectedRevision)
       throw new TaskRevisionConflictError(id, existing.revision);
+    const targetSession = patch.sessionId === undefined ? existing.session_id : patch.sessionId;
+    const targetProject = patch.projectId === undefined ? existing.project_id : patch.projectId;
+    // Session moves hold FOR UPDATE; keep the assignment valid through this write.
+    const sessions = new Map<string, string | null>();
+    if (existing.session_id !== null) sessions.set(existing.session_id, existing.project_id);
+    if (targetSession !== null) sessions.set(targetSession, targetProject);
+    for (const [sessionId, projectId] of [...sessions].sort(([a], [b]) => a.localeCompare(b)))
+      await this.lockSession(sessionId, projectId);
     const values: Partial<Record<keyof TasksTable, unknown>> = {};
     if (patch.projectId !== undefined) values.project_id = patch.projectId;
     if (patch.sessionId !== undefined) values.session_id = patch.sessionId;
@@ -361,6 +380,18 @@ export class TaskStore {
       if (current !== undefined) throw new TaskRevisionConflictError(id, current.revision);
     }
     return (result.numDeletedRows ?? 0n) > 0n;
+  }
+
+  private async lockSession(sessionId: string | null, projectId: string | null): Promise<void> {
+    if (sessionId === null) return;
+    const session = await this.db
+      .selectFrom('sessions')
+      .select('project_id')
+      .where('session_id', '=', sessionId)
+      .forShare()
+      .executeTakeFirst();
+    if (session === undefined || session.project_id !== projectId)
+      throw new TaskInputError('session is not in the task project');
   }
 
   private record(row: Selectable<TasksTable>): TaskRecord {

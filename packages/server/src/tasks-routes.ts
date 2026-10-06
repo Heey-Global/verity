@@ -175,6 +175,25 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     return undefined;
   }
 
+  app.get('/tasks/:id/attachments/:hash', async (request, reply) => {
+    const { id, hash } = z
+      .object({ id: taskParams.shape.id, hash: attachment.shape.hash })
+      .parse(request.params);
+    const task = await tasks.get(id, ownerId(request));
+    if (
+      task === undefined ||
+      !(await canUseProject(request.localUserId, task.projectId, 'read')) ||
+      !task.attachments.some((item) => item.hash === hash)
+    )
+      return reply.code(404).send({ error: 'attachment not found' });
+    const blob = await deps.eventStore.getAttachment(hash);
+    if (blob === undefined) return reply.code(404).send({ error: 'attachment not found' });
+    return reply
+      .header('Content-Type', blob.mediaType)
+      .header('Cache-Control', 'private, max-age=31536000, immutable')
+      .send(blob.bytes);
+  });
+
   app.get('/tasks', async (request) => {
     const query = listQuery.parse(request.query);
     const list = await tasks.list({
@@ -198,6 +217,21 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
   app.put('/tasks/:id', async (request, reply) => {
     const { id } = taskParams.parse(request.params);
     const body = putBody.parse(request.body);
+    const owner = ownerId(request);
+    const previous = await tasks.get(id, owner);
+    if (
+      previous !== undefined &&
+      !(await canUseProject(
+        request.localUserId,
+        previous.projectId,
+        previous.sessionId === null ? 'read' : 'execute',
+      ))
+    ) {
+      reply.code(404);
+      return { error: 'task not found' };
+    }
+    // PUT is capture creation/retry. Edits use PATCH with a revision.
+    if (previous !== undefined) return { task: taskResponse(previous) };
     const projectId = body.projectId ?? null;
     const sessionId = body.sessionId ?? null;
     if (
@@ -214,19 +248,6 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
       reply.code(400);
       return { error: 'session is not in the task project' };
     }
-    const owner = ownerId(request);
-    const previous = await tasks.get(id, owner);
-    if (
-      previous !== undefined &&
-      !(await canUseProject(
-        request.localUserId,
-        previous.projectId,
-        previous.sessionId === null ? 'read' : 'execute',
-      ))
-    ) {
-      reply.code(404);
-      return { error: 'task not found' };
-    }
     try {
       const task = await tasks.upsert(
         {
@@ -242,12 +263,24 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
           status: body.status as TaskRecord['status'] | undefined,
           sort: body.sort,
         },
-        previous?.revision ?? 0,
+        0,
       );
-      await notify(task, previous?.sessionId ?? null, previous === undefined ? 'added' : 'updated');
-      reply.code(previous === undefined ? 201 : 200);
+      await notify(task, null, 'added');
+      reply.code(201);
       return { task: taskResponse(task) };
     } catch (error) {
+      if (error instanceof TaskRevisionConflictError) {
+        const saved = await tasks.get(id, owner);
+        if (
+          saved !== undefined &&
+          (await canUseProject(
+            request.localUserId,
+            saved.projectId,
+            saved.sessionId === null ? 'read' : 'execute',
+          ))
+        )
+          return { task: taskResponse(saved) };
+      }
       const handled = failure(reply, error);
       if (handled === undefined) throw error;
       return handled;

@@ -201,9 +201,10 @@ New table `tasks` in `packages/store` (migration after the current latest,
 | `created_at`, `updated_at`, `completed_at` | timestamps |
 
 Attachments are stored through the existing `putAttachment` path
-(`packages/store/src/store.ts`) and read through `GET /attachments/:hash`. That
-route's existence check (`sessionHasAttachment`) must also accept hashes
-referenced by one of the caller's tasks.
+(`packages/store/src/store.ts`) and read through
+`GET /tasks/:id/attachments/:hash`. This route checks task ownership, current
+project read access and the attachment reference before returning bytes. The
+generic session attachment route retains its existing authorization.
 
 ## 6. Agent integration
 
@@ -307,9 +308,10 @@ line ("Agent added 5 tasks", "#3 done ✓") linking to the panel.
 | Route | Purpose |
 |---|---|
 | `GET /tasks?projectId=&sessionId=&status=` | list, owner-scoped |
-| `PUT /tasks/:id` | create or replace (idempotent by client id) |
+| `PUT /tasks/:id` | create; a repeated client id returns the existing task without overwriting edits or completion |
 | `PATCH /tasks/:id` | partial update with `expectedRevision` |
 | `DELETE /tasks/:id` | delete |
+| `GET /tasks/:id/attachments/:hash` | read a referenced attachment with task-owner and project-read checks |
 
 ### 7.2 Authorization
 
@@ -319,6 +321,12 @@ Every route checks ownership. When `projectId` is set, the caller also needs
 `store.hasProjectPermission`). Assigning a task to a session requires `execute`
 on the session's project, because it leads to a turn. The route-scope guard test
 (`route-scopes.test.ts`) must list the new routes.
+
+Task assignment and status writes lock the session row and validate its project
+inside the write transaction. A session project move removes its assignments in
+the same transaction and increments task revisions. Tasks retain their original
+project, context and status in that project's backlog; moving a session never
+transfers task content into another project.
 
 ### 7.3 Client API
 

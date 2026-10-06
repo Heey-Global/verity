@@ -169,3 +169,50 @@ it.each([false, true])(
     else expect(saved).toBeUndefined();
   },
 );
+
+it('returns assigned tasks to their source backlog and invalidates pre-move revisions', async () => {
+  const owner = '00000000-0000-4000-8000-000000000001';
+  const task = await ctx.store.tasks.upsert({
+    id: 'task',
+    ownerUserId: owner,
+    projectId: 'a',
+    sessionId: 's',
+    sourceSessionId: 's',
+    origin: 'agent',
+    title: 'Source work',
+    detail: 'Context',
+    status: 'in_progress',
+  });
+  await ctx.store.commitSessionMove('s', 'move', 'Moved', '{}');
+  const moved = await ctx.store.tasks.get(task.id, owner);
+  expect(moved).toMatchObject({
+    projectId: 'a',
+    sessionId: null,
+    sourceSessionId: 's',
+    title: task.title,
+    detail: task.detail,
+    status: task.status,
+    revision: task.revision + 1,
+  });
+  await expect(
+    ctx.store.tasks.patch(task.id, owner, { status: 'done' }, task.revision),
+  ).rejects.toThrow(/revision/);
+  await expect(ctx.store.tasks.patch(task.id, owner, { sessionId: 's' })).rejects.toThrow(
+    /session is not/,
+  );
+  await expect(
+    ctx.store.tasks.upsert({
+      id: 'stale',
+      ownerUserId: owner,
+      projectId: 'a',
+      sessionId: 's',
+      origin: 'user',
+      title: 'Stale',
+    }),
+  ).rejects.toThrow(/session is not/);
+  await ctx.store.commitSessionMove('s', 'move', 'Moved', '{}');
+  expect((await ctx.store.tasks.get(task.id, owner))?.revision).toBe(moved?.revision);
+  expect(
+    await ctx.store.tasks.patch(task.id, owner, { projectId: 'b', sessionId: 's' }),
+  ).toMatchObject({ projectId: 'b', sessionId: 's' });
+});

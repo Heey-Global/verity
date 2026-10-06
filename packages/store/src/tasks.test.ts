@@ -122,7 +122,12 @@ describe('TaskStore', () => {
       origin: 'user',
       title: 'T',
     });
-    const started = await tasks().patch('t1', ADMIN, { status: 'in_progress', sessionId: 's1' }, 1);
+    const started = await tasks().patch(
+      't1',
+      ADMIN,
+      { status: 'in_progress', projectId: 'p1', sessionId: 's1' },
+      1,
+    );
     expect(started).toMatchObject({ status: 'in_progress', sessionId: 's1', revision: 2 });
     expect(started.completedAt).toBeNull();
 
