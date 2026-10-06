@@ -131,7 +131,17 @@ memory peak that was never measured.
 
 For an existing installation, rerun the self-hosted installer to install the
 exporter and timer and apply the Server mount. A Server image update alone does
-not install a host service. On hosts without systemd, schedule the installed
+not install a host service. Managed bootstrap seals the same read-only bind into
+new deployments and migrates existing specifications on an installer rerun.
+Other sealed fields and absent resource-limit fields are preserved; an already
+sealed diagnostic host path cannot be relocated implicitly. Older releases that
+predate this mount cannot parse the migrated specification. The migration keeps
+the previous sealed authority as `server-deployment.before-host-diagnostics.json`
+in the updater-owned deployment root, without overwriting it on retries. A
+rollback below that release requires compatible authority and its matching
+image, restored through the normal stopped-deployment maintenance workflow.
+
+On hosts without systemd, schedule the installed
 `/usr/local/libexec/verity/verity-host-diagnostics` yourself, for example once per
 minute using the host's scheduler. It requires Bash, GNU date/coreutils and jq;
 `journalctl` and permission to read system journals are needed for host evidence.
