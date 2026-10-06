@@ -31,6 +31,14 @@ it('uses active membership rights and keeps the control-plane project private', 
     expect(await store.hasProjectPermission('member', 'control', 'read')).toBe(false);
     expect(await store.isActiveLocalUser('member')).toBe(true);
     expect(await store.listReadableProjectIds('member')).toEqual(['ordinary']);
+    // The notification audience of a project without an initiator: execute
+    // holders only, and the control plane stays its creator's alone.
+    expect(await store.listProjectUserIds('ordinary', 'read')).toEqual(
+      expect.arrayContaining([admin, 'member']),
+    );
+    expect(await store.listProjectUserIds('ordinary', 'execute')).toEqual([admin]);
+    expect(await store.listProjectUserIds('control', 'read')).toEqual([admin]);
+    expect(await store.listActiveAdministratorIds()).toEqual([admin]);
     await sql`update project_memberships set can_read = false
       where project_id = 'ordinary' and user_id = 'member'`.execute(ctx.db);
     expect(await store.listReadableProjectIds('member')).toEqual([]);

@@ -1,7 +1,7 @@
 import type { SessionRecord } from '@verity/store';
 import type { PullRequestStatus } from './github.js';
-import type { PushForegroundPresence } from './push-fire-points.js';
-import type { PushLogger, PushNotification, PushSender } from './push-sender.js';
+import type { PushRouter } from './push-router.js';
+import type { PushLogger, PushNotification } from './push-sender.js';
 
 const DEFAULT_POLL_MS = 30_000;
 
@@ -16,8 +16,9 @@ export interface PullRequestReadyMonitor {
 }
 
 export interface PullRequestReadyMonitorOptions {
-  sender: PushSender;
-  presence: PushForegroundPresence;
+  router: Pick<PushRouter, 'notify'>;
+  /** Whoever ran the session's last turn; the PR is their work. */
+  initiatorOf?(sessionId: string): string | undefined;
   listSessions(): Promise<SessionRecord[]>;
   statusFor(session: SessionRecord): Promise<PullRequestStatus | null>;
   wasSent(sessionId: string, marker: string): Promise<boolean>;
@@ -66,21 +67,24 @@ export function startPullRequestReadyMonitor(
   const pending = new Set<string>();
 
   const inspect = async (session: SessionRecord): Promise<void> => {
-    if (options.presence.hasViewer(session.sessionId)) return;
     const pr = await options.statusFor(session);
-    if (!isReady(pr) || options.presence.hasViewer(session.sessionId)) return;
+    if (!isReady(pr)) return;
     const marker = pullRequestReadyMarker(pr);
     const pendingKey = `${session.sessionId}\0${marker}`;
     if (pending.has(pendingKey) || (await options.wasSent(session.sessionId, marker))) return;
     pending.add(pendingKey);
     try {
       const context = await options.describeSession(session);
-      const result = await options.sender.send(
-        buildPullRequestReadyNotification(session.sessionId, pr, context),
-      );
+      const outcome = await options.router.notify({
+        key: `pr-ready:${session.sessionId}`,
+        sessionId: session.sessionId,
+        initiatorUserId: options.initiatorOf?.(session.sessionId),
+        notification: buildPullRequestReadyNotification(session.sessionId, pr, context),
+      });
       // A ready PR discovered before any device registers must remain eligible;
       // likewise, an all-error batch should retry after token refresh/pruning.
-      if (result.targets === 0 || result.ticketsAccepted === 0) return;
+      // A user who already sees the session (or is in the app) has seen it.
+      if (outcome === 'undelivered') return;
       await options.markSent(session.sessionId, marker);
     } catch {
       options.logger?.warn(

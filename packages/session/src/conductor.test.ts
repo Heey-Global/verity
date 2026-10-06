@@ -2150,6 +2150,64 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('reports a turn starting and stopping, which no event records', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onSessionChanged = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate).backend,
+      worktreeExists: async () => true,
+      onSessionChanged,
+    });
+    await conductor.dispatchTurn('s1', 'go');
+    expect(onSessionChanged).toHaveBeenCalledWith('s1', 'activity');
+    onSessionChanged.mockClear();
+    release();
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(onSessionChanged).toHaveBeenCalledWith('s1', 'activity');
+  });
+
+  it('stamps the initiator on the prompt, across the durable queue too', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate).backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first', undefined, { initiatedBy: { userId: 'alice' } });
+    await vi.waitFor(async () => {
+      expect((await ctx.store.getEvents('s1')).find((event) => event.t === 'prompt')).toMatchObject(
+        { text: 'first', initiatedBy: { userId: 'alice' } },
+      );
+    });
+    // Queued behind the running turn: the row carries the initiator, so a restart
+    // that recovers the queue still knows whose turn it is.
+    await conductor.dispatchTurn(
+      's1',
+      'second',
+      { attachments: [] },
+      {
+        queueBehindActiveTurn: true,
+        initiatedBy: { userId: 'bob' },
+      },
+    );
+    expect((await ctx.store.listQueuedTurns())[0]?.opts.initiatedBy).toEqual({ userId: 'bob' });
+    release();
+    await vi.waitFor(async () => {
+      expect(
+        (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt').at(-1),
+      ).toMatchObject({ text: 'second', initiatedBy: { userId: 'bob' } });
+    });
+  });
+
   it('dequeue returns undefined for an unknown/stale id', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });

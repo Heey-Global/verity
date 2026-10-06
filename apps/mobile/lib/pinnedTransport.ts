@@ -57,6 +57,7 @@ interface NativePinnedTransport {
     proxyPort: number,
   ): Promise<string>;
   closeWebSocket(id: string): Promise<void>;
+  sendWebSocket(id: string, text: string): Promise<void>;
   addListener(
     event: 'onWebSocketEvent',
     listener: (event: {
@@ -452,13 +453,17 @@ export function createPinnedWebSocket(
   protocols: string | string[] = [],
   useRemote = false,
 ) {
-  const listeners = new Map<'message' | 'close' | 'error', Set<SocketListener>>();
+  const listeners = new Map<'open' | 'message' | 'close' | 'error', Set<SocketListener>>();
   let socketId: string | null = null;
   let closed = false;
   const subscription = native().addListener('onWebSocketEvent', (event) => {
     if (event.id !== socketId) return;
-    if (event.type === 'open') return;
-    if (event.type === 'message' || event.type === 'close' || event.type === 'error') {
+    if (
+      event.type === 'open' ||
+      event.type === 'message' ||
+      event.type === 'close' ||
+      event.type === 'error'
+    ) {
       for (const listener of listeners.get(event.type) ?? []) listener({ data: event.data });
     }
     if (event.type === 'close') subscription.remove();
@@ -482,10 +487,18 @@ export function createPinnedWebSocket(
       subscription.remove();
     });
   return {
-    addEventListener(type: 'message' | 'close' | 'error', listener: SocketListener) {
+    addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: SocketListener) {
       const registered = listeners.get(type) ?? new Set<SocketListener>();
       registered.add(listener);
       listeners.set(type, registered);
+    },
+    send(data: string) {
+      // The live connection sends only after the server's `ready`, so the native
+      // socket exists by then; anything earlier would have nowhere to go.
+      if (closed || socketId === null) return;
+      void native()
+        .sendWebSocket(socketId, data)
+        .catch(() => undefined);
     },
     close() {
       closed = true;

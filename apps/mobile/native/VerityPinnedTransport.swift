@@ -301,6 +301,13 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       return id
     }
 
+    // The live connection talks back (subscriptions, foreground state, pings).
+    // A failed send surfaces through the receive loop, which closes the socket.
+    AsyncFunction("sendWebSocket") { (id: String, text: String) in
+      guard let (_, task, _) = self.socket(id) else { return }
+      task.send(.string(text)) { _ in }
+    }
+
     AsyncFunction("closeWebSocket") { (id: String) in
       guard let (session, task, _) = self.removeSocket(id) else { return }
       task.cancel(with: .normalClosure, reason: nil)

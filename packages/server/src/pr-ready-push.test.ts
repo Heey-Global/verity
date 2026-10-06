@@ -1,7 +1,7 @@
 import type { SessionRecord } from '@verity/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PullRequestStatus } from './github.js';
-import { createPushForegroundPresence } from './push-fire-points.js';
+import type { PushRouter } from './push-router.js';
 import type { PushSender } from './push-sender.js';
 import {
   buildPullRequestReadyNotification,
@@ -46,6 +46,19 @@ function fakeSender(): PushSender & { send: ReturnType<typeof vi.fn> } {
   };
 }
 
+/** Pushes through the sender and reports what a real router would: delivered
+ * when a ticket was accepted, undelivered otherwise. */
+function routerFor(sender: Pick<PushSender, 'send'>): Pick<PushRouter, 'notify'> & {
+  notify: ReturnType<typeof vi.fn<PushRouter['notify']>>;
+} {
+  return {
+    notify: vi.fn<PushRouter['notify']>(async (input) => {
+      const result = await sender.send(input.notification);
+      return result.ticketsAccepted > 0 ? 'delivered' : 'undelivered';
+    }),
+  };
+}
+
 describe('pull request ready push', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -70,8 +83,7 @@ describe('pull request ready push', () => {
     const sender = fakeSender();
     const markers = new Set<string>();
     const monitor = startPullRequestReadyMonitor({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
       wasSent: async (_sessionId, marker) => markers.has(marker),
@@ -89,28 +101,32 @@ describe('pull request ready push', () => {
     await monitor.stop();
   });
 
-  it('waits while the session is visible and sends after it is closed', async () => {
-    const sender = fakeSender();
-    const presence = createPushForegroundPresence();
-    const detach = presence.attach('s1');
+  it('counts a user who already sees the session as notified', async () => {
+    const markers = new Set<string>();
+    const router = { notify: vi.fn<PushRouter['notify']>().mockResolvedValue('suppressed') };
     const monitor = startPullRequestReadyMonitor({
-      sender,
-      presence,
+      router,
+      initiatorOf: () => 'user-a',
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
-      wasSent: async () => false,
-      markSent: async () => true,
+      wasSent: async (_sessionId, marker) => markers.has(marker),
+      markSent: async (_sessionId, marker) => {
+        markers.add(marker);
+        return true;
+      },
       describeSession: async () => ({}),
       pollMs: 60_000,
     });
     await monitor.runOnce();
-    expect(sender.send.mock.calls).toHaveLength(0);
-    detach();
     await monitor.runOnce();
-    expect(sender.send.mock.calls).toHaveLength(1);
+    // The PR is the work of whoever ran the session's last turn.
+    expect(router.notify).toHaveBeenCalledOnce();
+    expect(router.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 's1', initiatorUserId: 'user-a' }),
+    );
+    expect(markers).toContain('pr-ready:831:abc123');
     await monitor.stop();
   });
-
   it('does not notify until checks pass and GitHub confirms mergeability', async () => {
     const sender = fakeSender();
     const statuses = [
@@ -119,8 +135,7 @@ describe('pull request ready push', () => {
       READY,
     ];
     const monitor = startPullRequestReadyMonitor({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => statuses.shift() ?? READY,
       wasSent: async () => false,
@@ -148,8 +163,7 @@ describe('pull request ready push', () => {
     });
     let marked = false;
     const monitor = startPullRequestReadyMonitor({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
       wasSent: async () => marked,
@@ -187,8 +201,7 @@ describe('pull request ready push', () => {
       });
     let marked = false;
     const monitor = startPullRequestReadyMonitor({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
       wasSent: async () => marked,
@@ -216,8 +229,7 @@ describe('pull request ready push', () => {
     const sender = fakeSender();
     const warn = vi.fn();
     const monitor = startPullRequestReadyMonitor({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       listSessions: async () => {
         throw new Error('getaddrinfo ENOTFOUND verity-postgres');
       },

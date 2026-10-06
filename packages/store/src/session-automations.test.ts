@@ -45,6 +45,14 @@ describe('EventStore — session automations', () => {
     expect(await ctx.store.getSessionAutomation('s1')).toEqual(automation);
   });
 
+  it('records who confirmed it, and the confirming user of a replacement', async () => {
+    const admin = '00000000-0000-4000-8000-000000000001';
+    expect((await ctx.store.setSessionAutomation(input)).sponsorUserId).toBeNull();
+    const confirmed = await ctx.store.setSessionAutomation({ ...input, sponsorUserId: admin });
+    expect(confirmed.sponsorUserId).toBe(admin);
+    expect((await ctx.store.getSessionAutomation('s1'))?.sponsorUserId).toBe(admin);
+  });
+
   it('persists the user zone and reuses it when resuming after a DST change', async () => {
     const schedule = { ...daily, timeZone: 'Europe/Berlin' };
     const automation = await ctx.store.setSessionAutomation(

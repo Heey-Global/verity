@@ -25,6 +25,9 @@ export const pushPayloadSchema = z
     kind: z.enum(PUSH_KINDS),
     toolUseId: z.string().min(1).optional(),
     pullRequestNumber: z.number().int().positive().optional(),
+    /** Option labels of a `question` raised in-app from a live alert; a choice
+     * action answers with the label at its position. Never in a push payload. */
+    choices: z.array(z.string().min(1).max(200)).max(4).optional(),
     deviceId: z.string().min(1).optional(),
   })
   .superRefine((payload, context) => {

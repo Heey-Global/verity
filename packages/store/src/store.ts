@@ -375,6 +375,9 @@ export interface SessionAutomationRecord {
   /** Short operator-facing explanation of the last outcome, if any. */
   lastDetail: string | null;
   nextRunAt: Date | null;
+  /** The local user who confirmed it; null for automations confirmed before
+   * sponsors were recorded. */
+  sponsorUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -394,6 +397,7 @@ export interface SessionAutomationInput {
   prompt: string;
   script?: string | null;
   model?: string | null;
+  sponsorUserId?: string | null;
 }
 
 export interface ProjectSettingsRecord {
@@ -3945,14 +3949,20 @@ export class EventStore implements EventSink {
    * with its `seq`. `afterSeq = 0` returns the full log. The cursor lets a WS
    * client page a backlog and resume after a reconnect without re-sending it.
    */
-  async getEventsAfter(sessionId: string, afterSeq: number): Promise<SequencedEvent[]> {
-    const rows = await this.db
+  async getEventsAfter(
+    sessionId: string,
+    afterSeq: number,
+    limit?: number,
+  ): Promise<SequencedEvent[]> {
+    let query = this.db
       .selectFrom('events')
       .select(['id', 'payload', 'created_at'])
       .where('session_id', '=', sessionId)
       .where('id', '>', afterSeq)
-      .orderBy('id', 'asc')
-      .execute();
+      .orderBy('id', 'asc');
+    // Paged readers (the live replay) bound each read; recovery reads stay whole.
+    if (limit !== undefined) query = query.limit(limit);
+    const rows = await query.execute();
     return rows.map((row) => {
       const parsed = parseAgentEvent(row.payload);
       if (!parsed.success) {
@@ -4992,6 +5002,50 @@ export class EventStore implements EventSink {
       .map((membership) => membership.project_id);
   }
 
+  /** Active users holding a project permission — the notification audience
+   * for project work that has no individual initiator. Same control-plane rule
+   * as {@link hasProjectPermission}. */
+  async listProjectUserIds(
+    projectId: string,
+    permission: 'read' | 'execute' | 'manage',
+  ): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('project_memberships as m')
+      .innerJoin('users as u', 'u.id', 'm.user_id')
+      .innerJoin('projects as p', 'p.id', 'm.project_id')
+      .select([
+        'm.user_id',
+        'm.can_read',
+        'm.can_execute',
+        'm.can_manage',
+        'u.status',
+        'u.role',
+        'p.kind',
+        'p.created_by_user_id',
+      ])
+      .where('m.project_id', '=', projectId)
+      .execute();
+    return rows
+      .filter(
+        (row) =>
+          row.status === 'active' &&
+          row[`can_${permission}`] &&
+          (row.kind !== 'control_plane' ||
+            (row.role === 'administrator' && row.created_by_user_id === row.user_id)),
+      )
+      .map((row) => row.user_id);
+  }
+
+  async listActiveAdministratorIds(): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', '=', 'administrator')
+      .where('status', '=', 'active')
+      .execute();
+    return rows.map((row) => row.id);
+  }
+
   async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
@@ -5604,6 +5658,7 @@ export class EventStore implements EventSink {
     last_outcome: string | null;
     last_detail: string | null;
     next_run_at: Date | null;
+    sponsor_user_id: string | null;
     created_at: Date;
     updated_at: Date;
   }): SessionAutomationRecord {
@@ -5621,6 +5676,7 @@ export class EventStore implements EventSink {
       lastOutcome: row.last_outcome as SessionAutomationOutcome | null,
       lastDetail: row.last_detail,
       nextRunAt: row.next_run_at,
+      sponsorUserId: row.sponsor_user_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5649,6 +5705,8 @@ export class EventStore implements EventSink {
       last_outcome: null,
       last_detail: null,
       next_run_at: computeNextRun(input.schedule, now).toISOString(),
+      // A replacement is confirmed by whoever confirmed it, so it re-sponsors.
+      sponsor_user_id: input.sponsorUserId ?? null,
     };
     return this.db.transaction().execute(async (tx) => {
       // Serialize with commitSessionMove: a script checked in the old workspace
@@ -7274,6 +7332,35 @@ export class EventStore implements EventSink {
           createdAt: new Date(row.created_at).getTime(),
           updatedAt: new Date(row.updated_at).getTime(),
         };
+  }
+
+  /** The push tokens of the given users' devices, with the user each belongs to. */
+  async listDevicePushTokensForUsers(
+    userIds: readonly string[],
+  ): Promise<(DevicePushTokenRecord & { userId: string })[]> {
+    if (userIds.length === 0) return [];
+    const rows = await this.db
+      .selectFrom('device_push_tokens as t')
+      .innerJoin('auth_tokens as a', 'a.id', 't.auth_token_id')
+      .select([
+        't.auth_token_id',
+        't.expo_token',
+        't.platform',
+        't.created_at',
+        't.updated_at',
+        'a.user_id',
+      ])
+      .where('a.user_id', 'in', [...userIds])
+      .orderBy('t.created_at', 'asc')
+      .execute();
+    return rows.map((row) => ({
+      authTokenId: row.auth_token_id,
+      expoToken: row.expo_token,
+      platform: row.platform,
+      createdAt: new Date(row.created_at).getTime(),
+      updatedAt: new Date(row.updated_at).getTime(),
+      userId: row.user_id,
+    }));
   }
 
   async listDevicePushTokens(): Promise<DevicePushTokenRecord[]> {

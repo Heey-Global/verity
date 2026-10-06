@@ -1,6 +1,8 @@
+import { LIVE_ALERT_MAX_CHOICES } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
 import type { PushSessionContext } from './pr-ready-push.js';
-import type { PushLogger, PushSender } from './push-sender.js';
+import type { PushRouter } from './push-router.js';
+import type { PushLogger, PushNotification } from './push-sender.js';
 
 const DEFAULT_PRESENCE_DEBOUNCE_MS = 750;
 const TERMINAL_STATE_RETENTION_MS = 5 * 60 * 1_000;
@@ -18,6 +20,10 @@ interface SessionFireState {
    * end it decides whether a completion fires the ordinary SESSION_STATUS or the
    * actionable AGENT_QUESTION. Bounded, and reset at every turn boundary. */
   questionTail: string;
+  /** The turn ended by offering fixed choices (a `choices` event): it is a
+   * question even without a trailing question mark. `labels` is set when the
+   * choices fit on notification buttons. */
+  choices: { labels: string[] | undefined } | undefined;
 }
 
 /** Append a text delta to the rolling question tail, keeping only the last
@@ -38,43 +44,16 @@ function endsWithQuestion(tail: string): boolean {
   return tail.replace(/[\s"'`)*_\]]+$/u, '').endsWith('?');
 }
 
-/** A live session WebSocket means that session is visible on at least one
- * device. Presence is deliberately session-wide: one foreground viewer
- * suppresses the notification fan-out to every paired device. */
-export interface PushForegroundPresence {
-  attach(sessionId: string): () => void;
-  hasViewer(sessionId: string): boolean;
-}
-
-export function createPushForegroundPresence(): PushForegroundPresence {
-  const viewers = new Map<string, number>();
-  return {
-    attach(sessionId): () => void {
-      viewers.set(sessionId, (viewers.get(sessionId) ?? 0) + 1);
-      let attached = true;
-      return () => {
-        if (!attached) return;
-        attached = false;
-        const remaining = (viewers.get(sessionId) ?? 1) - 1;
-        if (remaining <= 0) viewers.delete(sessionId);
-        else viewers.set(sessionId, remaining);
-      };
-    },
-    hasViewer(sessionId): boolean {
-      return (viewers.get(sessionId) ?? 0) > 0;
-    },
-  };
-}
-
 export interface PushFirePoints {
   observe(sessionId: string, event: SequencedEvent): void;
   permissionResolved(sessionId: string, toolUseId: string): void;
+  /** The user the session's current (or last) turn runs for, if known. */
+  initiatorOf(sessionId: string): string | undefined;
   close(): Promise<void>;
 }
 
 export interface PushFirePointOptions {
-  sender: PushSender;
-  presence: PushForegroundPresence;
+  router: Pick<PushRouter, 'notify' | 'cancel'>;
   logger?: PushLogger | undefined;
   debounceMs?: number | undefined;
   describeSession?: ((sessionId: string) => Promise<PushSessionContext>) | undefined;
@@ -91,6 +70,10 @@ function pushSessionName(context: PushSessionContext): string {
 class DefaultPushFirePoints implements PushFirePoints {
   private readonly debounceMs: number;
   private readonly sessions = new Map<string, SessionFireState>();
+  /** Kept apart from the per-turn state, which is evicted after a turn ends: a
+   * notification about the session's work after that (a PR becoming ready) still
+   * belongs to whoever ran it. */
+  private readonly initiators = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly active = new Set<Promise<void>>();
   private closed = false;
@@ -105,11 +88,20 @@ class DefaultPushFirePoints implements PushFirePoints {
     const state = this.state(sessionId);
 
     if (event.t === 'session' || event.t === 'prompt') {
+      // Steering a running turn does not make it someone else's turn, and a
+      // prompt without a user behind it (a linked peer, a server follow-up)
+      // continues the work of whoever ran the session last.
+      if (event.t === 'prompt' && event.steered !== true && event.initiatedBy !== undefined) {
+        this.initiators.set(sessionId, event.initiatedBy.userId);
+      }
       state.terminalHandled = false;
       state.terminalOutcome = undefined;
       state.questionTail = '';
+      state.choices = undefined;
       this.cancel(`terminal:${sessionId}`);
       this.cancel(`cleanup:${sessionId}`);
+      // An answer (or any new prompt) settles an open question everywhere.
+      this.options.router.cancel(`question:${sessionId}`);
       this.cancelPermissions(sessionId, state);
       state.handledPermissions.clear();
       state.openTasks.clear();
@@ -134,18 +126,44 @@ class DefaultPushFirePoints implements PushFirePoints {
       }
       return;
     }
+    if (event.t === 'choices') {
+      const labels = event.options.map((option) => option.label);
+      state.choices = {
+        labels:
+          event.multiSelect !== true && labels.length <= LIVE_ALERT_MAX_CHOICES
+            ? labels
+            : undefined,
+      };
+      return;
+    }
     if (event.t === 'permission') {
       if (state.handledPermissions.has(event.id)) return;
       state.handledPermissions.add(event.id);
-      this.schedule(`permission:${sessionId}:${event.id}`, sessionId, 'permission', async () => {
+      const key = `permission:${sessionId}:${event.id}`;
+      this.schedule(key, sessionId, 'permission', async () => {
         const context = await this.describeSession(sessionId);
-        return this.options.sender.send({
-          title: pushHeading(context, 'Permission needed'),
-          body: `${pushSessionName(context)} requests permission to continue.`,
-          categoryId: 'PERMISSION_PROMPT',
-          data: { sessionId, kind: 'permission', toolUseId: event.id },
-          priority: 'high',
-          sound: 'default',
+        const title = pushHeading(context, 'Permission needed');
+        const body = `${pushSessionName(context)} requests permission to continue.`;
+        return this.options.router.notify({
+          key,
+          sessionId,
+          initiatorUserId: this.initiators.get(sessionId),
+          notification: {
+            title,
+            body,
+            categoryId: 'PERMISSION_PROMPT',
+            data: { sessionId, kind: 'permission', toolUseId: event.id },
+            priority: 'high',
+            sound: 'default',
+          },
+          alert: {
+            sessionId,
+            kind: 'permission',
+            categoryId: 'PERMISSION_PROMPT',
+            toolUseId: event.id,
+            title,
+            body,
+          },
         });
       });
       return;
@@ -175,7 +193,12 @@ class DefaultPushFirePoints implements PushFirePoints {
   permissionResolved(sessionId: string, toolUseId: string): void {
     const key = `permission:${sessionId}:${toolUseId}`;
     this.cancel(key);
+    this.options.router.cancel(key);
     this.state(sessionId).handledPermissions.add(toolUseId);
+  }
+
+  initiatorOf(sessionId: string): string | undefined {
+    return this.initiators.get(sessionId);
   }
 
   async close(): Promise<void> {
@@ -194,6 +217,7 @@ class DefaultPushFirePoints implements PushFirePoints {
         terminalOutcome: undefined,
         handledPermissions: new Set(),
         questionTail: '',
+        choices: undefined,
       };
       this.sessions.set(sessionId, state);
     }
@@ -207,7 +231,9 @@ class DefaultPushFirePoints implements PushFirePoints {
   private scheduleCompletion(sessionId: string, state: SessionFireState): void {
     this.scheduleTerminal(
       sessionId,
-      endsWithQuestion(state.questionTail) ? 'question' : 'completed',
+      state.choices !== undefined || endsWithQuestion(state.questionTail)
+        ? 'question'
+        : 'completed',
       state,
     );
   }
@@ -225,32 +251,53 @@ class DefaultPushFirePoints implements PushFirePoints {
     state.terminalOutcome = outcome;
     this.cancelPermissions(sessionId, state);
     this.scheduleStateCleanup(sessionId, state);
+    const choices = state.choices?.labels;
     this.schedule(`terminal:${sessionId}`, sessionId, outcome, async () => {
       const context = await this.describeSession(sessionId);
-      return this.options.sender.send(
-        outcome === 'question'
-          ? {
-              title: pushHeading(context, 'Reply needed'),
-              body: `${pushSessionName(context)} is waiting for your answer.`,
-              categoryId: 'AGENT_QUESTION',
-              data: { sessionId, kind: 'question' },
-              priority: 'high',
-              sound: 'default',
-            }
-          : {
-              title: pushHeading(
-                context,
-                outcome === 'completed' ? 'Turn complete' : 'Session stopped',
-              ),
-              body:
-                outcome === 'completed'
-                  ? `${pushSessionName(context)} finished its turn.`
-                  : `${pushSessionName(context)} stopped unexpectedly.`,
-              categoryId: 'SESSION_STATUS',
-              data: { sessionId, kind: outcome },
-              priority: outcome === 'completed' ? 'normal' : 'high',
-            },
-      );
+      const initiatorUserId = this.initiators.get(sessionId);
+      if (outcome === 'question') {
+        const title = pushHeading(context, 'Reply needed');
+        const body = `${pushSessionName(context)} is waiting for your answer.`;
+        return this.options.router.notify({
+          key: `question:${sessionId}`,
+          sessionId,
+          initiatorUserId,
+          notification: {
+            title,
+            body,
+            categoryId: 'AGENT_QUESTION',
+            data: { sessionId, kind: 'question' },
+            priority: 'high',
+            sound: 'default',
+          },
+          // The labels travel only on the authenticated live socket; the push
+          // payload stays free of agent text (ADR 0008).
+          alert: {
+            sessionId,
+            kind: 'question',
+            categoryId: 'AGENT_QUESTION',
+            ...(choices !== undefined ? { choices } : {}),
+            title,
+            body,
+          },
+        });
+      }
+      const notification: PushNotification = {
+        title: pushHeading(context, outcome === 'completed' ? 'Turn complete' : 'Session stopped'),
+        body:
+          outcome === 'completed'
+            ? `${pushSessionName(context)} finished its turn.`
+            : `${pushSessionName(context)} stopped unexpectedly.`,
+        categoryId: 'SESSION_STATUS',
+        data: { sessionId, kind: outcome },
+        priority: outcome === 'completed' ? 'normal' : 'high',
+      };
+      return this.options.router.notify({
+        key: `terminal:${sessionId}`,
+        sessionId,
+        initiatorUserId,
+        notification,
+      });
     });
   }
 
@@ -267,7 +314,8 @@ class DefaultPushFirePoints implements PushFirePoints {
     if (this.timers.has(key)) return;
     const timer = setTimeout(() => {
       this.timers.delete(key);
-      if (this.closed || this.options.presence.hasViewer(sessionId)) return;
+      // Whether anyone is looking is decided per user by the router.
+      if (this.closed) return;
       const task = send()
         .then(() => undefined)
         .catch(() => {
@@ -291,6 +339,7 @@ class DefaultPushFirePoints implements PushFirePoints {
   private cancelPermissions(sessionId: string, state: SessionFireState): void {
     for (const toolUseId of state.handledPermissions) {
       this.cancel(`permission:${sessionId}:${toolUseId}`);
+      this.options.router.cancel(`permission:${sessionId}:${toolUseId}`);
     }
   }
 

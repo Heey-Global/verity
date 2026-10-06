@@ -10,6 +10,8 @@ import {
 import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { getVerityBaseUrl } from '../lib/client';
+import { useLiveHints } from '../lib/liveConnection';
 
 export interface UseSessionList extends SessionListState {
   /** Force an immediate reload (e.g. pull-to-refresh / retry button). `silent`
@@ -48,6 +50,16 @@ export function useSessionList(client: VerityClient): UseSessionList {
   useEffect(() => {
     setState({ ...model.state, loading: true });
   }, [model]);
+
+  // The list refetches when the server says a session changed; its own poll is
+  // only the safety net. Hints for a model that is not running are ignored.
+  const onHints = useCallback(
+    (hints: Parameters<typeof model.applyHints>[0]) => {
+      model.applyHints(hints);
+    },
+    [model],
+  );
+  useLiveHints(getVerityBaseUrl(), onHints);
 
   const [focused, setFocused] = useState(false);
   useFocusEffect(

@@ -2,46 +2,12 @@ import type { AgentEvent } from '@verity/events';
 import { describe, expect, it, vi } from 'vitest';
 import { VerityApiError, type VerityClient } from '../api.js';
 import { SessionReducer } from '../reducer.js';
-import type { StreamSocket } from '../stream.js';
-import { SessionModel, type SessionModelState } from './session.js';
+import { FakeTransport, type FakeSubscription } from '../live/testing.js';
+import { DEFAULT_ACTIVITY_POLL_MS, SessionModel, type SessionModelState } from './session.js';
 
-type Listener = (event: { data: unknown }) => void;
-
-class FakeSocket implements StreamSocket {
-  closed = false;
-  private msg: Listener[] = [];
-  private cls: Listener[] = [];
-  private err: Listener[] = [];
-  constructor(readonly url: string) {}
-  addEventListener(type: 'message' | 'close' | 'error', listener: Listener): void {
-    if (type === 'message') this.msg.push(listener);
-    else if (type === 'close') this.cls.push(listener);
-    else this.err.push(listener);
-  }
-  close(): void {
-    this.closed = true;
-  }
-  emitEvent(seq: number, event: AgentEvent): void {
-    this.emitRaw(JSON.stringify({ k: 'event', seq, event }));
-  }
-  emitRaw(data: string): void {
-    for (const l of this.msg) l({ data });
-  }
-  emitClose(): void {
-    for (const l of this.cls) l({ data: undefined });
-  }
-}
-
-function recordingConnect(): { connect: (url: string) => FakeSocket; sockets: FakeSocket[] } {
-  const sockets: FakeSocket[] = [];
-  return {
-    connect: (url: string) => {
-      const s = new FakeSocket(url);
-      sockets.push(s);
-      return s;
-    },
-    sockets,
-  };
+function recordingConnect(): { connect: FakeTransport; sockets: FakeSubscription[] } {
+  const connect = new FakeTransport();
+  return { connect, sockets: connect.sockets };
 }
 
 function stubClient(): VerityClient {
@@ -80,10 +46,9 @@ function metadataHistoryEvent(seq: number): { seq: number; event: AgentEvent } {
 }
 
 describe('SessionModel — stream', () => {
-  it('publishes REST history while the parallel stream ticket is still pending', async () => {
+  it('publishes REST history before the live replay has caught up', async () => {
     const { connect, sockets } = recordingConnect();
     let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getHistory']>>) => void;
-    let resolveTicket!: (ticket: string) => void;
     const client = stubClient();
     const getHistory = vi.fn().mockReturnValue(
       new Promise((resolve) => {
@@ -93,21 +58,9 @@ describe('SessionModel — stream', () => {
     client.getHistory = getHistory;
     const getActivity = vi.fn().mockResolvedValue({ busy: false, queued: [] });
     client.getActivity = getActivity;
-    const getStreamTicket = vi.fn().mockReturnValue(
-      new Promise((resolve) => {
-        resolveTicket = resolve;
-      }),
-    );
-    const model = new SessionModel({
-      client,
-      sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
-      getStreamTicket,
-    });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
       model.start();
-      expect(getStreamTicket).toHaveBeenCalledTimes(1);
       expect(getHistory).toHaveBeenCalledTimes(1);
       expect(getActivity).not.toHaveBeenCalled();
       resolveHistory({
@@ -115,16 +68,12 @@ describe('SessionModel — stream', () => {
         hasMore: true,
       });
       await flush();
-      // A delayed handshake must not hide a complete REST transcript.
+      // A slow live replay must not hide a complete REST transcript.
       expect(model.state.loaded).toBe(true);
       expect(agentTexts(model.state)).toEqual(['tail']);
       expect(model.state.hasOlder).toBe(true);
-      expect(sockets).toHaveLength(0);
       expect(getActivity).toHaveBeenCalledTimes(1);
-      resolveTicket('initial');
-      await flush();
-      expect(getStreamTicket).toHaveBeenCalledTimes(1);
-      expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
+      expect(sockets[0]?.sinceSeq).toBe(100);
       sockets[0]?.emitEvent(101, { t: 'text', delta: ' replay' });
       sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 101 }));
       expect(agentTexts(model.state)).toEqual(['tail replay']);
@@ -147,7 +96,7 @@ describe('SessionModel — stream', () => {
       );
       const client = stubClient();
       client.getHistory = vi.fn().mockReturnValue(history);
-      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       try {
         model.start();
         model.pause();
@@ -167,9 +116,7 @@ describe('SessionModel — stream', () => {
         model.resume();
         await flush();
         expect(sockets).toHaveLength(1);
-        expect(sockets[0]?.url).toBe(
-          `ws://host/sessions/s1/stream?sinceSeq=${outcome === 'resolve' ? 100 : 0}`,
-        );
+        expect(sockets[0]?.sinceSeq).toBe(outcome === 'resolve' ? 100 : 0);
         if (outcome === 'reject') sockets[0]?.emitEvent(100, { t: 'text', delta: 'loaded' });
         sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
         expect(model.state.loaded).toBe(true);
@@ -186,13 +133,12 @@ describe('SessionModel — stream', () => {
     const model = new SessionModel({
       client: stubClient(),
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       onChange: (s) => updates.push(s.session.messages.length),
     });
     model.start();
     await flush();
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0');
+    expect(sockets[0]?.sinceSeq).toBe(0);
     sockets[0]?.emitEvent(1, { t: 'text', delta: 'hi' });
     // Backlog is batched: the screen only updates at the caught_up watermark.
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 }));
@@ -212,11 +158,11 @@ describe('SessionModel — stream', () => {
       }),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     // REST seeds the tail; the socket only replays events persisted afterwards.
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
+    expect(sockets[0]?.sinceSeq).toBe(100);
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
     expect(agentTexts(model.state)).toEqual(['x']);
   });
@@ -249,13 +195,13 @@ describe('SessionModel — stream', () => {
       getHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
     await flush();
 
     expect(getHistory).toHaveBeenNthCalledWith(2, 's1', { beforeSeq: 100, limit: 150 });
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
+    expect(sockets[0]?.sinceSeq).toBe(100);
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
     expect(agentTexts(model.state)).toEqual(['visible tail']);
     expect(model.state.hasOlder).toBe(true);
@@ -281,7 +227,7 @@ describe('SessionModel — stream', () => {
       getHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
     await flush();
@@ -290,7 +236,7 @@ describe('SessionModel — stream', () => {
     // can render, then connect after its newest event instead of bursting the entire
     // session through the WebSocket.
     expect(getHistory).toHaveBeenCalledTimes(6);
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=901');
+    expect(sockets[0]?.sinceSeq).toBe(901);
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 901 }));
     expect(agentTexts(model.state)).toEqual(['recovered']);
     expect(model.state.hasOlder).toBe(true);
@@ -316,7 +262,7 @@ describe('SessionModel — stream', () => {
       }),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
     await flush();
@@ -339,7 +285,7 @@ describe('SessionModel — stream', () => {
       ...stubClient(),
       getSession: vi.fn().mockResolvedValue({ resumable: true, model: 'codex/default' }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
     await flush();
@@ -363,8 +309,7 @@ describe('SessionModel — stream', () => {
     const model = new SessionModel({
       client: stubClient(),
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await flush();
@@ -376,52 +321,9 @@ describe('SessionModel — stream', () => {
     expect(model.state.loaded).toBe(true); // first snapshot at caught_up → loaded
   });
 
-  it('surfaces a stream error and clears it on the next event', async () => {
-    const { connect, sockets } = recordingConnect();
-    const model = new SessionModel({
-      client: stubClient(),
-      sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
-    });
-    model.start();
-    await flush();
-    sockets[0]?.emitRaw(JSON.stringify({ k: 'error', message: 'failed to load backlog' }));
-    expect(model.state.streamError).toBe('failed to load backlog');
-    sockets[0]?.emitEvent(1, { t: 'text', delta: 'ok' });
-    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 })); // flush → clears the error
-    expect(model.state.streamError).toBeUndefined();
-  });
-
-  it('threads scheduleReconnect through to the stream', async () => {
-    const { connect, sockets } = recordingConnect();
-    const schedule = vi.fn();
-    const model = new SessionModel({
-      client: stubClient(),
-      sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
-      scheduleReconnect: schedule,
-    });
-    model.start();
-    await flush();
-    sockets[0]?.emitClose(); // an unexpected close → the stream schedules a reconnect
-    expect(schedule).toHaveBeenCalledTimes(1);
-    expect(schedule).toHaveBeenCalledWith(expect.any(Function), 1_000);
-  });
-
   it('exposes reconnect lifecycle in model state', async () => {
     const { connect, sockets } = recordingConnect();
-    let retry = (): void => undefined;
-    const model = new SessionModel({
-      client: stubClient(),
-      sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
-      scheduleReconnect: (next) => {
-        retry = next;
-      },
-    });
+    const model = new SessionModel({ client: stubClient(), sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.connectionState).toBe('connecting');
@@ -429,11 +331,33 @@ describe('SessionModel — stream', () => {
     expect(model.state.connectionState).toBe('connected');
     sockets[0]?.emitClose();
     expect(model.state.connectionState).toBe('reconnecting');
-    retry();
+    connect.reconnect();
     sockets[1]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
     expect(model.state.connectionState).toBe('connected');
     model.stop();
     expect(model.state.connectionState).toBe('stopped');
+  });
+
+  it('reports a session the server will not stream and stops', async () => {
+    const { connect, sockets } = recordingConnect();
+    const model = new SessionModel({ client: stubClient(), sessionId: 's1', transport: connect });
+    model.start();
+    await flush();
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'ended', reason: 'forbidden' }));
+    expect(model.state.streamError).toBe('You no longer have access to this session.');
+    expect(model.state.connectionState).toBe('stopped');
+  });
+
+  it('subscribes as viewing only while the screen says so', async () => {
+    const { connect, sockets } = recordingConnect();
+    const model = new SessionModel({ client: stubClient(), sessionId: 's1', transport: connect });
+    model.setView(true);
+    model.start();
+    await flush();
+    expect(sockets[0]?.view).toBe(true);
+    model.setView(false);
+    expect(sockets[0]?.view).toBe(false);
+    model.stop();
   });
 
   it('stops the stream on stop()', async () => {
@@ -441,8 +365,7 @@ describe('SessionModel — stream', () => {
     const model = new SessionModel({
       client: stubClient(),
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await flush();
@@ -459,7 +382,7 @@ describe('SessionModel — stream', () => {
       }),
     );
     const { connect, sockets } = recordingConnect();
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     model.stop();
     resolveHistory({ events: [], hasMore: false });
@@ -491,7 +414,7 @@ describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
       getHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     // Stream the tail so the reducer has a loaded head (oldestSeq = 100).
@@ -521,7 +444,7 @@ describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
       getHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     sockets[0]?.emitEvent(100, { t: 'text', delta: 'tail' });
@@ -544,7 +467,7 @@ describe('SessionModel — busy seeding', () => {
       // Never resolves within the test → the seed must come from the detail probe.
       getActivity: vi.fn().mockReturnValue(new Promise(() => {})),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     // No activity poll has resolved, yet the Stop button / activity line are lit
@@ -569,7 +492,7 @@ describe('SessionModel — busy seeding', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush(); // activity poll resolves first → busy=false, _activityLoaded=true
     expect(model.state.busy).toBe(false);
@@ -590,7 +513,7 @@ describe('SessionModel — busy seeding', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockReturnValue(new Promise(() => {})),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.busy).toBe(true);
@@ -615,8 +538,7 @@ describe('SessionModel — working reconciliation', () => {
       const model = new SessionModel({
         client,
         sessionId: 's1',
-        baseUrl: 'http://host',
-        connect,
+        transport: connect,
         onChange: (s) => workingSeen.push(s.working),
       });
       model.start();
@@ -633,7 +555,7 @@ describe('SessionModel — working reconciliation', () => {
       // The turn ends server-side but the reducer MISSES its terminal event and stays
       // stuck running. The next settled poll (no newer event since) must win.
       workingSeen.length = 0;
-      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS);
       expect(model.state.session.running).toBe(true); // reducer is still stuck ON
       expect(model.state.working).toBe(false); // reconciled to the authoritative server
       // ...and the flip must be EMITTED (a bare `busy:false` re-anchor can't be swallowed
@@ -652,7 +574,7 @@ describe('SessionModel — working reconciliation', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockResolvedValue({ busy: true, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.busy).toBe(true);
@@ -668,8 +590,7 @@ describe('SessionModel — sendTurn', () => {
     const model = new SessionModel({
       client: { sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       onChange: (s) => sendingStates.push(s.sending),
     });
 
@@ -694,8 +615,7 @@ describe('SessionModel — sendTurn', () => {
     const model = new SessionModel({
       client: { sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     const sending = model.sendTurn('visible immediately');
@@ -713,7 +633,7 @@ describe('SessionModel — sendTurn', () => {
       ...stubClient(),
       sendTurn: vi.fn().mockResolvedValue({ sessionId: 's1', accepted: true }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
 
@@ -734,8 +654,7 @@ describe('SessionModel — sendTurn', () => {
         sendTurn: vi.fn().mockRejectedValue(new Error('offline')),
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.sendTurn('do not lose me');
@@ -751,8 +670,7 @@ describe('SessionModel — sendTurn', () => {
     const model = new SessionModel({
       client: { sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     const attachments = [
       { kind: 'image' as const, mediaType: 'image/jpeg' as const, data: 'aGk=' },
@@ -769,8 +687,7 @@ describe('SessionModel — sendTurn', () => {
     const model = new SessionModel({
       client: { sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     sendTurn.mockRejectedValueOnce(
@@ -798,8 +715,7 @@ describe('SessionModel — sendTurn', () => {
     const model = new SessionModel({
       client: { sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     const first = model.sendTurn('one');
@@ -823,8 +739,7 @@ describe('SessionModel — sendTurn', () => {
     const model = new SessionModel({
       client: { sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.sendTurn('while busy');
@@ -845,8 +760,7 @@ describe('SessionModel — cancel (#79)', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), cancelTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       onTurnCancelled,
     });
 
@@ -868,8 +782,7 @@ describe('SessionModel — cancel (#79)', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), cancelTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.cancel({ force: true });
@@ -889,8 +802,7 @@ describe('SessionModel — cancel (#79)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), cancelTurn, getActivity } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     await (model as unknown as { loadActivity(): Promise<void> }).loadActivity();
     expect(model.state.terminationUnconfirmed).toBe(true);
@@ -918,8 +830,7 @@ describe('SessionModel — cancel (#79)', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), cancelTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       onTurnCancelled,
     });
 
@@ -940,8 +851,7 @@ describe('SessionModel — cancel (#79)', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), cancelTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     cancelTurn.mockRejectedValueOnce(new VerityApiError(404, 'session s1 not found'));
@@ -960,8 +870,7 @@ describe('SessionModel — cancel (#79)', () => {
     const model = new SessionModel({
       client: { sendTurn, cancelTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.cancel();
@@ -978,8 +887,7 @@ describe('SessionModel — resumable', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), getSession } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     expect(model.state.resumable).toBeUndefined(); // unknown until the detail loads
@@ -996,8 +904,7 @@ describe('SessionModel — resumable', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), getSession } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     model.start();
@@ -1019,8 +926,7 @@ describe('SessionModel — resumable', () => {
         getSession: vi.fn().mockResolvedValue({ resumable: true }),
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.sendTurn('go');
@@ -1037,8 +943,7 @@ describe('SessionModel — resumable', () => {
     const model = new SessionModel({
       client: { sendTurn, getSession } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.sendTurn('go'); // 410 → latches resumable false
@@ -1058,8 +963,7 @@ describe('SessionModel — name', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), getSession } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     expect(model.state.name).toBeUndefined(); // unknown until the detail loads
@@ -1075,8 +979,7 @@ describe('SessionModel — name', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), getSession } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     model.start();
@@ -1092,8 +995,7 @@ describe('SessionModel — name', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), getSession } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     model.start();
@@ -1113,8 +1015,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
     const model = new SessionModel({
       client: { sendTurn: vi.fn(), getSession } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     expect(model.state.model).toBeUndefined(); // unknown until the detail loads
@@ -1136,8 +1037,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
         setSessionModel,
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.switchModel('codex/default');
@@ -1165,8 +1065,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
           .mockResolvedValue({ sessionId: 's1', model: 'codex/default', deferred: true }),
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     const loadActivity = (): Promise<void> =>
       (
@@ -1200,8 +1099,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getActivity } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     const loadActivity = (): Promise<void> =>
       (
@@ -1229,8 +1127,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getActivity } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     const loadActivity = (): Promise<void> =>
       (model as unknown as { loadActivity(): Promise<void> }).loadActivity();
@@ -1252,8 +1149,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getActivity } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     await (model as unknown as { loadActivity(): Promise<void> }).loadActivity();
     expect(model.state.terminationUnconfirmed).toBe(false);
@@ -1265,8 +1161,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), setSessionModel } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await flush();
@@ -1317,8 +1212,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getHistory, setSessionModel } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await flush();
@@ -1355,8 +1249,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
         setSessionModel,
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await flush();
@@ -1394,7 +1287,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
         },
       }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
     await vi.waitFor(() => {
@@ -1433,7 +1326,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
         ],
       }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
 
@@ -1470,8 +1363,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
         setSessionModel,
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await vi.waitFor(() => {
@@ -1505,8 +1397,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
         setSessionModel,
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await vi.waitFor(() => {
@@ -1529,8 +1420,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
         setSessionModel,
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await vi.waitFor(() => {
@@ -1563,8 +1453,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
       const model = new SessionModel({
         client,
         sessionId: 's1',
-        baseUrl: 'http://host',
-        connect,
+        transport: connect,
         onChange: (state) => updates.push(state),
       });
       model.start();
@@ -1601,7 +1490,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
         events: [{ seq: 50, event: { t: 'prompt', text: 'older' } }],
         hasMore: true,
       });
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     const apply = vi.spyOn(SessionReducer.prototype, 'applyFrame');
@@ -1634,12 +1523,12 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
       getHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
     await flush();
     // Tail was seeded by REST; the stream resumes after that snapshot.
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
+    expect(sockets[0]?.sinceSeq).toBe(100);
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
     expect(model.state.hasOlder).toBe(true);
 
@@ -1662,7 +1551,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.hasOlder).toBe(false);
@@ -1692,7 +1581,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
       ...stubClient(),
       getHistory,
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
     model.start();
     await flush();
@@ -1725,8 +1614,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getHistory } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     model.start();
@@ -1764,8 +1652,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getHistory } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     model.start();
@@ -1797,7 +1684,7 @@ describe('SessionModel — server activity + queued messages', () => {
       const { connect, sockets } = recordingConnect();
       const getActivity = vi.fn().mockResolvedValue({ busy: false, queued: [] });
       const client = { ...stubClient(), getActivity } as unknown as VerityClient;
-      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
       model.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -1829,7 +1716,7 @@ describe('SessionModel — server activity + queued messages', () => {
         .fn()
         .mockResolvedValue({ busy: true, queued: [{ id: 'q1', text: 'waiting one' }] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.busy).toBe(true);
@@ -1845,7 +1732,7 @@ describe('SessionModel — server activity + queued messages', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [], branch: 'feat/122-x' }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.branch).toBe('feat/122-x');
@@ -1866,11 +1753,11 @@ describe('SessionModel — server activity + queued messages', () => {
         getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
         getActivity,
       } as unknown as VerityClient;
-      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       model.start();
       await vi.advanceTimersByTimeAsync(0); // immediate first poll → still unnamed
       expect(model.state.name).toBeNull();
-      await vi.advanceTimersByTimeAsync(1500); // next poll → auto-title landed server-side
+      await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS); // next poll → auto-title landed server-side
       expect(model.state.name).toBe('Auth Refactor');
       model.stop();
     } finally {
@@ -1886,7 +1773,7 @@ describe('SessionModel — server activity + queued messages', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.name).toBe('From Detail');
@@ -1913,7 +1800,7 @@ describe('SessionModel — server activity + queued messages', () => {
         getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
         getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
       } as unknown as VerityClient;
-      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
       model.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -1925,7 +1812,7 @@ describe('SessionModel — server activity + queued messages', () => {
       });
 
       vi.setSystemTime(new Date(102_000));
-      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS);
 
       expect(model.state.session.rateLimit).toBeUndefined();
       model.stop();
@@ -1948,11 +1835,11 @@ describe('SessionModel — server activity + queued messages', () => {
         getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
         getActivity,
       } as unknown as VerityClient;
-      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       model.start();
       await vi.advanceTimersByTimeAsync(0); // immediate first poll
       expect(model.state.branch).toBe('main');
-      await vi.advanceTimersByTimeAsync(1500); // next interval poll → external checkout
+      await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS); // next interval poll → external checkout
       expect(model.state.branch).toBe('feat/122-x');
       model.stop();
     } finally {
@@ -1978,14 +1865,14 @@ describe('SessionModel — server activity + queued messages', () => {
         getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
         getActivity,
       } as unknown as VerityClient;
-      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       model.start();
       await vi.advanceTimersByTimeAsync(0); // first poll starts, then hangs
-      await vi.advanceTimersByTimeAsync(1500); // interval ticks → must be skipped
-      await vi.advanceTimersByTimeAsync(1500); // and again
+      await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS); // interval ticks → must be skipped
+      await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS); // and again
       expect(getActivity).toHaveBeenCalledTimes(1); // overlap guard held
       resolveFirst({ busy: false, queued: [] }); // the slow poll finally resolves
-      await vi.advanceTimersByTimeAsync(1500); // next tick is allowed now
+      await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS); // next tick is allowed now
       expect(getActivity).toHaveBeenCalledTimes(2);
       model.stop();
     } finally {
@@ -2001,7 +1888,7 @@ describe('SessionModel — server activity + queued messages', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
 
@@ -2027,7 +1914,7 @@ describe('SessionModel — server activity + queued messages', () => {
         .fn()
         .mockResolvedValue({ busy: true, queued: [{ id: 'q1', text: 'hello there' }] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.waitingMessages).toEqual([{ id: 'q1', text: 'hello there' }]); // shown while queued
@@ -2051,7 +1938,7 @@ describe('SessionModel — server activity + queued messages', () => {
         .fn()
         .mockResolvedValue({ busy: true, queued: [{ id: 'q1', text: 'same words' }] }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     sockets[0]?.emitEvent(1, {
@@ -2087,7 +1974,7 @@ describe('SessionModel — server activity + queued messages', () => {
       getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
       getActivity: vi.fn().mockReturnValue(activity),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
 
@@ -2116,7 +2003,7 @@ describe('SessionModel — server activity + queued messages', () => {
         ],
       }),
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.waitingMessages).toEqual([
@@ -2150,7 +2037,7 @@ describe('SessionModel — server activity + queued messages', () => {
       }),
       cancelQueued,
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
     expect(model.state.waitingMessages).toEqual([{ id: 'q1', text: 'fix me' }]);
@@ -2179,7 +2066,7 @@ describe('SessionModel — server activity + queued messages', () => {
       }),
       cancelQueued,
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
 
@@ -2202,7 +2089,7 @@ describe('SessionModel — server activity + queued messages', () => {
       }),
       cancelQueued,
     } as unknown as VerityClient;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
 
@@ -2228,8 +2115,7 @@ describe('SessionModel — decidePermission (#149)', () => {
         decidePermission,
       } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       onChange: (s) => updates.push(s),
     });
 
@@ -2256,8 +2142,7 @@ describe('SessionModel — decidePermission (#149)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), decidePermission } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       onPermissionSettled,
     });
     model.start();
@@ -2289,8 +2174,7 @@ describe('SessionModel — decidePermission (#149)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), decidePermission } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       onPermissionSettled,
     });
     model.start();
@@ -2322,8 +2206,7 @@ describe('SessionModel — decidePermission (#149)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), decidePermission } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
     model.start();
     await flush();
@@ -2355,8 +2238,7 @@ describe('SessionModel — decidePermission (#149)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), decidePermission } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     const first = model.decidePermission('tu_1', { behavior: 'allow' });
@@ -2376,8 +2258,7 @@ describe('SessionModel — decidePermission (#149)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), decidePermission } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.decidePermission('tu_1', { behavior: 'allow' });
@@ -2397,8 +2278,7 @@ describe('SessionModel — decidePermission (#149)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), decidePermission } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     await model.decidePermission('tu_1', { behavior: 'allow', scope: 'project' });
@@ -2413,8 +2293,7 @@ describe('SessionModel — decidePermission (#149)', () => {
     const model = new SessionModel({
       client: { ...stubClient(), decidePermission } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
     });
 
     decidePermission.mockRejectedValueOnce(new VerityApiError(500, 'boom on the server'));
@@ -2450,8 +2329,7 @@ describe('SessionModel — a session that is still being created', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getHistory, getSession, getActivity } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       ready,
     });
 
@@ -2467,7 +2345,7 @@ describe('SessionModel — a session that is still being created', () => {
 
     created();
     await flush();
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0');
+    expect(sockets[0]?.sinceSeq).toBe(0);
     expect(getSession).toHaveBeenCalled();
     expect(getActivity).toHaveBeenCalled();
     model.stop();
@@ -2480,8 +2358,7 @@ describe('SessionModel — a session that is still being created', () => {
     const model = new SessionModel({
       client: { ...stubClient(), sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       ready,
     });
     model.start();
@@ -2507,8 +2384,7 @@ describe('SessionModel — a session that is still being created', () => {
     const model = new SessionModel({
       client: { ...stubClient(), sendTurn } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       ready,
     });
     model.start();
@@ -2533,8 +2409,7 @@ describe('SessionModel — a session that is still being created', () => {
     const model = new SessionModel({
       client: { ...stubClient(), getActivity } as unknown as VerityClient,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       ready,
     });
 
@@ -2554,8 +2429,7 @@ describe('SessionModel — a session that is still being created', () => {
     const model = new SessionModel({
       client,
       sessionId: 's1',
-      baseUrl: 'http://host',
-      connect,
+      transport: connect,
       ready,
     });
 
@@ -2579,7 +2453,7 @@ it('keeps a session usable after a missing knowledge error', async () => {
     getSession: vi.fn().mockResolvedValue({ resumable: true }),
     sendTurn: vi.fn().mockRejectedValue(new VerityApiError(404, 'Knowledge source not found')),
   } as unknown as VerityClient;
-  const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+  const model = new SessionModel({ client, sessionId: 's1', transport: connect });
   model.start();
   try {
     await vi.waitFor(() => expect(model.state.resumable).toBe(true));
@@ -2617,12 +2491,12 @@ describe('SessionModel — planning', () => {
       client.getActivity = getActivity;
       const decided = action === 'implement' ? 'implemented' : 'discarded';
       client.decidePlanning = vi.fn().mockResolvedValue({ planning: decided });
-      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       try {
         model.start();
         await vi.advanceTimersByTimeAsync(0);
         expect(model.state.planning).toBe('active');
-        await vi.advanceTimersByTimeAsync(1500);
+        await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS);
         expect(getActivity).toHaveBeenCalledTimes(2);
         await model.decidePlanning(action, 7);
         expect(model.state.planning).toBe(decided);
@@ -2630,7 +2504,7 @@ describe('SessionModel — planning', () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(model.state.planning).toBe(decided);
         expect(model.state.planningRevision).toBe(7);
-        await vi.advanceTimersByTimeAsync(1500);
+        await vi.advanceTimersByTimeAsync(DEFAULT_ACTIVITY_POLL_MS);
         expect(model.state.planning).toBe('active');
         expect(model.state.planningRevision).toBe(8);
       } finally {
@@ -2650,7 +2524,7 @@ describe('SessionModel — planning', () => {
       return { planning: 'implemented' as const };
     });
     client.decidePlanning = decidePlanning;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
       model.start();
       await flush();
@@ -2683,7 +2557,7 @@ describe('SessionModel — planning', () => {
       throw new VerityApiError(409, 'plan changed', { code: 'stalePlan' });
     });
     client.decidePlanning = decidePlanning;
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
       model.start();
       await flush();
@@ -2706,7 +2580,7 @@ describe('SessionModel — planning', () => {
     client.decidePlanning = vi.fn(async () => {
       throw new VerityApiError(409, 'this session is not in planning mode');
     });
-    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
       model.start();
       await model.decidePlanning('discard');

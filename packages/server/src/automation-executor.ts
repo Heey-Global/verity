@@ -24,7 +24,8 @@ export interface AutomationScriptResult {
 export type AutomationRunInput = Pick<
   SessionAutomationRecord,
   'id' | 'sessionId' | 'name' | 'prompt' | 'script' | 'model'
->;
+> &
+  Partial<Pick<SessionAutomationRecord, 'sponsorUserId'>>;
 
 export interface AutomationExecutorDeps {
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
@@ -49,6 +50,8 @@ export interface AutomationExecutorDeps {
       model?: string;
       displayPrompt: string;
       validateSession: (session: SessionRecord) => Promise<boolean>;
+      /** The automation's sponsor, who the turn runs for and notifies. */
+      initiatedBy?: { userId: string };
     },
   ): Promise<{ accepted: boolean }>;
   appendNotice(sessionId: string, text: string): Promise<void>;
@@ -170,6 +173,9 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
             acceptedSession.worktree === session.worktree &&
             (await deps.isCurrent?.(automation, acceptedSession)) !== false,
           displayPrompt: `Automation · ${automation.name}\n\n${automation.prompt}`,
+          ...(automation.sponsorUserId
+            ? { initiatedBy: { userId: automation.sponsorUserId } }
+            : {}),
         });
         return accepted
           ? { outcome: 'acted', detail: null }

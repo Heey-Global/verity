@@ -28,6 +28,7 @@ import { ServerUpdateBanner } from '../components/ServerUpdateBanner';
 import { DemoBanner } from '../components/DemoBanner';
 import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
+import { LiveConnectionLifecycle } from '../components/LiveConnectionLifecycle';
 import { WindowControlsProbe } from '../components/WindowControls';
 import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
@@ -183,6 +184,7 @@ function HydratedRoot() {
       }}
     >
       {!isDemoMode() ? <ForegroundUpdateSync /> : null}
+      <LiveConnectionLifecycle />
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <SafeAreaProvider>
           {/*

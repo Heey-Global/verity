@@ -50,7 +50,7 @@ type ExpoActions = Parameters<typeof Notifications.setNotificationCategoryAsync>
  *  destructive approval (`authenticationRequired`) both foregrounds the app and
  *  forces a device unlock so it can never be granted silently from the lock screen
  *  (ADR 0008 §11); every other action runs in the background without a prompt. */
-function toExpoActions(spec: PushCategorySpec): ExpoActions {
+export function toExpoActions(spec: PushCategorySpec): ExpoActions {
   return spec.actions.map((action) => ({
     identifier: action.identifier,
     buttonTitle: action.buttonTitle,

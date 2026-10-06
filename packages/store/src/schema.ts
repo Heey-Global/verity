@@ -663,6 +663,8 @@ export interface QueuedTurnOpts {
   attachments?: Attachment[];
   displayPrompt?: string;
   peer?: { sessionId: string; projectId: string; label: string; message: string };
+  /** The local user the queued turn runs for; stamped on its `prompt` event. */
+  initiatedBy?: { userId: string };
 }
 
 /**
@@ -951,6 +953,8 @@ export interface SessionAutomationsTable {
   last_detail: ColumnType<string | null, string | null | undefined, string | null>;
   /** The scheduler's due-time index. NULL while paused. */
   next_run_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** The local user who confirmed it; its turns run for and notify that user. */
+  sponsor_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }

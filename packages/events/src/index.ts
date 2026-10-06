@@ -139,3 +139,29 @@ export {
 export { selectedOpenCodeModels } from './opencode-model-selection.js';
 
 export { fileOperationRequestSchema } from './file-operations.js';
+
+export {
+  LIVE_ALERT_KINDS,
+  LIVE_ALERT_MAX_CHOICES,
+  LIVE_ENDED_REASONS,
+  LIVE_HINT_TOPICS,
+  LIVE_MAX_SESSION_SUBSCRIPTIONS,
+  LIVE_PING_INTERVAL_MS,
+  LIVE_PONG_TIMEOUT_MS,
+  LIVE_PROTOCOL_VERSION,
+  LIVE_TICKET_PROTOCOL_PREFIX,
+  decodeLiveClientFrame,
+  decodeLiveServerFrame,
+  liveAlertSchema,
+  liveClientFrameSchema,
+  liveHintSchema,
+  liveServerFrameSchema,
+  type LiveAlert,
+  type LiveAlertKind,
+  type LiveClientFrame,
+  type LiveDecodeResult,
+  type LiveEndedReason,
+  type LiveHint,
+  type LiveHintTopic,
+  type LiveServerFrame,
+} from './live.js';

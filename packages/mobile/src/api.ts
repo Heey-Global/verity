@@ -3767,10 +3767,10 @@ export class VerityClient {
     return sessionDetailSchema.parse(await res.json());
   }
 
-  async createStreamTicket(id: string): Promise<StreamTicket> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/stream-ticket`, {
-      method: 'POST',
-    });
+  /** A one-use ticket for the app-wide live connection (`WS /live`), carried as
+   * a WebSocket subprotocol so it never appears in a URL. */
+  async createLiveTicket(): Promise<StreamTicket> {
+    const res = await this.request('/live/ticket', { method: 'POST' });
     return streamTicketSchema.parse(await res.json());
   }
 
