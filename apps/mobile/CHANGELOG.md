@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.54.0](https://github.com/Heey-Global/verity/compare/mobile-v1.53.0...mobile-v1.54.0) (2026-10-06)
+
+
+### Features
+
+* **dev-servers:** control server lifetime with Local and Shared online ([#1186](https://github.com/Heey-Global/verity/issues/1186)) ([3e5f978](https://github.com/Heey-Global/verity/commit/3e5f9785bf9415bca531381142fd91133236fd6f))
+* **dev-servers:** manage session servers from Preview and chat ([#1175](https://github.com/Heey-Global/verity/issues/1175)) ([c8aa031](https://github.com/Heey-Global/verity/commit/c8aa03142ec51b3b454119c334a18ecc7bb186ec))
+* **session:** add persistent planning with synchronized plan approvals ([#1163](https://github.com/Heey-Global/verity/issues/1163)) ([c774e2b](https://github.com/Heey-Global/verity/commit/c774e2b218b5fd54d65e7b436cf7ffa882a14d11))
+* **web:** add local browser client with cookie sessions ([#1183](https://github.com/Heey-Global/verity/issues/1183)) ([29f8e70](https://github.com/Heey-Global/verity/commit/29f8e701df3263fe8ad575903fe87456ea61c4ff))
+
+
+### Bug Fixes
+
+* **mobile:** allow slower interactive OTA update checks ([#1182](https://github.com/Heey-Global/verity/issues/1182)) ([20cfef4](https://github.com/Heey-Global/verity/commit/20cfef453ec8e78dc41795a2dac9f058267b3ebb))
+* **mobile:** attach session row icons to the model name ([#1181](https://github.com/Heey-Global/verity/issues/1181)) ([38c98ea](https://github.com/Heey-Global/verity/commit/38c98ea0331631fc5f6cf5e6720f6542594775e8))
+* **mobile:** even out preview cards and name running servers by state ([#1167](https://github.com/Heey-Global/verity/issues/1167)) ([310848f](https://github.com/Heey-Global/verity/commit/310848f2e209f57c95c683f5cce93bd79208a9f3))
+* **mobile:** keep chat-enabled Google services scoped to the session ([#1171](https://github.com/Heey-Global/verity/issues/1171)) ([7df6fcb](https://github.com/Heey-Global/verity/commit/7df6fcb7676ce21cafcf988e84963e15556a532e))
+* **mobile:** pin session row icons to the row's right edge ([#1166](https://github.com/Heey-Global/verity/issues/1166)) ([17c5a0d](https://github.com/Heey-Global/verity/commit/17c5a0d308b97f156c5fc21363c862de96527dd8))
+* **mobile:** prevent chat scroll jumps with persisted plans ([#1180](https://github.com/Heey-Global/verity/issues/1180)) ([9f7efbc](https://github.com/Heey-Global/verity/commit/9f7efbcec98d0dc02ba281977def2ec8cefc674e))
+* **push:** alert audibly when the agent waits on the operator ([#1200](https://github.com/Heey-Global/verity/issues/1200)) ([58a9b13](https://github.com/Heey-Global/verity/commit/58a9b138929e0c84c85018855185db6d8e74fcfa))
+
 ## [1.53.0](https://github.com/Heey-Global/verity/compare/mobile-v1.52.0...mobile-v1.53.0) (2026-10-05)
 
 
