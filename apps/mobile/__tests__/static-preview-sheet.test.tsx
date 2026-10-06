@@ -96,6 +96,13 @@ function renderSheet(
   );
 }
 
+function enableDetectedOnline() {
+  jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.text === '1 hour')?.onPress?.();
+  });
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -141,19 +148,24 @@ it('opens on static files when no server runs in the session', async () => {
 // Step two shows both accesses as equals. A public link form that already
 // exists must not pre-create anything, and the PIN appears only once the link
 // exists, because a PIN on screen reads as a link that is already out there.
-it('shows both access cards for a picked server and creates the public link on demand', async () => {
+it('shows both access switches for a picked server and creates the public link on demand', async () => {
   const createSessionPortPreviewShare = jest.fn(async () => portShare());
   renderSheet(makeClient({ createSessionPortPreviewShare }));
 
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  expect(await screen.findByLabelText('On your network')).toBeTruthy();
-  expect(screen.getByLabelText('Over the internet')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy();
+  expect(await screen.findByRole('switch', { name: 'Local' })).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Shared online' })).toBeTruthy();
   expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
 
-  fireEvent.press(screen.getByRole('radio', { name: '24 hours' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  act(() =>
+    alert.mock.calls
+      .at(-1)?.[2]
+      ?.find((button) => button.text === '24 hours')
+      ?.onPress?.(),
+  );
   await waitFor(() =>
     expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
       targetPort: 5173,
@@ -162,9 +174,71 @@ it('shows both access cards for a picked server and creates the public link on d
     }),
   );
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
-  expect(screen.getByText('123 456')).toBeTruthy();
+  expect(screen.getByText(/123 456/)).toBeTruthy();
   // Both cards stay on screen: the local one is unaffected by the public link.
-  expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' })).toBeTruthy();
+});
+
+// Detected processes must not keep the legacy row-only overview.
+it('controls detected access directly from the server overview', async () => {
+  const createSessionLocalPreviewShare = jest.fn(async () => localShare);
+  const createSessionPortPreviewShare = jest.fn();
+  renderSheet(makeClient({ createSessionLocalPreviewShare, createSessionPortPreviewShare }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  await waitFor(() =>
+    expect(createSessionLocalPreviewShare).toHaveBeenCalledWith('session-one', {
+      targetPort: 5173,
+    }),
+  );
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
+  expect(
+    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+  ).toBe(false);
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  expect(openLocalPreview).not.toHaveBeenCalled();
+});
+
+// A failed revoke must leave the switch on so access can be retried.
+it('keeps detected Local on when revocation fails without changing Shared online', async () => {
+  const stopLocalPreviewShare = jest.fn(async () => {
+    throw new Error('Could not revoke local access');
+  });
+  const stopPublicPreviewShare = jest.fn();
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+      stopLocalPreviewShare,
+      stopPublicPreviewShare,
+    }),
+    { initialServer: vite },
+  );
+  await screen.findByText('https://vite.example');
+  fireEvent.press(screen.getByRole('switch', { name: 'Local' }));
+  expect(await screen.findByText('Could not revoke local access')).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
+  expect(
+    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+  ).toBe(true);
+  expect(stopPublicPreviewShare).not.toHaveBeenCalled();
+});
+
+it('cancels a detected online link before allocating access', async () => {
+  const createSessionPortPreviewShare = jest.fn();
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  renderSheet(makeClient({ createSessionPortPreviewShare }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  expect(screen.queryByLabelText('On your network')).toBeNull();
+  expect(screen.queryByLabelText('Over the internet')).toBeNull();
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.disabled).toBe(
+    true,
+  );
+  await act(async () => alert.mock.calls.at(-1)?.[3]?.onDismiss?.());
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  expect(
+    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState,
+  ).toMatchObject({ checked: false, disabled: false });
 });
 
 it('shares only the server that was picked from several', async () => {
@@ -182,7 +256,14 @@ it('shares only the server that was picked from several', async () => {
   );
   fireEvent.press(await screen.findByRole('button', { name: 'API on port 3000' }));
   expect(await screen.findByText('API :3000')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  act(() =>
+    alert.mock.calls
+      .at(-1)?.[2]
+      ?.find((button) => button.text === '1 hour')
+      ?.onPress?.(),
+  );
   await waitFor(() =>
     expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
       'session-one',
@@ -202,7 +283,8 @@ it('opens a server on the local network without creating a public link', async (
     onOpenSettings: openSettings,
   });
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Open in browser' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('link', { name: 'Open in browser' }));
   await waitFor(() =>
     expect(createSessionLocalPreviewShare).toHaveBeenCalledWith('session-one', {
       targetPort: 5173,
@@ -216,7 +298,7 @@ it('opens a server on the local network without creating a public link', async (
   );
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   expect(await screen.findByText('http://server:8100/')).toBeTruthy();
-  expect(screen.getByText('On')).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
 });
 
 // The unreachable dialog's "Share publicly" lands directly on a link with the
@@ -230,7 +312,8 @@ it('creates the public link when the unreachable dialog asks to share instead', 
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Open in browser' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('link', { name: 'Open in browser' }));
   await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
   const sharePublicly = (openLocalPreview as jest.Mock).mock.calls[0]?.[2] as () => void;
   act(() => sharePublicly());
@@ -254,10 +337,11 @@ it('copies the local link, creating the local share on first use', async () => {
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
   fireEvent.press(await screen.findByRole('button', { name: 'Copy local link' }));
   await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('http://server:8100/'));
   expect(createSessionLocalPreviewShare).toHaveBeenCalledTimes(1);
-  expect(await screen.findByText('Copied')).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
   // A second copy reuses the share instead of allocating another port.
   fireEvent.press(screen.getByRole('button', { name: 'Copy local link' }));
   await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledTimes(2));
@@ -276,10 +360,10 @@ it('marks a target with an existing local share and lets it be stopped from its 
   expect(await screen.findByText('On network')).toBeTruthy();
   fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
   expect(await screen.findByText('http://server:8100/')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Turn off local access' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Local' }));
   await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith('local-one'));
   await waitFor(() => expect(screen.queryByText('http://server:8100/')).toBeNull());
-  expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' })).toBeTruthy();
 });
 
 // Without entitlement the public card stays visible and explains itself. It
@@ -298,12 +382,12 @@ it('shows the public card as Premium without a create button for a free user', a
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   expect(await screen.findByText('Premium')).toBeTruthy();
-  expect(screen.getByText('Public sharing is part of Verity Premium.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Create link with PIN' })).toBeNull();
   expect(screen.queryByRole('radio', { name: '24 hours' })).toBeNull();
   fireEvent.press(screen.getByRole('button', { name: 'Open Premium settings' }));
   expect(openSettings).toHaveBeenCalledTimes(1);
-  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('link', { name: 'Open in browser' }));
   await waitFor(() => expect(createSessionLocalPreviewShare).toHaveBeenCalledTimes(1));
   expect(openLocalPreview).toHaveBeenCalledWith(
     localShare,
@@ -337,12 +421,12 @@ it('shows the live public link with its PIN on reopen and stops it after confirm
     { initialServer: vite },
   );
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
-  expect(screen.getByText('123 456')).toBeTruthy();
-  expect(screen.getByText(/^Live until/)).toBeTruthy();
+  expect(screen.getByText(/123 456/)).toBeTruthy();
+  expect(screen.getByText(/^until/)).toBeTruthy();
   // The badge already carries the expiry; a second countdown under the card
   // read as a different deadline. One copy control per credential row, too.
   expect(screen.queryByText(/ left$/)).toBeNull();
-  expect(screen.getAllByRole('button', { name: 'Copy preview link' })).toHaveLength(1);
+  expect(screen.getByRole('link', { name: 'Open preview link https://vite.example' })).toBeTruthy();
 
   const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
   fireEvent.press(screen.getByRole('button', { name: 'Share link and PIN' }));
@@ -351,13 +435,16 @@ it('shows the live public link with its PIN on reopen and stops it after confirm
   });
 
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-  fireEvent.press(screen.getByRole('button', { name: 'Stop sharing' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
   expect(stopPublicPreviewShare).not.toHaveBeenCalled();
   const confirm = alert.mock.calls[0]?.[2]?.find((choice) => choice.text === 'Stop sharing');
   act(() => confirm?.onPress?.());
   await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('port-share'));
-  expect(await screen.findByRole('button', { name: 'Create link with PIN' })).toBeTruthy();
-  expect(screen.getByText('Link stopped')).toBeTruthy();
+  await waitFor(() =>
+    expect(
+      screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+    ).toBe(false),
+  );
   expect(screen.queryByText('https://vite.example')).toBeNull();
 });
 
@@ -368,10 +455,10 @@ it('explains a locked PIN and keeps the PIN out of the share action', async () =
     }),
     { initialServer: vite },
   );
-  expect(await screen.findByText(/PIN access locked/)).toBeTruthy();
+  expect(await screen.findByText(/PIN locked/)).toBeTruthy();
   expect(screen.queryByText('123 456')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Share link and PIN' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Copy preview link' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Open preview link https://vite.example' })).toBeTruthy();
 });
 
 // A row badge tells apart "open locally" from "public until" so step one
@@ -672,11 +759,11 @@ it('explains an Uplink internal error and allows retrying', async () => {
     .mockResolvedValueOnce(portShare());
   renderSheet(makeClient({ createSessionPortPreviewShare }));
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
+  enableDetectedOnline();
   expect(
     await screen.findByText('Uplink could not create this link. Please try again later.'),
   ).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
+  enableDetectedOnline();
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
 });
 
@@ -690,12 +777,11 @@ it('shows progress while a public link is being created', async () => {
   );
   renderSheet(makeClient({ createSessionPortPreviewShare }));
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
+  enableDetectedOnline();
   expect(await screen.findByText('Creating link…')).toBeTruthy();
-  expect(screen.getByText(/takes a few seconds/)).toBeTruthy();
-  expect(
-    screen.getByRole('button', { name: 'Open in browser' }).props.accessibilityState.disabled,
-  ).toBe(true);
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.disabled).toBe(
+    true,
+  );
   await act(async () => {
     resolve(portShare());
   });
@@ -708,7 +794,7 @@ it('steps back from the access step and out of nested folders on Android back', 
   const onClose = jest.fn();
   renderSheet(makeClient(), { onClose });
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  expect(await screen.findByLabelText('On your network')).toBeTruthy();
+  expect(await screen.findByRole('switch', { name: 'Local' })).toBeTruthy();
   act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
   expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled();
@@ -737,7 +823,7 @@ it('keeps a newly created link when the share list arrives late without it', asy
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Create link with PIN' }));
+  enableDetectedOnline();
   expect(await screen.findByText('https://vite.example')).toBeTruthy();
   await act(async () => {
     resolveList([]);
@@ -755,7 +841,7 @@ it('keeps a local port access stoppable after its listener disappears', async ()
     }),
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
-  fireEvent.press(await screen.findByRole('button', { name: 'Turn off local access' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
   await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith(localShare.id));
 });
 
@@ -771,7 +857,7 @@ it('reuses the public link when local access is unreachable and both accesses ex
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   await screen.findByText('https://vite.example');
-  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
+  fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
   await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
   const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
   await act(async () => fallback());
@@ -793,7 +879,7 @@ it('replaces a cached local access revoked by Core before opening', async () => 
   );
   await screen.findByText('On network');
   fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
+  fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
   await waitFor(() =>
     expect(openLocalPreview).toHaveBeenCalledWith(
       replacement,
@@ -814,7 +900,7 @@ it('does not share a locked PIN from the unreachable-local fallback', async () =
   );
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   await screen.findByText('https://vite.example');
-  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
+  fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
   await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
   await act(async () => jest.mocked(openLocalPreview).mock.calls[0]![2]());
   expect(share).not.toHaveBeenCalled();
@@ -841,7 +927,7 @@ it('checks the updated PIN lock when a delayed network-dialog action is selected
     );
     fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
     await screen.findByText('https://vite.example');
-    fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
+    fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
     await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
     const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
     await act(async () => {
@@ -960,7 +1046,7 @@ describe('managed dev servers', () => {
   it('shows each server with its state and both accesses, apart from unmanaged listeners', async () => {
     renderSheet(managedClient([demo()]));
     expect(await screen.findByText('Curtis Demo')).toBeTruthy();
-    expect(screen.getByText('Running')).toBeTruthy();
+    expect(screen.getAllByText('Running')).toHaveLength(2);
     expect(screen.getByText('verity.local:8104')).toBeTruthy();
     expect(
       screen.getByRole('switch', { name: 'Local for Curtis Demo' }).props.accessibilityState,

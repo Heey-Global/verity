@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -40,6 +40,21 @@ describe('development listener announcement', () => {
 });
 
 describe('managed dev server commands', () => {
+  // Missing provisioning must not instruct an agent to bypass managed lifetime control.
+  it('reports missing managed capability without recommending a direct start', () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve('agent-seed/bin/verity-dev-server'), 'list'],
+      {
+        env: { ...process.env, VERITY_DEV_SERVER_URL: '', VERITY_PROJECT_MEMORY_URL: '' },
+        encoding: 'utf8',
+      },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('restore the managed server capability');
+    expect(result.stderr).not.toContain('Start the server yourself');
+  });
+
   // `start` returns before the server answers; the command must wait and print
   // the network address, because the agent repeats that line to the operator.
   it('starts, waits for the server, and prints the address with the capability', async () => {
