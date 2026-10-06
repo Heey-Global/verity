@@ -1,3 +1,4 @@
+import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
@@ -2194,6 +2195,10 @@ export async function buildEmbeddedServer(
                     session.projectId ?? CONTROL_PLANE_PROJECT_ID,
                   );
                   if (!project) throw new Error('Project is unavailable');
+                  const containerName =
+                    project.kind === 'control_plane' && config.controlPlaneRunner === true
+                      ? MANAGED_CONTROL_PLANE_RUNNER_NAME
+                      : project.containerName;
                   const readOnly =
                     [
                       'rev-parse',
@@ -2208,15 +2213,12 @@ export async function buildEmbeddedServer(
                       'show-ref',
                     ].includes(args[index + 2] ?? '') ||
                     (args[index + 2] === 'worktree' && args[index + 3] === 'list');
-                  if (
-                    readOnly &&
-                    !(await projectDocker.inspectContainer(project.containerName)).running
-                  ) {
+                  if (readOnly && !(await projectDocker.inspectContainer(containerName)).running) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({
                       docker: projectDocker,
-                      templateContainer: project.containerName,
+                      templateContainer: containerName,
                       projectId: project.id,
                       hostRoot: projectClonePath(config.hostCloneRoot!, project),
                       ...(config.dataVolume
@@ -2228,10 +2230,10 @@ export async function buildEmbeddedServer(
                     })(args);
                   }
                   return createSandboxGit({
-                    containerName: project.containerName,
+                    containerName: containerName,
                     hostRoot: projectClonePath(config.hostCloneRoot!, project),
                     dockerBaseUrl: config.dockerBaseUrl,
-                    inspect: () => projectDocker.inspectContainer(project.containerName),
+                    inspect: () => projectDocker.inspectContainer(containerName),
                   })(args);
                 },
               }
