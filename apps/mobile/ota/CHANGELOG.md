@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.1](https://github.com/Heey-Global/verity/compare/mobile-v1.56.0...mobile-v1.56.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **mobile:** display readable names for all Verity tools ([#1236](https://github.com/Heey-Global/verity/issues/1236)) ([3c59133](https://github.com/Heey-Global/verity/commit/3c591338826d0ba376fab95f5e52ef7c98e6118b))
+
 ## [1.54.3](https://github.com/Heey-Global/verity/compare/mobile-v1.54.2...mobile-v1.54.3) (2026-10-06)
 
 
