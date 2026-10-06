@@ -52,14 +52,14 @@ export const TASKS_TOOL_DESCRIPTION = `Read and update the durable task list ass
 /** Sent with every context, fresh or resumed: when the durable list applies. */
 export const TASKS_SYSTEM_PROMPT = `# Tasks (Verity)
 
-Verity keeps a durable task list per user, shown in the app and edited through \`${TASKS_TOOL}\`; your native checklist stays the plan for the current turn. Record tasks when three or more follow-up steps will not be finished in this turn (audit findings, review results, "later") or when the user asks for a list, each written so a fresh session could do it alone, with file, risk and proposed fix in \`detail\`. Mark a task in_progress when you start it, complete it only after verification with a one-line result, and drop it with a reason instead of leaving it open. Tasks assigned to this session appear under "Assigned tasks" in your context: keep their status current, and end a turn by naming what is still open, offering the next task as a Quick Action.`;
+Verity keeps a durable task list per user, shown in the app and edited through \`${TASKS_TOOL}\`; your native checklist stays the plan for the current turn. Record agreed work in \`verity_tasks\`: accepted audit findings, agreed follow-ups and actionable steps of a user-approved plan, even a single task. Proposals await agreement; saving tasks does not authorize execution. List first to reuse existing tasks. Keep file reads and test commands in the native checklist. Write each task for a fresh session with context in \`detail\`. Mark a task in_progress when you start it, complete it only after verification with a one-line result, and drop it with a reason instead of leaving it open. Tasks assigned to this session appear under "Assigned tasks" in your context: keep their status current, and end a turn by naming what is still open, offering the next task as a Quick Action.`;
 
 /** The compact reminder a resumed context carries on every message: the full
  *  rules above arrived with its fresh context, so only the tool and the status
  *  duty are restated. */
 export const TASKS_RESUME_SYSTEM_PROMPT = `# Tasks (Verity)
 
-Durable tasks live in \`${TASKS_TOOL}\`, separate from your per-turn checklist. Record follow-up work that outlives this turn there, keep the status of tasks listed under "Assigned tasks" current, and end a turn by naming what is still open.`;
+Durable tasks live in \`${TASKS_TOOL}\`, separate from your per-turn checklist. Record agreed work and approved plan steps there; list first to avoid duplicates. Saving is not execution approval. Keep small work steps in the native checklist, keep the status of tasks listed under "Assigned tasks" current, and end a turn by naming what is still open.`;
 
 /** The fields the per-turn prompt needs from a task; the store record is wider. */
 export interface AssignedTaskSummary {
