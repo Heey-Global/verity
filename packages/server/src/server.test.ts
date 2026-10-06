@@ -4008,9 +4008,14 @@ describe('GET /provider-limits', () => {
   });
 });
 
-it('does not expose the retired issues and task-board routes', async () => {
+it('does not expose the retired issues route', async () => {
   expect((await app.inject({ method: 'GET', url: '/issues' })).statusCode).toBe(404);
-  expect((await app.inject({ method: 'GET', url: '/tasks' })).statusCode).toBe(404);
+});
+
+it('serves the durable task list through the full server', async () => {
+  const response = await app.inject({ method: 'GET', url: '/tasks' });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toEqual({ tasks: [] });
 });
 
 describe('GET /projects (#174)', () => {
