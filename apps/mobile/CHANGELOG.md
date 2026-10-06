@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.56.0](https://github.com/Heey-Global/verity/compare/mobile-v1.55.0...mobile-v1.56.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* **mobile:** preserve Shift+Enter in prompt composer ([#1235](https://github.com/Heey-Global/verity/issues/1235)) ([d194c38](https://github.com/Heey-Global/verity/commit/d194c3823b929e78fd3f7060784c9a61cc4eaff2))
+* **preview:** unify detected server controls and require managed starts ([#1237](https://github.com/Heey-Global/verity/issues/1237)) ([98498d1](https://github.com/Heey-Global/verity/commit/98498d17d851cd342a4c8d69fd9796f25be8d838))
+
 ## [1.55.0](https://github.com/Heey-Global/verity/compare/mobile-v1.54.0...mobile-v1.55.0) (2026-10-06)
 
 
