@@ -2428,6 +2428,8 @@ export async function buildEmbeddedServer(
     }
     return sandbox?.user || undefined;
   };
+  // Filled once the managed dev server manager exists, further down.
+  const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
   let previewShareManager: PreviewShareManager | undefined;
   const withPreviewProjectMutation = async <T>(
     projectId: string,
@@ -2481,6 +2483,9 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
+      onShareEnded: (share) => {
+        if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
+      },
       docker: projectDocker,
       resolveConnectorImage: config.publicPreviews.resolveConnectorImage,
       ...(config.dataVolume ? { dataVolume: config.dataVolume } : {}),
@@ -3578,6 +3583,11 @@ export async function buildEmbeddedServer(
         Promise.reject(new Error('sandbox wake is unavailable')),
       log: (message, detail) => managedDevServerLog.current?.(message, detail),
     });
+    const managed = managedDevServerManager;
+    // Fired from a share's teardown; a store error here must not become an
+    // unhandled rejection in the Core.
+    managedLinkEnded.current = (instanceId, shareId) =>
+      void managed.publicLinkEnded(instanceId, shareId).catch(() => undefined);
   }
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised
@@ -5005,6 +5015,9 @@ export async function buildEmbeddedServer(
         const swept = await sweepOrphanedPreviewShares({
           store: eventStore,
           docker: projectDocker,
+          onShareEnded: ({ managedInstanceId, id }) => {
+            if (managedInstanceId) managedLinkEnded.current?.(managedInstanceId, id);
+          },
         });
         if (swept > 0) {
           app.log.warn({ swept }, 'revoked orphaned public preview shares');

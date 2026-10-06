@@ -91,6 +91,9 @@ export interface ManagedInstanceView {
   sandboxPort: number;
   /** True while running without the operator's approval for local publishing. */
   awaitingApproval: boolean;
+  /** The Local switch: on while the operator wants it published on the network. A
+   *  crash keeps it as it was; an unapproved command never reads as on. */
+  localOn: boolean;
   /** The running command differs from the entry's current one. */
   restartToApply: boolean;
   startedAt: string | null;
@@ -102,6 +105,9 @@ export interface ManagedServerView {
   command: string;
   workdir: string;
   approved: boolean;
+  /** This Core has the Local and Shared online switches (`/local`, `local` on
+   *  start and approve). Lets newer apps fall back on older Cores. */
+  accessSwitches: true;
   /** This session's instance, if the entry ever ran here. */
   instance: ManagedInstanceView | null;
   /** Running or starting instances in other sessions of the project. */
@@ -149,6 +155,8 @@ export class ManagedDevServerManager {
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
   private activeProjects = new Set<string>();
+  private readonly pendingLinkEnds = new Map<string, string | undefined>();
+  private readonly pendingUnpublish = new Map<string, ManagedDevServerInstanceRecord>();
   private closed = false;
 
   constructor(private readonly options: ManagedDevServerManagerOptions) {
@@ -256,6 +264,7 @@ export class ManagedDevServerManager {
         command: entry.command,
         workdir: entry.workdir,
         approved: entry.approved,
+        accessSwitches: true as const,
         instance: own ? this.instanceView(entry, own) : null,
         elsewhere: instances
           .filter(
@@ -289,6 +298,10 @@ export class ManagedDevServerManager {
       sandboxPort: instance.sandboxPort,
       awaitingApproval:
         instance.state === 'running' && url === null && !this.ranApproved(entry, instance),
+      localOn:
+        instance.localAccess &&
+        this.ranApproved(entry, instance) &&
+        (instance.desired === 'running' || instance.state === 'crashed'),
       restartToApply:
         (instance.state === 'running' || instance.state === 'starting') &&
         (instance.lastRunCommand !== entry.command || instance.lastRunWorkdir !== entry.workdir),
@@ -346,17 +359,35 @@ export class ManagedDevServerManager {
     sessionId: string,
     idOrName: string,
     seen: { command: string; workdir: string },
+    options: { local?: boolean | undefined } = {},
   ): Promise<ManagedServerView[]> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
-    const approved = await this.servers.approve(entry.id, seen);
-    if (!approved)
-      throw new ManagedDevServerError(
-        'The command changed in the meantime. Review it again before approving.',
-        409,
-      );
     await this.locked(project.id, async () => {
-      const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      const approved = await this.servers.approve(entry.id, seen);
+      if (!approved)
+        throw new ManagedDevServerError(
+          'The command changed in the meantime. Review it again before approving.',
+          409,
+        );
+      let instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      // Approved from Shared online: the operator agreed to a public link, not
+      // to opening the server on the network.
+      if (instance && options.local === false) {
+        instance =
+          (await this.servers.updateInstance(instance.id, {
+            localAccess: false,
+            accessStartedAt: new Date(this.now()),
+          })) ?? instance;
+        // Still published from an earlier approved run: that address goes too.
+        try {
+          await this.unpublish(instance);
+        } catch (error) {
+          if (!(await this.hasLivePublicLink(instance)))
+            await this.stopInstance(project, instance, null);
+          throw error;
+        }
+      }
       if (instance?.state === 'running') await this.publish(project, approved, instance);
     });
     return this.view(sessionId);
@@ -376,7 +407,19 @@ export class ManagedDevServerManager {
 
   // ---- lifecycle --------------------------------------------------------
 
-  async start(sessionId: string, idOrName: string, by: StartedBy): Promise<ManagedServerView> {
+  /**
+   * `local` is the operator's Local switch for this start: true from the Local
+   * switch, false when Shared online starts the server alone. Absent, a running
+   * instance keeps what it had; an agent start of a stopped one without a live
+   * public link turns Local on, so no server runs with no access left and
+   * nothing to stop it.
+   */
+  async start(
+    sessionId: string,
+    idOrName: string,
+    by: StartedBy,
+    options: { local?: boolean | undefined } = {},
+  ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
     const entry = await this.entry(context.project.id, idOrName);
     if (by === 'operator') {
@@ -385,8 +428,98 @@ export class ManagedDevServerManager {
       if (!entry.approved)
         throw new ManagedDevServerError('Review and approve the command first', 409);
     }
-    await this.locked(context.project.id, () => this.startEntry(context, entry, by));
+    await this.locked(context.project.id, () => this.startEntry(context, entry, by, options.local));
     return this.viewOf(sessionId, entry.id);
+  }
+
+  /**
+   * The Local switch. On starts the server if needed and publishes it; off ends
+   * local access and, when no public link is left either, stops the server.
+   */
+  async setLocal(sessionId: string, idOrName: string, on: boolean): Promise<ManagedServerView> {
+    const context = await this.context(sessionId);
+    const { project } = context;
+    const entry = await this.entry(project.id, idOrName);
+    if (on && !entry.approved)
+      throw new ManagedDevServerError('Review and approve the command first', 409);
+    await this.locked(project.id, async () => {
+      const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      if (on) {
+        // Only a live process of the approved command gets the flag; anything
+        // else starts, crashed included, and an older command restarts.
+        if (
+          instance &&
+          !this.ranApproved(entry, instance) &&
+          (instance.state === 'running' || instance.state === 'starting')
+        )
+          await this.stopInstance(project, instance, null);
+        else if (instance && (instance.state === 'running' || instance.state === 'starting')) {
+          const updated = await this.servers.updateInstance(instance.id, { localAccess: true });
+          if (updated?.state === 'running') await this.publish(project, entry, updated);
+          return;
+        }
+        await this.startEntry(context, entry, 'operator', true);
+        return;
+      }
+      if (!instance) return;
+      await this.servers.updateInstance(instance.id, { localAccess: false });
+      if (!(await this.hasLivePublicLink(instance))) {
+        // Persist stop intent before attempting edge cleanup: a Core restart
+        // must not forget that switching off the last access stopped this run.
+        await this.stopInstance(project, instance, null);
+      } else {
+        await this.unpublish(instance);
+        this.refreshQuietly(project);
+      }
+      this.pendingLinkEnds.delete(instance.id);
+    });
+    return this.viewOf(sessionId, entry.id);
+  }
+
+  /**
+   * A public link of a managed instance ended: stopped by the operator, expired,
+   * or removed by the Uplink. With Local off nothing is left that anyone can
+   * open, so the server stops instead of running unnoticed.
+   */
+  async publicLinkEnded(instanceId: string, shareId?: string): Promise<void> {
+    this.pendingLinkEnds.set(instanceId, shareId);
+    try {
+      const instance = await this.servers.getInstance(instanceId);
+      if (instance && !instance.localAccess && instance.desired === 'running') {
+        const project = await this.options.store.getProject(instance.projectId);
+        if (project)
+          await this.locked(project.id, async () => {
+            const current = await this.servers.getInstance(instanceId);
+            if (!current || current.localAccess || current.desired !== 'running') return;
+            if (shareId) {
+              const ended = await this.options.store.getPublicPreviewShare(shareId);
+              if (
+                !ended ||
+                ((current.accessStartedAt ?? current.startedAt) &&
+                  (ended.revokedAt ?? ended.updatedAt).getTime() <
+                    (current.accessStartedAt ?? current.startedAt)!.getTime())
+              )
+                return;
+            }
+            if (await this.hasLivePublicLink(current)) return;
+            await this.stopInstance(project, current, null);
+          });
+      }
+      this.pendingLinkEnds.delete(instanceId);
+    } catch {
+      // The link is already terminal; supervision must retry its cleanup.
+    }
+  }
+
+  private async hasLivePublicLink(instance: ManagedDevServerInstanceRecord): Promise<boolean> {
+    const shares = await this.options.store.listPublicPreviewShares(instance.projectId);
+    const now = this.now();
+    return shares.some(
+      (share) =>
+        share.managedInstanceId === instance.id &&
+        (share.state === 'creating' || share.state === 'active') &&
+        share.expiresAt.getTime() > now,
+    );
   }
 
   async restart(sessionId: string, idOrName: string, by: StartedBy): Promise<ManagedServerView> {
@@ -398,16 +531,31 @@ export class ManagedDevServerManager {
     await this.locked(context.project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       if (instance) await this.stopInstance(context.project, instance, null);
-      await this.startEntry(context, entry, by);
+      // Restart keeps the switches; with both off it turns Local on.
+      const local =
+        instance && !instance.localAccess && (await this.hasLivePublicLink(instance))
+          ? undefined
+          : true;
+      await this.startEntry(context, entry, by, by === 'operator' ? local : undefined);
     });
     return this.viewOf(sessionId, entry.id);
   }
 
-  async stop(sessionId: string, idOrName: string): Promise<ManagedServerView> {
+  async stop(
+    sessionId: string,
+    idOrName: string,
+    options: { onlyIfUnshared?: boolean | undefined } = {},
+  ): Promise<ManagedServerView> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
     await this.locked(project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+      if (
+        instance &&
+        options.onlyIfUnshared &&
+        (instance.localAccess || (await this.hasLivePublicLink(instance)))
+      )
+        return;
       if (instance) await this.stopInstance(project, instance, null);
     });
     return this.viewOf(sessionId, entry.id);
@@ -470,6 +618,7 @@ export class ManagedDevServerManager {
     context: SessionContext,
     entry: ManagedDevServerRecord,
     by: StartedBy,
+    local?: boolean,
   ): Promise<void> {
     const { project, sessionId } = context;
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
@@ -480,13 +629,20 @@ export class ManagedDevServerManager {
         sessionId,
         sandboxPorts: MANAGED_SANDBOX_PORTS,
       });
+      const access =
+        local ?? (by === 'agent' && !(await this.hasLivePublicLink(instance)) ? true : undefined);
       await this.servers.updateInstance(instance.id, {
+        ...(access !== undefined ? { localAccess: access } : {}),
         desired: 'running',
         state: 'starting',
         detail: WAKING_DETAIL,
         lastRunCommand: entry.command,
         lastRunWorkdir: entry.workdir,
         startedAt: new Date(this.now()),
+        accessStartedAt:
+          by === 'recovery'
+            ? (instance.accessStartedAt ?? instance.startedAt ?? new Date(this.now()))
+            : new Date(this.now()),
       });
       this.activeProjects.add(project.id);
       void this.options
@@ -511,16 +667,40 @@ export class ManagedDevServerManager {
       sandboxPorts: MANAGED_SANDBOX_PORTS,
       avoid: busy,
     });
+    if (local !== undefined && instance.localAccess !== local)
+      instance =
+        (await this.servers.updateInstance(instance.id, { localAccess: local })) ?? instance;
+    if (by === 'operator') {
+      this.pendingLinkEnds.delete(instance.id);
+      if (local === false)
+        instance =
+          (await this.servers.updateInstance(instance.id, {
+            accessStartedAt: new Date(this.now()),
+          })) ?? instance;
+    }
+    if (local === false) await this.unpublish(instance);
     const status = await this.options.runtime
       .managedServerStatus(project, instance.id)
       .catch(() => ({ alive: false, exitCode: null }));
-    if (status.alive && (instance.state === 'running' || instance.state === 'starting')) {
+    if (
+      status.alive &&
+      (instance.state === 'running' || instance.state === 'starting') &&
+      (by !== 'operator' || this.ranApproved(entry, instance))
+    ) {
       // Already up after a wake: drop the marker so supervision stops relaunching.
       if (instance.detail === WAKING_DETAIL)
         await this.servers.updateInstance(instance.id, { detail: null });
       this.activeProjects.add(project.id);
       return;
     }
+    if (
+      local === undefined &&
+      by === 'agent' &&
+      !instance.localAccess &&
+      !(await this.hasLivePublicLink(instance))
+    )
+      instance =
+        (await this.servers.updateInstance(instance.id, { localAccess: true })) ?? instance;
     if (status.alive) await this.options.runtime.stopManagedServer(project, instance.id);
     const holder = processes.find((process) => process.port === instance.sandboxPort);
     if (holder && holder.instanceId !== instance.id) {
@@ -560,6 +740,8 @@ export class ManagedDevServerManager {
       lastRunCommand: command,
       lastRunWorkdir: workdir,
       startedAt: now,
+      accessStartedAt:
+        by === 'recovery' ? (instance.accessStartedAt ?? instance.startedAt ?? now) : now,
       lastRanAt: now,
     });
     this.options.log?.('verity: managed dev server starting', {
@@ -598,14 +780,19 @@ export class ManagedDevServerManager {
     detail: string | null,
   ): Promise<void> {
     await this.servers.updateInstance(instance.id, { desired: 'stopped' });
-    await this.unpublish(instance);
-    if (project.state === 'active' && project.containerName)
-      await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
-    await this.servers.updateInstance(instance.id, {
-      state: 'stopped',
-      detail,
-      ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
-    });
+    try {
+      await this.unpublish(instance);
+    } finally {
+      // Edge cleanup must not prevent the server process from being stopped.
+      if (project.state === 'active' && project.containerName)
+        await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
+      await this.servers.updateInstance(instance.id, {
+        state: 'stopped',
+        detail,
+        ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
+      });
+    }
+
     this.refreshQuietly(project);
   }
 
@@ -617,7 +804,7 @@ export class ManagedDevServerManager {
     instance: ManagedDevServerInstanceRecord,
   ): Promise<void> {
     const local = this.options.localShares;
-    if (!local) return;
+    if (!local || !instance.localAccess) return;
     if (
       !instance.lastRunCommand ||
       !instance.lastRunWorkdir ||
@@ -687,8 +874,14 @@ export class ManagedDevServerManager {
   }
 
   private async unpublish(instance: ManagedDevServerInstanceRecord): Promise<void> {
-    const share = this.shareFor(instance);
-    if (share) await this.options.localShares?.stop(share.id).catch(() => false);
+    try {
+      const share = this.shareFor(instance);
+      if (share) await this.options.localShares?.stop(share.id);
+      this.pendingUnpublish.delete(instance.id);
+    } catch (error) {
+      this.pendingUnpublish.set(instance.id, instance);
+      throw error;
+    }
   }
 
   /**
@@ -727,6 +920,17 @@ export class ManagedDevServerManager {
   }
 
   private async supervise(): Promise<void> {
+    for (const instance of this.pendingUnpublish.values()) {
+      await this.locked(instance.projectId, async () => {
+        const current = await this.servers.getInstance(instance.id);
+        if (current?.localAccess && current.desired === 'running') {
+          this.pendingUnpublish.delete(instance.id);
+          return;
+        }
+        await this.unpublish(current ?? instance);
+      }).catch(() => undefined);
+    }
+    for (const [id, shareId] of this.pendingLinkEnds) await this.publicLinkEnded(id, shareId);
     let instances: ManagedDevServerInstanceRecord[];
     try {
       instances = await this.servers.listInstances({ desired: 'running' });
@@ -761,6 +965,31 @@ export class ManagedDevServerManager {
       // Re-read under the project lock: a stop since the pass began wins.
       const instance = await this.servers.getInstance(snapshot.id);
       if (!instance || instance.desired !== 'running') continue;
+      if (!instance.localAccess) {
+        await this.unpublish(instance).catch(() => undefined);
+        const links = await this.options.store.listPublicPreviewShares(projectId);
+        const live = links.some(
+          (link) =>
+            link.managedInstanceId === instance.id &&
+            (link.state === 'active' || link.state === 'creating') &&
+            link.expiresAt.getTime() > this.now(),
+        );
+        // Terminal link data survives a Core restart that lost its cleanup queue.
+        // Older links must not cancel a new start waiting for its share creation.
+        const ended = links.some(
+          (link) =>
+            link.managedInstanceId === instance.id &&
+            (link.state === 'revoked' || link.state === 'expired' || link.state === 'failed') &&
+            (instance.accessStartedAt ?? instance.startedAt) &&
+            (link.revokedAt ?? link.updatedAt).getTime() >
+              (instance.accessStartedAt ?? instance.startedAt)!.getTime(),
+        );
+        if (!live && ended) {
+          await this.stopInstance(project, instance, null);
+          changed = true;
+          continue;
+        }
+      }
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
       if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {
@@ -807,7 +1036,7 @@ export class ManagedDevServerManager {
         );
         if (recent.length >= 3) {
           this.recoveries.delete(instance.id);
-          await this.unpublish(instance);
+          await this.unpublish(instance).catch(() => undefined);
           await this.servers.updateInstance(instance.id, {
             desired: 'stopped',
             state: 'crashed',
@@ -851,7 +1080,7 @@ export class ManagedDevServerManager {
           : elsewhere
             ? `Did not answer on its port: it listens on ${String(elsewhere.port)} instead. Use $PORT or {port} in the command.`
             : 'Did not answer on its port within 60 seconds';
-      await this.unpublish(instance);
+      await this.unpublish(instance).catch(() => undefined);
       if (status.alive)
         await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
       await this.servers.updateInstance(instance.id, {

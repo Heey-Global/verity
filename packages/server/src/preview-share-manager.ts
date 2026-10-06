@@ -123,6 +123,9 @@ export interface PreviewShareManagerOptions {
    * round trip, the connector start and the wait for its edge connection all
    * sit behind the same spinner. */
   log?: Pick<Console, 'info' | 'warn'>;
+  /** Called once a share has ended, revoked or expired. Managed dev servers stop
+   *  when their last access ends (concept 2.6). */
+  onShareEnded?: (share: { id: string; managedInstanceId: string | null }) => void;
 }
 
 /** Records the milliseconds spent in each named step, in the order they ran. */
@@ -659,6 +662,7 @@ export class PreviewShareManager {
         if (recovery) {
           await this.options.store.transitionPublicPreviewShare(shareId, ['creating'], 'revoking', {
             failure: safeFailure(error),
+            revokedAt: this.now(),
           });
         }
         throw new AggregateError(
@@ -781,7 +785,7 @@ export class PreviewShareManager {
           shareId,
           becameActive ? ['active'] : ['creating'],
           'revoking',
-          { failure: safeFailure(error) },
+          { failure: safeFailure(error), revokedAt: this.now() },
         );
         throw new AggregateError(
           [error, ...cleanupFailures],
@@ -926,7 +930,7 @@ export class PreviewShareManager {
             share.id,
             ['creating', 'active'],
             'revoking',
-            { failure: reason },
+            { failure: reason, revokedAt: this.now() },
           );
           const current = claimed ?? (await this.options.store.getPublicPreviewShare(share.id));
           if (!current || current.state !== 'revoking') return;
@@ -941,10 +945,11 @@ export class PreviewShareManager {
             'revoked',
             {
               connectorContainerId: null,
-              revokedAt: this.now(),
+              revokedAt: current.revokedAt ?? current.updatedAt,
               failure: current.failure,
             },
           );
+          this.notifyEnded(current);
         }),
     );
     const rejected: unknown[] = [];
@@ -964,6 +969,7 @@ export class PreviewShareManager {
       id,
       ['creating', 'active'],
       'revoking',
+      { revokedAt: this.now() },
     );
     const current = claimed ?? (await this.options.store.getPublicPreviewShare(id));
     if (!current || current.state === 'revoked' || current.state === 'expired') return true;
@@ -1010,9 +1016,21 @@ export class PreviewShareManager {
       current.expiresAt.getTime() <= this.now().getTime() ? 'expired' : terminal;
     await this.options.store.transitionPublicPreviewShare(id, ['revoking'], resolvedTerminal, {
       connectorContainerId: null,
-      revokedAt: this.now(),
+      revokedAt: current.revokedAt ?? current.updatedAt,
     });
+    this.notifyEnded(current);
     return true;
+  }
+
+  private notifyEnded(share: { id: string; managedInstanceId?: string | null | undefined }) {
+    try {
+      this.options.onShareEnded?.({
+        id: share.id,
+        managedInstanceId: share.managedInstanceId ?? null,
+      });
+    } catch {
+      /* A listener must not turn a completed revocation into a failure. */
+    }
   }
 
   /** The Uplink has authoritatively expired and removed the public edge. Only
@@ -1024,6 +1042,7 @@ export class PreviewShareManager {
       id,
       ['creating', 'active'],
       'revoking',
+      { revokedAt: this.now() },
     );
     const current = claimed ?? (await this.options.store.getPublicPreviewShare(id));
     if (!current || current.state !== 'revoking') return;
@@ -1034,8 +1053,9 @@ export class PreviewShareManager {
     );
     await this.options.store.transitionPublicPreviewShare(id, ['revoking'], 'expired', {
       connectorContainerId: null,
-      revokedAt: this.now(),
+      revokedAt: current.revokedAt ?? current.updatedAt,
     });
+    this.notifyEnded(current);
   }
 
   /** Startup/periodic convergence: TTL, missing or replaced sandboxes, and
@@ -1460,6 +1480,7 @@ export async function sweepOrphanedPreviewShares(options: {
   store: EventStore;
   docker: DockerClient;
   now?: () => Date;
+  onShareEnded?: PreviewShareManagerOptions['onShareEnded'];
 }): Promise<number> {
   const now = options.now ?? (() => new Date());
   const shares = await options.store.listPublicPreviewShares();
@@ -1474,8 +1495,16 @@ export async function sweepOrphanedPreviewShares(options: {
       );
       await options.store.transitionPublicPreviewShare(share.id, ACTIVE_STATES, 'revoked', {
         connectorContainerId: null,
-        revokedAt: now(),
+        revokedAt: share.revokedAt ?? now(),
       });
+      try {
+        options.onShareEnded?.({
+          id: share.id,
+          managedInstanceId: share.managedInstanceId ?? null,
+        });
+      } catch {
+        /* Cleanup remains complete if a listener fails. */
+      }
       swept += 1;
     } catch (error) {
       // One unreachable container must not strand the remaining records.
