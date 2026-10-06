@@ -1,9 +1,11 @@
 import { captureJson } from './capture-json.mjs';
 import { promotionChangelog, type PromotionRelease } from './promotion-changelog.mjs';
-import { createPrivateKey, sign } from 'node:crypto';
+import { createHash, createPrivateKey, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, createWriteStream, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 
 export interface ServerPromotion {
   schema: 1;
@@ -375,12 +377,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 
 export interface NativePromotion {
-  schema: 1;
+  schema: 1 | 2;
+  artifact?: { id: number; sha256: string };
   product: 'mobile-native';
   version: string;
   source: string;
   appId: string;
-  buildId: string;
+  buildId?: string;
   buildNumber: string;
   releasePr: number;
 }
@@ -388,12 +391,16 @@ export function validateNativePromotion(value: unknown): NativePromotion {
   const candidate = value as NativePromotion;
   if (
     !candidate ||
-    candidate.schema !== 1 ||
+    ![1, 2].includes(candidate.schema) ||
     candidate.product !== 'mobile-native' ||
     !/^\d+\.\d+\.0$/.test(candidate.version) ||
     !/^[a-f0-9]{40}$/.test(candidate.source) ||
     !/^\d+$/.test(candidate.appId) ||
-    !/^[a-zA-Z0-9-]+$/.test(candidate.buildId) ||
+    (candidate.schema === 1
+      ? !/^[a-zA-Z0-9-]+$/.test(candidate.buildId ?? '')
+      : !Number.isSafeInteger(candidate.artifact?.id) ||
+        (candidate.artifact?.id ?? 0) < 1 ||
+        !/^[a-f0-9]{64}$/.test(candidate.artifact?.sha256 ?? '')) ||
     !/^\d+$/.test(candidate.buildNumber) ||
     !Number.isSafeInteger(candidate.releasePr) ||
     candidate.releasePr < 1
@@ -440,6 +447,62 @@ export function assertTestFlightReady(state: string): void {
   if (state !== 'IN_BETA_TESTING')
     throw new Error(`Approved build is not available for internal TestFlight testing (${state})`);
 }
+async function uploadApprovedBinary(candidate: NativePromotion): Promise<string> {
+  const artifact = candidate.artifact!;
+  const metadata = api<{ expired: boolean; archive_download_url: string }>(
+    `repos/${repo()}/actions/artifacts/${artifact.id}`,
+  );
+  if (metadata.expired)
+    throw new Error('Approved binary expired; prepare and approve a new candidate');
+  const root = mkdtempSync(`${process.env.RUNNER_TEMP ?? '/tmp'}/approved-native-`);
+  const response = await fetch(metadata.archive_download_url, {
+    headers: { Authorization: `Bearer ${process.env.GH_TOKEN}` },
+  });
+  if (!response.ok || !response.body) throw new Error('Cannot download approved binary');
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(`${root}/archive.zip`));
+  run('ditto', '-x', '-k', `${root}/archive.zip`, root);
+  const ipa = `${root}/Verity.ipa`;
+  if (createHash('sha256').update(readFileSync(ipa)).digest('hex') !== artifact.sha256)
+    throw new Error('Stored binary differs from approved digest');
+  const keyDirectory = `${process.env.HOME}/.appstoreconnect/private_keys`;
+  mkdirSync(keyDirectory, { recursive: true });
+  writeFileSync(`${keyDirectory}/AuthKey_${process.env.ASC_KEY_ID}.p8`, process.env.ASC_KEY_P8!, {
+    mode: 0o600,
+  });
+  const existing = (
+    await apple(
+      `builds?filter[app]=${candidate.appId}&filter[version]=${candidate.buildNumber}&filter[preReleaseVersion.version]=${candidate.version}`,
+    )
+  ).data as { id: string }[];
+  if (existing.length > 1) throw new Error('Multiple builds match approved binary');
+  if (existing.length === 0)
+    run(
+      'xcrun',
+      'altool',
+      '--upload-app',
+      '--type',
+      'ios',
+      '--file',
+      ipa,
+      '--apiKey',
+      process.env.ASC_KEY_ID!,
+      '--apiIssuer',
+      process.env.ASC_ISSUER_ID!,
+    );
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const result = await apple(
+      `builds?filter[app]=${candidate.appId}&filter[version]=${candidate.buildNumber}&filter[preReleaseVersion.version]=${candidate.version}`,
+    );
+    const builds = result.data as { id: string; attributes: { processingState: string } }[];
+    if (builds.length > 1) throw new Error('Multiple builds match approved binary');
+    const build = builds[0];
+    if (build?.attributes.processingState === 'VALID') return build.id;
+    if (build && ['FAILED', 'INVALID'].includes(build.attributes.processingState))
+      throw new Error('Apple rejected approved binary');
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
+  }
+  throw new Error('Apple processing timed out');
+}
 export async function promoteNative() {
   const path = 'releases/mobile-production.json';
   const candidate = validateNativePromotion(JSON.parse(readFileSync(path, 'utf8')));
@@ -450,7 +513,9 @@ export async function promoteNative() {
   const app = (await apple(`apps/${candidate.appId}`)).data as { attributes: { bundleId: string } };
   if (app.attributes.bundleId !== 'build.verity.app')
     throw new Error('Production app bundle identity differs');
-  const build = (await apple(`builds/${candidate.buildId}`)).data as {
+  const buildId =
+    candidate.schema === 2 ? await uploadApprovedBinary(candidate) : candidate.buildId!;
+  const build = (await apple(`builds/${buildId}`)).data as {
     attributes: { version: string; processingState: string };
   };
   if (
@@ -458,8 +523,8 @@ export async function promoteNative() {
     build.attributes.processingState !== 'VALID'
   )
     throw new Error('Approved native build is not valid');
-  const buildApp = (await apple(`builds/${candidate.buildId}/app`)).data as { id: string };
-  const runtime = (await apple(`builds/${candidate.buildId}/preReleaseVersion`)).data as {
+  const buildApp = (await apple(`builds/${buildId}/app`)).data as { id: string };
+  const runtime = (await apple(`builds/${buildId}/preReleaseVersion`)).data as {
     attributes: { version: string; platform: string };
   };
   if (
@@ -470,10 +535,21 @@ export async function promoteNative() {
     throw new Error('Approved build belongs to a different app or runtime');
   // Uploading to TestFlight already distributes builds according to Apple's group settings.
   // Promotion must not create an App Store version or submit the app for review.
-  const details = (await apple(`builds/${candidate.buildId}/buildBetaDetail`)).data as {
-    attributes: { internalBuildState: string };
-  };
-  assertTestFlightReady(details.attributes.internalBuildState);
+  for (let attempt = 0; ; attempt++) {
+    const details = (await apple(`builds/${buildId}/buildBetaDetail`)).data as {
+      attributes: { internalBuildState: string };
+    };
+    const state = details.attributes.internalBuildState;
+    if (state === 'IN_BETA_TESTING') break;
+    // Apple can finish binary processing before internal TestFlight distribution.
+    if (
+      candidate.schema !== 2 ||
+      attempt >= 59 ||
+      !['PROCESSING', 'READY_FOR_BETA_TESTING'].includes(state)
+    )
+      assertTestFlightReady(state);
+    await new Promise((resolve) => setTimeout(resolve, 15_000));
+  }
   gh('release', 'edit', `mobile-v${candidate.version}`, '--prerelease=false', '--latest=false');
 }
 function assertReviewed(path: string, expectedBranch: string, candidate: unknown) {

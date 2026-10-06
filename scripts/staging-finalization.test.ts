@@ -115,20 +115,23 @@ describe('Staging finalization retries', () => {
         ?.run,
     ).toContain('VERITY_RELEASE_REVISION="$REVISION"');
   });
-  it('records native evidence and approval before clearing the draft-only retry boundary', () => {
+  it('publishes staging with only its own verified evidence', () => {
     const steps = workflow.jobs['finalize-mobile-staging']!.steps;
-    const approval = steps.findIndex((step) => step.name === 'Open native production approval');
+    const evidence = steps.findIndex((step) => step.name === 'Record verified staging build');
     const publication = steps.findIndex(
       (step) => step.name === 'Publish verified native GitHub release',
     );
-    expect(approval).toBeGreaterThanOrEqual(0);
-    expect(publication).toBeGreaterThan(approval);
-    expect(steps[approval]?.run).toContain('gh release upload');
-    expect(steps[approval]?.run).toContain('production-promotion.ts propose');
+    expect(evidence).toBeGreaterThanOrEqual(0);
+    expect(publication).toBeGreaterThan(evidence);
+    expect(steps[evidence]?.run).toContain('native-staging.json');
+    expect(steps[evidence]?.run).not.toContain('native-production.json');
     expect(publication).toBe(steps.length - 1);
   });
   it('reuses recorded native evidence after a new build on recovery', () => {
-    const approval = workflow.jobs['finalize-mobile-staging']!.steps.find(
+    const production = parse(
+      readFileSync('.github/workflows/mobile-production-build.yml', 'utf8'),
+    ) as typeof workflow;
+    const approval = production.jobs['finalize-mobile-production']!.steps.find(
       (step) => step.name === 'Open native production approval',
     )!.run!;
     const recovery = approval.slice(
