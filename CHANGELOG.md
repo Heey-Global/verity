@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.16.2](https://github.com/Heey-Global/verity/compare/v4.16.1...v4.16.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **sessions:** restore shared project containers and session worktrees ([#1211](https://github.com/Heey-Global/verity/issues/1211)) ([b4ba92b](https://github.com/Heey-Global/verity/commit/b4ba92b2dacb1e0a4179067b08fe4e643d001319))
+
 ## [4.16.1](https://github.com/Heey-Global/verity/compare/v4.16.0...v4.16.1) (2026-10-06)
 
 
