@@ -203,3 +203,17 @@ it('retries cleanup after both provisioning and Docker removal fail', async () =
   expect(docker.removeContainer).toHaveBeenCalledTimes(2);
   expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
 });
+
+it('continues reconciliation after a session inspection failure', async () => {
+  const { manager, options, docker } = fixture();
+  const first = await manager.create('s1', { targetPort: 3000 });
+  const expired = await manager.create('s2', { targetPort: 4000 });
+  expired.expiresAt = new Date(Date.now() - 1);
+  options.resolveSessionProject = async () => {
+    throw new Error('Docker temporarily unavailable');
+  };
+  await expect(manager.reconcile()).resolves.toBeUndefined();
+  expect(manager.list('s1').map((share) => share.id)).toContain(first.id);
+  expect(manager.list('s2')).toEqual([]);
+  expect(docker.removeContainer).toHaveBeenCalled();
+});

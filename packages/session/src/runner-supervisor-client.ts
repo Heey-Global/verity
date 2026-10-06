@@ -2193,6 +2193,8 @@ export async function requestRunnerSupervisorStart(
 
 export interface SupervisorRunnerRecoveryOptions {
   dataVolumeRoot: string;
+  resolveSessionRuntime?:
+    ((sessionId: string, projectId: string) => string | Promise<string>) | undefined;
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   controlPlaneProjectId?: string | undefined;
   timeoutMs?: number;
@@ -2216,7 +2218,10 @@ export class SupervisorRunnerRecovery implements RunnerRecovery {
       if (session === undefined || projectId === undefined || !SAFE_ID.test(projectId)) {
         return { status: 'uncertain' };
       }
-      const runtime = join(this.options.dataVolumeRoot, 'runners', projectId);
+      const runtime =
+        this.options.resolveSessionRuntime === undefined
+          ? join(this.options.dataVolumeRoot, 'runners', projectId)
+          : await this.options.resolveSessionRuntime(marker.sessionId, projectId);
       const runtimeStats = await lstat(runtime);
       if (!runtimeStats.isDirectory() || runtimeStats.isSymbolicLink()) {
         return { status: 'uncertain' };

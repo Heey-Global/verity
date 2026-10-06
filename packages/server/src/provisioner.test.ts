@@ -572,7 +572,9 @@ describe('ProvisionerImpl (#174)', () => {
     const lifecycle = vi.fn(() => {
       throw new Error('telemetry sink unavailable');
     });
+    const stopSessions = vi.fn(async () => undefined);
     const provisioner = createProvisioner({
+      stopProjectSessionSandboxes: stopSessions,
       store: ctx.store,
       db: ctx.db,
       docker,
@@ -586,6 +588,7 @@ describe('ProvisionerImpl (#174)', () => {
 
     const result = await provisioner.sleepProject(id);
 
+    expect(stopSessions).toHaveBeenCalledWith(id);
     expect(result).toMatchObject({ state: 'sleeping' });
     expect(result.sleepCompatibilityFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(slept).toEqual([id]);

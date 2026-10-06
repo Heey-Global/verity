@@ -15,6 +15,15 @@ describe('managed installer acceptance isolation', () => {
     expect(() => execFileSync('bash', ['-n', script])).not.toThrow();
   });
 
+  it('installs the provider fixture in the image before publishing the acceptance digest', async () => {
+    const source = await readFile(script, 'utf8');
+    const build = source.indexOf('isolated_docker build --quiet');
+    expect(build).toBeGreaterThan(0);
+    expect(source).toContain('COPY --chmod=0755 provider.mjs /usr/local/bin/claude-agent-acp');
+    expect(build).toBeLessThan(source.indexOf('isolated_docker push --quiet'));
+    expect(source).not.toContain('install_provider_fixture');
+  });
+
   it.each(['host', 'inside', 'occupied'] as const)(
     'refuses %s daemon evidence before cleanup or installation',
     async (failure) => {

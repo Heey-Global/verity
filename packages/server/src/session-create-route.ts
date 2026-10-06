@@ -1,6 +1,7 @@
+import { createSessionCloneProvisioner } from './session-clone.js';
 import { parseSpawnRequestBody, type SpawnBody } from './session-create-schema.js';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DeletedProjectError, type ProjectRecord } from '@verity/store';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { parseOwnerRepo } from './canonical.js';
@@ -8,7 +9,7 @@ import {
   CONTROL_PLANE_PROJECT_OWNER,
   CONTROL_PLANE_PROJECT_REPO,
 } from './control-plane-project.js';
-import { createGitWorktreeProvisioner, type WorktreeProvisioner } from './worktree.js';
+import { type WorktreeProvisioner } from './worktree.js';
 import { projectClonePath } from './provisioner.js';
 import type {
   ServerDeps,
@@ -247,9 +248,9 @@ export function registerSessionCreateRoute(
         };
         projectWorktrees =
           deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-          createGitWorktreeProvisioner({
+          createSessionCloneProvisioner({
             repoDir: projectClone,
-            worktreeRoot: join(projectClone, '.verity-sessions'),
+            worktreeRoot: join(dirname(projectClone), '.verity-session-clones', project.id),
             ...worktreeOpts,
           });
         await deps.refreshProjectToken?.(project);

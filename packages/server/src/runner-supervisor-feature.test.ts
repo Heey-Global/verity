@@ -6518,3 +6518,83 @@ describe('supervisor protocol range (ADR 0006 D9)', () => {
     await expect(status(version)).rejects.toThrow(/unsupported supervisor protocol/u);
   });
 });
+
+describe('isolated supervisor session identity', () => {
+  it('rejects another session before accepting a turn', async () => {
+    const previous = process.env.VERITY_ISOLATED_SESSION_ID;
+    process.env.VERITY_ISOLATED_SESSION_ID = 'session-own';
+    const starter = {
+      start: vi.fn(() => ({
+        accepted: true as const,
+        pending: Promise.resolve({ outcome: 'created' }),
+      })),
+    };
+    try {
+      await expect(
+        handleSupervisorRequest(
+          runtimeDir,
+          'runner',
+          {
+            protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
+            kind: 'start-turn',
+            sessionId: 'session-other',
+          },
+          starter,
+        ),
+      ).rejects.toThrow('does not belong');
+      expect(starter.start).not.toHaveBeenCalled();
+      await expect(
+        handleSupervisorRequest(
+          runtimeDir,
+          'runner',
+          {
+            protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
+            kind: 'start-turn',
+            sessionId: 'session-own',
+          },
+          starter,
+        ),
+      ).resolves.toMatchObject({ ok: true, outcome: 'created' });
+      expect(starter.start).toHaveBeenCalledOnce();
+    } finally {
+      if (previous === undefined) delete process.env.VERITY_ISOLATED_SESSION_ID;
+      else process.env.VERITY_ISOLATED_SESSION_ID = previous;
+    }
+  });
+
+  it('rejects a broker spawn attributed to another session', async () => {
+    const spawned = vi.fn();
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      enforceRoot: false,
+      agentUid: process.getuid?.() ?? 0,
+      agentGid: process.getgid?.() ?? 0,
+      worktreeRoot: runtimeDir,
+      env: { VERITY_ISOLATED_SESSION_ID: 'session-own' },
+      spawnChild: spawned,
+    });
+    try {
+      const response = await new Promise<string>((resolveResponse, reject) => {
+        const socket = createConnection(broker.socketPath);
+        let response = '';
+        socket.on('connect', () =>
+          socket.write(
+            `${JSON.stringify({ protocolVersion: 1, kind: 'spawn', sessionEnv: { VERITY_SESSION_ID: 'session-other' } })}\n`,
+          ),
+        );
+        socket.on('data', (data) => {
+          response += data.toString();
+        });
+        socket.on('end', () => resolveResponse(response));
+        socket.on('error', reject);
+      });
+      expect(JSON.parse(response)).toMatchObject({
+        ok: false,
+        error: 'spawn request does not belong to this isolated session',
+      });
+      expect(spawned).not.toHaveBeenCalled();
+    } finally {
+      await broker.close();
+    }
+  });
+});

@@ -452,6 +452,38 @@ describe('createGitWorktreeProvisioner', () => {
     expect(existsSync(worktree)).toBe(false);
   });
 
+  it('(integration, real git) locks sessions against pruning from a foreign mount namespace', async () => {
+    const repo = tempRoot();
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    git('commit', '--allow-empty', '-qm', 'init');
+    const provisioner = createGitWorktreeProvisioner({
+      repoDir: repo,
+      worktreeRoot: join(repo, '.verity-sessions'),
+    });
+    try {
+      const worktree = await provisioner.add('agent/locked');
+      const admin = join(repo, '.git', 'worktrees', basename(worktree));
+      const index = readFileSync(join(admin, 'index'));
+      writeFileSync(join(admin, 'gitdir'), '/invisible-host/session/.git\n');
+      git('worktree', 'prune', '--expire', 'now');
+      expect(readFileSync(join(admin, 'index'))).toEqual(index);
+      // Backfill must protect sessions created before locking was introduced.
+      rmSync(join(admin, 'locked'));
+      reregisterPrunedWorktrees(repo);
+      git('worktree', 'prune', '--expire', 'now');
+      expect(readFileSync(join(admin, 'index'))).toEqual(index);
+      await provisioner.remove(worktree);
+      expect(existsSync(admin)).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it.each(['foreign-prefix', 'pruned'])(
     '(integration, real git) removes a worktree with %s registration',
     async (damage) => {
@@ -476,7 +508,10 @@ describe('createGitWorktreeProvisioner', () => {
         // Git can succeed without removing files when its reverse link points
         // into the other mount namespace; a later prune removes registration.
         writeFileSync(join(admin, 'gitdir'), '/nonexistent-host-prefix/agent-delete/.git\n');
-        if (damage === 'pruned') git('worktree', 'prune', '--expire', 'now');
+        if (damage === 'pruned') {
+          rmSync(join(admin, 'locked'));
+          git('worktree', 'prune', '--expire', 'now');
+        }
         await provisioner.remove(worktree);
         expect(existsSync(worktree)).toBe(false);
         expect(existsSync(admin)).toBe(false);
@@ -513,6 +548,7 @@ describe('createGitWorktreeProvisioner', () => {
     const name = basename(worktree);
     const adminGitdir = join(repo, '.git', 'worktrees', name, 'gitdir');
     writeFileSync(adminGitdir, `/work/.verity-sessions/${name}/.git\n`);
+    rmSync(join(repo, '.git', 'worktrees', name, 'locked'), { force: true });
     expect(git('worktree', 'list', '--porcelain')).toContain('prunable');
 
     repairAdminGitdirs(repo, join(repo, '.verity-sessions'));
@@ -898,6 +934,7 @@ describe('createGitWorktreeProvisioner', () => {
     const liveAdminDir = join(repo, '.git', 'worktrees', liveName);
     // Rot exactly as a worktree created inside the session container does.
     writeFileSync(join(liveAdminDir, 'gitdir'), `/work/.verity-sessions/${liveName}/.git\n`);
+    rmSync(join(liveAdminDir, 'locked'));
     expect(git('worktree', 'list', '--porcelain')).toContain('prunable');
 
     // An unrelated spawn, into a DIFFERENT root — the live session is not under it.
@@ -1603,6 +1640,7 @@ describe('repairProjectAdminGitdirs', () => {
         join(repo, '.git', 'worktrees', name, 'gitdir'),
         `/work/.verity-sessions/${name}/.git\n`,
       );
+      rmSync(join(repo, '.git', 'worktrees', name, 'locked'));
       expect(git('worktree', 'list', '--porcelain')).toContain('prunable');
       clones.push(repo);
     }

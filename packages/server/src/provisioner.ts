@@ -514,6 +514,7 @@ export interface LinkCloneToGitHubResult {
 export interface ProvisionerOptions {
   /** EventStore the provisioner drives `projects.state` through. */
   store: EventStore;
+  stopProjectSessionSandboxes?: (projectId: string) => Promise<void>;
   /** Raw kysely handle (used for the `SELECT … FOR UPDATE` lock tx — the
    *  {@link EventStore} interface doesn't expose transactions, so the lock
    *  tx is composed here on the raw kysely connection). */
@@ -2277,6 +2278,67 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  /** Prepare a runtime that is mounted into exactly one session container. */
+  prepareSessionRuntime(sessionId: string): string {
+    return this.prepareRunnerRuntime(`session-${sessionId}`, true)!;
+  }
+
+  async awaitSessionRuntime(runtimePath: string): Promise<void> {
+    await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runtimePath);
+  }
+
+  async startSessionRuntime(
+    containerName: string,
+    runtimePath: string,
+    workspace?: { path: string; waitForPostCreate: boolean; freshContainer?: boolean },
+  ): Promise<void> {
+    if (this.opts.dockerHostForBuild === undefined) {
+      throw new ProvisioningError('Session isolation requires a Docker exec host');
+    }
+    await this.containerCommand({
+      containerName,
+      dockerHost: this.opts.dockerHostForBuild,
+      user: `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
+      workdir: RUNNER_RUNTIME_TARGET,
+      command: 'verity-runner-stack-start',
+    });
+    if (workspace?.waitForPostCreate) {
+      const settings = devcontainerRuntimeSettings(join(workspace.path, '.devcontainer'));
+      const completed = `${runtimePath}.workspace-post-create-complete`;
+      if (workspace.freshContainer) rmSync(completed, { force: true });
+      if (workspace.freshContainer || !existsSync(completed)) {
+        if (settings.postCreateCommand !== undefined) {
+          await this.containerCommand({
+            containerName,
+            dockerHost: this.opts.dockerHostForBuild,
+            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
+            workdir: '/work',
+            command: NODE_MODULES_INSTALL_WAIT_COMMAND,
+            timeoutMs: NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS * 1000,
+          });
+          await this.containerCommand({
+            containerName,
+            dockerHost: this.opts.dockerHostForBuild,
+            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
+            workdir: '/work',
+            command: underNodeModulesInstallLock(settings.postCreateCommand, NODE_MODULES_TARGET),
+          });
+        }
+        writeFileSync(completed, 'complete\n', { mode: 0o600 });
+      }
+      // The inherited post-start command waits on a fresh gate on each wake.
+      // Certify the private checkout only after its own lifecycle hook succeeds.
+      await this.containerCommand({
+        containerName,
+        dockerHost: this.opts.dockerHostForBuild,
+        user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
+        workdir: '/work',
+        command: `touch ${DEVCONTAINER_POST_CREATE_READY_FILE}`,
+      });
+    }
+    await this.awaitSessionRuntime(runtimePath);
+  }
+
   private prepareRunnerRuntime(projectId: string, enabled: boolean): string | undefined {
     if (!enabled) return undefined;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(projectId)) {
@@ -2825,6 +2887,11 @@ export class ProvisionerImpl implements Provisioner {
     const failures: unknown[] = [];
     for (const result of authorityResults) {
       if (result.status === 'rejected') failures.push(result.reason as unknown);
+    }
+    try {
+      await this.opts.stopProjectSessionSandboxes?.(project.id);
+    } catch (error) {
+      failures.push(error);
     }
     // Start Sandbox shutdown only after authority cleanup has settled. Even when
     // revocation failed, still attempt the stop and report every failure together.

@@ -34,7 +34,13 @@ export VERITY_RUNNER_FOREGROUND=1
 # launcher is the single entrypoint of the Runner in both. A project Sandbox never
 # runs it and keeps the one /work tree it has always had. The value is a flag —
 # the broker holds the path itself as a constant, so this cannot name a directory.
-export VERITY_AGENT_SHARED_SESSION_ROOT=1
+if [ -n "${VERITY_ISOLATED_SESSION_ID:-}" ]; then
+  # A private session has no shared session mount; retaining the flag prevents
+  # its spawn broker from starting and would widen its permitted roots.
+  unset VERITY_AGENT_SHARED_SESSION_ROOT
+else
+  export VERITY_AGENT_SHARED_SESSION_ROOT=1
+fi
 
 export VERITY_RUNNER_RUNTIME_UID="${VERITY_RUNNER_RUNTIME_UID:-1101}"
 export VERITY_RUNNER_RUNTIME_GID="${VERITY_RUNNER_RUNTIME_GID:-1101}"
