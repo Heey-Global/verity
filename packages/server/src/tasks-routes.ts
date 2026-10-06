@@ -188,7 +188,11 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
       sessionId: query.sessionId,
       statuses: query.status as TaskRecord['status'][] | undefined,
     });
-    return { tasks: list.map(taskResponse) };
+    const readable = new Set<string | null>();
+    for (const projectId of new Set(list.map((task) => task.projectId))) {
+      if (await canUseProject(request.localUserId, projectId, 'read')) readable.add(projectId);
+    }
+    return { tasks: list.filter((task) => readable.has(task.projectId)).map(taskResponse) };
   });
 
   app.put('/tasks/:id', async (request, reply) => {
@@ -224,19 +228,22 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
       return { error: 'task not found' };
     }
     try {
-      const task = await tasks.upsert({
-        id,
-        ownerUserId: owner,
-        projectId,
-        sessionId,
-        sourceSessionId: body.sourceSessionId ?? null,
-        origin: 'user',
-        title: body.title,
-        detail: body.detail ?? null,
-        attachments: body.attachments,
-        status: body.status as TaskRecord['status'] | undefined,
-        sort: body.sort,
-      });
+      const task = await tasks.upsert(
+        {
+          id,
+          ownerUserId: owner,
+          projectId,
+          sessionId,
+          sourceSessionId: body.sourceSessionId ?? null,
+          origin: 'user',
+          title: body.title,
+          detail: body.detail ?? null,
+          attachments: body.attachments,
+          status: body.status as TaskRecord['status'] | undefined,
+          sort: body.sort,
+        },
+        previous?.revision ?? 0,
+      );
       await notify(task, previous?.sessionId ?? null, previous === undefined ? 'added' : 'updated');
       reply.code(previous === undefined ? 201 : 200);
       return { task: taskResponse(task) };
@@ -318,11 +325,20 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
         request.localUserId,
         previous.projectId,
         previous.sessionId === null ? 'read' : 'execute',
-      )) ||
-      !(await tasks.delete(id, owner))
+      ))
     ) {
       reply.code(404);
       return { error: 'task not found' };
+    }
+    try {
+      if (!(await tasks.delete(id, owner, previous.revision))) {
+        reply.code(404);
+        return { error: 'task not found' };
+      }
+    } catch (error) {
+      const handled = failure(reply, error);
+      if (handled === undefined) throw error;
+      return handled;
     }
     await notify(previous, null, 'deleted');
     return { deleted: true };

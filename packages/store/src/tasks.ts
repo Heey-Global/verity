@@ -209,7 +209,7 @@ export class TaskStore {
    * retry after a lost response therefore converges on one row. Replacing keeps
    * the row's revision counter moving so other devices notice the change.
    */
-  async upsert(input: TaskInput): Promise<TaskRecord> {
+  async upsert(input: TaskInput, expectedRevision?: number): Promise<TaskRecord> {
     const title = this.cipher.encrypt(normalizeTitle(input.title));
     const detail = normalizeOptionalText(input.detail, TASK_DETAIL_MAX, 'detail');
     const attachments = JSON.stringify(normalizeAttachments(input.attachments));
@@ -231,8 +231,8 @@ export class TaskStore {
         sort: input.sort ?? 0,
         completed_at: isTerminal(status) ? now : null,
       })
-      .onConflict((conflict) =>
-        conflict
+      .onConflict((conflict) => {
+        let update = conflict
           .column('id')
           .doUpdateSet({
             project_id: input.projectId ?? null,
@@ -248,11 +248,18 @@ export class TaskStore {
               ? sql`coalesce(tasks.completed_at, ${now}::timestamptz)`
               : null,
           })
-          .where('tasks.owner_user_id', '=', input.ownerUserId),
-      )
+          .where('tasks.owner_user_id', '=', input.ownerUserId);
+        if (expectedRevision !== undefined)
+          update = update.where('tasks.revision', '=', expectedRevision);
+        return update;
+      })
       .returningAll()
       .executeTakeFirst();
-    if (row === undefined) throw new TaskNotFoundError(input.id);
+    if (row === undefined) {
+      const current = await this.get(input.id, input.ownerUserId);
+      if (current !== undefined) throw new TaskRevisionConflictError(input.id, current.revision);
+      throw new TaskNotFoundError(input.id);
+    }
     return this.record(row);
   }
 
@@ -321,12 +328,17 @@ export class TaskStore {
     return this.record(row);
   }
 
-  async delete(id: string, ownerUserId: string): Promise<boolean> {
-    const result = await this.db
+  async delete(id: string, ownerUserId: string, expectedRevision?: number): Promise<boolean> {
+    let query = this.db
       .deleteFrom('tasks')
       .where('id', '=', id)
-      .where('owner_user_id', '=', ownerUserId)
-      .executeTakeFirst();
+      .where('owner_user_id', '=', ownerUserId);
+    if (expectedRevision !== undefined) query = query.where('revision', '=', expectedRevision);
+    const result = await query.executeTakeFirst();
+    if ((result.numDeletedRows ?? 0n) === 0n && expectedRevision !== undefined) {
+      const current = await this.get(id, ownerUserId);
+      if (current !== undefined) throw new TaskRevisionConflictError(id, current.revision);
+    }
     return (result.numDeletedRows ?? 0n) > 0n;
   }
 

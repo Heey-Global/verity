@@ -179,6 +179,64 @@ describe('tasks routes', () => {
     expect(published).toEqual([]);
   });
 
+  it('hides project tasks from all listing variants after access is revoked', async () => {
+    await grantMember({ read: true, execute: true });
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: MEMBER,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Private project',
+    });
+    await store.tasks.upsert({ id: T2, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
+    await ctx.db.deleteFrom('project_memberships').where('user_id', '=', MEMBER).execute();
+    for (const url of ['/tasks?projectId=p1', '/tasks?sessionId=s1']) {
+      expect((await app.inject({ method: 'GET', url, headers: asMember })).json().tasks).toEqual(
+        [],
+      );
+    }
+    expect(
+      ids((await app.inject({ method: 'GET', url: '/tasks', headers: asMember })).json()),
+    ).toEqual([T2]);
+  });
+
+  it.each(['PUT', 'DELETE'] as const)(
+    'rejects stale %s authorization after a concurrent move',
+    async (method) => {
+      await store.tasks.upsert({ id: T1, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
+      const name = method === 'PUT' ? 'upsert' : 'delete';
+      const original = store.tasks[name].bind(store.tasks);
+      // Move after the route authorized its snapshot but before its mutation.
+      const spy =
+        method === 'PUT'
+          ? vi.spyOn(store.tasks, 'upsert').mockImplementationOnce(async (...args) => {
+              await store.tasks.patch(T1, MEMBER, { projectId: 'p1', sessionId: 's1' });
+              return (original as typeof store.tasks.upsert)(...args);
+            })
+          : vi.spyOn(store.tasks, 'delete').mockImplementationOnce(async (...args) => {
+              await store.tasks.patch(T1, MEMBER, { projectId: 'p1', sessionId: 's1' });
+              return (original as typeof store.tasks.delete)(...args);
+            });
+      try {
+        expect(
+          (
+            await app.inject({
+              method,
+              url: `/tasks/${T1}`,
+              headers: asMember,
+              ...(method === 'PUT' ? { payload: { title: 'Replacement' } } : {}),
+            })
+          ).statusCode,
+        ).toBe(409);
+        expect((await store.tasks.get(T1, MEMBER))?.sessionId).toBe('s1');
+        expect(published).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
   it('rejects HTTP assignment when the task moves after validation', async () => {
     await store.tasks.upsert({
       id: T1,
