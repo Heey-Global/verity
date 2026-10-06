@@ -1,5 +1,3 @@
-import { sessionSandboxSpec } from './session-sandbox.js';
-import type { ProjectRecord } from '@verity/store';
 import { DockerError } from './docker.js';
 import {
   STANDARD_MOUNTS,
@@ -1970,31 +1968,6 @@ describe('session port previews', () => {
     expect(listListeningProcesses).not.toHaveBeenCalled();
   });
 
-  it('allows the dependency volume produced by the private sandbox contract', async () => {
-    const { manager, docker, inspect } = portFixture([listener(5173, 'any')]);
-    const spec = sessionSandboxSpec(
-      { ...inspect, image: 'sandbox:test' },
-      { project: project as ProjectRecord, sessionId: 's1', worktree: '/private/s1' },
-    );
-    const dependency = spec.volumeMounts!.find((mount) => mount.target === '/work/node_modules')!;
-    docker.inspectContainer.mockResolvedValue({
-      ...inspect,
-      mountCount: (inspect.mounts?.length ?? 0) + 1,
-      labels: { ...inspect.labels, 'verity.session-id': 's1' },
-      mounts: [
-        ...(inspect.mounts ?? []),
-        {
-          type: 'volume',
-          name: dependency.volume,
-          destination: dependency.target,
-          readWrite: true,
-        },
-      ],
-    });
-    await expect(
-      manager.create({ sessionId: 's1', targetPort: 5173, pin: '123456', ttlSeconds: 3600 }),
-    ).resolves.toBeDefined();
-  });
   it('points the connector at the session port over the project network', async () => {
     const { manager, store, docker } = portFixture([listener(5173, 'any')]);
 

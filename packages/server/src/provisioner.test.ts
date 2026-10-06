@@ -83,6 +83,7 @@ import {
   ENV_DRIFT_RECREATE_LIMIT,
   ENV_DRIFT_RECREATES_PER_TICK,
   IMAGE_UPDATE_DEFER_REPORT_AFTER_MS,
+  IMAGE_UPDATE_RECREATE_LIMIT,
   ORPHAN_DEFER_TICK_LIMIT,
   PROJECT_ID_LABEL,
   SANDBOX_ENV_COHORTS,
@@ -572,9 +573,7 @@ describe('ProvisionerImpl (#174)', () => {
     const lifecycle = vi.fn(() => {
       throw new Error('telemetry sink unavailable');
     });
-    const stopSessions = vi.fn(async () => undefined);
     const provisioner = createProvisioner({
-      stopProjectSessionSandboxes: stopSessions,
       store: ctx.store,
       db: ctx.db,
       docker,
@@ -588,7 +587,6 @@ describe('ProvisionerImpl (#174)', () => {
 
     const result = await provisioner.sleepProject(id);
 
-    expect(stopSessions).toHaveBeenCalledWith(id);
     expect(result).toMatchObject({ state: 'sleeping' });
     expect(result.sleepCompatibilityFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(slept).toEqual([id]);
@@ -7745,6 +7743,64 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
+  it('builds a devcontainer that declares the base ARG on the base it is hashed against', async () => {
+    // A build left on the Dockerfile's own `:latest` lags a staging Server
+    // release; the update checker reports the sandbox behind after every
+    // recreate and the reconciler loops on it.
+    const { root, clonePath } = makeCloneRoot(true);
+    try {
+      const dir = join(clonePath, '.devcontainer');
+      writeFileSync(join(dir, 'devcontainer.json'), '{ "build": { "dockerfile": "Dockerfile" } }');
+      writeFileSync(
+        join(dir, 'Dockerfile'),
+        'ARG VERITY_SANDBOX_IMAGE=example/base:latest\nFROM ${VERITY_SANDBOX_IMAGE}\n',
+      );
+      const id = await seedProject();
+      const seenArgs: unknown[] = [];
+      const build = vi.fn<DevcontainerBuildSpawner>(async ({ workspaceFolder }) => {
+        const config = JSON.parse(
+          readFileSync(join(workspaceFolder, '.devcontainer', 'devcontainer.json'), 'utf8'),
+        ) as { build: { args?: unknown } };
+        seenArgs.push(config.build.args);
+        return { stdout: 'built', stderr: '' };
+      });
+      const base = 'ghcr.io/heey-global/dev-base:v1.2.3@sha256:' + 'b'.repeat(64);
+      // The tag an earlier Server cached this exact checkout under, built on the
+      // Dockerfile's default. Reusing it would keep the stale image forever.
+      const staleTag = devcontainerImageTag(
+        'example-org',
+        'example-repo',
+        devcontainerContentHash(
+          dir,
+          base,
+          `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '24' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        ),
+      );
+      const imageExists = vi.fn(async (tag: string) => tag === staleTag);
+      const { client: docker } = fakeDocker({ imageExists });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: base,
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      await provisioner.provision(id);
+
+      expect(imageExists).toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalledWith(staleTag);
+      expect(seenArgs).toEqual([{ VERITY_SANDBOX_IMAGE: base }]);
+      // The clone itself is never rewritten.
+      expect(readFileSync(join(dir, 'devcontainer.json'), 'utf8')).not.toContain('args');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('(h) a Feature identity change produces a different derived tag → rebuild', async () => {
     const { root } = makeCloneRoot(true);
     try {
@@ -9124,6 +9180,39 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       envDrift: false,
       imageUpdate: true,
     });
+  });
+
+  it('stops recreating a sandbox whose image update never lands, and reports it stalled', async () => {
+    // The loop this bounds: a recreate that rebuilds the same stale image leaves
+    // the update reported, and every tick tore the project container — and all of
+    // the sessions in it — down again while sessions were working.
+    const p = await seedActive('image-loop', 'dev-image-loop');
+    const { client } = dockerInspecting({ 'dev-image-loop': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+    const unresolved = vi.fn();
+    const tick = (updateAvailable?: ReadonlySet<string>) =>
+      provisioner.reconcileRelays([p], {
+        ...(updateAvailable !== undefined ? { updateAvailable } : {}),
+        onImageUpdateUnresolved: unresolved,
+      });
+
+    for (let i = 0; i < IMAGE_UPDATE_RECREATE_LIMIT + 3; i++) await tick(new Set([p.id]));
+    expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT);
+    expect(unresolved).toHaveBeenCalledTimes(1);
+    expect(unresolved).toHaveBeenCalledWith(p.id, { attempts: IMAGE_UPDATE_RECREATE_LIMIT });
+    expect([...provisioner.unrepairedSandboxes()]).toEqual([p.id]);
+
+    // A pass whose update discovery failed says nothing about the image.
+    await tick(undefined);
+    await tick(new Set([p.id]));
+    expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT);
+
+    // The update landed (no longer reported): a later update gets a fresh budget.
+    await tick(new Set());
+    await tick(new Set([p.id]));
+    expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT + 1);
   });
 
   it('waits indefinitely for a busy project before updating its sandbox image', async () => {

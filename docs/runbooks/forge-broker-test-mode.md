@@ -20,7 +20,7 @@ is no project opt-in setting or Docker Compose environment switch. The internal
 
 1. Deploy server and digest-pinned project-relay images built from this change,
    together with the updated agent seed/toolkit. An older relay rejects CONNECT.
-2. Recreate project sandboxes and their session sandboxes through the normal
+2. Recreate project sandboxes through the normal
    project lifecycle. Updating the server alone does not rewrite existing
    sandbox environments or relay generations. Finish active sessions first.
 3. Verify GitHub sandboxes have `VERITY_FORGE_MODE=proxy-test`,
@@ -80,8 +80,8 @@ compatibility tests. The helper produces an error when its proxy/CA/capability
 configuration is missing; Git's interactive credential fallback is disabled.
 
 Control-plane host-side Git operations remain trusted server operations and are
-not redirected by this setting. Docker-backed project sessions inherit the
-project's mode and public CA; the trusted-host legacy Docker redemption
+not redirected by this setting. Docker-backed sessions run in the shared project container and use its
+mode and public CA; the trusted-host legacy Docker redemption
 is excluded from the test-mode helper path.
 
 ## Verification and final migration

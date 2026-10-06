@@ -11,58 +11,12 @@ import {
   BranchNotFoundError,
   DirtyWorktreeError,
   InvalidBranchNameError,
-  isValidBranchName,
   MergeConflictError,
   NothingToMergeError,
   type GitBranchService,
-  type GitOutput,
 } from './branches.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import { sessionParams } from './session-route-schemas.js';
-import { transferSessionCommit } from './session-git-transfer.js';
-
-/** Import the central merge and retain it as the private clone's next branch base. */
-export async function syncLocalMergeBase(opts: {
-  basePath: string;
-  worktree: string;
-  base: string;
-  baseTip: string;
-  centralGit: GitOutput;
-  sessionGit: GitOutput;
-}): Promise<boolean> {
-  if (!isValidBranchName(opts.base)) throw new InvalidBranchNameError(opts.base);
-  if (!/^[0-9a-f]{40,64}$/.test(opts.baseTip)) throw new Error('Invalid merge commit');
-  const transfer = await transferSessionCommit({
-    source: opts.basePath,
-    destination: opts.worktree,
-    sourceGit: opts.centralGit,
-    destinationGit: opts.sessionGit,
-    commit: opts.baseTip,
-  });
-  try {
-    const ref = `refs/heads/${opts.base}`;
-    // A turn may have committed on the base while housekeeping waited for idle.
-    // Never rewrite its checked-out branch or replace commits absent from the merge.
-    const attached = await opts
-      .sessionGit(['-C', opts.worktree, 'symbolic-ref', '-q', 'HEAD'])
-      .then((out) => out.trim())
-      .catch(() => undefined);
-    if (attached === ref) return false;
-    const oldTip = (
-      await opts.sessionGit(['-C', opts.worktree, 'rev-parse', '--verify', ref])
-    ).trim();
-    const canAdvance = await opts
-      .sessionGit(['-C', opts.worktree, 'merge-base', '--is-ancestor', oldTip, opts.baseTip])
-      .then(() => true)
-      .catch(() => false);
-    if (!canAdvance) return false;
-    // CAS preserves a ref advanced after the ancestry check, including direct Git use.
-    await opts.sessionGit(['-C', opts.worktree, 'update-ref', ref, opts.baseTip, oldTip]);
-    return true;
-  } finally {
-    await transfer.cleanup();
-  }
-}
 
 type PrSummary = Pick<PullRequestStatus, 'phase' | 'pipeline' | 'mergeable'>;
 export interface SessionMergeRouteDeps {
@@ -72,11 +26,6 @@ export interface SessionMergeRouteDeps {
   branchPrStatus: ServerDeps['branchPrStatus'];
   branchPrStatusForBranches: ServerDeps['branchPrStatusForBranches'];
   sandboxGit: ServerDeps['sandboxGit'];
-  sessionSandboxGit?: (
-    sessionId: string,
-    project: ProjectRecord,
-    worktree: string,
-  ) => Promise<GitOutput>;
   conductor: Pick<
     Conductor,
     'dispatchTurn' | 'runWhenIdle' | 'emitMerged' | 'tryRunExclusive' | 'runExclusive'
@@ -316,7 +265,6 @@ export function registerSessionMergeRoutes(
       setStatus(503);
       return { error: 'merging is not configured' };
     }
-    let sessionGit = sandboxGit;
     // Merging a branch a live turn is still writing to would land half-finished
     // work — same admission rule as the branch switch below. The turn lock is held
     // for the whole merge rather than only sampled first: a turn that started in
@@ -325,33 +273,13 @@ export function registerSessionMergeRoutes(
     let merged: { base: string; branch: string; mergedTip: string; baseTip: string };
     try {
       const attempt = await conductor.tryRunExclusive(id, async () => {
-        sessionGit = deps.sessionSandboxGit
-          ? await deps.sessionSandboxGit(id, project, session.worktree)
-          : sandboxGit;
         if (approvedTip !== undefined) {
           const currentTip = (
-            await sessionGit(['-C', session.worktree, 'rev-parse', 'HEAD'])
+            await sandboxGit(['-C', session.worktree, 'rev-parse', 'HEAD'])
           ).trim();
           if (currentTip !== approvedTip) return null;
         }
-        if (!deps.sessionSandboxGit) {
-          return branches.mergeIntoLocalBase(session.worktree, basePath, { git: sandboxGit });
-        }
-        const transfer = await transferSessionCommit({
-          source: session.worktree,
-          destination: basePath,
-          sourceGit: sessionGit,
-          destinationGit: sandboxGit,
-        });
-        try {
-          return await branches.mergeIntoLocalBase(session.worktree, basePath, {
-            git: sandboxGit,
-            sessionGit,
-            mergeRef: transfer.ref,
-          });
-        } finally {
-          await transfer.cleanup();
-        }
+        return branches.mergeIntoLocalBase(session.worktree, basePath, { git: sandboxGit });
       });
       if (!attempt.ran) {
         setStatus(409);
@@ -428,22 +356,11 @@ export function registerSessionMergeRoutes(
         try {
           // The whole merge result: the branch commit it absorbed decides what may be
           // deleted, the merge commit it created is where the worktree lands.
-          if (deps.sessionSandboxGit) {
-            const synchronized = await syncLocalMergeBase({
-              basePath,
-              worktree: session.worktree,
-              base,
-              baseTip: merged.baseTip,
-              centralGit: sandboxGit,
-              sessionGit,
-            });
-            if (!synchronized) throw new Error('Session base changed after the merge');
-          }
           const { deletedBranch, retainedBranch, skipped } = await branches.resetToLocalBase(
             session.worktree,
             base,
             merged,
-            { git: sessionGit },
+            { git: sandboxGit },
           );
           if (skipped === true) {
             note = `${merge}, up to the commit it was on when you merged. Your worktree kept that branch because it has moved on since — commit or discard what is there and merge again to bring the rest across.`;

@@ -8289,7 +8289,9 @@ function PermissionPrompt({
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
-  const isEndPlanning = planningToolName(pending.tool) === END_PLANNING_TOOL;
+  const planningTool = planningToolName(pending.tool);
+  const isEndPlanning = planningTool === END_PLANNING_TOOL;
+  const isPresentPlan = planningTool === 'verity_present_plan';
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
@@ -8383,11 +8385,12 @@ function PermissionPrompt({
       calendarSummary?.title ?? null,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
       isEndPlanning ? 'Implement the plan?' : null,
+      isPresentPlan ? 'Show the proposed plan?' : null,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
     // so this is consistency rather than exposure — but it is the headline, and the one field
     // here that never passed a summariser.
-    `Allow ${spellOutBidiControls(pending.tool)}?`;
+    `Allow ${spellOutBidiControls(view.title)}?`;
   const allow = (scope?: 'session' | 'project' | 'forever'): void => {
     if (!active) return;
     onDecide(
@@ -8404,7 +8407,7 @@ function PermissionPrompt({
       accessibilityLabel={
         isKnowledge
           ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
-          : `The agent wants to run ${pending.tool}. Allow or deny.`
+          : `${cardTitle} Allow or deny.`
       }
     >
       <View style={styles.permissionHeader}>
@@ -8424,6 +8427,13 @@ function PermissionPrompt({
               : pending.riskClass}
         </Text>
       </View>
+      {isPresentPlan ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionHttpMeta}>
+            The agent wants to show you a plan for review. This does not approve implementation.
+          </Text>
+        </View>
+      ) : null}
       {isEndPlanning ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta}>

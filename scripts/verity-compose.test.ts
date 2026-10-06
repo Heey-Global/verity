@@ -329,7 +329,7 @@ describe('deploy/bin/verity-compose', () => {
       readFileSync('packages/server/src/self-update/managed-control-plane-runner.ts', 'utf8'),
     ).toContain(`target: '${SHARED_SESSION_ROOT}', subpath: 'sessions'`);
     expect(readFileSync('deploy/bin/verity-control-plane-runner-start', 'utf8')).toMatch(
-      /^\s*export VERITY_AGENT_SHARED_SESSION_ROOT=1$/mu,
+      /^export VERITY_AGENT_SHARED_SESSION_ROOT=1$/mu,
     );
     // A project Sandbox has one tree and must stay that way: its launcher never
     // sets the flag, so its broker keeps /work alone.
@@ -337,40 +337,6 @@ describe('deploy/bin/verity-compose', () => {
       readFileSync('features/verity-sandbox-toolkit/bin/verity-runner-stack-start', 'utf8'),
     ).not.toContain('VERITY_AGENT_SHARED_SESSION_ROOT');
   });
-
-  it.each([undefined, 'private-session'])(
-    'confines control runner roots for isolated session %s',
-    async (sessionId) => {
-      const identity = mkdtempSync(join(tmpdir(), 'verity-private-identity-'));
-      try {
-        for (const file of ['ca.crt', 'client.crt', 'client.key', 'generation']) {
-          writeFileSync(join(identity, file), 'fixture');
-        }
-        const launcher = readFileSync('deploy/bin/verity-control-plane-runner-start', 'utf8');
-        // Execute the actual identity bootstrap and root selection. Stop before
-        // privileged runtime initialization, which needs a real container.
-        const prefix = launcher.slice(0, launcher.indexOf('export VERITY_RUNNER_RUNTIME_UID='));
-        const { stdout } = await rawExecFileAsync(
-          'bash',
-          [
-            '-c',
-            `id() { printf '0\\n'; }\n${prefix}\nprintf '%s' "\${VERITY_AGENT_SHARED_SESSION_ROOT:-unset}"`,
-          ],
-          {
-            env: {
-              ...process.env,
-              VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR: identity,
-              VERITY_ISOLATED_SESSION_ID: sessionId ?? '',
-              VERITY_AGENT_SHARED_SESSION_ROOT: '1',
-            },
-          },
-        );
-        expect(stdout).toBe(sessionId ? 'unset' : '1');
-      } finally {
-        rmSync(identity, { recursive: true, force: true });
-      }
-    },
-  );
 
   /**
    * The SAME container is declared twice — by the Compose overlay for the

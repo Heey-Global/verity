@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ManagedDevServer, SessionDevServer } from '@verity/mobile';
@@ -25,6 +26,9 @@ export function RunningServerCard({
   onShare: () => void;
 }) {
   const { theme } = useUnistyles();
+  const identity = JSON.stringify([server.port, server.pid, server.managedInstanceId]);
+  const [dismissed, setDismissed] = useState<string>();
+  if (dismissed === identity) return null;
   return (
     <View
       style={styles.card}
@@ -41,6 +45,14 @@ export function RunningServerCard({
           <Text style={styles.state}> · Server running</Text>
         </Text>
       </View>
+      <Pressable
+        style={styles.dismiss}
+        onPress={() => setDismissed(identity)}
+        accessibilityRole="button"
+        accessibilityLabel={`Dismiss the running server hint for ${server.name}`}
+      >
+        <Icon name="x" size={18} color={theme.colors.textMuted} />
+      </Pressable>
       {managed ? (
         <Text selectable style={styles.command}>
           {managed.command}
@@ -110,6 +122,12 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'space-between',
     columnGap: theme.spacing.md,
     rowGap: theme.spacing.xs,
+  },
+  dismiss: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   command: { color: theme.colors.textMuted, fontSize: theme.text.xs, flexBasis: '100%' },
   title: {

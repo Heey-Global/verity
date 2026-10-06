@@ -2422,46 +2422,6 @@ export class EventStore implements EventSink {
       .execute();
   }
 
-  /** Relocate an idle session within its project, while the conductor holds its
-   * session lock. A stale workspace or durable running marker refuses the move.
-   * Native resume pointers name the previous runtime; durable context remains in
-   * the event log and is handed off to a fresh backend on the next turn. */
-  async relocateSessionWorkspace(
-    sessionId: string,
-    expectedWorktree: string,
-    nextWorktree: string,
-  ): Promise<boolean> {
-    return await this.db.transaction().execute(async (tx) => {
-      const session = await tx
-        .selectFrom('sessions')
-        .select('worktree')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (session?.worktree !== expectedWorktree) return false;
-      const changed = await tx
-        .updateTable('sessions')
-        .set({ worktree: nextWorktree })
-        .where('session_id', '=', sessionId)
-        .where('worktree', '=', expectedWorktree)
-        .where(
-          sql<boolean>`not exists (select 1 from running_turns where session_id = ${sessionId})`,
-        )
-        .executeTakeFirst();
-      if (changed.numUpdatedRows === 0n) return false;
-      if (nextWorktree === expectedWorktree) return true;
-      await tx.deleteFrom('session_backend_state').where('session_id', '=', sessionId).execute();
-      await tx
-        .insertInto('session_pending_note')
-        .values({
-          session_id: sessionId,
-          note: `Your session workspace is now isolated at ${nextWorktree}. Continue from the durable conversation context; native backend state was reset for the new runtime.`,
-        })
-        .execute();
-      return true;
-    });
-  }
-
   async commitSessionMove(
     sessionId: string,
     operationId: string,

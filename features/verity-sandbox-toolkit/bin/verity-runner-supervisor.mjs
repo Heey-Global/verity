@@ -384,12 +384,6 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
   ) {
     throw new Error('trusted CLI is unavailable for this turn');
   }
-  if (
-    process.env.VERITY_ISOLATED_SESSION_ID !== undefined &&
-    startRequest.sessionId !== process.env.VERITY_ISOLATED_SESSION_ID
-  ) {
-    throw new Error('trusted CLI turn does not belong to this isolated session');
-  }
   const socketPath =
     options.brokerSocket ??
     process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ??
@@ -491,9 +485,6 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
         `${JSON.stringify({
           protocolVersion: 1,
           kind: 'spawn-trusted-cli',
-          ...(startRequest.sessionId === undefined
-            ? {}
-            : { sessionEnv: { VERITY_SESSION_ID: startRequest.sessionId } }),
           ...(request.correlationId === undefined ? {} : { correlationId: request.correlationId }),
           command: request.command[0],
           args: request.command.slice(1),
@@ -2406,14 +2397,6 @@ export async function handleSupervisorRequest(
 ) {
   if (!isObject(request) || !supportedRequestVersion(request.protocolVersion)) {
     throw new Error('unsupported supervisor protocol');
-  }
-  const isolatedSessionId = process.env.VERITY_ISOLATED_SESSION_ID;
-  if (isolatedSessionId !== undefined) {
-    if (request.kind === 'start-turn' || request.kind === 'claim-turn') {
-      if (request.sessionId !== isolatedSessionId) {
-        throw new Error('runner request does not belong to this isolated session');
-      }
-    }
   }
   switch (request.kind) {
     case 'status':

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
+import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 
 let dir: string;
@@ -27,99 +27,85 @@ afterEach(async () => {
 });
 
 describe('MCP gateway trusted CLI integration', () => {
-  it.each(['project-1', 'session-session-1'])(
-    'executes approved trusted CLI in runtime %s',
-    async (runtimeName) => {
-      const runtime = join(dir, runtimeName);
-      const socketPath = join(runtime, 'supervisor.sock');
-      await mkdir(runtime, { recursive: true });
-      let supervisorRequest: Record<string, unknown> | undefined;
-      const server = createServer((socket) => {
-        sockets.add(socket);
-        socket.once('close', () => sockets.delete(socket));
-        socket.once('data', (data) => {
-          supervisorRequest = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
-          socket.end(
-            `${JSON.stringify({ ok: true, exitCode: 0, stdout: 'pod-1\n', stderr: '' })}\n`,
-          );
-        });
+  it('consumes the approval and resolves the secret before the live-turn supervisor executes', async () => {
+    const runtime = join(dir, 'project-1');
+    const socketPath = join(runtime, 'supervisor.sock');
+    await mkdir(runtime, { recursive: true });
+    let supervisorRequest: Record<string, unknown> | undefined;
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+      socket.once('data', (data) => {
+        supervisorRequest = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+        socket.end(`${JSON.stringify({ ok: true, exitCode: 0, stdout: 'pod-1\n', stderr: '' })}\n`);
       });
-      servers.push(server);
-      await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
 
-      const order: string[] = [];
-      const trustedCli = createTrustedCliTool({
-        getProjectBinding: async () => ({
-          dopplerToken: 'binding-marker',
-          dopplerProject: 'project',
-          dopplerConfig: 'prod',
-        }),
-        consumeApproval: async (input) => {
-          order.push('consume');
-          expect(input).toEqual({
-            projectId: 'project-1',
-            sessionId: 'session-1',
-            turnId: 'turn-1',
-            callId: 'call-1',
-            requestHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
-          });
-          return true;
-        },
-        resolveSecret: async ({ secretName }) => {
-          order.push('resolve');
-          expect(secretName).toBe('KUBECONFIG_PROD');
-          return Buffer.from('kubeconfig-marker');
-        },
-      });
-      const invoke = createMcpGatewayToolExecutor({
-        brokeredHttpTool: vi.fn(async () => ({ status: 200, body: null })),
-        trustedCliTool: trustedCli,
-        runnerRoot: dir,
-        ...(runtimeName === 'project-1'
-          ? {}
-          : {
-              resolveSessionRuntime: (projectId: string, sessionId: string) => {
-                expect(projectId).toBe('project-1');
-                expect(sessionId).toBe('session-1');
-                return runtime;
-              },
-            }),
-      });
-
-      await expect(
-        invoke({
+    const order: string[] = [];
+    const trustedCli = createTrustedCliTool({
+      getProjectBinding: async () => ({
+        dopplerToken: 'binding-marker',
+        dopplerProject: 'project',
+        dopplerConfig: 'prod',
+      }),
+      consumeApproval: async (input) => {
+        order.push('consume');
+        expect(input).toEqual({
           projectId: 'project-1',
           sessionId: 'session-1',
           turnId: 'turn-1',
           callId: 'call-1',
-          invocationId: 'invocation-1',
-          toolName: 'verity_secret_run',
-          request: {
-            command: ['/usr/bin/kubectl', 'get', 'pods'],
-            secrets: [{ secretAlias: 'KUBECONFIG_PROD', env: 'KUBECONFIG', injection: 'file' }],
-          },
-        }),
-      ).resolves.toEqual({ exitCode: 0, stdout: 'pod-1\n', stderr: '' });
+          requestHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        });
+        return true;
+      },
+      resolveSecret: async ({ secretName }) => {
+        order.push('resolve');
+        expect(secretName).toBe('KUBECONFIG_PROD');
+        return Buffer.from('kubeconfig-marker');
+      },
+    });
+    const invoke = createMcpGatewayToolExecutor({
+      brokeredHttpTool: vi.fn(async () => ({ status: 200, body: null })),
+      trustedCliTool: trustedCli,
+      runnerRoot: dir,
+    });
 
-      expect(order).toEqual(['consume', 'resolve']);
-      expect(supervisorRequest).toEqual({
-        protocolVersion: 1,
-        kind: 'run-trusted-cli',
+    await expect(
+      invoke({
+        projectId: 'project-1',
+        sessionId: 'session-1',
         turnId: 'turn-1',
-        correlationId: 'call-1',
-        secrets: [
-          {
-            secretAlias: 'KUBECONFIG_PROD',
-            env: 'KUBECONFIG',
-            injection: 'file',
-            secret: Buffer.from('kubeconfig-marker').toString('base64'),
-            encoding: 'base64',
-          },
-        ],
-        command: ['/usr/bin/kubectl', 'get', 'pods'],
-      });
-    },
-  );
+        callId: 'call-1',
+        invocationId: 'invocation-1',
+        toolName: 'verity_secret_run',
+        request: {
+          command: ['/usr/bin/kubectl', 'get', 'pods'],
+          secrets: [{ secretAlias: 'KUBECONFIG_PROD', env: 'KUBECONFIG', injection: 'file' }],
+        },
+      }),
+    ).resolves.toEqual({ exitCode: 0, stdout: 'pod-1\n', stderr: '' });
+
+    expect(order).toEqual(['consume', 'resolve']);
+    expect(supervisorRequest).toEqual({
+      protocolVersion: 1,
+      kind: 'run-trusted-cli',
+      turnId: 'turn-1',
+      correlationId: 'call-1',
+      secrets: [
+        {
+          secretAlias: 'KUBECONFIG_PROD',
+          env: 'KUBECONFIG',
+          injection: 'file',
+          secret: Buffer.from('kubeconfig-marker').toString('base64'),
+          encoding: 'base64',
+        },
+      ],
+      command: ['/usr/bin/kubectl', 'get', 'pods'],
+    });
+  });
 });
 
 describe('MCP gateway Google Slides integration', () => {
@@ -205,28 +191,5 @@ describe('MCP gateway control-plane session tools', () => {
         }),
       ).rejects.toThrow('control-plane session tools are unavailable');
     }
-  });
-});
-
-describe('session trusted CLI preflight', () => {
-  it('queries the authenticated session supervisor', async () => {
-    const requestStatus = vi.fn(() => Promise.resolve({ scriptIsolation: false }));
-    const resolveSessionRuntime = vi.fn(() => '/private/session-s');
-    const authorize = createTrustedCliPreflight({
-      runnerRoot: '/shared',
-      resolveSessionRuntime,
-      requestStatus,
-    });
-    await expect(
-      authorize({
-        projectId: 'p',
-        sessionId: 's',
-        turnId: 't',
-        toolName: 'verity_secret_run',
-        request: { entryScript: { path: '/work/script' } },
-      }),
-    ).rejects.toThrow('cannot');
-    expect(resolveSessionRuntime).toHaveBeenCalledWith('p', 's');
-    expect(requestStatus).toHaveBeenCalledWith('/private/session-s/supervisor.sock');
   });
 });

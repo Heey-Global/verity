@@ -1,5 +1,10 @@
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
-import { createDevcontainerBuildSnapshot } from './devcontainer-build-boundary.js';
+import {
+  createDevcontainerBuildSnapshot,
+  DEVCONTAINER_BASE_IMAGE_ARG,
+  declaresDevcontainerBaseImageArg,
+  pinDevcontainerBaseImage,
+} from './devcontainer-build-boundary.js';
 import {
   STANDARD_MOUNTS,
   DEFAULT_AGENT_SEED_SOURCE,
@@ -147,6 +152,7 @@ import {
   ENV_DRIFT_RECREATES_PER_TICK,
   envDriftIsSoleReason,
   IMAGE_UPDATE_DEFER_REPORT_AFTER_MS,
+  IMAGE_UPDATE_RECREATE_LIMIT,
   type ProjectContainerClass,
 } from './project-relay-migration.js';
 
@@ -515,7 +521,6 @@ export interface LinkCloneToGitHubResult {
 export interface ProvisionerOptions {
   /** EventStore the provisioner drives `projects.state` through. */
   store: EventStore;
-  stopProjectSessionSandboxes?: (projectId: string) => Promise<void>;
   /** Raw kysely handle (used for the `SELECT … FOR UPDATE` lock tx — the
    *  {@link EventStore} interface doesn't expose transactions, so the lock
    *  tx is composed here on the raw kysely connection). */
@@ -1602,6 +1607,10 @@ export interface Provisioner {
        *  the drift is now a standing condition to be fixed in the provisioner, not
        *  something another recreate will resolve. */
       onEnvDriftUnresolved?: (projectId: string, info: { attempts: number }) => void;
+      /** An image update has been applied `IMAGE_UPDATE_RECREATE_LIMIT` times and
+       *  the sandbox is still reported behind, so the reconciler has stopped
+       *  recreating it. Fired once per project per budget. */
+      onImageUpdateUnresolved?: (projectId: string, info: { attempts: number }) => void;
       onEnvDriftThrottled?: (info: {
         deferred: number;
         attempted: number;
@@ -2280,67 +2289,6 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  /** Prepare a runtime that is mounted into exactly one session container. */
-  prepareSessionRuntime(sessionId: string): string {
-    return this.prepareRunnerRuntime(`session-${sessionId}`, true)!;
-  }
-
-  async awaitSessionRuntime(runtimePath: string): Promise<void> {
-    await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runtimePath);
-  }
-
-  async startSessionRuntime(
-    containerName: string,
-    runtimePath: string,
-    workspace?: { path: string; waitForPostCreate: boolean; freshContainer?: boolean },
-  ): Promise<void> {
-    if (this.opts.dockerHostForBuild === undefined) {
-      throw new ProvisioningError('Session isolation requires a Docker exec host');
-    }
-    await this.containerCommand({
-      containerName,
-      dockerHost: this.opts.dockerHostForBuild,
-      user: `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
-      workdir: RUNNER_RUNTIME_TARGET,
-      command: 'verity-runner-stack-start',
-    });
-    if (workspace?.waitForPostCreate) {
-      const settings = devcontainerRuntimeSettings(join(workspace.path, '.devcontainer'));
-      const completed = `${runtimePath}.workspace-post-create-complete`;
-      if (workspace.freshContainer) rmSync(completed, { force: true });
-      if (workspace.freshContainer || !existsSync(completed)) {
-        if (settings.postCreateCommand !== undefined) {
-          await this.containerCommand({
-            containerName,
-            dockerHost: this.opts.dockerHostForBuild,
-            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
-            workdir: '/work',
-            command: NODE_MODULES_INSTALL_WAIT_COMMAND,
-            timeoutMs: NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS * 1000,
-          });
-          await this.containerCommand({
-            containerName,
-            dockerHost: this.opts.dockerHostForBuild,
-            user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
-            workdir: '/work',
-            command: underNodeModulesInstallLock(settings.postCreateCommand, NODE_MODULES_TARGET),
-          });
-        }
-        writeFileSync(completed, 'complete\n', { mode: 0o600 });
-      }
-      // The inherited post-start command waits on a fresh gate on each wake.
-      // Certify the private checkout only after its own lifecycle hook succeeds.
-      await this.containerCommand({
-        containerName,
-        dockerHost: this.opts.dockerHostForBuild,
-        user: `${String(RUNNER_AGENT_UID)}:${String(RUNNER_AGENT_GID)}`,
-        workdir: '/work',
-        command: `touch ${DEVCONTAINER_POST_CREATE_READY_FILE}`,
-      });
-    }
-    await this.awaitSessionRuntime(runtimePath);
-  }
-
   private prepareRunnerRuntime(projectId: string, enabled: boolean): string | undefined {
     if (!enabled) return undefined;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(projectId)) {
@@ -2596,6 +2544,19 @@ export class ProvisionerImpl implements Provisioner {
    *  error line that says a fleet-wide cohort is misdeclared. Cleared with the
    *  budget, by the sandbox coming back whole. */
   private readonly envDriftReported = new Set<string>();
+
+  /** Per project, recreates spent on an image update the sandbox still reports
+   *  afterwards (see `IMAGE_UPDATE_RECREATE_LIMIT`). Cumulative for the same reason
+   *  as {@link envDriftRecreates}, and cleared only by a pass in which the update
+   *  checker answered and no longer reports the update for this sandbox. In-memory:
+   *  a restart hands back one budget, which is a bounded number of recreates per
+   *  Server start rather than one per minute. Keyed by project alone because the
+   *  target is: a released Server pins one sandbox image for its whole life, so a
+   *  newer target arrives only with a new Server process and a fresh budget. */
+  private readonly imageUpdateRecreates = new Map<string, number>();
+
+  /** Projects whose exhausted image-update budget has already been reported. */
+  private readonly imageUpdateReported = new Set<string>();
 
   /** Has this project used up its env-drift recreates? Shared by the reconcile tick
    *  and the turn-time repair on purpose: the two are separate loop drivers over the
@@ -2889,11 +2850,6 @@ export class ProvisionerImpl implements Provisioner {
     const failures: unknown[] = [];
     for (const result of authorityResults) {
       if (result.status === 'rejected') failures.push(result.reason as unknown);
-    }
-    try {
-      await this.opts.stopProjectSessionSandboxes?.(project.id);
-    } catch (error) {
-      failures.push(error);
     }
     // Start Sandbox shutdown only after authority cleanup has settled. Even when
     // revocation failed, still attempt the stop and report every failure together.
@@ -3505,6 +3461,10 @@ export class ProvisionerImpl implements Provisioner {
        *  the drift is now a standing condition to be fixed in the provisioner, not
        *  something another recreate will resolve. */
       onEnvDriftUnresolved?: (projectId: string, info: { attempts: number }) => void;
+      /** An image update has been applied `IMAGE_UPDATE_RECREATE_LIMIT` times and
+       *  the sandbox is still reported behind, so the reconciler has stopped
+       *  recreating it. Fired once per project per budget. */
+      onImageUpdateUnresolved?: (projectId: string, info: { attempts: number }) => void;
       onEnvDriftThrottled?: (info: {
         deferred: number;
         attempted: number;
@@ -3560,8 +3520,28 @@ export class ProvisionerImpl implements Provisioner {
         try {
           const { classification, envDriftOnly } = await this.classifyProjectSandbox(project);
           const { busy, confirmed } = await this.probeProjectBusy(project.id);
-          const imageUpdate =
+          const updateOffered =
             classification === 'migrated' && callbacks.updateAvailable?.has(project.id) === true;
+          // Only an answer from the checker refunds the budget: a pass whose update
+          // discovery failed passes no set at all and says nothing about the image.
+          if (
+            classification === 'migrated' &&
+            callbacks.updateAvailable !== undefined &&
+            !updateOffered
+          ) {
+            this.imageUpdateRecreates.delete(project.id);
+            this.imageUpdateReported.delete(project.id);
+          }
+          const imageUpdateAttempts = this.imageUpdateRecreates.get(project.id) ?? 0;
+          const imageUpdateSpent =
+            updateOffered && imageUpdateAttempts >= IMAGE_UPDATE_RECREATE_LIMIT;
+          if (imageUpdateSpent && !this.imageUpdateReported.has(project.id)) {
+            this.imageUpdateReported.add(project.id);
+            callbacks.onImageUpdateUnresolved?.(project.id, { attempts: imageUpdateAttempts });
+          }
+          // A spent budget falls through as a plain `migrated` sandbox, which settles
+          // it below: reported as stalled, left running, and no longer recreated.
+          const imageUpdate = updateOffered && !imageUpdateSpent;
           // A failed automatic recreate may already have removed the old container
           // before its pull/create phase failed. `absent` normally means there is
           // nothing for relay migration to do, but for a repair we explicitly owe it
@@ -3674,6 +3654,7 @@ export class ProvisionerImpl implements Provisioner {
           // a repair that would have worked, permanently: only classifying
           // `migrated` clears the count, and a still-drifted sandbox never does.
           if (envDriftOnly) this.noteEnvDriftRecreate(project.id);
+          if (imageUpdate) this.imageUpdateRecreates.set(project.id, imageUpdateAttempts + 1);
           // The repair itself is past. Anything that throws below is a CALLER's
           // callback, and charging that to the streak would report a sandbox as
           // stuck twice over after two rebuilds that both worked.
@@ -5946,10 +5927,14 @@ export class ProvisionerImpl implements Provisioner {
             'Verity currently builds devcontainer images but starts them through its own Docker create path.',
         );
       }
+      const pinsBase = declaresDevcontainerBaseImageArg(snapshot);
       const hash = devcontainerContentHash(
         snapshotDevcontainerDir,
         baseImageRef,
-        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}`,
+        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}` +
+          // Only for Dockerfiles the pin applies to, so every other project keeps
+          // its cached image across this change.
+          (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
       );
       const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
       // Cache check: the derived tag on the daemon means an identical
@@ -5987,6 +5972,9 @@ export class ProvisionerImpl implements Provisioner {
       }
       // Build the derived image onto the target daemon. A non-zero exit rejects
       // with the build stderr, which the caller truncates into provision_error.
+      // After the cache check, into the private copy only: the hash above was
+      // computed over the project's own configuration.
+      if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
       await build({
         workspaceFolder: snapshot.workspaceFolder,
         imageName: derivedTag,

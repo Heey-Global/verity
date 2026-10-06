@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -7073,98 +7072,6 @@ describe('DELETE /sessions/:id', () => {
 });
 
 describe('DELETE /sessions/:id (worktree cleanup)', () => {
-  it('removes a legacy linked worktree with its Git registration and merged branch', async () => {
-    const root = join(worktreeRoot, 'legacy-project-root');
-    const repo = join(root, 'legacy-project');
-    const checkout = join(repo, '.verity-sessions', 'agent-legacy');
-    mkdirSync(repo, { recursive: true });
-    const git = (...args: string[]) =>
-      execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
-    git('init', '-b', 'main');
-    git(
-      '-c',
-      'user.name=Test',
-      '-c',
-      'user.email=test@example.com',
-      'commit',
-      '--allow-empty',
-      '-m',
-      'initial',
-    );
-    git('worktree', 'add', '--lock', '-b', 'session-delete', checkout);
-    await ctx.store.upsertProject({
-      id: 'legacy-project',
-      owner: 'local',
-      repo: 'legacy-project',
-      cloneDir: 'legacy-project',
-      containerName: 'central',
-      state: 'active',
-    });
-    await ctx.store.createSession({
-      sessionId: 'legacy-delete',
-      projectId: 'legacy-project',
-      worktree: checkout,
-      model: 'm',
-    });
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, projectCloneRoot: root });
-    try {
-      const response = await a.inject({ method: 'DELETE', url: '/sessions/legacy-delete' });
-      expect(response.statusCode).toBe(200);
-      expect(existsSync(checkout)).toBe(false);
-      expect(git('worktree', 'list', '--porcelain').toString()).not.toContain(checkout);
-      expect(() => git('rev-parse', '--verify', 'refs/heads/session-delete')).toThrow();
-    } finally {
-      await a.close();
-    }
-  });
-  it('removes only the deleted private clone after its container is stopped', async () => {
-    const root = join(worktreeRoot, 'private-clones');
-    const own = join(root, 'own');
-    const sibling = join(root, 'sibling');
-    mkdirSync(own, { recursive: true });
-    execFileSync('git', ['init', own], { stdio: 'ignore' });
-    mkdirSync(sibling);
-    writeFileSync(join(sibling, 'unfinished.txt'), 'keep');
-    await ctx.store.upsertProject({
-      id: 'private-project',
-      owner: 'local',
-      repo: 'private',
-      containerName: 'central',
-      state: 'active',
-    });
-    await ctx.store.createSession({
-      sessionId: 'private-delete',
-      projectId: 'private-project',
-      worktree: own,
-      model: 'm',
-    });
-    const removeContainer = vi.fn(() => {
-      expect(existsSync(own)).toBe(true);
-      return Promise.resolve();
-    });
-    const a = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      worktrees: { add: () => Promise.resolve(own), remove: () => Promise.resolve() },
-      removeSessionSandbox: removeContainer,
-      sessionIsolationMigration: {
-        backupRoot: join(worktreeRoot, 'backups'),
-        projectRepoPath: () => worktreeRoot,
-        privateCloneRoot: () => root,
-      },
-    });
-    try {
-      const response = await a.inject({ method: 'DELETE', url: '/sessions/private-delete' });
-      expect(response.statusCode).toBe(200);
-      expect(removeContainer).toHaveBeenCalledWith('private-delete');
-      expect(existsSync(own)).toBe(false);
-      expect(readFileSync(join(sibling, 'unfinished.txt'), 'utf8')).toBe('keep');
-    } finally {
-      await a.close();
-    }
-  });
-
   function fake() {
     const removed: string[] = [];
     const provisioner = {
@@ -9704,25 +9611,6 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       projectId: 'p1',
     });
   };
-
-  it.each(['merge', 'save-to-project'])(
-    'does not provision a busy session sandbox for %s',
-    async (action) => {
-      await seedLocalSession();
-      const provisionSessionGit = vi.fn(async () => sandboxGit);
-      tryRunExclusive.mockResolvedValueOnce({ ran: false });
-      const app = buildLocal({ sessionSandboxGit: provisionSessionGit });
-      try {
-        const response = await app.inject({ method: 'POST', url: `/sessions/s1/${action}` });
-        expect(response.statusCode).toBe(409);
-        expect(provisionSessionGit).not.toHaveBeenCalled();
-        expect(sendTurn).not.toHaveBeenCalled();
-        expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
-      } finally {
-        await app.close();
-      }
-    },
-  );
 
   it('commits through the agent before adding the session work to the project', async () => {
     await seedLocalSession();
