@@ -1,6 +1,15 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { authenticateBrowser, pairBrowser } from '../lib/browserSession';
 import { createVerityClient } from '../lib/client';
 
@@ -40,7 +49,17 @@ export default function WebConnectScreen() {
     }
   };
   return (
-    <View style={styles.root}>
+    <ScrollView contentContainerStyle={styles.root} keyboardShouldPersistTaps="handled">
+      <Stack.Screen options={{ headerShown: false }} />
+      <View style={styles.brand}>
+        <Image
+          source={require('../assets/brand/verity-v-mark.png')}
+          style={styles.logo}
+          resizeMode="contain"
+          accessibilityLabel="Verity logo"
+        />
+        <Text style={styles.wordmark}>Verity</Text>
+      </View>
       <View style={styles.card}>
         <Text style={styles.title}>
           {stage === 'code'
@@ -119,18 +138,30 @@ export default function WebConnectScreen() {
           </Pressable>
         )}
       </View>
-    </View>
+    </ScrollView>
   );
 }
 const styles = StyleSheet.create({
   root: {
-    flex: 1,
-    backgroundColor: '#0c1018',
+    flexGrow: 1,
+    backgroundColor: '#090a14',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
-  card: { width: '100%', maxWidth: 480, gap: 18 },
+  brand: { alignItems: 'center', gap: 12, marginBottom: 28 },
+  logo: { width: 64, height: 64 },
+  wordmark: { color: '#f4f3ff', fontSize: 28, fontWeight: '700' },
+  card: {
+    width: '100%',
+    maxWidth: 440,
+    gap: 18,
+    padding: 28,
+    borderRadius: 20,
+    backgroundColor: '#121322',
+    borderWidth: 1,
+    borderColor: '#29283e',
+  },
   title: { color: '#fff', fontSize: 26, fontWeight: '600' },
   description: { color: '#b0b6c3', fontSize: 16 },
   input: {
