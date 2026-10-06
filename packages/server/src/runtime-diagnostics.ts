@@ -754,13 +754,20 @@ export function createRuntimeDiagnostics(deps: {
             const output = await readDocker(`/events?${query.toString()}`);
             const lines = output.bytes.toString('utf8').trim().split('\n').filter(Boolean);
             const records: Evidence[] = [];
-            for (const line of lines.slice(-256)) {
+            for (const line of lines) {
               const event = object(JSON.parse(line));
               if (event.Type !== 'container') continue;
               const actor = object(event.Actor);
               const attributes = object(actor.Attributes);
               const [label, expected] = eventLabels[0]!.split('=');
               if (attributes[label!] !== expected) continue;
+              if (
+                !request.projectId &&
+                !roleFor(
+                  attributes['verity.managed-role'] ?? attributes['com.docker.compose.service'],
+                )
+              )
+                continue;
               const rawCode =
                 typeof event.Action === 'string' ? event.Action.split(':')[0] : event.status;
               const seconds = numeric(event.time);
@@ -789,6 +796,10 @@ export function createRuntimeDiagnostics(deps: {
                 ...(exit !== undefined ? { exitCode: exit } : {}),
                 ...(signal !== undefined ? { signal } : {}),
               });
+              if (records.length > 256) {
+                records.shift();
+                docker.events.truncated = true;
+              }
             }
             const combined = [...docker.events.records, ...records]
               .filter(
@@ -801,8 +812,7 @@ export function createRuntimeDiagnostics(deps: {
                   ) === index,
               )
               .sort((a, b) => a.at.localeCompare(b.at));
-            docker.events.truncated ||=
-              output.truncated || lines.length >= 256 || combined.length > 256;
+            docker.events.truncated ||= output.truncated || combined.length > 256;
             docker.events.records = combined.slice(-256);
           } catch {
             docker.events.state = 'failed';

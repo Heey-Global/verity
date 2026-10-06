@@ -215,18 +215,30 @@ describe('runtime diagnostics', () => {
           );
         if (path.startsWith('/events?')) {
           const scoped = decodeURIComponent(path).includes('com.docker.compose.project=');
+          const event = (eventId: string, labels: Record<string, string>) => ({
+            Type: 'container',
+            Action: 'die',
+            time: now / 1000,
+            Actor: { ID: eventId, Attributes: labels },
+          });
+          const events = scoped
+            ? [
+                event(companions[0]!.Id, companions[0]!.Labels),
+                // Removed components remain diagnosable from historical role labels.
+                event('9'.repeat(64), {
+                  'com.docker.compose.project': 'stack',
+                  'com.docker.compose.service': services[0]!,
+                }),
+                ...Array.from({ length: 300 }, () =>
+                  event('f'.repeat(64), {
+                    'com.docker.compose.project': 'stack',
+                    'com.docker.compose.service': 'excluded-service',
+                  }),
+                ),
+              ]
+            : [event(id, server.Labels)];
           return {
-            bytes: Buffer.from(
-              JSON.stringify({
-                Type: 'container',
-                Action: 'die',
-                time: now / 1000,
-                Actor: {
-                  ID: scoped ? companions[0]!.Id : id,
-                  Attributes: scoped ? companions[0]!.Labels : server.Labels,
-                },
-              }) + '\n',
-            ),
+            bytes: Buffer.from(events.map((entry) => JSON.stringify(entry)).join('\n') + '\n'),
             truncated: false,
           };
         }
@@ -254,8 +266,9 @@ describe('runtime diagnostics', () => {
         verified ? ['server', 'updater', 'gateway', 'gateway', 'database'] : ['server'],
       );
       expect(result.docker.events.records.map((record) => record.containerId)).toEqual(
-        verified ? [id, companions[0]!.Id] : [id],
+        verified ? [id, companions[0]!.Id, '9'.repeat(64)] : [id],
       );
+      expect(result.docker.events.truncated).toBe(false);
       expect(
         result.docker.containers.every(
           (container) =>
