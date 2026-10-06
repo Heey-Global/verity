@@ -327,11 +327,12 @@ export class PreviewEdge {
     // Preview credentials belong to the edge, never to the application target.
     if (url.searchParams.has('pin')) {
       // Preserve application query bytes: reserialization can invalidate signed URLs.
-      url.search = url.search
+      const query = url.search
         .slice(1)
         .split('&')
         .filter((parameter) => !new URLSearchParams(parameter).has('pin'))
         .join('&');
+      url.search = query ? `?${query}` : '';
     }
     if (!this.sessionAuthorized(request)) {
       if (pin === null) {

@@ -331,7 +331,7 @@ describe('WebSocket PIN query authentication', () => {
     });
     const { edgePort } = await bridge('ws-pin-query', targetPort);
     const client = new WebSocket(
-      `ws://127.0.0.1:${edgePort}/attendee?pin=123456&token=audio%20~&p%69n=secret`,
+      `ws://127.0.0.1:${edgePort}/attendee?pin=123456&?token=audio%20~&p%69n=secret`,
     );
     cleanups.push(() => client.terminate());
     await opened(client);
@@ -340,7 +340,7 @@ describe('WebSocket PIN query authentication', () => {
     );
     client.send('audio chunk');
     expect(await echo).toBe('audio chunk');
-    expect(paths).toEqual(['/attendee?token=audio%20~']);
+    expect(paths).toEqual(['/attendee??token=audio%20~']);
   });
 
   it('preserves raw application query encoding when authenticating with a cookie', async () => {
