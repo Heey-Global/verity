@@ -331,7 +331,7 @@ describe('WebSocket PIN query authentication', () => {
     });
     const { edgePort } = await bridge('ws-pin-query', targetPort);
     const client = new WebSocket(
-      `ws://127.0.0.1:${edgePort}/attendee?pin=123456&token=audio&pin=secret`,
+      `ws://127.0.0.1:${edgePort}/attendee?pin=123456&token=audio%20~&p%69n=secret`,
     );
     cleanups.push(() => client.terminate());
     await opened(client);
@@ -340,7 +340,19 @@ describe('WebSocket PIN query authentication', () => {
     );
     client.send('audio chunk');
     expect(await echo).toBe('audio chunk');
-    expect(paths).toEqual(['/attendee?token=audio']);
+    expect(paths).toEqual(['/attendee?token=audio%20~']);
+  });
+
+  it('preserves raw application query encoding when authenticating with a cookie', async () => {
+    const paths: string[] = [];
+    const targetPort = await wsTarget((_socket, request) => paths.push(request.url!));
+    const { edgePort, cookie } = await bridge('ws-query-encoding', targetPort);
+    const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket?signature=a%20~&value=%2f`, {
+      headers: { cookie },
+    });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    expect(paths).toEqual(['/socket?signature=a%20~&value=%2f']);
   });
 
   it('shares the failed-attempt limit with HTTP and rejects foreign browser origins', async () => {

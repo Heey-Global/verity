@@ -323,7 +323,14 @@ export class PreviewEdge {
     }
     const pin = url.searchParams.get('pin');
     // Preview credentials belong to the edge, never to the application target.
-    url.searchParams.delete('pin');
+    if (url.searchParams.has('pin')) {
+      // Preserve application query bytes: reserialization can invalidate signed URLs.
+      url.search = url.search
+        .slice(1)
+        .split('&')
+        .filter((parameter) => !new URLSearchParams(parameter).has('pin'))
+        .join('&');
+    }
     if (!this.sessionAuthorized(request)) {
       if (pin === null) {
         socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
