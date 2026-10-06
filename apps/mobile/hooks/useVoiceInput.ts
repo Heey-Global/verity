@@ -206,14 +206,14 @@ export function useVoiceInput(
       onChangeRef.current('');
       void send(submitted)
         .then((accepted) => {
-          if (disposedRef.current || !listeningRef.current) return;
+          if (disposedRef.current) return;
           if (!accepted && !editedDuringSendRef.current) {
             baseRef.current = composeTranscript(submitted, baseRef.current);
             onChangeRef.current(baseRef.current);
           }
         })
         .catch(() => {
-          if (disposedRef.current || !listeningRef.current) return;
+          if (disposedRef.current) return;
           if (!editedDuringSendRef.current) {
             baseRef.current = composeTranscript(submitted, baseRef.current);
             onChangeRef.current(baseRef.current);

@@ -50,10 +50,10 @@ jest.mock('./startSession', () => ({
   createSessionConfirmingWarnings: jest.fn(async () => ({ existing: false })),
 }));
 jest.mock('./tasksStore', () => ({ refreshTasks: jest.fn(async () => undefined) }));
-jest.mock('expo-crypto', () => ({
-  randomUUID: jest.fn().mockReturnValueOnce('new-session').mockReturnValue('turn-key'),
-}));
+let mockUUIDCounter = 0;
+jest.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${++mockUUIDCounter}` }));
 beforeEach(async () => {
+  mockUUIDCounter = 0;
   await AsyncStorage.clear();
   jest.clearAllMocks();
   remote = [{ ...task }];
@@ -99,4 +99,51 @@ it('refuses General or mixed-project selections', async () => {
     dispatchTasks([task, { ...task, id: 'task-2', projectId: 'other' }]),
   ).rejects.toThrow('one project');
   expect(createSessionConfirmingWarnings).not.toHaveBeenCalled();
+});
+
+it('starts a fresh attempt after a completed task is reopened', async () => {
+  await dispatchTasks([task]);
+  remote = [{ ...task, revision: 5, status: 'open' }];
+  await dispatchTasks(remote);
+  expect(mockClient.updateTask).toHaveBeenCalledTimes(2);
+  expect(mockClient.sendTurn.mock.calls[1]![1].clientReplyId).not.toBe(
+    mockClient.sendTurn.mock.calls[0]![1].clientReplyId,
+  );
+});
+it('allows a fresh attempt after refreshing a stale task snapshot', async () => {
+  remote = [{ ...task, revision: 3, title: 'Updated outcome' }];
+  await expect(dispatchTasks([task])).rejects.toThrow('Task changed');
+  await dispatchTasks(remote);
+  expect(mockClient.sendTurn).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({ prompt: 'Work on task #task-1: Updated outcome\nContext' }),
+  );
+});
+
+it('rejects excessive attachment counts before creating or assigning a session', async () => {
+  const attachments = Array.from({ length: 9 }, (_, i) => ({
+    hash: `hash-${i}`,
+    filename: 'context.txt',
+    mimeType: 'text/plain',
+  }));
+  await expect(dispatchTasks([{ ...task, attachments }])).rejects.toThrow('eight attachments');
+  expect(createSessionConfirmingWarnings).not.toHaveBeenCalled();
+  expect(mockClient.updateTask).not.toHaveBeenCalled();
+});
+it('rejects oversized attachment bytes before creating or assigning a session', async () => {
+  mockClient.readTaskAttachment.mockResolvedValueOnce(new ArrayBuffer(25_000_001));
+  await expect(
+    dispatchTasks([
+      { ...task, attachments: [{ hash: 'hash', filename: 'large.txt', mimeType: 'text/plain' }] },
+    ]),
+  ).rejects.toThrow('size limit');
+  expect(createSessionConfirmingWarnings).not.toHaveBeenCalled();
+  expect(mockClient.updateTask).not.toHaveBeenCalled();
+});
+
+it('coalesces concurrent taps into one dispatch attempt', async () => {
+  const [first, second] = await Promise.all([dispatchTasks([task]), dispatchTasks([task])]);
+  expect(first).toBe(second);
+  expect(mockClient.sendTurn).toHaveBeenCalledTimes(1);
+  expect(createSessionConfirmingWarnings).toHaveBeenCalledTimes(1);
 });

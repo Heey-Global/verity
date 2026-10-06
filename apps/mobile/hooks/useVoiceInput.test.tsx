@@ -381,3 +381,25 @@ it('holds recognition ownership until cancellation finishes after unmount', asyn
   act(() => second.result.current.toggle());
   await waitFor(() => expect(second.result.current.state).toBe('recording'));
 });
+
+it('restores a failed automatic send after recognition ends without an edit', async () => {
+  jest.useFakeTimers();
+  let fail!: (error: Error) => void;
+  const send = jest.fn(
+    () =>
+      new Promise<boolean>((_resolve, reject) => {
+        fail = reject;
+      }),
+  );
+  const change = jest.fn();
+  const { result } = renderHook(() => useVoiceInput('', change, send));
+  act(() => result.current.startAuto());
+  await waitFor(() => expect(result.current.state).toBe('recording'));
+  act(() => handlers.result({ results: [{ transcript: 'Retain this outcome' }], isFinal: true }));
+  act(() => jest.advanceTimersByTime(5400));
+  expect(send).toHaveBeenCalled();
+  act(() => handlers.end({}));
+  await act(async () => fail(new Error('offline')));
+  expect(change).toHaveBeenLastCalledWith('Retain this outcome');
+  jest.useRealTimers();
+});

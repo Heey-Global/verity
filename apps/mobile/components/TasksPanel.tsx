@@ -46,7 +46,7 @@ export function TasksPanel({
 }) {
   const { theme } = useUnistyles();
   const { width, height } = useWindowDimensions();
-  const { tasks, pending, conflicts } = useTasks();
+  const { tasks, pending, conflicts, errors } = useTasks();
   const [showDone, setShowDone] = useState(false);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -213,7 +213,7 @@ export function TasksPanel({
         {conflicts.includes(task.id) ? (
           <View>
             <Text accessibilityRole="alert" style={fg}>
-              Changed on another device. Your edit is kept locally.
+              {errors?.[task.id] ?? 'Changed on another device. Your edit is kept locally.'}
             </Text>
             <View style={{ flexDirection: 'row', gap: 8 }}>
               <Pressable

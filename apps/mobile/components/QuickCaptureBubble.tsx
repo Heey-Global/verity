@@ -40,9 +40,20 @@ import { QuickCaptureCard } from './QuickCaptureCard';
 import { TasksPanel } from './TasksPanel';
 
 export function QuickCaptureBubble() {
+  const hintRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshFromHint = useCallback(() => {
-    void refreshTasks().catch(() => undefined);
+    if (hintRefresh.current) return;
+    hintRefresh.current = setTimeout(() => {
+      hintRefresh.current = null;
+      void refreshTasks().catch(() => undefined);
+    }, 2000);
   }, []);
+  useEffect(
+    () => () => {
+      if (hintRefresh.current) clearTimeout(hintRefresh.current);
+    },
+    [],
+  );
   useLiveHints(getVerityBaseUrl(), refreshFromHint);
   useEffect(
     () =>

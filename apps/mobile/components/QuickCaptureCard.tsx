@@ -132,11 +132,11 @@ export function QuickCaptureCard({
   const pick = async (kind: 'photo' | 'file') => {
     const wasEditing = editing;
     setEditing(true);
-    if (uploads.length >= 10) return;
+    if (uploads.length >= 8) return;
     try {
       const selected = await (kind === 'photo'
-        ? pickImagesFromLibrary(10 - uploads.length)
-        : pickFiles(10 - uploads.length));
+        ? pickImagesFromLibrary(8 - uploads.length)
+        : pickFiles(8 - uploads.length));
       setUploads((previous) => [...previous, ...selected]);
     } catch (error) {
       Alert.alert('Could not attach', error instanceof Error ? error.message : 'Try again');

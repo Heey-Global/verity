@@ -32,7 +32,7 @@ function setup(initial?: string) {
       remote.push(saved);
       return saved;
     }),
-    updateTask: vi.fn(async (_id: string, patch: { expectedRevision: number }) => ({
+    updateTask: vi.fn(async (_id: string, patch: { expectedRevision: number }): Promise<Task> => ({
       ...task,
       ...patch,
       revision: patch.expectedRevision + 1,
@@ -185,4 +185,66 @@ it('can delete a task with a retained conflicting edit', async () => {
   expect(s.api.updateTask).not.toHaveBeenCalled();
   expect(s.api.deleteTask).toHaveBeenCalledWith(task.id);
   expect(s.snapshot().pending).toHaveLength(0);
+});
+
+it('retains a rejected capture while allowing unrelated captures to sync', async () => {
+  const s = setup();
+  await s.queue.create(
+    { ...task, projectId: 'missing' },
+    { title: task.title, projectId: 'missing' },
+  );
+  const other = { ...task, id: '22222222-2222-4222-8222-222222222222' };
+  await s.queue.create(other, { title: 'General capture', projectId: null });
+  s.api.saveTask.mockRejectedValueOnce(
+    Object.assign(new Error('project not found'), { status: 404 }),
+  );
+  await s.queue.sync();
+  expect(s.api.saveTask).toHaveBeenCalledWith(other.id, {
+    title: 'General capture',
+    projectId: null,
+  });
+  expect(s.snapshot().pending).toHaveLength(1);
+  expect(s.snapshot().conflicts).toContain(task.id);
+  expect(s.snapshot().errors?.[task.id]).toBe('project not found');
+});
+
+it('does not rebase a stale editor over an in-flight patch', async () => {
+  const s = setup(
+    JSON.stringify({ tasks: [{ ...task, revision: 2 }], pending: [], conflicts: [] }),
+  );
+  await s.queue.restore();
+  await s.queue.patch(task.id, { title: 'Current edit', expectedRevision: 2 });
+  let finish!: (value: Task) => void;
+  s.api.updateTask.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  s.api.updateTask.mockRejectedValueOnce(Object.assign(new Error('changed'), { status: 409 }));
+  const syncing = s.queue.sync();
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  await s.queue.patch(task.id, { title: 'Stale edit', expectedRevision: 1 });
+  finish({ ...task, title: 'Current edit', revision: 3 });
+  await syncing;
+  expect(s.api.updateTask).toHaveBeenLastCalledWith(task.id, {
+    title: 'Stale edit',
+    expectedRevision: 1,
+  });
+  expect(s.snapshot().conflicts).toContain(task.id);
+});
+
+it('can move a rejected capture to General and retry its original id', async () => {
+  const s = setup(
+    JSON.stringify({
+      tasks: [{ ...task, projectId: 'revoked' }],
+      pending: [{ kind: 'create', id: task.id, body: { title: task.title, projectId: 'revoked' } }],
+      conflicts: [task.id],
+    }),
+  );
+  await s.queue.restore();
+  await s.queue.patch(task.id, { projectId: null, sessionId: null, expectedRevision: 0 });
+  await s.queue.sync();
+  expect(s.api.saveTask).toHaveBeenCalledWith(task.id, { title: task.title, projectId: null });
+  expect(s.snapshot().conflicts).toHaveLength(0);
 });

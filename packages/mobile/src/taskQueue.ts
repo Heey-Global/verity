@@ -17,6 +17,7 @@ const stateSchema = z.object({
   tasks: z.array(taskSchema),
   pending: z.array(operationSchema),
   conflicts: z.array(z.string()),
+  errors: z.record(z.string(), z.string()).optional(),
 });
 export type TaskQueueState = z.infer<typeof stateSchema>;
 interface Dependencies {
@@ -72,6 +73,25 @@ export class TaskQueue {
       if (!this.deps.active()) throw new Error('Sign in again before editing');
       const current = this.state.tasks.find((task) => task.id === id);
       if (!current) throw new Error('Task no longer exists');
+      const rejectedCapture = this.state.pending.find(
+        (op) => op.id === id && op.kind === 'create' && this.state.conflicts.includes(id),
+      );
+      if (rejectedCapture?.kind === 'create') {
+        const capture = taskCaptureSchema.parse({ ...rejectedCapture.body, ...body });
+        await this.commit({
+          ...this.state,
+          tasks: this.state.tasks.map((task) =>
+            task.id === id ? taskSchema.parse({ ...task, ...body, revision: 0 }) : task,
+          ),
+          pending: [
+            ...this.state.pending.filter((op) => op.id !== id),
+            { ...rejectedCapture, body: capture },
+            { kind: 'patch', id, body: { ...body, expectedRevision: 0 } },
+          ],
+          conflicts: this.state.conflicts.filter((item) => item !== id),
+        });
+        return;
+      }
       // A sync may have advanced the revision while the row was being edited.
       // Preserve the row's original revision; stale writes must conflict.
       await this.commit({
@@ -99,7 +119,9 @@ export class TaskQueue {
         ...this.state,
         tasks: this.state.tasks.filter((task) => task.id !== id),
         pending: [
-          ...this.state.pending.filter((op) => op.id !== id || op.kind === 'create'),
+          ...this.state.pending.filter(
+            (op) => op.id !== id || (op.kind === 'create' && !this.state.conflicts.includes(id)),
+          ),
           { kind: 'delete', id },
         ],
         conflicts: this.state.conflicts.filter((item) => item !== id),
@@ -181,11 +203,22 @@ export class TaskQueue {
           );
           continue;
         }
-        if (status === 409 || (status === 404 && op.kind === 'patch')) {
+        if (
+          status === 409 ||
+          status === 400 ||
+          status === 403 ||
+          status === 404 ||
+          status === 413 ||
+          status === 422
+        ) {
           await this.serial(() =>
             this.commit({
               ...this.state,
               conflicts: [...new Set([...this.state.conflicts, op.id])],
+              errors: {
+                ...this.state.errors,
+                [op.id]: error instanceof Error ? error.message : 'Task was rejected by the server',
+              },
             }),
           );
           continue;
@@ -199,7 +232,10 @@ export class TaskQueue {
           .map((item) => ({ ...item }));
         if (saved) {
           const next = pending.find((item) => item.id === op.id);
-          if (next?.kind === 'patch')
+          if (
+            next?.kind === 'patch' &&
+            next.body.expectedRevision === (op.kind === 'patch' ? op.body.expectedRevision : 0)
+          )
             next.body = { ...next.body, expectedRevision: saved.revision };
         }
         const hasLater = pending.some((item) => item.id === op.id);
