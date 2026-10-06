@@ -897,8 +897,6 @@ export function SessionChat({
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);
-  const [previewManagedId, setPreviewManagedId] = useState<string>();
-  const [managedEntries, setManagedEntries] = useState<ManagedDevServer[]>([]);
   const completedServerTools = session.messages.filter(
     (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
   ).length;
@@ -913,7 +911,6 @@ export function SessionChat({
       .listManagedDevServers(sessionId)
       .then((servers) => {
         if (!active || !servers) return;
-        setManagedEntries(servers);
         setManagedByInstance(
           new Map(
             servers.flatMap((server) =>
@@ -1189,10 +1186,20 @@ export function SessionChat({
   // not the one captured when the callback was created.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const transcriptSnapshot = {
+    messages: session.messages,
+    planning: { planning, planningPlan, planningRevision },
+    localMessageGroups: [localMeetingMessages, pendingEchoMessages],
+  };
+  const transcriptSnapshotRef = useRef(transcriptSnapshot);
+  transcriptSnapshotRef.current = transcriptSnapshot;
   const frozenTailRef = useRef<FrozenTranscriptTail | null>(null);
   frozenTailRef.current = frozenTail;
   const snapshotLiveTail = useCallback(() => {
-    setFrozenTail(freezeTranscriptTail(messagesRef.current));
+    const snapshot = transcriptSnapshotRef.current;
+    setFrozenTail(
+      freezeTranscriptTail(snapshot.messages, snapshot.planning, snapshot.localMessageGroups),
+    );
   }, []);
   // A snapshot whose boundary message is gone (the transcript was reloaded) no longer
   // describes this session: `frozenTranscriptRows` returned null and we are rendering
@@ -3866,8 +3873,8 @@ export function SessionChat({
           const entry = server.managedInstanceId
             ? managedByInstance.get(server.managedInstanceId)
             : undefined;
+          // The overview holds both access switches, so the card leads there.
           const openEntry = () => {
-            setPreviewManagedId(entry?.id);
             setStaticPreviewOpen(true);
           };
           return (
@@ -3940,36 +3947,6 @@ export function SessionChat({
             />
           );
         })}
-      {managedEntries
-        .filter(
-          (entry) =>
-            !session.devServers?.some((server) => server.managedInstanceId === entry.instance?.id),
-        )
-        .map((entry) => (
-          <Pressable
-            key={`configured:${entry.id}`}
-            accessibilityRole="button"
-            accessibilityLabel={`Details for ${entry.name}`}
-            onPress={() => {
-              setPreviewManagedId(entry.id);
-              setStaticPreviewOpen(true);
-            }}
-            style={{
-              marginHorizontal: theme.spacing.md,
-              padding: theme.spacing.md,
-              backgroundColor: theme.colors.surfaceAlt,
-              borderRadius: theme.radius.md,
-            }}
-          >
-            <Text style={{ color: theme.colors.text }}>
-              {entry.name} · {entry.instance?.state ?? 'Configured'}
-            </Text>
-            <Text style={{ color: theme.colors.textMuted }}>
-              {entry.command}
-              {entry.workdir !== '.' ? `\nin ${entry.workdir}` : ''}
-            </Text>
-          </Pressable>
-        ))}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
       ) : null}
@@ -3987,7 +3964,6 @@ export function SessionChat({
         <StaticPreviewSheet
           detectedServers={session.devServers}
           initialServer={previewServer}
-          initialManagedId={previewManagedId}
           onAskAgent={(prompt) => {
             setStaticPreviewOpen(false);
             sendQuickReply(prompt);
@@ -4002,7 +3978,6 @@ export function SessionChat({
           onClose={() => {
             setStaticPreviewOpen(false);
             setPreviewServer(undefined);
-            setPreviewManagedId(undefined);
             refreshStaticPreview();
           }}
         />

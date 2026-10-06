@@ -163,6 +163,44 @@ describe('applyStartupUpdate', () => {
     });
   });
 
+  it.each([true, false])('allows a slow interactive check (reload: %s)', async (reload) => {
+    jest.useFakeTimers();
+    const client = makeClient({
+      checkForUpdateAsync: jest.fn(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ isAvailable: true } as UpdateCheckResult), 6_000),
+          ),
+      ),
+      fetchUpdateAsync: jest.fn().mockResolvedValue({ isNew: true }),
+      reloadAsync: jest.fn().mockResolvedValue(undefined),
+    });
+    const check = createSerialUpdateChecker(client, reload);
+    const result = check();
+    await jest.advanceTimersByTimeAsync(6_000);
+    await expect(result).resolves.toBe(reload ? 'reloading' : 'downloaded');
+    expect(client.fetchUpdateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])(
+    'bounds an unresponsive interactive check (reload: %s)',
+    async (reload) => {
+      jest.useFakeTimers();
+      const client = makeClient({
+        checkForUpdateAsync: jest.fn(() => new Promise(() => undefined)),
+      });
+      const result = createSerialUpdateChecker(client, reload)();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await expect(result).resolves.toMatchObject({
+        status: 'failed',
+        phase: 'check',
+        timedOut: true,
+        message: expect.stringContaining('30 seconds'),
+      });
+      expect(client.fetchUpdateAsync).not.toHaveBeenCalled();
+    },
+  );
+
   it('serializes overlapping foreground update checks', async () => {
     let resolveCheck: ((value: UpdateCheckResult) => void) | undefined;
     const client = makeClient({

@@ -4,6 +4,7 @@ import {
   Alert,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   Share,
@@ -22,7 +23,12 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { openLocalPreview } from './previewAccess';
-import { ManagedServerDetail, ManagedServerRows, managedStateLine } from './ManagedServers';
+import {
+  ManagedServerBlock,
+  ManagedServerDetail,
+  managedLocalOn,
+  managedStatus,
+} from './ManagedServers';
 import { Icon } from '../Icon';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
@@ -150,7 +156,6 @@ export function StaticPreviewSheet({
   initialServer,
   onOpenSettings,
   onAskAgent,
-  initialManagedId,
   settleTimeoutMs = 1_000,
 }: {
   client: VerityClient;
@@ -160,8 +165,6 @@ export function StaticPreviewSheet({
   detectedServers?: SessionDevServer[] | undefined;
   initialServer?: SessionDevServer | undefined;
   onOpenSettings?: (() => void) | undefined;
-  /** Opens straight on a managed server's detail, from its chat card. */
-  initialManagedId?: string | undefined;
   /** Sends a request to the session's agent, for "Save as entry" and crashes. */
   onAskAgent?: ((prompt: string) => void) | undefined;
   /** How long the default tab waits for slow lists before deciding. */
@@ -243,7 +246,7 @@ export function StaticPreviewSheet({
   const [managed, setManaged] = useState<ManagedDevServer[] | null | undefined>(
     typeof client.listManagedDevServers === 'function' ? undefined : null,
   );
-  const [managedId, setManagedId] = useState<string | undefined>(initialManagedId);
+  const [managedId, setManagedId] = useState<string | undefined>();
   const [managedPending, setManagedPending] = useState<string>();
   const [managedLogs, setManagedLogs] = useState<string>();
   const loadManaged = useCallback(async () => {
@@ -280,14 +283,18 @@ export function StaticPreviewSheet({
     };
   }, [client, managedId, sessionId]);
 
-  /** The operator sees exactly what will run before it is allowed on the network. */
-  const confirmCommand = (server: ManagedDevServer, action: string) =>
+  /** The operator sees exactly what will run before it becomes reachable. */
+  const confirmCommand = (server: ManagedDevServer, action: string, mode: 'local' | 'online') =>
     new Promise<boolean>((resolve) =>
       Alert.alert(
-        `Allow ${server.name} on your network?`,
+        mode === 'local' ? `Allow ${server.name} locally?` : `Share ${server.name} online?`,
         `The agent set this server up. It runs:\n\n${server.command}${
           server.workdir !== '.' ? `\n\nin ${server.workdir}` : ''
-        }\n\nAnyone on your network can open it while it runs.`,
+        }\n\n${
+          mode === 'local'
+            ? 'Anyone on your network can open it without a PIN while it runs.'
+            : 'Anyone with the public link and its PIN can open it while it runs.'
+        }`,
         [
           { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
           { text: action, onPress: () => resolve(true) },
@@ -296,8 +303,22 @@ export function StaticPreviewSheet({
       ),
     );
 
-  const managedAction = async (server: ManagedDevServer, work: () => Promise<unknown>) => {
+  const [managedSwitch, setManagedSwitch] = useState<{ id: string; kind: 'local' | 'online' }>();
+  const sheetOpen = useRef(true);
+  useEffect(
+    () => () => {
+      sheetOpen.current = false;
+    },
+    [],
+  );
+
+  const managedAction = async (
+    server: ManagedDevServer,
+    kind: 'local' | 'online' | 'other',
+    work: () => Promise<unknown>,
+  ) => {
     setManagedPending(server.id);
+    if (kind !== 'other') setManagedSwitch({ id: server.id, kind });
     setError(undefined);
     try {
       await work();
@@ -305,36 +326,226 @@ export function StaticPreviewSheet({
       setError(previewError(caught));
     } finally {
       setManagedPending(undefined);
+      setManagedSwitch(undefined);
       await loadManaged();
     }
   };
 
-  const approveManaged = async (server: ManagedDevServer, action: string) => {
-    if (!(await confirmCommand(server, action))) return false;
-    await client.approveManagedDevServer(sessionId, server.id, {
-      command: server.command,
-      workdir: server.workdir,
-    });
+  /** Approves the command the operator was shown; false when they cancel. */
+  const approveManaged = async (
+    server: ManagedDevServer,
+    action: string,
+    mode: 'local' | 'online',
+  ) => {
+    if (server.approved) return true;
+    if (!(await confirmCommand(server, action, mode))) return false;
+    await client.approveManagedDevServer(
+      sessionId,
+      server.id,
+      { command: server.command, workdir: server.workdir },
+      // Approved for a public link only: the server must not also open locally.
+      mode === 'online' && server.accessSwitches && !managedLocalOn(server) ? { local: false } : {},
+    );
     return true;
   };
 
-  const toggleManaged = (server: ManagedDevServer, on: boolean) =>
-    void managedAction(server, async () => {
-      if (!on) return client.controlManagedDevServer(sessionId, server.id, 'stop');
-      // Switching on is the operator's own act and approves what runs, once
-      // they have seen the command.
-      if (!server.approved && !(await approveManaged(server, 'Allow and start'))) return;
-      return client.controlManagedDevServer(sessionId, server.id, 'start');
+  /** The live public link of a managed instance, if any. */
+  const managedLinkFor = (server: ManagedDevServer) =>
+    server.instance
+      ? currentShares.current.find(
+          (share) => share.managedInstanceId === server.instance?.id && isLive(share),
+        )
+      : undefined;
+
+  const askLinkLifetime = () =>
+    new Promise<number | undefined>((resolve) => {
+      const cancel = {
+        text: 'Cancel',
+        style: 'cancel' as const,
+        onPress: () => resolve(undefined),
+      };
+      const options = PUBLIC_PREVIEW_DURATIONS.map((option) => ({
+        text: option.a11y,
+        onPress: () => resolve(option.seconds),
+      }));
+      // Android permits only three Alert buttons; longer lifetimes use a second dialog.
+      Alert.alert(
+        'How long should the link work?',
+        'Visitors need the link and its PIN.',
+        [
+          ...(Platform.OS === 'ios' ? [cancel] : []),
+          options[0]!,
+          options[1]!,
+          {
+            text: 'More durations',
+            onPress: () =>
+              Alert.alert(
+                'Longer link lifetime',
+                'Visitors need the link and its PIN.',
+                [options[2]!, options[3]!, cancel],
+                { cancelable: true, onDismiss: () => resolve(undefined) },
+              ),
+          },
+        ],
+        { cancelable: true, onDismiss: () => resolve(undefined) },
+      );
+    });
+
+  /** Waits until the instance answers on its port; a public link needs that. */
+  const waitUntilRunning = async (serverId: string) => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      // Closed meanwhile: nobody would see the link or its PIN, so none is made.
+      if (!sheetOpen.current) throw new Error('The Preview sheet was closed.');
+      const servers = await client.listManagedDevServers(sessionId);
+      if (!sheetOpen.current) throw new Error('The Preview sheet was closed.');
+      if (servers) setManaged(servers);
+      const instance = servers?.find((value) => value.id === serverId)?.instance;
+      if (instance?.state === 'running') return instance;
+      if (instance?.state === 'crashed')
+        throw new Error(instance.detail ?? 'The server crashed while starting.');
+      // Stopped elsewhere meanwhile: waiting longer would only delay the cleanup.
+      if (!instance || instance.state === 'stopped')
+        throw new Error('The server stopped before the link was ready.');
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    throw new Error('The server did not start in time.');
+  };
+
+  const toggleLocal = (server: ManagedDevServer, on: boolean) =>
+    void managedAction(server, 'local', async () => {
+      if (on && !(await approveManaged(server, 'Allow', 'local'))) return;
+      // A Core before the access switches has no Local route; its single
+      // switch started and stopped the server.
+      if (!server.accessSwitches)
+        return client.controlManagedDevServer(sessionId, server.id, on ? 'start' : 'stop');
+      return client.setManagedDevServerLocal(sessionId, server.id, on);
+    });
+
+  const toggleOnline = (server: ManagedDevServer, on: boolean) => {
+    if (!on) {
+      const link = managedLinkFor(server);
+      if (link) stopPublic(link, () => void loadManaged());
+      return;
+    }
+    void managedAction(server, 'online', async () => {
+      if (publicSharing !== 'available') return;
+      const ttlSeconds = await askLinkLifetime();
+      if (ttlSeconds === undefined) return;
+      if (!server.accessSwitches) {
+        const confirmed = await new Promise<boolean>((resolve) =>
+          Alert.alert(
+            'Share online and on your network?',
+            'This Core also enables Local access when sharing online. Anyone on your network can open the server without a PIN. The public link requires its PIN.',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Share', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          ),
+        );
+        if (!confirmed) return;
+      }
+      const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
+      let share: PublicPreviewShare;
+      try {
+        if (!(await approveManaged(server, 'Share', 'online'))) return;
+        if (!running || server.instance?.restartToApply)
+          await client.controlManagedDevServer(
+            sessionId,
+            server.id,
+            'start',
+            // An older Core ignores Local and opens the server on the network too;
+            // its Local switch then shows that honestly.
+            server.accessSwitches ? { local: managedLocalOn(server) } : {},
+          );
+        const instance = await waitUntilRunning(server.id);
+        share = await client.createSessionPortPreviewShare(sessionId, {
+          targetPort: instance.sandboxPort,
+          managedInstanceId: instance.id,
+          pin: generatePreviewPin(),
+          ttlSeconds,
+        });
+      } catch (caught) {
+        // Started only for this link: with no access on, nothing may keep running.
+        if ((server.accessSwitches || !running) && !managedLocalOn(server))
+          await client
+            .controlManagedDevServer(
+              sessionId,
+              server.id,
+              'stop',
+              server.accessSwitches ? { onlyIfUnshared: true } : {},
+            )
+            .catch(() => undefined);
+        throw caught;
+      }
+      if (!sheetOpen.current) {
+        await client.stopPublicPreviewShare(share.id);
+        if ((server.accessSwitches || !running) && !managedLocalOn(server))
+          await client.controlManagedDevServer(
+            sessionId,
+            server.id,
+            'stop',
+            server.accessSwitches ? { onlyIfUnshared: true } : {},
+          );
+        return;
+      }
+      createdShareIds.current.add(share.id);
+      setShares((current) => [share, ...current]);
+    });
+  };
+
+  /** Start and Start again keep the switches; with both off they turn Local on. */
+  const startManaged = (server: ManagedDevServer) =>
+    void managedAction(server, 'other', async () => {
+      if (!(await approveManaged(server, 'Allow and start', 'local'))) return;
+      const keepLocalOff = managedLinkFor(server) !== undefined && !managedLocalOn(server);
+      return client.controlManagedDevServer(
+        sessionId,
+        server.id,
+        'start',
+        server.accessSwitches && !keepLocalOff ? { local: true } : {},
+      );
     });
 
   const restartManaged = (server: ManagedDevServer) =>
-    void managedAction(server, async () => {
-      if (!server.approved && !(await approveManaged(server, 'Allow and restart'))) return;
+    void managedAction(server, 'other', async () => {
+      if (!(await approveManaged(server, 'Allow and restart', 'local'))) return;
       return client.controlManagedDevServer(sessionId, server.id, 'restart');
     });
 
-  const shareManagedOnNetwork = (server: ManagedDevServer) =>
-    void managedAction(server, () => approveManaged(server, 'Allow'));
+  /** Stop turns both switches off; ending a public link asks first. */
+  const stopManaged = (server: ManagedDevServer) => {
+    const stop = () =>
+      void managedAction(server, 'other', () =>
+        client.controlManagedDevServer(sessionId, server.id, 'stop'),
+      );
+    const link = managedLinkFor(server);
+    if (link) stopPublic(link, stop);
+    else stop();
+  };
+
+  const openManagedPublic = (server: ManagedDevServer) => {
+    const link = managedLinkFor(server);
+    if (!link?.publicOrigin) return;
+    // The PIN in the address signs this device in; the edge swaps it for a
+    // session cookie and strips it from the address.
+    const url = new URL(link.publicOrigin);
+    url.searchParams.set('pin', link.pin);
+    void Linking.openURL(url.toString()).catch((caught: unknown) => setError(previewError(caught)));
+  };
+
+  const [pinCopiedFor, setPinCopiedFor] = useState<string>();
+  const copyManagedPin = (server: ManagedDevServer) => {
+    const link = managedLinkFor(server);
+    if (!link) return;
+    void Clipboard.setStringAsync(link.pin).then(() => {
+      setPinCopiedFor(server.id);
+      setTimeout(
+        () => setPinCopiedFor((current) => (current === server.id ? undefined : current)),
+        1_500,
+      );
+    });
+  };
 
   const openManaged = async (server: ManagedDevServer) => {
     const url = server.instance?.url;
@@ -370,27 +581,13 @@ export function StaticPreviewSheet({
           text: 'Delete',
           style: 'destructive',
           onPress: () =>
-            void managedAction(server, async () => {
+            void managedAction(server, 'other', async () => {
               await client.deleteManagedDevServer(sessionId, server.id);
               setManagedId(undefined);
             }),
         },
       ],
     );
-
-  /** A managed instance as a share target; its port is internal and not shown. */
-  const managedTarget = (server: ManagedDevServer): PreviewTarget => ({
-    kind: 'port',
-    server: {
-      port: server.instance?.sandboxPort ?? 0,
-      managedInstanceId: server.instance?.id,
-      reachable: true,
-      pid: 0,
-      name: server.name,
-      command: server.command,
-      workdir: server.workdir,
-    },
-  });
 
   const navigate = (nextPath: string) => {
     // Walking the folders pins the tab: a server starting meanwhile must not
@@ -646,7 +843,7 @@ export function StaticPreviewSheet({
       .finally(() => setBusy(undefined));
   };
 
-  const stopPublic = (share: PublicPreviewShare) => {
+  const stopPublic = (share: PublicPreviewShare, after?: () => void) => {
     Alert.alert('Stop public link?', 'The link will stop working immediately.', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -662,6 +859,7 @@ export function StaticPreviewSheet({
               createdShareIds.current.delete(share.id);
               setShares((current) => current.filter((item) => item.id !== share.id));
               setJustStopped(true);
+              after?.();
             })
             .catch((caught: unknown) =>
               setError(caught instanceof Error ? caught.message : 'Could not stop preview'),
@@ -900,23 +1098,58 @@ export function StaticPreviewSheet({
             <Text style={styles.label}>YOUR SERVERS</Text>
             <Text style={styles.sectionHint}>Set up by the agent</Text>
           </View>
-          <ManagedServerRows
-            servers={managed}
-            pendingId={managedPending}
-            onToggle={toggleManaged}
-            onOpenAddress={(server) => void openManaged(server)}
-            onSelect={(server) => {
-              setError(undefined);
-              setManagedLogs(undefined);
-              setManagedId(server.id);
-            }}
-            onStopElsewhere={(instanceId) =>
-              void client
-                .stopManagedDevServerInstance(sessionId, instanceId)
-                .then(setManaged)
-                .catch((caught: unknown) => setError(previewError(caught)))
-            }
-          />
+          {managed.map((server) => {
+            const link = managedLinkFor(server);
+            return (
+              <ManagedServerBlock
+                key={server.id}
+                server={server}
+                publicLink={
+                  // A link still being created counts as on, so the switch
+                  // cannot start a second one meanwhile.
+                  link
+                    ? {
+                        origin: link.publicOrigin ?? null,
+                        pin: link.pin,
+                        expiresAt: link.expiresAt,
+                        pinLocked: link.pinLocked === true,
+                        pending: link.state !== 'active' || !link.publicOrigin,
+                      }
+                    : undefined
+                }
+                publicSharing={publicSharing}
+                pending={
+                  managedSwitch?.id === server.id
+                    ? managedSwitch.kind
+                    : managedPending || busy
+                      ? 'other'
+                      : undefined
+                }
+                pinCopied={pinCopiedFor === server.id}
+                onLocal={(on) => toggleLocal(server, on)}
+                onOnline={(on) => toggleOnline(server, on)}
+                onOpenLocal={() => void openManaged(server)}
+                onOpenPublic={() => openManagedPublic(server)}
+                onSharePublic={() => {
+                  if (link)
+                    void Share.share({ message: shareMessage(link) }).catch(() => undefined);
+                }}
+                onCopyPin={() => copyManagedPin(server)}
+                onDetails={() => {
+                  setError(undefined);
+                  setManagedLogs(undefined);
+                  setManagedId(server.id);
+                }}
+                onStopElsewhere={(instanceId) =>
+                  void client
+                    .stopManagedDevServerInstance(sessionId, instanceId)
+                    .then(setManaged)
+                    .catch((caught: unknown) => setError(previewError(caught)))
+                }
+                onOpenSettings={onOpenSettings}
+              />
+            );
+          })}
         </>
       ) : null}
       {!devServersLoading &&
@@ -1478,71 +1711,14 @@ export function StaticPreviewSheet({
     );
   };
 
-  const renderManagedNetworkCard = (server: ManagedDevServer) => {
-    const url = server.instance?.url ?? null;
-    return (
-      <View
-        style={[styles.card, url ? styles.cardLocalActive : null]}
-        accessibilityLabel="On your network"
-      >
-        {renderCardHeading({
-          icon: 'wifi',
-          title: 'On your network',
-          description: url
-            ? 'Straight from your Verity server, at home or over VPN. No PIN and not encrypted.'
-            : 'Not shared yet. Allow it once and Verity opens it on your network whenever it runs.',
-        })}
-        {url ? (
-          <View style={styles.actions}>
-            <Pressable
-              onPress={() => void openManaged(server)}
-              accessibilityRole="button"
-              accessibilityLabel="Open in browser"
-              style={[styles.primaryButton, styles.actionButton]}
-            >
-              <Icon name="external-link" size={16} color={theme.colors.onPrimary} />
-              <Text style={styles.actionPrimaryText}>Open in browser</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void Clipboard.setStringAsync(url).then(() => setCopied('local-link'))}
-              accessibilityRole="button"
-              accessibilityLabel="Copy local link"
-              style={[styles.secondaryButton, styles.actionButton]}
-            >
-              <Icon
-                name={copied === 'local-link' ? 'check' : 'copy'}
-                size={16}
-                color={theme.colors.text}
-              />
-              <Text style={styles.secondaryText}>
-                {copied === 'local-link' ? 'Copied' : 'Copy link'}
-              </Text>
-            </Pressable>
-          </View>
-        ) : (
-          <Pressable
-            onPress={() => shareManagedOnNetwork(server)}
-            disabled={managedPending !== undefined}
-            accessibilityRole="button"
-            accessibilityLabel="Open on network"
-            style={styles.primaryButton}
-          >
-            <Icon name="wifi" size={16} color={theme.colors.onPrimary} />
-            <Text style={styles.actionPrimaryText}>Open on network</Text>
-          </Pressable>
-        )}
-      </View>
-    );
-  };
-
   const renderManagedDetail = (server: ManagedDevServer) => (
     <>
       <ManagedServerDetail
         server={server}
         logs={managedLogs}
-        busy={managedPending !== undefined}
-        onStart={() => toggleManaged(server, true)}
-        onStop={() => toggleManaged(server, false)}
+        busy={managedPending !== undefined || busy !== undefined}
+        onStart={() => startManaged(server)}
+        onStop={() => stopManaged(server)}
         onRestart={() => restartManaged(server)}
         onAskAgent={
           onAskAgent
@@ -1555,13 +1731,6 @@ export function StaticPreviewSheet({
             : undefined
         }
         onDelete={() => deleteManaged(server)}
-        networkCard={renderManagedNetworkCard(server)}
-        publicCard={
-          server.instance &&
-          (server.instance.state === 'running' || publicShareFor(managedTarget(server)))
-            ? renderPublicCard(managedTarget(server))
-            : null
-        }
       />
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </>
@@ -1599,9 +1768,6 @@ export function StaticPreviewSheet({
                 <View style={styles.rowText}>
                   <Text style={styles.title} numberOfLines={1}>
                     {selectedManaged.name}
-                  </Text>
-                  <Text style={styles.rowDetail} numberOfLines={1}>
-                    {managedStateLine(selectedManaged)}
                   </Text>
                 </View>
               </Pressable>
@@ -1660,6 +1826,9 @@ export function StaticPreviewSheet({
   );
 }
 
+/** On wide screens the sheet keeps one readable column instead of stretching. */
+const SHEET_CONTENT_MAX_WIDTH = 640;
+
 const styles = StyleSheet.create((theme) => ({
   overlay: { flex: 1, justifyContent: 'flex-end' },
   backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
@@ -1688,6 +1857,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: theme.spacing.md,
     marginBottom: theme.spacing.md,
+    width: '100%',
+    maxWidth: SHEET_CONTENT_MAX_WIDTH,
+    alignSelf: 'center',
   },
   headerBack: {
     flex: 1,
@@ -1697,7 +1869,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-  content: { flex: 1, minHeight: 0, gap: theme.spacing.md },
+  content: {
+    flex: 1,
+    minHeight: 0,
+    gap: theme.spacing.md,
+    width: '100%',
+    maxWidth: SHEET_CONTENT_MAX_WIDTH,
+    alignSelf: 'center',
+  },
   scroll: { flex: 1, minHeight: 0 },
   list: { gap: theme.spacing.sm, paddingBottom: theme.spacing.md },
   footer: { gap: theme.spacing.md },

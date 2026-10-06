@@ -45,6 +45,7 @@ function fixture(
     inspectArtifact?: PreviewShareManagerOptions['inspectArtifact'];
     listArtifactDirectory?: PreviewShareManagerOptions['listArtifactDirectory'];
     agentSeedHostPath?: string | undefined;
+    onShareEnded?: PreviewShareManagerOptions['onShareEnded'];
   } = {},
 ) {
   const record = {
@@ -136,6 +137,7 @@ function fixture(
     wait: vi.fn(async () => undefined),
     log,
     ...(options.inspectArtifact === undefined ? {} : { inspectArtifact: options.inspectArtifact }),
+    ...(options.onShareEnded === undefined ? {} : { onShareEnded: options.onShareEnded }),
     ...(options.listArtifactDirectory === undefined
       ? {}
       : { listArtifactDirectory: options.listArtifactDirectory }),
@@ -1186,6 +1188,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating', 'active'],
       'revoking',
+      { revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
     expect(store.transitionPublicPreviewShare).not.toHaveBeenCalledWith(
       'share-id',
@@ -1301,7 +1304,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating'],
       'revoking',
-      { failure: 'database interrupted' },
+      { failure: 'database interrupted', revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
   });
 
@@ -1434,6 +1437,56 @@ describe('PreviewShareManager', () => {
       ['revoking'],
       'expired',
       expect.objectContaining({ connectorContainerId: null }),
+    );
+  });
+
+  // A managed dev server with Local off stops once its last link ends; without
+  // this notice an expired link would leave it running unnoticed.
+  it('reports an ended managed link on Uplink expiry, revocation, and disabling', async () => {
+    const onShareEnded = vi.fn();
+    const { manager, store, record } = fixture({ onShareEnded });
+    const active = {
+      ...record,
+      state: 'active' as const,
+      connectorContainerId: 'connector-id',
+      managedInstanceId: 'instance-1',
+    };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.finishExpiredByUplink(record.id);
+    expect(onShareEnded).toHaveBeenLastCalledWith({
+      id: record.id,
+      managedInstanceId: 'instance-1',
+    });
+
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.stop(record.id);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+
+    // Losing the Uplink or Premium ends every link at once.
+    store.listPublicPreviewShares.mockResolvedValueOnce([active]);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.disableAll('lease expired');
+    expect(onShareEnded).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves revocation intent time when delayed cleanup finishes', async () => {
+    const { manager, store, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    const active = { ...record, state: 'active' as const };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({
+      ...active,
+      state: 'revoking',
+      revokedAt: began,
+    });
+    await manager.stop(record.id);
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['revoking'],
+      expect.any(String),
+      expect.objectContaining({ revokedAt: began }),
     );
   });
 
@@ -1712,16 +1765,28 @@ describe('sweepOrphanedPreviewShares', () => {
   it('kills the connector and revokes every non-terminal share', async () => {
     const { store, docker, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'active', connectorContainerId: 'connector-id' },
+      {
+        ...record,
+        state: 'active',
+        connectorContainerId: 'connector-id',
+        managedInstanceId: 'managed-1',
+      },
       { ...record, id: 'other', state: 'creating', connectorContainerName: 'verity-preview-other' },
       { ...record, id: 'done', state: 'revoked' },
     ]);
+    const onShareEnded = vi.fn();
     const swept = await sweepOrphanedPreviewShares({
       store: store as unknown as EventStore,
       docker: docker as unknown as DockerClient,
       now: () => new Date('2030-01-01T00:00:00Z'),
+      onShareEnded,
     });
     expect(swept).toBe(2);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+    expect(onShareEnded).toHaveBeenCalledWith({
+      id: record.id,
+      managedInstanceId: 'managed-1',
+    });
     expect(docker.removeContainer).toHaveBeenNthCalledWith(1, 'connector-id');
     expect(docker.removeContainer).toHaveBeenNthCalledWith(2, 'verity-preview-other');
     expect(store.transitionPublicPreviewShare.mock.calls.map(([id, , to]) => [id, to])).toEqual([
@@ -1732,6 +1797,25 @@ describe('sweepOrphanedPreviewShares', () => {
       connectorContainerId: null,
       revokedAt: new Date('2030-01-01T00:00:00Z'),
     });
+  });
+
+  it('preserves the original revocation time during orphan cleanup', async () => {
+    const { store, docker, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      { ...record, state: 'revoking', revokedAt: began },
+    ]);
+    await sweepOrphanedPreviewShares({
+      store: store as unknown as EventStore,
+      docker: docker as unknown as DockerClient,
+      now: () => new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['creating', 'active', 'revoking'],
+      'revoked',
+      expect.objectContaining({ revokedAt: began }),
+    );
   });
 
   it('closes out the remaining shares when one connector cannot be removed', async () => {
@@ -2351,6 +2435,7 @@ describe('managed public links', () => {
       serverId: 'entry-1',
       projectId: 'p1',
       sessionId: 's1',
+      localAccess: true,
       sandboxPort: 41000,
       networkPort: 8100,
       state: 'stopped',
@@ -2359,6 +2444,7 @@ describe('managed public links', () => {
       lastRunCommand: 'node server.mjs',
       lastRunWorkdir: '.',
       startedAt: null,
+      accessStartedAt: null,
       lastRanAt: null,
     };
     let running = false;

@@ -31,12 +31,14 @@ function view(
     command: 'node server.mjs --port {port}',
     workdir: '.',
     approved: true,
+    accessSwitches: true,
     instance:
       instance === null
         ? null
         : {
             id: 'inst',
             localShareId: 'local-share',
+            localOn: true,
             sessionId: 's1',
             state: 'running',
             desired: 'running',
@@ -177,7 +179,41 @@ describe('Preview sheet routes', () => {
       url: '/sessions/s1/managed-dev-servers/srv/start',
     });
     expect(response.statusCode).toBe(409);
-    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator');
+    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', { local: undefined });
+  });
+
+  // Shared online alone starts the server without a network address; the route
+  // must pass that through rather than drop it.
+  it('passes the Local switch state through start and the local route', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const start = vi.fn(async () => view({}));
+    const setLocal = vi.fn(async () => view({}));
+    registerManagedDevServerRoutes(app, {
+      manager: { start, setLocal } as unknown as ManagedDevServerManager,
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/managed-dev-servers/srv/start',
+      payload: { local: false },
+    });
+    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', { local: false });
+    const off = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/managed-dev-servers/srv/local',
+      payload: { on: false },
+    });
+    expect(off.statusCode).toBe(200);
+    expect(setLocal).toHaveBeenCalledWith('s1', 'srv', false);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/sessions/s1/managed-dev-servers/srv/local',
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(400);
   });
 
   it('approves only with the command and subdirectory the app showed', async () => {
@@ -194,6 +230,11 @@ describe('Preview sheet routes', () => {
       url,
       payload: { command: 'node server.mjs', workdir: '.' },
     });
-    expect(approve).toHaveBeenCalledWith('s1', 'srv', { command: 'node server.mjs', workdir: '.' });
+    expect(approve).toHaveBeenCalledWith(
+      's1',
+      'srv',
+      { command: 'node server.mjs', workdir: '.' },
+      { local: undefined },
+    );
   });
 });
