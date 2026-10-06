@@ -7,7 +7,6 @@ import type { ProjectRecord } from '@verity/store';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { Conductor, InMemoryEventBus } from '@verity/session';
 import { buildServer } from './server.js';
-import { createProjectWorktreeFactory } from './embedded.js';
 import { projectClonePath, type Provisioner } from './provisioner.js';
 import type { PreviewShareManager } from './preview-share-manager.js';
 import type { ProjectRuntime } from './project-runtime.js';
@@ -78,12 +77,9 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     .mockResolvedValue(runtimeResult);
   const stop = vi.fn().mockResolvedValue({ ...runtimeResult, running: false });
   const revokeShares = vi.fn(async () => undefined);
-  const removeSessionSandbox = vi.fn(async () => undefined);
   const app = buildServer({
     eventStore: ctx.store,
     conductor,
-    projectWorktrees: createProjectWorktreeFactory(async () => undefined),
-    removeSessionSandbox,
     bus: new InMemoryEventBus(),
     projectCloneRoot: root,
     projectRuntime: {
@@ -153,10 +149,6 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     expect(stop).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
     const moved = recovered.json<{ worktree: string; retainedWorktree: string }>();
-    expect(moved.worktree.startsWith(join(root, '.verity-session-clones', projects[1]!.id))).toBe(
-      true,
-    );
-    expect(removeSessionSandbox).toHaveBeenCalledExactlyOnceWith('moved');
     expect(await readFile(join(moved.worktree, 'new.txt'), 'utf8')).toBe('uncommitted');
     expect(await readFile(join(moved.retainedWorktree, 'new.txt'), 'utf8')).toBe('uncommitted');
     const retry = await app.inject({ method: 'POST', url: '/sessions/moved/project', payload });
@@ -188,9 +180,6 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
       }),
     );
     expect(blocked.ran && blocked.value.statusCode).toBe(409);
-    // Private clones do not inherit the project clone's local author identity.
-    await moveGit(moved.worktree, 'config', 'user.name', 'Test');
-    await moveGit(moved.worktree, 'config', 'user.email', 'test@example.test');
     await moveGit(moved.worktree, 'add', 'new.txt');
     await moveGit(moved.worktree, 'commit', '-m', 'session work');
     const commitGate = await app.inject({

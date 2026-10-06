@@ -68,8 +68,6 @@ export interface ManagedDevServerManagerOptions {
   networkPorts: readonly number[];
   /** The session worktree as the sandbox sees it. */
   sandboxWorktree(project: ProjectRecord, worktree: string): string;
-  resolveSessionProject?: (sessionId: string, project: ProjectRecord) => Promise<ProjectRecord>;
-  prepareSessionProject?: (sessionId: string, project: ProjectRecord) => Promise<ProjectRecord>;
   /** Instances whose public link is live and must keep their network port. */
   protectedInstances?: () => ReadonlySet<string>;
   /** Pushes a refreshed listener snapshot to the app. */
@@ -218,8 +216,7 @@ export class ManagedDevServerManager {
       throw new ManagedDevServerError('session not found', 404);
     const project = await this.options.store.getProject(session.projectId);
     if (!project) throw new ManagedDevServerError('project not found', 404);
-    const runtimeProject = await this.options.resolveSessionProject?.(sessionId, project);
-    return { project: runtimeProject ?? project, sessionId, worktree: session.worktree };
+    return { project, sessionId, worktree: session.worktree };
   }
 
   private async entry(projectId: string, idOrName: string): Promise<ManagedDevServerRecord> {
@@ -594,10 +591,7 @@ export class ManagedDevServerManager {
    * its worktree. A move also forgets the instances, which belong to the source
    * project and would otherwise hold their network ports forever.
    */
-  async stopSession(
-    sessionId: string,
-    options: { forget?: boolean; legacyRuntime?: boolean } = {},
-  ): Promise<void> {
+  async stopSession(sessionId: string, options: { forget?: boolean } = {}): Promise<void> {
     const instances = await this.servers.listInstances({ sessionId });
     const session = await this.options.store.getSession(sessionId);
     const project = session?.projectId
@@ -605,12 +599,7 @@ export class ManagedDevServerManager {
       : undefined;
     const work = async () => {
       for (const instance of instances) {
-        if (project) {
-          const stop = this.stopInstance(project, instance, null, options.legacyRuntime);
-          // Migration must abort if a legacy process cannot be stopped.
-          if (options.legacyRuntime) await stop;
-          else await stop.catch(() => undefined);
-        }
+        if (project) await this.stopInstance(project, instance, null).catch(() => undefined);
         if (options.forget) await this.servers.deleteInstance(instance.id);
       }
     };
@@ -631,9 +620,7 @@ export class ManagedDevServerManager {
     by: StartedBy,
     local?: boolean,
   ): Promise<void> {
-    const { sessionId } = context;
-    const project =
-      (await this.options.prepareSessionProject?.(sessionId, context.project)) ?? context.project;
+    const { project, sessionId } = context;
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
       // Record the intent, wake the sandbox, and let supervision start the server
       // once it is up: an instance that should run but has no process is started.
@@ -791,22 +778,14 @@ export class ManagedDevServerManager {
     project: ProjectRecord,
     instance: ManagedDevServerInstanceRecord,
     detail: string | null,
-    legacyRuntime = false,
   ): Promise<void> {
-    // Only the migration path may stop tagged processes in the legacy shared runtime.
-    const runtimeProject = legacyRuntime
-      ? project
-      : ((await this.options.resolveSessionProject?.(instance.sessionId, project)) ?? project);
     await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     try {
       await this.unpublish(instance);
     } finally {
       // Edge cleanup must not prevent the server process from being stopped.
-      if (runtimeProject.state === 'active' && runtimeProject.containerName) {
-        const stop = this.options.runtime.stopManagedServer(runtimeProject, instance.id);
-        if (legacyRuntime) await stop;
-        else await stop.catch(() => undefined);
-      }
+      if (project.state === 'active' && project.containerName)
+        await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
       await this.servers.updateInstance(instance.id, {
         state: 'stopped',
         detail,
@@ -978,9 +957,9 @@ export class ManagedDevServerManager {
     projectId: string,
     instances: ManagedDevServerInstanceRecord[],
   ): Promise<void> {
-    const baseProject = await this.options.store.getProject(projectId);
-    if (!baseProject) return;
-    const scans = new Map<string, ListeningProcess[]>();
+    const project = await this.options.store.getProject(projectId);
+    if (!project || project.state !== 'active' || !project.containerName) return;
+    const processes = await this.options.runtime.listListeningProcesses(project);
     let changed = false;
     for (const snapshot of instances) {
       // Re-read under the project lock: a stop since the pass began wins.
@@ -1006,33 +985,13 @@ export class ManagedDevServerManager {
               (instance.accessStartedAt ?? instance.startedAt)!.getTime(),
         );
         if (!live && ended) {
-          try {
-            await this.stopInstance(baseProject, instance, null);
-          } catch {
-            // Unavailable private runtimes must not block sibling supervision.
-            continue;
-          }
+          await this.stopInstance(project, instance, null);
           changed = true;
           continue;
         }
       }
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
-      let project: ProjectRecord;
-      let processes: ListeningProcess[];
-      try {
-        project =
-          (await this.options.resolveSessionProject?.(instance.sessionId, baseProject)) ??
-          baseProject;
-        if (project.state !== 'active' || !project.containerName) continue;
-        const key = project.containerName;
-        const cached = scans.get(key);
-        processes = cached ?? (await this.options.runtime.listListeningProcesses(project));
-        if (!cached) scans.set(key, processes);
-      } catch {
-        // One unavailable private runtime must not hide healthy sibling servers.
-        continue;
-      }
       if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {
         const session = await this.options.store.getSession(instance.sessionId);
         if (session?.worktree) {
@@ -1132,6 +1091,6 @@ export class ManagedDevServerManager {
       });
       changed = true;
     }
-    if (changed) this.refreshQuietly(baseProject);
+    if (changed) this.refreshQuietly(project);
   }
 }

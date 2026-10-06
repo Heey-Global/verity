@@ -573,9 +573,7 @@ describe('ProvisionerImpl (#174)', () => {
     const lifecycle = vi.fn(() => {
       throw new Error('telemetry sink unavailable');
     });
-    const stopSessions = vi.fn(async () => undefined);
     const provisioner = createProvisioner({
-      stopProjectSessionSandboxes: stopSessions,
       store: ctx.store,
       db: ctx.db,
       docker,
@@ -589,7 +587,6 @@ describe('ProvisionerImpl (#174)', () => {
 
     const result = await provisioner.sleepProject(id);
 
-    expect(stopSessions).toHaveBeenCalledWith(id);
     expect(result).toMatchObject({ state: 'sleeping' });
     expect(result.sleepCompatibilityFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(slept).toEqual([id]);
@@ -9165,7 +9162,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
   it('stops recreating a sandbox whose image update never lands, and reports it stalled', async () => {
     // The loop this bounds: a recreate that rebuilds the same stale image leaves
     // the update reported, and every tick tore the project container — and all of
-    // its session sandboxes — down again while sessions were working.
+    // the sessions in it — down again while sessions were working.
     const p = await seedActive('image-loop', 'dev-image-loop');
     const { client } = dockerInspecting({ 'dev-image-loop': migratedInspect(p.id) });
     const provisioner = makeProvisioner(client);

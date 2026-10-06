@@ -329,11 +329,6 @@ async function validateSharedSessionRoot(options) {
 }
 
 async function validateSpawnRequest(raw, options) {
-  const isolatedSessionId =
-    options.env?.VERITY_ISOLATED_SESSION_ID ?? process.env.VERITY_ISOLATED_SESSION_ID;
-  if (isolatedSessionId !== undefined && raw?.sessionEnv?.VERITY_SESSION_ID !== isolatedSessionId) {
-    throw new Error('spawn request does not belong to this isolated session');
-  }
   if (
     isObject(raw) &&
     raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&

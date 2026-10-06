@@ -1821,28 +1821,6 @@ describe('SupervisorRunnerRecovery', () => {
     });
   }
 
-  it('discovers durable artifacts in the session runtime instead of the project runtime', async () => {
-    await fixture('running', '{}\n', 'session-s');
-    const resolveSessionRuntime = vi.fn(() => join(dir, 'runners', 'session-s'));
-    const recovery = new SupervisorRunnerRecovery({
-      dataVolumeRoot: dir,
-      getSession: async () => ({ projectId: 'project-1' }),
-      resolveSessionRuntime,
-    });
-    const outcome = await recovery.discover({
-      sessionId: 's',
-      turnId: 'turn-1',
-      startCommandId: 'start-1',
-    });
-    expect(outcome).toMatchObject({
-      status: 'live',
-      target: {
-        eventFilePath: join(dir, 'runners', 'session-s', 'turns', 'turn-1', 'events.jsonl'),
-      },
-    });
-    expect(resolveSessionRuntime).toHaveBeenCalledWith('s', 'project-1');
-  });
-
   it('returns the Server-visible durable artifacts for a running turn', async () => {
     const recovery = await fixture();
     await expect(

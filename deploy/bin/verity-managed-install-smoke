@@ -63,16 +63,7 @@ for attempt in $(seq 1 60); do
   sleep 0.25
 done
 [[ "$registry_ready" == 1 ]] || { echo 'isolated registry did not become ready' >&2; exit 1; }
-# Private session containers start from the immutable image, so the provider
-# fixture must be in that image rather than only in the shared Runner's layer.
-provider_context="$(mktemp -d)"
-cp "$repo_root/scripts/fixtures/fake-managed-install-acp.mjs" "$provider_context/provider.mjs"
-printf '%s\n' 'ARG BASE_IMAGE' 'FROM ${BASE_IMAGE}' 'USER root' \
-  'RUN rm -f /usr/local/bin/claude-agent-acp' \
-  'COPY --chmod=0755 provider.mjs /usr/local/bin/claude-agent-acp' 'USER node' > "$provider_context/Dockerfile"
-isolated_docker build --quiet --build-arg "BASE_IMAGE=$image" \
-  --tag "$repo:managed-install-smoke" "$provider_context" >/dev/null
-rm -rf "$provider_context"
+isolated_docker tag "$image" "$repo:managed-install-smoke"
 isolated_docker push --quiet "$repo:managed-install-smoke" >/dev/null
 digest="$(isolated_docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:managed-install-smoke" | awk -v prefix="$repo@sha256:" 'index($0, prefix) == 1 { print; exit }')"
 [[ "$digest" =~ ^ghcr.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ ]] || refuse 'registry did not return the official image digest'
@@ -128,6 +119,17 @@ wait_for_runner
 isolated_docker exec verity-managed-server sh -ec \
   'test "$(id -u)" != 0; directory=$(mktemp -d /srv/verity/runners/acceptance.XXXXXX); rmdir "$directory"'
 
+# Replace only the ACP provider in this disposable Runner. The real launcher,
+# supervisor, broker, Server and gateway still carry every request.
+install_provider_fixture() {
+  isolated_docker exec --user 0:0 verity-managed-control-plane-runner \
+    rm -f /usr/local/bin/claude-agent-acp
+  isolated_docker cp "$repo_root/scripts/fixtures/fake-managed-install-acp.mjs" \
+    verity-managed-control-plane-runner:/usr/local/bin/claude-agent-acp
+  isolated_docker exec --user 0:0 verity-managed-control-plane-runner sh -ec \
+    'chown 0:0 /usr/local/bin/claude-agent-acp; chmod 0755 /usr/local/bin/claude-agent-acp'
+}
+install_provider_fixture
 run_driver exercise
 run_broker_acceptance
 
@@ -150,6 +152,7 @@ inside_host sh -c 'umask 077; exec env VERITY_PAIRING_IPS=127.0.0.1 VERITY_API_H
 inside_host sh -ec 'for name in deployment-id compose-project updater-token postgres-password tls-ca-cert.pem; do cmp -s "/etc/verity/$name" "/opt/verity-managed-install-smoke/$name.before-repair" || { echo "repair changed persisted $name" >&2; exit 1; }; done'
 [[ "$(isolated_docker inspect --format '{{.Config.Image}}' verity-managed-server)" == "$digest" ]] || { echo 'repair changed the sealed Server image' >&2; exit 1; }
 wait_for_runner
+install_provider_fixture
 run_driver verify-repair
 run_broker_acceptance
 

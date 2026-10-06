@@ -20,7 +20,7 @@
 # private copy of devcontainer.json). It has to be that exact image: the update
 # checker measures this layer's inherited base against it, and a layer built on
 # anything else comes back "behind" after every recreate — which once had the
-# reconciler rebuilding the project container, and every session sandbox in it,
+# reconciler rebuilding the project container, and every session in it,
 # once a minute. So keep the ARG's name; a guard test reads this file.
 #
 # The `:latest` default only serves builds that pass nothing, such as a laptop

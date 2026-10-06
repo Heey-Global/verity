@@ -476,7 +476,7 @@ export const DEVCONTAINER_BASE_IMAGE_ARG = 'VERITY_SANDBOX_IMAGE';
  * The update checker measures the derived image against that pinned base, so a
  * layer built FROM anything else — typically the Dockerfile's own `:latest`
  * default, which lags a staging release — comes back still "behind". The
- * reconciler then recreates the project container, and every session sandbox
+ * reconciler then recreates the project container, and every session
  * in it, on every tick.
  *
  * Written into the snapshot rather than substituted from the environment: the

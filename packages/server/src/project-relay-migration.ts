@@ -386,7 +386,7 @@ export const IMAGE_UPDATE_DEFER_REPORT_AFTER_MS = 30 * 60_000;
  * target. A devcontainer whose Dockerfile builds `FROM` something other than the
  * pinned base comes back exactly as far behind as before, the checker reports the
  * same update on the next tick, and the project container — with every session
- * sandbox in it — is torn down once a minute while its sessions are working.
+ * running in it — is torn down once a minute while those sessions are working.
  *
  * Two, not one: a single recreate that raced a release, or whose target moved
  * while it built, deserves another try. Cleared once the update stops being

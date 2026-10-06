@@ -19,79 +19,6 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 describe('independent listener discovery', () => {
-  it('scans only the resolved private container and attributes its checkout to its session', async () => {
-    const project = { id: 'p', containerName: 'shared', state: 'active' };
-    const store = {
-      getSession: async () => ({ sessionId: 'a', projectId: 'p', worktree: '/data/private/a' }),
-      getProject: async () => project,
-    } as unknown as EventStore;
-    const scan = vi.fn(async () => [
-      { port: 5173, pid: 1, cwd: '/work', command: 'vite', bind: 'any' as const },
-      { port: 8000, pid: 2, cwd: '/work', command: 'node', bind: 'any' as const, sessionId: 'b' },
-    ]);
-    const onScan = vi.fn();
-    const discovery = new ListenerDiscovery({
-      eventStore: store,
-      bus: new InMemoryEventBus(),
-      hostCloneRoot: '/data',
-      scan,
-      onScan,
-      resolveSessionProject: async (_sessionId, record) => ({
-        ...record,
-        containerName: 'private-a',
-      }),
-    });
-    try {
-      const servers = await discovery.listSessionDevServers('a');
-      expect(scan).toHaveBeenCalledWith(expect.objectContaining({ containerName: 'private-a' }));
-      expect(servers.map((server) => server.port)).toEqual([5173]);
-      expect(servers[0]?.sessionId).toBe('a');
-      expect(onScan).toHaveBeenCalledWith(
-        expect.objectContaining({ containerName: 'private-a' }),
-        await scan.mock.results[0]!.value,
-      );
-      scan.mockRejectedValueOnce(new Error('Docker unavailable'));
-      await discovery.listSessionDevServers('a');
-      expect(onScan).toHaveBeenCalledTimes(1);
-    } finally {
-      discovery.close();
-    }
-  });
-  it('retains a background scan when a later direct scan fails without an isolation resolver', async () => {
-    const project = {
-      id: 'p',
-      owner: 'org',
-      repo: 'repo',
-      containerName: 'sandbox',
-      state: 'active',
-    };
-    const session = { sessionId: 'a', projectId: 'p', worktree: '/data/org-repo/a' };
-    const store = {
-      getSession: async () => session,
-      getProject: async () => project,
-      listSessions: async () => [session],
-      getLatestDevServersEvent: async () => undefined,
-      appendEvent: async () => ({ seq: 1, ts: Date.now() }),
-    } as unknown as EventStore;
-    const scan = vi.fn(async () => [
-      { port: 5173, pid: 1, cwd: '/work/a', command: 'vite', bind: 'any' as const },
-    ]);
-    const discovery = new ListenerDiscovery({
-      eventStore: store,
-      bus: new InMemoryEventBus(),
-      hostCloneRoot: '/data',
-      scan,
-    });
-    try {
-      await discovery.refreshProject(project as never);
-      scan.mockRejectedValueOnce(new Error('Transient scan failure'));
-      expect(await discovery.listSessionDevServers('a')).toMatchObject([
-        { port: 5173, scope: 'session' },
-      ]);
-    } finally {
-      discovery.close();
-    }
-  });
   it('includes unassigned project listeners and excludes another session', async () => {
     const project = {
       id: 'p',
@@ -275,35 +202,4 @@ describe('independent listener discovery', () => {
       discovery.close();
     }
   });
-});
-
-it('retries isolated listener persistence after a failed append', async () => {
-  const project = { id: 'p', containerName: 'parent', state: 'active' };
-  const session = { sessionId: 'a', projectId: 'p', worktree: '/data/a' };
-  const appendEvent = vi
-    .fn()
-    .mockRejectedValueOnce(new Error('store unavailable'))
-    .mockResolvedValue({ seq: 1, ts: 1 });
-  const store = {
-    getSession: async () => session,
-    getProject: async () => project,
-    listSessions: async () => [session],
-    getLatestDevServersEvent: async () => undefined,
-    appendEvent,
-  } as unknown as EventStore;
-  const discovery = new ListenerDiscovery({
-    eventStore: store,
-    bus: new InMemoryEventBus(),
-    hostCloneRoot: '/data',
-    scan: async () => [{ port: 5173, pid: 1, cwd: '/work', command: 'vite', bind: 'any' }],
-    resolveSessionProject: async (_id, record) => ({ ...record, containerName: 'private' }),
-  });
-  try {
-    await discovery.refreshProject(project as never);
-    await discovery.refreshProject(project as never);
-    await discovery.refreshProject(project as never);
-    expect(appendEvent).toHaveBeenCalledTimes(2);
-  } finally {
-    discovery.close();
-  }
 });
