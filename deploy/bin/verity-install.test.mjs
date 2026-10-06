@@ -421,6 +421,10 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.match(result.output, /━━ Starting Verity ━━/);
     assert.match(result.output, /━━ Pair your device ━━/);
     assert.match(result.output, /━━ Cannot scan the QR code\? ━━/);
+    // Dropping the exposure warning would leave a public-facing host
+    // without any notice during setup.
+    assert.match(result.output, /━━ Keep Verity off the public internet ━━/);
+    assert.match(result.output, /Do not open or forward port 8082 or the preview ports 8100-8119/);
     assert.doesNotMatch(result.output, /Control token|Compose project|Deployment ID/);
     assert.match(result.output, /verity:\/\/pair\?payload=test/);
     assert.match(
