@@ -122,6 +122,22 @@ describe('broker-managed downloads and related entities', () => {
     ).rejects.toThrow();
     expect(count).toBe(6);
   });
+  it('preserves repository parent metadata alongside related issues', async () => {
+    const upstream = Object.assign(
+      Readable.from([
+        JSON.stringify({
+          data: {
+            repository: {
+              parent: { nameWithOwner: 'upstream/app' },
+              issue: { parent: { repository: { nameWithOwner: 'acme/app' }, number: 1 } },
+            },
+          },
+        }),
+      ]),
+      { statusCode: 200, headers: {} },
+    ) as IncomingMessage;
+    await expect(verifyRelatedIssueResponse(upstream, 'acme', 'app')).resolves.toBeDefined();
+  });
   it('rejects a parent issue without repository identity before emitting bytes', async () => {
     const upstream = Object.assign(
       Readable.from([

@@ -19,6 +19,7 @@ describe('repository workflow API policy', () => {
     ['PATCH', '/releases/123', 'releases-write'],
     ['DELETE', '/releases/assets/123', 'releases-write'],
     ['GET', '/issues/123/labels', 'issues-read'],
+    ['HEAD', '/issues/123', 'issues-read'],
   ])(
     'authorizes only the bound repository and explicit action: %s %s',
     async (method, path, action) => {

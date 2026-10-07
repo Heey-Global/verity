@@ -224,7 +224,10 @@ export function createGitHubForgeAdapter(options: {
       if (!graph) {
         assertAction(actions, action);
         if (request.hostname === 'api.github.com' && /\/issues(?:\/|$)/.test(url.pathname))
-          assertAction(actions, request.method === 'GET' ? 'pulls-read' : 'pulls-write');
+          assertAction(
+            actions,
+            ['GET', 'HEAD'].includes(request.method) ? 'pulls-read' : 'pulls-write',
+          );
       }
 
       const verifyNode = async (

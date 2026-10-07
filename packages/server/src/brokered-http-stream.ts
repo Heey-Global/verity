@@ -236,7 +236,7 @@ export async function verifyRelatedIssueResponse(
     )
       throw new Error('broker related issue rejected');
   };
-  const walk = (value: unknown): void => {
+  const walk = (value: unknown, depth = 0): void => {
     if (!value || typeof value !== 'object') return;
     for (const [key, entry] of Object.entries(value)) {
       if (['subIssues', 'blockedBy', 'blocking'].includes(key) && entry) {
@@ -244,8 +244,9 @@ export async function verifyRelatedIssueResponse(
         for (const node of connection.nodes ?? []) verify(node);
         for (const edge of connection.edges ?? []) verify(edge.node);
       }
-      if (key === 'parent') verify(entry);
-      walk(entry);
+      // A top-level repository's parent is fork metadata, not an Issue relationship.
+      if (key === 'parent' && depth !== 2) verify(entry);
+      walk(entry, depth + 1);
     }
   };
   walk(data);
