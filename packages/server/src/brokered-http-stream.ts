@@ -154,6 +154,15 @@ export async function relayBrokeredHttpResponse(
       response.setHeader(name, redactAllSecretForms(value, credentials, needles));
     }
   }
+  // HEAD carries the resource size without a body; registry clients need it for descriptors.
+  const length = upstream.headers['content-length'];
+  if (response.req.method === 'HEAD' && typeof length === 'string') {
+    if (!/^(?:0|[1-9][0-9]{0,15})$/.test(length) || !Number.isSafeInteger(Number(length))) {
+      upstream.destroy();
+      throw new Error('invalid broker response length');
+    }
+    response.setHeader('content-length', length);
+  }
   response.statusCode = status;
   let bytes = 0;
   const limit = new Transform({

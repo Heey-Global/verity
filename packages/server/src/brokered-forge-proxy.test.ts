@@ -189,7 +189,8 @@ async function call(
   host = 'api.github.com',
   body?: string,
   connection?: string,
-): Promise<{ status: number; body: string }> {
+  method?: string,
+): Promise<{ status: number; body: string; length?: string }> {
   return await new Promise((done, reject) => {
     const outer = request({ hostname: '127.0.0.1', port, method: 'CONNECT', path: `${host}:443` });
     outer.on('error', reject);
@@ -205,7 +206,7 @@ async function call(
         {
           hostname: host,
           path,
-          method: body === undefined ? 'GET' : 'POST',
+          method: method ?? (body === undefined ? 'GET' : 'POST'),
           headers: {
             host,
             authorization: auth,
@@ -222,7 +223,15 @@ async function call(
             result += value.toString();
           });
           response.on('error', reject);
-          response.on('end', () => done({ status: response.statusCode ?? 0, body: result }));
+          response.on('end', () =>
+            done({
+              status: response.statusCode ?? 0,
+              body: result,
+              ...(response.headers['content-length'] === undefined
+                ? {}
+                : { length: response.headers['content-length'] }),
+            }),
+          );
         },
       );
       inner.on('error', reject);
@@ -387,6 +396,29 @@ describe('brokered forge TLS boundary', () => {
     expect(h.received.at(-1)?.auth).toBe('Bearer ' + registryBearer);
     expect((await call(h.port, '/v2/acme/other/tags/list', undefined, 'ghcr.io')).status).toBe(403);
     expect(h.received).toHaveLength(2);
+  });
+  it('preserves manifest size for registry HEAD reads', async () => {
+    const h = await harness(
+      (req, res) => {
+        if (req.url?.startsWith('/token?')) res.end(JSON.stringify({ token: 'registry-bearer' }));
+        else {
+          res.setHeader('content-type', 'application/vnd.oci.image.manifest.v1+json');
+          res.setHeader('content-length', '1234');
+          res.end();
+        }
+      },
+      { registry: true, actions: new Set<ForgeAction>(['packages-read']) },
+    );
+    const result = await call(
+      h.port,
+      '/v2/acme/app/server/manifests/v1',
+      undefined,
+      'ghcr.io',
+      undefined,
+      undefined,
+      'HEAD',
+    );
+    expect(result).toEqual({ status: 200, body: '', length: '1234' });
   });
   it('streams Release uploads and follows authorized asset redirects without forwarding credentials', async () => {
     const payload = 'x'.repeat(2 * 1024 * 1024);
