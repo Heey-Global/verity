@@ -108,9 +108,12 @@ export function QuickCaptureCard({
   const autoSaving =
     voice.state === 'idle' && recorded.current && text.trim().length > 0 && !editing && !saving;
   useEffect(() => {
-    if (!autoSaving) return;
+    // Reset while paused, so the bar is already full when the countdown resumes.
+    if (!autoSaving) {
+      setRemaining(TASK_SAVE_DELAY_MS);
+      return;
+    }
     const start = Date.now();
-    setRemaining(TASK_SAVE_DELAY_MS);
     const timer = setInterval(() => {
       const next = Math.max(0, TASK_SAVE_DELAY_MS - (Date.now() - start));
       setRemaining(next);
@@ -160,8 +163,7 @@ export function QuickCaptureCard({
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
   const counting = autoSaving;
-  // Until the timer's first tick the bar starts full rather than from a stale value.
-  const shown = counting && remaining === 0 ? TASK_SAVE_DELAY_MS : remaining;
+  const shown = remaining;
   const chip = (id: string | null) => {
     const selected = projectId === id;
     return (

@@ -7,7 +7,7 @@ import {
   type TaskContext,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -373,8 +373,16 @@ export function TasksPanel({
   };
   // iOS will not present an alert while the menu's modal is still fading out,
   // so the confirmation waits for the dismissal to finish.
-  const confirm = (title: string, verb: string, task: Task, work: () => Promise<unknown>) =>
-    setTimeout(
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    },
+    [],
+  );
+  const confirm = (title: string, verb: string, task: Task, work: () => Promise<unknown>) => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    confirmTimer.current = setTimeout(
       () =>
         Alert.alert(title, task.title, [
           { text: 'Cancel', style: 'cancel' },
@@ -382,6 +390,7 @@ export function TasksPanel({
         ]),
       350,
     );
+  };
   const menuItems = (task: Task): ActionMenuItem[] => {
     const isDone = task.status === 'done';
     const close = (work: () => void) => () => {
@@ -675,7 +684,7 @@ export function TasksPanel({
         <ActionMenu
           anchor={menu.anchor}
           label="Task actions"
-          items={menuItems(menu.task)}
+          items={menuItems(tasks.find((task) => task.id === menu.task.id) ?? menu.task)}
           onClose={() => setMenu(null)}
         />
       ) : null}
