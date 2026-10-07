@@ -29949,11 +29949,15 @@ async function runAcpTurn(opts, profile) {
   if (opts.toolless === true && profile.enforcesToolless !== true) {
     throw new Error(`${profile.telemetryBackend} cannot run a turn without tools`);
   }
-  const child = spawner(opts.command ?? profile.defaultCommand, args, {
+  const spawn2 = () => spawner(opts.command ?? profile.defaultCommand, args, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     keepStdinOpen: true
   });
+  let child = spawn2();
+  const startupRecoveryDeadline = Date.now() + 16 * 6e4;
+  let stopped = false;
+  let wakeRetry;
   const writer = new SessionWriter(opts.store, {
     ...opts.bus !== void 0 ? { bus: opts.bus } : {},
     ...opts.onSession !== void 0 ? { onSession: opts.onSession } : {}
@@ -29964,6 +29968,7 @@ async function runAcpTurn(opts, profile) {
   let boundSessionId;
   let loadRefused = false;
   let diagnosticPhase = "spawn";
+  const isInitializing = () => diagnosticPhase === "initialize";
   const topLevelText = new AcpTextStream();
   let updateTail = Promise.resolve();
   let updateError;
@@ -29988,6 +29993,8 @@ async function runAcpTurn(opts, profile) {
     return true;
   });
   const stop = (operatorCancel) => {
+    stopped = true;
+    wakeRetry?.();
     if (operatorCancel)
       aborted = true;
     if (cancelSession === void 0) {
@@ -30065,7 +30072,7 @@ async function runAcpTurn(opts, profile) {
     }
   };
   try {
-    const result3 = await client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
+    const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
       if (loadingSession)
         return Promise.resolve();
       if (isAgentContent(params.update))
@@ -30260,6 +30267,50 @@ async function runAcpTurn(opts, profile) {
       await writer.finish();
       return prompt;
     });
+    let result3;
+    for (; ; ) {
+      try {
+        result3 = await connect();
+        break;
+      } catch (error) {
+        if (profile.telemetryBackend !== "codex-acp" || !isInitializing() || boundSessionId !== void 0 || stopped || Date.now() >= startupRecoveryDeadline || !/timed out waiting for state db backfill after 30s\s*\(status: running\)/.test(child.stderr()))
+          throw error;
+        child.closeStdin?.();
+        killAgent(child);
+        const exited = await new Promise((resolve3) => {
+          let settled2 = false;
+          const timer = setTimeout(() => done(false), Math.max(0, Math.min(1e4, startupRecoveryDeadline - Date.now())));
+          function done(didExit) {
+            if (settled2)
+              return;
+            settled2 = true;
+            clearTimeout(timer);
+            wakeRetry = void 0;
+            resolve3(didExit);
+          }
+          wakeRetry = () => done(false);
+          void child.exited.then(() => done(true), () => done(false));
+          if (stopped)
+            done(false);
+        });
+        if (!exited || stopped)
+          throw error;
+        await new Promise((resolve3) => {
+          const timer = setTimeout(done, Math.min(5e3, startupRecoveryDeadline - Date.now()));
+          function done() {
+            clearTimeout(timer);
+            wakeRetry = void 0;
+            resolve3();
+          }
+          wakeRetry = done;
+          if (stopped)
+            done();
+        });
+        if (stopped || Date.now() >= startupRecoveryDeadline)
+          throw error;
+        child = spawn2();
+      }
+    }
     return {
       sessionId: boundSessionId,
       exitCode: result3.stopReason === "cancelled" && !aborted ? 1 : 0,
