@@ -1778,6 +1778,7 @@ function SessionRow({
   // would have used is not the thing to say — and the row keeps its height, which
   // this list re-measures on every poll.
   const notice = attentionNotice(session.attention);
+  const automationActive = session.automation?.status === 'enabled';
   const edgeMarkers = sessionMarkers({
     favorite,
     automation: session.automation?.status,
@@ -1860,12 +1861,17 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {hasIssue || previewActive ? (
+          {hasIssue || automationActive || previewActive ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
               <SessionIssueRef branch={session.branch} repo={repo} />
+              {automationActive ? (
+                <View accessible accessibilityLabel="Automation active">
+                  <Icon name="repeat" size={14} color={theme.colors.primary} />
+                </View>
+              ) : null}
               {previewActive ? (
                 <Pressable
                   // openURL rejects only if no handler can open the URL; swallow it.
