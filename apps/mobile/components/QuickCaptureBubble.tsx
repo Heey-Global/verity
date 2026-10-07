@@ -1,5 +1,10 @@
 import { Icon } from './Icon';
-import { taskContext, type ProjectRecord, type SessionSummary } from '@verity/mobile';
+import {
+  bubbleRestingPlace,
+  taskContext,
+  type ProjectRecord,
+  type SessionSummary,
+} from '@verity/mobile';
 import * as Haptics from 'expo-haptics';
 import { useGlobalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -84,6 +89,7 @@ export function QuickCaptureBubble() {
   const [panel, setPanel] = useState(false);
   const [saved, setSaved] = useState<{ id: string; label: string } | null>(null);
   const position = useRef(new Animated.ValueXY()).current;
+  const squash = useRef(new Animated.Value(1)).current;
   const origin = useRef({ x: 0, y: 0 });
   const loadGeneration = useRef(0);
   const context = taskContext(pathname, params, sessions);
@@ -128,19 +134,53 @@ export function QuickCaptureBubble() {
             setHidden(true);
             return;
           }
-          const side = origin.current.x + g.dx + BUBBLE / 2 < width / 2 ? 'left' : 'right';
-          const y = Math.max(top, Math.min(bottom, origin.current.y + g.dy));
-          origin.current = { x: side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2, y };
-          position.setValue(origin.current);
-          void saveTaskPreferences({ side, fraction: y / height });
-          void Haptics.selectionAsync();
+          // A throw keeps its momentum: the spring starts at the finger's
+          // velocity, so a hard fling overshoots the edge and bounces back,
+          // while a gentle release just glides home.
+          const rest = bubbleRestingPlace({
+            x: origin.current.x + g.dx + BUBBLE / 2,
+            y: origin.current.y + g.dy,
+            vx: g.vx,
+            vy: g.vy,
+            width,
+            top,
+            bottom,
+          });
+          origin.current = {
+            x: rest.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
+            y: rest.y,
+          };
+          position.stopAnimation();
+          Animated.spring(position, {
+            toValue: origin.current,
+            velocity: { x: g.vx * 1000, y: g.vy * 1000 },
+            speed: 14,
+            bounciness: Math.min(18, 6 + Math.abs(g.vx) * 10),
+            useNativeDriver: false,
+          }).start(({ finished }) => {
+            if (!finished) return;
+            // Arrival: a short squash against the edge, like a ball landing.
+            squash.setValue(Math.max(0.82, 1 - Math.abs(g.vx) * 0.12));
+            Animated.spring(squash, {
+              toValue: 1,
+              speed: 30,
+              bounciness: 14,
+              useNativeDriver: false,
+            }).start();
+          });
+          void saveTaskPreferences({ side: rest.side, fraction: rest.y / height });
+          void Haptics.impactAsync(
+            Math.abs(g.vx) > 0.6
+              ? Haptics.ImpactFeedbackStyle.Medium
+              : Haptics.ImpactFeedbackStyle.Light,
+          );
         },
         onPanResponderTerminate: () => {
           setDragging(false);
-          position.setValue(origin.current);
+          Animated.spring(position, { toValue: origin.current, useNativeDriver: false }).start();
         },
       }),
-    [position, width, height, top, bottom],
+    [position, squash, width, height, top, bottom],
   );
   useEffect(() => startTasksStore(), []);
   useEffect(() => {
@@ -263,7 +303,11 @@ export function QuickCaptureBubble() {
             position: 'absolute',
             left: 0,
             top: 0,
-            transform: position.getTranslateTransform(),
+            transform: [
+              ...position.getTranslateTransform(),
+              { scaleX: squash },
+              { scaleY: Animated.divide(1, squash) },
+            ],
           }}
         >
           {/* Half tucked into the edge and translucent, so it reads as a handle

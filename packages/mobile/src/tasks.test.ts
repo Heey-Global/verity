@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { taskAge, taskContext } from './tasks.js';
+import { bubbleRestingPlace, taskAge, taskContext } from './tasks.js';
 describe('task context', () => {
   const sessions = [{ sessionId: 's', projectId: 'p' }];
   it('uses the session project on phone and selected wide home', () => {
@@ -43,5 +43,24 @@ describe('task age', () => {
   it('never reports the future or an unparsable stamp as elapsed time', () => {
     expect(at('2026-10-08T12:00:00Z')).toBe('just now');
     expect(at('')).toBe('just now');
+  });
+});
+describe('bubble resting place', () => {
+  const screen = { width: 390, top: 100, bottom: 700 };
+  it('follows a sideways fling even away from the nearer edge', () => {
+    expect(bubbleRestingPlace({ ...screen, x: 60, y: 300, vx: 1.2, vy: 0 })).toEqual({
+      side: 'right',
+      y: 300,
+    });
+    expect(bubbleRestingPlace({ ...screen, x: 330, y: 300, vx: -0.8, vy: 0 }).side).toBe('left');
+  });
+  it('docks at the nearer edge after a slow release', () => {
+    expect(bubbleRestingPlace({ ...screen, x: 100, y: 300, vx: 0.1, vy: 0 }).side).toBe('left');
+    expect(bubbleRestingPlace({ ...screen, x: 300, y: 300, vx: -0.1, vy: 0 }).side).toBe('right');
+  });
+  it('carries vertical momentum past the finger but never off the band', () => {
+    expect(bubbleRestingPlace({ ...screen, x: 10, y: 300, vx: 0, vy: 0.5 }).y).toBe(410);
+    expect(bubbleRestingPlace({ ...screen, x: 10, y: 300, vx: 0, vy: -3 }).y).toBe(100);
+    expect(bubbleRestingPlace({ ...screen, x: 10, y: 650, vx: 0, vy: 4 }).y).toBe(700);
   });
 });

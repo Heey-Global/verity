@@ -80,5 +80,41 @@ export function taskAge(createdAt: string, now = Date.now()): string {
   return months === 1 ? '1 month ago' : `${String(months)} months ago`;
 }
 
+export interface BubbleRest {
+  side: 'left' | 'right';
+  y: number;
+}
+
+/**
+ * Where a flung capture bubble comes to rest. A sideways fling picks the edge it
+ * was thrown towards; a slow release docks at the nearer edge. Vertical momentum
+ * carries the bubble on past the finger before it settles, clamped to the band
+ * the screen allows. Velocities are in points per millisecond, as the gesture
+ * responder reports them.
+ */
+export function bubbleRestingPlace(input: {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  width: number;
+  top: number;
+  bottom: number;
+}): BubbleRest {
+  const FLING = 0.3;
+  // How far a vertical throw travels: momentum scaled by a decay horizon.
+  const CARRY_MS = 220;
+  const side =
+    Math.abs(input.vx) > FLING
+      ? input.vx < 0
+        ? 'left'
+        : 'right'
+      : input.x < input.width / 2
+        ? 'left'
+        : 'right';
+  const carried = input.y + input.vy * CARRY_MS;
+  return { side, y: Math.max(input.top, Math.min(input.bottom, carried)) };
+}
+
 export const TASK_SILENCE_MS = 1500;
 export const TASK_SAVE_DELAY_MS = 3000;
