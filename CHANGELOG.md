@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.25.3](https://github.com/Heey-Global/verity/compare/v4.25.2...v4.25.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** preserve Unistyles state during OTA reloads and bound diagnostics ([#1311](https://github.com/Heey-Global/verity/issues/1311)) ([e597a26](https://github.com/Heey-Global/verity/commit/e597a264ca5516b5285b6d4d4864bd3304a7fd63))
+
 ## [4.25.2](https://github.com/Heey-Global/verity/compare/v4.25.1...v4.25.2) (2026-10-07)
 
 
