@@ -889,10 +889,12 @@ describe('SessionListModel.setFavorite', () => {
     const model = new SessionListModel({ client });
     await model.refresh();
     const older = model.setFavorite('a', true);
-    await model.setFavorite('a', false);
+    const newer = model.setFavorite('a', false);
+    expect(setSessionFavorite).toHaveBeenCalledTimes(1);
     if (outcome === 'success') resolve({ sessionId: 'a', favorite: true });
     else reject(new Error('older request failed'));
     await older;
+    await newer;
     expect(model.state.sessions[0]?.favorite).toBeUndefined();
     expect(model.state.error).toBeUndefined();
   });
@@ -934,51 +936,52 @@ describe('SessionListModel.setFavorite', () => {
     );
     setSessionFavorite.mockRejectedValueOnce(new Error('second failed'));
     const first = model.setFavorite('a', true);
-    await model.setFavorite('a', false);
+    const second = model.setFavorite('a', false);
     reject(new Error('first failed'));
     await first;
+    await second;
     expect(model.state.sessions[0]?.favorite).toBeUndefined();
     expect(model.state.error).toBe('failed to update favorite');
   });
 
-  it.each(['success first', 'failure first'])(
-    'rolls back to an older successful confirmation: %s',
-    async (order) => {
-      const { client, listSessions, setSessionFavorite } = makeClient();
-      listSessions.mockResolvedValueOnce([session('a', 'idle')]);
-      const model = new SessionListModel({ client });
-      await model.refresh();
-      let resolve!: (value: { sessionId: string; favorite: boolean }) => void;
-      let reject!: (error: Error) => void;
-      setSessionFavorite.mockImplementationOnce(
-        () =>
-          new Promise((yes) => {
-            resolve = yes;
-          }),
-      );
-      setSessionFavorite.mockImplementationOnce(
-        () =>
-          new Promise((_yes, no) => {
-            reject = no;
-          }),
-      );
-      const first = model.setFavorite('a', true);
-      const second = model.setFavorite('a', false);
-      if (order === 'success first') {
-        resolve({ sessionId: 'a', favorite: true });
-        await first;
-        expect(model.state.sessions[0]?.favorite).toBeUndefined();
-        reject(new Error('latest failed'));
-        await second;
-      } else {
-        reject(new Error('latest failed'));
-        await second;
-        resolve({ sessionId: 'a', favorite: true });
-        await first;
-      }
-      expect(model.state.sessions[0]?.favorite).toBe(true);
-    },
-  );
+  it('persists queued changes in order and restores the last successful value on failure', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    let persisted = false;
+    listSessions.mockImplementation(async () => [
+      { ...session('a', 'idle'), ...(persisted ? { favorite: true } : {}) },
+    ]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let finish!: () => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            persisted = true;
+            resolve({ sessionId: 'a', favorite: persisted });
+          };
+        }),
+    );
+    setSessionFavorite.mockImplementationOnce(async (_id, favorite) => {
+      persisted = favorite;
+      return { sessionId: 'a', favorite: persisted };
+    });
+    const first = model.setFavorite('a', true);
+    const second = model.setFavorite('a', false);
+    expect(setSessionFavorite).toHaveBeenCalledTimes(1);
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    finish();
+    await Promise.all([first, second]);
+    expect(persisted).toBe(false);
+    await model.refresh();
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    setSessionFavorite.mockRejectedValueOnce(new Error('latest failed'));
+    await Promise.all([model.setFavorite('a', true), model.setFavorite('a', false)]);
+    expect(model.state.sessions[0]?.favorite).toBe(true);
+    expect(model.state.error).toBe('failed to update favorite');
+  });
 
   it('reverts only that flag and surfaces the error when the update fails', async () => {
     const { client, listSessions, setSessionFavorite } = makeClient();

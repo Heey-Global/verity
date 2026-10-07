@@ -102,8 +102,7 @@ export class SessionListModel {
   private reqSeq = 0;
   private favoriteMutations = new Map<string, number>();
   private confirmedFavorites = new Map<string, boolean>();
-  private failedFavoriteMutations = new Map<string, number>();
-  private confirmedFavoriteMutations = new Map<string, number>();
+  private favoriteWrites = new Map<string, Promise<void>>();
   private pendingFavorites = new Map<string, { favorite: boolean; maxRequest: number }>();
   private pendingAutomations = new Map<
     string,
@@ -246,35 +245,29 @@ export class SessionListModel {
     this.pendingFavorites.set(sessionId, { favorite, maxRequest: Infinity });
     this.applyFavorite(sessionId, favorite);
     this.emit();
-    try {
-      const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
-      if (mutation > (this.confirmedFavoriteMutations.get(sessionId) ?? 0)) {
-        this.confirmedFavoriteMutations.set(sessionId, mutation);
+    // Parallel requests can commit in reverse order even when stale responses are ignored.
+    const write = async (): Promise<void> => {
+      try {
+        const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
         this.confirmedFavorites.set(sessionId, stored);
+        if (this.favoriteMutations.get(sessionId) !== mutation) return;
+        this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
+        this.applyFavorite(sessionId, stored);
+        this._error = undefined;
+      } catch (error) {
+        if (this.favoriteMutations.get(sessionId) !== mutation) return;
+        const confirmed = this.confirmedFavorites.get(sessionId) ?? previous;
+        this.pendingFavorites.set(sessionId, { favorite: confirmed, maxRequest: this.reqSeq });
+        this.applyFavorite(sessionId, confirmed);
+        this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
       }
-      if (this.favoriteMutations.get(sessionId) !== mutation) {
-        if (
-          this.failedFavoriteMutations.get(sessionId) === this.favoriteMutations.get(sessionId) &&
-          this.confirmedFavoriteMutations.get(sessionId) === mutation
-        ) {
-          this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
-          this.applyFavorite(sessionId, stored);
-          this.emit();
-        }
-        return;
-      }
-      this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
-      this.applyFavorite(sessionId, stored);
-      this._error = undefined;
-    } catch (error) {
-      if (this.favoriteMutations.get(sessionId) !== mutation) return;
-      this.failedFavoriteMutations.set(sessionId, mutation);
-      const confirmed = this.confirmedFavorites.get(sessionId) ?? previous;
-      this.pendingFavorites.set(sessionId, { favorite: confirmed, maxRequest: this.reqSeq });
-      this.applyFavorite(sessionId, confirmed);
-      this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
-    }
-    this.emit();
+      this.emit();
+    };
+    const previousWrite = this.favoriteWrites.get(sessionId);
+    const pending = previousWrite ? previousWrite.then(write) : write();
+    this.favoriteWrites.set(sessionId, pending);
+    await pending;
+    if (this.favoriteWrites.get(sessionId) === pending) this.favoriteWrites.delete(sessionId);
   }
 
   /** Retire one permission immediately after its decision POST settles. The next
