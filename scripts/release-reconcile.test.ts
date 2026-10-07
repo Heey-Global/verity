@@ -29,6 +29,7 @@ type Fixture = {
     mainMoved?: boolean;
     oldHead?: boolean;
     recent?: boolean;
+    rename?: boolean;
   };
 };
 
@@ -53,6 +54,10 @@ function sweep(fixture: Fixture) {
       JSON.stringify({ schema: 1, version: '1.33.1', tag: 'mobile-v1.33.1' }),
     );
   }
+  if (fixture.native?.rename) {
+    mkdirSync(join(cwd, 'apps/mobile/plugins'), { recursive: true });
+    writeFileSync(join(cwd, 'apps/mobile/plugins/capture.js'), 'native change');
+  }
   git('add', '.');
   const commitDate = fixture.approvedAt ?? approvedAt;
   execFileSync('git', ['commit', '-qm', 'chore(mobile): promote OTA 1.33.1'], {
@@ -61,9 +66,12 @@ function sweep(fixture: Fixture) {
   });
   if (fixture.native) {
     git('tag', 'mobile-v1.33.0');
-    const nativePath = fixture.native.path ?? 'apps/mobile/plugins/capture.js';
+    const nativePath = fixture.native.rename
+      ? 'capture.js'
+      : (fixture.native.path ?? 'apps/mobile/plugins/capture.js');
     mkdirSync(resolve(cwd, nativePath, '..'), { recursive: true });
-    writeFileSync(join(cwd, nativePath), 'native change');
+    if (fixture.native.rename) git('mv', 'apps/mobile/plugins/capture.js', nativePath);
+    else writeFileSync(join(cwd, nativePath), 'native change');
     git('add', '.');
     const date = fixture.native.recent ? new Date().toISOString() : approvedAt;
     execFileSync('git', ['commit', '-qm', 'feat(tasks): capture tasks'], {
@@ -384,6 +392,12 @@ describe('missing native Staging planning', () => {
     expect(result.status).toBe(0);
     expect(result.dispatches).toEqual([replan]);
     expect(result.summary).toContain('had no Staging release PR');
+  });
+  // Rename detection must not hide the removal of an input from the native tree.
+  it('recovers a native file moved outside the native tree', () => {
+    const result = sweep({ ota: false, native: { rename: true }, releases: native });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
   });
   it.each([
     { name: 'open native PR', native: { open: true } },

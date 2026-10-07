@@ -303,7 +303,9 @@ function reconcileNativePlanning() {
     notes.push(`Mobile planning: dispatcher ${active.html_url} is still ${active.status}.`);
     return;
   }
-  const paths = git('diff', '--name-only', tag, head).split('\n').filter(Boolean);
+  const paths = git('diff', '--no-renames', '--name-only', '-z', tag, head, '--')
+    .split('\0')
+    .filter(Boolean);
   if (!paths.some((path) => nativePathKind(path) !== 'ota')) {
     notes.push('Mobile planning: only OTA-compatible source paths changed.');
     return;
