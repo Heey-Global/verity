@@ -87,9 +87,9 @@ import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import {
   localPreviewLinks,
   mergeSessionPreviewUrls,
-  publicPreviewSessionIds,
   nextProjectPreviewLinks,
   publicPreviewLinks,
+  publicPreviewSessionIds,
   type ProjectPreviewLinks,
 } from '../lib/sessionPreviewLinks';
 import { prefetchBranches } from '../lib/branchesPrefetch';

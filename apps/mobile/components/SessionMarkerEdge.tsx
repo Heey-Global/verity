@@ -1,7 +1,7 @@
 // The session row's leading edge: one thin stripe per standing property, side
 // by side, always in the same order and color — favorite (accent), automation
-// (primary) and shared preview (done, wider when public). The edge never tints the row itself, so
-// the selected background stays the only fill and remains readable.
+// (primary) and shared preview (done, wider when public). The edge never tints
+// the row itself, so the selected background stays the only fill.
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
