@@ -252,7 +252,7 @@ export class LiveConnection implements LiveSessionTransport {
       entry.listeners.delete(listener);
       if (entry.listeners.size === 0) {
         this.resources.delete(key);
-        if (this.state === 'connected') this.sendFrame({ k: 'unwatch', resource });
+        if (this.resourceWatching) this.sendFrame({ k: 'unwatch', resource });
       }
     };
   }
@@ -413,6 +413,10 @@ export class LiveConnection implements LiveSessionTransport {
         return;
       case 'error':
         if (frame.message.startsWith('resource ')) {
+          if (this.resourceWatching) {
+            for (const { resource } of this.resources.values())
+              this.sendFrame({ k: 'unwatch', resource });
+          }
           this.resourceWatching = false;
           for (const listener of [...this.stateListeners]) listener(this.state);
         }
