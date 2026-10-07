@@ -101,6 +101,7 @@ export class SessionListModel {
   // Monotonic request id: a slower earlier load must not overwrite a newer one.
   private reqSeq = 0;
   private favoriteMutations = new Map<string, number>();
+  private pendingFavorites = new Map<string, { favorite: boolean; maxRequest: number }>();
   private pendingAutomations = new Map<
     string,
     { automation: SessionSummary['automation']; maxRequest: number }
@@ -158,6 +159,14 @@ export class SessionListModel {
       this._sessions = sessions
         .filter((session) => !this.pendingDeletes.has(session.sessionId))
         .map((session) => {
+          const favorite = this.pendingFavorites.get(session.sessionId);
+          if (favorite !== undefined) {
+            if (req <= favorite.maxRequest) {
+              session = { ...session };
+              if (favorite.favorite) session.favorite = true;
+              else delete session.favorite;
+            } else this.pendingFavorites.delete(session.sessionId);
+          }
           const automation = this.pendingAutomations.get(session.sessionId);
           if (automation !== undefined) {
             this.pendingAutomations.delete(session.sessionId);
@@ -227,15 +236,18 @@ export class SessionListModel {
     const mutation = (this.favoriteMutations.get(sessionId) ?? 0) + 1;
     this.favoriteMutations.set(sessionId, mutation);
     const previous = this._sessions.find((s) => s.sessionId === sessionId)?.favorite === true;
+    this.pendingFavorites.set(sessionId, { favorite, maxRequest: Infinity });
     this.applyFavorite(sessionId, favorite);
     this.emit();
     try {
       const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
       if (this.favoriteMutations.get(sessionId) !== mutation) return;
+      this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
       this.applyFavorite(sessionId, stored);
       this._error = undefined;
     } catch (error) {
       if (this.favoriteMutations.get(sessionId) !== mutation) return;
+      this.pendingFavorites.set(sessionId, { favorite: previous, maxRequest: this.reqSeq });
       this.applyFavorite(sessionId, previous);
       this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
     }

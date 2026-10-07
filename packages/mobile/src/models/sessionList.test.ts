@@ -897,6 +897,29 @@ describe('SessionListModel.setFavorite', () => {
     expect(model.state.error).toBeUndefined();
   });
 
+  it('preserves a confirmed favorite against an older refresh', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((yes) => {
+          resolve = yes;
+        }),
+    );
+    const refresh = model.refresh({ silent: true });
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    await model.setFavorite('a', true);
+    resolve([session('a', 'idle')]);
+    await refresh;
+    expect(model.state.sessions[0]?.favorite).toBe(true);
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    await model.refresh();
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+  });
+
   it('reverts only that flag and surfaces the error when the update fails', async () => {
     const { client, listSessions, setSessionFavorite } = makeClient();
     listSessions.mockResolvedValue([{ ...session('a', 'idle'), favorite: true }]);
