@@ -19,9 +19,9 @@ describe('acceptWebDrop', () => {
     });
   });
 
-  it('refuses folders and files beyond the remaining slots', () => {
+  it('refuses folders, unreadable items and files beyond the remaining slots', () => {
     const result = acceptWebDrop(
-      [item('dir', 0, '', true), item('a', 1), item('b', 1)],
+      [item('dir', 0, '', true), { file: null, isDirectory: false }, item('a', 1), item('b', 1)],
       { maxFiles: 1 },
       url,
     );
@@ -42,11 +42,11 @@ describe('acceptWebDrop', () => {
 
   it('skips files once the drop exceeds its total budget', () => {
     const result = acceptWebDrop(
-      [item('a', 6), item('b', 6)],
-      { maxFiles: 2, maxFileBytes: 10, maxTotalBytes: 10 },
+      [item('a', 600_000), item('b', 600_000)],
+      { maxFiles: 2, maxTotalBytes: 1_000_000 },
       url,
     );
     expect(result.files.map((file) => file.fileName)).toEqual(['a']);
-    expect(result.errors).toEqual(['"b" was skipped (max ~0 MB per drop).']);
+    expect(result.errors).toEqual(['"b" was skipped (max ~1 MB per drop).']);
   });
 });

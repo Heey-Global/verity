@@ -10,7 +10,8 @@ export interface WebDropLimits {
 }
 
 export interface WebDroppedItem {
-  file: File;
+  /** Null when the browser cannot expose the item as a file. */
+  file: File | null;
   isDirectory: boolean;
 }
 
@@ -30,7 +31,9 @@ export function acceptWebDrop(
       ? limits.maxFileBytes
       : DEFAULT_MAX_DROPPED_FILE_BYTES;
   const maxTotalBytes = Math.max(0, limits.maxTotalBytes ?? 0);
-  const supported = items.filter((item) => !item.isDirectory);
+  const supported = items.flatMap((item) =>
+    item.file && !item.isDirectory ? [{ file: item.file }] : [],
+  );
   const accepted = supported.slice(0, Math.max(0, limits.maxFiles));
   const errors: string[] = [];
   if (supported.length > accepted.length) {
@@ -69,9 +72,8 @@ export function webDroppedItems(transfer: DataTransfer): WebDroppedItem[] {
   if (items.length === 0) {
     return Array.from(transfer.files).map((file) => ({ file, isDirectory: false }));
   }
-  return items.flatMap((item) => {
-    const file = item.getAsFile();
-    if (!file) return [];
-    return [{ file, isDirectory: item.webkitGetAsEntry?.()?.isDirectory === true }];
-  });
+  return items.map((item) => ({
+    file: item.getAsFile(),
+    isDirectory: item.webkitGetAsEntry?.()?.isDirectory === true,
+  }));
 }

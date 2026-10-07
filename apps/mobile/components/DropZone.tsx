@@ -104,6 +104,8 @@ function WebDropZone({
     const drop = (event: DragEvent) => {
       if (!hasFiles(event) || !event.dataTransfer) return;
       event.preventDefault();
+      // Like the native target, only the innermost zone receives the drop.
+      event.stopPropagation();
       depth = 0;
       latest.current.onActiveChange(false);
       if (!accepting()) return;

@@ -96,7 +96,6 @@ export function droppedImageMediaType(
   return null;
 }
 
-/** Read temporary files emitted by the native iOS drop target into uploads. */
 /** Bytes of a dropped file: a native temporary copy, or a browser object URL. */
 export async function droppedFileData(uri: string): Promise<Blob> {
   if (Platform.OS !== 'web') return new FsFile(uri);
@@ -124,6 +123,7 @@ async function droppedFileBase64(uri: string): Promise<string> {
   return dataUrl.slice(dataUrl.indexOf(',') + 1);
 }
 
+/** Read files from the native drop target or a browser drop into uploads. */
 export async function readDroppedAttachments(
   files: readonly DroppedFileDescriptor[],
   remaining: number,
