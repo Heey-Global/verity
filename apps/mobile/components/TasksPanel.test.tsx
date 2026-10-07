@@ -152,3 +152,34 @@ it('keeps steps of ended sessions out of the operator list', () => {
   // Their session is gone, so they were dropped server-side; never list them.
   expect(ui.queryByText('Orphaned step')).toBeNull();
 });
+
+it('does not overwrite a concurrent title on blur without typing', () => {
+  jest.mocked(patchTask).mockClear();
+  jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
+  const ui = render(<TasksPanel {...props} />);
+  fireEvent(ui.getByLabelText('Task text'), 'focus');
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [{ ...task, title: 'Remote edit', revision: 2 }],
+    pending: [],
+    conflicts: [],
+  });
+  ui.rerender(<TasksPanel {...props} />);
+  fireEvent(ui.getByLabelText('Task text'), 'blur');
+  expect(patchTask).not.toHaveBeenCalled();
+  expect(ui.getByDisplayValue('Remote edit')).toBeTruthy();
+});
+it('uses the revision at focus when saving across a concurrent edit', () => {
+  jest.mocked(patchTask).mockClear().mockResolvedValue(undefined);
+  jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
+  const ui = render(<TasksPanel {...props} />);
+  fireEvent(ui.getByLabelText('Task text'), 'focus');
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'My edit');
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [{ ...task, title: 'Remote edit', revision: 2 }],
+    pending: [],
+    conflicts: [],
+  });
+  ui.rerender(<TasksPanel {...props} />);
+  fireEvent(ui.getByLabelText('Task text'), 'blur');
+  expect(patchTask).toHaveBeenCalledWith(task, { title: 'My edit' });
+});

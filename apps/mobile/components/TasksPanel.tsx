@@ -638,9 +638,11 @@ export function TasksPanel({
 function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): Promise<unknown> }) {
   const [value, setValue] = useState(task.title);
   const focused = useRef(false);
-  // Latest text and title for the unmount flush below.
-  const latest = useRef({ value, title: task.title, onSave });
-  latest.current = { value, title: task.title, onSave };
+  // Keep the original revision through the save callback to detect concurrent edits.
+  const baseline = useRef({ title: task.title, onSave });
+  const dirty = useRef(false);
+  const latest = useRef(value);
+  latest.current = value;
   // Follow edits from elsewhere (another device, the agent) unless typing.
   useEffect(() => {
     if (!focused.current) setValue(task.title);
@@ -659,9 +661,9 @@ function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): P
   // blur arrives; save what was typed instead of dropping it.
   useEffect(
     () => () => {
-      if (!focused.current) return;
-      const { value: next, title, onSave: save } = latest.current;
-      const trimmed = next.trim();
+      if (!focused.current || !dirty.current) return;
+      const { title, onSave: save } = baseline.current;
+      const trimmed = latest.current.trim();
       if (trimmed && trimmed !== title) void save(trimmed).catch(() => undefined);
     },
     [],
@@ -670,13 +672,19 @@ function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): P
     <TextInput
       accessibilityLabel="Task text"
       value={value}
-      onChangeText={setValue}
+      onChangeText={(next) => {
+        dirty.current = true;
+        setValue(next);
+      }}
       onFocus={() => {
+        baseline.current = { title: task.title, onSave };
+        dirty.current = false;
         focused.current = true;
       }}
       onBlur={() => {
         focused.current = false;
-        commit(value, task.title, onSave);
+        if (dirty.current) commit(value, baseline.current.title, baseline.current.onSave);
+        else setValue(task.title);
       }}
       multiline
       scrollEnabled={false}
