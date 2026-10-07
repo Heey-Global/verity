@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.24.0](https://github.com/Heey-Global/verity/compare/v4.23.0...v4.24.0) (2026-10-07)
+
+
+### Features
+
+* **broker:** restore GitHub workflows and scoped GHCR reads ([#1280](https://github.com/Heey-Global/verity/issues/1280)) ([24cbf39](https://github.com/Heey-Global/verity/commit/24cbf395334129654f3931463cbac0037c41668b))
+
+
+### Bug Fixes
+
+* **release:** recover native staging plans and prevent promotion rollback ([#1274](https://github.com/Heey-Global/verity/issues/1274)) ([adffd1b](https://github.com/Heey-Global/verity/commit/adffd1bd9da542e898acd7e13a849f49866d1aff))
+* **session:** retry Codex SQLite backfill initialization timeouts ([#1281](https://github.com/Heey-Global/verity/issues/1281)) ([9967c0d](https://github.com/Heey-Global/verity/commit/9967c0d0b84aff4619b1b11dd67049a0a0e0e027))
+
 ## [4.23.0](https://github.com/Heey-Global/verity/compare/v4.22.1...v4.23.0) (2026-10-07)
 
 
