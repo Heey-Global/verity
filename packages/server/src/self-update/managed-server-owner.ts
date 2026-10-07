@@ -621,6 +621,20 @@ async function resolveEnvironment(
       throw new Error(`managed Server environment contains NUL: ${entry.name}`);
     if (entry.name === 'VERITY_MANAGED_DEPLOYMENT_ID' && value !== spec.deploymentId)
       throw new Error('managed Server deployment ID does not match the sealed authority');
+    // Old Compose defaults were sealed as env sources indistinguishable from a
+    // host pin. Do not let that historical default survive every Server update.
+    // File-backed values remain explicit; the opt-in also works with old specs.
+    if (
+      entry.name === 'VERITY_SANDBOX_PIDS_LIMIT' &&
+      entry.source.kind === 'env' &&
+      value === '512' &&
+      environment.VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY !== '1'
+    ) {
+      console.warn(
+        'Ignoring legacy managed Server VERITY_SANDBOX_PIDS_LIMIT=512 pin; using the Server default. Set VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY=1 to retain 512.',
+      );
+      value = '';
+    }
     result.push(`${entry.name}=${value}`);
   }
   return { env: result, unresolved };

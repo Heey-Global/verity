@@ -157,6 +157,7 @@ export async function runManagedBootstrap(
             // Server simply uses what its own image carries.
             'VERITY_BUNDLED_PROJECT_RELAY_IMAGE',
             'VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE',
+            'VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY',
             'VERITY_MANAGED_ROOT',
             'VERITY_SERVER_IMAGE',
             'VERITY_SERVER_UID',

@@ -134,6 +134,8 @@ services:
       # 100), not as a fraction of Docker's nominal 1024. 0 restores the default.
       VERITY_SANDBOX_CPU_SHARES: ${VERITY_SANDBOX_CPU_SHARES:-512}
       VERITY_SANDBOX_PIDS_LIMIT: ${VERITY_SANDBOX_PIDS_LIMIT:-4096}
+      # Updater input: explicitly retain the historical 512 PID limit.
+      VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY: ${VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY:-0}
       # Escape hatch for a project whose devcontainer needs sudo or a capability:
       # VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION: '1'   # keep sudo working
       # VERITY_SANDBOX_CAP_ADD: NET_BIND_SERVICE          # add back specific caps

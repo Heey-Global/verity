@@ -242,6 +242,22 @@ describe('runManagedBootstrap', () => {
     expect(names).toContain('VERITY_DATA_VOLUME');
   });
 
+  it('keeps the legacy PID opt-in as an Updater input rather than a sealed Server source', async () => {
+    const env = {
+      ...(await environment()),
+      VERITY_SANDBOX_PIDS_LIMIT: '512',
+      VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY: '1',
+    };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!state.managed) throw new Error(state.reason);
+    expect(state.spec.environment.map((entry) => entry.name)).not.toContain(
+      'VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY',
+    );
+    const desired = await managedServerContainerSpec(state.spec, env, async () => '');
+    expect(desired.env).toContain('VERITY_SANDBOX_PIDS_LIMIT=512');
+  });
+
   it('rejects an image that differs from the sealed deployment authority', async () => {
     const env = await environment();
     await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
