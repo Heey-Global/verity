@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -9,11 +9,8 @@ import { NATIVE_PATCHES, applyNativePatch, runPatch } from './patch-mobile-nativ
 const patch = NATIVE_PATCHES.find(
   (entry: { package: string }) => entry.package === 'react-native-unistyles',
 )!;
-const original = readFileSync(
-  'node_modules/react-native-unistyles/ios/UnistylesModuleOnLoad.mm',
-  'utf8',
-);
-const patched = applyNativePatch(patch, original).source;
+const installedSource = 'node_modules/react-native-unistyles/ios/UnistylesModuleOnLoad.mm';
+const patched = applyNativePatch(patch, patch.before).source;
 
 function runLifecycle(source: string) {
   const helper = source.match(/class VerityUnistylesLifecycle \{[\s\S]*?\n};/)?.[0] ?? '';
@@ -86,5 +83,12 @@ it('applies the native ownership patch idempotently and rejects source drift', (
   expect(() =>
     applyNativePatch(patch, patch.before.replace('get().destroy()', 'get().reset()')),
   ).toThrow();
-  expect(runPatch(patch, process.cwd())).toMatch(/patched/);
 });
+
+it.skipIf(!existsSync(installedSource))(
+  'checks the installed native source when mobile dependencies are available',
+  () => {
+    expect(applyNativePatch(patch, readFileSync(installedSource, 'utf8')).source).toBe(patched);
+    expect(runPatch(patch, process.cwd())).toMatch(/patched/);
+  },
+);
