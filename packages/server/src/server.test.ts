@@ -7564,6 +7564,21 @@ describe('POST /sessions/:id/turns', () => {
     });
   });
 
+  // Steered into a running reply, a second meeting question shares that reply and its
+  // card shows the answer to the first question.
+  it('queues a turn behind the active one only when the client asks for it', async () => {
+    dispatchTurn.mockResolvedValueOnce({ queued: true });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/turns',
+      payload: { prompt: 'meeting question', queueBehindActiveTurn: true },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(dispatchTurn).toHaveBeenCalledWith('s1', 'meeting question', expect.any(Object), {
+      queueBehindActiveTurn: true,
+    });
+  });
+
   it('stamps the authenticated caller as the initiator, never a body-supplied one', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const { token } = await registry.mint('phone');

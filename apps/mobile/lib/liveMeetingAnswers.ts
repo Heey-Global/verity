@@ -9,6 +9,9 @@ export interface MeetingAnswerCard {
   status: 'working' | 'ready' | 'failed';
   answer: string;
   requestId?: string;
+  /** Another request was steered into this one's turn before it answered, so the reply
+   * cannot be told apart; the card offers a separate retry instead of a guessed answer. */
+  combined?: boolean;
 }
 
 export function meetingRequestFromPrompt(
@@ -33,19 +36,27 @@ export function meetingAnswerCards(events: SessionEvent[], meetingId: string): M
   const cards: MeetingAnswerCard[] = [];
   let current: MeetingAnswerCard | null = null;
   for (const { seq, event } of events) {
-    if (event.t === 'prompt' && !event.steered) {
+    if (event.t === 'prompt') {
       const request = meetingRequestFromPrompt(event.text, meetingId);
+      // A steered prompt joins the running turn: what follows answers the newer request.
+      if (event.steered && !request) continue;
+      if (event.steered && current && !current.combined) {
+        Object.assign(current, { status: 'failed', combined: true, answer: '' });
+      }
       current = request ? { id: String(seq), ...request, status: 'working', answer: '' } : null;
-      if (current) cards.push(current);
-    } else if (event.t === 'text' && !event.parentToolId && current) {
+      if (current) {
+        if (event.steered) Object.assign(current, { status: 'failed', combined: true });
+        cards.push(current);
+      }
+    } else if (event.t === 'text' && !event.parentToolId && current && !current.combined) {
       current.answer += event.delta;
       if (current.answer.length > 20_000) current.answer = current.answer.slice(-20_000);
-    } else if (event.t === 'tool_call' && !event.parentToolId && current) {
+    } else if (event.t === 'tool_call' && !event.parentToolId && current && !current.combined) {
       // Progress before research tools is not the answer to show in the meeting card.
       current.answer = '';
-    } else if (event.t === 'result' && current) {
+    } else if (event.t === 'result' && current && !current.combined) {
       if (current.answer.trim()) current.status = 'ready';
-    } else if (event.t === 'interrupted' && current) {
+    } else if (event.t === 'interrupted' && current && !current.combined) {
       current.status = current.answer.trim() ? 'ready' : 'failed';
       current = null;
     }
@@ -67,13 +78,34 @@ export function sameMeetingRequest(a: MeetingAnswerCard, b: MeetingAnswerCard): 
   return a.request === b.request && a.kind === b.kind;
 }
 
+// Answers are short bullet lists; the compact card keeps whole lines so a bullet never
+// runs into the next one, and leaves inline Markdown for the card to render.
+function answerLines(answer: string): string[] {
+  return answer
+    .split('\n')
+    .map((line) => line.replace(/^\s*#{1,6}\s+/, '').trimEnd())
+    .filter((line) => line.trim());
+}
+
+/** True when the compact card leaves part of the answer out. */
+export function meetingAnswerTruncated(answer: string): boolean {
+  return compactMeetingAnswer(answer) !== answerLines(answer).join('\n');
+}
+
 export function compactMeetingAnswer(answer: string): string {
-  const text = answer
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text.length > 360 ? `${text.slice(0, 357).trimEnd()}…` : text;
+  const lines = answerLines(answer);
+  const kept: string[] = [];
+  let length = 0;
+  for (const line of lines) {
+    if (length + line.length > 360) {
+      if (kept.length) kept[kept.length - 1] += ' …';
+      else kept.push(`${line.slice(0, 357).trimEnd()}…`);
+      break;
+    }
+    kept.push(line);
+    length += line.length;
+  }
+  return kept.join('\n');
 }
 
 export function meetingAnswerSource(answer: string): string | null {

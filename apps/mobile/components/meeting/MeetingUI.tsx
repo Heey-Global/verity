@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { parseInline } from '@verity/mobile';
 
 type Colors = ReturnType<typeof useUnistyles>['theme']['colors'];
 
@@ -132,6 +133,8 @@ export function NoticedCard({
   source,
   working = false,
   actions = [],
+  prominent = false,
+  children,
 }: {
   label: string;
   tone: string;
@@ -142,6 +145,9 @@ export function NoticedCard({
   source?: string | null;
   working?: boolean;
   actions?: CardAction[];
+  /** The title is the subject of the card, such as the question being researched. */
+  prominent?: boolean;
+  children?: ReactNode;
 }) {
   return (
     <View style={styles.card}>
@@ -152,10 +158,54 @@ export function NoticedCard({
         {time ? <Text style={styles.cardTime}>{time}</Text> : null}
       </View>
       {quote ? <Text style={styles.cardQuote}>{quote}</Text> : null}
-      <Text style={styles.cardTitle}>{title}</Text>
+      <Text style={prominent ? styles.cardQuestion : styles.cardTitle}>{title}</Text>
       {body ? <Text style={styles.cardBody}>{body}</Text> : null}
+      {children}
       {source ? <Text style={styles.cardSource}>{source}</Text> : null}
       <ActionRow actions={actions} />
+    </View>
+  );
+}
+
+const BULLET = /^\s*(?:[-*•]|\d{1,2}[.)])\s+/;
+
+// Meeting answers are short Markdown bullet lists. Lines keep their own row so bullets
+// never run together, and inline bold and links render instead of showing raw markup.
+export function MeetingAnswerText({ text }: { text: string }) {
+  const { theme } = useUnistyles();
+  const lines = text.split('\n').filter((line) => line.trim());
+  return (
+    <View style={styles.answer} testID="meeting-answer">
+      {lines.map((line, index) => {
+        const bullet = BULLET.exec(line);
+        const content = (bullet ? line.slice(bullet[0].length) : line).replace(/^\s*#{1,6}\s+/, '');
+        return (
+          <View key={index} style={styles.answerLine}>
+            {bullet ? <Text style={styles.answerBullet}>•</Text> : null}
+            <Text style={styles.answerText}>
+              {parseInline(content).map((span, spanIndex) =>
+                span.t === 'bold' ? (
+                  <Text key={spanIndex} style={styles.answerStrong}>
+                    {span.text}
+                  </Text>
+                ) : span.t === 'link' ? (
+                  <Text
+                    key={spanIndex}
+                    accessibilityRole={span.external ? 'link' : undefined}
+                    style={{ color: theme.colors.accent }}
+                    onPress={span.external ? () => void Linking.openURL(span.url) : undefined}
+                  >
+                    {span.text}
+                  </Text>
+                ) : (
+                  // Single-asterisk emphasis is not parsed; drop its markers rather than show them.
+                  span.text.replace(/(^|[^*\w])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![*\w])/g, '$1$2')
+                ),
+              )}
+            </Text>
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -205,6 +255,17 @@ const styles = StyleSheet.create((theme) => ({
   cardTime: { color: theme.colors.textFaint, fontSize: theme.text.xs },
   cardQuote: { color: theme.colors.textMuted, fontSize: theme.text.sm },
   cardTitle: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
+  cardQuestion: {
+    color: theme.colors.text,
+    fontSize: theme.text.lg,
+    fontWeight: '700',
+    lineHeight: 24,
+  },
+  answer: { gap: theme.spacing.xs },
+  answerLine: { flexDirection: 'row', gap: theme.spacing.sm },
+  answerBullet: { color: theme.colors.textMuted, fontSize: theme.text.md, lineHeight: 22 },
+  answerText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
+  answerStrong: { fontWeight: '700' },
   cardBody: { color: theme.colors.text, fontSize: theme.text.sm, lineHeight: 20 },
   cardSource: { color: theme.colors.accent, fontSize: theme.text.xs },
   actions: {

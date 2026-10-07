@@ -196,8 +196,11 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
       'session-1',
       expect.objectContaining({ prompt: expect.stringContaining('Is the release still Friday?') }),
     );
-    expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
+    expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
   });
+  // The suggestion turns into its research card instead of staying beside it.
+  expect(screen.queryByLabelText('Research meeting question')).toBeNull();
+  expect(screen.queryByText(/Project knowledge and the web/)).toBeNull();
   expect(router.push).not.toHaveBeenCalled();
   fireEvent.press(screen.getByLabelText('Check meeting claim'));
   await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(2));
@@ -239,7 +242,7 @@ it('shows the compact session answer in the meeting after reopening it', async (
         : {
             hasMore: true,
             events: [
-              { seq: 8, event: { t: 'text', delta: 'The roadmap confirms Tuesday.' } },
+              { seq: 8, event: { t: 'text', delta: '- The roadmap confirms **Tuesday**.' } },
               { seq: 9, event: { t: 'result' } },
             ],
           },
@@ -255,8 +258,11 @@ it('shows the compact session answer in the meeting after reopening it', async (
     }),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
-  expect(await screen.findByText('ANSWER READY')).toBeOnTheScreen();
+  expect(await screen.findByText('ANSWER')).toBeOnTheScreen();
+  // Markdown renders as a bullet with bold text, never as raw markers.
   expect(screen.getByText('The roadmap confirms Tuesday.')).toBeOnTheScreen();
+  expect(screen.getByText('•')).toBeOnTheScreen();
+  expect(screen.queryByText(/\*\*/)).toBeNull();
   expect(screen.getByText('What changed?')).toBeOnTheScreen();
   expect(router.push).not.toHaveBeenCalled();
   fireEvent.press(screen.getByLabelText('Open answer in chat'));
@@ -302,7 +308,7 @@ it('shows a spoken request as working without leaving the meeting', async () => 
     }),
   );
   expect(screen.getByText('check the deadline')).toBeOnTheScreen();
-  expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
+  expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
   expect(router.push).not.toHaveBeenCalled();
 });
 
@@ -607,7 +613,7 @@ it('shows a spoken request failure without interrupting the meeting', async () =
     return jest.fn();
   });
   render(<MeetingScreen />);
-  expect(await screen.findByText(/● Transcribing/)).toBeOnTheScreen();
+  expect(await screen.findByLabelText('Pause meeting')).toBeOnTheScreen();
   act(() =>
     notify({
       meetingId: meeting.id,
@@ -617,7 +623,7 @@ it('shows a spoken request failure without interrupting the meeting', async () =
     }),
   );
   expect(screen.getByText('Voice request could not be sent: offline')).toBeOnTheScreen();
-  expect(screen.getByText(/● Transcribing/)).toBeOnTheScreen();
+  expect(screen.getByLabelText('Pause meeting')).toBeOnTheScreen();
 });
 
 it('starts a direct meeting request and stays put when the server rejects it', async () => {
@@ -654,6 +660,43 @@ it('starts a direct meeting request and stays put when the server rejects it', a
   );
   expect(router.push).not.toHaveBeenCalled();
   expect(input).toHaveDisplayValue('What do you think?');
+});
+
+it('preserves a new question typed while the previous request is sending', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-pending-request',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  let resolveSend!: () => void;
+  const sendTurn = jest.fn().mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }),
+  );
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Ask Verity'));
+  const input = screen.getByLabelText('Ask Verity about this meeting');
+  fireEvent.changeText(input, 'First question');
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
+  await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
+  fireEvent.changeText(input, 'Next question');
+  await act(async () => resolveSend());
+  expect(input).toHaveDisplayValue('Next question');
 });
 
 it.each([
@@ -871,7 +914,7 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Start meeting'));
   fireEvent.changeText(await noteInput(), 'Unsaved decision');
-  await screen.findByText('● Recording · note not saved');
+  await screen.findByText('Note not saved yet. Use retry in the note field.');
   expect(screen.getByLabelText('Retry saving note')).toBeOnTheScreen();
 
   fireEvent.press(screen.getByLabelText('End meeting'));
@@ -882,14 +925,13 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   expect(screen.getByLabelText('Speech recognition')).toBeOnTheScreen();
   expect(screen.getByLabelText('Start meeting')).toBeOnTheScreen();
   expect(screen.queryByLabelText('Open full transcript')).toBeNull();
-  expect(screen.queryByLabelText('Retry saving note')).toBeNull();
-  expect(screen.getByText(/A note from the last meeting is not saved yet/)).toBeOnTheScreen();
-  fireEvent.press(screen.getByText('Cancel'));
+  // The unsaved note is shown with its own retry, not a hint to cancel back to it.
+  expect(screen.getByTestId('unsaved-note')).toBeOnTheScreen();
+  expect(screen.getByText('“Unsaved decision”')).toBeOnTheScreen();
 
   fireEvent.press(screen.getByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
-  await screen.findByText('Ended · server sync pending');
-  expect(screen.getByText(/Unsaved decision/)).toBeOnTheScreen();
+  await waitFor(() => expect(screen.queryByTestId('unsaved-note')).toBeNull());
 });
 
 it('shows an autosaved draft after the meeting ends before Add note', async () => {
@@ -943,7 +985,7 @@ it('retries a failed save even when the edited draft contains only spaces', asyn
   fireEvent.changeText(await noteInput(), '   ');
   fireEvent.press(await screen.findByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
-  await screen.findByText(/Transcribing/);
+  await waitFor(() => expect(screen.queryByText(/Note not saved/)).toBeNull());
 });
 
 it('keeps a new note when an older notes read finishes afterward', async () => {
@@ -1089,7 +1131,9 @@ it('shows a late note-save failure after the meeting screen is reopened', async 
   await act(async () => {
     rejectSave(new Error('disk full'));
   });
-  expect(await screen.findByText('● Recording · note not saved')).toBeOnTheScreen();
+  expect(
+    await screen.findByText('Note not saved yet. Use retry in the note field.'),
+  ).toBeOnTheScreen();
   expect(screen.getByLabelText('Retry saving note')).toBeOnTheScreen();
 });
 
