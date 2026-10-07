@@ -22,7 +22,7 @@ export interface ActionMenuItem {
   destructive?: boolean;
 }
 
-export const ACTION_MENU_ROW_HEIGHT = 56;
+const ACTION_MENU_ROW_HEIGHT = 56;
 
 /**
  * The small "…" card used across the app: pinned to the button that opened it,
