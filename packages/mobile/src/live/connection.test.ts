@@ -172,6 +172,20 @@ describe('LiveConnection', () => {
     h.connection.stop();
   });
 
+  it('releases server watches after a resource limit enables fallback', async () => {
+    const h = await harness();
+    h.sockets[0]!.serve({ k: 'ready', v: 1, maxSessions: 8, resources: true });
+    const resource = { path: '/projects' };
+    const detach = h.connection.watchResource(resource, vi.fn());
+    h.sockets[0]!.serve({ k: 'error', message: 'resource limit reached' });
+    expect(h.connection.resourceWatching).toBe(false);
+    detach();
+    expect(h.sockets[0]!.sent.filter((frame) => frame.k === 'unwatch')).toEqual([
+      { k: 'unwatch', resource },
+    ]);
+    h.connection.stop();
+  });
+
   it('connects to /live with the ticket as a subprotocol, never in the URL', async () => {
     const h = await harness();
     expect(h.sockets[0]?.url).toBe('wss://core.example/live');

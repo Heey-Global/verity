@@ -252,7 +252,7 @@ export class LiveConnection implements LiveSessionTransport {
       entry.listeners.delete(listener);
       if (entry.listeners.size === 0) {
         this.resources.delete(key);
-        if (this.resourceWatching) this.sendFrame({ k: 'unwatch', resource });
+        if (this.state === 'connected') this.sendFrame({ k: 'unwatch', resource });
       }
     };
   }

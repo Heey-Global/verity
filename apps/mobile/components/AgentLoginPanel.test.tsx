@@ -1,11 +1,16 @@
+const mockWatch = jest.fn();
 const mockLive = new Set<() => void>();
 jest.mock('../lib/liveConnection', () => ({
   subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockWatch();
     mockLive.add(refresh);
     return () => mockLive.delete(refresh);
   },
 }));
-beforeEach(() => mockLive.clear());
+beforeEach(() => {
+  mockLive.clear();
+  mockWatch.mockClear();
+});
 import { type AgentLogin, type VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
@@ -91,7 +96,9 @@ describe('AgentLoginPanel live updates', () => {
     });
     expect(getAgentLogin).toHaveBeenCalledTimes(1);
 
-    await act(async () => resolvePoll(waitingLogin));
+    const watchCount = mockWatch.mock.calls.length;
+    await act(async () => resolvePoll({ ...waitingLogin }));
+    expect(mockWatch).toHaveBeenCalledTimes(watchCount);
     await act(async () => {
       for (const refresh of mockLive) refresh();
     });

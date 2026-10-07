@@ -123,66 +123,67 @@ export function AgentLoginPanel({
     [onSealed, patchProvider],
   );
 
-  const poll = (provider: AgentLoginProvider, sessionId: string) => {
-    const pollKey = `${provider}:${sessionId}`;
-    if (pollsInFlight.current.has(pollKey)) return;
-    pollsInFlight.current.add(pollKey);
-    void client
-      .getAgentLogin(sessionId)
-      .then((login) => {
-        if (currentSessions.current[provider] !== sessionId) return;
-        patchProvider(provider, { login, error: login.status === 'failed' ? login.message : null });
-        refreshConfigured(provider, login);
-      })
-      .catch((caught) => {
-        if (currentSessions.current[provider] !== sessionId) return;
-        if (isSealedError(caught)) {
-          delete currentSessions.current[provider];
-          patchProvider(provider, { login: null, busy: false, error: null });
-          onSealed?.();
-          return;
-        }
-        if (isMissingLoginSession(caught)) {
-          delete currentSessions.current[provider];
-          patchProvider(provider, { login: null, busy: false, error: null });
-          return;
-        }
-        patchProvider(provider, {
-          error: caught instanceof VerityApiError ? caught.message : 'Could not refresh login.',
-        });
-      })
-      .finally(() => pollsInFlight.current.delete(pollKey));
-  };
+  const poll = useCallback(
+    (provider: AgentLoginProvider, sessionId: string) => {
+      const pollKey = `${provider}:${sessionId}`;
+      if (pollsInFlight.current.has(pollKey)) return;
+      pollsInFlight.current.add(pollKey);
+      void client
+        .getAgentLogin(sessionId)
+        .then((login) => {
+          if (currentSessions.current[provider] !== sessionId) return;
+          patchProvider(provider, {
+            login,
+            error: login.status === 'failed' ? login.message : null,
+          });
+          refreshConfigured(provider, login);
+        })
+        .catch((caught) => {
+          if (currentSessions.current[provider] !== sessionId) return;
+          if (isSealedError(caught)) {
+            delete currentSessions.current[provider];
+            patchProvider(provider, { login: null, busy: false, error: null });
+            onSealed?.();
+            return;
+          }
+          if (isMissingLoginSession(caught)) {
+            delete currentSessions.current[provider];
+            patchProvider(provider, { login: null, busy: false, error: null });
+            return;
+          }
+          patchProvider(provider, {
+            error: caught instanceof VerityApiError ? caught.message : 'Could not refresh login.',
+          });
+        })
+        .finally(() => pollsInFlight.current.delete(pollKey));
+    },
+    [client, patchProvider, refreshConfigured, onSealed],
+  );
 
-  useEffect(() => {
-    const active = PROVIDERS.filter((provider) => {
+  const activeLoginIds = JSON.stringify(
+    PROVIDERS.flatMap((provider) => {
       const login = logins[provider].login;
-      return (
-        login !== null &&
-        (login.status === 'starting' || login.status === 'ready' || login.status === 'waiting')
-      );
-    });
+      return login && ['starting', 'ready', 'waiting'].includes(login.status)
+        ? [[provider, login.sessionId]]
+        : [];
+    }),
+  );
+  useEffect(() => {
+    const active = JSON.parse(activeLoginIds) as Array<[AgentLoginProvider, string]>;
     onActiveChange?.(active.length > 0);
     if (active.length === 0) return;
     const refresh = () => {
-      for (const provider of active) {
-        const sessionId = logins[provider].login?.sessionId;
-        if (!sessionId) continue;
-        poll(provider, sessionId);
-      }
+      for (const [provider, sessionId] of active) poll(provider, sessionId);
     };
     return subscribeLiveRefresh(
       client,
       refresh,
       (path) => path.startsWith('/settings/agent-logins/'),
-      active.flatMap((provider) => {
-        const sessionId = logins[provider].login?.sessionId;
-        return sessionId
-          ? [{ path: `/settings/agent-logins/${encodeURIComponent(sessionId)}` }]
-          : [];
-      }),
+      active.map(([, sessionId]) => ({
+        path: `/settings/agent-logins/${encodeURIComponent(sessionId)}`,
+      })),
     );
-  }, [logins, onActiveChange]);
+  }, [activeLoginIds, client, poll, onActiveChange]);
 
   const start = useCallback(
     (provider: AgentLoginProvider) => {
