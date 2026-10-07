@@ -10,7 +10,7 @@ import {
 } from '@verity/mobile';
 import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVerityBaseUrl } from '../lib/client';
 import { useLiveHints } from '../lib/liveConnection';
 
@@ -73,17 +73,19 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [client, model],
   );
 
-  const [focused, setFocused] = useState(false);
+  // Focus only gates background requests; React state would redraw the entire
+  // overview and embedded transcript during each navigation transition.
+  const focused = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      setFocused(true);
+      focused.current = true;
       if (AppState.currentState === 'active') model.start();
       const appState = AppState.addEventListener('change', (nextState) => {
         if (nextState === 'active') model.start();
         else model.stop();
       });
       return () => {
-        setFocused(false);
+        focused.current = false;
         appState.remove();
         model.stop();
       };
@@ -94,9 +96,9 @@ export function useSessionList(client: VerityClient): UseSessionList {
     () =>
       subscribeSettledPermissions((sessionId, toolUseId) => {
         model.settlePermission(sessionId, toolUseId);
-        if (focused) void model.refresh({ silent: true });
+        if (focused.current) void model.refresh({ silent: true });
       }),
-    [model, focused],
+    [model],
   );
 
   useEffect(
@@ -104,7 +106,7 @@ export function useSessionList(client: VerityClient): UseSessionList {
       subscribeSessionStatusMutations((sessionId, status) => {
         model.applySessionStatus(sessionId, status);
       }),
-    [model, focused],
+    [model],
   );
 
   useEffect(
@@ -122,9 +124,9 @@ export function useSessionList(client: VerityClient): UseSessionList {
     () =>
       subscribePullRequestStatusMutations(({ sessionId, pr }) => {
         if (pr !== undefined) model.applyPullRequestStatus(sessionId, pr);
-        if (focused) void model.refresh({ silent: true });
+        if (focused.current) void model.refresh({ silent: true });
       }),
-    [model, focused],
+    [model],
   );
 
   const refresh = useCallback(
