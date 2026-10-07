@@ -1,0 +1,13 @@
+{
+  "schema": 2,
+  "product": "mobile-native",
+  "version": "1.58.0",
+  "source": "a4adffaa8bf7b68a45fbaeb36154e79f716c1555",
+  "appId": "6807746931",
+  "buildNumber": "49",
+  "artifact": {
+    "sha256": "03b45e627d193910c074e7272b0bf328cf32f1ccaf071951b01004ec82fac34d",
+    "id": 11486548385
+  },
+  "releasePr": 1284
+}
