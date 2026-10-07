@@ -132,7 +132,14 @@ export function QuickCaptureBubble() {
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6,
-        onPanResponderGrant: () => setDragging(true),
+        onPanResponderGrant: () => {
+          // Grabbing a bubble mid-flight: freeze it where it is and drag from there.
+          position.stopAnimation((value) => {
+            origin.current = value;
+          });
+          squash.stopAnimation(() => squash.setValue(1));
+          setDragging(true);
+        },
         onPanResponderMove: (_, g) =>
           position.setValue({
             x: Math.max(-BUBBLE / 2, Math.min(width - BUBBLE / 2, origin.current.x + g.dx)),
@@ -329,8 +336,13 @@ export function QuickCaptureBubble() {
             accessibilityHint="Double tap to record a task; long press to open the task list"
             onPress={() => (preferences.introSeen ? setCapture(true) : setIntro(true))}
             onLongPress={() => setPanel(true)}
-            // Only half the bubble is on screen; the slop keeps the target 44pt wide.
-            hitSlop={{ top: 4, bottom: 4, left: 12, right: 12 }}
+            // Half the bubble is off screen; slop on the inner edge keeps the target 44pt wide.
+            hitSlop={{
+              top: 4,
+              bottom: 4,
+              left: preferences.side === 'right' ? 22 : 0,
+              right: preferences.side === 'left' ? 22 : 0,
+            }}
             style={{
               width: BUBBLE,
               height: BUBBLE,
@@ -397,7 +409,10 @@ export function QuickCaptureBubble() {
       ) : null}
       {intro ? (
         <QuickCaptureIntro
-          onClose={() => setIntro(false)}
+          onClose={() => {
+            setIntro(false);
+            void saveTaskPreferences({ introSeen: true });
+          }}
           onStart={() => {
             setIntro(false);
             void saveTaskPreferences({ introSeen: true });

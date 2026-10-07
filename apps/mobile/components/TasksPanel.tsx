@@ -33,8 +33,6 @@ import {
 interface TaskGroup {
   key: string;
   label: string;
-  /** Right-hand detail of the header: done/total for the session group. */
-  detail?: string;
   current: boolean;
   items: Task[];
   expanded: boolean;
@@ -503,7 +501,7 @@ export function TasksPanel({
                   <Pressable
                     disabled={!group.collapsible}
                     accessibilityRole={group.collapsible ? 'button' : undefined}
-                    accessibilityLabel={`${group.label} · ${group.detail ?? String(group.items.length)}`}
+                    accessibilityLabel={`${group.label} · ${String(group.items.length)}`}
                     accessibilityState={
                       group.collapsible ? { expanded: group.expanded } : undefined
                     }
@@ -533,9 +531,7 @@ export function TasksPanel({
                       {group.label}
                     </Text>
                     <View style={styles.count}>
-                      <Text style={styles.countLabel}>
-                        {group.detail ?? String(group.items.length)}
-                      </Text>
+                      <Text style={styles.countLabel}>{String(group.items.length)}</Text>
                     </View>
                   </Pressable>
                   {group.expanded ? group.items.map(row) : null}
@@ -581,7 +577,7 @@ export function TasksPanel({
                   ) : null}
                 </View>
               ) : null}
-              {!mine.length ? (
+              {!mine.length && !done.length ? (
                 <Text style={styles.empty}>
                   {agentAll.length
                     ? 'Nothing captured yet. Tap the bubble to add a task.'
