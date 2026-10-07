@@ -129,18 +129,11 @@ export function TasksPanel({
   const agentSteps = visible.filter(agentScope);
   const agentAll = tasks.filter((task) => agentScope(task) && task.status !== 'dropped');
   const agentDone = agentAll.filter((task) => task.status === 'done').length;
-  // In a session, steps left behind by ended sessions of this project get their
-  // own collapsed line instead of mixing with this session's plan.
-  const leftovers =
-    context.sessionId === null
-      ? []
-      : visible.filter(
-          (task) =>
-            isStep(task) &&
-            task.sessionId === null &&
-            task.status !== 'done' &&
-            task.projectId === context.projectId,
-        );
+  // Steps left behind by ended sessions that this view does not already show
+  // get their own collapsed line, so none becomes unreachable.
+  const leftovers = visible.filter(
+    (task) => isStep(task) && task.sessionId === null && !agentScope(task),
+  );
   const groups: TaskGroup[] = [
     ...(context.projectId
       ? [
@@ -624,7 +617,7 @@ export function TasksPanel({
                   {leftoversOpen ? leftovers.map(agentRow) : null}
                 </View>
               ) : null}
-              {!mine.length && !done.length ? (
+              {!mine.length && !done.length && !leftovers.length ? (
                 <Text style={styles.empty}>
                   {agentAll.length
                     ? 'Nothing captured yet. Tap the bubble to add a task.'

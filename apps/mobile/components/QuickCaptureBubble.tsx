@@ -88,6 +88,8 @@ export function QuickCaptureBubble() {
   const [remoteMeeting, setRemoteMeeting] = useState(false);
   const [hidden, setHidden] = useState(false);
   const [dragging, setDragging] = useState(false);
+  /** From grab until the release spring lands: the whole bubble is on screen. */
+  const [loose, setLoose] = useState(false);
   const [capture, setCapture] = useState(false);
   const [intro, setIntro] = useState(false);
   const [panel, setPanel] = useState(false);
@@ -109,7 +111,7 @@ export function QuickCaptureBubble() {
   // their own section of the panel and must not nag from the badge.
   const count = tasks.filter(
     (task) =>
-      task.origin === 'user' &&
+      task.origin !== 'agent' &&
       (task.status === 'open' || task.status === 'in_progress') &&
       (context.sessionId
         ? task.sessionId === context.sessionId ||
@@ -141,6 +143,7 @@ export function QuickCaptureBubble() {
           });
           squash.stopAnimation(() => squash.setValue(1));
           setDragging(true);
+          setLoose(true);
         },
         onPanResponderMove: (_, g) =>
           position.setValue({
@@ -179,6 +182,7 @@ export function QuickCaptureBubble() {
             friction: Math.max(5.5, 8.5 - Math.abs(g.vx) * 2),
             useNativeDriver: false,
           }).start(({ finished }) => {
+            setLoose(false);
             if (!finished) return;
             // Arrival: a short squash against the edge, like a ball landing.
             squash.setValue(Math.max(0.88, 1 - Math.abs(g.vx) * 0.08));
@@ -204,7 +208,9 @@ export function QuickCaptureBubble() {
             x: preferences.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
             y: Math.max(top, Math.min(bottom, height * preferences.fraction)),
           };
-          Animated.spring(position, { toValue: origin.current, useNativeDriver: false }).start();
+          Animated.spring(position, { toValue: origin.current, useNativeDriver: false }).start(() =>
+            setLoose(false),
+          );
         },
       }),
     [position, squash, width, height, top, bottom, preferences.side, preferences.fraction],
@@ -381,8 +387,8 @@ export function QuickCaptureBubble() {
                 alignItems: 'center',
                 // Docked, the glyph sits on the visible half; in the hand the
                 // whole bubble is on screen, so the glyph centres again.
-                paddingLeft: dragging || preferences.side === 'right' ? 0 : BUBBLE / 2 - 4,
-                paddingRight: !dragging && preferences.side === 'right' ? BUBBLE / 2 - 4 : 0,
+                paddingLeft: loose || preferences.side === 'right' ? 0 : BUBBLE / 2 - 4,
+                paddingRight: !loose && preferences.side === 'right' ? BUBBLE / 2 - 4 : 0,
               }}
             >
               <Icon name="mic" size={19} color={theme.colors.textMuted} />

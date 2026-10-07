@@ -104,8 +104,11 @@ export function QuickCaptureCard({
   saveRef.current = () => {
     void save();
   };
+  // One predicate drives both the auto-save timer and the countdown UI.
+  const autoSaving =
+    voice.state === 'idle' && recorded.current && text.trim().length > 0 && !editing && !saving;
   useEffect(() => {
-    if (voice.state !== 'idle' || !recorded.current || !text.trim() || editing || saving) return;
+    if (!autoSaving) return;
     const start = Date.now();
     setRemaining(TASK_SAVE_DELAY_MS);
     const timer = setInterval(() => {
@@ -117,7 +120,7 @@ export function QuickCaptureCard({
       }
     }, 100);
     return () => clearInterval(timer);
-  }, [voice.state, text, editing, saving]);
+  }, [autoSaving]);
   const dismiss = () => {
     if (!savingRef.current) {
       voice.abort();
@@ -156,8 +159,7 @@ export function QuickCaptureCard({
       : projectDisplayName(
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
-  // Same predicate as the auto-save timer above.
-  const counting = settled && recorded.current && !editing && !saving && text.trim().length > 0;
+  const counting = autoSaving;
   const chip = (id: string | null) => {
     const selected = projectId === id;
     return (
@@ -419,21 +421,24 @@ function LevelBars({ level, color }: { level: number; color: string }) {
 function AttachButton({ onPick }: { onPick(kind: 'photo' | 'file'): Promise<void> }) {
   const { theme } = useUnistyles();
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="Attach photo or file"
-      onPress={() =>
-        Alert.alert('Attach', undefined, [
-          { text: 'Photo', onPress: () => void onPick('photo') },
-          { text: 'File', onPress: () => void onPick('file') },
-          { text: 'Cancel', style: 'cancel' },
-        ])
-      }
-      style={({ pressed }) => [styles.tool, pressed ? styles.pressed : null]}
-    >
-      <Icon name="paperclip" size={15} color={theme.colors.textMuted} />
-      <Text style={styles.toolLabel}>Photo / File</Text>
-    </Pressable>
+    <View style={styles.toolGroup}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Attach photo"
+        onPress={() => void onPick('photo')}
+        style={({ pressed }) => [styles.tool, pressed ? styles.pressed : null]}
+      >
+        <Icon name="image" size={15} color={theme.colors.textMuted} />
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Attach file"
+        onPress={() => void onPick('file')}
+        style={({ pressed }) => [styles.tool, pressed ? styles.pressed : null]}
+      >
+        <Icon name="paperclip" size={15} color={theme.colors.textMuted} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -547,7 +552,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  toolLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+  toolGroup: { flexDirection: 'row', gap: theme.spacing.sm },
   stop: {
     marginLeft: 'auto',
     width: 44,
