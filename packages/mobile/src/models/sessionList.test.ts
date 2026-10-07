@@ -873,6 +873,30 @@ describe('SessionListModel.setFavorite', () => {
     expect(setSessionFavorite).toHaveBeenCalledWith('a', true);
   });
 
+  it.each(['success', 'failure'])('ignores an older %s after a newer update', async (outcome) => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([session('a', 'idle')]);
+    let resolve!: (value: { sessionId: string; favorite: boolean }) => void;
+    let reject!: (error: Error) => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((yes, no) => {
+          resolve = yes;
+          reject = no;
+        }),
+    );
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: false });
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    const older = model.setFavorite('a', true);
+    await model.setFavorite('a', false);
+    if (outcome === 'success') resolve({ sessionId: 'a', favorite: true });
+    else reject(new Error('older request failed'));
+    await older;
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.error).toBeUndefined();
+  });
+
   it('reverts only that flag and surfaces the error when the update fails', async () => {
     const { client, listSessions, setSessionFavorite } = makeClient();
     listSessions.mockResolvedValue([{ ...session('a', 'idle'), favorite: true }]);

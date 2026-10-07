@@ -100,6 +100,7 @@ export class SessionListModel {
   private cancelTimeTick: CancelPoll | undefined;
   // Monotonic request id: a slower earlier load must not overwrite a newer one.
   private reqSeq = 0;
+  private favoriteMutations = new Map<string, number>();
   private pendingAutomations = new Map<
     string,
     { automation: SessionSummary['automation']; maxRequest: number }
@@ -223,14 +224,18 @@ export class SessionListModel {
    * reverted while the error surfaces until the next successful load.
    */
   async setFavorite(sessionId: string, favorite: boolean): Promise<void> {
+    const mutation = (this.favoriteMutations.get(sessionId) ?? 0) + 1;
+    this.favoriteMutations.set(sessionId, mutation);
     const previous = this._sessions.find((s) => s.sessionId === sessionId)?.favorite === true;
     this.applyFavorite(sessionId, favorite);
     this.emit();
     try {
       const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
+      if (this.favoriteMutations.get(sessionId) !== mutation) return;
       this.applyFavorite(sessionId, stored);
       this._error = undefined;
     } catch (error) {
+      if (this.favoriteMutations.get(sessionId) !== mutation) return;
       this.applyFavorite(sessionId, previous);
       this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
     }
