@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.58.1](https://github.com/Heey-Global/verity/compare/mobile-v1.58.0...mobile-v1.58.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** initialize Unistyles before loading routes ([#1288](https://github.com/Heey-Global/verity/issues/1288)) ([0f89d27](https://github.com/Heey-Global/verity/commit/0f89d27388c3a004aa0ca1c04c0b8e28d6b99a0f))
+* **web:** restore layouts and composer behavior and optimize loading ([#1273](https://github.com/Heey-Global/verity/issues/1273)) ([ba34bbb](https://github.com/Heey-Global/verity/commit/ba34bbb6118e5ee92d23ae027dca886c40e94a01))
+
 ## [1.57.5](https://github.com/Heey-Global/verity/compare/mobile-v1.57.4...mobile-v1.57.5) (2026-10-07)
 
 
