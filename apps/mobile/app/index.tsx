@@ -1868,7 +1868,8 @@ function SessionRow({
               </Text>
               <SessionIssueRef branch={session.branch} repo={repo} />
               {automationActive ? (
-                <View accessible accessibilityLabel="Automation active">
+                // Decorative: the row's label already says "automation active".
+                <View accessible={false} importantForAccessibility="no-hide-descendants">
                   <Icon name="repeat" size={14} color={theme.colors.primary} />
                 </View>
               ) : null}
