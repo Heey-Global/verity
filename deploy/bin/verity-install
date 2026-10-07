@@ -951,18 +951,45 @@ VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" \
 # remain on the host, outside project containers and the Control tool surface.
 install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-diagnostics" \
   "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics"
-install -d -m 0755 -o root -g root "${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}"
+diagnostic_dir="${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}"
+# This path becomes both a Docker bind source and a systemd writable path.
+[[ $diagnostic_dir == /* && $diagnostic_dir != / && $diagnostic_dir != */ &&
+   $diagnostic_dir != *:* && $diagnostic_dir != *//* &&
+   ! $diagnostic_dir =~ (^|/)\.\.?(/|$) &&
+   ! $diagnostic_dir =~ [[:cntrl:]] ]] || die 'host diagnostic directory must be a normalized absolute directory'
+install -d -m 0755 -o root -g root "$diagnostic_dir"
+export VERITY_HOST_DIAGNOSTIC_DIR="$diagnostic_dir"
 if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
   for unit in verity-host-diagnostics.service verity-host-diagnostics.timer; do
     install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
   done
+  # systemd does not inherit the installer's environment. Keep exporter output,
+  # capability receipts and the sealed Server bind on the same configured paths.
+  diagnostic_override_dir="$SYSTEMD_UNIT_DIR/verity-host-diagnostics.service.d"
+  install -d -m 0755 -o root -g root "$diagnostic_override_dir"
+  systemd_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//%/%%}"
+    printf '"%s"' "$value"
+  }
+  diagnostic_override="$(mktemp "$diagnostic_override_dir/.paths.XXXXXX")"
+  {
+    printf '[Service]\nExecStart=\nExecStart=%s\n' "$(systemd_quote "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics")"
+    printf 'Environment=%s\n' "$(systemd_quote "VERITY_HOST_DIAGNOSTIC_DIR=$diagnostic_dir")"
+    printf 'Environment=%s\n' "$(systemd_quote "VERITY_HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR")"
+    printf 'ReadWritePaths=%s %s\n' "$(systemd_quote "$diagnostic_dir")" "$(systemd_quote "$HOST_RUNTIME_DIR")"
+  } >"$diagnostic_override"
+  chmod 0644 "$diagnostic_override"
+  mv -f "$diagnostic_override" "$diagnostic_override_dir/paths.conf"
   systemctl daemon-reload
   systemctl enable --now verity-host-diagnostics.timer >/dev/null 2>&1 \
     || die 'could not enable the host diagnostics timer'
 else
   note 'No systemd: schedule /usr/local/libexec/verity/verity-host-diagnostics to refresh historical host evidence'
 fi
-"$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics" \
+VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics" \
   || note 'Host diagnostic collection unavailable; Control will report missing or stale evidence'
 
 # ── hand over to the guarded migration ─────────────────────────────────────

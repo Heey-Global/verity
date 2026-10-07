@@ -72,3 +72,15 @@ jq -n --arg observedAt "$until" --arg since "$since" --arg until "$until" \
   ' >"$work_dir/snapshot.json"
 chmod 0644 "$work_dir/snapshot.json"
 mv -f "$work_dir/snapshot.json" "$state_dir/snapshot.json"
+# The Updater sees runtime status, not the snapshot directory. Publish capability
+# only after the snapshot rename, so an interrupted collection cannot authorize
+# a mount based on evidence that was never written.
+if [[ -n ${VERITY_HOST_RUNTIME_DIR:-} ]]; then
+  [[ -d $VERITY_HOST_RUNTIME_DIR && ! -L $VERITY_HOST_RUNTIME_DIR ]] || exit 1
+  receipt="$(mktemp "$VERITY_HOST_RUNTIME_DIR/.diagnostics.XXXXXX")"
+  jq --arg hostPath "$state_dir" \
+    '{version: 1, hostPath: $hostPath, snapshot: del(.records)}' \
+    "$state_dir/snapshot.json" >"$receipt"
+  chmod 0644 "$receipt"
+  mv -f "$receipt" "$VERITY_HOST_RUNTIME_DIR/diagnostics.json"
+fi
