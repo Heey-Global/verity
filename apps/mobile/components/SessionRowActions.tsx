@@ -27,6 +27,11 @@ export const FULL_SWIPE_RATIO = 0.5;
 
 type SwipeSide = 'favorite' | 'delete';
 
+export function isFullSwipe(side: SwipeSide, translation: number, threshold: number): boolean {
+  'worklet';
+  return side === 'favorite' ? translation >= threshold : translation <= -threshold;
+}
+
 // Only one row may hold an action open; opening another closes it, like iOS lists.
 let openRow: SwipeableMethods | null = null;
 
@@ -155,11 +160,11 @@ function SwipeAction({
     [onArm, side],
   );
   useAnimatedReaction(
-    () => Math.abs(translation.value) >= fullSwipe,
+    () => isFullSwipe(side, translation.value, fullSwipe),
     (on, previous) => {
       if (on !== previous) runOnJS(arm)(on);
     },
-    [fullSwipe],
+    [fullSwipe, side],
   );
   // The lane follows the finger past its resting width, so a long swipe fills the
   // row with the action color instead of opening a gap.

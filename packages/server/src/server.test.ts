@@ -6658,7 +6658,7 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s1',
-      payload: { name: 'after', model: 'codex/default' },
+      payload: { name: 'after', favorite: true, model: 'codex/default' },
     });
 
     expect(res.statusCode).toBe(503);
@@ -6667,6 +6667,10 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     });
     const session = await ctx.store.getSession('s1');
     expect(session?.name).toBe('after');
+    expect(session?.favorite).toBe(true);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining('the favorite change in this request was applied'),
+    });
     expect(session?.model).toBe('claude-opus-4-8');
     expect(res.headers['retry-after']).toBe('5');
   });
@@ -6687,7 +6691,7 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s1',
-      payload: { name: 'after', model: 'codex/default' },
+      payload: { name: 'after', favorite: true, model: 'codex/default' },
     });
 
     expect(res.statusCode).toBe(409);
@@ -6697,6 +6701,10 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     expect(res.headers['retry-after']).toBe('5');
     const session = await ctx.store.getSession('s1');
     expect(session?.name).toBe('after');
+    expect(session?.favorite).toBe(true);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining('the favorite change in this request was applied'),
+    });
     expect(session?.model).toBe('claude-opus-4-8');
   });
 

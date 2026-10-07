@@ -1,7 +1,11 @@
 import { fireEvent, render, screen } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
-import { SessionContextMenu, SwipeableSessionRow } from '../components/SessionRowActions';
+import {
+  isFullSwipe,
+  SessionContextMenu,
+  SwipeableSessionRow,
+} from '../components/SessionRowActions';
 
 function renderMenu(favorite: boolean) {
   const handlers = {
@@ -91,5 +95,16 @@ describe('SwipeableSessionRow', () => {
 
     expect(screen.getByLabelText('Unfavorite')).toBeTruthy();
     expect(screen.queryByLabelText('Favorite')).toBeNull();
+  });
+});
+
+describe('full swipe direction', () => {
+  it('arms only the action in the swipe direction', () => {
+    expect(isFullSwipe('favorite', 200, 160)).toBe(true);
+    expect(isFullSwipe('delete', 200, 160)).toBe(false);
+    expect(isFullSwipe('favorite', -200, 160)).toBe(false);
+    expect(isFullSwipe('delete', -200, 160)).toBe(true);
+    expect(isFullSwipe('favorite', 100, 160)).toBe(false);
+    expect(isFullSwipe('delete', -100, 160)).toBe(false);
   });
 });

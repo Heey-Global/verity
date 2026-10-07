@@ -118,7 +118,8 @@ export function registerSessionMetadataRoute(
           return {
             error:
               `session ${id} still has an unterminated backend — retry the model switch` +
-              (name !== undefined ? ' (the rename in this request was applied)' : ''),
+              (name !== undefined ? ' (the rename in this request was applied)' : '') +
+              (favorite !== undefined ? ' (the favorite change in this request was applied)' : ''),
           };
         }
         if (error instanceof SessionBusyError) {
@@ -126,7 +127,8 @@ export function registerSessionMetadataRoute(
           return {
             error:
               `session ${id} is busy with another operation — retry the model switch` +
-              (name !== undefined ? ' (the rename in this request was applied)' : ''),
+              (name !== undefined ? ' (the rename in this request was applied)' : '') +
+              (favorite !== undefined ? ' (the favorite change in this request was applied)' : ''),
           };
         }
         throw error;
