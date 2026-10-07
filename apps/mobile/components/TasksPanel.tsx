@@ -383,7 +383,14 @@ export function TasksPanel({
           <View style={[styles.chips, styles.agentIndent]}>
             {isDone ? null : chip('Done', () => complete(task))}
             {chip('Move to my tasks', () => {
-              void run(() => patchTask(task, { origin: 'user', sessionId: null }));
+              void run(() =>
+                patchTask(task, {
+                  origin: 'user',
+                  sessionId: null,
+                  // Adopted work starts fresh in the operator's list.
+                  ...(isDone ? {} : { status: 'open' as const }),
+                }),
+              );
             })}
             {chip('Drop', () =>
               Alert.alert('Drop this step?', task.title, [
