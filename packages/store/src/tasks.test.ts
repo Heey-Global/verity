@@ -212,6 +212,17 @@ describe('TaskStore', () => {
     expect(adopted).toMatchObject({ origin: 'user', sessionId: null, revision: 2 });
   });
 
+  it('drops the agent’s unfinished steps when their session is deleted, and keeps the operator’s', async () => {
+    const base = { ownerUserId: ADMIN, projectId: 'p1', sessionId: 's1' };
+    await tasks().upsert({ ...base, id: 'step', origin: 'agent', title: 'Step' });
+    await tasks().upsert({ ...base, id: 'done', origin: 'agent', title: 'Done', status: 'done' });
+    await tasks().upsert({ ...base, id: 'mine', origin: 'user', title: 'Mine' });
+    await ctx.store.deleteSession('s1');
+    expect(await tasks().get('step', ADMIN)).toMatchObject({ status: 'dropped', sessionId: null });
+    expect(await tasks().get('done', ADMIN)).toMatchObject({ status: 'done' });
+    expect(await tasks().get('mine', ADMIN)).toMatchObject({ status: 'open', sessionId: null });
+  });
+
   it('rejects empty titles and too many attachments', async () => {
     await expect(
       tasks().upsert({ id: 't1', ownerUserId: ADMIN, origin: 'user', title: '   ' }),

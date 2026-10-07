@@ -110,8 +110,9 @@ it('keeps the agent’s steps in a collapsed section without implement buttons',
   expect(ui.getByText('Rate-limit login')).toBeTruthy();
   expect(ui.queryByText('Other session step')).toBeNull();
   expect(ui.queryByText(/New Session/)).toBeNull();
-  fireEvent.press(ui.getByText('Rate-limit login'));
-  expect(ui.getByText('Move to my tasks')).toBeTruthy();
+  // Step actions live in the shared "…" card, not inline chips.
+  expect(ui.queryByText('Move to my tasks')).toBeNull();
+  expect(ui.getAllByA11yHint('Opens step actions')).toHaveLength(1);
 });
 it('never dispatches a selection that includes assigned or done tasks', () => {
   jest.mocked(useTasks).mockReturnValue({
@@ -127,4 +128,25 @@ it('never dispatches a selection that includes assigned or done tasks', () => {
   expect(ui.getAllByText('+ New Session')).toHaveLength(2);
   fireEvent.press(ui.getByText('Busy'));
   expect(ui.getAllByText('+ New Session')).toHaveLength(1);
+});
+it('keeps steps of ended sessions out of the operator list', () => {
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [
+      { ...task, id: 'mine', title: 'My capture', projectId: 'p' },
+      {
+        ...task,
+        id: 'orphan',
+        title: 'Orphaned step',
+        origin: 'agent',
+        projectId: 'p',
+        status: 'in_progress',
+      },
+    ],
+    pending: [],
+    conflicts: [],
+  });
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  expect(ui.getByText('My capture')).toBeTruthy();
+  // Their session is gone, so they were dropped server-side; never list them.
+  expect(ui.queryByText('Orphaned step')).toBeNull();
 });

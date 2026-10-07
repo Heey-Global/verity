@@ -7,7 +7,7 @@ import {
   type TaskContext,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -21,14 +21,10 @@ import {
 } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { openTaskAttachment } from '../lib/taskAttachments';
+import type { AttachAnchor } from '../lib/attachMenu';
+import { ActionMenu, type ActionMenuItem } from './ActionMenu';
 import { dispatchTasks } from '../lib/taskDispatch';
-import {
-  patchTask,
-  refreshTasks,
-  removeTask,
-  resolveTaskConflict,
-  useTasks,
-} from '../lib/tasksStore';
+import { patchTask, removeTask, resolveTaskConflict, useTasks } from '../lib/tasksStore';
 
 interface TaskGroup {
   key: string;
@@ -72,7 +68,15 @@ export function TasksPanel({
   const [moving, setMoving] = useState<Task | null>(null);
   const [busy, setBusy] = useState(false);
   const [undo, setUndo] = useState<string[]>([]);
-  const [actions, setActions] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ task: Task; anchor: AttachAnchor } | null>(null);
+  const anchors = useRef(new Map<string, View>());
+  // The "…" card opens pinned to the row's own button, like the chat's message menu.
+  const openMenu = (task: Task) =>
+    anchors.current
+      .get(task.id)
+      ?.measureInWindow((x, y, width, height) =>
+        setMenu({ task, anchor: { x, y, width, height } }),
+      );
   const [agentOpen, setAgentOpen] = useState(false);
   const wide = width >= 900;
   const run = async (work: () => Promise<unknown>) => {
@@ -107,16 +111,16 @@ export function TasksPanel({
     const project = projects.find((p) => p.id === id);
     return project ? projectDisplayName(project) : 'Project';
   };
-  // An agent step belongs to a session; a step whose session is gone is backlog.
-  const isStep = (task: Task) => task.origin === 'agent' && task.sessionId !== null;
+  // Everything the agent recorded is its working plan, never the operator's
+  // list — also after its session has ended. Adopting moves a step across.
+  const isStep = (task: Task) => task.origin === 'agent';
   const done = tasks.filter((t) => t.status === 'done' && !isStep(t));
   const visible = tasks.filter(
     (task) =>
       task.status !== 'dropped' && (task.status !== 'done' || showDone || undo.includes(task.id)),
   );
-  // The operator's own captures are the list. The agent's steps are its working
-  // plan for a request and stay in a separate, quieter section below — but only
-  // while they belong to a session; a step whose session is gone is backlog.
+  // The operator's own captures are the list; the agent's steps sit in a
+  // separate, quieter section below.
   const mine = visible.filter((task) => !isStep(task));
   const agentScope = (task: Task) =>
     isStep(task) &&
@@ -193,14 +197,13 @@ export function TasksPanel({
     const pan = PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 20 && Math.abs(g.dx) > Math.abs(g.dy),
       onPanResponderRelease: (_, g) => {
-        if (Math.abs(g.dx) > 40) setActions(task.id);
+        if (Math.abs(g.dx) > 40) openMenu(task);
       },
     });
     const isDone = task.status === 'done';
     const isSelected = selected.includes(task.id);
     const syncing = pending.some((op) => op.id === task.id);
     const meta = [
-      ...(task.origin === 'agent' ? ['from agent'] : []),
       taskAge(task.createdAt),
       ...(task.attachments.length
         ? [
@@ -256,10 +259,14 @@ export function TasksPanel({
             <Text style={styles.meta}>{meta}</Text>
           </Pressable>
           <Pressable
+            ref={(node) => {
+              if (node) anchors.current.set(task.id, node);
+              else anchors.current.delete(task.id);
+            }}
             accessibilityRole="button"
             accessibilityLabel="Task actions"
             hitSlop={8}
-            onPress={() => setActions(actions === task.id ? null : task.id)}
+            onPress={() => openMenu(task)}
             style={styles.more}
           >
             <Icon name="more-horizontal" size={18} color={theme.colors.textMuted} />
@@ -319,42 +326,23 @@ export function TasksPanel({
             {chip('+ New Session', () => implement([task]))}
           </View>
         ) : null}
-        {actions === task.id ? (
-          <View style={[styles.chips, styles.indent]}>
-            {chip(isDone ? 'Reopen' : 'Done', () => complete(task))}
-            {chip('Move', () => setMoving(task))}
-            {chip('Edit', () => {
-              setEdit(task);
-              setText(task.title);
-            })}
-            {chip('Delete', () =>
-              Alert.alert('Delete task?', task.title, [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Delete',
-                  style: 'destructive',
-                  onPress: () => {
-                    void run(() => removeTask(task.id));
-                  },
-                },
-              ]),
-            )}
-          </View>
-        ) : null}
       </View>
     );
   };
   // An agent step: compact, muted, no implement buttons — the agent is already
-  // on it. Tap toggles a small action row; adopting moves it into the list above.
+  // on it. Tap opens the same "…" card; adopting moves it into the list above.
   const agentRow = (task: Task) => {
     const isDone = task.status === 'done';
-    const open = actions === task.id;
     return (
       <View key={task.id} style={styles.agentRow}>
         <Pressable
+          ref={(node) => {
+            if (node) anchors.current.set(task.id, node);
+            else anchors.current.delete(task.id);
+          }}
           accessibilityRole="button"
-          accessibilityState={{ expanded: open }}
-          onPress={() => setActions(open ? null : task.id)}
+          accessibilityHint="Opens step actions"
+          onPress={() => openMenu(task)}
           style={styles.agentMain}
         >
           <Icon
@@ -380,35 +368,102 @@ export function TasksPanel({
             <Text style={styles.link}>Undo</Text>
           </Pressable>
         ) : null}
-        {open ? (
-          <View style={[styles.chips, styles.agentIndent]}>
-            {isDone ? null : chip('Done', () => complete(task))}
-            {chip('Move to my tasks', () => {
-              void run(() =>
-                patchTask(task, {
-                  origin: 'user',
-                  sessionId: null,
-                  // Adopted work starts fresh in the operator's list.
-                  ...(isDone ? {} : { status: 'open' as const }),
-                }),
-              );
-            })}
-            {chip('Drop', () =>
-              Alert.alert('Drop this step?', task.title, [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Drop',
-                  style: 'destructive',
-                  onPress: () => {
-                    void run(() => patchTask(task, { status: 'dropped' }));
-                  },
-                },
-              ]),
-            )}
-          </View>
-        ) : null}
       </View>
     );
+  };
+  // iOS will not present an alert while the menu's modal is still fading out,
+  // so the confirmation waits for the dismissal to finish.
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    },
+    [],
+  );
+  const confirm = (title: string, verb: string, task: Task, work: () => Promise<unknown>) => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    confirmTimer.current = setTimeout(
+      () =>
+        Alert.alert(title, task.title, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: verb, style: 'destructive', onPress: () => void run(work) },
+        ]),
+      350,
+    );
+  };
+  const menuItems = (task: Task): ActionMenuItem[] => {
+    const isDone = task.status === 'done';
+    const close = (work: () => void) => () => {
+      setMenu(null);
+      work();
+    };
+    if (task.origin === 'agent')
+      return [
+        ...(isDone
+          ? []
+          : [
+              {
+                icon: 'check-circle' as const,
+                title: 'Mark done',
+                subtitle: 'The agent no longer needs to do this',
+                onPress: close(() => complete(task)),
+              },
+            ]),
+        {
+          icon: 'corner-up-left',
+          title: 'Move to my tasks',
+          subtitle: 'Keep it in your own list',
+          onPress: close(() => {
+            void run(() =>
+              patchTask(task, {
+                origin: 'user',
+                sessionId: null,
+                // Adopted work starts fresh in the operator's list.
+                ...(isDone ? {} : { status: 'open' as const }),
+              }),
+            );
+          }),
+        },
+        {
+          icon: 'x-circle',
+          title: 'Drop step',
+          subtitle: 'Remove it from the agent’s plan',
+          destructive: true,
+          onPress: close(() =>
+            confirm('Drop this step?', 'Drop', task, () => patchTask(task, { status: 'dropped' })),
+          ),
+        },
+      ];
+    return [
+      {
+        icon: isDone ? 'rotate-ccw' : 'check-circle',
+        title: isDone ? 'Reopen' : 'Mark done',
+        subtitle: isDone ? 'Put it back on your list' : 'Tick it off your list',
+        onPress: close(() => complete(task)),
+      },
+      {
+        icon: 'edit-2',
+        title: 'Edit',
+        subtitle: 'Change the text',
+        onPress: close(() => {
+          setEdit(task);
+          setText(task.title);
+        }),
+      },
+      {
+        icon: 'folder',
+        title: 'Move',
+        subtitle: 'To another project or General',
+        onPress: close(() => setMoving(task)),
+      },
+      {
+        icon: 'trash-2',
+        title: 'Delete',
+        subtitle: 'Remove the task for good',
+        destructive: true,
+        onPress: close(() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))),
+      },
+    ];
   };
   const selectedTasks = tasks.filter((task) => selected.includes(task.id));
   const dispatchable = selectedTasks.filter(implementable);
@@ -418,7 +473,7 @@ export function TasksPanel({
     dispatchable.every((task) => task.projectId === dispatchable[0]?.projectId)
       ? dispatchable[0]!.projectId
       : null;
-  const headerButton = (label: string, icon: 'mic' | 'refresh-cw' | 'x', onPress: () => void) => (
+  const headerButton = (label: string, icon: 'mic' | 'x', onPress: () => void) => (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
@@ -455,9 +510,6 @@ export function TasksPanel({
               Tasks
             </Text>
             {headerButton('Capture task', 'mic', onCapture)}
-            {headerButton('Refresh Tasks', 'refresh-cw', () => {
-              void run(() => refreshTasks(true));
-            })}
             {headerButton('Close', 'x', onClose)}
           </View>
           {edit ? (
@@ -628,6 +680,14 @@ export function TasksPanel({
           </Pressable>
         </View>
       </View>
+      {menu ? (
+        <ActionMenu
+          anchor={menu.anchor}
+          label="Task actions"
+          items={menuItems(tasks.find((task) => task.id === menu.task.id) ?? menu.task)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </Modal>
   );
 }

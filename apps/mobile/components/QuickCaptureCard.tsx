@@ -20,7 +20,8 @@ import {
   View,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
-import { useUnistyles } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Icon } from './Icon';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { pickFiles, pickImagesFromLibrary } from '../lib/attachments';
 import { recentTaskScreenshot, readTaskScreenshot } from '../lib/taskScreenshot';
@@ -103,10 +104,16 @@ export function QuickCaptureCard({
   saveRef.current = () => {
     void save();
   };
+  // One predicate drives both the auto-save timer and the countdown UI.
+  const autoSaving =
+    voice.state === 'idle' && recorded.current && text.trim().length > 0 && !editing && !saving;
   useEffect(() => {
-    if (voice.state !== 'idle' || !recorded.current || !text.trim() || editing || saving) return;
+    // Reset while paused, so the bar is already full when the countdown resumes.
+    if (!autoSaving) {
+      setRemaining(TASK_SAVE_DELAY_MS);
+      return;
+    }
     const start = Date.now();
-    setRemaining(TASK_SAVE_DELAY_MS);
     const timer = setInterval(() => {
       const next = Math.max(0, TASK_SAVE_DELAY_MS - (Date.now() - start));
       setRemaining(next);
@@ -116,7 +123,7 @@ export function QuickCaptureCard({
       }
     }, 100);
     return () => clearInterval(timer);
-  }, [voice.state, text, editing, saving]);
+  }, [autoSaving]);
   const dismiss = () => {
     if (!savingRef.current) {
       voice.abort();
@@ -144,47 +151,75 @@ export function QuickCaptureCard({
       setEditing(wasEditing);
     }
   };
-  const button = { padding: 12, borderRadius: 20, backgroundColor: theme.colors.background };
-  const fg = { color: theme.colors.text };
+  const recording = voice.state === 'recording';
+  // Chips and Save only once dictation has fully settled, so a late final
+  // result is never cut off by an early save.
+  const settled = voice.state === 'idle';
   const chips = [...new Set([context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)])];
+  const label = (id: string | null) =>
+    id === null
+      ? 'General'
+      : projectDisplayName(
+          projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
+        );
+  const counting = autoSaving;
+  const shown = remaining;
+  const chip = (id: string | null) => {
+    const selected = projectId === id;
+    return (
+      <Pressable
+        key={id ?? 'general'}
+        accessibilityRole="button"
+        accessibilityState={{ selected }}
+        onPress={() => {
+          setProjectId(id);
+          void save(id);
+        }}
+        style={({ pressed }) => [
+          styles.chip,
+          selected ? styles.chipSelected : null,
+          pressed ? styles.pressed : null,
+        ]}
+      >
+        {selected ? <View style={styles.chipDot} /> : null}
+        <Text style={[styles.chipLabel, selected ? styles.chipLabelSelected : null]}>
+          {label(id)}
+        </Text>
+      </Pressable>
+    );
+  };
   return (
     <Modal transparent animationType="slide" onRequestClose={dismiss}>
-      <KeyboardAvoidingView
-        behavior="padding"
-        style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: '#0005' }}
-      >
-        <View
-          style={{
-            margin: 12,
-            marginBottom: 32,
-            padding: 18,
-            borderRadius: 24,
-            backgroundColor: theme.colors.surface,
-          }}
-        >
-          <View {...pan.panHandlers} style={{ alignItems: 'center', padding: 8 }}>
-            <View
-              style={{
-                width: 36,
-                height: 4,
-                borderRadius: 2,
-                backgroundColor: theme.colors.textMuted,
-              }}
-            />
+      <KeyboardAvoidingView behavior="padding" style={styles.backdrop}>
+        <View style={styles.card}>
+          <View {...pan.panHandlers} style={styles.grabArea}>
+            <View style={styles.grabber} />
           </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Text style={fg}>{voice.state === 'recording' ? 'Listening…' : 'Capture task'}</Text>
-            <Pressable accessibilityLabel="Discard capture" onPress={dismiss}>
-              <Text style={fg}>✕</Text>
+          <View style={styles.head}>
+            {recording ? (
+              <>
+                <View style={styles.recDot} />
+                <Text style={styles.recLabel}>Recording</Text>
+                <LevelBars level={voice.level} color={theme.colors.tone.danger} />
+              </>
+            ) : (
+              <Text style={styles.headLabel}>{saving ? 'Saving…' : 'New task'}</Text>
+            )}
+            <Text style={styles.target} numberOfLines={1}>
+              → <Text style={styles.targetName}>{label(projectId)}</Text>
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Discard capture"
+              hitSlop={10}
+              onPress={dismiss}
+              style={({ pressed }) => [styles.close, pressed ? styles.pressed : null]}
+            >
+              <Icon name="x" size={18} color={theme.colors.textMuted} />
             </Pressable>
           </View>
-          {voice.onDevice === false ? (
-            <Text style={{ color: theme.colors.textMuted }}>
-              Speech recognition uses your device’s network service.
-            </Text>
-          ) : null}
           {voice.error ? (
-            <Text accessibilityRole="alert" style={fg}>
+            <Text accessibilityRole="alert" style={styles.error}>
               {voice.error}
             </Text>
           ) : null}
@@ -193,176 +228,391 @@ export function QuickCaptureCard({
             value={text}
             multiline
             maxLength={2000}
-            placeholder="What needs doing?"
-            placeholderTextColor={theme.colors.textMuted}
+            placeholder={recording ? 'Listening…' : 'What needs doing?'}
+            placeholderTextColor={theme.colors.textFaint}
             onFocus={() => setEditing(true)}
             onChangeText={(value) => {
               setEditing(true);
               voice.onComposerEdit(value);
               setText(value);
             }}
-            style={{ ...fg, minHeight: 90, fontSize: 18 }}
+            style={styles.input}
           />
-          {voice.state === 'recording' ? (
-            <View style={{ gap: 8 }}>
-              <View
-                style={{
-                  height: 4,
-                  width: `${Math.max(3, voice.level * 100)}%`,
-                  backgroundColor: theme.colors.accent,
+          {voice.onDevice === false ? (
+            <Text style={styles.hint}>Speech recognition uses your device’s network service.</Text>
+          ) : null}
+          {screenshot ? (
+            <View style={styles.suggest}>
+              {/* An icon rather than the asset itself: library URIs (ph://) do not
+                  render reliably in Image on every platform. */}
+              <View style={styles.suggestThumb}>
+                <Icon name="image" size={18} color={theme.colors.textMuted} />
+              </View>
+              <View style={styles.suggestBody}>
+                <Text style={styles.suggestTitle}>Screenshot from just now</Text>
+                <Text style={styles.hint}>Attach it to this task?</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setEditing(true);
+                  void readTaskScreenshot(screenshot)
+                    .then((items) => {
+                      setUploads((previous) => [...previous, ...items]);
+                      setScreenshot(null);
+                    })
+                    .catch((error) =>
+                      Alert.alert(
+                        'Could not attach screenshot',
+                        error instanceof Error ? error.message : 'Try the photo picker',
+                      ),
+                    );
                 }}
-              />
-              <Pressable accessibilityLabel="Stop recording" onPress={voice.toggle} style={button}>
-                <Text style={fg}>■ Stop</Text>
+                style={({ pressed }) => [styles.attach, pressed ? styles.pressed : null]}
+              >
+                <Text style={styles.attachLabel}>+ Attach</Text>
               </Pressable>
             </View>
           ) : null}
-          <ScrollView horizontal style={{ marginVertical: 8 }}>
-            {uploads.map((upload, index) => (
-              <Pressable
-                key={index}
-                accessibilityLabel={`Remove attachment ${index + 1}`}
-                onPress={() => {
-                  setEditing(true);
-                  setUploads((items) => items.filter((_, i) => i !== index));
-                }}
-                style={{ marginRight: 8 }}
-              >
-                {upload.kind === 'image' ? (
-                  <Image
-                    source={{ uri: `data:${upload.mediaType};base64,${upload.data}` }}
-                    style={{ width: 56, height: 56, borderRadius: 8 }}
-                  />
-                ) : (
-                  <Text style={fg}>{upload.fileName}</Text>
-                )}
-                <Text style={fg}>✕</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-          {screenshot ? (
-            <Pressable
-              style={button}
-              onPress={() => {
-                setEditing(true);
-                void readTaskScreenshot(screenshot)
-                  .then((items) => {
-                    setUploads((previous) => [...previous, ...items]);
-                    setScreenshot(null);
-                  })
-                  .catch((error) =>
-                    Alert.alert(
-                      'Could not attach screenshot',
-                      error instanceof Error ? error.message : 'Try the photo picker',
-                    ),
-                  );
-              }}
-            >
-              <Text style={fg}>Recent screenshot · + Attach</Text>
-            </Pressable>
-          ) : null}
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Pressable
-              onPress={() => {
-                void pick('photo');
-              }}
-              style={button}
-            >
-              <Text style={fg}>+ Photo</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void pick('file');
-              }}
-              style={button}
-            >
-              <Text style={fg}>+ File</Text>
-            </Pressable>
-          </View>
-          {voice.state === 'idle' ? (
-            <>
-              <ScrollView horizontal style={{ marginVertical: 12 }}>
-                {chips.map((id) => (
-                  <Pressable
-                    key={id ?? 'general'}
-                    onPress={() => {
-                      setProjectId(id);
-                      void save(id);
-                    }}
-                    style={{
-                      ...button,
-                      marginRight: 6,
-                      borderWidth: projectId === id ? 1 : 0,
-                      borderColor: theme.colors.accent,
-                    }}
-                  >
-                    <Text style={fg}>
-                      {id === null
-                        ? 'General'
-                        : projectDisplayName(
-                            projects.find((p) => p.id === id) ?? {
-                              owner: '',
-                              repo: id,
-                              kind: 'local',
-                            },
-                          )}
-                    </Text>
-                  </Pressable>
-                ))}
+          {uploads.length ? (
+            <ScrollView horizontal contentContainerStyle={styles.thumbs}>
+              {uploads.map((upload, index) => (
                 <Pressable
-                  style={button}
+                  key={index}
+                  accessibilityLabel={`Remove attachment ${String(index + 1)}`}
+                  onPress={() => {
+                    setEditing(true);
+                    setUploads((items) => items.filter((_, i) => i !== index));
+                  }}
+                  style={styles.thumb}
+                >
+                  {upload.kind === 'image' ? (
+                    <Image
+                      source={{ uri: `data:${upload.mediaType};base64,${upload.data}` }}
+                      style={styles.thumbImage}
+                    />
+                  ) : (
+                    <View style={styles.thumbFile}>
+                      <Icon name="file" size={18} color={theme.colors.textMuted} />
+                      <Text style={styles.thumbName} numberOfLines={2}>
+                        {upload.fileName}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.thumbRemove}>
+                    <Icon name="x" size={11} color="#fff" />
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
+          {!settled ? (
+            <View style={styles.toolsRow}>
+              <AttachButton onPick={pick} />
+              <Text style={styles.hint}>Stops when you pause</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Stop recording"
+                disabled={!recording}
+                onPress={voice.toggle}
+                style={({ pressed }) => [
+                  styles.stop,
+                  !recording ? styles.saveDisabled : null,
+                  pressed ? styles.pressed : null,
+                ]}
+              >
+                <View style={styles.stopSquare} />
+              </Pressable>
+            </View>
+          ) : (
+            <>
+              <View style={styles.chips}>
+                {chips.map(chip)}
+                <Pressable
+                  accessibilityRole="button"
                   onPress={() => {
                     setEditing(true);
                     setOther(!other);
                   }}
+                  style={({ pressed }) => [styles.chip, pressed ? styles.pressed : null]}
                 >
-                  <Text style={fg}>Other…</Text>
+                  <Text style={[styles.chipLabel, styles.chipLabelMuted]}>Other…</Text>
                 </Pressable>
-              </ScrollView>
+              </View>
               {other ? (
-                <ScrollView style={{ maxHeight: 180 }}>
+                <ScrollView style={styles.otherList}>
                   {projects.map((project) => (
                     <Pressable
                       key={project.id}
-                      style={button}
+                      style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
                       onPress={() => {
                         setProjectId(project.id);
                         void save(project.id);
                       }}
                     >
-                      <Text style={fg}>{projectDisplayName(project)}</Text>
+                      <Text style={styles.chipLabel}>{projectDisplayName(project)}</Text>
                     </Pressable>
                   ))}
                 </ScrollView>
               ) : null}
-              <View
-                style={{
-                  height: 2,
-                  width: `${(remaining / TASK_SAVE_DELAY_MS) * 100}%`,
-                  backgroundColor: theme.colors.accent,
-                }}
-              />
-              <Pressable
-                disabled={!text.trim() || saving}
-                onPress={() => {
-                  void save();
-                }}
-                style={button}
-              >
-                {saving ? (
-                  <ActivityIndicator />
+              <View style={styles.footer}>
+                <AttachButton onPick={pick} />
+                {counting ? (
+                  <View style={styles.countdown}>
+                    <View style={styles.countdownTrack}>
+                      <View
+                        style={[
+                          styles.countdownFill,
+                          {
+                            width:
+                              `${String(Math.round((shown / TASK_SAVE_DELAY_MS) * 100))}%` as `${number}%`,
+                          },
+                        ]}
+                      />
+                    </View>
+                    <Text style={styles.hint}>
+                      Saving to {label(projectId)} · swipe down to discard
+                    </Text>
+                  </View>
                 ) : (
-                  <Text style={fg}>
-                    {editing || !recorded.current
-                      ? 'Save task'
-                      : `Saving in ${Math.ceil(remaining / 1000)} seconds…`}
-                  </Text>
+                  <View style={styles.footerSpacer} />
                 )}
-              </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={!text.trim() || saving}
+                  onPress={() => {
+                    void save();
+                  }}
+                  style={({ pressed }) => [
+                    styles.save,
+                    !text.trim() ? styles.saveDisabled : null,
+                    pressed ? styles.pressed : null,
+                  ]}
+                >
+                  {saving ? (
+                    <ActivityIndicator color={theme.colors.onPrimary} />
+                  ) : (
+                    <Text style={styles.saveLabel}>{counting ? 'Save now' : 'Save'}</Text>
+                  )}
+                </Pressable>
+              </View>
             </>
-          ) : null}
+          )}
         </View>
       </KeyboardAvoidingView>
     </Modal>
   );
 }
+
+/** Live input level as a row of bars, newest on the right. */
+function LevelBars({ level, color }: { level: number; color: string }) {
+  const [history, setHistory] = useState<number[]>(() => Array.from({ length: 12 }, () => 0));
+  useEffect(() => {
+    setHistory((previous) => [...previous.slice(1), level]);
+  }, [level]);
+  return (
+    <View style={styles.bars}>
+      {history.map((value, index) => (
+        <View
+          key={index}
+          style={[styles.bar, { height: 4 + Math.min(1, value) * 16, backgroundColor: color }]}
+        />
+      ))}
+    </View>
+  );
+}
+
+function AttachButton({ onPick }: { onPick(kind: 'photo' | 'file'): Promise<void> }) {
+  const { theme } = useUnistyles();
+  return (
+    <View style={styles.toolGroup}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Attach photo"
+        onPress={() => void onPick('photo')}
+        style={({ pressed }) => [styles.tool, pressed ? styles.pressed : null]}
+      >
+        <Icon name="image" size={15} color={theme.colors.textMuted} />
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Attach file"
+        onPress={() => void onPick('file')}
+        style={({ pressed }) => [styles.tool, pressed ? styles.pressed : null]}
+      >
+        <Icon name="paperclip" size={15} color={theme.colors.textMuted} />
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create((theme) => ({
+  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.35)' },
+  card: {
+    marginHorizontal: theme.spacing.sm,
+    marginBottom: theme.spacing.xl,
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
+    borderRadius: theme.radius.lg + 6,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    gap: theme.spacing.md,
+  },
+  grabArea: { alignItems: 'center', paddingTop: theme.spacing.sm, paddingBottom: 2 },
+  grabber: { width: 38, height: 5, borderRadius: 3, backgroundColor: theme.colors.border },
+  head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm, minHeight: 24 },
+  recDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: theme.colors.tone.danger },
+  recLabel: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '600' },
+  headLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
+  target: {
+    marginLeft: 'auto',
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    flexShrink: 1,
+  },
+  targetName: { color: theme.colors.text, fontWeight: '600' },
+  bars: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 22, marginLeft: 4 },
+  bar: { width: 3, borderRadius: 2 },
+  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
+  input: {
+    color: theme.colors.text,
+    fontSize: theme.text.lg - 2,
+    lineHeight: 25 * theme.fontScale,
+    minHeight: 76,
+    maxHeight: 180,
+    padding: 0,
+    textAlignVertical: 'top',
+  },
+  hint: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  suggest: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md + 4,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  suggestThumb: {
+    width: 34,
+    height: 48,
+    borderRadius: 6,
+    backgroundColor: theme.colors.background,
+  },
+  suggestBody: { flex: 1, gap: 2 },
+  suggestTitle: { color: theme.colors.text, fontSize: theme.text.sm },
+  attach: {
+    paddingHorizontal: theme.spacing.md,
+    minHeight: 32,
+    justifyContent: 'center',
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  attachLabel: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  thumbs: { gap: theme.spacing.sm },
+  thumb: { width: 52, height: 72 },
+  thumbImage: {
+    width: 52,
+    height: 72,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  thumbFile: {
+    width: 52,
+    height: 72,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 4,
+    gap: 4,
+  },
+  thumbName: { color: theme.colors.textMuted, fontSize: theme.text.micro, textAlign: 'center' },
+  thumbRemove: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  tool: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: theme.spacing.md,
+    minHeight: 34,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  toolGroup: { flexDirection: 'row', gap: theme.spacing.sm },
+  stop: {
+    marginLeft: 'auto',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stopSquare: { width: 14, height: 14, borderRadius: 3, backgroundColor: theme.colors.tone.danger },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 34,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  chipSelected: { borderColor: theme.colors.primary },
+  chipDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.primary },
+  chipLabel: { color: theme.colors.text, fontSize: theme.text.sm },
+  chipLabelSelected: { color: theme.colors.primary, fontWeight: '600' },
+  chipLabelMuted: { color: theme.colors.textMuted },
+  otherList: { maxHeight: 180 },
+  otherRow: {
+    paddingVertical: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  footer: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  countdown: { flex: 1, gap: 6 },
+  countdownTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: theme.colors.surfaceAlt,
+    overflow: 'hidden',
+  },
+  countdownFill: { height: '100%', borderRadius: 2, backgroundColor: theme.colors.primary },
+  footerSpacer: { flex: 1 },
+  save: {
+    minHeight: 40,
+    minWidth: 88,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveDisabled: { opacity: 0.4 },
+  saveLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '700' },
+  close: { paddingLeft: theme.spacing.xs },
+  pressed: { opacity: 0.7 },
+}));
