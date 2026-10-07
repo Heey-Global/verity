@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.23.0](https://github.com/Heey-Global/verity/compare/v4.22.1...v4.23.0) (2026-10-07)
+
+
+### Features
+
+* **mobile:** add session favorites, swipe actions and context menu ([#1275](https://github.com/Heey-Global/verity/issues/1275)) ([4b5c745](https://github.com/Heey-Global/verity/commit/4b5c745650a691bcb8cd0d7f9792d055778ced93))
+* **tasks:** quieter task surfaces, agent steps apart, bubble physics ([#1276](https://github.com/Heey-Global/verity/issues/1276)) ([f656a4b](https://github.com/Heey-Global/verity/commit/f656a4bf505c977d3fc30e5dcca6ffadd938018c))
+
 ## [4.22.1](https://github.com/Heey-Global/verity/compare/v4.22.0...v4.22.1) (2026-10-07)
 
 
