@@ -71,7 +71,7 @@ export default function LiveMeetingSTTScreen() {
         .split(',')
         .map((word) => word.trim())
         .filter(Boolean);
-      await liveMeetingSTT.start(selected, locale.trim(), vocabulary);
+      await liveMeetingSTT.start(selected, locale.trim(), vocabulary, 0);
     } catch (reason) {
       setError(String(reason));
       setStatus('Failed to start');
@@ -113,7 +113,7 @@ export default function LiveMeetingSTTScreen() {
         <Text style={styles.label}>Engine</Text>
         {loadingEngines ? <ActivityIndicator color={ACCENT} /> : null}
         {!loadingEngines && engines.length === 0 ? (
-          <Text style={styles.caption}>This prototype requires iOS 26 or later.</Text>
+          <Text style={styles.caption}>This prototype requires iOS 27 or later.</Text>
         ) : null}
         {engines.map((engine) => (
           <Pressable

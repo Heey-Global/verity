@@ -11,7 +11,7 @@ import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildServer } from './server.js';
 import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from './doppler-token.js';
@@ -651,20 +651,31 @@ describe('listDopplerProjects (production check, faked transport)', () => {
   });
 
   it('applies one overall timeout budget across the page walk', async () => {
+    // The clock only moves inside the fake fetch. With a real clock and a 1 ms
+    // budget, a slow runner spent the budget before the first request was made,
+    // so the walk failed with zero requests and never exercised the second page.
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     let calls = 0;
-    const fetch: HttpFetch = async () => {
+    const fetch: HttpFetch = () => {
       calls += 1;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      return {
+      // Each full page stays inside the budget on its own; only the walk as a
+      // whole overruns it. A deadline reset per page would keep paging.
+      now += 60;
+      return Promise.resolve({
         ok: true,
         status: 200,
         json: () => Promise.resolve(projectPage(calls * 100, 100)),
-      };
+      } as HttpResponse);
     };
-    await expect(listDopplerProjects(TOKEN_FIXTURE, { fetch, timeoutMs: 1 })).rejects.toThrow(
-      'could not reach Doppler',
-    );
-    expect(calls).toBe(1);
+    try {
+      await expect(listDopplerProjects(TOKEN_FIXTURE, { fetch, timeoutMs: 100 })).rejects.toThrow(
+        'could not reach Doppler',
+      );
+    } finally {
+      clock.mockRestore();
+    }
+    expect(calls).toBe(2);
   });
 
   it('keeps paging when a full page contains a malformed entry', async () => {

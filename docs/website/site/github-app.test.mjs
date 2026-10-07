@@ -17,7 +17,7 @@ const manifest = {
   public: false,
   default_permissions: {
     contents: 'write', pull_requests: 'write', checks: 'read', actions: 'write', workflows: 'write',
-    issues: 'write', metadata: 'read', packages: 'read', organization_projects: 'write',
+    issues: 'write', metadata: 'read', packages: 'read',
   },
   default_events: [],
 };
@@ -79,14 +79,21 @@ test('the claimed callback is bound to the signed Verity app at image build time
   const association = JSON.parse(
     associationTemplate.replaceAll('__APPLE_TEAM_ID__', 'ABCDE12345'),
   );
-  assert.deepEqual(association.applinks.details[0].appIDs, ['ABCDE12345.build.verity.app']);
+  const mobileConfig = readFileSync(
+    join(here, '..', '..', '..', 'apps/mobile/app.config.ts'),
+    'utf8',
+  );
+  const bundleIds = mobileConfig.match(/bundleIdentifier: staging \? '([^']+)' : '([^']+)'/);
+  assert.ok(bundleIds, 'Mobile bundle identifiers must be available to the callback guard');
+  const appIds = bundleIds.slice(1).map((bundle) => `ABCDE12345.${bundle}`).sort();
+  assert.deepEqual([...association.applinks.details[0].appIDs].sort(), appIds);
   assert.deepEqual(
     association.applinks.details[0].components.map((component) => component['/']),
     ['/github/app/callback', '/mcp/oauth/callback'],
   );
   // ASWebAuthenticationSession refuses an HTTPS callback before showing its
   // sheet unless the app is also authorized under `webcredentials`.
-  assert.deepEqual(association.webcredentials.apps, ['ABCDE12345.build.verity.app']);
+  assert.deepEqual([...association.webcredentials.apps].sort(), appIds);
 
   const dockerfile = readFileSync(join(here, '..', 'Dockerfile'), 'utf8');
   assert.match(dockerfile, /type=secret,id=apple_team_id/);

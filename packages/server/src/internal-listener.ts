@@ -14,6 +14,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { BrokeredForgeProxy } from './brokered-forge-proxy.js';
 
 /**
  * Network-level isolation for the `/internal/*` control-plane routes (audit H1
@@ -90,6 +91,7 @@ export interface ProjectInternalUnixListenerOptions {
   readonly ownerUid: number;
   /** Dedicated relay group; group members may connect but cannot replace files. */
   readonly relayGid: number;
+  readonly forgeProxy?: BrokeredForgeProxy | undefined;
 }
 
 /** Remove a socket path only while it still names the inode this lifecycle
@@ -144,6 +146,8 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/git/sign',
   'POST /internal/github/token',
   'POST /internal/project/memory',
+  // `verity-dev-server`: managed dev servers (concept 2.6), same capability as memory.
+  'POST /internal/dev-servers',
   // The loopback MCP gateway (ADR 0014 D1). It rides the project-bound socket for the same
   // reason the others do: the project identity the handler binds its per-turn bearer to is
   // the one the connection proved, not one the request body could claim.
@@ -238,6 +242,10 @@ export async function startProjectInternalUnixListener(
       return;
     }
     app.routing(req, res);
+  });
+  server.on('connect', (request, socket, head) => {
+    if (options.forgeProxy === undefined) socket.destroy();
+    else options.forgeProxy.connect(request, socket, head, identity);
   });
   markInternalConnections(server, identity);
   server.on('connection', (socket) => {

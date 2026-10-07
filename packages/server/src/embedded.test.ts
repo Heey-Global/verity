@@ -51,7 +51,6 @@ import {
   parseNonNegativeInt,
   parsePort,
   parsePushEnabled,
-  parseTasksProjectNumber,
   refreshProjectGitHubToken,
   createProjectWorktreeFactory,
   buildRunnerConductorWiring,
@@ -527,22 +526,6 @@ describe('sandbox hardening env parsers (C1)', () => {
     expect(parseCpuCores('1.5')).toBe(1_500_000_000);
     expect(() => parseCpuCores('0')).toThrow(/positive number of cores/);
     expect(() => parseCpuCores('nope')).toThrow(/positive number of cores/);
-  });
-});
-
-describe('parseTasksProjectNumber (ADR 0007)', () => {
-  it('is undefined when unset/empty (feature stays off) and parses a positive board number', () => {
-    expect(parseTasksProjectNumber(undefined)).toBeUndefined();
-    expect(parseTasksProjectNumber('')).toBeUndefined();
-    expect(parseTasksProjectNumber('  ')).toBeUndefined();
-    expect(parseTasksProjectNumber('7')).toBe(7);
-  });
-
-  it('rejects non-positive / non-integer values loudly (no silently-disabled feature)', () => {
-    expect(() => parseTasksProjectNumber('0')).toThrow(/VERITY_TASKS_PROJECT_NUMBER/);
-    expect(() => parseTasksProjectNumber('-1')).toThrow(/VERITY_TASKS_PROJECT_NUMBER/);
-    expect(() => parseTasksProjectNumber('1.5')).toThrow(/VERITY_TASKS_PROJECT_NUMBER/);
-    expect(() => parseTasksProjectNumber('foo')).toThrow(/VERITY_TASKS_PROJECT_NUMBER/);
   });
 });
 
@@ -2588,6 +2571,45 @@ describe('buildEmbeddedServer', () => {
     ).rejects.toThrow(/VERITY_DEFAULT_PROJECT_IMAGE must be pinned/);
   });
 
+  it('wires local previews and discovery without configuring Uplink', async () => {
+    server = await buildTestEmbeddedServer({
+      ...testProjectRelayConfig,
+      dockerBaseUrl: 'http://127.0.0.1:1',
+      hostCloneRoot: '/tmp/verity-projects',
+      resolvePreviewConnectorImage: async () => `example@sha256:${'a'.repeat(64)}`,
+    });
+    // A disabled manager returns 503 before inspecting a session; this catches
+    // accidentally restoring the publicPreviews condition in the composition root.
+    expect(
+      (
+        await server.app.inject({
+          method: 'POST',
+          url: '/sessions/missing/local-shares',
+          payload: { targetPort: 5173 },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await server.app.inject({
+          method: 'GET',
+          url: '/sessions/missing/dev-servers',
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await server.app.inject({
+          method: 'GET',
+          url: '/sessions/missing/public-static-directories',
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (await server.app.inject({ method: 'GET', url: '/preview-capabilities' })).json(),
+    ).toEqual({ publicSharing: 'premium-required' });
+  });
+
   it('wires /projects without a static GitHub token so DB-backed Apps can list repos', async () => {
     // The first-project onboarding step uses GET /projects after the GitHub App
     // has been configured through the encrypted DB settings. That deployment has
@@ -2693,34 +2715,6 @@ describe('buildEmbeddedServer', () => {
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('wires /tasks on repoDir + tasksProjectNumber even without a token (ADR 0007 — DB-only App creds)', async () => {
-    // The construction gate must NOT require a token at build time: an App configured
-    // purely via the app UI stores credentials in the encrypted DB, and the request-time
-    // mint reaches those DB credentials. So
-    // opting in (repoDir + board number) alone wires the service; with no token resolvable
-    // here it degrades to an inert board rather than a 503.
-    const repoDir = mkdtempSync(join(tmpdir(), 'verity-tasks-gate-'));
-    try {
-      server = await buildTestEmbeddedServer({ repoDir, tasksProjectNumber: 1 });
-      const res = await server.app.inject({ method: 'GET', url: '/tasks' });
-      expect(res.statusCode).toBe(200); // wired (not 503), not gated out by the missing token
-      expect(res.json()).toEqual({ board: null }); // inert: no token resolved
-    } finally {
-      rmSync(repoDir, { recursive: true, force: true });
-    }
-  });
-
-  it('503s /tasks when the board number is not configured (not opted in)', async () => {
-    const repoDir = mkdtempSync(join(tmpdir(), 'verity-tasks-gate-'));
-    try {
-      server = await buildTestEmbeddedServer({ repoDir }); // no tasksProjectNumber
-      const res = await server.app.inject({ method: 'GET', url: '/tasks' });
-      expect(res.statusCode).toBe(503);
-    } finally {
-      rmSync(repoDir, { recursive: true, force: true });
     }
   });
 

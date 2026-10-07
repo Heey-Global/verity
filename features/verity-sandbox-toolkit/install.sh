@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.284}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.289}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.81.2}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.85.1}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -46,11 +46,11 @@ DOPPLER_VERSION="${DOPPLERVERSION:-3.76.6}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.157.1}"
+CODEX_VERSION="${CODEXVERSION:-0.160.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-1.13.1}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.1.1}"
 # renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.18.32}"
+OPENCODE_VERSION="${OPENCODEVERSION:-1.18.34}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -627,13 +627,21 @@ install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-push" "$HOOKS_PATH/pre-push"
 # so the policy exists once.
 install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-commit" "$HOOKS_PATH/pre-commit"
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/gh" /opt/agent-seed/bin/gh
+# Preserve an installed ORAS binary before adding the broker-aware wrapper.
+if [ -x /usr/local/bin/oras ] && [ ! -L /usr/local/bin/oras ]; then
+  mkdir -p /usr/local/lib/verity
+  mv /usr/local/bin/oras /usr/local/lib/verity/oras-real
+fi
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/oras" /opt/agent-seed/bin/oras
+ln -sf /opt/agent-seed/bin/oras /usr/local/bin/oras
+
 # git wrapper: refuses `git worktree remove` on a Verity session worktree (a
 # session must not delete the tree it runs in). Transparent for every other git
 # invocation, so baking it first on PATH is inert on all other operations.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/git" /opt/agent-seed/bin/git
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/bin/verity-dev-server
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
-install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-tasks" /opt/agent-seed/bin/verity-tasks
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
 # env only in broker mode; without the broker env it is transparently ssh-keygen,
 # so baking it here is inert on non-broker deployments.
@@ -651,12 +659,11 @@ install -m 0644 "$FEATURE_DIR/agent-seed/code-review-prompt.md" /opt/agent-seed/
 # GitHub token in the sandbox.
 ln -sf /opt/agent-seed/bin/gh /usr/local/bin/gh
 # Put the marker tool on PATH so `verity-code-review mark` works from any cwd.
+ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
 ln -sf /opt/agent-seed/bin/verity-secret-scan /usr/local/bin/verity-secret-scan
-# The task-board CLI (ADR 0007) so an agent can run `verity-tasks …` from any cwd.
-ln -sf /opt/agent-seed/bin/verity-tasks /usr/local/bin/verity-tasks
 # The token-broker client + credential helper on PATH so the gh wrapper and git's
 # `!verity-gh-cred` helper resolve from any cwd.
 ln -sf /opt/agent-seed/bin/verity-gh-token /usr/local/bin/verity-gh-token

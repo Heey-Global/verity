@@ -15,6 +15,46 @@ const meetingBody = z.object({
   endedAt: z.number().int().nonnegative().nullable(),
   state: z.enum(['active', 'interrupted', 'ended']),
   transcript: z.string().max(1_000_000),
+  expectedParticipants: z.number().int().min(1).max(10).nullable().optional(),
+  speakerTurns: z
+    .array(
+      z
+        .object({
+          speaker: z.number().int().min(0).max(9),
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().nonnegative(),
+        })
+        .refine((turn) => turn.end > turn.start),
+    )
+    .max(10_000)
+    .optional(),
+  timedWords: z
+    .array(
+      z
+        .object({
+          text: z.string().min(1).max(1_000_000),
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().nonnegative(),
+        })
+        .refine((word) => word.end > word.start),
+    )
+    .max(50_000)
+    .refine((words) => words.reduce((length, word) => length + word.text.length, 0) <= 1_000_000)
+    .optional(),
+  speakerNames: z.record(z.string().regex(/^[0-9]$/), z.string().trim().min(1).max(60)).optional(),
+  speakerCorrections: z
+    .array(
+      z
+        .object({
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().nonnegative(),
+          speaker: z.number().int().min(0).max(9).nullable(),
+        })
+        .refine((correction) => correction.end > correction.start),
+    )
+    .max(2_000)
+    .optional(),
+  speakerMerges: z.record(z.string().regex(/^[0-9]$/), z.number().int().min(0).max(9)).optional(),
   captureStatus: z.enum(['preparing', 'downloading', 'listening', 'paused']),
   ownerToken: z.string().min(32).max(256),
   revision: z.number().int().positive(),
@@ -100,8 +140,23 @@ export function registerLiveMeetingRoutes(
     knowledge?: (sessionId: string, transcript: string) => Promise<MeetingKnowledgeExcerpt[]>;
     delayMs?: number;
     minIntervalMs?: number;
+    /** Files a finished meeting. Called again after later notes or speaker edits, so
+     * it must be idempotent. Uploads are acknowledged only after filing succeeds. */
+    onFinished?: (sessionId: string, meetingId: string) => Promise<void>;
   } = {},
 ): void {
+  const fileFinished = async (sessionId: string, meetingId: string) => {
+    if (!opts.onFinished) return;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await opts.onFinished(sessionId, meetingId);
+        return;
+      } catch (error) {
+        if (attempt >= 2) throw error;
+        app.log.warn({ err: error, sessionId, meetingId }, 'retrying live meeting filing');
+      }
+    }
+  };
   const queued = new Map<
     string,
     {
@@ -208,6 +263,7 @@ export function registerLiveMeetingRoutes(
               createdAt: Date.now(),
             });
           }
+          if (current.terminal) await fileFinished(current.sessionId, meetingId);
           lastAnalyzed.set(meetingId, {
             length: current.transcript.length,
             hash: createHash('sha256').update(current.transcript).digest('hex'),
@@ -270,7 +326,12 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'session not found' };
     }
-    const body = meetingBody.parse(request.body);
+    const parsed = meetingBody.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: 'invalid meeting update' };
+    }
+    const body = parsed.data;
     const { ownerToken, ...meeting } = body;
     const accepted = await store.liveMeetings.putMeeting({
       id: meetingId,
@@ -282,7 +343,7 @@ export function registerLiveMeetingRoutes(
       reply.code(409);
       return { error: 'meeting owner or session mismatch' };
     }
-    if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision)
+    if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision) {
       scheduleAnalysis(
         sessionId,
         meetingId,
@@ -290,6 +351,8 @@ export function registerLiveMeetingRoutes(
         body.transcript,
         body.state !== 'active',
       );
+      if (body.state !== 'active') await fileFinished(sessionId, meetingId);
+    }
     return { accepted: true };
   });
 
@@ -418,6 +481,10 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'meeting not found in session' };
     }
+    // Persisted state survives restarts and does not file active recordings.
+    const stored = await store.liveMeetings.changes(sessionId, 0);
+    if (stored.meetings.some((item) => item.id === meetingId && item.state !== 'active'))
+      await fileFinished(sessionId, meetingId);
     return { accepted: true };
   });
 }

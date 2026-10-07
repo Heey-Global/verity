@@ -60,3 +60,46 @@ export async function loadSharingModule(): Promise<typeof import('expo-sharing')
     return undefined;
   }
 }
+
+/** Like {@link loadSharingModule}: a build without the native print module (an
+ * older dev client, Jest) reports printing as unavailable instead of crashing. */
+export async function loadPrintModule(): Promise<typeof import('expo-print') | undefined> {
+  try {
+    return await import('expo-print');
+  } catch {
+    return undefined;
+  }
+}
+
+/** The name a file's PDF export is shared under: `notes/a.md` → `a.pdf`. */
+export function pdfFileName(path: string): string {
+  const name = path.split('/').filter(Boolean).pop() ?? 'document';
+  const stem = name.replace(/\.[^.]+$/, '');
+  return `${stem.length > 0 ? stem : name}.pdf`;
+}
+
+/** The folders a breadcrumb walks through to reach `path`, each with the path a
+ * tap on it navigates to: `a/b` → `[{ a, 'a' }, { b, 'a/b' }]`. The root itself is
+ * not a segment; the breadcrumb draws it as the active tab's icon. */
+export function breadcrumbSegments(path: string): Array<{ name: string; path: string }> {
+  const parts = path.split('/').filter(Boolean);
+  return parts.map((name, index) => ({ name, path: parts.slice(0, index + 1).join('/') }));
+}
+
+/** Why `name` cannot replace `currentName` in a folder holding `siblings`, or
+ * `null` when it can. Mirrors the server's file-name rule so the dialog can say
+ * what is wrong before a round trip; the server still has the final word, since
+ * the agent may take the name between the check and the request. */
+export function renameProblem(
+  name: string,
+  currentName: string,
+  siblings: readonly string[],
+): string | null {
+  if (name.trim().length === 0) return 'Enter a name.';
+  if (name !== name.trim()) return 'Names cannot start or end with a space.';
+  if (name === '.' || name === '..') return 'This name is reserved.';
+  if (/[\0\\/]/.test(name)) return 'Names cannot contain / or \\.';
+  if (new TextEncoder().encode(name).length > 255) return 'This name is too long.';
+  if (name !== currentName && siblings.includes(name)) return `"${name}" already exists here.`;
+  return null;
+}

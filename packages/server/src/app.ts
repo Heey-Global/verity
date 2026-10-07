@@ -1,4 +1,5 @@
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
+import { renderAssignedTasksPrompt } from '@verity/events';
 import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -14,8 +15,7 @@ import type { AuthTokenRegistry } from './auth.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import type { WorktreeProvisioner } from './worktree.js';
 import type { GitBranchService, GitOutput } from './branches.js';
-import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } from './github.js';
-import type { GitHubTaskService } from './github-tasks.js';
+import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -39,6 +39,7 @@ import type { SandboxUpdateChecker } from './sandbox-updates.js';
 import type { ClaudeOAuthTokenProvider } from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import type { PushSender } from './push-sender.js';
+import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
@@ -51,6 +52,8 @@ export interface ControlPlaneDeps {
   onMatrixConfigured?: ServerDeps['onMatrixConfigured'];
   /** TLS termination options for the public direct-server listener. */
   https?: ServerDeps['https'];
+  webAppDir?: ServerDeps['webAppDir'];
+  browserRequestOrigin?: ServerDeps['browserRequestOrigin'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
   /** Installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
@@ -70,6 +73,7 @@ export interface ControlPlaneDeps {
   /** Google Drive OAuth iOS client id (ADR 0009), from `GOOGLE_AUTH_ID`. Forwarded
    *  to {@link buildServer}; non-secret, surfaced to the app via `/settings`. */
   googleDriveClientId?: string | undefined;
+  stagingGoogleClientId?: string | undefined;
   /** The sealable at-rest secret cipher — powers `/secret/status|init|unlock`.
    *  Omit → those routes report/act as an always-unlocked no-op deployment. */
   secretCipher?: SealableSecretCipher | undefined;
@@ -91,8 +95,12 @@ export interface ControlPlaneDeps {
   pushEnabled?: boolean | undefined;
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: ServerDeps['previewShareManager'];
+  listenerDiscovery?: ServerDeps['listenerDiscovery'];
+  localPreviewManager?: ServerDeps['localPreviewManager'];
+  previewSharingCapability?: ServerDeps['previewSharingCapability'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
+  runtimeDiagnostics?: ServerDeps['runtimeDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
   /** Invalidate cached access tokens after shared Google OAuth credentials change. */
@@ -169,19 +177,12 @@ export interface ControlPlaneDeps {
   mergePr?: ((number: number, worktree: string) => Promise<boolean>) | undefined;
   /** Resolve GitHub owner/repo for a session worktree so Issue/PR chips deep-link correctly. */
   repoIdentity?: ((worktree: string) => Promise<GitHubIdentity | null>) | undefined;
-  /** Open-issues list for the overview backlog (#137). Omit → `GET /issues` 503. */
-  listIssues?: (() => Promise<IssueSummary[]>) | undefined;
   /** Latest GitHub release lookup for project overview/detail badges. */
   latestRelease?: ((owner: string, repo: string) => ReleaseSummary | null | undefined) | undefined;
   /** Awaited latest-release refresh for routes that need an immediate answer. */
   refreshLatestRelease?:
     ((owner: string, repo: string) => Promise<ReleaseSummary | null | undefined>) | undefined;
-  /** Task-management backend over a Projects v2 board (ADR 0007). Omit → the `/tasks`
-   *  routes 503. Forwarded to {@link buildServer} — like `listIssues`, it must be
-   *  passed explicitly or the routes silently never see it (#137). */
-  taskService?: GitHubTaskService | undefined;
-  /** Working dir (repo root) for the one-shot task refiner (ADR 0007, Voice → Refiner).
-   *  Omit → `POST /tasks/refine` 503. Forwarded to {@link buildServer}. */
+  /** Repository context for server-side model queries. */
   refineCwd?: string | undefined;
   /** Live GitHub-App credential validation for `POST /github/app/validate` (#320).
    * Test-mints an installation token from the passed creds and reports a redaction-
@@ -302,8 +303,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
         }
       : undefined;
 
+  const sessionChanges = createSessionChangeFeed();
   return buildServer({
     eventStore: deps.eventStore,
+    sessionChanges,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { matrixConnectorToken: deps.matrixConnectorToken }
@@ -312,6 +315,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { onMatrixConfigured: deps.onMatrixConfigured }
       : {}),
     ...(deps.https !== undefined ? { https: deps.https } : {}),
+    ...(deps.webAppDir !== undefined ? { webAppDir: deps.webAppDir } : {}),
+    ...(deps.browserRequestOrigin !== undefined
+      ? { browserRequestOrigin: deps.browserRequestOrigin }
+      : {}),
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }
       : {}),
@@ -328,6 +335,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.serverUpdateNotifierStatePath !== undefined
       ? { serverUpdateNotifierStatePath: deps.serverUpdateNotifierStatePath }
+      : {}),
+    ...(deps.stagingGoogleClientId !== undefined
+      ? { stagingGoogleClientId: deps.stagingGoogleClientId }
       : {}),
     ...(deps.googleDriveClientId !== undefined
       ? { googleDriveClientId: deps.googleDriveClientId }
@@ -348,11 +358,21 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
+    ...(deps.listenerDiscovery !== undefined ? { listenerDiscovery: deps.listenerDiscovery } : {}),
+    ...(deps.localPreviewManager !== undefined
+      ? { localPreviewManager: deps.localPreviewManager }
+      : {}),
+    ...(deps.previewSharingCapability !== undefined
+      ? { previewSharingCapability: deps.previewSharingCapability }
+      : {}),
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
       : {}),
     ...(deps.remoteControlDescriptor !== undefined
       ? { remoteControlDescriptor: deps.remoteControlDescriptor }
+      : {}),
+    ...(deps.runtimeDiagnostics !== undefined
+      ? { runtimeDiagnostics: deps.runtimeDiagnostics }
       : {}),
     ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
@@ -396,12 +416,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.mergePr !== undefined ? { mergePr: deps.mergePr } : {}),
     ...(deps.repoIdentity !== undefined ? { repoIdentity: deps.repoIdentity } : {}),
-    ...(deps.listIssues !== undefined ? { listIssues: deps.listIssues } : {}),
     ...(deps.latestRelease !== undefined ? { latestRelease: deps.latestRelease } : {}),
     ...(deps.refreshLatestRelease !== undefined
       ? { refreshLatestRelease: deps.refreshLatestRelease }
       : {}),
-    ...(deps.taskService !== undefined ? { taskService: deps.taskService } : {}),
     ...(deps.refineCwd !== undefined ? { refineCwd: deps.refineCwd } : {}),
     ...(deps.githubAppValidate !== undefined ? { githubAppValidate: deps.githubAppValidate } : {}),
     ...(deps.resolveGitHubAppIdentity !== undefined
@@ -452,6 +470,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       new Conductor({
         store: deps.eventStore,
         bus: deps.bus,
+        onSessionChanged: (sessionId, change) => sessionChanges.emit(sessionId, change),
         ...deps.conductor,
         ...(deps.conductor?.sessionBackend === undefined &&
         derivedProjectSessionBackend !== undefined
@@ -465,6 +484,19 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
                   (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
                   ? VERITY_CONTROL_SYSTEM_PROMPT
                   : '',
+            }
+          : {}),
+        ...(deps.conductor?.assignedTasksPrompt === undefined
+          ? {
+              assignedTasksPrompt: async (session) =>
+                renderAssignedTasksPrompt(
+                  (await deps.eventStore.tasks.listAssigned(session.sessionId)).map((task) => ({
+                    id: task.id,
+                    title: task.title,
+                    status: task.status === 'in_progress' ? 'in_progress' : 'open',
+                    attachments: task.attachments.length,
+                  })),
+                ),
             }
           : {}),
         onTurnError: (sessionId, error) => {

@@ -1,132 +1,19 @@
-import { VerityApiError } from './api.js';
-import type { AgentEvent } from '@verity/events';
-import { describe, expect, it, vi } from 'vitest';
-import { SessionStream, type StreamSocket } from './stream.js';
+import { describe, expect, it } from 'vitest';
+import { FakeTransport } from './live/testing.js';
+import { SessionStream } from './stream.js';
 
-type Listener = (event: { data: unknown }) => void;
-
-class FakeSocket implements StreamSocket {
-  closed = false;
-  private msg: Listener[] = [];
-  private cls: Listener[] = [];
-  private err: Listener[] = [];
-
-  constructor(readonly url: string) {}
-
-  addEventListener(type: 'message' | 'close' | 'error', listener: Listener): void {
-    if (type === 'message') this.msg.push(listener);
-    else if (type === 'close') this.cls.push(listener);
-    else this.err.push(listener);
-  }
-  close(): void {
-    this.closed = true;
-  }
-
-  emitEvent(seq: number, event: AgentEvent): void {
-    this.emitRaw(JSON.stringify({ k: 'event', seq, event }));
-  }
-  emitRaw(data: string): void {
-    for (const l of this.msg) l({ data });
-  }
-  emitClose(): void {
-    for (const l of this.cls) l({ data: undefined });
-  }
-  emitError(): void {
-    for (const l of this.err) l({ data: undefined });
-  }
-}
-
-/** A connect factory that records every socket it opens. */
-function recordingConnect(): { connect: (url: string) => FakeSocket; sockets: FakeSocket[] } {
-  const sockets: FakeSocket[] = [];
-  return {
-    connect: (url: string) => {
-      const s = new FakeSocket(url);
-      sockets.push(s);
-      return s;
-    },
-    sockets,
-  };
+function recordingConnect(): { connect: FakeTransport; sockets: FakeTransport['sockets'] } {
+  const connect = new FakeTransport();
+  return { connect, sockets: connect.sockets };
 }
 
 describe('SessionStream', () => {
-  it.each(['resolve', 'reject'] as const)(
-    'retries authorization on resume while a stale ticket is pending (%s)',
-    async (outcome) => {
-      let resolveStale!: (ticket: string) => void;
-      let rejectStale!: (error: Error) => void;
-      const stale = new Promise<string>((resolve, reject) => {
-        resolveStale = resolve;
-        rejectStale = reject;
-      });
-      let resolveFresh!: (ticket: string) => void;
-      const fresh = new Promise<string>((resolve) => {
-        resolveFresh = resolve;
-      });
-      const getStreamTicket = vi.fn().mockReturnValueOnce(stale).mockReturnValue(fresh);
-      const { connect, sockets } = recordingConnect();
-      const onError = vi.fn();
-      const stream = new SessionStream({
-        baseUrl: 'http://host',
-        sessionId: 's1',
-        connect,
-        getStreamTicket,
-        onError,
-      });
-      try {
-        stream.start();
-        stream.pause();
-        stream.resume();
-        expect(getStreamTicket).toHaveBeenCalledTimes(2);
-        if (outcome === 'resolve') resolveStale('stale');
-        else rejectStale(new Error('stale request failed'));
-        await Promise.resolve();
-        await Promise.resolve();
-        expect(sockets).toHaveLength(0);
-        expect(onError).not.toHaveBeenCalled();
-        // A stale completion must not release the fresh request's in-flight guard.
-        stream.start();
-        expect(getStreamTicket).toHaveBeenCalledTimes(2);
-        resolveFresh('fresh');
-        await Promise.resolve();
-        expect(sockets).toHaveLength(1);
-      } finally {
-        stream.stop();
-      }
-    },
-  );
-
-  it('connects to the session stream URL (http→ws) starting at sinceSeq 0', () => {
-    const { connect, sockets } = recordingConnect();
-    new SessionStream({ baseUrl: 'http://host:3000/', sessionId: 's1', connect }).start();
-    expect(sockets[0]?.url).toBe('ws://host:3000/sessions/s1/stream?sinceSeq=0');
-  });
-
-  it('uses a one-time stream ticket as a subprotocol, never in the URL', async () => {
-    const { connect, sockets } = recordingConnect();
-    const protocols: Array<string | string[] | undefined> = [];
-    const recording = (url: string, protocol?: string | string[]): FakeSocket => {
-      protocols.push(protocol);
-      return connect(url);
-    };
-    new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect: recording,
-      getStreamTicket: async () => 'ticket-xyz',
-    }).start();
-    await vi.waitFor(() => expect(sockets).toHaveLength(1));
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0');
-    expect(protocols).toEqual(['verity-stream-ticket.ticket-xyz']);
-  });
-
   it('decodes event frames into the reducer and tracks the seq', () => {
     const { connect, sockets } = recordingConnect();
     const updates: number[] = [];
     const stream = new SessionStream({
-      baseUrl: 'https://host',
       sessionId: 's1',
-      connect,
+      transport: connect,
       onUpdate: (state) => updates.push(state.messages.length),
     });
     stream.start();
@@ -146,40 +33,95 @@ describe('SessionStream', () => {
     expect(updates.length).toBe(1); // one batched update at caught_up
   });
 
-  it('prepends older history, rebuilding the transcript across the page boundary', () => {
+  it.each([true, false])(
+    'prepends older history across the page boundary (notify=%s)',
+    (notify) => {
+      const { connect, sockets } = recordingConnect();
+      const updates: number[] = [];
+      const stream = new SessionStream({
+        sessionId: 's1',
+        transport: connect,
+        onUpdate: (state) => updates.push(state.messages.length),
+      });
+      stream.start();
+      const s = sockets[0];
+      // Tail: a tool_result whose matching tool_call lives in the OLDER page.
+      s?.emitEvent(10, { t: 'session', id: 's1', model: 'm', worktree: '/wt' });
+      s?.emitEvent(11, { t: 'tool_result', id: 'tool1', output: 'done', isError: false });
+      s?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+      expect(stream.oldestSeq).toBe(10);
+      const afterTail = updates.length;
+
+      stream.prependHistory(
+        [
+          { seq: 8, event: { t: 'prompt', text: 'do it' } },
+          {
+            seq: 9,
+            event: { t: 'tool_call', id: 'tool1', name: 'Bash', input: { command: 'ls' } },
+          },
+        ],
+        { notify },
+      );
+
+      expect(stream.oldestSeq).toBe(8); // cursor moved back for the next page
+      expect(updates.length).toBe(afterTail + (notify ? 1 : 0));
+      // The older tool_call pairs with the tail's tool_result → one completed tool,
+      // and the older prompt is ordered first.
+      expect(stream.state.messages[0]).toMatchObject({ kind: 'user-text', text: 'do it' });
+      expect(stream.state.messages.filter((m) => m.kind === 'tool-call')).toMatchObject([
+        { tool: { state: 'completed', result: 'done' } },
+      ]);
+    },
+  );
+
+  it('preserves unchanged replay snapshots and invalidates later live text and tool updates', () => {
     const { connect, sockets } = recordingConnect();
-    const updates: number[] = [];
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      onUpdate: (state) => updates.push(state.messages.length),
-    });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
-    const s = sockets[0];
-    // Tail: a tool_result whose matching tool_call lives in the OLDER page.
-    s?.emitEvent(10, { t: 'session', id: 's1', model: 'm', worktree: '/wt' });
-    s?.emitEvent(11, { t: 'tool_result', id: 'tool1', output: 'done', isError: false });
-    s?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
-    expect(stream.oldestSeq).toBe(10);
-    const afterTail = updates.length;
+    const socket = sockets[0];
+    socket?.emitEvent(10, { t: 'text', delta: 'closed' });
+    socket?.emitEvent(11, { t: 'tool_call', id: 't1', name: 'Bash', input: {} });
+    socket?.emitEvent(12, { t: 'text', delta: 'live' });
+    socket?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 12 }));
+    const before = stream.state.messages;
+    stream.prependHistory([{ seq: 9, event: { t: 'prompt', text: 'older' } }]);
+    const replayed = stream.state.messages;
+    // Replaying unchanged rows must not invalidate every memoized transcript row.
+    expect(replayed.slice(1)).toEqual(before);
+    before.forEach((message, index) => expect(replayed[index + 1]).toBe(message));
+    socket?.emitEvent(13, { t: 'text', delta: ' update' });
+    expect(stream.state.messages[3]).not.toBe(before[2]);
+    expect(stream.state.messages[3]).toMatchObject({ text: 'live update' });
+    expect(before[2]).toMatchObject({ text: 'live' });
+    socket?.emitEvent(14, { t: 'tool_result', id: 't1', output: 'done', isError: false });
+    expect(stream.state.messages[2]).not.toBe(before[1]);
+    expect(stream.state.messages[2]).toMatchObject({
+      tool: { state: 'completed', result: 'done' },
+    });
+    expect(before[1]).toMatchObject({ tool: { state: 'running' } });
+    expect(stream.state.messages[1]).toBe(before[0]);
+  });
 
-    stream.prependHistory([
-      { seq: 8, event: { t: 'prompt', text: 'do it' } },
-      { seq: 9, event: { t: 'tool_call', id: 'tool1', name: 'Bash', input: { command: 'ls' } } },
-    ]);
-
-    expect(stream.oldestSeq).toBe(8); // cursor moved back for the next page
-    expect(updates.length).toBe(afterTail + 1); // emitted a fresh snapshot
-    // The older tool_call pairs with the tail's tool_result → one completed tool,
-    // and the older prompt is ordered first.
-    expect(stream.state.messages[0]).toMatchObject({ kind: 'user-text', text: 'do it' });
-    expect(stream.state.messages.filter((m) => m.kind === 'tool-call')).toHaveLength(1);
+  it('publishes merged text freshly when an older page continues the loaded head', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, { t: 'text', delta: 'tail' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 10 }));
+    const before = stream.state.messages[0];
+    stream.prependHistory([{ seq: 9, event: { t: 'text', delta: 'head ' } }]);
+    const merged = stream.state.messages[0];
+    expect(merged).not.toBe(before);
+    expect(merged).toMatchObject({ id: 'text-9', text: 'head tail' });
+    expect(before).toMatchObject({ id: 'text-10', text: 'tail' });
+    sockets[0]?.emitEvent(11, { t: 'text', delta: ' live' });
+    expect(stream.state.messages[0]).toMatchObject({ text: 'head tail live' });
+    expect(merged).toMatchObject({ text: 'head tail' });
   });
 
   it('keeps a resolved permission dismissed across a reducer rebuild', () => {
     const { connect, sockets } = recordingConnect();
-    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
     const s = sockets[0];
     s?.emitEvent(10, {
@@ -214,9 +156,8 @@ describe('SessionStream', () => {
     const { connect, sockets } = recordingConnect();
     const updates: number[] = [];
     const stream = new SessionStream({
-      baseUrl: 'http://host',
       sessionId: 's1',
-      connect,
+      transport: connect,
       onUpdate: (state) => updates.push(state.messages.length),
     });
     stream.start();
@@ -232,9 +173,8 @@ describe('SessionStream', () => {
     const { connect, sockets } = recordingConnect();
     const updates: Array<string | undefined> = [];
     const stream = new SessionStream({
-      baseUrl: 'http://host',
       sessionId: 's1',
-      connect,
+      transport: connect,
       onUpdate: (state) => updates.push(state.pendingPermission?.toolUseId),
     });
     stream.start();
@@ -259,7 +199,7 @@ describe('SessionStream', () => {
 
   it('ignores duplicate and out-of-order live sequence frames', () => {
     const { connect, sockets } = recordingConnect();
-    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
     sockets[0]?.emitEvent(2, { t: 'text', delta: 'new' });
     sockets[0]?.emitEvent(2, { t: 'text', delta: 'duplicate' });
@@ -270,69 +210,60 @@ describe('SessionStream', () => {
 
   it('forwards a caught_up watermark as an update without advancing the cursor', () => {
     const { connect, sockets } = recordingConnect();
-    let scheduled = (): void => undefined;
     const updates: number[] = [];
     const stream = new SessionStream({
-      baseUrl: 'http://host',
       sessionId: 's1',
-      connect,
+      transport: connect,
       onUpdate: () => updates.push(1),
-      scheduleReconnect: (r) => {
-        scheduled = r;
-      },
     });
     stream.start();
     sockets[0]?.emitEvent(1, { t: 'text', delta: 'hi' }); // backlog — batched (no update)
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 }));
     expect(updates.length).toBe(1); // caught_up flushes the batched backlog once
 
-    // caught_up does not advance lastSeq → a reconnect resumes from the event seq
+    // caught_up does not advance the cursor → a reconnect resumes from the event seq
     sockets[0]?.emitClose();
-    scheduled();
-    expect(sockets[1]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=1');
+    connect.reconnect();
+    expect(sockets[1]?.sinceSeq).toBe(1);
   });
-
-  it('uses wss:// for an https base url', () => {
+  it('reports a session the server will not stream, and stops', () => {
     const { connect, sockets } = recordingConnect();
-    new SessionStream({ baseUrl: 'https://host', sessionId: 's1', connect }).start();
-    expect(sockets[0]?.url).toBe('wss://host/sessions/s1/stream?sinceSeq=0');
+    const errors: string[] = [];
+    const states: string[] = [];
+    new SessionStream({
+      sessionId: 's1',
+      transport: connect,
+      onError: (m) => errors.push(m),
+      onConnectionStateChange: (state) => states.push(state),
+    }).start();
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'ended', reason: 'not_found' }));
+    expect(errors).toEqual(['This session no longer exists.']);
+    expect(states.at(-1)).toBe('stopped');
   });
 
-  it('surfaces a server error frame and an undecodable message via onError', () => {
+  it('surfaces why the connection dropped', () => {
     const { connect, sockets } = recordingConnect();
     const errors: string[] = [];
     new SessionStream({
-      baseUrl: 'http://host',
       sessionId: 's1',
-      connect,
+      transport: connect,
       onError: (m) => errors.push(m),
     }).start();
-    sockets[0]?.emitRaw(JSON.stringify({ k: 'error', message: 'failed to load backlog' }));
-    sockets[0]?.emitRaw('{not json');
-    expect(errors[0]).toBe('failed to load backlog');
-    expect(errors[1]).toContain('undecodable');
+    sockets[0]?.emitClose('Core is unreachable.');
+    expect(errors).toEqual(['Core is unreachable.']);
   });
-
-  it('reconnects on close, resuming from the last seq', () => {
+  it('resumes from the last seq after the connection comes back', () => {
     const { connect, sockets } = recordingConnect();
-    let retry = (): void => undefined;
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      scheduleReconnect: (r) => {
-        retry = r;
-      },
-    });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
     sockets[0]?.emitEvent(1, { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
     sockets[0]?.emitEvent(2, { t: 'text', delta: 'first' });
     sockets[0]?.emitEvent(3, { t: 'tool_call', id: 'toolu_1', name: 'Bash', input: {} }); // boundary
     sockets[0]?.emitClose(); // connection drops at seq 3
 
-    retry(); // the scheduled reconnect fires
+    connect.reconnect();
     expect(sockets).toHaveLength(2);
-    expect(sockets[1]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=3'); // resume cursor = lastSeq
+    expect(sockets[1]?.sinceSeq).toBe(3); // resume cursor = lastSeq
 
     // the reducer persists across reconnect: the 'first' block survives and the
     // post-reconnect text is a new, distinct message (no reset, no duplication).
@@ -340,230 +271,42 @@ describe('SessionStream', () => {
     const texts = stream.state.messages.filter((m) => m.kind === 'agent-text');
     expect(texts.map((m) => (m.kind === 'agent-text' ? m.text : ''))).toEqual(['first', 'second']);
   });
-
-  it('pauses in background and resumes from the last seq without a stale reconnect', () => {
+  it('pauses in background and resumes from the last seq', () => {
     const { connect, sockets } = recordingConnect();
-    let retry = (): void => undefined;
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      scheduleReconnect: (next) => {
-        retry = next;
-      },
-    });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
     sockets[0]?.emitEvent(4, { t: 'text', delta: 'before background' });
-    sockets[0]?.emitClose();
 
     stream.pause();
-    retry();
-    expect(sockets).toHaveLength(1); // scheduled reconnect was invalidated by pause
+    expect(sockets[0]?.closed).toBe(true);
+    connect.reconnect();
+    expect(sockets).toHaveLength(1); // a paused stream is not resubscribed
 
     stream.resume();
     expect(sockets).toHaveLength(2);
-    expect(sockets[1]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=4');
+    expect(sockets[1]?.sinceSeq).toBe(4);
 
-    // A late close from the old socket cannot clobber the resumed one.
-    sockets[0]?.emitClose();
-    expect(sockets).toHaveLength(2);
-
-    // Nor can a buffered frame from that retired socket regress the cursor.
+    // A buffered frame from the retired subscription cannot regress the cursor.
     sockets[0]?.emitEvent(2, { t: 'text', delta: 'stale' });
     sockets[1]?.emitEvent(5, { t: 'text', delta: 'current' });
-    sockets[1]?.emitClose();
-    retry();
-    expect(sockets[2]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=5');
     const texts = stream.state.messages.filter((message) => message.kind === 'agent-text');
     expect(texts.map((message) => (message.kind === 'agent-text' ? message.text : ''))).toEqual([
       'before backgroundcurrent',
     ]);
   });
-
-  it('actively closes an open socket when paused', () => {
+  it('leaves its subscription when paused', () => {
     const { connect, sockets } = recordingConnect();
-    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
     stream.pause();
     expect(sockets[0]?.closed).toBe(true);
 
     stream.resume();
-    expect(sockets[1]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0');
+    expect(sockets[1]?.sinceSeq).toBe(0);
   });
-
-  it('surfaces a socket error event via onError', () => {
-    const { connect, sockets } = recordingConnect();
-    const errors: string[] = [];
-    new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      onError: (m) => errors.push(m),
-    }).start();
-    sockets[0]?.emitError();
-    expect(errors).toEqual(['stream connection error']);
-  });
-
-  it('falls back to a setTimeout reconnect when no scheduler is injected', () => {
-    vi.useFakeTimers();
-    try {
-      const { connect, sockets } = recordingConnect();
-      const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
-      stream.start();
-      sockets[0]?.emitClose();
-      expect(sockets).toHaveLength(1); // not reconnected yet
-      vi.advanceTimersByTime(1000);
-      expect(sockets).toHaveLength(2); // reconnected via the default timer
-      stream.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('backs off repeated failed reconnects and caps the delay', () => {
-    const { connect, sockets } = recordingConnect();
-    const scheduled: { retry: () => void; delayMs: number }[] = [];
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      scheduleReconnect: (retry, delayMs) => scheduled.push({ retry, delayMs }),
-    });
-    stream.start();
-
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      sockets.at(-1)?.emitClose();
-      scheduled.at(-1)?.retry();
-    }
-
-    expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([
-      1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000,
-    ]);
-    stream.stop();
-  });
-
-  it('resets reconnect backoff only after the replacement stream catches up', () => {
-    const { connect, sockets } = recordingConnect();
-    const delays: number[] = [];
-    let retry = (): void => undefined;
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      scheduleReconnect: (next, delayMs) => {
-        retry = next;
-        delays.push(delayMs);
-      },
-    });
-    stream.start();
-    sockets[0]?.emitClose();
-    retry();
-    sockets[1]?.emitClose();
-    retry();
-    sockets[2]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
-    sockets[2]?.emitClose();
-    expect(delays).toEqual([1_000, 2_000, 1_000]);
-    stream.stop();
-  });
-
-  it.each([
-    [
-      new VerityApiError(401, 'secret server body'),
-      "Could not open the session: Core rejected this device's authorization (HTTP 401). Sign in again and retry.",
-    ],
-    [
-      new VerityApiError(503, 'secret server body'),
-      'Could not open the session: Core could not issue a stream ticket (HTTP 503). Retry in a moment.',
-    ],
-    [
-      Object.assign(new Error('Uplink attachment and direct Core request failed: secret'), {
-        name: 'VerityConnectionError',
-      }),
-      'Could not open the session: Uplink attachment failed, and Core was unreachable directly. Check your connection and retry.',
-    ],
-    [
-      Object.assign(new Error('Direct Core request failed: secret'), {
-        name: 'VerityConnectionError',
-      }),
-      'Could not open the session: Core is unreachable at the paired address. Connect through VPN or enable Remote Control, then retry. (Direct Core)',
-    ],
-    [
-      Object.assign(
-        new Error(
-          'Uplink admission (Remote admission failed: unavailable.) and direct Core request failed: secret',
-        ),
-        { name: 'VerityConnectionError' },
-      ),
-      'Could not open the session: Uplink admission failed (unavailable), and Core was unreachable directly. Check your connection and retry.',
-    ],
-    [
-      Object.assign(
-        new Error(
-          'Uplink routing (no remote descriptor saved) and direct Core request failed: secret',
-        ),
-        { name: 'VerityConnectionError' },
-      ),
-      'Could not open the session: Remote Control is not configured on this device and the direct Core connection failed. Connect to Core through VPN once, then retry without VPN. (Uplink routing)',
-    ],
-    [
-      new Error('secret'),
-      'Could not open the session: the connection failed before Core could authorize the stream. Retry in a moment.',
-    ],
-  ])('reports a safe ticket failure classification for %s', async (error, expected) => {
-    const { connect, sockets } = recordingConnect();
-    const onError = vi.fn();
-    const scheduleReconnect = vi.fn();
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      onError,
-      scheduleReconnect,
-      getStreamTicket: async () => {
-        throw error;
-      },
-    });
-    stream.start();
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expected));
-    expect(sockets).toHaveLength(0);
-    expect(scheduleReconnect).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(onError.mock.calls)).not.toContain('secret');
-    stream.stop();
-  });
-
-  it('reports reconnect lifecycle and mints a fresh ticket on every attempt', async () => {
-    const { connect, sockets } = recordingConnect();
-    const states: string[] = [];
-    let ticket = 'old';
-    let retry = (): void => undefined;
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      getStreamTicket: async () => ticket,
-      onConnectionStateChange: (state) => states.push(state),
-      scheduleReconnect: (next) => {
-        retry = next;
-      },
-    });
-    stream.start();
-    await vi.waitFor(() => expect(sockets).toHaveLength(1));
-    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
-    sockets[0]?.emitClose();
-    ticket = 'rotated';
-    retry();
-    await vi.waitFor(() => expect(sockets).toHaveLength(2));
-    sockets[1]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
-    stream.stop();
-
-    expect(sockets[0]?.url).not.toContain('access_token');
-    expect(sockets[1]?.url).not.toContain('access_token');
-    expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'connected', 'stopped']);
-  });
-
   it('start() after stop() is a no-op', () => {
     const { connect, sockets } = recordingConnect();
-    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.stop();
     stream.start();
     expect(sockets).toHaveLength(0);
@@ -574,9 +317,8 @@ describe('SessionStream', () => {
     const updates: number[] = [];
     const errors: string[] = [];
     const stream = new SessionStream({
-      baseUrl: 'http://host',
       sessionId: 's1',
-      connect,
+      transport: connect,
       onUpdate: () => updates.push(1),
       onError: (m) => errors.push(m),
     });
@@ -584,14 +326,14 @@ describe('SessionStream', () => {
     stream.stop();
     // frames buffered on the now-abandoned socket must not push state/errors
     sockets[0]?.emitEvent(1, { t: 'text', delta: 'late' });
-    sockets[0]?.emitError();
+    sockets[0]?.emitClose('late failure');
     expect(updates).toEqual([]);
     expect(errors).toEqual([]);
   });
 
-  it('start() twice does not open a second socket (call-once)', () => {
+  it('start() twice does not subscribe twice (call-once)', () => {
     const { connect, sockets } = recordingConnect();
-    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
     stream.start();
     expect(sockets).toHaveLength(1);
@@ -600,20 +342,11 @@ describe('SessionStream', () => {
 
   it('does not reconnect after stop()', () => {
     const { connect, sockets } = recordingConnect();
-    let retried = false;
-    const stream = new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      scheduleReconnect: () => {
-        retried = true;
-      },
-    });
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
     stream.start();
     stream.stop();
     expect(sockets[0]?.closed).toBe(true);
-    sockets[0]?.emitClose(); // a close after stop must not schedule a reconnect
-    expect(retried).toBe(false);
+    connect.reconnect(); // a stopped stream is not resubscribed
     expect(sockets).toHaveLength(1);
   });
 });

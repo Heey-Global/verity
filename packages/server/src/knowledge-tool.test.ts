@@ -11,7 +11,13 @@ describe('knowledge tool boundary', () => {
         path: 'planning.md',
       }),
     ).toMatchObject({ operation: 'import_source', destination: 'meetings' });
-    for (const path of ['../planning.md', 'nested/planning.md', '.']) {
+    for (const path of [
+      '../planning.md',
+      'nested/../planning.md',
+      '.',
+      '/planning.md',
+      '.hidden/planning.md',
+    ]) {
       expect(
         knowledgeToolRequestSchema.safeParse({
           operation: 'import_source',
@@ -21,6 +27,14 @@ describe('knowledge tool boundary', () => {
         }).success,
       ).toBe(false);
     }
+    expect(
+      knowledgeToolRequestSchema.safeParse({
+        operation: 'import_source',
+        sourcePath: 'docs/meetings/planning.md',
+        destination: 'meetings',
+        path: 'nested/planning.md',
+      }).success,
+    ).toBe(true);
   });
 
   it('accepts a bounded Shared insight publication', () => {

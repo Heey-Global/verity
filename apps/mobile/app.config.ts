@@ -8,7 +8,14 @@ const expoProjectId = process.env.EXPO_PROJECT_ID?.trim() || 'b38b4675-5fef-4eb5
 const officialGoogleOAuthClientId =
   '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com';
 const googleOAuthClientId = process.env.GOOGLE_AUTH_ID?.trim() || officialGoogleOAuthClientId;
-const expoUpdateChannel = process.env.EXPO_UPDATE_CHANNEL?.trim();
+const appVariant = process.env.VERITY_APP_VARIANT ?? 'production';
+if (appVariant !== 'production' && appVariant !== 'staging')
+  throw new Error('Invalid VERITY_APP_VARIANT');
+const staging = appVariant === 'staging';
+const expoUpdateChannel =
+  process.env.EXPO_UPDATE_CHANNEL?.trim() || (staging ? 'staging' : undefined);
+if (staging && expoUpdateChannel !== 'staging')
+  throw new Error('Staging app requires the staging OTA channel');
 const iosBuildNumber = process.env.VERITY_IOS_BUILD_NUMBER?.trim();
 const googleOAuthClientPattern = /^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/;
 
@@ -25,12 +32,12 @@ const googleOAuthScheme = `com.googleusercontent.apps.${googleOAuthClientId.repl
 // field). EAS Update checks on launch; native build workflows inject the target
 // channel and the OTA workflow publishes compatible updates.
 const config: ExpoConfig = {
-  name: 'Verity',
+  name: staging ? 'Verity Staging' : 'Verity',
   slug: 'verity',
   // The Google scheme must be registered in the native binary before its OAuth
   // redirect can return from the system browser.
-  scheme: ['verity', googleOAuthScheme],
-  version: '1.43.0', // x-release-please-version
+  scheme: [staging ? 'verity-staging' : 'verity', googleOAuthScheme],
+  version: '1.57.0', // x-release-please-version
   // iPad and iPad-on-Mac should adapt to the user's current window/device
   // orientation, especially with Magic Keyboard or Stage Manager. Phone layouts
   // still render portrait-first through the app's responsive UI constraints.
@@ -59,9 +66,9 @@ const config: ExpoConfig = {
   owner: 'heey',
   // Shared iOS and Android application identifier (reverse-DNS of verity.build).
   ios: {
-    bundleIdentifier: 'build.verity.app',
+    bundleIdentifier: staging ? 'build.verity.app.staging' : 'build.verity.app',
     // Keep the generated app target and Podfile on the same iOS minimum.
-    deploymentTarget: '26.0',
+    deploymentTarget: '27.0',
     // GitHub's manifest code has no PKCE protection, so its callback must use a
     // claimed HTTPS link rather than a custom scheme another app could steal.
     // ASWebAuthenticationSession validates HTTPS callbacks through the
@@ -73,7 +80,12 @@ const config: ExpoConfig = {
     // same iPad binary on Apple Silicon Macs unless Mac availability is disabled
     // there.
     supportsTablet: true,
+    // Meetings keep the microphone session active after an app switch or screen lock.
+    entitlements: {
+      'com.apple.developer.background-tasks.continued-processing.inference': true,
+    },
     infoPlist: {
+      UIBackgroundModes: ['audio'],
       // Verity uses only standard/exempt encryption; declaring export compliance
       // stops EAS/App Store Connect prompting for it on every build.
       ITSAppUsesNonExemptEncryption: false,
@@ -101,7 +113,7 @@ const config: ExpoConfig = {
     },
   },
   android: {
-    package: 'build.verity.app',
+    package: staging ? 'build.verity.app.staging' : 'build.verity.app',
     // Adaptive icon: the Verity V as a transparent foreground (padded into the
     // mask safe zone) over a true-black background, so any launcher mask shape
     // keeps the mark centered and uncropped.
@@ -146,6 +158,14 @@ const config: ExpoConfig = {
     // Hermes' Intl returns a UI-language + region combo (e.g. en-DE) that isn't a
     // valid recognition locale.
     'expo-localization',
+    [
+      'expo-media-library',
+      {
+        photosPermission: 'Allow Verity to offer your recent screenshot when capturing a task.',
+        savePhotosPermission: false,
+        granularPermissions: ['photo'],
+      },
+    ],
     // Live voice dictation (§6) via the OS speech recognizer. Sets the iOS
     // NSMicrophoneUsageDescription + NSSpeechRecognitionUsageDescription, and
     // declares Google's recognition service so Android can bind to it.
@@ -160,6 +180,8 @@ const config: ExpoConfig = {
     // The live STT prototype's inline Swift module uses FluidAudio for the two
     // selectable on-device models. The local plugin pins its native pod.
     './plugins/withFluidAudio',
+    // iOS 27 requires scene lifecycle adoption before UIKit creates the UI.
+    './plugins/withSceneLifecycle',
     // Efficient image rendering (chat attachments + previews).
     'expo-image',
     // Native share-sheet integration for exporting session content and files.
@@ -183,12 +205,13 @@ const config: ExpoConfig = {
     'expo-web-browser',
   ],
   experiments: {
+    baseUrl: '/app',
     typedRoutes: true,
     // Native iOS drop target for Finder/Desktop files. Expo discovers the Swift
     // view during prebuild and includes it in the generated app target.
     inlineModules: { watchedDirectories: ['native'] },
   },
-  extra: { eas: { projectId: expoProjectId } },
+  extra: { appVariant, eas: { projectId: expoProjectId } },
 };
 
 // A native X.Y.0 release owns exactly one OTA line. Version fields are excluded
@@ -196,6 +219,6 @@ const config: ExpoConfig = {
 // that X.(Y+1).x updates can never reach an older X.Y.0 installation.
 if (!config.version) throw new Error('Mobile release version is required');
 const [runtimeMajor, runtimeMinor] = config.version.split('.');
-config.runtimeVersion = `${runtimeMajor}.${runtimeMinor}.0`;
+config.runtimeVersion = `${staging ? 'staging-' : ''}${runtimeMajor}.${runtimeMinor}.0`;
 
 export default config;

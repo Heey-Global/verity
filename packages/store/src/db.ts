@@ -1,3 +1,8 @@
+import {
+  instrumentPostgresPool,
+  measureLatencyPhase,
+  recordRequestQuery,
+} from './request-latency.js';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator, type Migration, type MigrationProvider } from 'kysely/migration';
 import pg from 'pg';
@@ -506,7 +511,7 @@ export function createPostgresDb(
       ? {}
       : {
           verify: (client: pg.PoolClient, done: (error?: Error) => void): void => {
-            void (async () => {
+            void measureLatencyPhase('pool_generation_verify', async () => {
               // `pg.Pool` verifies once when it creates a physical connection.
               // That connection retains this shared session lock across every
               // later checkout, so a successor's exclusive activation cannot
@@ -535,7 +540,7 @@ export function createPostgresDb(
                 ]);
                 throw new Error('control-plane generation fence is not held');
               }
-            })().then(() => done(), done);
+            }).then(() => done(), done);
           },
         }),
   });
@@ -580,7 +585,15 @@ export function createPostgresDb(
       console.error(`verity: postgres client error while checked out: ${String(error)}`);
     });
   });
-  return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
+  return new Kysely<Database>({
+    dialect: new PostgresDialect({
+      pool: instrumentPostgresPool(pool, () => ({
+        waiting: pool.waitingCount,
+        total: pool.totalCount,
+      })),
+    }),
+    log: (event) => recordRequestQuery(event.queryDurationMillis, event.level === 'error'),
+  });
 }
 
 /** Hold pairing creation out while a host-only unpaired setup repair commits. */

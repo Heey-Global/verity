@@ -1,4 +1,5 @@
 import type { DockerClient } from '../docker.js';
+import { readHostDiagnosticsCapability } from './host-diagnostics.js';
 import { advanceManagedDeploymentImage, readManagedDeployment } from './managed-deployment.js';
 import { MANAGED_DEPLOYMENT_LABEL, MANAGED_ROLE_LABEL } from './managed-server-owner.js';
 import {
@@ -126,6 +127,7 @@ export interface DockerStandbyPromotionOptions {
   readonly standbyTimeoutMs?: number;
   /** How long the new generation may take to start serving. */
   readonly readinessTimeoutMs?: number;
+  readonly hostRuntimeDir?: string;
   /** How much longer than its own budget a probe container may take to finish
    *  before the executor stops waiting for it. */
   readonly probeGraceMs?: number;
@@ -608,8 +610,42 @@ export async function dockerStandbyPromotion(
       if (!candidate.running) await docker.startContainer(state.candidateContainerId);
     },
 
-    candidateReady: (state) =>
-      probe(state, 'ready', readinessTimeoutMs, candidateHost, journal.targetDigest),
+    candidateReady: async (state) => {
+      await probe(state, 'ready', readinessTimeoutMs, candidateHost, journal.targetDigest);
+      const deployment = await readManagedDeployment(options.managedRoot);
+      if (!deployment.managed) throw new Error(deployment.reason);
+      const diagnosticMount = deployment.spec.mounts.find(
+        (mount) => mount.target === '/run/verity-host-diagnostics',
+      );
+      if (diagnosticMount === undefined) return;
+      const candidate = await docker.inspectContainer(state.candidateContainerId);
+      const diagnosticSource = diagnosticMount.source;
+      if (
+        diagnosticSource.kind !== 'bind' ||
+        !candidate.mounts?.some(
+          (mount) =>
+            mount.type === 'bind' &&
+            mount.source === diagnosticSource.path &&
+            mount.destination === diagnosticMount.target &&
+            mount.readWrite === false,
+        )
+      )
+        throw new Error('activated Server lacks the sealed read-only host diagnostic mount');
+      const diagnostics = await readHostDiagnosticsCapability(options.hostRuntimeDir);
+      if (diagnostics.state === 'available' && diagnostics.hostPath !== diagnosticSource.path) {
+        log(
+          'Activated Server diagnostic mount verified; exporter path differs from sealed authority',
+        );
+        return;
+      }
+      // Diagnostics are optional evidence, not a reason to roll back a healthy
+      // Server when a journal source or host timer temporarily fails.
+      log(
+        diagnostics.state === 'available'
+          ? `Host diagnostic snapshot verified; kernel=${diagnostics.snapshot.sources.kernel}, runtime=${diagnostics.snapshot.sources.runtime}`
+          : `Activated Server diagnostic mount verified; host snapshot ${diagnostics.state}`,
+      );
+    },
 
     drainGateway: async () => {
       const status = await gateway.status();

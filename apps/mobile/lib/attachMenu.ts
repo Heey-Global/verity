@@ -5,6 +5,8 @@
 import type { IconName } from '../components/Icon';
 import { MEETING_AUDIO_ENABLED } from './featureFlags';
 
+export type AttachAnchor = { x: number; y: number; width: number; height: number };
+
 export type AttachMenuRow =
   | { section: string }
   | { divider: true }
@@ -17,19 +19,17 @@ export interface AttachMenuHandlers {
   onPickMeetingAudio: () => void;
   onLiveMeeting: () => void;
   onConnectGmail: () => void;
+  onConnectCalendar: () => void;
+  onConnectContacts: () => void;
 }
 
-/**
- * The menu groups actions by what they do. Content sources can feed the current
- * conversation and Project Knowledge, while connected services grant the
- * current session access to an external account.
- *
- * `meetingAudioEnabled` defaults to the build-time flag; callers pass it only in
- * tests.
- */
+/** Google shortcuts require a centrally connected account. */
 export function attachMenuRows(
   handlers: AttachMenuHandlers,
-  { meetingAudioEnabled = MEETING_AUDIO_ENABLED }: { meetingAudioEnabled?: boolean } = {},
+  {
+    meetingAudioEnabled = MEETING_AUDIO_ENABLED,
+    googleConnected = false,
+  }: { meetingAudioEnabled?: boolean; googleConnected?: boolean } = {},
 ): AttachMenuRow[] {
   return [
     { icon: 'camera', label: 'Take photo', onPress: handlers.onCapturePhoto },
@@ -46,13 +46,29 @@ export function attachMenuRows(
           { icon: 'mic' as IconName, label: 'Live Meeting', onPress: handlers.onLiveMeeting },
         ]
       : []),
-    { divider: true },
-    { section: 'Connect' },
-    {
-      icon: 'mail',
-      label: 'Gmail',
-      detail: 'Read & draft',
-      onPress: handlers.onConnectGmail,
-    },
+    ...(googleConnected
+      ? [
+          { divider: true } as const,
+          { section: 'Connect' },
+          {
+            icon: 'mail' as IconName,
+            label: 'Gmail',
+            detail: 'Read & draft',
+            onPress: handlers.onConnectGmail,
+          },
+          {
+            icon: 'calendar' as IconName,
+            label: 'Google Calendar',
+            detail: 'Read & approve changes',
+            onPress: handlers.onConnectCalendar,
+          },
+          {
+            icon: 'users' as IconName,
+            label: 'Google Contacts',
+            detail: 'Read names & emails',
+            onPress: handlers.onConnectContacts,
+          },
+        ]
+      : []),
   ];
 }

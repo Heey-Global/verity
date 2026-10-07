@@ -208,6 +208,48 @@ describe('createGitBranchService', () => {
     });
   });
 
+  it('detects pending project files with real git, before and after committing', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'verity-project-changes-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+    try {
+      git('init', '-q', '-b', 'main');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      git('config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'notes.txt'), 'original');
+      git('add', '.');
+      git('commit', '-qm', 'initial');
+      git('switch', '-qc', 'session');
+      const svc = createGitBranchService({ repoDir: repo });
+      expect(await svc.hasProjectChanges(repo, 'main')).toBe(false);
+      writeFileSync(join(repo, '.verity-worktree.json'), '{}');
+      writeFileSync(join(repo, '.verity-worktree.json.tmp'), 'partial');
+      expect(await svc.hasProjectChanges(repo, 'main')).toBe(false);
+      writeFileSync(
+        join(repo, '.git', 'info', 'exclude'),
+        '/.verity-worktree.json\n/.verity-worktree.json.tmp\n',
+      );
+      writeFileSync(join(repo, 'new.txt'), 'new');
+      expect(await svc.hasProjectChanges(repo, 'main')).toBe(true);
+      rmSync(join(repo, 'new.txt'));
+      writeFileSync(join(repo, 'notes.txt'), 'edited');
+      expect(await svc.hasProjectChanges(repo, 'main')).toBe(true);
+      git('add', 'notes.txt');
+      expect(await svc.hasProjectChanges(repo, 'main')).toBe(true);
+      git('commit', '-qm', 'edit');
+      // A clean index must not hide file changes still awaiting Save to project.
+      expect(await svc.isDirty(repo)).toBe(false);
+      expect(await svc.hasProjectChanges(repo, 'main')).toBe(true);
+      git('switch', 'main');
+      git('merge', '--ff-only', 'session');
+      git('switch', 'session');
+      expect(await svc.hasProjectChanges(repo, 'main')).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   describe('switchable', () => {
     it('drops branches checked out in any worktree, excludes current, puts main first', async () => {
       const { git, calls } = fakeGit({

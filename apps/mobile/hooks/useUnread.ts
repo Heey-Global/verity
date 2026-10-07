@@ -14,7 +14,7 @@ export interface UseUnread {
   /** Mark a session seen at its current event count — call when opening it so its
    * unread dot clears on every device. A `undefined` count (older server) is a safe
    * no-op. */
-  markSeen: (sessionId: string, eventCount?: number) => void;
+  markSeen: (sessionId: string, eventCount?: number, counterVersion?: string) => void;
 }
 
 /**
@@ -35,6 +35,21 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
   // stable regardless of poll cadence.
   const sentRef = useRef<Map<string, number>>(new Map());
 
+  const versionsRef = useRef(new Map(sessions.map((s) => [s.sessionId, s.eventCountVersion])));
+  useEffect(() => {
+    const changed = sessions.filter(
+      (s) => versionsRef.current.get(s.sessionId) !== s.eventCountVersion,
+    );
+    for (const s of sessions) versionsRef.current.set(s.sessionId, s.eventCountVersion);
+    for (const s of changed) sentRef.current.delete(s.sessionId);
+    if (changed.length)
+      setOverrides((current) => {
+        const next = new Map(current);
+        for (const s of changed) next.delete(s.sessionId);
+        return next;
+      });
+  }, [sessions]);
+
   // Once the polled list confirms the server mark reached an optimistic override,
   // drop the override so the server value (which follows across devices) takes over.
   useEffect(() => {
@@ -42,7 +57,7 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
   }, [sessions]);
 
   const markSeen = useCallback(
-    (sessionId: string, eventCount?: number) => {
+    (sessionId: string, eventCount?: number, counterVersion?: string) => {
       if (eventCount === undefined) return;
       // Skip a redundant write: we've already told the server about this count (or a
       // newer one). Advancing is monotonic, so an older count is never re-sent.
@@ -55,7 +70,7 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
       // locally only, and the next open/poll can retry the write. Both rollbacks are
       // guarded on the value still equaling THIS failed count, so a newer in-flight
       // markSeen(sessionId, N2) that already advanced past N1 is left untouched.
-      void client.setSessionSeen(sessionId, eventCount).catch(() => {
+      void client.setSessionSeen(sessionId, eventCount, counterVersion).catch(() => {
         if (sentRef.current.get(sessionId) === eventCount) sentRef.current.delete(sessionId);
         setOverrides((current) => {
           if (current.get(sessionId) !== eventCount) return current;

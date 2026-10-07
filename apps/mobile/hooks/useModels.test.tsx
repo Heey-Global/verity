@@ -13,6 +13,22 @@ function fakeClient(listModels: () => Promise<ModelList>): VerityClient {
 }
 
 describe('useModels', () => {
+  it('defers the catalog request until the transcript is ready', async () => {
+    const listModels = jest.fn().mockResolvedValue({ models: ['codex/default'] });
+    const client = fakeClient(listModels);
+    const { result, rerender } = renderHook(
+      ({ ready }: { ready: boolean }) => useModels(client, ready),
+      {
+        initialProps: { ready: false },
+      },
+    );
+    // A request here silently competes with the history fetch for the transport.
+    expect(listModels).not.toHaveBeenCalled();
+    rerender({ ready: true });
+    await waitFor(() => expect(result.current.models).toEqual(['codex/default']));
+    expect(listModels).toHaveBeenCalledTimes(1);
+  });
+
   it('re-fetches /models on refresh so a later-discovered catalog surfaces', async () => {
     const listModels = jest
       .fn<Promise<ModelList>, []>()

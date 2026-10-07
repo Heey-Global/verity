@@ -458,6 +458,50 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     textAlign: 'center',
   },
+  updateHeader: {
+    gap: 2,
+  },
+  updateTitle: {
+    color: theme.colors.text,
+    fontSize: theme.text.lg,
+    fontWeight: '700',
+  },
+  updateDetail: {
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+    lineHeight: 20 * theme.fontScale,
+  },
+  // Full width: this is the one action the screen exists for.
+  updateButton: {
+    alignSelf: 'stretch',
+  },
+  releaseNotes: {
+    gap: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
+  },
+  releaseNotesTitle: {
+    color: theme.colors.text,
+    fontSize: theme.text.md,
+    fontWeight: '700',
+  },
+  releaseNotesSection: {
+    gap: 2,
+  },
+  releaseNotesHeading: {
+    color: theme.colors.setup.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  releaseNotesItem: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+  },
+  releaseNotesItemText: {
+    flex: 1,
+  },
   updateProgressRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -475,29 +519,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     fontSize: theme.text.sm,
     fontWeight: '600',
-  },
-  toggleTrack: {
-    width: 46,
-    height: 26,
-    padding: 3,
-    borderRadius: theme.radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    backgroundColor: theme.colors.setup.surfaceAlt,
-  },
-  toggleTrackOn: {
-    borderColor: theme.colors.setup.text,
-    backgroundColor: `${theme.colors.setup.text}33`,
-  },
-  toggleKnob: {
-    width: 20,
-    height: 20,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.setup.textMuted,
-  },
-  toggleKnobOn: {
-    transform: [{ translateX: 20 }],
-    backgroundColor: theme.colors.primary,
   },
   footnote: {
     color: theme.colors.setup.textMuted,

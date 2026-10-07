@@ -98,7 +98,11 @@ const SPAWNABLE_AGENT_COMMANDS = new Set(['claude-agent-acp', 'codex-acp', 'open
  * turn runs on, so an in-Sandbox helper such as `verity-code-review` starts its
  * isolated reviewer on the same one instead of guessing from the environment.
  */
-const SESSION_RUNTIME_ENV_KEYS = ['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL'];
+const SESSION_RUNTIME_ENV_KEYS = [
+  'VERITY_SESSION_BACKEND',
+  'VERITY_SESSION_MODEL',
+  'VERITY_SESSION_ID',
+];
 const MAX_SESSION_ENV_VALUE_BYTES = 256;
 /**
  * Every neighbouring bound here is a size cap, but a value bound for a child's
@@ -120,6 +124,7 @@ const SESSION_ENV_VALUE_SHAPES = {
   // it is only length- and control-character-checked. Consumers must quote it:
   // it is an environment value, never a fragment of a command line.
   VERITY_SESSION_MODEL: undefined,
+  VERITY_SESSION_ID: undefined,
 };
 function hasControlCharacter(value) {
   for (let index = 0; index < value.length; index += 1) {
@@ -414,11 +419,13 @@ async function validateSpawnRequest(raw, options) {
       if (digest !== raw.entryScript.sha256) {
         throw new Error('trusted CLI entry script content hash changed after approval');
       }
-      const worktreeRoot = [...worktreeRoots]
-        .sort((left, right) => right.length - left.length)
-        .find((root) => withinAgentWorktreeRoots(canonical, [root]));
-      if (worktreeRoot === undefined) throw new Error('trusted CLI entry script has no worktree');
-      if (!withinAgentWorktreeRoots(cwd, [worktreeRoot])) {
+      // The turn's cwd is its session worktree, which is usually NESTED in a
+      // configured root (`/work/.verity-sessions/<agent>`). Measuring from the
+      // configured root would demand a session-specific project path the agent
+      // cannot know and no grant could carry across sessions, and would hand a
+      // dynamic script every sibling session as its tree.
+      const worktreeRoot = cwd;
+      if (!withinAgentWorktreeRoots(canonical, [worktreeRoot])) {
         throw new Error('trusted CLI cwd and entry script must share one worktree root');
       }
       const projectPath = canonical.slice(worktreeRoot.length + 1);
@@ -583,6 +590,10 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     // approval and their allowance. Session links are the only agent-to-agent
     // channel. Never accept this value from a request.
     ...(isClaude ? { CLAUDE_CODE_HARBOR_KITE: '0' } : {}),
+    // The Claude CLI offers its task-list tools (TaskCreate/TaskUpdate, which the
+    // ACP adapter reports as a plan) only to models on its own allowlist. Newer
+    // models silently lose them, and the app never receives a checklist.
+    ...(isClaude ? { CLAUDE_CODE_ENABLE_TODO_TOOLS: '1' } : {}),
     // ADR 0006 D10: derive auth only from one validated local connector URL.
     // Never copy an inherited OAuth/API token; the placeholder is fixed here.
     ...connectorEnv,
@@ -635,6 +646,10 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
         }
       : {}),
     ...copy('IS_SANDBOX'),
+    ...copy('VERITY_FORGE_MODE'),
+    ...copy('VERITY_FORGE_PROXY_URL'),
+    ...copy('VERITY_FORGE_PROXY_CA_FILE'),
+    ...copy('GIT_TERMINAL_PROMPT'),
     ...copy('GIT_CONFIG_COUNT'),
     ...Object.fromEntries(
       Object.entries(source).filter(([name]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/u.test(name)),
@@ -1048,6 +1063,9 @@ function trustedCliInterpreterName(token) {
 
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.verity-trusted-cli-policy.json';
 export const LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.breeze-trusted-cli-policy.json';
+// Paginated diagnostic modes can exceed 64 routes; keep the whole policy bounded
+// without invalidating every existing route when another mode is installed.
+const MAX_TRUSTED_CLI_ARGV_POLICY_ROUTES = 256;
 const MAX_TRUSTED_CLI_ARGV_POLICY_BYTES = 64 * 1024;
 const TRUSTED_CLI_POLICY_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/u;
 
@@ -1058,7 +1076,7 @@ function parseTrustedCliArgvPolicy(raw) {
     Object.keys(raw).some((key) => key !== 'version' && key !== 'routes') ||
     !Array.isArray(raw.routes) ||
     raw.routes.length === 0 ||
-    raw.routes.length > 64
+    raw.routes.length > MAX_TRUSTED_CLI_ARGV_POLICY_ROUTES
   ) {
     throw new Error('trusted CLI argv policy is invalid');
   }
@@ -1564,7 +1582,6 @@ const TRUSTED_CLI_VALIDATION_CODES = new Map([
   ['trusted CLI entry script escaped the worktree root', 'validation_entry_outside_worktree'],
   ['trusted CLI entry script must be a regular file', 'validation_entry_not_regular_file'],
   ['trusted CLI entry script content hash changed after approval', 'validation_entry_hash_changed'],
-  ['trusted CLI entry script has no worktree', 'validation_entry_missing_worktree'],
   [
     'trusted CLI cwd and entry script must share one worktree root',
     'validation_entry_worktree_mismatch',

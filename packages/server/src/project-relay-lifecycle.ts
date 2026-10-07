@@ -19,6 +19,16 @@ export interface ProjectRelayRuntime {
   /** Stop serving while retaining the exact container for a later adoption. */
   quiesce(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * Put the generation's container back if it has exited underneath a lifecycle
+   * that still holds it. The relay runs with `restartPolicy: 'no'`, so a crash
+   * (including a possible OOM kill) leaves
+   * an exited container that nothing restarts; without this the only repair left
+   * is recreating the whole sandbox, which kills the turn that was running in it.
+   * Rejects with the adapter's not-found error when the container is gone, so the
+   * caller can tell "restarted" from "there is nothing left to restart".
+   */
+  ensureRunning?(): Promise<void>;
 }
 
 /** Start failed after acquiring a retryable runtime resource. */
@@ -249,7 +259,22 @@ export class ProjectRelayLifecycle {
 
   private async resumeExclusive(binding: ProjectRelayBinding): Promise<void> {
     validateBinding(binding);
-    if (this.active.has(binding.projectId)) return;
+    const active = this.active.get(binding.projectId);
+    if (active !== undefined) {
+      // Already owned by this process, so the listeners and capabilities behind the
+      // relay are live and nothing needs rebuilding. The container itself may still
+      // have exited — the health probe calls resume for exactly that case — and the
+      // adapter is the only one that can start it again without a new generation.
+      // Returning here unconditionally (as this once did) left an exited relay down
+      // for good: every tick found it unhealthy, asked for a resume, got this no-op,
+      // and classified the sandbox orphaned until the recreate interrupted its turn.
+      // A different generation is not ours to restart: it belongs to a start or
+      // stop that is converging on its own.
+      if (active.containerGeneration === binding.containerGeneration) {
+        await active.runtime?.ensureRunning?.();
+      }
+      return;
+    }
     this.starting.set(binding.projectId, binding.containerGeneration);
     try {
       await this.startClaimed(binding, false, true);

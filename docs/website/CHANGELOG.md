@@ -1,5 +1,51 @@
 # Changelog
 
+## [2.2.0](https://github.com/Heey-Global/verity/compare/website-v2.1.1...website-v2.2.0) (2026-10-07)
+
+
+### Features
+
+* **website:** announce beta testing and link development ([#1266](https://github.com/Heey-Global/verity/issues/1266)) ([4f433eb](https://github.com/Heey-Global/verity/commit/4f433eb01bda78a6287b0f200c8e2b2320c44a3f))
+
+## [2.1.1](https://github.com/Heey-Global/verity/compare/website-v2.1.0...website-v2.1.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged:1.31-alpine docker digest to b9241c6 ([#1188](https://github.com/Heey-Global/verity/issues/1188)) ([dbb196b](https://github.com/Heey-Global/verity/commit/dbb196bc443b65ddf2b89abe16f65e4d4dc59347))
+
+## [2.1.0](https://github.com/Heey-Global/verity/compare/website-v2.0.2...website-v2.1.0) (2026-10-03)
+
+
+### Features
+
+* **release:** add staging channels and production promotion ([#1035](https://github.com/Heey-Global/verity/issues/1035)) ([55a7aea](https://github.com/Heey-Global/verity/commit/55a7aea98f8e2bb3aedbf8d6b84a19c0692ce2de))
+
+## [2.0.2](https://github.com/Heey-Global/verity/compare/website-v2.0.1...website-v2.0.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **security:** verify server images before installation and updates ([#1018](https://github.com/Heey-Global/verity/issues/1018)) ([fdf09e0](https://github.com/Heey-Global/verity/commit/fdf09e0d32889d87417d8d46ea9dea5ce47c565a))
+
+## [2.0.1](https://github.com/Heey-Global/verity/compare/website-v2.0.0...website-v2.0.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **installer:** preserve sudo terminal and filter Docker pairing addresses ([#1013](https://github.com/Heey-Global/verity/issues/1013)) ([6c7b118](https://github.com/Heey-Global/verity/commit/6c7b1184f0814a7d60cca549a4f3628917c76f8f))
+
+## [2.0.0](https://github.com/Heey-Global/verity/compare/website-v1.6.5...website-v2.0.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tasks:** Remove GET /issues and /tasks routes and the mobile task API.
+
+### Code Refactoring
+
+* **tasks:** remove retired issues and plan board ([#922](https://github.com/Heey-Global/verity/issues/922)) ([663e4c5](https://github.com/Heey-Global/verity/commit/663e4c593ba03bc99884159362a1144ef8f26e8f))
+
 ## [1.6.5](https://github.com/Heey-Global/verity/compare/website-v1.6.4...website-v1.6.5) (2026-09-29)
 
 

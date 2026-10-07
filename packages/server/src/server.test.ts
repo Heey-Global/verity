@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -14,6 +15,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { Readable } from 'node:stream';
+import { gunzipSync } from 'node:zlib';
 import {
   BackendTerminationUnconfirmedError,
   InMemoryEventBus,
@@ -52,7 +54,7 @@ import {
   SealedError,
   type ProjectRecord,
 } from '@verity/store';
-import { createAuthTokenRegistry } from './auth.js';
+import { hashAuthToken, createAuthTokenRegistry } from './auth.js';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from './sandbox-updates.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import {
@@ -427,6 +429,7 @@ const conductor = {
 // Branch service (#91) stub — the git ops are unit-tested in branches.test.ts;
 // here we only verify the route's HTTP mapping.
 const branchSvc = {
+  hasProjectChanges: vi.fn<(wt: string, base: string) => Promise<boolean>>(),
   current: vi.fn<(wt: string) => Promise<string>>(),
   sessionBranches: vi.fn<(wt: string) => Promise<string[]>>(),
   switchable: vi.fn<(wt: string) => Promise<string[]>>(),
@@ -1009,7 +1012,9 @@ describe('POST /server/updates', () => {
       const res = await request(server, updates.token);
       expect(res.statusCode).toBe(202);
       expect(res.json()).toEqual({ operation: preparingOperation });
-      expect(updates.requested).toEqual([{ idempotencyKey: 'k1', targetDigest: availableDigest }]);
+      expect(updates.requested).toEqual([
+        { idempotencyKey: 'k1', targetDigest: availableDigest, channel: availableRelease.channel },
+      ]);
     } finally {
       await server.close();
     }
@@ -1396,6 +1401,94 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
           text: expect.stringContaining(`Meeting transcript saved: [${body.path}](${body.path})`),
         },
       ]);
+    } finally {
+      await meetingApp.close();
+      rmSync(worktree, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('files an ended live meeting into project knowledge and links it in the session', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'verity-live-meeting-test-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'verity-live-meeting-knowledge-'));
+    const meetingApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      dataRoot,
+    });
+    const url = '/sessions/s1/live-meetings/live-1';
+    const meeting = {
+      engine: 'fluid-nemotron',
+      startedAt: Date.UTC(2026, 9, 1, 9, 30),
+      endedAt: Date.UTC(2026, 9, 1, 9, 45),
+      state: 'ended',
+      transcript: 'We ship on Friday.',
+      timedWords: [{ text: 'We ship on Friday.', start: 4, end: 6 }],
+      speakerTurns: [{ speaker: 0, start: 3, end: 7 }],
+      captureStatus: 'listening',
+      ownerToken: 'o'.repeat(64),
+      revision: 2,
+    };
+    try {
+      await ctx.store.upsertProject({
+        id: 'meeting-project',
+        owner: 'test',
+        repo: 'meeting',
+        containerName: 'meeting-project',
+        state: 'active',
+      });
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree,
+        model: 'm',
+        projectId: 'meeting-project',
+      });
+      expect((await meetingApp.inject({ method: 'PUT', url, payload: meeting })).statusCode).toBe(
+        200,
+      );
+      expect(
+        (
+          await meetingApp.inject({
+            method: 'PUT',
+            url: `${url}/notes/n1`,
+            payload: { atSeconds: 5, text: 'Friday release', revision: 1 },
+          })
+        ).statusCode,
+      ).toBe(200);
+
+      const notices = async () =>
+        (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
+      await vi.waitFor(async () => expect(await notices()).toHaveLength(1));
+      const [notice] = await notices();
+      const link = /\]\((\/knowledge\/sources\/meetings\/[^)]+\.md)\)/.exec(
+        notice?.t === 'notice' ? notice.text : '',
+      )?.[1];
+      expect(link).toMatch(
+        /^\/knowledge\/sources\/meetings\/2026-10-01-live-meeting-[a-f0-9]{8}\.md$/,
+      );
+      const knowledgeRoot = join(dataRoot, 'knowledge', 'meeting-project');
+      const filed = join(knowledgeRoot, link!.slice('/knowledge/'.length));
+      // The last note reaches the server after the ended meeting and still lands in the file.
+      await vi.waitFor(() =>
+        expect(readFileSync(filed, 'utf8')).toContain('(00:05) Friday release'),
+      );
+      expect(readFileSync(filed, 'utf8')).toContain('**Speaker 1** (00:04): We ship on Friday.');
+      expect(readFileSync(join(knowledgeRoot, 'sources/meetings/index.md'), 'utf8')).toContain(
+        `(${link!.split('/').at(-1)})`,
+      );
+
+      // Naming a speaker afterwards rewrites the same document without a second message.
+      await meetingApp.inject({
+        method: 'PUT',
+        url,
+        payload: { ...meeting, speakerNames: { '0': 'Anna' }, revision: 3 },
+      });
+      await vi.waitFor(() =>
+        expect(readFileSync(filed, 'utf8')).toContain('**Anna** (00:04): We ship on Friday.'),
+      );
+      expect(await notices()).toHaveLength(1);
     } finally {
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });
@@ -2081,7 +2174,15 @@ describe('session worktree files', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ path: 'note.txt', content: 'hello\n', size: 6 });
+    expect(res.json()).toEqual({
+      path: 'note.txt',
+      content: 'hello\n',
+      size: 6,
+      editable: true,
+      version: createHash('sha256')
+        .update(readFileSync(join(worktree, 'note.txt')))
+        .digest('hex'),
+    });
   });
 
   it('downloads binary files with attachment headers', async () => {
@@ -2346,6 +2447,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
   });
 
@@ -2392,6 +2495,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
       branch: 'feat/122-x',
     });
     expect(branchSvc.current).toHaveBeenCalledWith('/wt/s1');
@@ -2413,6 +2518,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: 'Auth Refactor',
+      planningPlan: null,
+      planningRevision: 0,
     });
     await noBranches.close();
   });
@@ -2442,6 +2549,8 @@ describe('GET /sessions/:id/activity', () => {
       modelSwitchPending: false,
       terminationUnconfirmed: false,
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
     await noBranches.close();
   });
@@ -2665,6 +2774,31 @@ describe('POST /sessions/:id/debug/scroll', () => {
 });
 
 describe('GET /sessions/:id/events (backward pagination)', () => {
+  it('negotiates compression for history while leaving other responses untouched', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'history '.repeat(1_000) });
+    const plain = await app.inject({ method: 'GET', url: '/sessions/s1/events' });
+    const compressed = await app.inject({
+      method: 'GET',
+      url: '/sessions/s1/events',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    // Verify composition: a route-only fixture can hide a missing compressor.
+    expect(compressed.statusCode).toBe(200);
+    expect(compressed.headers['content-encoding']).toBe('gzip');
+    expect(compressed.headers.vary).toContain('accept-encoding');
+    expect(gunzipSync(compressed.rawPayload).toString()).toBe(plain.body);
+    expect(compressed.rawPayload.length).toBeLessThan(plain.rawPayload.length);
+    expect(plain.headers['content-encoding']).toBeUndefined();
+    const settings = await app.inject({
+      method: 'GET',
+      url: '/settings',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.headers['content-encoding']).toBeUndefined();
+  });
+
   it('returns the newest page (ascending) with hasMore, then the older page', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const seqs: number[] = [];
@@ -2691,6 +2825,50 @@ describe('GET /sessions/:id/events (backward pagination)', () => {
   it('404s an unknown session', async () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/ghost/events' });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('GET /sessions/:id/diagnostics', () => {
+  it('bounds history reads when recent events have no diagnostics', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const read = vi.spyOn(ctx.store, 'getEventsBeforeSeq').mockResolvedValue({
+      events: [{ seq: 1, ts: 1, event: { t: 'prompt', text: 'private chat' } }],
+      hasMore: true,
+    });
+    try {
+      const res = await app.inject({ method: 'GET', url: '/sessions/s1/diagnostics' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+      expect(read).toHaveBeenCalledTimes(10);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('returns technical metadata without transcript content', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'private chat' });
+    await ctx.store.appendEvent('s1', {
+      t: 'diagnostic',
+      source: 'agent',
+      outcome: 'failed',
+      phase: 'session_load',
+      backend: 'opencode-acp',
+      code: -32603,
+    });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s1/diagnostics' });
+    expect(res.statusCode).toBe(200);
+    const diagnostics = res.json<Array<{ seq: number; ts: number; source: string }>>();
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.ts).toBeGreaterThan(0);
+    expect(diagnostics[0]).toMatchObject({
+      source: 'agent',
+      outcome: 'failed',
+      phase: 'session_load',
+      backend: 'opencode-acp',
+      code: -32603,
+    });
+    expect(res.body).not.toContain('private chat');
   });
 });
 
@@ -3030,6 +3208,39 @@ describe('GET /sessions', () => {
     expect(byId).toEqual({ s1: true, s2: false });
   });
 
+  it('marks sessions that carry an automation and checks its model on confirm', async () => {
+    await ctx.store.updateVeritySettings({
+      claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+    });
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.createSession({ sessionId: 's2', worktree: '/wt/s2', model: 'm' });
+    const proposal = {
+      name: 'Morning review',
+      schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Review the open pull requests.',
+    };
+    // A project-less session has no project allowlist, but an agent-proposed model
+    // still has to be one this server can actually run unattended.
+    const refused = await app.inject({
+      method: 'PUT',
+      url: '/sessions/s1/automation',
+      payload: { ...proposal, model: 'nowhere/unknown' },
+    });
+    expect(refused.statusCode).toBe(400);
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/sessions/s1/automation',
+      payload: { ...proposal, model: CLAUDE_SORTED[0] },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const list = (await app.inject({ method: 'GET', url: '/sessions' })).json<
+      Array<{ sessionId: string; automation?: unknown }>
+    >();
+    expect(list.find((s) => s.sessionId === 's1')?.automation).toEqual({ status: 'enabled' });
+    expect(list.find((s) => s.sessionId === 's2')).not.toHaveProperty('automation');
+  });
+
   it('lists sessions with a derived status badge', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'status', state: 'awaiting_input' });
@@ -3043,13 +3254,15 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
-        kind: 'normal',
         status: 'awaiting_input',
         pendingPermissions: [],
         usage: ZERO_USAGE,
         resumable: false, // fake worktree path → not on disk
         eventCount: 1,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -3058,13 +3271,15 @@ describe('GET /sessions', () => {
         worktree: '/wt/s2',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
-        kind: 'normal',
         status: 'idle',
         pendingPermissions: [],
         usage: ZERO_USAGE,
         resumable: false,
         eventCount: 0,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: null,
         lastSeenEventCount: null,
       },
@@ -3222,8 +3437,9 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
+        planningPlan: null,
+        planningRevision: 0,
         projectId: null,
-        kind: 'normal',
         status: 'completed',
         pendingPermissions: [],
         usage: {
@@ -3235,6 +3451,7 @@ describe('GET /sessions', () => {
         },
         resumable: false,
         eventCount: 2,
+        eventCountVersion: 'dev-servers-excluded-v1',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -3321,6 +3538,55 @@ describe('GET /sessions', () => {
     expect(summary?.rateLimit).toMatchObject({ status: 'rejected', resetsAt: 1_700_000_042 });
     // The counters stay facts about the whole log, whatever the tail read.
     expect(summary?.eventCount).toBe(written.length);
+  });
+
+  it('carries the cached branch on each summary without awaiting git', async () => {
+    let release: (branch: string) => void = () => undefined;
+    const current = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const branches = {
+      current,
+      switchable: vi.fn(async () => [] as string[]),
+      previewable: vi.fn(async () => [] as string[]),
+      switch: vi.fn(),
+    };
+    const branchApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: branches as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchCacheTtlMs: 60_000,
+    });
+    try {
+      const live = join(worktreeRoot, 'live');
+      mkdirSync(live, { recursive: true });
+      await ctx.store.createSession({ sessionId: 's1', worktree: live, model: 'm' });
+      await ctx.store.createSession({ sessionId: 's2', worktree: '/wt/gone', model: 'm' });
+      // The list is polled every 2 s for every session: a git read that never
+      // settles must not hold it up, so the cold answer simply has no branch.
+      type Listed = { sessionId: string; branch?: string };
+      const cold = await branchApp.inject({ method: 'GET', url: '/sessions' });
+      expect(cold.statusCode).toBe(200);
+      expect(cold.json<Listed[]>().find((s) => s.sessionId === 's1')?.branch).toBeUndefined();
+      release('feat/122-preview-branches');
+      await vi.waitFor(async () => {
+        const res = await branchApp.inject({ method: 'GET', url: '/sessions' });
+        const byId = new Map(res.json<Listed[]>().map((s) => [s.sessionId, s]));
+        expect(byId.get('s1')?.branch).toBe('feat/122-preview-branches');
+        expect(byId.get('s2')?.branch).toBeUndefined();
+      });
+      // A gone worktree is never asked: git would fail for it on every poll.
+      expect(current).not.toHaveBeenCalledWith('/wt/gone');
+      // Within the TTL the label comes from memory, not another git read per poll.
+      expect(current).toHaveBeenCalledTimes(1);
+    } finally {
+      await branchApp.close();
+    }
   });
 
   it('enriches each summary with a compact `pr` once resolved (stale-while-revalidate)', async () => {
@@ -3742,49 +4008,14 @@ describe('GET /provider-limits', () => {
   });
 });
 
-describe('GET /issues (#137)', () => {
-  it('503s when no issue provider is configured (GitHub off)', async () => {
-    // The shared `app` is built without `listIssues`.
-    const res = await app.inject({ method: 'GET', url: '/issues' });
-    expect(res.statusCode).toBe(503);
-    expect(res.json()).toEqual({ error: 'GitHub issues are not configured' });
-  });
+it('does not expose the retired issues route', async () => {
+  expect((await app.inject({ method: 'GET', url: '/issues' })).statusCode).toBe(404);
+});
 
-  it('returns the provider list when configured', async () => {
-    const issues = [
-      { number: 137, title: 'Issues on the overview', body: 'do the thing', url: 'https://x/137' },
-      { number: 42, title: 'Another', body: '', url: 'https://x/42' },
-    ];
-    const withIssues = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      listIssues: () => Promise.resolve(issues),
-    });
-    try {
-      const res = await withIssues.inject({ method: 'GET', url: '/issues' });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual(issues);
-    } finally {
-      await withIssues.close();
-    }
-  });
-
-  it('returns an empty list (200, not 503) when the provider yields none', async () => {
-    const withIssues = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      listIssues: () => Promise.resolve([]),
-    });
-    try {
-      const res = await withIssues.inject({ method: 'GET', url: '/issues' });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual([]);
-    } finally {
-      await withIssues.close();
-    }
-  });
+it('serves the durable task list through the full server', async () => {
+  const response = await app.inject({ method: 'GET', url: '/tasks' });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toEqual({ tasks: [] });
 });
 
 describe('GET /projects (#174)', () => {
@@ -4647,7 +4878,7 @@ describe('GET /projects (#174)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 2 },
+      payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ sessionId: 's-seen', lastSeenEventCount: 2 });
@@ -4656,7 +4887,7 @@ describe('GET /projects (#174)', () => {
     const stale = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 1 },
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(stale.json()).toMatchObject({ lastSeenEventCount: 2 });
 
@@ -4667,11 +4898,70 @@ describe('GET /projects (#174)', () => {
     expect(summary?.lastSeenEventCount).toBe(2);
   });
 
+  it('updates listener snapshots without making session summaries unread', async () => {
+    const sessionId = 's-listener-unread';
+    await ctx.store.createSession({ sessionId, worktree: '/wt/listener', model: 'm' });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'read' });
+    await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
+    });
+    await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
+    const listed = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(
+      listed.json<Array<{ sessionId: string }>>().find((s) => s.sessionId === sessionId),
+    ).toMatchObject({
+      eventCount: 1,
+      lastSeenEventCount: 1,
+    });
+    const detail = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
+    expect(detail.json()).toMatchObject({
+      eventCount: 1,
+      lastSeenEventCount: 1,
+      eventCountVersion: 'dev-servers-excluded-v1',
+    });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'new message' });
+    const unread = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
+    expect(unread.json()).toMatchObject({ eventCount: 2, lastSeenEventCount: 1 });
+  });
+
+  it('rejects stale all-event read marks without hiding unread messages', async () => {
+    const sessionId = 's-stale-read-count';
+    await ctx.store.createSession({ sessionId, worktree: '/wt/stale', model: 'm' });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'read' });
+    await ctx.store.setSessionSeen(sessionId, 1);
+    await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
+    await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'unread' });
+    const stale = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 3, counterVersion: 'dev-servers-excluded-v1' },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    // The legacy count can also overlap the new count; an upper bound cannot detect it.
+    const overlapping = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 2 },
+    });
+    expect(overlapping.statusCode).toBe(409);
+    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    const valid = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
+    });
+    expect(valid.statusCode).toBe(200);
+    expect(valid.json()).toMatchObject({ lastSeenEventCount: 2 });
+  });
+
   it('returns 404 when marking an unknown session seen', async () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/does-not-exist/seen',
-      payload: { eventCount: 1 },
+      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ error: expect.stringContaining('not found') });
@@ -4853,6 +5143,39 @@ describe('agent login routes', () => {
 });
 
 describe('GET/PATCH /settings', () => {
+  // GET /settings now projects the DECRYPTED row so it can derive plan labels.
+  // A secret the projection forgot to strip would then leave as plaintext, not
+  // ciphertext — so every stored credential is planted and searched for.
+  it('derives subscription plans without exposing any stored credential', async () => {
+    const claudeCredentials = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'planted-claude-access',
+        refreshToken: 'planted-claude-refresh',
+        subscriptionType: 'max',
+        rateLimitTier: 'default_claude_max_20x',
+      },
+    });
+    const secrets = {
+      gitSshPrivateKey: 'planted-ssh-key',
+      githubAppPrivateKey: 'planted-github-key',
+      dopplerServiceToken: 'planted-doppler',
+      transcribeApiKey: 'planted-transcribe',
+      claudeCodeOauthCredentialsJson: claudeCredentials,
+      codexAuthJson: JSON.stringify({ tokens: { access_token: 'planted-codex-access' } }),
+      opencodeApiKey: 'planted-opencode',
+      googleDriveRefreshToken: 'planted-drive',
+      uplinkSubscriptionKey: 'planted-uplink',
+    };
+    await ctx.store.updateVeritySettings(secrets);
+
+    const response = await app.inject({ method: 'GET', url: '/settings' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().settings.claudeSubscriptionPlan).toBe('Max 20x');
+    expect(response.json().settings.codexSubscriptionPlan).toBeNull();
+    expect(response.body).not.toMatch(/planted-/);
+  });
+
   it('does not accept a manually supplied OpenCode model catalog', async () => {
     const response = await app.inject({
       method: 'PATCH',
@@ -5818,6 +6141,7 @@ describe('GET /models (#143)', () => {
     expect(body.models).toEqual([...CLAUDE_SORTED]);
     expect(body.default).toBe(DEFAULT_MODEL);
     expect(body.default).not.toContain('/');
+    expect(res.json<{ moreModels: string[] }>().moreModels).toEqual(['claude-haiku-4-5-20251001']);
   });
 
   it('returns Codex only when only Codex is logged in', async () => {
@@ -5849,6 +6173,7 @@ describe('GET /models (#143)', () => {
       listModels: () =>
         Promise.resolve([
           'codex/default',
+          'codex/gpt-6.1-sol',
           'codex/gpt-5.6-sol',
           'codex/gpt-5.6-terra',
           'codex/gpt-5.6-luna',
@@ -5867,16 +6192,23 @@ describe('GET /models (#143)', () => {
           'codex/gpt-5.6-luna',
           'codex/gpt-5.6-sol',
           'codex/gpt-5.6-terra',
+          'codex/gpt-6.1-sol',
         ],
         modelOrder: [
           ...CLAUDE_SORTED,
+          'codex/gpt-6.1-sol',
           'codex/gpt-5.6-sol',
           'codex/gpt-5.6-terra',
           'codex/gpt-5.6-luna',
           'codex/gpt-5.5',
           'codex/gpt-5.3-codex-spark',
         ],
-        moreModels: ['codex/gpt-5.5', 'codex/gpt-5.3-codex-spark'],
+        moreModels: [
+          'claude-haiku-4-5-20251001',
+          'codex/gpt-5.6-luna',
+          'codex/gpt-5.5',
+          'codex/gpt-5.3-codex-spark',
+        ],
         default: DEFAULT_MODEL,
       });
     } finally {
@@ -5997,13 +6329,15 @@ describe('GET /sessions/:id', () => {
       worktree: '/wt/s1',
       model: 'm',
       name: null,
+      planningPlan: null,
+      planningRevision: 0,
       projectId: null,
-      kind: 'normal',
       status: 'running',
       pendingPermissions: [],
       usage: ZERO_USAGE,
       resumable: false,
       eventCount: 2,
+      eventCountVersion: 'dev-servers-excluded-v1',
       lastActivityAt: expect.any(Number),
       lastSeenEventCount: null,
       busy: false,
@@ -6109,6 +6443,60 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ error: expect.stringContaining('missing') });
+  });
+
+  it('marks and unmarks a favorite, and lists it in GET /sessions', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const marked = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: true },
+    });
+    expect(marked.statusCode).toBe(200);
+    expect(marked.json()).toEqual({ sessionId: 's1', favorite: true });
+    const listed = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(
+      listed.json<{ sessionId: string; favorite?: boolean }[]>().find((s) => s.sessionId === 's1')
+        ?.favorite,
+    ).toBe(true);
+
+    const unmarked = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: false },
+    });
+    expect(unmarked.json()).toEqual({ sessionId: 's1', favorite: false });
+    expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+  });
+
+  it('applies a favorite together with a rename', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { name: 'Pinned', favorite: true },
+    });
+    expect(res.json()).toEqual({ sessionId: 's1', name: 'Pinned', favorite: true });
+    expect(await ctx.store.getSession('s1')).toMatchObject({ name: 'Pinned', favorite: true });
+  });
+
+  it('returns 404 when marking an unknown session as favorite', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/missing',
+      payload: { favorite: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects a non-boolean favorite with 400', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: 'yes' },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it('rejects a whitespace-only name with 400', async () => {
@@ -6270,7 +6658,7 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s1',
-      payload: { name: 'after', model: 'codex/default' },
+      payload: { name: 'after', favorite: true, model: 'codex/default' },
     });
 
     expect(res.statusCode).toBe(503);
@@ -6279,6 +6667,10 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     });
     const session = await ctx.store.getSession('s1');
     expect(session?.name).toBe('after');
+    expect(session?.favorite).toBe(true);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining('the favorite change in this request was applied'),
+    });
     expect(session?.model).toBe('claude-opus-4-8');
     expect(res.headers['retry-after']).toBe('5');
   });
@@ -6299,7 +6691,7 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s1',
-      payload: { name: 'after', model: 'codex/default' },
+      payload: { name: 'after', favorite: true, model: 'codex/default' },
     });
 
     expect(res.statusCode).toBe(409);
@@ -6309,6 +6701,10 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     expect(res.headers['retry-after']).toBe('5');
     const session = await ctx.store.getSession('s1');
     expect(session?.name).toBe('after');
+    expect(session?.favorite).toBe(true);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining('the favorite change in this request was applied'),
+    });
     expect(session?.model).toBe('claude-opus-4-8');
   });
 
@@ -6857,7 +7253,7 @@ describe('DELETE /sessions/:id (worktree cleanup)', () => {
     }
   });
 
-  it('restarts a running preview on synchronized main before removing its session worktree', async () => {
+  it('does not restart a retired configured Dev Server while deleting its session', async () => {
     const projectWorktrees = fake();
     await ctx.store.upsertProject({
       id: 'p-preview-delete',
@@ -6925,14 +7321,8 @@ describe('DELETE /sessions/:id (worktree cleanup)', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s-preview-delete' });
       expect(res.statusCode).toBe(200);
-      expect(syncProjectCheckout).toHaveBeenCalledWith('p-preview-delete');
-      expect(startDevServer).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'p-preview-delete' }),
-        expect.objectContaining({
-          devServerId: devServer.id,
-          devServerCheckoutRoot: null,
-        }),
-      );
+      expect(syncProjectCheckout).not.toHaveBeenCalled();
+      expect(startDevServer).not.toHaveBeenCalled();
       expect(projectWorktrees.removed).toEqual([
         '/data/dev/heey-global-verity/.verity-sessions/agent-preview',
       ]);
@@ -7172,6 +7562,35 @@ describe('POST /sessions/:id/turns', () => {
     expect(dispatchTurn).toHaveBeenCalledWith('s1', 'yes, do it', expect.any(Object), {
       clientReplyId: 'reply-abc',
     });
+  });
+
+  it('stamps the authenticated caller as the initiator, never a body-supplied one', async () => {
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('phone');
+    const gated = buildServer({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: createSealableSecretCipher(),
+      authRegistry: registry,
+    });
+    try {
+      dispatchTurn.mockResolvedValueOnce({ queued: false });
+      const res = await gated.inject({
+        method: 'POST',
+        url: '/sessions/s1/turns',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { prompt: 'go', initiatedBy: { userId: 'someone-else' } },
+      });
+      expect(res.statusCode).toBe(202);
+      const caller = registry.resolveUserId(token);
+      expect(caller).toBeDefined();
+      expect(dispatchTurn).toHaveBeenCalledWith('s1', 'go', expect.any(Object), {
+        initiatedBy: { userId: caller },
+      });
+    } finally {
+      await gated.close();
+    }
   });
 
   it('rejects unknown provider model overrides for project-bound sessions', async () => {
@@ -8048,7 +8467,148 @@ describe('GET /sessions/:id/branches', () => {
     await withPrStatus.close();
   });
 
+  it('shares PR status and branch enumeration between devices, overview and background polls', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('feat/shared-pr');
+    branchSvc.switchable.mockResolvedValue(['main']);
+    branchSvc.previewable.mockResolvedValue([]);
+    const branchPrStatus = vi.fn(async () => ({
+      number: 119,
+      title: 'Shared PR',
+      url: 'https://github.com/example/repo/pull/119',
+      phase: 'open' as const,
+      pipeline: 'success' as const,
+      mergeable: true,
+      checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+    }));
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus,
+      pullRequestRepairPollMs: 20,
+    });
+    try {
+      await Promise.all(
+        Array.from({ length: 4 }, () =>
+          cachedApp.inject({
+            method: 'GET',
+            url: '/sessions/s1/branches',
+          }),
+        ),
+      );
+      await cachedApp.inject({ method: 'GET', url: '/sessions' });
+      await vi.waitFor(async () => {
+        const result = await cachedApp.inject({ method: 'GET', url: '/sessions' });
+        expect(result.json()[0].pr).toMatchObject({ pipeline: 'success' });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(branchPrStatus).toHaveBeenCalledTimes(1);
+      expect(branchSvc.current).toHaveBeenCalledTimes(1);
+      expect(branchSvc.switchable).toHaveBeenCalledTimes(1);
+      expect(branchSvc.previewable).toHaveBeenCalledTimes(1);
+    } finally {
+      await cachedApp.close();
+    }
+  });
+
+  it('resumes discovery immediately after a turn opens a PR', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('feat/new-pr');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    let status: PullRequestStatus | null = null;
+    const branchPrStatus = vi.fn(async () => status);
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus,
+    });
+    try {
+      await cachedApp.inject({ method: 'GET', url: '/sessions/s1/branches' });
+      status = {
+        number: 119,
+        title: 'New PR',
+        url: 'https://github.com/example/repo/pull/119',
+        phase: 'open',
+        pipeline: 'running',
+        mergeable: null,
+        checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+      };
+      bus.publish('s1', {
+        seq: 1,
+        ts: Date.now(),
+        event: {
+          t: 'result',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        },
+      });
+      await vi.waitFor(async () => {
+        const response = await cachedApp.inject({ method: 'GET', url: '/sessions/s1/branches' });
+        expect(response.json().pullRequest?.number).toBe(119);
+      });
+      expect(branchPrStatus).toHaveBeenCalledTimes(2);
+      expect(branchSvc.switchable).toHaveBeenCalledTimes(2);
+    } finally {
+      await cachedApp.close();
+    }
+  });
+
+  it.each(['ci', 'conflict'] as const)(
+    'repairs %s in the background without app requests or push registration',
+    async (failure) => {
+      let now = 0;
+      await createExistingSession('s1');
+      branchSvc.current.mockResolvedValue('feat/background-repair');
+      const branchPrStatus = vi.fn(async () => ({
+        number: 119,
+        title: 'Background repair',
+        url: 'https://github.com/heey-global/verity/pull/119',
+        phase: 'open' as const,
+        headSha: 'abc123',
+        pipeline: 'failure' as const,
+        checks: { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
+        mergeable: false,
+        ...(failure === 'conflict' ? { mergeState: 'dirty' as const } : {}),
+      }));
+      const backgroundApp = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+        branchPrStatus,
+        pullRequestRepairPollMs: 20,
+        pullRequestCacheNow: () => now,
+      });
+      try {
+        // No HTTP request drives discovery, and no device token enables it.
+        await backgroundApp.ready();
+        await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1));
+        const reads = branchPrStatus.mock.calls.length;
+        now += 120_000;
+        await vi.waitFor(() => expect(branchPrStatus.mock.calls.length).toBeGreaterThan(reads));
+        expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1);
+        expect(dispatchTurnWhenIdle).toHaveBeenCalledWith('s1', expect.any(String), undefined, {
+          displayPrompt:
+            failure === 'conflict'
+              ? 'Resolve merge conflicts for PR #119'
+              : 'Fix failing CI for PR #119',
+        });
+      } finally {
+        await backgroundApp.close();
+      }
+      const readsAfterClose = branchPrStatus.mock.calls.length;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(branchPrStatus).toHaveBeenCalledTimes(readsAfterClose);
+    },
+  );
+
   it('automatically asks the agent to fix failed CI once per PR head', async () => {
+    let now = 0;
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
     branchSvc.switchable.mockResolvedValue([]);
@@ -8071,11 +8631,15 @@ describe('GET /sessions/:id/branches', () => {
       conductor,
       branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
       branchPrStatus,
+      pullRequestCacheNow: () => now,
     });
 
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    const readsAfterRepair = branchPrStatus.mock.calls.length;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(branchPrStatus).toHaveBeenCalledTimes(readsAfterRepair);
     headSha = 'def456';
+    now += 30_000;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
 
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(2);
@@ -8174,6 +8738,7 @@ describe('GET /sessions/:id/branches', () => {
   });
 
   it('automatically asks the agent to resolve merge conflicts once per PR head', async () => {
+    let now = 0;
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
     branchSvc.switchable.mockResolvedValue([]);
@@ -8199,11 +8764,13 @@ describe('GET /sessions/:id/branches', () => {
       conductor,
       branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
       branchPrStatus,
+      pullRequestCacheNow: () => now,
     });
 
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
     headSha = 'def456';
+    now += 30_000;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
 
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(2);
@@ -8217,6 +8784,7 @@ describe('GET /sessions/:id/branches', () => {
   });
 
   it('dispatches conflict repair again when only the BASE branch moved', async () => {
+    let now = 0;
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
     branchSvc.switchable.mockResolvedValue([]);
@@ -8245,6 +8813,7 @@ describe('GET /sessions/:id/branches', () => {
       conductor,
       branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
       branchPrStatus,
+      pullRequestCacheNow: () => now,
     });
 
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
@@ -8252,6 +8821,7 @@ describe('GET /sessions/:id/branches', () => {
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1);
 
     baseSha = 'base222';
+    now += 30_000;
     await withPrStatus.inject({ method: 'GET', url: '/sessions/s1/branches' });
 
     expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(2);
@@ -9656,9 +10226,17 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
     branchSvc.switchable.mockResolvedValue([]);
     const app = buildLocal();
 
+    branchSvc.hasProjectChanges.mockResolvedValue(false);
     const local = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
     expect(local.statusCode).toBe(200);
-    expect(local.json()).toMatchObject({ current: 'feat/notes', localMerge: { base: 'trunk' } });
+    expect(local.json()).toMatchObject({
+      current: 'feat/notes',
+      localMerge: { base: 'trunk', hasChanges: false },
+    });
+    expect(branchSvc.hasProjectChanges).toHaveBeenCalledWith(process.cwd(), 'trunk');
+    branchSvc.hasProjectChanges.mockResolvedValue(true);
+    const changed = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(changed.json().localMerge.hasChanges).toBe(true);
     await app.close();
 
     // Same session without a configured clone root: nothing to merge into locally.
@@ -9834,7 +10412,7 @@ describe('error boundary', () => {
   });
 });
 
-describe('GET /sessions/:id/stream (WebSocket)', () => {
+describe('GET /live (WebSocket)', () => {
   type Frame = Record<string, unknown>;
 
   /**
@@ -9875,20 +10453,111 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     return { ws, next, closed };
   }
 
-  it('streams backlog -> caught_up -> live, deduped by seq', async () => {
+  /** Connect, wait for `ready`, then subscribe to a session. */
+  async function subscribe(
+    atPort: number,
+    sessionId: string,
+    options: { sinceSeq?: number; protocol?: string } = {},
+  ): Promise<Conn> {
+    const conn = await connect(atPort, '/live', options.protocol);
+    expect(await conn.next()).toMatchObject({ k: 'ready', v: 1 });
+    conn.ws.send(
+      JSON.stringify({
+        k: 'sub',
+        ch: 'session',
+        id: sessionId,
+        ...(options.sinceSeq === undefined ? {} : { sinceSeq: options.sinceSeq }),
+      }),
+    );
+    return conn;
+  }
+
+  it('preserves the project on deletion hints without a cached session owner', async () => {
+    await ctx.store.createProject({
+      id: 'p-delete',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'delete',
+      cloneDir: 'delete',
+      containerName: 'delete',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-delete',
+      worktree: '/wt/s-delete',
+      model: 'm',
+      projectId: 'p-delete',
+    });
+    const conn = await connect(port, '/live');
+    try {
+      expect(await conn.next()).toMatchObject({ k: 'ready' });
+      conn.ws.send(JSON.stringify({ k: 'sub', ch: 'overview' }));
+      // Synchronize after the subscription without priming the session owner cache.
+      conn.ws.send(JSON.stringify({ k: 'ping', n: 1 }));
+      expect(await conn.next()).toMatchObject({ k: 'pong', n: 1 });
+      expect((await app.inject({ method: 'DELETE', url: '/sessions/s-delete' })).statusCode).toBe(
+        200,
+      );
+      expect(await conn.next()).toMatchObject({
+        k: 'hint',
+        hints: [{ sessionId: 's-delete', projectId: 'p-delete', deleted: true }],
+      });
+    } finally {
+      conn.ws.close();
+    }
+  });
+
+  it('synchronizes project collapse between live devices after a saved mutation', async () => {
+    await ctx.store.createProject({
+      id: 'p-live',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'live',
+      cloneDir: 'live',
+      containerName: 'live',
+      state: 'active',
+    });
+    const first = await connect(port, '/live');
+    const second = await connect(port, '/live');
+    try {
+      for (const connection of [first, second]) {
+        expect(await connection.next()).toMatchObject({ k: 'ready', resources: true });
+        connection.ws.send(JSON.stringify({ k: 'watch', resource: { path: '/projects' } }));
+        expect(await connection.next()).toEqual({ k: 'invalidate', path: '/projects' });
+      }
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/projects/p-live/collapsed',
+        payload: { collapsed: true },
+      });
+      expect(response.statusCode).toBe(200);
+      for (const connection of [first, second]) {
+        expect(await connection.next()).toEqual({ k: 'invalidate', path: '/projects' });
+        expect(
+          (await app.inject({ method: 'GET', url: '/projects' }))
+            .json<{ id: string; collapsed: boolean }[]>()
+            .find((project) => project.id === 'p-live')?.collapsed,
+        ).toBe(true);
+      }
+    } finally {
+      first.ws.close();
+      second.ws.close();
+    }
+  });
+
+  it('streams a subscribed session: backlog -> caught_up -> live', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const { seq: backlogSeq, ts: backlogTs } = await ctx.store.appendEvent('s1', {
       t: 'text',
       delta: 'backlog',
     });
 
-    const { ws, next } = await connect(port, '/sessions/s1/stream');
+    const { ws, next } = await subscribe(port, 's1');
     try {
       // The backlog frame carries the row's real created_at as `ts` (#32).
-      expect(await next()).toMatchObject({ k: 'event', seq: backlogSeq, ts: backlogTs });
-      expect(await next()).toMatchObject({ k: 'caught_up', seq: backlogSeq });
+      expect(await next()).toMatchObject({ k: 'event', id: 's1', seq: backlogSeq, ts: backlogTs });
+      expect(await next()).toMatchObject({ k: 'caught_up', id: 's1', seq: backlogSeq });
 
-      // a live event published after caught_up is forwarded, ts and all
       bus.publish('s1', {
         seq: backlogSeq + 1,
         ts: 1_700_000_000_000,
@@ -9896,6 +10565,7 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
       });
       expect(await next()).toMatchObject({
         k: 'event',
+        id: 's1',
         seq: backlogSeq + 1,
         ts: 1_700_000_000_000,
         event: { t: 'text', delta: 'live' },
@@ -9905,13 +10575,12 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     }
   });
 
-  it('with ?sinceSeq, replays only events after the cursor (reconnect)', async () => {
+  it('with sinceSeq, replays only events after the cursor (reconnect)', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const { seq: one } = await ctx.store.appendEvent('s1', { t: 'text', delta: 'one' });
     const { seq: two } = await ctx.store.appendEvent('s1', { t: 'text', delta: 'two' });
-    const { ws, next } = await connect(port, `/sessions/s1/stream?sinceSeq=${String(one)}`);
+    const { ws, next } = await subscribe(port, 's1', { sinceSeq: one });
     try {
-      // 'one' (== cursor) is skipped; only 'two' replays
       expect(await next()).toMatchObject({
         k: 'event',
         seq: two,
@@ -9923,34 +10592,28 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     }
   });
 
-  it('falls back to the full backlog when sinceSeq is not a number', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    const { seq } = await ctx.store.appendEvent('s1', { t: 'text', delta: 'x' });
-    const { ws, next } = await connect(port, '/sessions/s1/stream?sinceSeq=abc');
+  it('ends the subscription of a session that does not exist', async () => {
+    const { ws, next } = await subscribe(port, 'missing');
     try {
-      expect(await next()).toMatchObject({ k: 'event', seq }); // full backlog (fallback to 0)
+      expect(await next()).toEqual({ k: 'ended', id: 'missing', reason: 'not_found' });
     } finally {
       ws.close();
     }
   });
 
-  it('closes with 1008 for an invalid session id', async () => {
-    const { closed } = await connect(port, '/sessions/bad%20id/stream');
-    expect((await closed).code).toBe(1008);
-  });
-
-  it('sends an error frame and closes if the backlog read fails', async () => {
+  it('ends the subscription without detail if the backlog read fails', async () => {
     const throwing = {
       listMovePreviewRestarts: async () => [],
+      getSession: async () => ({ sessionId: 's1', projectId: null }),
       getEventsAfter: () => Promise.reject(new Error('db down INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
     const badApp = buildServer({ eventStore: throwing, bus: new InMemoryEventBus(), conductor });
     await badApp.listen({ port: 0, host: '127.0.0.1' });
     const badPort = (badApp.server.address() as AddressInfo).port;
     try {
-      const { ws, next } = await connect(badPort, '/sessions/s1/stream');
+      const { ws, next } = await subscribe(badPort, 's1');
       const frame = await next();
-      expect(frame).toMatchObject({ k: 'error' });
+      expect(frame).toEqual({ k: 'ended', id: 's1', reason: 'error' });
       expect(JSON.stringify(frame)).not.toContain('INTERNAL');
       ws.close();
     } finally {
@@ -9958,7 +10621,65 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     }
   });
 
-  it('requires a session-bound, single-use stream ticket once the gate is armed', async () => {
+  it.each(['revoke', 'forget', 'clear'] as const)(
+    'invalidates pending tickets and open connections on %s',
+    async (operation) => {
+      const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+      const device = await registry.mint('revoked-device');
+      const other = await registry.mint('other-device');
+      const gated = buildServer({
+        eventStore: ctx.store,
+        bus: new InMemoryEventBus(),
+        conductor,
+        secretCipher: createSealableSecretCipher(),
+        authRegistry: registry,
+      });
+      await gated.listen({ port: 0, host: '127.0.0.1' });
+      const gatedPort = (gated.server.address() as AddressInfo).port;
+      const connections: Array<{ ws: { close(): void } }> = [];
+      try {
+        const mint = async (token: string): Promise<string> => {
+          const response = await gated.inject({
+            method: 'POST',
+            url: '/live/ticket',
+            headers: { authorization: `Bearer ${token}` },
+          });
+          expect(response.statusCode).toBe(200);
+          return response.json<{ ticket: string }>().ticket;
+        };
+        const pending = await mint(device.token);
+        const active = await connect(
+          gatedPort,
+          '/live',
+          `verity-live-ticket.${await mint(device.token)}`,
+        );
+        connections.push(active);
+        expect(await active.next()).toMatchObject({ k: 'ready' });
+        const unaffected = await connect(
+          gatedPort,
+          '/live',
+          `verity-live-ticket.${await mint(other.token)}`,
+        );
+        connections.push(unaffected);
+        expect(await unaffected.next()).toMatchObject({ k: 'ready' });
+        if (operation === 'revoke') await registry.revoke(device.id);
+        else if (operation === 'clear') registry.clear();
+        else registry.forget(hashAuthToken(device.token));
+        // Existing connections and unused tickets otherwise outlive device authority.
+        expect((await active.closed).code).toBe(1008);
+        const rejected = await connect(gatedPort, '/live', `verity-live-ticket.${pending}`);
+        connections.push(rejected);
+        expect((await rejected.closed).code).toBe(1008);
+        if (operation === 'clear') expect((await unaffected.closed).code).toBe(1008);
+        else expect(unaffected.ws.readyState).toBe(1);
+      } finally {
+        for (const connection of connections) connection.ws.close();
+        await gated.close();
+      }
+    },
+  );
+
+  it('requires a single-use, expiring live ticket once the gate is armed', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const { token } = await registry.mint('test-device');
     const gated = buildServer({
@@ -9971,54 +10692,65 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     await gated.listen({ port: 0, host: '127.0.0.1' });
     const gatedPort = (gated.server.address() as AddressInfo).port;
     try {
-      const mint = async (sessionId: string): Promise<string> => {
+      const mint = async (): Promise<string> => {
         const response = await gated.inject({
           method: 'POST',
-          url: `/sessions/${sessionId}/stream-ticket`,
+          url: '/live/ticket',
           headers: { authorization: `Bearer ${token}` },
         });
         expect(response.statusCode).toBe(200);
         return response.json<{ ticket: string }>().ticket;
       };
-      const noToken = await connect(gatedPort, '/sessions/s1/stream');
+      const unauthenticatedTicket = await gated.inject({ method: 'POST', url: '/live/ticket' });
+      expect(unauthenticatedTicket.statusCode).toBe(401);
+      const noToken = await connect(gatedPort, '/live');
       expect((await noToken.closed).code).toBe(1008);
-      const bearerInUrl = await connect(gatedPort, `/sessions/s1/stream?access_token=${token}`);
+      const bearerInUrl = await connect(gatedPort, `/live?access_token=${token}`);
       expect((await bearerInUrl.closed).code).toBe(1008);
 
-      const wrongSessionTicket = await mint('other-session');
-      const wrongSession = await connect(
-        gatedPort,
-        '/sessions/s1/stream',
-        `verity-stream-ticket.${wrongSessionTicket}`,
-      );
-      expect((await wrongSession.closed).code).toBe(1008);
-
-      const ticket = await mint('s1');
-      const ok = await connect(gatedPort, '/sessions/s1/stream', `verity-stream-ticket.${ticket}`);
-      expect(await ok.next()).toMatchObject({ k: 'caught_up' });
+      const ticket = await mint();
+      const ok = await connect(gatedPort, '/live', `verity-live-ticket.${ticket}`);
+      expect(await ok.next()).toMatchObject({ k: 'ready' });
       ok.ws.close();
-      const replay = await connect(
-        gatedPort,
-        '/sessions/s1/stream',
-        `verity-stream-ticket.${ticket}`,
-      );
+      const replay = await connect(gatedPort, '/live', `verity-live-ticket.${ticket}`);
       expect((await replay.closed).code).toBe(1008);
 
-      const expiringTicket = await mint('s1');
+      const expiringTicket = await mint();
       const now = Date.now();
       const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 31_000);
       try {
-        const expired = await connect(
-          gatedPort,
-          '/sessions/s1/stream',
-          `verity-stream-ticket.${expiringTicket}`,
-        );
+        const expired = await connect(gatedPort, '/live', `verity-live-ticket.${expiringTicket}`);
         expect((await expired.closed).code).toBe(1008);
       } finally {
         clock.mockRestore();
       }
     } finally {
       await gated.close();
+    }
+  });
+
+  it('hints overview subscribers about session mutations that are not events', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conn = await connect(port, '/live');
+    try {
+      expect(await conn.next()).toMatchObject({ k: 'ready' });
+      conn.ws.send(JSON.stringify({ k: 'sub', ch: 'overview' }));
+      // Let the subscription land before the mutation.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const renamed = await app.inject({
+        method: 'PATCH',
+        url: '/sessions/s1',
+        payload: { name: 'Renamed' },
+      });
+      expect(renamed.statusCode).toBe(200);
+      expect(await conn.next()).toMatchObject({
+        k: 'hint',
+        hints: [
+          expect.objectContaining({ sessionId: 's1', topics: expect.arrayContaining(['session']) }),
+        ],
+      });
+    } finally {
+      conn.ws.close();
     }
   });
 });
@@ -12504,6 +13236,55 @@ describe('DELETE /projects/:id', () => {
     }
   });
 
+  // An accepted plan is also a turn: it must respect the deletion fence.
+  it('refuses plan implementation while the project teardown is running', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-plan-race',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-plan-race',
+      worktree: '/wt/plan-race',
+      model: 'm',
+      projectId: 'p-plan-race',
+    });
+    await ctx.store.setSessionPlanning('s-plan-race', 'active');
+    await ctx.store.presentSessionPlan('s-plan-race', 'Delete fence plan');
+    const base = fakeDeprovisioner();
+    let turnDuringTeardown: { statusCode: number; body: unknown } | undefined;
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      deprovisioner: {
+        deprovision: vi.fn(async (projectId: string): Promise<ProjectRecord> => {
+          const res = await a.inject({
+            method: 'POST',
+            url: '/sessions/s-plan-race/planning',
+            payload: { action: 'implement', planningRevision: 1 },
+          });
+          turnDuringTeardown = { statusCode: res.statusCode, body: res.json() };
+          return base.deprovision(projectId);
+        }),
+      },
+    });
+    try {
+      const res = await a.inject({ method: 'DELETE', url: '/projects/p-plan-race' });
+      expect(res.statusCode).toBe(200);
+      expect(turnDuringTeardown).toEqual({
+        statusCode: 409,
+        body: { error: 'invalid request' },
+      });
+      expect(dispatchTurn).not.toHaveBeenCalled();
+      expect(await ctx.store.listSessions()).toEqual([]);
+    } finally {
+      await a.close();
+    }
+  });
+
   // Same window, from the other side: `hiddenAt` is only set after the
   // deprovision, so a spawn admitted before it would build its worktree inside
   // the clone root being purged.
@@ -13170,271 +13951,35 @@ describe('POST /projects/:id/repair', () => {
   });
 });
 
-describe('POST /projects/:id/setup-dev-servers', () => {
-  it('reports unavailable setup before validating the request body', async () => {
-    const a = buildServer({ eventStore: ctx.store, bus, conductor });
+describe('retired configured Dev Server routes', () => {
+  it('does not recreate a sandbox through a retired setup request', async () => {
+    const provisioner = {
+      provision: vi.fn(async () => {
+        throw new Error('unexpected provisioning');
+      }),
+    };
+    const deprovisioner = { deprovision: vi.fn() };
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, provisioner, deprovisioner });
     try {
       const res = await a.inject({
         method: 'POST',
         url: '/projects/missing/setup-dev-servers',
         payload: {},
       });
-      expect(res.statusCode).toBe(503);
-      expect(res.json()).toEqual({ error: 'project setup is not configured' });
-    } finally {
-      await a.close();
-    }
-  });
-
-  it('refuses reconfiguration while a project session is busy', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-busy-dev-setup',
-      owner: 'acme',
-      repo: 'website',
-      containerName: 'verity-acme--website',
-      state: 'active',
-    });
-    await ctx.store.createSession({
-      sessionId: 'busy-dev-setup-session',
-      worktree: '/work/busy-dev-setup-session',
-      model: 'claude-sonnet',
-      projectId: 'p-busy-dev-setup',
-    });
-    await ctx.store.recordDevServerDetection('p-busy-dev-setup', 'busy-fingerprint');
-    isBusy.mockImplementation((id) => id === 'busy-dev-setup-session');
-    const deprovisioner = { deprovision: vi.fn() };
-    const provisioner = { provision: vi.fn() };
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, deprovisioner, provisioner });
-    try {
-      const res = await a.inject({
-        method: 'POST',
-        url: '/projects/p-busy-dev-setup/setup-dev-servers',
-        payload: {
-          fingerprint: 'busy-fingerprint',
-          devServers: [
-            {
-              sourceKey: '.:dev',
-              name: 'Website',
-              command: 'npm run dev',
-              workdir: null,
-              containerPort: '3000',
-            },
-          ],
-        },
-      });
-      expect(res.statusCode).toBe(409);
-      expect(deprovisioner.deprovision).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(404);
       expect(provisioner.provision).not.toHaveBeenCalled();
-    } finally {
-      await a.close();
-    }
-  });
-
-  it('applies a same-port detected change live without restarting the project container', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-live-update',
-      owner: 'acme',
-      repo: 'website',
-      containerName: 'verity-acme--website',
-      state: 'active',
-    });
-    await ctx.store.createDevServer({
-      projectId: 'p-live-update',
-      sourceKey: '.:dev',
-      name: 'Website',
-      command: 'npm run dev',
-      containerPort: '3000',
-      autoStart: true,
-    });
-    await ctx.store.recordDevServerDetection('p-live-update', 'changed-fingerprint');
-    const startDevServer = vi.fn(async (project) => ({
-      projectId: project.id,
-      url: null,
-      running: true,
-      pid: '123',
-    }));
-    const projectRuntime = {
-      startDevServer,
-      devServerStatus: vi.fn(),
-      stopDevServer: vi.fn(),
-      devServerLogs: vi.fn(),
-      devServerHealth: vi.fn(),
-    };
-    const deprovisioner = { deprovision: vi.fn() };
-    const provisioner = { provision: vi.fn() };
-    const a = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      deprovisioner,
-      provisioner,
-      projectRuntime,
-      projectCloneRoot: '/data/dev',
-    });
-    try {
-      const res = await a.inject({
-        method: 'POST',
-        url: '/projects/p-live-update/setup-dev-servers',
-        payload: {
-          fingerprint: 'changed-fingerprint',
-          devServers: [
-            {
-              sourceKey: '.:dev',
-              name: 'Website',
-              command: 'npm run dev -- --turbo',
-              workdir: null,
-              containerPort: '3000',
-            },
-          ],
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
       expect(deprovisioner.deprovision).not.toHaveBeenCalled();
-      expect(provisioner.provision).not.toHaveBeenCalled();
-      expect(startDevServer).toHaveBeenCalledTimes(1);
-      expect((await ctx.store.listDevServers('p-live-update'))[0]?.command).toBe(
-        'npm run dev -- --turbo',
-      );
     } finally {
-      await a.close();
-    }
-  });
-
-  it('durably applies detected servers and queues the restart idempotently', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-live-setup',
-      owner: 'acme',
-      repo: 'website',
-      containerName: 'verity-acme--website',
-      state: 'active',
-    });
-    const deprovisioner = {
-      deprovision: vi.fn(async (projectId: string) => {
-        return (await ctx.store.updateProjectState(projectId, 'absent'))!;
-      }),
-    };
-    const provisioner = {
-      provisionWarnings: vi.fn(async () => []),
-      provision: vi.fn(async (projectId: string) => {
-        return (await ctx.store.updateProjectState(projectId, 'active'))!;
-      }),
-    };
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, deprovisioner, provisioner });
-    await ctx.store.recordDevServerDetection('p-live-setup', 'fingerprint-1');
-    const payload = {
-      fingerprint: 'fingerprint-1',
-      devServers: [
-        {
-          sourceKey: '.:dev',
-          name: 'Website',
-          command: 'npm run dev',
-          workdir: null,
-          containerPort: '3000',
-        },
-      ],
-    };
-    try {
-      const [first, duplicate] = await Promise.all([
-        a.inject({
-          method: 'POST',
-          url: '/projects/p-live-setup/setup-dev-servers',
-          payload,
-        }),
-        a.inject({
-          method: 'POST',
-          url: '/projects/p-live-setup/setup-dev-servers',
-          payload,
-        }),
-      ]);
-      expect(first.statusCode).toBe(202);
-      expect(duplicate.statusCode).toBe(202);
-      expect(first.json().project).toMatchObject({ id: 'p-live-setup', state: 'cloning' });
-      expect(await ctx.store.listDevServers('p-live-setup')).toHaveLength(1);
-      expect(provisioner.provision).toHaveBeenCalledWith('p-live-setup', {
-        confirmWarnings: false,
-      });
-      expect(provisioner.provision).toHaveBeenCalledTimes(1);
-      expect(deprovisioner.deprovision).toHaveBeenCalledTimes(1);
-
-      await ctx.store.updateProjectState('p-live-setup', 'active');
-      await ctx.store.recordDevServerDetection('p-live-setup', 'fingerprint-2');
-      const second = await a.inject({
-        method: 'POST',
-        url: '/projects/p-live-setup/setup-dev-servers',
-        payload: {
-          ...payload,
-          fingerprint: 'fingerprint-2',
-          devServers: [{ ...payload.devServers[0], command: 'npm run dev -- --turbo' }],
-        },
-      });
-      expect(second.statusCode).toBe(202);
-      const servers = await ctx.store.listDevServers('p-live-setup');
-      expect(servers).toHaveLength(1);
-      expect(servers[0]?.command).toBe('npm run dev -- --turbo');
-    } finally {
-      await a.close();
-    }
-  });
-
-  it('releases the fingerprint claim when queueing fails so retry can recover', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-setup-retry',
-      owner: 'acme',
-      repo: 'retry',
-      containerName: 'verity-acme--retry',
-      state: 'absent',
-    });
-    await ctx.store.recordDevServerDetection('p-setup-retry', 'retry-fingerprint');
-    const originalUpdate = ctx.store.updateProjectState.bind(ctx.store);
-    let failQueue = true;
-    const update = vi.spyOn(ctx.store, 'updateProjectState').mockImplementation((id, state) => {
-      if (state === 'cloning' && failQueue) {
-        failQueue = false;
-        return Promise.reject(new Error('queue unavailable'));
-      }
-      return originalUpdate(id, state);
-    });
-    const provisioner = {
-      provision: vi.fn(async (id: string) => (await ctx.store.getProject(id))!),
-    };
-    const deprovisioner = { deprovision: vi.fn() };
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, provisioner, deprovisioner });
-    const request = {
-      method: 'POST' as const,
-      url: '/projects/p-setup-retry/setup-dev-servers',
-      payload: {
-        fingerprint: 'retry-fingerprint',
-        devServers: [
-          {
-            sourceKey: '.:dev',
-            name: 'Web',
-            command: 'npm run dev',
-            workdir: null,
-            containerPort: '3000',
-          },
-        ],
-      },
-    };
-    try {
-      expect((await a.inject(request)).statusCode).toBe(500);
-      expect(await ctx.store.getDevServerDetectionState('p-setup-retry')).toMatchObject({
-        reviewedFingerprint: null,
-      });
-      expect((await a.inject(request)).statusCode).toBe(202);
-      expect(provisioner.provision).toHaveBeenCalledTimes(1);
-    } finally {
-      update.mockRestore();
       await a.close();
     }
   });
 });
 
-describe('POST /concierge/projects/:id/refresh-token', () => {
+describe('POST /verity-control/projects/:id/refresh-token', () => {
   it('503s when project token refresh is not configured', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/concierge/projects/p1/refresh-token',
+      url: '/verity-control/projects/p1/refresh-token',
     });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ error: 'project token refresh is not configured' });
@@ -13446,7 +13991,7 @@ describe('POST /concierge/projects/:id/refresh-token', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/unknown/refresh-token',
+        url: '/verity-control/projects/unknown/refresh-token',
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'project unknown not found' });
@@ -13469,7 +14014,7 @@ describe('POST /concierge/projects/:id/refresh-token', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-token-refresh/refresh-token',
+        url: '/verity-control/projects/p-token-refresh/refresh-token',
       });
       expect(res.statusCode).toBe(200);
       expect(refreshProjectToken).toHaveBeenCalledWith(
@@ -13486,11 +14031,11 @@ describe('POST /concierge/projects/:id/refresh-token', () => {
   });
 });
 
-describe('POST /concierge/projects/:id/recreate-container', () => {
+describe('POST /verity-control/projects/:id/recreate-container', () => {
   it('503s when project container recreate is not configured', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/concierge/projects/p1/recreate-container',
+      url: '/verity-control/projects/p1/recreate-container',
     });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ error: 'project container recreate is not configured' });
@@ -13509,7 +14054,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/unknown/recreate-container',
+        url: '/verity-control/projects/unknown/recreate-container',
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'project unknown not found' });
@@ -13539,7 +14084,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-absent/recreate-container',
+        url: '/verity-control/projects/p-absent/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json()).toEqual({ error: 'project p-absent is absent; provision it instead' });
@@ -13570,7 +14115,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-recreate-hidden/recreate-container',
+        url: '/verity-control/projects/p-recreate-hidden/recreate-container',
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'project p-recreate-hidden not found' });
@@ -13600,7 +14145,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-starting/recreate-container',
+        url: '/verity-control/projects/p-starting/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json()).toEqual({ error: 'project p-starting is already provisioning' });
@@ -13646,7 +14191,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-verity/recreate-container',
+        url: '/verity-control/projects/p-verity/recreate-container',
       });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ project: { id: 'p-verity', state: 'active' } });
@@ -13696,7 +14241,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-recreate/recreate-container',
+        url: '/verity-control/projects/p-recreate/recreate-container',
       });
       expect(res.statusCode).toBe(200);
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-recreate', {
@@ -13731,7 +14276,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-rebuild/recreate-container',
+        url: '/verity-control/projects/p-rebuild/recreate-container',
         payload: { confirmWarnings: true, forceRebuild: true },
       });
       expect(res.statusCode).toBe(200);
@@ -13765,7 +14310,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-busy/recreate-container',
+        url: '/verity-control/projects/p-busy/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json().error).toMatch(/turn in flight/);
@@ -13797,7 +14342,7 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
     try {
       const res = await a.inject({
         method: 'POST',
-        url: '/concierge/projects/p-recreate-failed/recreate-container',
+        url: '/verity-control/projects/p-recreate-failed/recreate-container',
       });
       expect(res.statusCode).toBe(409);
       expect(res.json()).toEqual({
@@ -13809,9 +14354,9 @@ describe('POST /concierge/projects/:id/recreate-container', () => {
   });
 });
 
-describe('POST /concierge/session', () => {
-  it('creates a reusable control-plane Concierge session', async () => {
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+describe('POST /verity-control/session', () => {
+  it('creates a reusable control-plane Verity Control session', async () => {
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(201);
     const { sessionId }: { sessionId: string } = res.json();
@@ -13824,7 +14369,7 @@ describe('POST /concierge/session', () => {
     expect(await ctx.store.consumePendingNotes(sessionId)).toEqual([]);
   });
 
-  it('reuses the existing Concierge session when its worktree still exists', async () => {
+  it('reuses the legacy Concierge session when its worktree still exists', async () => {
     const worktree = mkdtempSync(join(worktreeRoot, 'concierge-existing-'));
     await ctx.store.createSession({
       sessionId: 'concierge-existing',
@@ -13833,7 +14378,7 @@ describe('POST /concierge/session', () => {
       name: 'Concierge',
     });
 
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sessionId: 'concierge-existing' });
@@ -13852,7 +14397,7 @@ describe('POST /concierge/session', () => {
       name: 'Verity Control',
     });
 
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sessionId: 'verity-control-existing' });
@@ -13878,7 +14423,7 @@ describe('POST /concierge/session', () => {
       name: 'Concierge',
       projectId: 'p-concierge',
     });
-    const res = await app.inject({ method: 'POST', url: '/concierge/session' });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
 
     expect(res.statusCode).toBe(201);
     const { sessionId }: { sessionId: string } = res.json();
@@ -14218,11 +14763,8 @@ describe('overview projections read only the narrow event slice', () => {
 
       expect(getEvents).not.toHaveBeenCalled();
       expect(getEventsAfter).not.toHaveBeenCalled();
-      // The list and the detail carry `eventCount`, so they pay for the counters.
-      // The activity poll — the most frequent of the three, and the only one whose
-      // response carries neither counter — must not: `count(*)` is the one part of
-      // the projection read that still grows with the log, and paying it 40 times
-      // a minute per open session is the shape of waste this whole change removed.
+      // Activity needs only the log's busy projection; reading overview facts
+      // would also hydrate usage and quota data that this response never returns.
       expect(countingReads).toHaveBeenCalledTimes(2);
       expect(tailReads).toHaveBeenCalledTimes(1);
       expect(sliceOnlyReads).not.toHaveBeenCalled();
@@ -14232,6 +14774,71 @@ describe('overview projections read only the narrow event slice', () => {
       countingReads.mockRestore();
       sliceOnlyReads.mockRestore();
       tailReads.mockRestore();
+    }
+  });
+
+  it('bounds full projection reads across overlapping overview requests', async () => {
+    for (let i = 0; i < 12; i += 1) {
+      await ctx.store.createSession({
+        sessionId: `fallback-${i}`,
+        worktree: `/wt/missing-${i}`,
+        model: 'm',
+      });
+      await ctx.store.appendEvent(`fallback-${i}`, { t: 'prompt', text: 'go' });
+      await ctx.store.appendEvent(`fallback-${i}`, { t: 'status', state: 'running' });
+    }
+    const originalFacts = ctx.store.listSessionProjectionFacts.bind(ctx.store);
+    const facts = vi
+      .spyOn(ctx.store, 'listSessionProjectionFacts')
+      .mockImplementation(async (...args) => {
+        const result = await originalFacts(...args);
+        for (const value of result.values()) {
+          value.eventsTruncated = true;
+          value.events = value.events.filter(({ event }) => event.t !== 'prompt');
+        }
+        return result;
+      });
+    const originalRead = ctx.store.listSessionProjectionEvents.bind(ctx.store);
+    let active = 0;
+    let peak = 0;
+    const reads = vi
+      .spyOn(ctx.store, 'listSessionProjectionEvents')
+      .mockImplementation(async (...args) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          return await originalRead(...args);
+        } finally {
+          active -= 1;
+        }
+      });
+    try {
+      const responses = await Promise.all([
+        app.inject({ method: 'GET', url: '/sessions' }),
+        app.inject({ method: 'GET', url: '/sessions' }),
+      ]);
+      for (const response of responses) {
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toHaveLength(12);
+        expect(
+          response
+            .json<Array<{ status: string }>>()
+            .every((session) => session.status === 'running'),
+        ).toBe(true);
+      }
+      // Identical badges would hide a queue large enough to monopolize the pool.
+      expect(reads).toHaveBeenCalledTimes(24);
+      expect(peak).toBe(1);
+      reads.mockRejectedValueOnce(new Error('projection read failed'));
+      const failed = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      expect(failed.statusCode).toBe(500);
+      const recovered = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      expect(recovered.statusCode).toBe(200);
+      expect(recovered.json()).toMatchObject({ status: 'running' });
+    } finally {
+      facts.mockRestore();
+      reads.mockRestore();
     }
   });
 
@@ -14301,6 +14908,153 @@ describe('overview projections read only the narrow event slice', () => {
     await ctx.store.appendEvent('s-task', resultEvent);
     const res = await app.inject({ method: 'GET', url: '/sessions/s-task/activity' });
     expect(res.json()).toMatchObject({ busy: true });
+  });
+});
+
+describe('activity polls reuse unchanged log state', () => {
+  let server: FastifyInstance;
+  const result = {
+    t: 'result' as const,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    stopReason: 'end_turn',
+  };
+  const poll = () => server.inject({ method: 'GET', url: '/sessions/activity-cache/activity' });
+
+  beforeEach(async () => {
+    server = buildServer({ eventStore: ctx.store, bus, conductor });
+    await ctx.store.createSession({
+      sessionId: 'activity-cache',
+      worktree: '/wt/cache',
+      model: 'm',
+    });
+    await ctx.store.appendEvent('activity-cache', { t: 'task', id: 'bg', phase: 'started' });
+    await ctx.store.appendEvent('activity-cache', result);
+  });
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it('hydrates once across repeated polls and refreshes after task completion and interruption', async () => {
+    const reads = vi.spyOn(ctx.store, 'listRecentSessionProjectionEvents');
+    try {
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      expect(reads).toHaveBeenCalledTimes(1);
+      await ctx.store.appendEvent('activity-cache', {
+        t: 'task',
+        id: 'bg',
+        phase: 'ended',
+        status: 'completed',
+      });
+      expect((await poll()).json()).toMatchObject({ busy: false });
+      await ctx.store.appendEvent('activity-cache', { t: 'task', id: 'another', phase: 'started' });
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      await ctx.store.appendEvent('activity-cache', { t: 'interrupted' });
+      expect((await poll()).json()).toMatchObject({ busy: false });
+      expect(reads).toHaveBeenCalledTimes(4);
+    } finally {
+      reads.mockRestore();
+    }
+  });
+
+  it('keeps conductor fields and renamed metadata live while the log is cached', async () => {
+    await ctx.store.appendEvent('activity-cache', { t: 'interrupted' });
+    expect((await poll()).json()).toMatchObject({ busy: false });
+    isBusy.mockReturnValue(true);
+    pendingPermissions.mockReturnValue(['permission-now']);
+    hasUnconfirmedTermination.mockReturnValue(true);
+    await ctx.store.renameSession('activity-cache', 'Renamed');
+    expect((await poll()).json()).toMatchObject({
+      busy: true,
+      pendingPermissions: ['permission-now'],
+      terminationUnconfirmed: true,
+      name: 'Renamed',
+    });
+    isBusy.mockReturnValue(false);
+    pendingPermissions.mockReturnValue([]);
+    expect((await poll()).json()).toMatchObject({ busy: false, pendingPermissions: [] });
+  });
+
+  it('invalidates on removal below the maximum sequence and session recreation', async () => {
+    expect((await poll()).json()).toMatchObject({ busy: true });
+    await ctx.db
+      .deleteFrom('events')
+      .where('session_id', '=', 'activity-cache')
+      .where('type', '=', 'task')
+      .execute();
+    expect((await poll()).json()).toMatchObject({ busy: false });
+    await ctx.store.deleteSession('activity-cache');
+    expect((await poll()).statusCode).toBe(404);
+    await ctx.store.createSession({ sessionId: 'activity-cache', worktree: '/wt/new', model: 'm' });
+    await ctx.store.appendEvent('activity-cache', { t: 'task', id: 'new', phase: 'started' });
+    await ctx.store.appendEvent('activity-cache', result);
+    expect((await poll()).json()).toMatchObject({ busy: true });
+  });
+
+  it('refreshes when an older sequence commits without advancing the maximum', async () => {
+    const original = await ctx.db
+      .selectFrom('events')
+      .select(['id'])
+      .where('session_id', '=', 'activity-cache')
+      .where('type', '=', 'task')
+      .executeTakeFirstOrThrow();
+    await ctx.db.deleteFrom('events').where('id', '=', original.id).execute();
+    expect((await poll()).json()).toMatchObject({ busy: false });
+    await ctx.db
+      .insertInto('events')
+      .values({
+        id: original.id,
+        session_id: 'activity-cache',
+        type: 'task',
+        payload: JSON.stringify({ t: 'task', id: 'late', phase: 'started' }),
+      })
+      .execute();
+    expect((await poll()).json()).toMatchObject({ busy: true });
+  });
+
+  it('does not reuse a matching revision when a session is recreated between polls', async () => {
+    expect((await poll()).json()).toMatchObject({ busy: true });
+    const previous = await ctx.store.getSessionEventStats('activity-cache');
+    await ctx.store.deleteSession('activity-cache');
+    await ctx.store.createSession({
+      sessionId: 'activity-cache',
+      worktree: '/wt/recreated',
+      model: 'm',
+    });
+    await ctx.store.appendEvent('activity-cache', { t: 'prompt', text: 'new turn' });
+    await ctx.store.appendEvent('activity-cache', result);
+    const recreated = await ctx.store.getSessionEventStats('activity-cache');
+    expect(recreated?.revision).toBe(previous?.revision);
+    expect(recreated?.lastEventSeq).not.toBe(previous?.lastEventSeq);
+    expect((await poll()).json()).toMatchObject({ busy: false });
+  });
+
+  it('shares simultaneous projection reads and retries after a failed read', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const realRead = ctx.store.listRecentSessionProjectionEvents.bind(ctx.store);
+    const reads = vi
+      .spyOn(ctx.store, 'listRecentSessionProjectionEvents')
+      .mockImplementationOnce(async () => {
+        await gate;
+        throw new Error('temporary read failure');
+      })
+      .mockImplementation(realRead);
+    try {
+      const first = poll();
+      const second = poll();
+      await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      release();
+      expect((await first).json()).toMatchObject({ busy: false });
+      expect((await second).json()).toMatchObject({ busy: false });
+      expect((await poll()).json()).toMatchObject({ busy: true });
+      expect(reads).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      reads.mockRestore();
+    }
   });
 });
 

@@ -389,24 +389,27 @@ describe('AcpOpenCodeBackend', () => {
       'text',
       'result',
       'status',
+      'diagnostic',
     ]);
     expect(fake.kill).toHaveBeenCalled();
   });
 
   it('never sends session/set_mode — OpenCode advertises no ACP modes block', async () => {
     const fake = acpSpawner();
-    await new AcpOpenCodeBackend().run({
+    const result = await new AcpOpenCodeBackend().run({
       store: ctx.store,
       storeSessionId: 'verity-opencode-2',
       worktree: '/work/project',
       cwd: '/work/project',
       prompt: 'Do it',
       permissionMode: 'plan',
+      planning: true,
       spawner: fake.spawner,
     });
     // The posture reaches the agent as a config option. Arming the shared loop's
     // `sessionMode` path instead would send a request this agent does not
     // implement, and the whole turn would fail on the error it answers with.
+    expect(result.exitCode).toBe(0);
     expect(write(fake.writes, 'session/set_mode')).toBeUndefined();
     expect(configOption(fake.writes, 'mode')).toMatchObject({
       params: { sessionId: 'opencode-session-1', configId: 'mode', value: 'plan' },
@@ -825,6 +828,18 @@ describe('AcpOpenCodeBackend', () => {
     // pre-execution in the plain sense, so this asserts the classifier's actual
     // rule — an auth/quota phrase in stderr — rather than that intuition.
     expect(result.failedBeforeExecution).toBeUndefined();
+    expect(
+      (await ctx.store.getEvents('verity-opencode-11')).filter((event) => event.t === 'diagnostic'),
+    ).toEqual([
+      {
+        t: 'diagnostic',
+        source: 'agent',
+        outcome: 'failed',
+        phase: 'session_load',
+        backend: 'opencode-acp',
+        code: -32002,
+      },
+    ]);
   });
 
   it('keeps the bind when the agent refuses the load for a reason of the moment', async () => {
@@ -850,6 +865,17 @@ describe('AcpOpenCodeBackend', () => {
     // recovered.
     expect(result.exitCode).toBe(1);
     expect(result.staleResume).toBeUndefined();
+    expect(
+      (await ctx.store.getEvents('verity-opencode-13')).filter((event) => event.t === 'diagnostic'),
+    ).toMatchObject([
+      {
+        source: 'agent',
+        outcome: 'failed',
+        phase: 'session_load',
+        backend: 'opencode-acp',
+        code: -32000,
+      },
+    ]);
   });
 
   it('keeps the bind when the adapter dies mid-load instead of refusing', async () => {
@@ -873,6 +899,11 @@ describe('AcpOpenCodeBackend', () => {
     // and the operator would silently lose the thread's context.
     expect(result.exitCode).toBe(1);
     expect(result.staleResume).toBeUndefined();
+    expect(
+      (await ctx.store.getEvents('verity-opencode-14')).filter((event) => event.t === 'diagnostic'),
+    ).toMatchObject([
+      { source: 'agent', outcome: 'failed', phase: 'session_load', backend: 'opencode-acp' },
+    ]);
   });
 
   it('settles an operator cancel without badging the session crashed', async () => {
@@ -893,6 +924,7 @@ describe('AcpOpenCodeBackend', () => {
       'status',
       'text',
       'result',
+      'diagnostic',
     ]);
   });
 });

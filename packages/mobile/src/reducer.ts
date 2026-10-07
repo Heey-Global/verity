@@ -1,3 +1,4 @@
+import type { SessionDevServer } from './api.js';
 import type {
   AgentEvent,
   AgentStatus,
@@ -9,7 +10,7 @@ import type {
   AgentTextMessage,
   ChoicesMessage,
   DependencyStatusMessage,
-  AgentLoopProposalMessage,
+  AutomationProposalMessage,
   Message,
   PendingPermission,
   ToolCallMessage,
@@ -24,6 +25,7 @@ export interface SessionState {
   model: string | undefined;
   status: AgentStatus | undefined;
   messages: Message[];
+  devServers?: SessionDevServer[];
   /** Live cumulative token usage across the session's completed turns (§13a). */
   usage: UsageTotals;
   /** Tools the session's turns requested but were denied (§5b). Each entry may
@@ -80,6 +82,35 @@ function shouldRenderAgentEvent(event: AgentEvent): boolean {
   );
 }
 
+function shallowRecordEqual(
+  left: object,
+  right: object,
+  excluded: readonly string[] = [],
+): boolean {
+  const leftFields = Object.entries(left).filter(([key]) => !excluded.includes(key));
+  const rightFields = Object.entries(right).filter(([key]) => !excluded.includes(key));
+  return (
+    leftFields.length === rightFields.length &&
+    leftFields.every(
+      ([key, value]) =>
+        Object.hasOwn(right, key) && Object.is(value, (right as Record<string, unknown>)[key]),
+    )
+  );
+}
+
+function samePublishedMessage(left: Message, right: Message): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'tool-call' && right.kind === 'tool-call') {
+    return (
+      shallowRecordEqual(left, right, ['tool', 'children']) &&
+      shallowRecordEqual(left.tool, right.tool) &&
+      left.children.length === right.children.length &&
+      left.children.every((child, index) => child === right.children[index])
+    );
+  }
+  return shallowRecordEqual(left, right);
+}
+
 /**
  * Folds a session's canonical event stream into the mobile transcript model
  * ({@link Message}[]) the forked Happy renderer consumes. Stateful: streaming
@@ -112,10 +143,24 @@ function shouldRenderAgentEvent(event: AgentEvent): boolean {
  * denied-tool list folded off `result` #26.)
  */
 export class SessionReducer {
+  private _devServers: SessionDevServer[] | undefined;
   private _sessionId: string | undefined;
   private _model: string | undefined;
   private _status: AgentStatus | undefined;
   private readonly _messages: Message[] = [];
+  private readonly messageSnapshots = new WeakMap<Message, Message>();
+  private publishedMessages: Message[] | undefined;
+
+  private appendMessage(message: Message): void {
+    this._messages.push(message);
+    this.publishedMessages = undefined;
+  }
+
+  private messageChanged(message: Message): void {
+    this.messageSnapshots.delete(message);
+    this.publishedMessages = undefined;
+  }
+
   private readonly _usage: UsageTotals = {
     inputTokens: 0,
     outputTokens: 0,
@@ -175,6 +220,9 @@ export class SessionReducer {
       this._pendingSkillToolId = null;
     }
     switch (event.t) {
+      case 'dev_servers_changed':
+        this._devServers = event.devServers;
+        break;
       case 'session':
         this._sessionId = event.id;
         this._model = event.model;
@@ -194,7 +242,7 @@ export class SessionReducer {
             createdAt: ts,
             text: event.message,
           };
-          this._messages.push(message);
+          this.appendMessage(message);
         }
         // A `completed`/`crashed` status is the AUTHORITATIVE turn-end marker: a
         // backend emits it only when a turn truly ends (for ACP, once the prompt
@@ -220,7 +268,7 @@ export class SessionReducer {
       case 'notice':
         this.active = null;
         if (event.role === 'operator') {
-          this._messages.push({
+          this.appendMessage({
             kind: 'user-text',
             id: `notice-${String(seq)}`,
             localId: event.clientRequestId ?? null,
@@ -228,7 +276,7 @@ export class SessionReducer {
             text: event.text,
           });
         } else {
-          this._messages.push({
+          this.appendMessage({
             kind: 'agent-text',
             id: `notice-${String(seq)}`,
             localId: null,
@@ -265,7 +313,7 @@ export class SessionReducer {
             ? { attachments: event.attachments }
             : {}),
         };
-        this._messages.push(msg);
+        this.appendMessage(msg);
         break;
       }
       case 'thinking':
@@ -377,18 +425,18 @@ export class SessionReducer {
           options: event.options.map((o) => ({ ...o })),
           multiSelect: event.multiSelect ?? false,
         };
-        this._messages.push(msg);
+        this.appendMessage(msg);
         break;
       }
-      case 'agent_loop_proposal': {
+      case 'automation_proposal': {
         this.active = null;
-        const msg: AgentLoopProposalMessage = {
-          kind: 'agent-loop-proposal',
-          id: `agent-loop-proposal-${String(seq)}`,
+        const msg: AutomationProposalMessage = {
+          kind: 'automation-proposal',
+          id: `automation-proposal-${String(seq)}`,
           createdAt: ts,
           proposal: event.proposal,
         };
-        this._messages.push(msg);
+        this.appendMessage(msg);
         break;
       }
       case 'interrupted':
@@ -400,6 +448,11 @@ export class SessionReducer {
         this.settleOpenSkillTools(ts);
         this._pendingPermission = undefined;
         this.emitAgentEvent(seq, ts, event);
+        break;
+      case 'tasks_updated':
+        // The operator's own panel edits are visible where they were made; only
+        // what the agent did to the list is worth a line in the transcript.
+        if (event.origin === 'agent') this.emitAgentEvent(seq, ts, event);
         break;
       case 'merged':
         // The operator merged the session's PR: a transcript-only "Merged PR #N"
@@ -423,6 +476,9 @@ export class SessionReducer {
         // canonical `error` event. So none of these clear the running flag.
         if (shouldRenderAgentEvent(event)) this.emitAgentEvent(seq, ts, event);
         break;
+      case 'diagnostic':
+        // Technical metadata belongs in session diagnostics, not the chat transcript.
+        break;
       default:
         // tool_call_start is rendered in a later slice. Any such event closes the
         // open streaming block so the next text/thinking delta starts a fresh message.
@@ -432,7 +488,10 @@ export class SessionReducer {
 
   private removeDependencyStatus(): void {
     for (let i = this._messages.length - 1; i >= 0; i -= 1) {
-      if (this._messages[i]?.kind === 'dependency-status') this._messages.splice(i, 1);
+      if (this._messages[i]?.kind === 'dependency-status') {
+        this._messages.splice(i, 1);
+        this.publishedMessages = undefined;
+      }
     }
   }
 
@@ -450,6 +509,7 @@ export class SessionReducer {
       this.active.blockId === null &&
       this.active.msg.parentToolId === parentToolId
     ) {
+      this.messageChanged(this.active.msg);
       this.active.msg.text += delta;
       return;
     }
@@ -461,7 +521,7 @@ export class SessionReducer {
       text: delta,
       ...(parentToolId !== undefined ? { parentToolId } : {}),
     };
-    this._messages.push(msg);
+    this.appendMessage(msg);
     this.active = { msg, blockId: null };
   }
 
@@ -477,6 +537,7 @@ export class SessionReducer {
       this.active.blockId === blockId &&
       this.active.msg.parentToolId === parentToolId
     ) {
+      this.messageChanged(this.active.msg);
       this.active.msg.text += delta;
       return;
     }
@@ -505,7 +566,7 @@ export class SessionReducer {
       isThinking: true,
       ...(parentToolId !== undefined ? { parentToolId } : {}),
     };
-    this._messages.push(msg);
+    this.appendMessage(msg);
     this.active = { msg, blockId };
   }
 
@@ -538,7 +599,7 @@ export class SessionReducer {
       children: [],
       ...(parentToolId !== undefined ? { parentToolId } : {}),
     };
-    this._messages.push(msg);
+    this.appendMessage(msg);
     this.toolsById.set(id, msg);
   }
 
@@ -554,6 +615,7 @@ export class SessionReducer {
     this.active = null;
     const msg = this.toolsById.get(id);
     if (!msg) return; // orphan result with no matching call — ignore, don't crash
+    this.messageChanged(msg);
     msg.tool.result = output;
     if (msg.tool.name === 'Skill' && !isError) {
       // A skill's "Launching skill…" ack lands immediately, but the review runs on
@@ -574,6 +636,7 @@ export class SessionReducer {
     for (const id of this._openSkillTools) {
       const msg = this.toolsById.get(id);
       if (msg && msg.tool.state === 'running') {
+        this.messageChanged(msg);
         msg.tool.state = 'completed';
         msg.tool.completedAt = ts;
       }
@@ -594,7 +657,10 @@ export class SessionReducer {
     // expandable with a blank detail pane.
     if (text.trim().length === 0) return;
     const msg = this.toolsById.get(id);
-    if (msg) msg.tool.skillBody = text;
+    if (msg) {
+      this.messageChanged(msg);
+      msg.tool.skillBody = text;
+    }
   }
 
   /** Fold a turn's `result` into the live session totals — the client-side
@@ -622,7 +688,7 @@ export class SessionReducer {
    * turns it into a display descriptor (see `ui/agentEvent`). */
   private emitAgentEvent(seq: number, ts: number, event: AgentEvent): void {
     this.active = null;
-    this._messages.push({
+    this.appendMessage({
       kind: 'agent-event',
       id: `event-${String(seq)}`,
       createdAt: ts,
@@ -639,8 +705,42 @@ export class SessionReducer {
   get status(): AgentStatus | undefined {
     return this._status;
   }
+  /** Restore published identities after canonical history replay. Payload objects
+   * remain reference-compared: replay uses the same retained event frames, and a
+   * new payload must never disappear behind an unchanged memoized row. */
+  reuseMessageSnapshots(previous: readonly Message[]): void {
+    const previousById = new Map(previous.map((message) => [message.id, message]));
+    const current = this.messages;
+    const shared = current.map((message, index) => {
+      const old = previousById.get(message.id);
+      if (old === undefined || !samePublishedMessage(message, old)) return message;
+      const working = this._messages[index];
+      if (working !== undefined) this.messageSnapshots.set(working, old);
+      return old;
+    });
+    this.publishedMessages =
+      shared.length === previous.length &&
+      shared.every((message, index) => message === previous[index])
+        ? (previous as Message[])
+        : shared;
+  }
+
   get messages(): readonly Message[] {
-    return this._messages;
+    if (this.publishedMessages === undefined) {
+      this.publishedMessages = this._messages.map((message) => {
+        const cached = this.messageSnapshots.get(message);
+        if (cached !== undefined) return cached;
+        // Sharing the working tool object lets a later result silently mutate an
+        // already-rendered snapshot, so memoized rows would miss the update.
+        const snapshot: Message =
+          message.kind === 'tool-call'
+            ? { ...message, tool: { ...message.tool }, children: [...message.children] }
+            : { ...message };
+        this.messageSnapshots.set(message, snapshot);
+        return snapshot;
+      });
+    }
+    return this.publishedMessages;
   }
   get usage(): Readonly<UsageTotals> {
     return this._usage;
@@ -692,7 +792,8 @@ export class SessionReducer {
       sessionId: this._sessionId,
       model: this._model,
       status: this._status,
-      messages: [...this._messages],
+      messages: this.messages as Message[],
+      ...(this._devServers !== undefined ? { devServers: this._devServers } : {}),
       usage: { ...this._usage },
       permissionDenials: [...this._permissionDenials],
       rateLimit: this._rateLimit ? { ...this._rateLimit } : undefined,

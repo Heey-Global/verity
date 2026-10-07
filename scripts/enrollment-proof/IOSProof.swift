@@ -13,6 +13,10 @@ final class EnrollmentProofApp: UIResponder, UIApplicationDelegate {
       let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
       let result = directory.appendingPathComponent("result.txt")
       do {
+        // A fresh simulator container may not have a Documents directory yet.
+        // Otherwise both the proof output and its failure report disappear.
+        try FileManager.default.createDirectory(at: directory,
+          withIntermediateDirectories: true)
         try Self.run(phase, service, directory)
         try "success".write(to: result, atomically: true, encoding: .utf8)
       } catch {
@@ -67,5 +71,19 @@ final class EnrollmentProofApp: UIResponder, UIApplicationDelegate {
     try check(SecItemDelete(query as CFDictionary) == errSecSuccess, "delete")
     var deleted: CFTypeRef?
     try check(SecItemCopyMatching(lookup as CFDictionary, &deleted) == errSecItemNotFound, "deletion")
+  }
+}
+
+// Current iOS SDKs reject even test-only applications without scene adoption.
+final class EnrollmentProofSceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions) {
+    guard let windowScene = scene as? UIWindowScene else { return }
+    let window = UIWindow(windowScene: windowScene)
+    window.rootViewController = UIViewController()
+    self.window = window
+    window.makeKeyAndVisible()
   }
 }

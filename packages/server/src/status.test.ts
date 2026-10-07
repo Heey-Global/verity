@@ -235,10 +235,12 @@ describe('projectionTailIsSelfContained', () => {
  * interesting on the day they were written.
  */
 const SAMPLES: Record<AgentEventType, AgentEvent> = {
+  dev_servers_changed: { t: 'dev_servers_changed', devServers: [] },
   session: { t: 'session', id: 's1', model: 'claude-opus-5', worktree: '/wt/s1' },
   status: running,
   text,
   notice: { t: 'notice', text: 'transcribing…' },
+  tasks_updated: { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['t1'] },
   prompt: { t: 'prompt', text: 'do the thing' },
   thinking: { t: 'thinking', blockId: 'b1', delta: 'hmm' },
   skill: { t: 'skill', text: '/code-review' },
@@ -259,13 +261,12 @@ const SAMPLES: Record<AgentEventType, AgentEvent> = {
   },
   task: taskStarted,
   choices: { t: 'choices', options: [{ label: 'yes' }] },
-  agent_loop_proposal: {
-    t: 'agent_loop_proposal',
+  automation_proposal: {
+    t: 'automation_proposal',
     proposal: {
-      loopId: '8d2b7f16-3a2e-4a29-9f0c-7b6b1c5a0d11',
-      name: 'nightly sweep',
-      script: 'run the sweep',
+      name: 'Nightly sweep',
       schedule: { kind: 'interval', everyMinutes: 60 },
+      prompt: 'Run the sweep.',
     },
   },
   interrupted: { t: 'interrupted' },
@@ -274,6 +275,13 @@ const SAMPLES: Record<AgentEventType, AgentEvent> = {
   error,
   session_progress: { t: 'session_progress', summary: 'halfway', outcomeDelivered: false },
   raw: { t: 'raw', backend: 'claude-code', payload: { a: 1 } },
+  diagnostic: {
+    t: 'diagnostic',
+    source: 'agent',
+    outcome: 'failed',
+    phase: 'session_load',
+    code: -32603,
+  },
 };
 
 describe('the session-overview projection slice', () => {

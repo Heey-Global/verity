@@ -38,3 +38,25 @@ describe('iOS GitHub callback association', () => {
     ]);
   });
 });
+
+describe('iOS live meeting background capture', () => {
+  it('targets an iOS release that supports background inference', () => {
+    // The inference entitlement is only available from iOS 27; an iOS 26
+    // release profile rejects it during archive signing.
+    expect(Number(config.ios?.deploymentTarget)).toBeGreaterThanOrEqual(27);
+  });
+
+  it('keeps microphone capture eligible to continue after an app switch or screen lock', () => {
+    // Without the audio mode, recording stops on device while foreground tests stay green.
+    expect(config.ios?.infoPlist?.UIBackgroundModes).toContain('audio');
+  });
+
+  it('keeps Neural Engine inference eligible while meeting models run in the background', () => {
+    // Audio background mode alone does not grant an in-app model access to the Neural Engine.
+    expect(
+      config.ios?.entitlements?.[
+        'com.apple.developer.background-tasks.continued-processing.inference'
+      ],
+    ).toBe(true);
+  });
+});

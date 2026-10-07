@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyRequest, FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type {
   SealableSecretCipher,
@@ -22,7 +22,7 @@ export interface SettingsRouteDeps {
   secretCipher?: SealableSecretCipher | undefined;
   parseSettingsPatch: (body: unknown) => VeritySettingsPatch;
   storeAgentCredentials: (patch: VeritySettingsPatch) => Promise<void>;
-  publicSettings: (settings: VeritySettingsRecord) => unknown;
+  publicSettings: (settings: VeritySettingsRecord, request: FastifyRequest) => unknown;
   effectiveTranscription: (settings: VeritySettingsRecord | null) => {
     baseUrl: string | null;
     model: string | null;
@@ -92,10 +92,26 @@ export function registerSettingsRoutes(
     clearInterval(refreshTimer);
     await pending;
   });
-  app.get('/settings', async () => {
-    const settings = (await deps.store().getVeritySettingsRaw()) ?? null;
-    return { settings: settings ? deps.publicSettings(settings) : null };
+  app.get('/settings', async (request) => {
+    const settings = (await readSettingsForDisplay()) ?? null;
+    return { settings: settings ? deps.publicSettings(settings, request) : null };
   });
+
+  // The public projection strips every secret, but a few labels it shows are
+  // derived from inside them (the subscription plan of a stored agent login).
+  // Read decrypted while the store is open; sealed — or if decryption fails —
+  // fall back to the raw row, so the screen that unlocks the store still loads
+  // and only those derived labels go blank.
+  async function readSettingsForDisplay(): Promise<VeritySettingsRecord | undefined> {
+    if (deps.secretCipher?.isSealed() !== true) {
+      try {
+        return await deps.store().getVeritySettings();
+      } catch (error) {
+        app.log.warn({ err: error }, 'settings: decrypted read failed; serving the raw row');
+      }
+    }
+    return deps.store().getVeritySettingsRaw();
+  }
 
   app.get('/settings/transcription', async () => {
     const settings = (await deps.store().getVeritySettingsRaw()) ?? null;
@@ -217,7 +233,7 @@ export function registerSettingsRoutes(
           throw error;
         }
       }
-      return { settings: deps.publicSettings(settings) };
+      return { settings: deps.publicSettings(settings, request) };
     }),
   );
 
@@ -250,7 +266,7 @@ export function registerSettingsRoutes(
     await deps.storeAgentCredentials(patch);
     const settings = await deps.store().getVeritySettings();
     if (settings === undefined) throw new Error('Verity settings disappeared after agent logout');
-    return { settings: deps.publicSettings(settings) };
+    return { settings: deps.publicSettings(settings, request) };
   });
 
   app.get('/settings/agent-logins/:sessionId', async (request) => {

@@ -36,6 +36,11 @@ on:
         required: false
         default: false
         type: boolean
+      mobile-replan:
+        description: Plan pending mobile changes as a native release PR
+        required: false
+        default: false
+        type: boolean
       backend-replan:
         description: Plan the next backend release PR after a completed publication
         required: false
@@ -59,7 +64,7 @@ on:
 # failed re-plan or recovery run never counts against a stranded release and a
 # reconcile run that ended green without publishing is noticed. Every other
 # trigger keeps GitHub's default title.
-run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || '' }}
+run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || (format('{0}', inputs['mobile-replan']) == 'true' && format('Replan native mobile {0}', github.sha) || '') }}
 
 permissions: read-all
 
@@ -98,6 +103,7 @@ jobs:
       # The publisher dispatches this run through the API, which carries inputs
       # as strings, while the manual form sends a real boolean. Normalize both:
       # a string reaching this boolean input fails the whole dispatched run.
+      mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}

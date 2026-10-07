@@ -88,7 +88,7 @@ it('removes legacy Wiki jobs and their maintenance sessions', async () => {
       );
     }
 
-    const result = await migrator.migrateToLatest();
+    const result = await migrator.migrateTo('0104_retire_wiki_job_writes');
     if (result.error) throw new Error('Migration failed', { cause: result.error });
 
     expect(

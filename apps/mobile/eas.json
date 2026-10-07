@@ -26,7 +26,21 @@
       "distribution": "store",
       "autoIncrement": true,
       "environment": "production",
-      "channel": "testflight"
+      "channel": "production",
+      "env": {
+        "VERITY_APP_VARIANT": "production",
+        "EXPO_UPDATE_CHANNEL": "production"
+      }
+    },
+    "staging": {
+      "distribution": "store",
+      "autoIncrement": true,
+      "environment": "preview",
+      "channel": "staging",
+      "env": {
+        "VERITY_APP_VARIANT": "staging",
+        "EXPO_UPDATE_CHANNEL": "staging"
+      }
     }
   },
   "submit": {

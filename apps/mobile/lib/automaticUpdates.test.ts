@@ -79,7 +79,12 @@ describe('applyStartupUpdate', () => {
       checkForUpdateAsync: jest.fn().mockRejectedValue(new Error('offline')),
     });
 
-    await expect(applyStartupUpdate(client)).resolves.toBe('failed');
+    await expect(applyStartupUpdate(client)).resolves.toEqual({
+      status: 'failed',
+      phase: 'check',
+      timedOut: false,
+      message: 'Update check failed.\n\noffline\n\nTry again later.',
+    });
     expect(client.reloadAsync).not.toHaveBeenCalled();
   });
 
@@ -92,7 +97,12 @@ describe('applyStartupUpdate', () => {
     const result = applyStartupUpdate(client);
     await jest.advanceTimersByTimeAsync(5_000);
 
-    await expect(result).resolves.toBe('failed');
+    await expect(result).resolves.toMatchObject({
+      status: 'failed',
+      phase: 'check',
+      timedOut: true,
+      message: expect.stringContaining('5 seconds'),
+    });
     expect(client.fetchUpdateAsync).not.toHaveBeenCalled();
   });
 
@@ -109,9 +119,87 @@ describe('applyStartupUpdate', () => {
     const result = applyStartupUpdate(client);
     await jest.advanceTimersByTimeAsync(30_000);
 
-    await expect(result).resolves.toBe('failed');
+    await expect(result).resolves.toMatchObject({
+      status: 'failed',
+      phase: 'download',
+      timedOut: true,
+      message: expect.stringContaining('30 seconds'),
+    });
     expect(client.reloadAsync).not.toHaveBeenCalled();
   });
+
+  it.each(['download', 'reload'] as const)('preserves a %s failure reason', async (phase) => {
+    const client = makeClient({
+      checkForUpdateAsync: jest.fn().mockResolvedValue({ isAvailable: true }),
+      fetchUpdateAsync:
+        phase === 'download'
+          ? jest.fn().mockRejectedValue(new Error('Asset unavailable'))
+          : jest.fn().mockResolvedValue({ isNew: true }),
+      reloadAsync: jest.fn().mockRejectedValue(new Error('Reload rejected')),
+    });
+
+    await expect(applyStartupUpdate(client)).resolves.toMatchObject({
+      status: 'failed',
+      phase,
+      timedOut: false,
+      message: expect.stringContaining(
+        phase === 'download' ? 'Asset unavailable' : 'Reload rejected',
+      ),
+    });
+    if (phase === 'download') expect(client.reloadAsync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['native error', 'native error'],
+    [null, 'Unknown error'],
+    [new Error(''), 'Unknown error'],
+  ])('handles nonstandard rejection %p', async (error, reason) => {
+    const client = makeClient({ checkForUpdateAsync: jest.fn().mockRejectedValue(error) });
+    await expect(applyStartupUpdate(client)).resolves.toMatchObject({
+      status: 'failed',
+      phase: 'check',
+      timedOut: false,
+      message: expect.stringContaining(reason),
+    });
+  });
+
+  it.each([true, false])('allows a slow interactive check (reload: %s)', async (reload) => {
+    jest.useFakeTimers();
+    const client = makeClient({
+      checkForUpdateAsync: jest.fn(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ isAvailable: true } as UpdateCheckResult), 6_000),
+          ),
+      ),
+      fetchUpdateAsync: jest.fn().mockResolvedValue({ isNew: true }),
+      reloadAsync: jest.fn().mockResolvedValue(undefined),
+    });
+    const check = createSerialUpdateChecker(client, reload);
+    const result = check();
+    await jest.advanceTimersByTimeAsync(6_000);
+    await expect(result).resolves.toBe(reload ? 'reloading' : 'downloaded');
+    expect(client.fetchUpdateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])(
+    'bounds an unresponsive interactive check (reload: %s)',
+    async (reload) => {
+      jest.useFakeTimers();
+      const client = makeClient({
+        checkForUpdateAsync: jest.fn(() => new Promise(() => undefined)),
+      });
+      const result = createSerialUpdateChecker(client, reload)();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await expect(result).resolves.toMatchObject({
+        status: 'failed',
+        phase: 'check',
+        timedOut: true,
+        message: expect.stringContaining('30 seconds'),
+      });
+      expect(client.fetchUpdateAsync).not.toHaveBeenCalled();
+    },
+  );
 
   it('serializes overlapping foreground update checks', async () => {
     let resolveCheck: ((value: UpdateCheckResult) => void) | undefined;
@@ -138,6 +226,25 @@ describe('applyStartupUpdate', () => {
 });
 
 describe('foreground update download', () => {
+  it('reports a foreground download failure and allows a retry', async () => {
+    const client = makeClient({
+      checkForUpdateAsync: jest.fn().mockResolvedValue({ isAvailable: true }),
+      fetchUpdateAsync: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Network lost'))
+        .mockResolvedValue({ isNew: true }),
+    });
+    const check = createSerialUpdateChecker(client, false);
+    await expect(check()).resolves.toMatchObject({
+      status: 'failed',
+      phase: 'download',
+      timedOut: false,
+      message: expect.stringContaining('Network lost'),
+    });
+    await expect(check()).resolves.toBe('downloaded');
+    expect(client.reloadAsync).not.toHaveBeenCalled();
+  });
+
   it('downloads an available update without reloading the interactive app', async () => {
     const client = makeClient({
       checkForUpdateAsync: jest.fn().mockResolvedValue({

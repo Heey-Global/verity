@@ -10,6 +10,10 @@ INSTALL_MISSING=0
 PREFLIGHT_ONLY=0
 REQUEST_REINSTALL=0
 REQUEST_UPDATE=0
+# Pins from the upstream cosign_checksums.txt release asset; update together.
+COSIGN_VERSION=v3.1.3
+COSIGN_SHA256_AMD64=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
 
 die() {
   printf 'verity-install: %s\n' "$*" >&2
@@ -103,7 +107,7 @@ run_preflight() {
       preflight_error "$tool is required"
     fi
   done
-  for tool in readlink stat awk grep mktemp sha512sum; do
+  for tool in readlink stat awk grep mktemp sha512sum sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || preflight_error "$tool is required"
   done
 
@@ -193,6 +197,56 @@ fi
 printf '%s\n' 'verity-install: preflight passed'
 [ "$PREFLIGHT_ONLY" -eq 0 ] || exit 0
 
+container_id=''
+privileged_root=''
+cosign_root=''
+cleanup() {
+  if [ -n "$cosign_root" ]; then rm -rf -- "$cosign_root"; fi
+  if [ -n "$container_id" ]; then run_docker rm -f "$container_id" >/dev/null 2>&1 || true; fi
+  if [ -n "$privileged_root" ]; then as_root rm -rf "$privileged_root" >/dev/null 2>&1 || true; fi
+}
+on_signal() {
+  status=$1
+  trap - EXIT
+  cleanup
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
+prepare_cosign() {
+  local checksum
+  case "$host_architecture" in
+    amd64) checksum=$COSIGN_SHA256_AMD64 ;;
+    arm64) checksum=$COSIGN_SHA256_ARM64 ;;
+    *) die 'unsupported cosign architecture' ;;
+  esac
+  cosign_root=$(mktemp -d)
+  chmod 0700 "$cosign_root"
+  printf '%s\n' 'verity-install: downloading pinned signature verifier' >&2
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 120 \
+    "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-$host_architecture" \
+    --output "$cosign_root/cosign" || die 'could not download cosign; installation stopped'
+  printf '%s  %s\n' "$checksum" "$cosign_root/cosign" | sha256sum --check --status \
+    || die 'cosign checksum mismatch; installation stopped'
+  chmod 0700 "$cosign_root/cosign"
+}
+
+verify_server_image() {
+  local image=$1
+  valid_image_override "$image" || die 'signature verification requires an official Server digest'
+  printf 'verity-install: verifying signature for %s\n' "$image" >&2
+  TUF_ROOT="$cosign_root/tuf" "$cosign_root/cosign" verify \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-identity https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main \
+    "$image" >/dev/null || die "signature verification failed for $image; installation stopped"
+}
+
+prepare_cosign
+
 run_docker() {
   as_root docker "$@"
 }
@@ -205,12 +259,16 @@ download_image() {
     return
   fi
 
-  output=$(mktemp)
-  if [ "$(id -u)" -eq 0 ]; then
-    setsid docker pull "$image" >"$output" 2>&1 &
-  else
-    setsid sudo docker pull "$image" >"$output" 2>&1 &
+  # sudo-rs authenticates per terminal; detaching sudo prevents password prompts
+  # and loses the terminal's cached authorization. Keep it in the foreground.
+  if [ "$(id -u)" -ne 0 ]; then
+    progress 3 "downloading $image"
+    run_docker pull "$image"
+    return
   fi
+
+  output=$(mktemp)
+  setsid docker pull "$image" >"$output" 2>&1 &
   pid=$!
   trap 'kill -TERM -- "-$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$output"; exit 129' HUP
   trap 'kill -TERM -- "-$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$output"; exit 130' INT
@@ -253,7 +311,9 @@ download_image() {
 }
 
 managed_server_is_unpaired() {
-  local name=$1 status
+  local name=$1 status image
+  image=$(run_docker inspect --format '{{.Config.Image}}' "$name") || return 1
+  verify_server_image "$image" || return 1
   # Before the first device is paired, Verity's global bearer gate is disabled
   # and this ordinary protected route answers 200. Once pairing completes it
   # answers 401 without a token. Probe the plain-HTTP backend from inside the
@@ -273,6 +333,7 @@ managed_server_is_unpaired() {
 
 sealed_managed_image() {
   local bootstrap_image=$1
+  verify_server_image "$bootstrap_image"
   run_docker run --rm --network none --read-only --cap-drop ALL --user 0:0 \
     --security-opt no-new-privileges \
     --mount type=volume,source=verity-managed-deployment,target=/managed,readonly \
@@ -374,6 +435,9 @@ fi
 # "Extracting 1B" lines in terminals that do not implement cursor movement.
 # Keep one stable line instead and animate it only when stdout is a terminal.
 download_image "$source_image"
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 image_digest=$(run_docker image inspect "$source_image" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
   awk -v repository="$IMAGE_REPOSITORY" 'index($0, repository "@sha256:") == 1 { print; exit }')
@@ -383,22 +447,8 @@ digest_hex=${image_digest#"$IMAGE_REPOSITORY"@sha256:}
 printf '%s\n' "$digest_hex" | grep -Eq '^[a-f0-9]{64}$' ||
   die "Docker did not resolve $source_image to an official digest"
 
-container_id=''
-privileged_root=''
-cleanup() {
-  if [ -n "$container_id" ]; then run_docker rm -f "$container_id" >/dev/null 2>&1 || true; fi
-  if [ -n "$privileged_root" ]; then as_root rm -rf "$privileged_root" >/dev/null 2>&1 || true; fi
-}
-on_signal() {
-  status=$1
-  trap - EXIT
-  cleanup
-  exit "$status"
-}
-trap cleanup EXIT
-trap 'on_signal 129' HUP
-trap 'on_signal 130' INT
-trap 'on_signal 143' TERM
+verify_server_image "$image_digest"
+
 
 # Never execute a persistent path through sudo. A fresh root-owned directory
 # prevents a previous run or another local account from replacing the guarded

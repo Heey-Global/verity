@@ -221,8 +221,27 @@
         font-size: clamp(17px, 2vw, 20px);
       }
 
-      .hero-cta {
+      .button-secondary {
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        box-shadow: none;
+        color: var(--text);
+      }
+
+      .button-secondary:hover {
+        border-color: var(--muted-2);
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 12px;
         margin-top: 32px;
+      }
+
+      .cta .hero-actions {
+        margin-top: 28px;
       }
 
       .hero .signup-note {
@@ -564,7 +583,7 @@
           font-size: 13px;
         }
 
-        .hero-cta {
+        .hero-actions {
           margin-top: 28px;
         }
 
@@ -601,7 +620,8 @@
         <nav class="nav-links" aria-label="Primary navigation">
           <a href="#product">Product</a>
           <a href="#security">Security</a>
-          <a class="button" href="#waitlist">Early access</a>
+          <a href="https://github.com/Heey-Global/verity">GitHub</a>
+          <a class="button" href="#beta">Beta</a>
         </nav>
       </div>
     </header>
@@ -610,7 +630,7 @@
       <section class="hero">
         <div class="wrap">
           <div class="hero-copy">
-            <span class="eyebrow">Self-hosted fleet of coding agents</span>
+            <span class="eyebrow">Open-source, self-hosted coding agents · Beta</span>
             <h1>Run your agent fleet <span>from your phone.</span></h1>
             <p class="sub">
               Claude Code and Codex behind a credential broker, plus
@@ -618,7 +638,10 @@
               session in its own sandbox and worktree, with your history on
               your server.
             </p>
-            <a class="button hero-cta" href="#waitlist">Early access details</a>
+            <div class="hero-actions">
+              <a class="button" href="#beta">Beta details</a>
+              <a class="button button-secondary" href="https://github.com/Heey-Global/verity">View on GitHub</a>
+            </div>
             <p class="signup-note">iPhone · iPad · Mac via the iPad app today</p>
           </div>
 
@@ -773,23 +796,27 @@
           <div class="proof-item">
             <h3>Not a hosted service</h3>
             <p>
-              Verity runs on your own host. A local installation does not
-              require a paid service from us.
+              Verity runs on your own host. The core is open source under the
+              Apache License 2.0, and a local installation does not require a
+              paid service from us.
             </p>
           </div>
         </div>
       </section>
 
-      <section id="waitlist" class="cta">
+      <section id="beta" class="cta">
         <div class="wrap">
           <h2>Put your agent fleet under control.</h2>
           <p>
-            Verity is rolling out to early users in waves. Public signup is not
-            open yet.
+            Verity is now in beta testing. Explore the self-hosted core on GitHub
+            and follow development as we refine the experience.
           </p>
           <p class="signup-note">
-            Signup is opening soon. No email is collected on this preview site.
+            Beta software: features and setup may change as testing progresses.
           </p>
+          <div class="hero-actions">
+            <a class="button button-secondary" href="https://github.com/Heey-Global/verity">Follow development on GitHub</a>
+          </div>
         </div>
       </section>
     </main>
@@ -802,6 +829,7 @@
         </a>
         <div class="footer-meta">
           <span>© 2026 · A product of Heey GmbH</span>
+          <a href="https://github.com/Heey-Global/verity">· GitHub</a>
           <a href="https://heey.global/imprint">· Imprint</a>
         </div>
       </div>

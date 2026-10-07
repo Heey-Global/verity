@@ -2,6 +2,18 @@ import { composeTranscript, pickRecognitionLocale, recognitionErrorMessage } fro
 import { getLocales } from 'expo-localization';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isDemoMode } from '../lib/demoMode';
+
+let recognitionOwner: symbol | null = null;
+let abandonedRecognition = false;
+// Native cancellation finishes asynchronously. Hold ownership through its final
+// end event so that event cannot accidentally end a newly mounted recorder.
+ExpoSpeechRecognitionModule.addListener('end', () => {
+  if (abandonedRecognition) {
+    recognitionOwner = null;
+    abandonedRecognition = false;
+  }
+});
 
 export type VoiceState = 'idle' | 'recording';
 
@@ -24,6 +36,8 @@ export interface UseVoiceInput {
    * when not recording.
    */
   abort: () => void;
+  level: number;
+  onDevice: boolean | null;
 }
 
 /** The device's preferred language tags, most-preferred first, used only as INPUT
@@ -69,6 +83,29 @@ async function resolveRecognitionLocale(): Promise<{ lang: string; onDevice: boo
   return { lang: preferred[0] ?? 'en-US', onDevice: false };
 }
 
+/** Reduce a recognizer transcript to its words. iOS 18 prefixes every result
+ * after a pause-final with a space and may re-punctuate or re-case the repeat it
+ * emits on stop, so a strict string match lets it through. */
+function utteranceWords(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[\s.,!?;:'"„“”‚‘’«»¿¡…()\-–—。、，！？：；]+/g, ' ')
+    .trim();
+}
+
+function sameUtterance(a: string, b: string): boolean {
+  const wa = utteranceWords(a);
+  return wa !== '' && wa === utteranceWords(b);
+}
+
+/** True when `partial` is the committed final or a word-aligned start of it —
+ * how a replay streams in after stop. */
+function replaysUtterance(partial: string, final: string): boolean {
+  const wp = utteranceWords(partial);
+  const wf = utteranceWords(final);
+  return wp !== '' && (wf === wp || wf.startsWith(`${wp} `));
+}
+
 /**
  * Live voice dictation via the OS speech recognizer (`expo-speech-recognition`:
  * iOS `SFSpeechRecognizer`, Android `SpeechRecognizer`). Unlike the previous
@@ -86,7 +123,19 @@ export function useVoiceInput(
   value: string,
   onChangeText: (next: string) => void,
   onAutoSend?: (text: string) => Promise<boolean>,
+  options?: { silenceMs?: number },
 ): UseVoiceInput {
+  const owner = useRef(Symbol('voice-input'));
+  const nativeStarted = useRef(false);
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [level, setLevel] = useState(0);
+  const [onDevice, setOnDevice] = useState<boolean | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const clearSilence = () => {
+    if (silenceTimer.current) clearTimeout(silenceTimer.current);
+    silenceTimer.current = null;
+  };
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string | undefined>(undefined);
   const [autoMode, setAutoMode] = useState(false);
@@ -100,6 +149,11 @@ export function useVoiceInput(
   const interimActiveRef = useRef(false);
   const ignoreCurrentUtteranceRef = useRef(false);
   const lastFinalTranscriptRef = useRef('');
+  // Set when the operator taps stop. If no utterance was open at that moment,
+  // anything the recognizer replays of the last final (interim or final) is a
+  // repeat of committed text, not new speech.
+  const stoppingRef = useRef(false);
+  const utteranceOpenAtStopRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoSendRef = useRef(onAutoSend);
   autoSendRef.current = onAutoSend;
@@ -172,7 +226,45 @@ export function useVoiceInput(
     }, 1800);
   }, [cancelCountdown]);
 
+  useSpeechRecognitionEvent('speechstart', () => {
+    if (recognitionOwner === owner.current) clearSilence();
+  });
+  useSpeechRecognitionEvent('speechend', () => {
+    if (
+      recognitionOwner !== owner.current ||
+      !listeningRef.current ||
+      !optionsRef.current?.silenceMs ||
+      stoppingRef.current
+    )
+      return;
+    clearSilence();
+    silenceTimer.current = setTimeout(() => {
+      if (recognitionOwner !== owner.current || !listeningRef.current) return;
+      stoppingRef.current = true;
+      utteranceOpenAtStopRef.current = interimActiveRef.current;
+      ExpoSpeechRecognitionModule.stop();
+    }, optionsRef.current.silenceMs);
+  });
+  useSpeechRecognitionEvent('volumechange', (event) => {
+    if (recognitionOwner !== owner.current || !listeningRef.current) return;
+    setLevel(Math.max(0, Math.min(1, (event.value + 2) / 12)));
+    if (event.value > 0) clearSilence();
+    else if (
+      (baseRef.current.trim() || interimActiveRef.current) &&
+      !silenceTimer.current &&
+      optionsRef.current?.silenceMs
+    ) {
+      silenceTimer.current = setTimeout(() => {
+        silenceTimer.current = null;
+        if (recognitionOwner !== owner.current || !listeningRef.current) return;
+        stoppingRef.current = true;
+        utteranceOpenAtStopRef.current = interimActiveRef.current;
+        ExpoSpeechRecognitionModule.stop();
+      }, optionsRef.current.silenceMs);
+    }
+  });
   useSpeechRecognitionEvent('result', (event) => {
+    if (recognitionOwner !== owner.current) return;
     if (!listeningRef.current) return; // ignore stray/late results after stop
     const transcript = event.results[0]?.transcript ?? '';
     if (ignoreCurrentUtteranceRef.current) {
@@ -183,9 +275,29 @@ export function useVoiceInput(
       }
       return;
     }
+    // Native stop can repeat an already committed final result before `end`,
+    // sometimes as an interim first. A new interim result before stop
+    // distinguishes an intentional repeated utterance.
+    const repeatsLastFinal = sameUtterance(transcript, lastFinalTranscriptRef.current);
+    if (
+      stoppingRef.current &&
+      !utteranceOpenAtStopRef.current &&
+      (event.isFinal
+        ? repeatsLastFinal
+        : replaysUtterance(transcript, lastFinalTranscriptRef.current))
+    ) {
+      // A replay interim the prefix check missed (e.g. a mid-word partial) may
+      // be on screen; its final is the replay, so restore the committed text.
+      if (event.isFinal && interimActiveRef.current) {
+        interimActiveRef.current = false;
+        onChangeRef.current(baseRef.current);
+      }
+      return;
+    }
+    if (event.isFinal && !interimActiveRef.current && repeatsLastFinal) return;
     if (transcript.trim()) {
       cancelCountdown();
-      if (!event.isFinal || transcript !== lastFinalTranscriptRef.current) {
+      if (!event.isFinal || !repeatsLastFinal) {
         pausedRef.current = false;
       }
     }
@@ -201,12 +313,18 @@ export function useVoiceInput(
       interimActiveRef.current = false;
       lastFinalTranscriptRef.current = transcript;
       baseRef.current = next;
+      // The utterance open at stop is now committed; further replays of it are repeats.
+      if (stoppingRef.current) utteranceOpenAtStopRef.current = false;
       finalReadyRef.current = true;
       startCountdown();
     }
   });
 
   useSpeechRecognitionEvent('end', () => {
+    if (recognitionOwner !== owner.current) return;
+    recognitionOwner = null;
+    nativeStarted.current = false;
+    clearSilence();
     listeningRef.current = false;
     autoModeRef.current = false;
     setAutoMode(false);
@@ -215,6 +333,8 @@ export function useVoiceInput(
   });
 
   useSpeechRecognitionEvent('error', (event) => {
+    if (recognitionOwner !== owner.current) return;
+    clearSilence();
     listeningRef.current = false;
     autoModeRef.current = false;
     setAutoMode(false);
@@ -227,17 +347,31 @@ export function useVoiceInput(
   });
 
   const start = useCallback(() => {
+    if (isDemoMode()) {
+      setError(
+        'Voice input is unavailable in the local demo. Type a message to try the simulated agent.',
+      );
+      return;
+    }
     // Claim the session synchronously so a second tap during the async permission
     // request can't kick off a parallel start() (which would emit `busy`). Cleared
     // on a denied/failed start, and on end/error once a real session finishes.
     if (listeningRef.current) return;
+    if (recognitionOwner !== null) {
+      setError('Another voice recording is active');
+      autoModeRef.current = false;
+      setAutoMode(false);
+      return;
+    }
+    recognitionOwner = owner.current;
     listeningRef.current = true;
     setError(undefined);
     void (async () => {
       try {
         const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-        if (disposedRef.current) return;
+        if (disposedRef.current || !listeningRef.current) return;
         if (!permission.granted) {
+          recognitionOwner = null;
           listeningRef.current = false;
           autoModeRef.current = false;
           setAutoMode(false);
@@ -249,14 +383,19 @@ export function useVoiceInput(
         interimActiveRef.current = false;
         ignoreCurrentUtteranceRef.current = false;
         lastFinalTranscriptRef.current = '';
+        stoppingRef.current = false;
+        utteranceOpenAtStopRef.current = false;
         // Resolve a locale that has an on-device model INSTALLED, matched to the
         // operator's preferred languages — so recognition stays on-device (private,
         // offline) AND we never request an invalid locale (the `en-DE` failure). If
         // the device has no on-device models at all, fall back to the network
         // recognizer for the first preferred tag.
         const { lang, onDevice } = await resolveRecognitionLocale();
-        if (disposedRef.current) return;
+        if (disposedRef.current || !listeningRef.current) return;
+        setOnDevice(onDevice);
+        nativeStarted.current = true;
         ExpoSpeechRecognitionModule.start({
+          volumeChangeEventOptions: { enabled: true, intervalMillis: 100 },
           lang,
           // Stream partial results so the field fills in live as we speak.
           interimResults: true,
@@ -266,6 +405,7 @@ export function useVoiceInput(
         });
         setState('recording');
       } catch {
+        if (recognitionOwner === owner.current) recognitionOwner = null;
         listeningRef.current = false;
         autoModeRef.current = false;
         setAutoMode(false);
@@ -280,6 +420,8 @@ export function useVoiceInput(
       autoModeRef.current = false;
       setAutoMode(false);
       cancelCountdown();
+      stoppingRef.current = true;
+      utteranceOpenAtStopRef.current = interimActiveRef.current;
       // Resolves to a final `result` then `end` → state flips to idle there.
       ExpoSpeechRecognitionModule.stop();
     } else {
@@ -326,7 +468,9 @@ export function useVoiceInput(
     cancelCountdown();
     if (!listeningRef.current) return;
     listeningRef.current = false;
-    ExpoSpeechRecognitionModule.abort();
+    clearSilence();
+    if (!nativeStarted.current && recognitionOwner === owner.current) recognitionOwner = null;
+    if (nativeStarted.current) ExpoSpeechRecognitionModule.abort();
     setState('idle');
   }, [cancelCountdown]);
 
@@ -339,16 +483,22 @@ export function useVoiceInput(
     return () => {
       disposedRef.current = true;
       autoModeRef.current = false;
-      if (listeningRef.current) {
-        listeningRef.current = false;
-        ExpoSpeechRecognitionModule.abort();
+      clearSilence();
+      if (recognitionOwner === owner.current) {
+        if (nativeStarted.current) {
+          abandonedRecognition = true;
+          ExpoSpeechRecognitionModule.abort();
+        } else recognitionOwner = null;
       }
+      listeningRef.current = false;
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
 
   return {
     state,
+    level,
+    onDevice,
     error,
     autoMode,
     countdown,

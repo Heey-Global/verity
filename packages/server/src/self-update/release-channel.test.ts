@@ -136,6 +136,19 @@ describe('createReleaseChannelResolver', () => {
       ...overrides,
     });
 
+  it('isolates staging and stable even when signatures are valid', async () => {
+    const staged = envelope({ ...metadata(), channel: 'staging' });
+    await expect(resolver({ load: async () => staged }).resolve()).resolves.toMatchObject({
+      state: 'unreachable',
+    });
+    await expect(
+      resolver({ channel: 'staging', load: async () => staged }).resolve(),
+    ).resolves.toMatchObject({ state: 'available', release: { channel: 'staging' } });
+    await expect(resolver({ channel: 'staging' }).resolve()).resolves.toMatchObject({
+      state: 'unreachable',
+    });
+  });
+
   it('does not contact the channel for an unmanaged deployment', async () => {
     const load = vi.fn();
     await expect(resolver({ managed: false, load }).resolve()).resolves.toMatchObject({

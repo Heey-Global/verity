@@ -28,6 +28,8 @@ import type {
   QueuedTurnOpts,
   ScheduleConfig,
 } from './schema.js';
+import { ManagedDevServerStore } from './managed-dev-servers.js';
+import { TaskStore } from './tasks.js';
 
 /** A stored image blob: its media type and raw bytes (for serving). */
 export interface AttachmentBlob {
@@ -50,13 +52,24 @@ export interface SessionRecord {
   /** Project the session runs in (concept §19); `null` for project-less
    *  (or pre-projects-slice) sessions. */
   projectId: string | null;
-  /** Ordinary chat session or the durable home of an Agent Loop. */
-  kind: 'normal' | 'agent_loop';
   /** Operator's "last seen" mark for the overview unread dot (#387): the session's
    *  `eventCount` at the last open. `null` = never opened → not unread. Global, so
    *  it syncs across devices; advanced monotonically by {@link EventStore.setSessionSeen}. */
   lastSeenEventCount: number | null;
+  /** Planning mode. Optional so records built outside the store need not state it;
+   *  absent and `null` both mean the session never planned. */
+  planning?: SessionPlanning | null;
+  planningRevision?: number;
+  planningPlan?: string | null;
+  /** Operator-marked favorite, highlighted in the session list. Global like the
+   *  unread mark, so it syncs across devices. Absent means not a favorite. */
+  favorite?: boolean;
 }
+
+/** `active`: turns run without permission to change files until the operator
+ *  ends planning. `implemented` / `discarded`: how the last planning round ended,
+ *  which tells the app whether the newest plan was carried out. */
+export type SessionPlanning = 'active' | 'implemented' | 'discarded';
 
 export interface SessionLinkRecord {
   sessionId: string;
@@ -112,11 +125,10 @@ export interface GoogleSlideImageCleanupRecord {
  * it at spawn). */
 export type SessionInput = Omit<
   SessionRecord,
-  'name' | 'projectId' | 'kind' | 'lastSeenEventCount'
+  'name' | 'projectId' | 'lastSeenEventCount' | 'planning'
 > & {
   name?: string | null;
   projectId?: string | null;
-  kind?: 'normal' | 'agent_loop';
 };
 
 /**
@@ -337,100 +349,59 @@ export interface SessionBackendStateRecord {
   updatedAt: Date;
 }
 
-/** The terminal states an Agent Loop run can settle in (ADR 0008). */
-export type AgentLoopRunOutcome = 'ok' | 'acted' | 'error' | 'skipped';
+/** How one scheduled automation run settled: `ok` (its check script found
+ * nothing to do), `acted` (a turn was dispatched), `skipped` (the session was
+ * busy or the project unavailable), or `error`. */
+export type SessionAutomationOutcome = 'ok' | 'acted' | 'error' | 'skipped';
 
-/** The lifecycle status of an Agent Loop (ADR 0008 §7). Only `enabled` fires. */
-export type AgentLoopStatus = 'draft' | 'enabled' | 'paused';
+/** Only an `enabled` automation fires. */
+export type SessionAutomationStatus = 'enabled' | 'paused';
 
-/** Raised when a caller tries to arm a loop that has not proven its current
- * script in a successful test run. Routes translate this to a 409 response. */
-export class AgentLoopNotReadyError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AgentLoopNotReadyError';
-  }
-}
+/** Consecutive failed runs after which an automation pauses itself. */
+export const SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS = 5;
 
-/** Stable fingerprint used to bind a green test to the complete executable
- * Agent Loop configuration that ran. Any config edit must require a new test. */
-export function agentLoopConfigFingerprint(config: {
-  script: string | null;
-  schedule: ScheduleConfig | null;
-  reactionPrompt: string | null;
-  reactionModel: string | null;
-}): string {
-  const canonical = JSON.stringify({
-    script: config.script,
-    schedule: config.schedule,
-    reactionPrompt: config.reactionPrompt,
-    reactionModel: config.reactionModel,
-  });
-  return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
-}
-
-/** App-facing Agent Loop record (camelCase), decoupled from the snake_case row.
- *  See {@link AgentLoopsTable} for column semantics. */
-export interface AgentLoopRecord {
+/** A recurring prompt bound to one session (see {@link SessionAutomationsTable}). */
+export interface SessionAutomationRecord {
   id: string;
-  projectId: string;
+  sessionId: string;
   name: string;
-  status: AgentLoopStatus;
-  /** Structured schedule; null on a draft with no schedule yet. */
-  schedule: ScheduleConfig | null;
-  /** The loop's script; null on a draft with none authored yet. */
+  status: SessionAutomationStatus;
+  schedule: ScheduleConfig;
+  /** The task the session's agent receives on every run. */
+  prompt: string;
+  /** Optional check script; when present the agent is only woken on its signal. */
   script: string | null;
-  /** Fallback turn prompt; null until authored. */
-  reactionPrompt: string | null;
-  reactionModel: string | null;
-  /** The loop's durable session, if any. */
-  sessionId: string | null;
-  /** Fingerprint of the complete config last proven by a green test run. */
-  testedScriptFingerprint: string | null;
+  /** Model for the dispatched turn; null keeps the session's model. */
+  model: string | null;
   consecutiveErrorCount: number;
   lastRunAt: Date | null;
-  lastOutcome: AgentLoopRunOutcome | null;
+  lastOutcome: SessionAutomationOutcome | null;
+  /** Short operator-facing explanation of the last outcome, if any. */
+  lastDetail: string | null;
   nextRunAt: Date | null;
+  /** The local user who confirmed it; null for automations confirmed before
+   * sponsors were recorded. */
+  sponsorUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-/** Input to {@link EventStore.createAgentLoop}. Only `projectId`/`name` are
- *  required; a loop is born a `draft` with no schedule/script yet. `id`/
- *  timestamps are store-managed. */
-export interface AgentLoopCreateInput {
-  projectId: string;
+/** Input to {@link EventStore.setSessionAutomation}. */
+export class SessionAutomationWorkspaceChangedError extends Error {
+  constructor() {
+    super('The session workspace changed. Confirm the automation again in its current project.');
+    this.name = 'SessionAutomationWorkspaceChangedError';
+  }
+}
+
+export interface SessionAutomationInput {
+  sessionId: string;
   name: string;
-  schedule?: ScheduleConfig | null;
+  schedule: ScheduleConfig;
+  prompt: string;
   script?: string | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
-}
-
-/** Partial update for {@link EventStore.updateAgentLoop}. Only the operator-owned
- *  fields; `next_run_at` is recomputed by the store when `schedule`/`status`
- *  change. Every field optional — an absent key leaves the column untouched. */
-export interface AgentLoopPatch {
-  name?: string;
-  status?: AgentLoopStatus;
-  schedule?: ScheduleConfig | null;
-  script?: string | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
-  sessionId?: string | null;
-}
-
-/** One Agent Loop run-history entry (ADR 0008). */
-export interface AgentLoopRunRecord {
-  id: string;
-  loopId: string;
-  startedAt: Date;
-  finishedAt: Date | null;
-  outcome: AgentLoopRunOutcome;
-  exitCode: number | null;
-  detail: string | null;
-  sessionId: string | null;
-  isTest: boolean;
+  model?: string | null;
+  sponsorUserId?: string | null;
 }
 
 export interface ProjectSettingsRecord {
@@ -454,6 +425,7 @@ export interface ProjectSettingsRecord {
   memory: string | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
+  googleDriveAccessMode: 'read-only' | 'read-write';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -494,7 +466,8 @@ type ProjectSettingsKey =
   | 'defaultModel'
   | 'memory'
   | 'googleDriveFolderId'
-  | 'googleDriveFolderName';
+  | 'googleDriveFolderName'
+  | 'googleDriveAccessMode';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -557,6 +530,8 @@ export type PublicPreviewShareState =
   'creating' | 'active' | 'revoking' | 'revoked' | 'expired' | 'failed';
 
 export interface PublicPreviewShareRecord {
+  managedInstanceId?: string | null;
+  pinLocked?: boolean;
   id: string;
   projectId: string;
   devServerId: string | null;
@@ -582,6 +557,7 @@ export interface PublicPreviewShareRecord {
 }
 
 export interface PublicPreviewShareCreateInput {
+  managedInstanceId?: string | null;
   id: string;
   projectId: string;
   devServerId: string | null;
@@ -658,7 +634,6 @@ export class ProjectMemoryTooLargeError extends Error {
 }
 
 export interface VeritySettingsRecord {
-  knowledgeModel?: string | null;
   gitUserName: string | null;
   gitUserEmail: string | null;
   gitSshPrivateKeyPath: string | null;
@@ -706,6 +681,12 @@ export interface VeritySettingsRecord {
   googleDriveRefreshToken: string | null;
   /** True after OAuth consent has explicitly included Gmail read/compose scopes. */
   gmailAuthorized: boolean;
+  /** True after OAuth consent has explicitly included Calendar event scopes. */
+  calendarAuthorized: boolean;
+  /** True after explicit consent to read Google Contacts. */
+  contactsAuthorized: boolean;
+  /** Scopes actually granted to the shared Google credential. */
+  googleGrantedScopes: string[];
   /** Verity Uplink subscription credential, encrypted at rest. */
   uplinkSubscriptionKey?: string | null;
   /** Stable identity assigned and validated by the Uplink. */
@@ -716,7 +697,6 @@ export interface VeritySettingsRecord {
 }
 
 type VeritySettingsKey =
-  | 'knowledgeModel'
   | 'advancedModeEnabled'
   | 'gitUserName'
   | 'gitUserEmail'
@@ -746,6 +726,9 @@ type VeritySettingsKey =
   | 'googleDriveAccountEmail'
   | 'googleDriveRefreshToken'
   | 'gmailAuthorized'
+  | 'calendarAuthorized'
+  | 'contactsAuthorized'
+  | 'googleGrantedScopes'
   | 'uplinkSubscriptionKey'
   | 'uplinkInstallationId';
 
@@ -754,6 +737,18 @@ export type VeritySettingsPatch = {
 };
 
 export interface SessionGmailConnection {
+  sessionId: string;
+  accountEmail: string;
+  enabledAt: Date;
+}
+
+export interface SessionCalendarConnection {
+  sessionId: string;
+  accountEmail: string;
+  enabledAt: Date;
+}
+
+export interface SessionContactsConnection {
   sessionId: string;
   accountEmail: string;
   enabledAt: Date;
@@ -773,6 +768,7 @@ export interface SecretKeyMetaRecord {
  *  until the device makes its first authenticated request after the server
  *  learned to stamp it. */
 export interface AuthTokenRecord {
+  expiresAt: number | null;
   id: string;
   userId: string;
   tokenHash: string;
@@ -880,10 +876,17 @@ function emptyUsageTotals(): UsageTotals {
  * What the overview projections need from one session's log — see
  * {@link EventStore.listSessionProjectionFacts}.
  */
+export interface SessionEventStats {
+  /** Persisted events excluding dev-server snapshots; used for unread state. */
+  eventCount: number;
+  lastEventSeq: number;
+  lastActivityAt: number | null;
+  /** Changes on every log mutation, including deletions below the latest seq. */
+  revision: string;
+}
+
 export interface SessionProjectionFacts {
-  /** Total persisted events (#387) — the unread counter, and the ONLY thing that
-   *  distinguishes an empty log (status `idle`) from one holding nothing the
-   *  status projection reads (status `running`). */
+  /** Persisted events excluding dev-server snapshots; the overview unread counter. */
   eventCount: number;
   /** Highest event seq visible in the snapshot; bounds a later fallback read. */
   lastEventSeq: number;
@@ -1327,11 +1330,15 @@ export class EventStore implements EventSink {
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db);
+    this.managedDevServers = new ManagedDevServerStore(db);
+    this.tasks = new TaskStore(db, cipher);
   }
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
+  readonly tasks: TaskStore;
+  readonly managedDevServers: ManagedDevServerStore;
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
 
@@ -1714,7 +1721,6 @@ export class EventStore implements EventSink {
       initial_model: session.model,
       name: session.name ?? null,
       project_id: session.projectId ?? null,
-      kind: session.kind ?? 'normal',
     };
     const projectId = session.projectId;
     if (projectId === undefined || projectId === null) {
@@ -1742,10 +1748,7 @@ export class EventStore implements EventSink {
    * model. Used only to seed a subsequent session; runtime model switches never
    * rewrite the remembered creation choice. */
   async getLastCreatedSessionModel(projectId: string | null): Promise<string | undefined> {
-    let query = this.db
-      .selectFrom('sessions')
-      .select(['initial_model', 'model'])
-      .where('kind', '=', 'normal');
+    let query = this.db.selectFrom('sessions').select(['initial_model', 'model']);
     query =
       projectId === null
         ? query.where('project_id', 'is', null)
@@ -1766,8 +1769,11 @@ export class EventStore implements EventSink {
         'model',
         'name',
         'project_id',
-        'kind',
         'last_seen_event_count',
+        'planning',
+        'planning_revision',
+        'planning_plan',
+        'favorite',
       ])
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
@@ -1778,8 +1784,11 @@ export class EventStore implements EventSink {
       model: row.model,
       name: row.name,
       projectId: row.project_id,
-      kind: row.kind as 'normal' | 'agent_loop',
       lastSeenEventCount: row.last_seen_event_count,
+      ...(row.planning !== null ? { planning: row.planning } : {}),
+      planningRevision: row.planning_revision,
+      planningPlan: row.planning_plan,
+      ...(row.favorite ? { favorite: true } : {}),
     };
   }
 
@@ -1883,6 +1892,86 @@ export class EventStore implements EventSink {
       .execute();
   }
 
+  async countLegacyProjectGoogleSessions(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<number> {
+    const table =
+      service === 'gmail'
+        ? 'session_gmail_connections'
+        : service === 'calendar'
+          ? 'session_calendar_connections'
+          : 'session_contacts_connections';
+    const result = await this.db
+      .selectFrom(table)
+      .innerJoin('sessions', 'sessions.session_id', `${table}.session_id`)
+      .select((eb) => eb.fn.countAll().as('count'))
+      .where('sessions.project_id', '=', projectId)
+      .executeTakeFirstOrThrow();
+    return Number(result.count);
+  }
+
+  async getProjectGoogleConnection(projectId: string, service: 'gmail' | 'calendar' | 'contacts') {
+    const row = await this.db
+      .selectFrom('project_google_connections')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .where('service', '=', service)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : { accountEmail: row.account_email, enabledAt: row.enabled_at };
+  }
+
+  async enableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+    accountEmail: string,
+  ): Promise<void> {
+    await this.db
+      .insertInto('project_google_connections')
+      .values({ project_id: projectId, service, account_email: accountEmail })
+      .onConflict((conflict) =>
+        conflict.columns(['project_id', 'service']).doUpdateSet({ account_email: accountEmail }),
+      )
+      .execute();
+  }
+
+  async disableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<void> {
+    await this.db.transaction().execute(async (transaction) => {
+      await transaction
+        .deleteFrom('project_google_connections')
+        .where('project_id', '=', projectId)
+        .where('service', '=', service)
+        .execute();
+      // Disabling the project also revokes legacy grants in its sessions.
+      const sessionIds = transaction
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('project_id', '=', projectId);
+      const table =
+        service === 'gmail'
+          ? 'session_gmail_connections'
+          : service === 'calendar'
+            ? 'session_calendar_connections'
+            : 'session_contacts_connections';
+      await transaction.deleteFrom(table).where('session_id', 'in', sessionIds).execute();
+    });
+  }
+
+  private async getProjectGoogleConnectionForSession(
+    sessionId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ) {
+    const session = await this.getSession(sessionId);
+    if (!session?.projectId) return undefined;
+    const grant = await this.getProjectGoogleConnection(session.projectId, service);
+    return grant === undefined ? undefined : { sessionId, ...grant };
+  }
+
   async getSessionGmailConnection(sessionId: string): Promise<SessionGmailConnection | undefined> {
     const row = await this.db
       .selectFrom('session_gmail_connections')
@@ -1890,7 +1979,7 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return row === undefined
-      ? undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'gmail')
       : {
           sessionId: row.session_id,
           accountEmail: row.account_email,
@@ -1928,6 +2017,113 @@ export class EventStore implements EventSink {
 
   async clearSessionGmailConnections(): Promise<void> {
     await this.db.deleteFrom('session_gmail_connections').execute();
+    await this.db.deleteFrom('project_google_connections').where('service', '=', 'gmail').execute();
+  }
+
+  async getSessionCalendarConnection(
+    sessionId: string,
+  ): Promise<SessionCalendarConnection | undefined> {
+    const row = await this.db
+      .selectFrom('session_calendar_connections')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row === undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'calendar')
+      : {
+          sessionId: row.session_id,
+          accountEmail: row.account_email,
+          enabledAt: row.enabled_at,
+        };
+  }
+
+  async enableSessionCalendar(
+    sessionId: string,
+    accountEmail: string,
+  ): Promise<SessionCalendarConnection> {
+    const row = await this.db
+      .insertInto('session_calendar_connections')
+      .values({ session_id: sessionId, account_email: accountEmail })
+      .onConflict((conflict) =>
+        conflict.column('session_id').doUpdateSet({ account_email: accountEmail }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    return (
+      (await this.getSessionCalendarConnection(sessionId)) ?? {
+        sessionId,
+        accountEmail,
+        enabledAt: row!.enabled_at,
+      }
+    );
+  }
+
+  async disableSessionCalendar(sessionId: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_calendar_connections')
+      .where('session_id', '=', sessionId)
+      .execute();
+  }
+
+  async clearSessionCalendarConnections(): Promise<void> {
+    await this.db.deleteFrom('session_calendar_connections').execute();
+    await this.db
+      .deleteFrom('project_google_connections')
+      .where('service', '=', 'calendar')
+      .execute();
+  }
+
+  async getSessionContactsConnection(
+    sessionId: string,
+  ): Promise<SessionContactsConnection | undefined> {
+    const row = await this.db
+      .selectFrom('session_contacts_connections')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row === undefined
+      ? await this.getProjectGoogleConnectionForSession(sessionId, 'contacts')
+      : {
+          sessionId: row.session_id,
+          accountEmail: row.account_email,
+          enabledAt: row.enabled_at,
+        };
+  }
+
+  async enableSessionContacts(
+    sessionId: string,
+    accountEmail: string,
+  ): Promise<SessionContactsConnection> {
+    const row = await this.db
+      .insertInto('session_contacts_connections')
+      .values({ session_id: sessionId, account_email: accountEmail })
+      .onConflict((conflict) =>
+        conflict.column('session_id').doUpdateSet({ account_email: accountEmail }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    return (
+      (await this.getSessionContactsConnection(sessionId)) ?? {
+        sessionId,
+        accountEmail,
+        enabledAt: row!.enabled_at,
+      }
+    );
+  }
+
+  async disableSessionContacts(sessionId: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_contacts_connections')
+      .where('session_id', '=', sessionId)
+      .execute();
+  }
+
+  async clearSessionContactsConnections(): Promise<void> {
+    await this.db.deleteFrom('session_contacts_connections').execute();
+    await this.db
+      .deleteFrom('project_google_connections')
+      .where('service', '=', 'contacts')
+      .execute();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.
@@ -2085,6 +2281,24 @@ export class EventStore implements EventSink {
     return this.claimGoogleSlideInvocation(input);
   }
 
+  async getCompletedGoogleWorkspaceInvocation(input: {
+    invocationId: string;
+    sessionId: string;
+    turnId: string;
+  }): Promise<{ result: unknown } | undefined> {
+    const row = await this.db
+      .selectFrom('google_slide_invocations')
+      .select(['session_id', 'turn_id', 'result_json'])
+      .where('invocation_id', '=', input.invocationId)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    if (row.session_id !== input.sessionId || row.turn_id !== input.turnId)
+      throw new Error('Google Workspace invocation id was reused across turns');
+    return row.result_json === null
+      ? undefined
+      : { result: JSON.parse(row.result_json) as unknown };
+  }
+
   async completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void> {
     await this.completeGoogleSlideInvocation(invocationId, result);
   }
@@ -2114,8 +2328,11 @@ export class EventStore implements EventSink {
         'model',
         'name',
         'project_id',
-        'kind',
         'last_seen_event_count',
+        'planning',
+        'planning_revision',
+        'planning_plan',
+        'favorite',
       ])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
@@ -2128,8 +2345,11 @@ export class EventStore implements EventSink {
       model: r.model,
       name: r.name,
       projectId: r.project_id,
-      kind: r.kind as 'normal' | 'agent_loop',
       lastSeenEventCount: r.last_seen_event_count,
+      ...(r.planning !== null ? { planning: r.planning } : {}),
+      planningRevision: r.planning_revision,
+      planningPlan: r.planning_plan,
+      ...(r.favorite ? { favorite: true } : {}),
     }));
   }
 
@@ -2261,6 +2481,22 @@ export class EventStore implements EventSink {
         .set({ project_id: move.target_project_id, worktree: move.target_worktree })
         .where('session_id', '=', sessionId)
         .execute();
+      // Assigned work stays in its source project; moving the session revokes
+      // the assignment and invalidates updates authorized before the move.
+      await tx
+        .updateTable('tasks')
+        .set({ session_id: null, revision: sql`revision + 1`, updated_at: sql`now()` })
+        .where('session_id', '=', sessionId)
+        .execute();
+      // The operator confirmed a check script against the source project. In the
+      // target it would run against another repository and other secrets without
+      // anyone having seen it there, so it waits until they resume it.
+      await tx
+        .updateTable('session_automations')
+        .set({ status: 'paused', next_run_at: null, updated_at: sql`now()` })
+        .where('session_id', '=', sessionId)
+        .where('script', 'is not', null)
+        .execute();
       await tx
         .updateTable('dev_servers')
         .set({ preview_session_id: null })
@@ -2384,6 +2620,19 @@ export class EventStore implements EventSink {
   }
 
   /**
+   * Mark or unmark a session as an operator favorite. Returns `false` if the
+   * session id is unknown, like {@link renameSession}.
+   */
+  async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({ favorite })
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  /**
    * Guarded auto-title write: set the name ONLY if it is still null. Returns true
    * if it named the session, false if a name was already set — e.g. the operator
    * renamed it DURING the (up to ~45s) title generation. The `name IS NULL`
@@ -2438,6 +2687,64 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
+  }
+
+  /** Move a session into or out of planning mode. `from` makes the write
+   *  conditional, so two racing decisions (a tap on "Implement plan" and the
+   *  approval of an agent's request) cannot both win. Answers whether it changed. */
+  async setSessionPlanning(
+    sessionId: string,
+    planning: SessionPlanning,
+    from?: readonly (SessionPlanning | null)[],
+    expectedRevision?: number,
+  ): Promise<boolean> {
+    let query = this.db
+      .updateTable('sessions')
+      .set({ planning })
+      .where('session_id', '=', sessionId);
+    if (from !== undefined) {
+      const states = from.filter((state): state is SessionPlanning => state !== null);
+      query = query.where((eb) =>
+        eb.or([
+          ...(states.length > 0 ? [eb('planning', 'in', states)] : []),
+          ...(from.includes(null) ? [eb('planning', 'is', null)] : []),
+        ]),
+      );
+    }
+    // A device can approve an old card while another device is publishing its revision.
+    // Checking in this UPDATE prevents the read-before-write race from accepting it.
+    if (expectedRevision !== undefined) {
+      query = query
+        .where('planning_revision', '=', expectedRevision)
+        .where('planning_plan', 'is not', null);
+    }
+    const result = await query.executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async startSessionPlanning(sessionId: string): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({
+        planning: 'active',
+        planning_plan: null,
+        planning_revision: sql`planning_revision + 1`,
+      })
+      .where('session_id', '=', sessionId)
+      .where((eb) => eb.or([eb('planning', 'is', null), eb('planning', '!=', 'active')]))
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async presentSessionPlan(sessionId: string, plan: string): Promise<number | undefined> {
+    const row = await this.db
+      .updateTable('sessions')
+      .set({ planning_plan: plan, planning_revision: sql`planning_revision + 1` })
+      .where('session_id', '=', sessionId)
+      .where('planning', '=', 'active')
+      .returning('planning_revision')
+      .executeTakeFirst();
+    return row?.planning_revision;
   }
 
   async getSessionBackendState(
@@ -2683,6 +2990,22 @@ export class EventStore implements EventSink {
       .where('marker', '=', marker)
       .executeTakeFirst();
     return result.numDeletedRows > 0n;
+  }
+
+  /** Constant-size log marker; a never-written session has no stats row. */
+  async getSessionEventStats(sessionId: string): Promise<SessionEventStats | undefined> {
+    const row = await this.db
+      .selectFrom('session_event_stats')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    return {
+      eventCount: Number(row.event_count),
+      lastEventSeq: Number(row.last_event_seq),
+      lastActivityAt: row.last_activity_at?.getTime() ?? null,
+      revision: String(row.revision),
+    };
   }
 
   async latestEventSeq(sessionId: string): Promise<number> {
@@ -3590,6 +3913,26 @@ export class EventStore implements EventSink {
     return row !== undefined;
   }
 
+  /** Restore listener discovery's baseline without reading the session's transcript. */
+  async getLatestDevServersEvent(
+    sessionId: string,
+  ): Promise<Extract<AgentEvent, { t: 'dev_servers_changed' }> | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('payload')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'dev_servers_changed')
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success || parsed.data.t !== 'dev_servers_changed') {
+      throw new Error(`corrupt listener snapshot in session ${sessionId}`);
+    }
+    return parsed.data;
+  }
+
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
     const sequenced = await this.getEventsAfter(sessionId, 0);
@@ -3636,14 +3979,20 @@ export class EventStore implements EventSink {
    * with its `seq`. `afterSeq = 0` returns the full log. The cursor lets a WS
    * client page a backlog and resume after a reconnect without re-sending it.
    */
-  async getEventsAfter(sessionId: string, afterSeq: number): Promise<SequencedEvent[]> {
-    const rows = await this.db
+  async getEventsAfter(
+    sessionId: string,
+    afterSeq: number,
+    limit?: number,
+  ): Promise<SequencedEvent[]> {
+    let query = this.db
       .selectFrom('events')
       .select(['id', 'payload', 'created_at'])
       .where('session_id', '=', sessionId)
       .where('id', '>', afterSeq)
-      .orderBy('id', 'asc')
-      .execute();
+      .orderBy('id', 'asc');
+    // Paged readers (the live replay) bound each read; recovery reads stay whole.
+    if (limit !== undefined) query = query.limit(limit);
+    const rows = await query.execute();
     return rows.map((row) => {
       const parsed = parseAgentEvent(row.payload);
       if (!parsed.success) {
@@ -3690,15 +4039,10 @@ export class EventStore implements EventSink {
    *   slice. That is the caller's proof to make (`projectionTailIsSelfContained`
    *   in the server), which is why `eventsTruncated` comes back with it.
    *
-   * WHAT IT DOES NOT REMOVE: the counters still scan one index entry per event,
-   * because both are exact facts about the whole log — `count(*)` for the unread
-   * badge, `max(id)` for "last activity", which an event OUTSIDE the slice (a
-   * streaming `text`) also moves. So this is still linear in log length, just
-   * index-only rather than a heap sweep. Making it sublinear means maintaining a
-   * per-session counter on the append path, which is a bigger change than a read
-   * path can make on its own. A caller that does not need the counters should ask
-   * {@link listSessionProjectionEvents} instead and skip that scan entirely —
-   * which is what the activity poll, the most frequent of these routes, does.
+   * Exact counters and the newest event timestamp come from the trigger-maintained
+   * `session_event_stats` row. Every event mutation updates it transactionally,
+   * including writes from older server generations and provisional fence removal.
+   * The counters therefore stay constant-size reads as text history grows.
    *
    * BATCHED ON PURPOSE: `GET /sessions` needs every session at once, so this
    * answers all of them in four queries (tails, rate-limit states, sums,
@@ -3753,31 +4097,14 @@ export class EventStore implements EventSink {
         await this.readLatestRateLimits(chunks, facts, tx);
         await this.readUsageTotals(chunks, facts, tx);
 
-        // `count(*)` and the newest row's timestamp, in one index scan per session.
-        //
-        // The timestamp rides along as a correlated subquery keyed by the group's own
-        // `max(id)` — a primary-key lookup per session, not a second scan — rather than
-        // as a follow-up statement. That is one round trip instead of two, and it puts
-        // the count and the timestamp in ONE snapshot, so they can no longer disagree
-        // about where the log ends.
-        //
-        // The timestamp is that of the row with the highest id rather than
-        // `max(created_at)`: `created_at` defaults to `now()`, which is transaction-
-        // START time, so two events appended from overlapping transactions can carry
-        // timestamps in the opposite order from their seq. The transcript's own
-        // ordering is by seq, and this has to agree with it.
+        // Triggers keep exact counters in the same transaction as every event
+        // mutation, so this read shares the tail/usage snapshot without scanning
+        // one index entry per streamed delta on every overview poll.
         for (const ids of chunks) {
           const totals = await tx
-            .selectFrom('events')
-            .select((eb) => [
-              'session_id',
-              eb.fn.countAll<string | number | bigint>().as('event_count'),
-              eb.fn.max<string | number>('id').as('last_event_seq'),
-              sql<Date | null>`(select newest.created_at from events as newest
-                 where newest.id = max(events.id))`.as('last_activity_at'),
-            ])
+            .selectFrom('session_event_stats')
+            .select(['session_id', 'event_count', 'last_event_seq', 'last_activity_at'])
             .where('session_id', 'in', ids)
-            .groupBy('session_id')
             .execute();
           for (const row of totals) {
             const entry = facts.get(row.session_id);
@@ -3984,12 +4311,8 @@ export class EventStore implements EventSink {
    * `GET /sessions/:id/activity` is the whole reason this exists. It polls every
    * 1.5 s per open session, and it reads the log for exactly one question: is a
    * background task still open behind a turn that already reported its result. It
-   * never returns `eventCount` or `lastActivityAt` — and those are the half of
-   * {@link listSessionProjectionFacts} that stays LINEAR in log length, because
-   * `count(*)` is an exact fact about the whole log while the slice is an index
-   * range over eight discriminants. Charging the hottest poll a full-log index
-   * scan for two numbers it discards is the same shape of waste this change
-   * removed from the routes, one level down.
+   * never returns counters, usage, or quota states, so fetching the other
+   * projection facts would add work whose result this caller discards.
    *
    * A separate method rather than a flag on the other one, because the flag would
    * have to leave `eventCount: 0` behind — and a zero count is not an absence,
@@ -4134,6 +4457,32 @@ export class EventStore implements EventSink {
         opts: JSON.stringify(input.opts),
       })
       .execute();
+  }
+
+  /** Accept a plan and its implementation backlog entry together. A restart
+   * between acceptance and the live queue update must still recover the work. */
+  async enqueuePlanImplementation(input: QueuedTurnInput, revision: number): Promise<boolean> {
+    return this.db.transaction().execute(async (tx) => {
+      const result = await tx
+        .updateTable('sessions')
+        .set({ planning: 'implemented' })
+        .where('session_id', '=', input.sessionId)
+        .where('planning', '=', 'active')
+        .where('planning_revision', '=', revision)
+        .where('planning_plan', 'is not', null)
+        .executeTakeFirst();
+      if (result.numUpdatedRows === 0n) return false;
+      await tx
+        .insertInto('queued_turns')
+        .values({
+          id: input.id,
+          session_id: input.sessionId,
+          prompt: input.prompt,
+          opts: JSON.stringify(input.opts),
+        })
+        .execute();
+      return true;
+    });
   }
 
   /**
@@ -4683,6 +5032,50 @@ export class EventStore implements EventSink {
       .map((membership) => membership.project_id);
   }
 
+  /** Active users holding a project permission — the notification audience
+   * for project work that has no individual initiator. Same control-plane rule
+   * as {@link hasProjectPermission}. */
+  async listProjectUserIds(
+    projectId: string,
+    permission: 'read' | 'execute' | 'manage',
+  ): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('project_memberships as m')
+      .innerJoin('users as u', 'u.id', 'm.user_id')
+      .innerJoin('projects as p', 'p.id', 'm.project_id')
+      .select([
+        'm.user_id',
+        'm.can_read',
+        'm.can_execute',
+        'm.can_manage',
+        'u.status',
+        'u.role',
+        'p.kind',
+        'p.created_by_user_id',
+      ])
+      .where('m.project_id', '=', projectId)
+      .execute();
+    return rows
+      .filter(
+        (row) =>
+          row.status === 'active' &&
+          row[`can_${permission}`] &&
+          (row.kind !== 'control_plane' ||
+            (row.role === 'administrator' && row.created_by_user_id === row.user_id)),
+      )
+      .map((row) => row.user_id);
+  }
+
+  async listActiveAdministratorIds(): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', '=', 'administrator')
+      .where('status', '=', 'active')
+      .execute();
+    return rows.map((row) => row.id);
+  }
+
   async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
@@ -4837,7 +5230,7 @@ export class EventStore implements EventSink {
       select exists (
         select 1 from sessions where project_id = ${projectId}
         union all select 1 from project_settings where project_id = ${projectId}
-        union all select 1 from agent_loops where project_id = ${projectId}
+        union all select 1 from project_google_connections where project_id = ${projectId}
         union all select 1 from dev_servers where project_id = ${projectId}
         union all select 1 from dev_server_detection_state where project_id = ${projectId}
         union all select 1 from claude_egress_client_certs where project_id = ${projectId}
@@ -5101,12 +5494,6 @@ export class EventStore implements EventSink {
         .where('project_id', '=', id)
         .execute();
       await tx.deleteFrom('project_knowledge_spaces').where('project_id', '=', id).execute();
-      await tx
-        .updateTable('knowledge_wiki_jobs')
-        .set({ status: 'failed', error: 'Project was deleted' })
-        .where('project_id', '=', id)
-        .where('status', 'in', ['pending', 'running'])
-        .execute();
       return result.numUpdatedRows > 0n;
     });
   }
@@ -5285,265 +5672,194 @@ export class EventStore implements EventSink {
       .execute();
   }
 
-  // ─── Agent Loops: recurring automations ("der Loop", ADR 0008) ─────────────
+  // ─── Session automations: recurring prompts bound to one session ──────────
 
-  private agentLoopRowToRecord(row: {
+  private sessionAutomationRowToRecord(row: {
     id: string;
-    project_id: string;
+    session_id: string;
     name: string;
     status: string;
-    schedule_kind: string | null;
-    schedule_config: ScheduleConfig | null;
+    schedule: ScheduleConfig;
+    prompt: string;
     script: string | null;
-    reaction_prompt: string | null;
-    reaction_model: string | null;
-    session_id: string | null;
-    tested_script_fingerprint: string | null;
+    model: string | null;
     consecutive_error_count: number;
     last_run_at: Date | null;
     last_outcome: string | null;
+    last_detail: string | null;
     next_run_at: Date | null;
+    sponsor_user_id: string | null;
     created_at: Date;
     updated_at: Date;
-  }): AgentLoopRecord {
+  }): SessionAutomationRecord {
     return {
       id: row.id,
-      projectId: row.project_id,
-      name: row.name,
-      status: row.status as AgentLoopStatus,
-      schedule: row.schedule_config,
-      script: row.script,
-      reactionPrompt: row.reaction_prompt,
-      reactionModel: row.reaction_model,
       sessionId: row.session_id,
-      testedScriptFingerprint: row.tested_script_fingerprint,
+      name: row.name,
+      status: row.status as SessionAutomationStatus,
+      schedule: row.schedule,
+      prompt: row.prompt,
+      script: row.script,
+      model: row.model,
       consecutiveErrorCount: row.consecutive_error_count,
       lastRunAt: row.last_run_at,
-      lastOutcome: row.last_outcome as AgentLoopRunOutcome | null,
+      lastOutcome: row.last_outcome as SessionAutomationOutcome | null,
+      lastDetail: row.last_detail,
       nextRunAt: row.next_run_at,
+      sponsorUserId: row.sponsor_user_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
   }
 
-  private readonly agentLoopColumns = [
-    'id',
-    'project_id',
-    'name',
-    'status',
-    'schedule_kind',
-    'schedule_config',
-    'script',
-    'reaction_prompt',
-    'reaction_model',
-    'session_id',
-    'tested_script_fingerprint',
-    'consecutive_error_count',
-    'last_run_at',
-    'last_outcome',
-    'next_run_at',
-    'created_at',
-    'updated_at',
-  ] as const;
-
   /**
-   * Create an Agent Loop. Every loop is born a `draft`; no caller can bypass the
-   * creation-time test gate by smuggling an enabled status into the insert.
+   * Create or replace the automation of one session. A session owns at most one
+   * automation, so confirming a new proposal replaces the previous one in place.
+   * The result is enabled immediately and armed for its next slot: the operator's
+   * confirmation is the gate, not a separate enable step.
    */
-  async createAgentLoop(input: AgentLoopCreateInput): Promise<AgentLoopRecord> {
-    const schedule = input.schedule ?? null;
-    const row = await this.db
-      .insertInto('agent_loops')
-      .values({
-        id: randomUUID(),
-        project_id: input.projectId,
-        name: input.name,
-        status: 'draft',
-        schedule_kind: schedule ? schedule.kind : null,
-        schedule_config: schedule ? JSON.stringify(schedule) : null,
-        script: input.script ?? null,
-        reaction_prompt: input.reactionPrompt ?? null,
-        reaction_model: input.reactionModel ?? null,
-        next_run_at: null,
-      })
-      .returningAll()
-      .executeTakeFirst();
-    if (!row) throw new Error('verity: createAgentLoop RETURNING yielded no row — dialect bug');
-    return this.agentLoopRowToRecord(row);
-  }
-
-  async getAgentLoop(id: string): Promise<AgentLoopRecord | undefined> {
-    const row = await this.db
-      .selectFrom('agent_loops')
-      .select(this.agentLoopColumns)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? this.agentLoopRowToRecord(row) : undefined;
-  }
-
-  /** Agent Loops for one project, newest first. */
-  async listAgentLoops(projectId: string): Promise<AgentLoopRecord[]> {
-    const rows = await this.db
-      .selectFrom('agent_loops')
-      .select(this.agentLoopColumns)
-      .where('project_id', '=', projectId)
-      .orderBy('created_at', 'desc')
-      .orderBy('id', 'desc')
-      .execute();
-    return rows.map((r) => this.agentLoopRowToRecord(r));
-  }
-
-  /**
-   * Partial update. When `schedule` or `status` changes, `next_run_at` is
-   * recomputed here so the scheduler stays consistent: moving to `enabled`
-   * (or rescheduling an enabled loop) arms it from now; moving to `draft`/`paused`
-   * clears its due time. Returns the updated record, or `undefined` for an
-   * unknown id.
-   */
-  async updateAgentLoop(id: string, patch: AgentLoopPatch): Promise<AgentLoopRecord | undefined> {
-    const set: Record<string, unknown> = { updated_at: sql`now()` };
-    let enableGuard: { fingerprint: string } | undefined;
-    const configChanged =
-      patch.script !== undefined ||
-      patch.schedule !== undefined ||
-      patch.reactionPrompt !== undefined ||
-      patch.reactionModel !== undefined;
-    if (patch.name !== undefined) set.name = patch.name;
-    if (patch.script !== undefined) {
-      set.script = patch.script;
-    }
-    if (patch.reactionPrompt !== undefined) set.reaction_prompt = patch.reactionPrompt;
-    if (patch.reactionModel !== undefined) set.reaction_model = patch.reactionModel;
-    if (patch.sessionId !== undefined) set.session_id = patch.sessionId;
-    // A green test belongs to the complete executable config. Any edit wins over
-    // a simultaneous enable request and immediately disarms the loop.
-    if (configChanged) {
-      set.tested_script_fingerprint = null;
-      set.status = 'draft';
-      set.next_run_at = null;
-    } else if (patch.status !== undefined) set.status = patch.status;
-    if (patch.schedule !== undefined) {
-      set.schedule_kind = patch.schedule ? patch.schedule.kind : null;
-      set.schedule_config = patch.schedule ? JSON.stringify(patch.schedule) : null;
-    }
-
-    // Recompute the due time whenever the schedule or the status moves. Uses the
-    // incoming schedule if given, else the stored one — so a bare enable arms
-    // against the existing schedule. Only an `enabled` loop is armed.
-    const scheduleChanged = patch.schedule !== undefined;
-    const statusChanged = patch.status !== undefined;
-    if (configChanged || statusChanged) {
-      const existing = await this.getAgentLoop(id);
-      if (existing) {
-        const schedule = scheduleChanged ? (patch.schedule ?? null) : existing.schedule;
-        const status = configChanged ? 'draft' : (patch.status ?? existing.status);
-        if (status === 'enabled') {
-          if (!schedule) throw new AgentLoopNotReadyError('Agent Loop needs a schedule');
-          if (!existing.script?.trim())
-            throw new AgentLoopNotReadyError('Agent Loop needs a script');
-          const fingerprint = agentLoopConfigFingerprint(existing);
-          if (existing.testedScriptFingerprint !== fingerprint) {
-            throw new AgentLoopNotReadyError('Test the current Agent Loop config before enabling');
-          }
-          enableGuard = { fingerprint };
-        }
-        set.next_run_at =
-          status === 'enabled' && schedule
-            ? computeNextRun(schedule, new Date()).toISOString()
-            : null;
+  async setSessionAutomation(
+    input: SessionAutomationInput,
+    now: Date = new Date(),
+    checkedWorkspace?: Pick<SessionRecord, 'projectId' | 'worktree'>,
+  ): Promise<SessionAutomationRecord> {
+    const values = {
+      name: input.name,
+      status: 'enabled',
+      schedule: JSON.stringify(input.schedule),
+      prompt: input.prompt,
+      script: input.script ?? null,
+      model: input.model ?? null,
+      consecutive_error_count: 0,
+      last_run_at: null,
+      last_outcome: null,
+      last_detail: null,
+      next_run_at: computeNextRun(input.schedule, now).toISOString(),
+      // A replacement is confirmed by whoever confirmed it, so it re-sponsors.
+      sponsor_user_id: input.sponsorUserId ?? null,
+    };
+    return this.db.transaction().execute(async (tx) => {
+      // Serialize with commitSessionMove: a script checked in the old workspace
+      // must not overwrite the move's pause or become enabled in the new one.
+      const session = await tx
+        .selectFrom('sessions')
+        .select(['project_id', 'worktree'])
+        .where('session_id', '=', input.sessionId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (
+        checkedWorkspace !== undefined &&
+        (session.project_id !== checkedWorkspace.projectId ||
+          session.worktree !== checkedWorkspace.worktree)
+      ) {
+        throw new SessionAutomationWorkspaceChangedError();
       }
-    }
-
-    let update = this.db.updateTable('agent_loops').set(set).where('id', '=', id);
-    // Close enable-vs-edit races: any config edit clears the stored fingerprint,
-    // so the exact tested config must still be current when this UPDATE lands.
-    if (enableGuard) {
-      update = update.where('tested_script_fingerprint', '=', enableGuard.fingerprint);
-    }
-    const row = await update.returningAll().executeTakeFirst();
-    if (!row && enableGuard && (await this.getAgentLoop(id))) {
-      throw new AgentLoopNotReadyError('Agent Loop changed while it was being enabled');
-    }
-    return row ? this.agentLoopRowToRecord(row) : undefined;
+      const row = await tx
+        .insertInto('session_automations')
+        .values({ id: randomUUID(), session_id: input.sessionId, ...values })
+        // A replacement gets a fresh id. Claims and outcomes are keyed by id, so a
+        // run of the previous configuration still in flight cannot record its result
+        // (or its errors) against the one the operator just confirmed.
+        .onConflict((oc) =>
+          oc
+            .column('session_id')
+            .doUpdateSet({ ...values, id: randomUUID(), updated_at: sql`now()` }),
+        )
+        .returningAll()
+        .executeTakeFirst();
+      if (!row)
+        throw new Error('verity: setSessionAutomation RETURNING yielded no row — dialect bug');
+      return this.sessionAutomationRowToRecord(row);
+    });
   }
 
-  /** Atomically bind a replacement session only while the loop is still
-   * unbound. This closes route-vs-scheduler recovery races: exactly one created
-   * session wins and callers can clean up any losing candidate. */
-  async linkAgentLoopSessionIfMissing(
-    id: string,
-    sessionId: string,
-  ): Promise<AgentLoopRecord | undefined> {
+  async getSessionAutomation(sessionId: string): Promise<SessionAutomationRecord | undefined> {
     const row = await this.db
-      .updateTable('agent_loops')
-      .set({ session_id: sessionId, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .where('session_id', 'is', null)
-      .returningAll()
+      .selectFrom('session_automations')
+      .selectAll()
+      .where('session_id', '=', sessionId)
       .executeTakeFirst();
-    return row ? this.agentLoopRowToRecord(row) : undefined;
+    return row ? this.sessionAutomationRowToRecord(row) : undefined;
   }
 
-  /** Mark exactly the config snapshot used by a successful test run as proven.
-   * Conditional predicates close the test-vs-edit race for every config field. */
-  async markAgentLoopTestPassed(
-    id: string,
-    testedConfig: AgentLoopRecord,
-  ): Promise<AgentLoopRecord | undefined> {
-    if (!testedConfig.script?.trim()) throw new AgentLoopNotReadyError('Agent Loop needs a script');
-    let update = this.db
-      .updateTable('agent_loops')
-      .set({
-        tested_script_fingerprint: agentLoopConfigFingerprint(testedConfig),
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .where('script', '=', testedConfig.script);
-    update = testedConfig.schedule
-      ? update
-          .where('schedule_kind', '=', testedConfig.schedule.kind)
-          .where('schedule_config', '=', testedConfig.schedule)
-      : update.where('schedule_kind', 'is', null).where('schedule_config', 'is', null);
-    update =
-      testedConfig.reactionPrompt === null
-        ? update.where('reaction_prompt', 'is', null)
-        : update.where('reaction_prompt', '=', testedConfig.reactionPrompt);
-    update =
-      testedConfig.reactionModel === null
-        ? update.where('reaction_model', 'is', null)
-        : update.where('reaction_model', '=', testedConfig.reactionModel);
-    const row = await update.returningAll().executeTakeFirst();
-    return row ? this.agentLoopRowToRecord(row) : undefined;
+  /**
+   * Pause or resume a session's automation. Resuming re-arms it from `now` and
+   * closes the error circuit, so an automation paused after repeated failures
+   * gets a fresh run of attempts once the operator turns it back on.
+   */
+  async setSessionAutomationStatus(
+    sessionId: string,
+    status: SessionAutomationStatus,
+    now: Date = new Date(),
+  ): Promise<SessionAutomationRecord | undefined> {
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('session_automations')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return undefined;
+      // Re-sending the current status must neither reset the error budget nor
+      // push an already armed slot further out.
+      if (row.status === status) return this.sessionAutomationRowToRecord(row);
+      const updated = await tx
+        .updateTable('session_automations')
+        .set({
+          status,
+          next_run_at:
+            status === 'enabled' ? computeNextRun(row.schedule, now).toISOString() : null,
+          ...(status === 'enabled' ? { consecutive_error_count: 0 } : {}),
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return this.sessionAutomationRowToRecord(updated);
+    });
   }
 
-  async deleteAgentLoop(id: string): Promise<boolean> {
-    const result = await this.db.deleteFrom('agent_loops').where('id', '=', id).executeTakeFirst();
+  async deleteSessionAutomation(sessionId: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('session_automations')
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
     return result.numDeletedRows > 0n;
   }
 
-  /**
-   * Enabled loops whose `next_run_at` is at or before `now` — the scheduler's due
-   * set for one pass. Ordered by due time so the earliest-overdue runs first.
-   */
-  async listDueAgentLoops(now: Date): Promise<AgentLoopRecord[]> {
+  /** Automation status per session, for the session list's automation marker.
+   *  Sessions without an automation are absent from the map. */
+  async listSessionAutomationStatuses(
+    sessionIds: readonly string[],
+  ): Promise<Map<string, SessionAutomationStatus>> {
+    const statuses = new Map<string, SessionAutomationStatus>();
+    if (sessionIds.length === 0) return statuses;
     const rows = await this.db
-      .selectFrom('agent_loops')
-      .select(this.agentLoopColumns)
+      .selectFrom('session_automations')
+      .select(['session_id', 'status'])
+      .where('session_id', 'in', sessionIds)
+      .execute();
+    for (const row of rows) statuses.set(row.session_id, row.status as SessionAutomationStatus);
+    return statuses;
+  }
+
+  /** Enabled automations due at or before `now`, earliest-overdue first. */
+  async listDueSessionAutomations(now: Date): Promise<SessionAutomationRecord[]> {
+    const rows = await this.db
+      .selectFrom('session_automations')
+      .selectAll()
       .where('status', '=', 'enabled')
       .where('next_run_at', 'is not', null)
       .where('next_run_at', '<=', now)
       .orderBy('next_run_at', 'asc')
       .execute();
-    return rows.map((r) => this.agentLoopRowToRecord(r));
+    return rows.map((r) => this.sessionAutomationRowToRecord(r));
   }
 
-  /**
-   * The earliest `next_run_at` across enabled loops, or `null` if none is
-   * scheduled — the scheduler sleeps until this instant instead of polling.
-   */
-  async nextAgentLoopDueAt(): Promise<Date | null> {
+  /** The earliest armed due time, or `null` — the scheduler sleeps until then. */
+  async nextSessionAutomationDueAt(): Promise<Date | null> {
     const row = await this.db
-      .selectFrom('agent_loops')
+      .selectFrom('session_automations')
       .select((eb) => eb.fn.min('next_run_at').as('next'))
       .where('status', '=', 'enabled')
       .where('next_run_at', 'is not', null)
@@ -5552,17 +5868,17 @@ export class EventStore implements EventSink {
   }
 
   /**
-   * Record that a loop ran: stamp `last_run_at` and advance `next_run_at` to the
-   * next scheduled slot (or clear it if no longer enabled). The scheduler computes
-   * the next slot from the loop's own schedule via {@link computeNextRun} and
-   * passes it in, so the store never re-derives scheduling policy.
+   * Claim one due tick: advance `next_run_at` before any work starts, so a crash
+   * mid-run cannot re-fire the same slot after a restart, and two server
+   * generations cannot both run it. Returns false when another claimer won or the
+   * automation was paused, replaced, or deleted in the meantime.
    */
-  async claimAgentLoopRun(id: string, ranAt: Date, nextRunAt: Date | null): Promise<boolean> {
+  async claimSessionAutomationRun(id: string, ranAt: Date, nextRunAt: Date): Promise<boolean> {
     const result = await this.db
-      .updateTable('agent_loops')
+      .updateTable('session_automations')
       .set({
         last_run_at: ranAt.toISOString(),
-        next_run_at: nextRunAt ? nextRunAt.toISOString() : null,
+        next_run_at: nextRunAt.toISOString(),
         updated_at: sql`now()`,
       })
       .where('id', '=', id)
@@ -5573,123 +5889,41 @@ export class EventStore implements EventSink {
     return result.numUpdatedRows > 0n;
   }
 
-  /** Open a run-history row for a loop pass. Returns its id so the scheduler can
-   *  close it with {@link finishAgentLoopRun} once the pass settles. */
-  async startAgentLoopRun(loopId: string): Promise<AgentLoopRunRecord> {
-    const row = await this.db
-      .insertInto('agent_loop_runs')
-      .values({ id: randomUUID(), loop_id: loopId, outcome: 'ok' })
-      .returningAll()
-      .executeTakeFirst();
-    if (!row) throw new Error('verity: startAgentLoopRun RETURNING yielded no row — dialect bug');
-    return this.agentLoopRunRowToRecord(row);
-  }
-
-  /** Close a run-history row with its terminal outcome, optional detail, exit
-   *  code, and the session it used (if any). */
-  async finishAgentLoopRun(
-    runId: string,
-    result: {
-      outcome: AgentLoopRunOutcome;
-      detail?: string | null;
-      sessionId?: string | null;
-      exitCode?: number | null;
-      isTest?: boolean;
-    },
+  /**
+   * Record how a claimed run settled. Five consecutive errors pause the
+   * automation so a broken one stops spending turns until the operator resumes it.
+   */
+  async recordSessionAutomationOutcome(
+    id: string,
+    result: { outcome: SessionAutomationOutcome; detail: string | null },
   ): Promise<void> {
     await this.db.transaction().execute(async (tx) => {
-      const run = await tx
-        .selectFrom('agent_loop_runs')
-        .select('loop_id')
-        .where('id', '=', runId)
-        .executeTakeFirst();
-      if (!run) return;
-      await tx
-        .updateTable('agent_loop_runs')
-        .set({
-          finished_at: sql`now()`,
-          outcome: result.outcome,
-          detail: result.detail ?? null,
-          session_id: result.sessionId ?? null,
-          exit_code: result.exitCode ?? null,
-          ...(result.isTest !== undefined ? { is_test: result.isTest } : {}),
-        })
-        .where('id', '=', runId)
-        .execute();
-
-      // Test runs prove config but must not trip or reset the production circuit.
-      if (result.isTest === true) return;
-      const loop = await tx
-        .selectFrom('agent_loops')
+      const automation = await tx
+        .selectFrom('session_automations')
         .select('consecutive_error_count')
-        .where('id', '=', run.loop_id)
+        .where('id', '=', id)
         .forUpdate()
         .executeTakeFirst();
-      if (!loop) return;
+      if (!automation) return;
       const errorCount =
         result.outcome === 'error'
-          ? loop.consecutive_error_count + 1
-          : result.outcome === 'ok' || result.outcome === 'acted'
-            ? 0
-            : loop.consecutive_error_count;
-      const circuitOpen = errorCount >= 5;
+          ? automation.consecutive_error_count + 1
+          : result.outcome === 'skipped'
+            ? automation.consecutive_error_count
+            : 0;
+      const circuitOpen = errorCount >= SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS;
       await tx
-        .updateTable('agent_loops')
+        .updateTable('session_automations')
         .set({
-          last_run_at: sql`now()`,
           last_outcome: result.outcome,
+          last_detail: result.detail,
           consecutive_error_count: errorCount,
           ...(circuitOpen ? { status: 'paused', next_run_at: null } : {}),
           updated_at: sql`now()`,
         })
-        .where('id', '=', run.loop_id)
+        .where('id', '=', id)
         .execute();
     });
-  }
-
-  /** Run history for a loop, newest first, capped at `limit` (default 50). */
-  async listAgentLoopRuns(loopId: string, limit = 50): Promise<AgentLoopRunRecord[]> {
-    const rows = await this.db
-      .selectFrom('agent_loop_runs')
-      .selectAll()
-      .where('loop_id', '=', loopId)
-      .orderBy('seq', 'desc')
-      .limit(limit)
-      .execute();
-    return rows.map((r) => this.agentLoopRunRowToRecord(r));
-  }
-
-  async getAgentLoopRun(id: string): Promise<AgentLoopRunRecord | undefined> {
-    const row = await this.db
-      .selectFrom('agent_loop_runs')
-      .selectAll()
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? this.agentLoopRunRowToRecord(row) : undefined;
-  }
-
-  private agentLoopRunRowToRecord(row: {
-    id: string;
-    loop_id: string;
-    started_at: Date;
-    finished_at: Date | null;
-    outcome: string;
-    exit_code: number | null;
-    detail: string | null;
-    session_id: string | null;
-    is_test: boolean;
-  }): AgentLoopRunRecord {
-    return {
-      id: row.id,
-      loopId: row.loop_id,
-      startedAt: row.started_at,
-      finishedAt: row.finished_at,
-      outcome: row.outcome as AgentLoopRunOutcome,
-      exitCode: row.exit_code,
-      detail: row.detail,
-      sessionId: row.session_id,
-      isTest: row.is_test,
-    };
   }
 
   private projectSettingsRowToRecord(
@@ -5706,6 +5940,7 @@ export class EventStore implements EventSink {
       memory: string | null;
       google_drive_folder_id: string | null;
       google_drive_folder_name: string | null;
+      google_drive_access_mode: 'read-only' | 'read-write';
       created_at: Date;
       updated_at: Date;
       // See veritySettingsRowToRecord: false → no decrypt (sealed-safe public read).
@@ -5727,6 +5962,7 @@ export class EventStore implements EventSink {
       memory: row.memory,
       googleDriveFolderId: row.google_drive_folder_id,
       googleDriveFolderName: row.google_drive_folder_name,
+      googleDriveAccessMode: row.google_drive_access_mode,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5745,13 +5981,13 @@ export class EventStore implements EventSink {
     'memory',
     'google_drive_folder_id',
     'google_drive_folder_name',
+    'google_drive_access_mode',
     'created_at',
     'updated_at',
   ] as const;
 
   private veritySettingsRowToRecord(
     row: {
-      knowledge_model: string | null;
       git_user_name: string | null;
       git_user_email: string | null;
       git_ssh_private_key_path: string | null;
@@ -5780,6 +6016,9 @@ export class EventStore implements EventSink {
       google_drive_account_email: string | null;
       google_drive_refresh_token: string | null;
       gmail_authorized: boolean;
+      calendar_authorized: boolean;
+      contacts_authorized: boolean;
+      google_granted_scopes: string[];
       uplink_subscription_key: string | null;
       uplink_installation_id: string | null;
       advanced_mode_enabled: boolean;
@@ -5792,7 +6031,6 @@ export class EventStore implements EventSink {
     decrypt = true,
   ): VeritySettingsRecord {
     return {
-      knowledgeModel: row.knowledge_model,
       advancedModeEnabled: row.advanced_mode_enabled,
       gitUserName: row.git_user_name,
       gitUserEmail: row.git_user_email,
@@ -5837,6 +6075,9 @@ export class EventStore implements EventSink {
         ? this.decryptSecret(row.google_drive_refresh_token)
         : row.google_drive_refresh_token,
       gmailAuthorized: row.gmail_authorized,
+      calendarAuthorized: row.calendar_authorized,
+      contactsAuthorized: row.contacts_authorized,
+      googleGrantedScopes: row.google_granted_scopes,
       uplinkSubscriptionKey: decrypt
         ? this.decryptSecret(row.uplink_subscription_key)
         : row.uplink_subscription_key,
@@ -5847,7 +6088,6 @@ export class EventStore implements EventSink {
   }
 
   private readonly veritySettingsColumns = [
-    'knowledge_model',
     'advanced_mode_enabled',
     'git_user_name',
     'git_user_email',
@@ -5877,6 +6117,9 @@ export class EventStore implements EventSink {
     'google_drive_account_email',
     'google_drive_refresh_token',
     'gmail_authorized',
+    'calendar_authorized',
+    'contacts_authorized',
+    'google_granted_scopes',
     'uplink_subscription_key',
     'uplink_installation_id',
     'advanced_mode_enabled',
@@ -5912,7 +6155,6 @@ export class EventStore implements EventSink {
   async updateVeritySettings(patch: VeritySettingsPatch): Promise<VeritySettingsRecord> {
     const values = {
       id: 'global',
-      knowledge_model: normalizeSetting(patch.knowledgeModel),
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
       git_user_name: normalizeSetting(patch.gitUserName),
       git_user_email: normalizeSetting(patch.gitUserEmail),
@@ -5946,6 +6188,9 @@ export class EventStore implements EventSink {
         normalizeSetting(patch.googleDriveRefreshToken),
       ),
       gmail_authorized: patch.gmailAuthorized ?? false,
+      calendar_authorized: patch.calendarAuthorized ?? false,
+      contacts_authorized: patch.contactsAuthorized ?? false,
+      google_granted_scopes: JSON.stringify(patch.googleGrantedScopes ?? []),
       uplink_subscription_key: this.encryptSecret(normalizeSetting(patch.uplinkSubscriptionKey)),
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
     };
@@ -5954,9 +6199,6 @@ export class EventStore implements EventSink {
       .values(values)
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
-          ...(patch.knowledgeModel !== undefined
-            ? { knowledge_model: normalizeSetting(patch.knowledgeModel) }
-            : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }
             : {}),
@@ -6061,6 +6303,15 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.gmailAuthorized !== undefined
             ? { gmail_authorized: patch.gmailAuthorized }
+            : {}),
+          ...(patch.calendarAuthorized !== undefined
+            ? { calendar_authorized: patch.calendarAuthorized }
+            : {}),
+          ...(patch.contactsAuthorized !== undefined
+            ? { contacts_authorized: patch.contactsAuthorized }
+            : {}),
+          ...(patch.googleGrantedScopes !== undefined
+            ? { google_granted_scopes: JSON.stringify(patch.googleGrantedScopes) }
             : {}),
           ...(patch.uplinkSubscriptionKey !== undefined
             ? {
@@ -6341,6 +6592,7 @@ export class EventStore implements EventSink {
       id: row.id,
       projectId: row.project_id,
       devServerId: row.dev_server_id,
+      managedInstanceId: row.managed_instance_id,
       containerGeneration: row.container_generation,
       targetPort: row.target_port,
       targetKind: row.target_kind,
@@ -6351,6 +6603,7 @@ export class EventStore implements EventSink {
       edgeUrl: row.edge_url,
       pinHash: this.decryptSecret(row.pin_hash_secret) ?? '',
       pin: this.decryptSecret(row.pin_secret)!,
+      pinLocked: row.pin_locked,
       connectorToken: this.decryptSecret(row.connector_token_secret) ?? '',
       sessionSecret: this.decryptSecret(row.session_secret) ?? '',
       connectorContainerName: row.connector_container_name,
@@ -6372,6 +6625,7 @@ export class EventStore implements EventSink {
         id: input.id,
         project_id: input.projectId,
         dev_server_id: input.devServerId,
+        managed_instance_id: input.managedInstanceId ?? null,
         container_generation: input.containerGeneration,
         target_port: input.targetPort,
         target_kind: input.targetKind ?? 'dev-server',
@@ -6389,7 +6643,38 @@ export class EventStore implements EventSink {
       })
       .returningAll()
       .executeTakeFirstOrThrow();
-    return this.publicPreviewShare(row);
+    // The control event may precede this insert; consume the durable snapshot.
+    await this.db
+      .updateTable('public_preview_shares')
+      .set({ pin_locked: true })
+      .where('id', '=', row.id)
+      .where('id', 'in', this.db.selectFrom('public_preview_pin_locks').select('share_id'))
+      .execute();
+    await this.db.deleteFrom('public_preview_pin_locks').where('share_id', '=', row.id).execute();
+    return (await this.getPublicPreviewShare(row.id))!;
+  }
+
+  /** PIN lockout blocks new authentication, never the active connector or cookies. */
+  async lockPublicPreviewSharePin(id: string): Promise<void> {
+    await this.db
+      .insertInto('public_preview_pin_locks')
+      .values({ share_id: id })
+      .onConflict((conflict) => conflict.column('share_id').doNothing())
+      .execute();
+    const updated = await this.db
+      .updateTable('public_preview_shares')
+      .set({ pin_locked: true, updated_at: new Date().toISOString() })
+      .where('id', '=', id)
+      .returning('id')
+      .executeTakeFirst();
+    if (updated) {
+      await this.db.deleteFrom('public_preview_pin_locks').where('share_id', '=', id).execute();
+    }
+    // Unknown snapshots cannot belong to a live share after the maximum 30-day TTL.
+    await this.db
+      .deleteFrom('public_preview_pin_locks')
+      .where('created_at', '<', new Date(Date.now() - 31 * 86400_000))
+      .execute();
   }
 
   async addPendingUplinkShareRemoval(shareId: string): Promise<void> {
@@ -6440,6 +6725,8 @@ export class EventStore implements EventSink {
     to: PublicPreviewShareState,
     patch: {
       connectorContainerId?: string | null;
+      targetPort?: number;
+      containerGeneration?: string;
       failure?: string | null;
       revokedAt?: Date | null;
     } = {},
@@ -6453,6 +6740,10 @@ export class EventStore implements EventSink {
         ...(patch.connectorContainerId === undefined
           ? {}
           : { connector_container_id: patch.connectorContainerId }),
+        ...(patch.targetPort === undefined ? {} : { target_port: patch.targetPort }),
+        ...(patch.containerGeneration === undefined
+          ? {}
+          : { container_generation: patch.containerGeneration }),
         ...(patch.failure === undefined ? {} : { failure: patch.failure }),
         ...(patch.revokedAt === undefined
           ? {}
@@ -6731,6 +7022,7 @@ export class EventStore implements EventSink {
       memory,
       google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
+      google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
     };
     return this.db.transaction().execute(async (tx) => {
       // Ensure and lock the per-project settings row before applying the patch.
@@ -6782,6 +7074,9 @@ export class EventStore implements EventSink {
             ...(patch.memory !== undefined ? { memory } : {}),
             ...(patch.googleDriveFolderId !== undefined
               ? { google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId) }
+              : {}),
+            ...(patch.googleDriveAccessMode !== undefined
+              ? { google_drive_access_mode: patch.googleDriveAccessMode }
               : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
@@ -6929,13 +7224,19 @@ export class EventStore implements EventSink {
 
   /** Persist a newly minted token (only its hash). */
   async insertAuthToken(record: {
+    expiresAt?: number | null;
     id: string;
     tokenHash: string;
     label?: string | null;
   }): Promise<string> {
     const row = await this.db
       .insertInto('auth_tokens')
-      .values({ id: record.id, token_hash: record.tokenHash, label: record.label ?? null })
+      .values({
+        id: record.id,
+        token_hash: record.tokenHash,
+        label: record.label ?? null,
+        expires_at: record.expiresAt == null ? null : new Date(record.expiresAt).toISOString(),
+      })
       .returning('user_id')
       .executeTakeFirstOrThrow();
     return row.user_id;
@@ -6953,13 +7254,14 @@ export class EventStore implements EventSink {
   async listAuthTokens(): Promise<AuthTokenRecord[]> {
     const rows = await this.db
       .selectFrom('auth_tokens')
-      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at'])
+      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at', 'expires_at'])
       .orderBy('created_at', 'desc')
       .execute();
     return rows.map((r) => ({
       id: r.id,
       userId: r.user_id,
       tokenHash: r.token_hash,
+      expiresAt: r.expires_at === null ? null : new Date(r.expires_at).getTime(),
       label: r.label,
       createdAt: new Date(r.created_at).getTime(),
       lastSeenAt: r.last_seen_at === null ? null : new Date(r.last_seen_at).getTime(),
@@ -6979,10 +7281,13 @@ export class EventStore implements EventSink {
 
   /** Stamp a device's last authenticated request. Called off the request's
    *  critical path and throttled by the registry, never per request. */
-  async touchAuthToken(id: string): Promise<void> {
+  async touchAuthToken(id: string, expiresAt?: number): Promise<void> {
     await this.db
       .updateTable('auth_tokens')
-      .set({ last_seen_at: new Date().toISOString() })
+      .set({
+        last_seen_at: new Date().toISOString(),
+        ...(expiresAt === undefined ? {} : { expires_at: new Date(expiresAt).toISOString() }),
+      })
       .where('id', '=', id)
       .execute();
   }
@@ -7057,6 +7362,37 @@ export class EventStore implements EventSink {
           createdAt: new Date(row.created_at).getTime(),
           updatedAt: new Date(row.updated_at).getTime(),
         };
+  }
+
+  /** The push tokens of the given users' devices, with the user each belongs to. */
+  async listDevicePushTokensForUsers(
+    userIds: readonly string[],
+  ): Promise<(DevicePushTokenRecord & { userId: string })[]> {
+    if (userIds.length === 0) return [];
+    const rows = await this.db
+      .selectFrom('device_push_tokens as t')
+      .innerJoin('auth_tokens as a', 'a.id', 't.auth_token_id')
+      .innerJoin('users as u', 'u.id', 'a.user_id')
+      .select([
+        't.auth_token_id',
+        't.expo_token',
+        't.platform',
+        't.created_at',
+        't.updated_at',
+        'a.user_id',
+      ])
+      .where('a.user_id', 'in', [...userIds])
+      .where('u.status', '=', 'active')
+      .orderBy('t.created_at', 'asc')
+      .execute();
+    return rows.map((row) => ({
+      authTokenId: row.auth_token_id,
+      expoToken: row.expo_token,
+      platform: row.platform,
+      createdAt: new Date(row.created_at).getTime(),
+      updatedAt: new Date(row.updated_at).getTime(),
+      userId: row.user_id,
+    }));
   }
 
   async listDevicePushTokens(): Promise<DevicePushTokenRecord[]> {

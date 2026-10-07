@@ -529,6 +529,7 @@ describe('release audit against the registry', () => {
       const child = spawn(process.execPath, ['scripts/audit-release-images.mjs'], {
         env: {
           ...process.env,
+          VERITY_FORGE_MODE: '',
           GITHUB_TOKEN: 't',
           GITHUB_REPOSITORY: 'heey-global/verity',
           GITHUB_API_URL: base,

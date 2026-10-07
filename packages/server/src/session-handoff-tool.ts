@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import { controlDiagnosticRecordSchema } from './control-diagnostics-tool.js';
 
 import {
   listSessionsRequestSchema,
@@ -142,7 +144,7 @@ interface ControlPlaneSessionCall {
  * reader, so it should not be widened.
  *
  * Deliberately absent: `name`. A session name looks like metadata, and often is — the
- * operator typed it, or it reads `Agent Loop: nightly`. But an unnamed session is auto-titled
+ * operator typed it, or it reads `Nightly audit`. But an unnamed session is auto-titled
  * by its own model from the first prompt and reply (`Conductor.maybeAutoTitle`), and that is
  * on by default. So the field is, in the common case, a three-word summary of another
  * project's opening conversation — and listing the fleet would hand every one of them over at
@@ -188,6 +190,8 @@ export interface ControlPlaneSessionToolDeps {
   /** The project a Verity Control session runs in. Both the caller check and the
    *  target exclusion key on it. */
   controlProjectId: string;
+  /** Permit verified Control metadata and approved handoffs across knowledge boundaries. */
+  allowKnowledgeControlOperations?: boolean | undefined;
   /** The originating session, to prove the bearer's project claim against the store. */
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   /** Knowledge-bearing contexts cannot act as a cross-project transfer bridge. */
@@ -310,6 +314,7 @@ export interface ControlPlaneSessionTools {
    * a Verity Control session.
    */
   authorizeCaller(input: Pick<ControlPlaneSessionCall, 'projectId' | 'sessionId'>): Promise<void>;
+  authorizeDiagnosticProject(projectId: string): Promise<void>;
 }
 
 function isControlPlaneTarget(project: ProjectRecord, controlProjectId: string): boolean {
@@ -353,11 +358,12 @@ export function createControlPlaneSessionTools(
         'originating session is not a Verity Control session',
       );
     }
-    await deps.authorizeKnowledgeCaller?.(input);
+    if (!deps.allowKnowledgeControlOperations) await deps.authorizeKnowledgeCaller?.(input);
   };
 
   const requireKnowledgeTarget = async (projectId: string, sessionId?: string): Promise<void> => {
     if (
+      !deps.allowKnowledgeControlOperations &&
       deps.canAccessKnowledgeTarget &&
       !(await deps.canAccessKnowledgeTarget({
         projectId,
@@ -469,6 +475,7 @@ export function createControlPlaneSessionTools(
     const permittedProjects: ProjectRecord[] = [];
     for (const project of projects) {
       if (
+        deps.allowKnowledgeControlOperations ||
         !deps.canAccessKnowledgeTarget ||
         (await deps.canAccessKnowledgeTarget({ projectId: project.id }))
       ) {
@@ -492,7 +499,7 @@ export function createControlPlaneSessionTools(
         narrow({ sessionId: candidate.sessionId, projectId: candidate.projectId }),
       requireResumable,
       // A cap before policy filtering can reveal protected session counts.
-      deps.canAccessKnowledgeTarget ? undefined : limit,
+      deps.canAccessKnowledgeTarget && !deps.allowKnowledgeControlOperations ? undefined : limit,
     );
     const sessions: { facts: ControlPlaneSessionFacts; project: ProjectRecord }[] = [];
     for (const session of projected.sessions) {
@@ -504,6 +511,7 @@ export function createControlPlaneSessionTools(
       if (project === undefined) continue;
       if (!narrow({ sessionId: session.sessionId, projectId })) continue;
       if (
+        !deps.allowKnowledgeControlOperations &&
         deps.canAccessKnowledgeTarget &&
         !(await deps.canAccessKnowledgeTarget({
           projectId,
@@ -517,7 +525,7 @@ export function createControlPlaneSessionTools(
     // the re-checks above drop sessions this module would never have reported anyway, and
     // folding those into the same number would tell the caller its view is truncated when it
     // is complete.
-    if (deps.canAccessKnowledgeTarget) {
+    if (deps.canAccessKnowledgeTarget && !deps.allowKnowledgeControlOperations) {
       const visible = limit === undefined ? sessions : sessions.slice(0, limit);
       return { sessions: visible, omitted: sessions.length - visible.length };
     }
@@ -550,6 +558,16 @@ export function createControlPlaneSessionTools(
 
   return {
     authorizeCaller: requireControlPlaneCaller,
+    async authorizeDiagnosticProject(projectId) {
+      const project = (await deps.listProjects()).find((candidate) => candidate.id === projectId);
+      if (
+        !project ||
+        project.hiddenAt !== null ||
+        isControlPlaneTarget(project, deps.controlProjectId)
+      )
+        throw new ControlPlaneSessionToolError('target project unavailable');
+      await requireKnowledgeTarget(projectId);
+    },
     async listSessions(input) {
       await requireControlPlaneCaller(input);
       const request = listSessionsRequestSchema.parse(input.request);
@@ -776,11 +794,37 @@ export function createControlPlaneSessionTools(
         sessionId: target.facts.sessionId,
         projectId: target.project.id,
         project: `${target.project.owner}/${target.project.repo}`,
-        ...result,
+        ...(deps.allowKnowledgeControlOperations
+          ? {
+              diagnostics: z
+                .array(controlDiagnosticRecordSchema)
+                .max(20)
+                .parse(result.diagnostics ?? []),
+              ...Object.fromEntries(
+                [
+                  'lifecycle',
+                  'status',
+                  'projectionTruncated',
+                  'lastActivityAt',
+                  'activeTurnStartedAt',
+                  'activeTurnAgeMs',
+                  'turnCompleted',
+                  'outcomeDelivered',
+                ]
+                  .filter(
+                    (key) =>
+                      ['string', 'number', 'boolean'].includes(typeof result[key]) ||
+                      result[key] === null,
+                  )
+                  .map((key) => [key, result[key]]),
+              ),
+            }
+          : result),
       };
     },
     async recentMessages(input) {
       await requireControlPlaneCaller(input);
+      await deps.authorizeKnowledgeCaller?.(input);
       const request = recentSessionMessagesRequestSchema.parse(input.request);
       const target = await requireObservableTarget(request.sessionId);
       if (deps.readRecentMessages === undefined) {
@@ -788,7 +832,15 @@ export function createControlPlaneSessionTools(
       }
       const count = request.count ?? RECENT_SESSION_MESSAGES_DEFAULT;
       await requireControlPlaneCaller(input);
-      await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
+      await deps.authorizeKnowledgeCaller?.(input);
+      if (
+        deps.canAccessKnowledgeTarget &&
+        !(await deps.canAccessKnowledgeTarget({
+          projectId: target.project.id,
+          sessionId: target.facts.sessionId,
+        }))
+      )
+        throw new ControlPlaneSessionToolError('target is unavailable for cross-project access');
       const result = await deps.readRecentMessages({
         sessionId: target.facts.sessionId,
         count,
@@ -796,7 +848,15 @@ export function createControlPlaneSessionTools(
         ...(request.beforeSeq === undefined ? {} : { beforeSeq: request.beforeSeq }),
       });
       await requireControlPlaneCaller(input);
-      await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
+      await deps.authorizeKnowledgeCaller?.(input);
+      if (
+        deps.canAccessKnowledgeTarget &&
+        !(await deps.canAccessKnowledgeTarget({
+          projectId: target.project.id,
+          sessionId: target.facts.sessionId,
+        }))
+      )
+        throw new ControlPlaneSessionToolError('target is unavailable for cross-project access');
       return {
         sessionId: target.facts.sessionId,
         projectId: target.project.id,

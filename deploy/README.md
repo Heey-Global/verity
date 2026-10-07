@@ -21,6 +21,14 @@ Phase A (the ADR lands with PR #303).
 
 ## Prerequisites
 
+For one active project sandbox, plan for **16 GiB of RAM and 4 CPU cores**.
+This is a sizing recommendation, not a tested minimum. The default per-sandbox
+limits are 6 GiB of RAM and a CPU quota of 4 cores, shared against the host's
+available CPU capacity rather than reserved cores. The Server, PostgreSQL,
+other services, and the host also need memory. For smaller hosts, lower the
+[resource limits](#resource-guardrails); allow additional capacity for multiple
+active sandboxes.
+
 - A Docker host with **Docker 25.0+** (the provisioner mounts per-project subdirs
   of a named volume into sibling sandboxes via `volume-subpath`) and the **Compose v2
   plugin** (`docker compose`; the standalone `docker-compose` binary is not used).
@@ -53,13 +61,32 @@ For a fresh managed installation, the recommended path is:
 curl -fsSL https://verity.build/install.sh | bash
 ```
 
-The public bootstrap pulls the official release, resolves it to an immutable
-digest, copies the release-matched deployment bundle into a fresh root-owned
+The public bootstrap temporarily downloads cosign v3.1.3 for the host's
+architecture and validates it against an embedded SHA-256 checksum. It pulls
+the official release, resolves it to an immutable digest, verifies its signature
+against the official GitHub release workflow identity, and copies the release-matched deployment bundle into a fresh root-owned
 directory, and runs the guarded installer below. The temporary bundle is removed
 afterwards; durable deployment identity remains under `/etc/verity`. It requires
 Docker 25+, Compose v2, and root access through either the current account or
 `sudo`. The privileged installer deliberately uses the root Docker daemon;
 Rootless Docker is not accepted as a source for code that will execute as root.
+
+Cosign is removed on exit and is not installed on the host. A download,
+checksum, or signature verification failure stops the bootstrap before image
+code executes or deployment files are extracted. Recovery also verifies the
+existing Server image before using it as a helper. Unsigned historical images
+cannot be recovered through this bootstrap; there is no verification bypass.
+Network access to GitHub releases, the registry, and Sigstore trust services is
+required. The bootstrap script itself remains the initial trust anchor.
+
+App updates receive the verifier with a normal confirmed Server update. Once
+installed, the networked Server checks the target image signature before
+submitting an update to the network-isolated Updater. Direct and bridge recovery
+commands also check the target signature before executing target-image probes.
+When run on the host, recovery commands temporarily download and checksum
+cosign if the bundled binary is unavailable; no host package installation is needed.
+The existing signed release-channel checks remain in place; the update that
+first introduces this verifier still uses the preceding release's update logic.
 
 Every run starts with an aggregated host preflight and reports all missing
 requirements before pulling an image or changing installation state. To run only
@@ -134,6 +161,12 @@ capability under `/etc/verity`. On first run, in the mobile app:
    These are encrypted and stored in the DB — no host-mounted `.pem`.
 4. **Add a project** by naming its repo. Verity clones it into the clone-root and
    runs a container from the standard base image; the agent is ready.
+
+Automatic address detection excludes interfaces named `docker0`, `docker1`, etc.,
+`br-*`, and `veth*` when the host has working `ip` tooling. Private LAN and
+Tailscale addresses remain eligible. Custom-named Docker bridges and the
+`hostname -I` fallback may still appear; choose an address your phone can reach,
+or explicitly set `VERITY_PAIRING_HOST` for automation.
 
 ### Pair another device
 
@@ -476,24 +509,31 @@ users.
 The reference deployment is designed for a trusted network segment. Everything
 below is what changes when the host is reachable from the public internet.
 
-**The API port (8082) is the defensible surface.** Transport is TLS terminated
-in-process with a certificate the app pins, every route not on the explicit
-pre-auth list requires a per-device bearer token, and `/secret/unlock` and
-`/secret/init` are throttled. A direct server also refuses to boot without
-pairing material, so the first-run window in which no master password exists
-cannot be claimed by an unauthenticated caller. Exposing 8082 is survivable —
-but fewer reachable ports is still fewer, so prefer a VPN (WireGuard,
-Tailscale) or a host firewall that admits only your devices' addresses when
-your setup allows it.
+**The API port (8082) uses TLS and device authentication.** The mobile app pins
+the server certificate, and API routes outside the explicit pre-authentication
+list require a per-device bearer token after pairing. `/secret/unlock` and
+`/secret/init` are throttled. A direct server refuses to boot without pairing
+material. See [SECURITY.md](../SECURITY.md) for the security model and known
+limitations.
 
-**The Dev Server ranges must not be public.** Host ports `3000–3099` and
-`8000–8099` publish project Dev Servers as raw, unauthenticated HTTP — no
-bearer, no TLS. Anything an agent starts there is reachable by whoever can
-reach the port, and agents act on repository content you may not fully trust.
-On an internet-facing host, keep both ranges firewalled to your own clients or
-VPN; do not follow the remote-preview note in
-[Ports & environment reference](#ports--environment-reference) with a
-public-internet allow rule.
+The reference Compose deployment publishes port 8082 on all host interfaces.
+Prefer access limited to your devices through a trusted network or VPN such as
+WireGuard or Tailscale. Using a VPN to connect does not itself restrict access
+through other host interfaces.
+
+**Docker-published ports can bypass ufw rules.** Docker forwards incoming traffic
+to containers before the usual ufw input rules apply. An active ufw firewall
+therefore does not establish that port 8082 is blocked. Use network filtering
+that covers Docker's published ports and verify access from both an allowed
+client and a network that should be denied. See Docker's
+[firewall documentation](https://docs.docker.com/engine/network/packet-filtering-firewalls/#docker-and-ufw).
+
+**The local preview range must not be public.** Host ports `8100–8119`
+(default `VERITY_LOCAL_PREVIEW_PORT_RANGE`) serve local HTTP and WebSocket previews
+without authentication or TLS. Allow this range only from trusted LAN clients or
+your VPN. Docker-published ports need filtering that covers Docker forwarding;
+ordinary ufw input rules alone do not establish that the range is restricted.
+Public previews use the authenticated Uplink edge instead.
 
 **Do not expose anything else.** PostgreSQL and the Claude/Codex egress
 gateways (9443/9444) are intentionally unpublished; nothing outside the Compose
@@ -702,9 +742,9 @@ VERITY_SANDBOX_CPUS=4
 VERITY_SANDBOX_CPU_SHARES=512
 ```
 
-Active project Sandboxes sleep after 30 minutes without a running turn, Agent
-Loop, dev server, or public preview. New turns and Agent Loops wake them
-automatically. This is a product lifecycle rule rather than a deployment setting.
+Active project Sandboxes sleep after 30 minutes without a running turn,
+automation check, dev server, or public preview. New turns and automations wake
+them automatically. This is a product lifecycle rule rather than a deployment setting.
 
 Sleep decides how many sandboxes are resident at all; the limits below govern the
 ones that are awake. The two are complementary, and neither replaces the other —
@@ -907,19 +947,45 @@ Verity's own secrets are additionally encrypted at rest.
 
 ## Ports & environment reference
 
-Verity reserves host ports `3000–3099` and `8000–8099` for project Dev Servers.
-The global database-backed registry assigns the lowest free port across both ranges
-and all projects; ports are not caller-selectable. Deleting a Dev Server or project
-releases its lease for reuse. Ensure both ranges are available on the Docker host
-and allowed by any host firewall when remote preview access is required — but
-only for clients you trust: these ports serve project Dev Servers without TLS or
-authentication, so on an internet-reachable host keep them restricted to your
-VPN or client addresses (see
-[Hardening an internet-reachable host](#hardening-an-internet-reachable-host)).
+Verity reserves one contiguous host range for local previews, default `8100–8119`.
+Set `VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119` in the deployment environment to
+change it (1–200 nonprivileged ports, excluding the API ports). The same range is
+published on the legacy Server or managed Gateway and used internally by the
+Server. Changing it requires restarting the ingress container; creating or
+revoking a share never recreates the project sandbox. Ports are assigned only
+while shares are active. A full range produces an explicit capacity error.
+
+Managed self-updates reconcile the Gateway's local preview listener range and
+publish missing host ports even when the Gateway image already matches the target.
+The migration uses the running managed Server's range and reconciles existing
+preview bindings, including legacy loopback bindings. Preview ports default to all
+host interfaces for LAN and VPN access. Set `VERITY_LOCAL_PREVIEW_BIND_ADDRESS`
+to an explicit host IP to restrict access (bracket IPv6 addresses, for example `[::1]`); Compose and managed updates use the same
+setting. Local previews are unauthenticated: public interfaces require appropriate
+host firewall restrictions. API port bindings remain unchanged.
+A failed replacement restarts the previous Gateway.
+This requires an Updater with companion reconciliation; deployments predating
+that mechanism still require the documented managed-bootstrap migration.
+Self-update changes the runtime container configuration, not the host's installed
+Compose files. Before manually recreating the Gateway with Compose, update those
+files to the current release so the recreation retains the preview configuration.
+
+Local previews are open HTTP, including REST APIs and WebSockets. Restrict the
+range to trusted clients or VPN addresses; it must never be exposed directly to
+the public internet. A network firewall may also need updating when the range
+changes. Docker's optional `userland-proxy: false` setting can reduce the process
+overhead of published ports; its actual memory cost depends on the Docker
+configuration and should be measured on the host.
+
+Start an HTTP/WebSocket service yourself or ask the agent to start it, then open
+the detected listener in the session Preview sheet. Local access uses the Verity
+ingress range. Services listen inside the sandbox; the connector forwards requests
+from the allocated preview port to the service.
 
 | Variable                              | Default                                                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `VERITY_API_HOST_PORT`                | `8082`                                                               | Host port published to the mobile app. Container `PORT` remains `8082`.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `VERITY_LOCAL_PREVIEW_PORT_RANGE`     | `8100-8119`                                                          | Identical host/container range for open local HTTP and WebSocket previews. Restrict to trusted LAN/VPN clients; changing it requires restarting the ingress container.                                                                                                                                                                                                                                                                                                                                          |
 | `PORT`                                | `8082`                                                               | API listen port.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `VERITY_DOCKER_BASE_URL`              | `unix:///var/run/docker.sock`                                        | Docker access (mounted socket, or proxy URL).                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `VERITY_DOCKER_SOCKET_PATH`           | `/var/run/docker.sock`                                               | Host socket path mounted into the runner for the default raw-socket mode.                                                                                                                                                                                                                                                                                                                                                                                                                                       |

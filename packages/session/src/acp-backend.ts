@@ -10,7 +10,7 @@ import type {
   RequestPermissionResponse,
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { AgentEvent, Usage } from '@verity/events';
+import { planningToolName, type AgentEvent, type Usage } from '@verity/events';
 import type { PermissionDecision, PermissionRequest } from './index.js';
 import type {
   RunResult,
@@ -18,7 +18,7 @@ import type {
   SpawnedProcess,
   SteerMessage,
 } from './backend-contract.js';
-import { isExplicitPreExecutionRejection } from './backend-contract.js';
+import { isExplicitPreExecutionRejection, isUsageLimitError } from './backend-contract.js';
 import {
   AcpEventAdapter,
   AcpTextStream,
@@ -149,6 +149,8 @@ export interface AcpBackendProfile {
    *  mode-carrying permission request asks which posture an approval implies.
    *  Agents that do not advertise the mode keep their own clamped current mode. */
   sessionMode?(opts: RunTurnOptions): string | undefined;
+  /** The profile verifies restrictive planning through configureSession instead. */
+  readonly planningViaConfig?: boolean;
   /** The one tool whose approval legitimately also picks a permission posture
    *  (Claude's `ExitPlanMode`). Profiles that name none never have a permission
    *  request read as a posture, whatever its options look like. */
@@ -587,6 +589,7 @@ export async function runAcpTurn(
   // so the conductor can drop the binding and start cold instead of re-resuming a
   // pointer that will be refused again on every future turn.
   let loadRefused = false;
+  let diagnosticPhase: 'spawn' | 'initialize' | 'session_load' | 'session_new' | 'prompt' = 'spawn';
   const topLevelText = new AcpTextStream();
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
@@ -694,7 +697,21 @@ export async function runAcpTurn(
       }
       return response;
     };
-    if (opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
+    // A planning turn refuses every request without asking. Whatever an agent asks
+    // for here is a step beyond reading — an edit, a command outside its read-only
+    // sandbox, Claude's own `ExitPlanMode` — and approving it would carry out part
+    // of a plan the operator has not accepted yet. The operator leaves planning
+    // through Verity instead, which ends it for every agent the same way.
+    const planning = opts.planning === true;
+    // Planning may start mid-turn, before opts.planning reflects the new posture.
+    // Let these calls reach the gateway in either posture: presenting only shows
+    // text, and ending planning still requires the gateway's implementation approval.
+    if (planningToolName(name) !== undefined) {
+      const allow = request.options.find((option) => option.kind === 'allow_once');
+      if (allow !== undefined)
+        return { outcome: { outcome: 'selected', optionId: allow.optionId } };
+    }
+    if (planning || opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
       // No approval UI is wired, so every request is refused. On a mode picker
       // the refusal IS "no, keep planning" and lands the session in `plan`;
       // pulling it back to the configured posture would turn a turn Verity
@@ -783,6 +800,7 @@ export async function runAcpTurn(
         return queueUpdate(params.update);
       })
       .connectWith(processStream(child, opts.worktree), async (agent) => {
+        diagnosticPhase = 'initialize';
         const initialized = await agent.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
           ...(profile.clientCapabilitiesMeta !== undefined
@@ -844,6 +862,7 @@ export async function runAcpTurn(
         };
         let session: NewSessionResponse;
         if (opts.resumeSessionId !== undefined) {
+          diagnosticPhase = 'session_load';
           if (initialized.agentCapabilities?.loadSession !== true) {
             throw new Error(profile.loadSessionUnsupported);
           }
@@ -882,9 +901,11 @@ export async function runAcpTurn(
             });
           session = { sessionId: opts.resumeSessionId, ...loaded };
         } else {
+          diagnosticPhase = 'session_new';
           session = await agent.request(acp.methods.agent.session.new, request);
         }
         sessionId = session.sessionId;
+        diagnosticPhase = 'prompt';
         boundSessionId = session.sessionId;
         cancelSession = () => {
           void agent
@@ -969,10 +990,15 @@ export async function runAcpTurn(
         // it rather than trust it. Awaited, unlike the drift pull-back: the mode
         // has to hold before the prompt goes out, or the turn's first tool call
         // runs in a posture nobody chose.
+        if (opts.planning === true && setMode === undefined && profile.planningViaConfig !== true) {
+          throw new Error('The agent does not support the required planning permission mode.');
+        }
         if (setMode !== undefined) {
           try {
             await setMode();
           } catch {
+            if (opts.planning === true)
+              throw new Error('The agent refused the required planning permission mode.');
             // The mode catalogue is reported once, at session creation, and ACP
             // offers no way to re-read it: `session/set_config_option` answers
             // with config options only. So a model selected just above can have
@@ -1079,6 +1105,14 @@ export async function runAcpTurn(
         } else if (!aborted) {
           await writer.write({ t: 'status', state: 'crashed' });
         }
+        await writer.write({
+          t: 'diagnostic',
+          source: 'agent',
+          outcome:
+            prompt.stopReason === 'cancelled' ? (aborted ? 'cancelled' : 'failed') : 'completed',
+          phase: diagnosticPhase,
+          backend: profile.telemetryBackend,
+        });
         await writer.finish();
         return prompt;
       });
@@ -1130,8 +1164,39 @@ export async function runAcpTurn(
     // {@link SessionWriter.finish} — but the invariant is the point, and it
     // should not rest on where the writer happens to drop events today.
     if (sessionId !== undefined && !aborted && !failedBeforeExecution) {
-      await writer.write({ t: 'error', kind: 'acp', message }).catch(() => undefined);
-      await writer.write({ t: 'status', state: 'crashed' }).catch(() => undefined);
+      const usageLimit = isUsageLimitError(message);
+      await writer
+        .write({ t: 'error', kind: usageLimit ? 'usage_limit' : 'acp', message })
+        .catch(() => undefined);
+      await writer
+        .write({ t: 'status', state: usageLimit ? 'completed' : 'crashed' })
+        .catch(() => undefined);
+    }
+    if (sessionId !== undefined || opts.storeSessionId !== undefined) {
+      const diagnostic = {
+        t: 'diagnostic',
+        source: 'agent',
+        outcome: aborted ? 'cancelled' : 'failed',
+        phase: diagnosticPhase,
+        backend: profile.telemetryBackend,
+        ...(error instanceof acp.RequestError ? { code: error.code } : {}),
+      } as const;
+      if (writer.currentSessionId !== undefined) {
+        await writer.write(diagnostic).catch(() => undefined);
+      } else {
+        // A refused session/load never binds SessionWriter. The existing Verity
+        // session still owns this attempt, so persist the metadata directly.
+        const storeId = opts.storeSessionId ?? opts.resumeSessionId;
+        if (storeId !== undefined && (await opts.store.getSession(storeId)) !== undefined) {
+          const { seq, ts } = await opts.store.appendEvent(storeId, diagnostic).catch(() => ({
+            seq: undefined,
+            ts: undefined,
+          }));
+          if (seq !== undefined && ts !== undefined) {
+            opts.bus?.publish(storeId, { seq, ts, event: diagnostic });
+          }
+        }
+      }
     }
     await writer.finish().catch(() => undefined);
     return {

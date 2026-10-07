@@ -2,7 +2,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VeritySettingsPatch, VeritySettingsRecord } from '@verity/store';
 import type { AgentLoginService } from './agent-login.js';
-import { registerSettingsRoutes } from './settings-routes.js';
+import { claudeSubscriptionPlan } from './agent-subscription.js';
+import { registerSettingsRoutes, type SettingsRouteDeps } from './settings-routes.js';
 
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
@@ -208,5 +209,65 @@ describe('automatic OpenCode settings models', () => {
       opencodeApiKey: 'new-key',
       opencodeModels: 'new',
     });
+  });
+});
+
+// The plan labels are derived from inside encrypted credentials. Fed the raw
+// row, the projection sees ciphertext and every plan silently reads as unknown;
+// fed the decrypted one while sealed, the screen that unlocks the store would
+// fail to load.
+describe('GET /settings subscription plans', () => {
+  const plaintext = JSON.stringify({
+    claudeAiOauth: { subscriptionType: 'max', rateLimitTier: 'default_claude_max_5x' },
+  });
+
+  async function plansApp(opts: { sealed: boolean; decryptFails?: boolean }) {
+    const getVeritySettings = vi.fn(async () => {
+      if (opts.decryptFails) throw new Error('decrypt failed');
+      return { claudeCodeOauthCredentialsJson: plaintext } as VeritySettingsRecord;
+    });
+    const app = Fastify();
+    apps.push(app);
+    registerSettingsRoutes(app, {
+      store: () => ({
+        getVeritySettingsRaw: async () =>
+          ({ claudeCodeOauthCredentialsJson: 'v1:ciphertext' }) as VeritySettingsRecord,
+        getVeritySettings,
+        updateVeritySettings: async () => ({}) as VeritySettingsRecord,
+        updateTranscribeBackendMode: async () => {},
+      }),
+      agentLogin: {} as AgentLoginService,
+      secretCipher: { isSealed: () => opts.sealed } as SettingsRouteDeps['secretCipher'],
+      parseSettingsPatch: (body) => body as VeritySettingsPatch,
+      storeAgentCredentials: async () => {},
+      publicSettings: (value) => ({
+        claudeSubscriptionPlan: claudeSubscriptionPlan(value.claudeCodeOauthCredentialsJson),
+      }),
+      effectiveTranscription: () => ({ baseUrl: null, model: null, apiKeyConfigured: false }),
+      transcriptionConfigured: () => false,
+    });
+    await app.ready();
+    return { app, getVeritySettings };
+  }
+
+  it('derives the plan from the decrypted login while the store is open', async () => {
+    const { app } = await plansApp({ sealed: false });
+    const response = await app.inject({ method: 'GET', url: '/settings' });
+    expect(response.json().settings.claudeSubscriptionPlan).toBe('Max 5x');
+  });
+
+  it('stays readable while sealed and leaves the plan blank', async () => {
+    const { app, getVeritySettings } = await plansApp({ sealed: true });
+    const response = await app.inject({ method: 'GET', url: '/settings' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().settings.claudeSubscriptionPlan).toBeNull();
+    expect(getVeritySettings).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the raw row when decryption fails', async () => {
+    const { app } = await plansApp({ sealed: false, decryptFails: true });
+    const response = await app.inject({ method: 'GET', url: '/settings' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().settings.claudeSubscriptionPlan).toBeNull();
   });
 });

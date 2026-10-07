@@ -43,8 +43,8 @@ describe('public preview share routes', () => {
 
     const created = await app.inject({
       method: 'POST',
-      url: '/dev-servers/dev-1/public-shares',
-      payload: { pin: '123456', ttlSeconds: 3600 },
+      url: '/sessions/s1/public-port-shares',
+      payload: { targetPort: 3000, pin: '123456', ttlSeconds: 3600 },
     });
     expect(created.statusCode).toBe(201);
     expect(created.json()).toEqual(
@@ -70,8 +70,8 @@ describe('public preview share routes', () => {
       (
         await app.inject({
           method: 'POST',
-          url: '/dev-servers/dev-1/public-shares',
-          payload: { pin: '123456', ttlSeconds: 3600 },
+          url: '/sessions/s1/public-port-shares',
+          payload: { targetPort: 3000, pin: '123456', ttlSeconds: 3600 },
         })
       ).statusCode,
     ).toBe(503);
@@ -107,7 +107,8 @@ describe('public preview share route refusals', () => {
     url,
     payload,
   });
-  const devServerCreate = create('/dev-servers/dev-1/public-shares', {
+  const devServerCreate = create('/sessions/s1/public-port-shares', {
+    targetPort: 3000,
     pin: '123456',
     ttlSeconds: 3600,
   });
@@ -155,9 +156,9 @@ describe('public preview share route refusals', () => {
     const manager = { create: vi.fn(() => Promise.reject(new Error('unreachable'))) };
     const app = appFor({ manager });
     for (const request of [
-      create('/dev-servers/dev-1/public-shares', { pin: '12345', ttlSeconds: 3600 }),
-      create('/dev-servers/dev-1/public-shares', { pin: '123456', ttlSeconds: 1.5 }),
-      create('/dev-servers/dev-1/public-shares', { pin: '123456', ttlSeconds: 60, extra: true }),
+      create('/sessions/s1/public-port-shares', { pin: '12345', ttlSeconds: 3600 }),
+      create('/sessions/s1/public-port-shares', { pin: '123456', ttlSeconds: 1.5 }),
+      create('/sessions/s1/public-port-shares', { pin: '123456', ttlSeconds: 60, extra: true }),
       create('/projects/p1/public-static-shares', { pin: '123456', ttlSeconds: 60 }),
       create('/projects/p1/public-static-shares', {
         pin: '123456',
@@ -221,6 +222,39 @@ describe('public preview share route refusals', () => {
     });
   });
 
+  it('lists session dev servers and shares one of their ports', async () => {
+    const devServers = [
+      { port: 5173, reachable: true, pid: 40, name: 'Vite', command: 'vite', workdir: '.' },
+    ];
+    const listSessionDevServers = vi.fn(async () => devServers);
+    const create = vi.fn(async () => ({ id: 'port-share', sessionId: 's1' }) as PublicPreviewShare);
+    const app = appFor({ manager: { listSessionDevServers, create } });
+
+    const listed = await app.inject({ method: 'GET', url: '/sessions/s1/dev-servers' });
+    expect(listed.json()).toEqual({ devServers });
+    expect(listSessionDevServers).toHaveBeenCalledWith('s1');
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/public-port-shares',
+      payload: { targetPort: 5173, pin: '123456', ttlSeconds: 3600 },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(create).toHaveBeenCalledWith({
+      sessionId: 's1',
+      targetPort: 5173,
+      pin: '123456',
+      ttlSeconds: 3600,
+    });
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/public-port-shares',
+      payload: { targetPort: 70_000, pin: '123456', ttlSeconds: 3600 },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it('shows an Uplink protocol refusal on static share creation', async () => {
     const response = await appFor({
       manager: {
@@ -273,4 +307,20 @@ describe('public preview share route refusals', () => {
     expect(response.json()).toEqual({ error: 'public preview share not found' });
     expect(manager.stop).toHaveBeenCalledWith('share-gone');
   });
+});
+
+it('browses static folders with a local runtime and no Uplink manager', async () => {
+  const app = Fastify();
+  const listStaticEntries = vi.fn(async () => ({ directories: ['dist'], files: [] }));
+  registerPreviewShareRoutes(app, {
+    eventStore: { getSession: async () => ({ projectId: 'p1' }) } as unknown as EventStore,
+    localManager: {
+      listStaticEntries,
+    } as unknown as import('./local-preview-manager.js').LocalPreviewManager,
+  });
+  const response = await app.inject('/sessions/s1/public-static-directories?path=web');
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toEqual({ directories: ['dist'], files: [] });
+  expect(listStaticEntries).toHaveBeenCalledWith('p1', 'web', 's1');
+  await app.close();
 });

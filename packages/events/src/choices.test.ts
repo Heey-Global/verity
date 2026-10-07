@@ -32,6 +32,48 @@ describe('parseChoicesBlock', () => {
     expect(choices).toEqual({ options: [{ label: 'A' }, { label: 'B' }] });
   });
 
+  it('lifts Claude list-shaped quick actions from a completed message', () => {
+    const input =
+      'Send the result.\n\n<quick-actions>\n• Screenshot bereit\n• Test nicht gefunden\n</quick-actions>';
+    expect(parseChoicesBlock(input)).toEqual({
+      text: 'Send the result.',
+      choices: { options: [{ label: 'Screenshot bereit' }, { label: 'Test nicht gefunden' }] },
+    });
+  });
+
+  it('leaves malformed quick-action lists visible as text', () => {
+    const input = 'Example:\n<quick-actions>\n• First\nnot a list item\n</quick-actions>';
+    expect(parseChoicesBlock(input)).toEqual({ text: input });
+  });
+
+  it('recovers a trailing quick-action list without its closing tag', () => {
+    // Claude can finish the turn without closing the tag, leaving every chip as prose.
+    const input =
+      'Ready.\n\n<quick-actions>\n• Es hakt wieder, Uhrzeit: ...\n• #1001 ist grün und gemerged\n';
+    expect(parseChoicesBlock(input)).toEqual({
+      text: 'Ready.',
+      choices: {
+        options: [
+          { label: 'Es hakt wieder, Uhrzeit: ...' },
+          { label: '#1001 ist grün und gemerged' },
+        ],
+      },
+    });
+  });
+
+  it('preserves an unclosed quick-action list followed by ordinary prose', () => {
+    const input = 'Ready.\n<quick-actions>\n• First\n• Second\nMore explanation.';
+    expect(parseChoicesBlock(input)).toEqual({ text: input });
+  });
+
+  it('honors a trailing unclosed list after an earlier completed list', () => {
+    const input =
+      '<quick-actions>\n• Earlier A\n• Earlier B\n</quick-actions>\n\nChoose now.\n<quick-actions>\n• Latest A\n• Latest B';
+    expect(parseChoicesBlock(input).choices).toEqual({
+      options: [{ label: 'Latest A' }, { label: 'Latest B' }],
+    });
+  });
+
   it('preserves question, recommended, and multiSelect fields', () => {
     const input = fence(
       '{"question":"Pick","options":[{"label":"A","recommended":true},{"label":"B"}],"multiSelect":true}',

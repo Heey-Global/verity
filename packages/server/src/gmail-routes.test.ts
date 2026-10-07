@@ -37,6 +37,8 @@ describe('Gmail routes', () => {
       disableSessionGmail: vi.fn(async () => {
         connection = undefined;
       }),
+      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
       clearSessionGmailConnections: vi.fn(async () => {
         connection = undefined;
       }),
@@ -49,7 +51,7 @@ describe('Gmail routes', () => {
           refresh_token: 'refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
+            'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
         }),
       )
       .mockResolvedValueOnce(googleResponse({ emailAddress: 'you@example.com' }));
@@ -142,7 +144,26 @@ describe('Gmail routes', () => {
     await app.close();
   });
 
-  it('revokes existing session grants when Gmail changes accounts', async () => {
+  it.each([
+    {
+      name: 'preserves Calendar grants on same-account expanded consent',
+      email: 'old@example.com',
+      calendarScopes: true,
+      clear: false,
+    },
+    {
+      name: 'revokes Calendar grants when its scopes are absent',
+      email: 'old@example.com',
+      calendarScopes: false,
+      clear: true,
+    },
+    {
+      name: 'revokes both session grants on account switch',
+      email: 'new@example.com',
+      calendarScopes: true,
+      clear: true,
+    },
+  ])('$name', async ({ email, calendarScopes, clear }) => {
     const clearSessionGmailConnections = vi.fn().mockResolvedValue(undefined);
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const store = {
@@ -158,6 +179,8 @@ describe('Gmail routes', () => {
       enableSessionGmail: vi.fn(),
       disableSessionGmail: vi.fn(),
       clearSessionGmailConnections,
+      clearSessionContactsConnections: vi.fn().mockResolvedValue(undefined),
+      clearSessionCalendarConnections: vi.fn().mockResolvedValue(undefined),
     };
     const fetch = vi
       .fn()
@@ -167,10 +190,13 @@ describe('Gmail routes', () => {
           refresh_token: 'new-refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
+            'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic' +
+            (calendarScopes
+              ? ' https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events'
+              : ''),
         }),
       )
-      .mockResolvedValueOnce(googleResponse({ emailAddress: 'new@example.com' }));
+      .mockResolvedValueOnce(googleResponse({ emailAddress: email }));
     const app = Fastify();
     registerGmailRoutes(app, { eventStore: store as never, googleClientId: 'client', fetch });
     await app.ready();
@@ -184,9 +210,13 @@ describe('Gmail routes', () => {
         })
       ).statusCode,
     ).toBe(200);
-    expect(clearSessionGmailConnections).toHaveBeenCalledOnce();
+    expect(clearSessionGmailConnections).toHaveBeenCalledTimes(email === 'old@example.com' ? 0 : 1);
+    expect(store.clearSessionCalendarConnections).toHaveBeenCalledTimes(clear ? 1 : 0);
     expect(updateVeritySettings).toHaveBeenCalledWith(
-      expect.objectContaining({ googleDriveAccountEmail: 'new@example.com' }),
+      expect.objectContaining({
+        googleDriveAccountEmail: email,
+        calendarAuthorized: calendarScopes,
+      }),
     );
     await app.close();
   });

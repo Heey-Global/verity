@@ -30,12 +30,12 @@ class VerityLiveSTT: Module {
       return await LiveSTTService.shared.engines()
     }
 
-    AsyncFunction("start") { (engine: String, locale: String, vocabulary: [String]) async throws in
+    AsyncFunction("start") { (engine: String, locale: String, vocabulary: [String], participants: Int) async throws in
       guard #available(iOS 26.0, *) else {
         throw LiveSTTError.unavailable("The STT test requires iOS 26 or later.")
       }
       try await LiveSTTService.shared.start(
-        engine: engine, locale: locale, vocabulary: vocabulary
+        engine: engine, locale: locale, vocabulary: vocabulary, participants: participants
       ) { [weak self] event in
         self?.sendEvent("onSTTEvent", event)
       }
@@ -58,6 +58,52 @@ class VerityLiveSTT: Module {
   }
 }
 
+private struct SpeakerAudio: Sendable {
+  let samples: [Float]
+  let sampleRate: Double
+}
+
+private actor LiveSpeakerProcessor {
+  private enum Model {
+    case sortformer(SortformerDiarizer)
+    case lsEend(LSEENDDiarizer)
+  }
+
+  private let model: Model
+
+  init(participants: Int) async throws {
+    if participants > 4 {
+      model = .lsEend(try await LSEENDDiarizer(variant: .dihard3))
+    } else {
+      let config = SortformerConfig.default
+      let models = try await SortformerModels.loadFromHuggingFace(config: config)
+      let diarizer = SortformerDiarizer(config: config)
+      diarizer.initialize(models: models)
+      model = .sortformer(diarizer)
+    }
+  }
+
+  func process(_ audio: SpeakerAudio) throws -> [DiarizerSegment] {
+    let update: DiarizerTimelineUpdate?
+    switch model {
+    case .sortformer(let diarizer):
+      update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+    case .lsEend(let diarizer):
+      update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+    }
+    return update?.finalizedSegments ?? []
+  }
+
+  func finish() throws -> [DiarizerSegment] {
+    let update: DiarizerTimelineUpdate?
+    switch model {
+    case .sortformer(let diarizer): update = try diarizer.finalizeSession()
+    case .lsEend(let diarizer): update = try diarizer.finalizeSession()
+    }
+    return update?.finalizedSegments ?? []
+  }
+}
+
 // A single microphone owner keeps the test independent of the screen mount.
 // Leaving the test screen calls stop; V1 will replace this with durable capture.
 @available(iOS 26.0, *)
@@ -73,11 +119,17 @@ private final class LiveSTTService {
   private var analyzer: SpeechAnalyzer?
   private var nemotron: StreamingNemotronMultilingualAsrManager?
   private var parakeet: SlidingWindowAsrManager?
+  private var speakerProcessor: LiveSpeakerProcessor?
+  private var speakerModelTask: Task<LiveSpeakerProcessor?, Never>?
+  private var speakerInput: AsyncStream<SpeakerAudio>.Continuation?
+  private var speakerTask: Task<Void, Never>?
+  private var speakerUnavailable = false
   private var emit: (([String: Any]) -> Void)?
   private var activeEngine: String?
   private var generation = 0
   private var reportedOverflow = false
   private var paused = false
+  private var emittedWordCount = 0
 
   func engines() async -> [[String: Any]] {
     let appleAvailable = SpeechTranscriber.isAvailable
@@ -90,7 +142,7 @@ private final class LiveSTTService {
   }
 
   func start(
-    engine: String, locale: String, vocabulary: [String],
+    engine: String, locale: String, vocabulary: [String], participants: Int,
     emit: @escaping ([String: Any]) -> Void
   ) async throws {
     guard activeEngine == nil else { throw LiveSTTError.alreadyRunning }
@@ -102,10 +154,36 @@ private final class LiveSTTService {
     activeEngine = engine
     paused = false
     reportedOverflow = false
+    speakerUnavailable = false
+    emittedWordCount = 0
     self.emit = emit
     emit(["kind": "status", "state": "preparing", "engine": engine])
 
     do {
+      if participants > 0 {
+        emit(["kind": "speaker-status", "state": "loading"])
+        speakerModelTask = Task { [weak self] in
+          do {
+            let processor = try await LiveSpeakerProcessor(participants: participants)
+            guard let self, self.generation == startGeneration, self.activeEngine != nil,
+              !self.speakerUnavailable else {
+              return nil
+            }
+            self.speakerProcessor = processor
+            self.emit?(["kind": "speaker-status", "state": "ready"])
+            return processor
+          } catch {
+            guard let self, self.generation == startGeneration, self.activeEngine != nil,
+              !self.speakerUnavailable else {
+              return nil
+            }
+            self.speakerUnavailable = true
+            self.speakerInput?.finish()
+            self.emit?(["kind": "speaker-status", "state": "unavailable", "message": error.localizedDescription])
+            return nil
+          }
+        }
+      }
       switch engine {
       case "apple-speech":
         try await startSpeechTranscriber(locale: locale, generation: startGeneration)
@@ -137,6 +215,10 @@ private final class LiveSTTService {
     generation += 1
     let wasCapturing = audioEngine != nil
     stopMicrophone()
+    if speakerProcessor == nil {
+      speakerModelTask?.cancel()
+      speakerTask?.cancel()
+    }
     if !wasCapturing {
       await analyzer?.cancelAndFinishNow()
       await parakeet?.cancel()
@@ -147,10 +229,15 @@ private final class LiveSTTService {
     do {
       // Drain every captured buffer before asking the recognizer to finalize.
       try await processingTask?.value
+      if speakerProcessor != nil { await speakerTask?.value }
+      if let speakerProcessor, !speakerUnavailable {
+        if let segments = try? await speakerProcessor.finish() { emitSpeakerSegments(segments) }
+      }
       if let analyzer {
         try await analyzer.finalizeAndFinishThroughEndOfInput()
       } else if let nemotron {
-        let text = try await nemotron.finish()
+        let (text, timings) = try await nemotron.finishWithTokenTimings()
+        emitWords(buildWordTimings(from: timings), includeLast: true)
         emit?(["kind": "snapshot", "text": text, "final": true])
         await nemotron.reset()
       } else if let parakeet {
@@ -202,6 +289,8 @@ private final class LiveSTTService {
   }
 
   private func clear() {
+    speakerTask?.cancel()
+    speakerModelTask?.cancel()
     audioEngine = nil
     microphoneInput = nil
     analyzerInput = nil
@@ -210,6 +299,11 @@ private final class LiveSTTService {
     analyzer = nil
     nemotron = nil
     parakeet = nil
+    speakerProcessor = nil
+    speakerModelTask = nil
+    speakerInput = nil
+    speakerTask = nil
+    speakerUnavailable = false
     activeEngine = nil
     paused = false
     emit = nil
@@ -376,6 +470,7 @@ private final class LiveSTTService {
             if text != last {
               last = text
               self.emit?(["kind": "snapshot", "text": text, "final": false])
+              self.emitWords(buildWordTimings(from: await manager.getTokenTimings()), includeLast: false)
             }
           }
         } catch {
@@ -424,8 +519,42 @@ private final class LiveSTTService {
     let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
       bufferingPolicy: .bufferingNewest(32))
     microphoneInput = continuation
+    if let speakerModelTask, !speakerUnavailable {
+      let (speakerStream, input) = AsyncStream<SpeakerAudio>.makeStream(
+        bufferingPolicy: .bufferingNewest(512))
+      speakerInput = input
+      speakerTask = Task {
+        guard let speakerProcessor = await speakerModelTask.value else { return }
+        for await chunk in speakerStream {
+          if speakerUnavailable { break }
+          do {
+            let segments = try await speakerProcessor.process(chunk)
+            emitSpeakerSegments(segments)
+          } catch {
+            speakerUnavailable = true
+            speakerInput?.finish()
+            emit?(["kind": "speaker-status", "state": "unavailable", "message": error.localizedDescription])
+            break
+          }
+        }
+      }
+    }
+    let speakerContinuation = speakerInput
     input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
       guard let copy = Self.copyBuffer(buffer) else { return }
+      if let channel = copy.floatChannelData?.pointee, let speakerContinuation {
+        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(copy.frameLength)))
+        if case .dropped = speakerContinuation.yield(
+          SpeakerAudio(samples: samples, sampleRate: copy.format.sampleRate)) {
+          speakerContinuation.finish()
+          Task { @MainActor [weak self] in
+            guard let self, !self.speakerUnavailable else { return }
+            self.speakerUnavailable = true
+            self.speakerModelTask?.cancel()
+            self.emit?(["kind": "speaker-status", "state": "unavailable", "message": "Speaker recognition fell behind audio capture."])
+          }
+        }
+      }
       if case .dropped = continuation.yield(copy) {
         Task { @MainActor [weak self] in
           guard let self, !self.reportedOverflow else { return }
@@ -441,6 +570,7 @@ private final class LiveSTTService {
     } catch {
       input.removeTap(onBus: 0)
       continuation.finish()
+      speakerContinuation?.finish()
       throw error
     }
   }
@@ -461,7 +591,29 @@ private final class LiveSTTService {
     audioEngine?.inputNode.removeTap(onBus: 0)
     audioEngine?.stop()
     microphoneInput?.finish()
+    speakerInput?.finish()
     try? AVAudioSession.sharedInstance().setActive(false)
+  }
+
+  private func emitSpeakerSegments(_ segments: [DiarizerSegment]) {
+    for segment in segments {
+      guard segment.endTime > segment.startTime else { continue }
+      emit?([
+        "kind": "speaker", "speaker": segment.speakerIndex,
+        "start": segment.startTime, "end": segment.endTime,
+      ])
+    }
+  }
+
+  private func emitWords(_ words: [WordTiming], includeLast: Bool) {
+    let count = includeLast ? words.count : max(0, words.count - 1)
+    if count < emittedWordCount { emittedWordCount = 0 }
+    guard count > emittedWordCount else { return }
+    let added = words[emittedWordCount..<count].map { word in
+      ["text": word.word, "start": word.startTime, "end": word.endTime] as [String: Any]
+    }
+    emittedWordCount = count
+    emit?(["kind": "words", "words": added])
   }
 
   private func failCapture(_ error: Error) async {

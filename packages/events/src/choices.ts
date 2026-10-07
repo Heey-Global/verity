@@ -30,6 +30,12 @@ export const CHOICES_FENCE_TAG = 'verity:choices';
  * strip them all so a stray block never leaks downstream as raw JSON.
  */
 const CHOICES_FENCE_RE = /```verity:choices[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+// Claude has emitted this list-shaped block in live sessions despite the JSON
+// contract. Keep the fallback narrow so ordinary prose lists stay untouched.
+const LEGACY_CHOICES_RE = /^<quick-actions>[ \t]*\r?\n([\s\S]*?)\r?\n<\/quick-actions>[ \t]*$/gm;
+// Recover a missing closer only at turn end; prose after the list must not be swallowed.
+const UNCLOSED_LEGACY_CHOICES_RE =
+  /^<quick-actions>[ \t]*\r?\n((?:[ \t]*[-*•] [^\r\n]+(?:\r?\n|(?![\s\S])))+)[ \t\r\n]*(?![\s\S])/gm;
 
 /** Result of scanning an agent text block for the choices contract. */
 export interface ParsedChoices {
@@ -95,7 +101,7 @@ function parseLenientJson(body: string): unknown {
  */
 export function parseChoicesBlock(input: string): ParsedChoices {
   const matches = [...input.matchAll(CHOICES_FENCE_RE)];
-  if (matches.length === 0) return { text: input };
+  if (matches.length === 0) return parseLegacyChoices(input);
 
   // Honor the last block that parses to a valid payload (the operative one).
   let choices: ChoicesPayload | undefined;
@@ -108,7 +114,7 @@ export function parseChoicesBlock(input: string): ParsedChoices {
 
   // No block parsed — degrade to verbatim prose (a malformed block stays visible
   // rather than vanishing), matching the best-effort contract.
-  if (choices === undefined) return { text: input };
+  if (choices === undefined) return parseLegacyChoices(input);
 
   // A block surfaced as chips — strip every fence (valid or not) from the prose,
   // right-to-left so earlier match indices stay valid, so none leaks as raw JSON.
@@ -118,6 +124,29 @@ export function parseChoicesBlock(input: string): ParsedChoices {
     text = text.slice(0, match.index) + text.slice(match.index + match[0].length);
   }
   return { text: text.trimEnd(), choices };
+}
+
+function parseLegacyChoices(input: string): ParsedChoices {
+  const matches = [
+    ...input.matchAll(LEGACY_CHOICES_RE),
+    ...input.matchAll(UNCLOSED_LEGACY_CHOICES_RE),
+  ].sort((a, b) => a.index - b.index);
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const lines = (matches[i]![1] ?? '').trimEnd().split(/\r?\n/);
+    if (lines.length < 2 || lines.length > 20) continue;
+    const labels = lines.map((line) => /^[ \t]*[-*•] (.+?)[ \t]*$/.exec(line)?.[1]);
+    if (labels.some((label) => label === undefined)) continue;
+    const result = choicesPayloadSchema.safeParse({
+      options: labels.map((label) => ({ label })),
+    });
+    if (!result.success) continue;
+    const match = matches[i]!;
+    return {
+      text: (input.slice(0, match.index) + input.slice(match.index + match[0].length)).trimEnd(),
+      choices: result.data,
+    };
+  }
+  return { text: input };
 }
 
 /**

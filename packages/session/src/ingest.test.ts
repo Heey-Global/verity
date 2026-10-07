@@ -70,8 +70,9 @@ describe('SessionWriter (turn ingestion)', () => {
       model: 'claude-opus-4-8',
       name: null,
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
+      planningPlan: null,
+      planningRevision: 0,
     });
     const events = await ctx.store.getEvents('s1');
     expect(events.map((e) => e.t)).toEqual(['session', 'text', 'result']);

@@ -130,6 +130,9 @@ describe('a managed deployment refuses project networks', () => {
       // Updater already computed and answers it; it joins nothing to anything.
       'GET /v1/reconcile',
       'GET /v1/update',
+      // A durable release preference: neither route changes container networks.
+      'GET /v1/update-channel',
+      'POST /v1/update-channel',
       'POST /v1/update',
       // Activation only records that Matrix credentials exist; the Updater still
       // owns the worker and this route never grants network attachment verbs.

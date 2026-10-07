@@ -10,7 +10,7 @@ import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold'
 import { createVerityClient } from '../../lib/client';
 
 const NEXT_HREF = '/';
-const BACK = '/onboarding/doppler';
+const BACK = '/onboarding/master-password';
 const CURRENT_HREF = '/onboarding/ai-backends';
 
 function unlockRoute(): string {
@@ -73,7 +73,7 @@ function AiBackendsStep({
         setStatus({
           claudeConfigured: next.claudeConfigured,
           codexConfigured: next.codexConfigured,
-          opencodeConfigured: false,
+          opencodeConfigured: next.opencodeConfigured ?? false,
         });
         setPhase({ kind: 'editing' });
       })
@@ -125,6 +125,10 @@ function AiBackendsStep({
 
       {phase.kind === 'editing' ? (
         <>
+          <Text style={styles.intro}>
+            Choose one AI provider to start. GitHub and other connections can be added later in
+            Settings → Connections.
+          </Text>
           <AgentLoginPanel
             client={client}
             configured={configured}

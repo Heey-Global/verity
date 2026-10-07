@@ -4,12 +4,42 @@ import type { SequencedEvent } from '@verity/store';
 import {
   currentPublishedProgress,
   olderEventsMayMatchWindow,
+  recentSessionDiagnostics,
   redactSessionObservationText,
   safeRecentMessages,
   safeSessionProgressErrorKind,
 } from './session-observation.js';
 
 describe('safe session observation', () => {
+  it('projects only technical diagnostic fields across the Control Plane boundary', () => {
+    const events = [
+      { seq: 1, ts: 10, event: { t: 'prompt', text: 'private chat' } },
+      {
+        seq: 2,
+        ts: 11,
+        event: {
+          t: 'diagnostic',
+          source: 'agent',
+          outcome: 'failed',
+          phase: 'session_load',
+          backend: 'opencode-acp',
+          code: -32603,
+          payload: 'private output',
+        },
+      },
+    ] as unknown as SequencedEvent[];
+    expect(recentSessionDiagnostics(events, 20)).toEqual([
+      {
+        seq: 2,
+        ts: 11,
+        source: 'agent',
+        outcome: 'failed',
+        phase: 'session_load',
+        backend: 'opencode-acp',
+        code: -32603,
+      },
+    ]);
+  });
   it('exposes only bounded structured error kinds in transcript-free progress', () => {
     expect(safeSessionProgressErrorKind('run_failed')).toBe('run_failed');
     expect(safeSessionProgressErrorKind('failure contained raw secret text')).toBe('unknown');

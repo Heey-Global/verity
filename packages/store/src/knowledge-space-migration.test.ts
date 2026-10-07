@@ -31,11 +31,11 @@ it('backfills stable spaces and preserves legacy memory without adopting a user 
     expect(space?.generalFolderId).not.toBe('user-general');
     expect(
       await ctx.db
-        .selectFrom('project_knowledge_spaces')
-        .select('legacy_memory')
+        .selectFrom('project_settings')
+        .select('memory')
         .where('project_id', '=', 'existing')
         .executeTakeFirst(),
-    ).toEqual({ legacy_memory: 'Preserve this legacy note' });
+    ).toEqual({ memory: 'Preserve this legacy note' });
     expect((await store.knowledge.listFolders()).find((f) => f.id === 'user-general')).toEqual({
       id: 'user-general',
       name: 'General',

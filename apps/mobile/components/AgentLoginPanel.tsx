@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   VerityApiError,
   type AgentLogin,
@@ -10,7 +11,6 @@ import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 're
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AgentProviderIcon } from './AgentProviderIcon';
-import { SettingsDisclosure } from './settings/SettingsDisclosure';
 
 type LoginState = {
   login: AgentLogin | null;
@@ -67,6 +67,8 @@ export function AgentLoginPanel({
   allowDisconnect = false,
   autoStartProvider,
   compact = false,
+  selectedProvider,
+  subscriptionPlans = {},
 }: {
   client: VerityClient;
   configured: AgentLoginConfiguredState;
@@ -77,8 +79,11 @@ export function AgentLoginPanel({
   allowDisconnect?: boolean;
   /** Starts a fresh provider login once when reached from an auth failure. */
   autoStartProvider?: AgentLoginProvider;
-  /** Settings collapse provider details; onboarding keeps the guided flow visible. */
+  /** Settings frame each provider as a standalone card; onboarding shows the guided flow. */
   compact?: boolean;
+  selectedProvider?: AgentLoginProvider;
+  /** Plan labels the server derived from each stored login, when it knows one. */
+  subscriptionPlans?: Partial<Record<AgentLoginProvider, string | null>>;
 }) {
   const [logins, setLogins] = useState<Record<AgentLoginProvider, LoginState>>({
     claude: emptyLoginState(),
@@ -118,57 +123,67 @@ export function AgentLoginPanel({
     [onSealed, patchProvider],
   );
 
-  const poll = (provider: AgentLoginProvider, sessionId: string) => {
-    const pollKey = `${provider}:${sessionId}`;
-    if (pollsInFlight.current.has(pollKey)) return;
-    pollsInFlight.current.add(pollKey);
-    void client
-      .getAgentLogin(sessionId)
-      .then((login) => {
-        if (currentSessions.current[provider] !== sessionId) return;
-        patchProvider(provider, { login, error: login.status === 'failed' ? login.message : null });
-        refreshConfigured(provider, login);
-      })
-      .catch((caught) => {
-        if (currentSessions.current[provider] !== sessionId) return;
-        if (isSealedError(caught)) {
-          delete currentSessions.current[provider];
-          patchProvider(provider, { login: null, busy: false, error: null });
-          onSealed?.();
-          return;
-        }
-        if (isMissingLoginSession(caught)) {
-          delete currentSessions.current[provider];
-          patchProvider(provider, { login: null, busy: false, error: null });
-          return;
-        }
-        patchProvider(provider, {
-          error: caught instanceof VerityApiError ? caught.message : 'Could not refresh login.',
-        });
-      })
-      .finally(() => pollsInFlight.current.delete(pollKey));
-  };
+  const poll = useCallback(
+    (provider: AgentLoginProvider, sessionId: string) => {
+      const pollKey = `${provider}:${sessionId}`;
+      if (pollsInFlight.current.has(pollKey)) return;
+      pollsInFlight.current.add(pollKey);
+      void client
+        .getAgentLogin(sessionId)
+        .then((login) => {
+          if (currentSessions.current[provider] !== sessionId) return;
+          patchProvider(provider, {
+            login,
+            error: login.status === 'failed' ? login.message : null,
+          });
+          refreshConfigured(provider, login);
+        })
+        .catch((caught) => {
+          if (currentSessions.current[provider] !== sessionId) return;
+          if (isSealedError(caught)) {
+            delete currentSessions.current[provider];
+            patchProvider(provider, { login: null, busy: false, error: null });
+            onSealed?.();
+            return;
+          }
+          if (isMissingLoginSession(caught)) {
+            delete currentSessions.current[provider];
+            patchProvider(provider, { login: null, busy: false, error: null });
+            return;
+          }
+          patchProvider(provider, {
+            error: caught instanceof VerityApiError ? caught.message : 'Could not refresh login.',
+          });
+        })
+        .finally(() => pollsInFlight.current.delete(pollKey));
+    },
+    [client, patchProvider, refreshConfigured, onSealed],
+  );
 
-  useEffect(() => {
-    const active = PROVIDERS.filter((provider) => {
+  const activeLoginIds = JSON.stringify(
+    PROVIDERS.flatMap((provider) => {
       const login = logins[provider].login;
-      return (
-        login !== null &&
-        (login.status === 'starting' || login.status === 'ready' || login.status === 'waiting')
-      );
-    });
+      return login && ['starting', 'ready', 'waiting'].includes(login.status)
+        ? [[provider, login.sessionId]]
+        : [];
+    }),
+  );
+  useEffect(() => {
+    const active = JSON.parse(activeLoginIds) as Array<[AgentLoginProvider, string]>;
     onActiveChange?.(active.length > 0);
     if (active.length === 0) return;
-    const timer = setInterval(() => {
-      for (const provider of active) {
-        const sessionId = logins[provider].login?.sessionId;
-        if (!sessionId) continue;
-        poll(provider, sessionId);
-      }
-    }, 2500);
-    if (typeof timer === 'object' && 'unref' in timer) timer.unref();
-    return () => clearInterval(timer);
-  }, [logins, onActiveChange]);
+    const refresh = () => {
+      for (const [provider, sessionId] of active) poll(provider, sessionId);
+    };
+    return subscribeLiveRefresh(
+      client,
+      refresh,
+      (path) => path.startsWith('/settings/agent-logins/'),
+      active.map(([, sessionId]) => ({
+        path: `/settings/agent-logins/${encodeURIComponent(sessionId)}`,
+      })),
+    );
+  }, [activeLoginIds, client, poll, onActiveChange]);
 
   const start = useCallback(
     (provider: AgentLoginProvider) => {
@@ -306,36 +321,42 @@ export function AgentLoginPanel({
           </Text>
         </View>
       ) : null}
-      <ProviderCard
-        provider="claude"
-        title="Claude"
-        configured={configured.claude}
-        state={logins.claude}
-        compact={compact}
-        allowDisconnect={allowDisconnect}
-        onStart={() => start('claude')}
-        onDisconnect={() => disconnect('claude')}
-        onCopyCode={(code) => copyCode('claude', code)}
-        onPasteCode={() => pasteCode('claude')}
-        onChangeCode={(code) => patchProvider('claude', { code })}
-        onOpenLoginPage={() => patchProvider('claude', { openedLoginPage: true })}
-        onSubmitCode={() => submitCode('claude')}
-      />
-      <ProviderCard
-        provider="codex"
-        title="Codex"
-        configured={configured.codex}
-        state={logins.codex}
-        compact={compact}
-        allowDisconnect={allowDisconnect}
-        onStart={() => start('codex')}
-        onDisconnect={() => disconnect('codex')}
-        onCopyCode={(code) => copyCode('codex', code)}
-        onPasteCode={() => pasteCode('codex')}
-        onChangeCode={(code) => patchProvider('codex', { code })}
-        onOpenLoginPage={() => patchProvider('codex', { openedLoginPage: true })}
-        onSubmitCode={() => submitCode('codex')}
-      />
+      {selectedProvider === undefined || selectedProvider === 'claude' ? (
+        <ProviderCard
+          provider="claude"
+          title="Claude"
+          configured={configured.claude}
+          state={logins.claude}
+          subscriptionPlan={subscriptionPlans.claude ?? null}
+          compact={compact}
+          allowDisconnect={allowDisconnect}
+          onStart={() => start('claude')}
+          onDisconnect={() => disconnect('claude')}
+          onCopyCode={(code) => copyCode('claude', code)}
+          onPasteCode={() => pasteCode('claude')}
+          onChangeCode={(code) => patchProvider('claude', { code })}
+          onOpenLoginPage={() => patchProvider('claude', { openedLoginPage: true })}
+          onSubmitCode={() => submitCode('claude')}
+        />
+      ) : null}
+      {selectedProvider === undefined || selectedProvider === 'codex' ? (
+        <ProviderCard
+          provider="codex"
+          title="Codex"
+          configured={configured.codex}
+          state={logins.codex}
+          subscriptionPlan={subscriptionPlans.codex ?? null}
+          compact={compact}
+          allowDisconnect={allowDisconnect}
+          onStart={() => start('codex')}
+          onDisconnect={() => disconnect('codex')}
+          onCopyCode={(code) => copyCode('codex', code)}
+          onPasteCode={() => pasteCode('codex')}
+          onChangeCode={(code) => patchProvider('codex', { code })}
+          onOpenLoginPage={() => patchProvider('codex', { openedLoginPage: true })}
+          onSubmitCode={() => submitCode('codex')}
+        />
+      ) : null}
     </>
   );
 }
@@ -345,6 +366,7 @@ function ProviderCard({
   title,
   configured,
   state,
+  subscriptionPlan,
   allowDisconnect,
   compact,
   onStart,
@@ -359,6 +381,7 @@ function ProviderCard({
   title: string;
   configured: boolean;
   state: LoginState;
+  subscriptionPlan: string | null;
   allowDisconnect: boolean;
   compact: boolean;
   onStart: () => void;
@@ -634,15 +657,37 @@ function ProviderCard({
     </View>
   );
   if (!compact) return content;
+  // Each provider has its own settings page, so its status and actions are the
+  // page: they stay visible instead of waiting behind a disclosure tap.
+  const bodyVisible =
+    (ready && allowDisconnect) ||
+    primaryButtonVisible ||
+    loginBoxVisible ||
+    Boolean(state.error ?? login?.message);
   return (
-    <SettingsDisclosure
-      title={title}
-      leadingIcon={<AgentProviderIcon provider={provider} color={theme.colors.primary} />}
-      summary={statusText}
-      attention={state.busy || state.error !== null || (login !== null && !ready)}
-    >
-      {content}
-    </SettingsDisclosure>
+    <View style={styles.settingsCard}>
+      <View style={styles.settingsCardHeader}>
+        <View style={styles.settingsCardIcon}>
+          <AgentProviderIcon provider={provider} size={22} color={theme.colors.primary} />
+        </View>
+        <View style={styles.providerTitleGroup}>
+          <Text style={styles.label} accessibilityRole="header">
+            {title}
+          </Text>
+          <Text style={styles.providerCopy}>
+            {ready
+              ? subscriptionPlan !== null
+                ? `${title} ${subscriptionPlan} subscription, connected to this Verity server.`
+                : 'Subscription connected to this Verity server.'
+              : 'Connect your ' + title + ' subscription to use it in sessions.'}
+          </Text>
+        </View>
+        <View style={[styles.pill, ready ? styles.pillReady : null]}>
+          <Text style={[styles.pillText, ready ? styles.pillTextReady : null]}>{statusText}</Text>
+        </View>
+      </View>
+      {bodyVisible ? <View style={styles.settingsCardBody}>{content}</View> : null}
+    </View>
   );
 }
 
@@ -687,6 +732,32 @@ function LoginStep({
 
 const styles = StyleSheet.create((theme) => ({
   compactCard: { gap: theme.spacing.sm },
+  settingsCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  settingsCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+  },
+  settingsCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.setup.surfaceAlt,
+  },
+  settingsCardBody: {
+    padding: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.border,
+  },
   guidance: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.lg,

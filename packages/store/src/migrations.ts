@@ -985,9 +985,10 @@ const migrations: Record<string, Migration> = {
         .execute();
     },
     async down(db: Kysely<unknown>): Promise<void> {
-      await db.schema.dropTable('agent_loop_runs').execute();
-      await db.schema.dropTable('agent_loops').execute();
-      await db.schema.alterTable('sessions').dropColumn('kind').execute();
+      // 0130 retires both tables, so a full rollback reaches here without them.
+      await db.schema.dropTable('agent_loop_runs').ifExists().execute();
+      await db.schema.dropTable('agent_loops').ifExists().execute();
+      await sql`alter table sessions drop column if exists kind`.execute(db);
     },
   },
 
@@ -3342,6 +3343,587 @@ const migrations: Record<string, Migration> = {
     },
     async down(db: Kysely<unknown>): Promise<void> {
       await sql`alter table public_preview_shares drop column pin_secret`.execute(db);
+    },
+  },
+  '0120_live_meeting_speakers': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column expected_participants integer`.execute(db);
+      await sql`alter table live_meetings add column speaker_turns_json text not null default '[]'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column timed_words_json text not null default '[]'`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column timed_words_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_turns_json`.execute(db);
+      await sql`alter table live_meetings drop column expected_participants`.execute(db);
+    },
+  },
+  '0121_live_meeting_speaker_edits': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column speaker_names_json text not null default '{}'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column speaker_corrections_json text not null default '[]'`.execute(
+        db,
+      );
+      await sql`alter table live_meetings add column speaker_merges_json text not null default '{}'`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column speaker_merges_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_corrections_json`.execute(db);
+      await sql`alter table live_meetings drop column speaker_names_json`.execute(db);
+    },
+  },
+  '0122_calendar_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table verity_settings
+        add column calendar_authorized boolean not null default false`.execute(db);
+      await sql`create table session_calendar_connections (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        account_email text not null,
+        enabled_at timestamptz not null default now()
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_calendar_connections`.execute(db);
+      await sql`alter table verity_settings drop column calendar_authorized`.execute(db);
+    },
+  },
+  '0123_google_contacts_and_granted_scopes': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table verity_settings
+        add column contacts_authorized boolean not null default false,
+        add column google_granted_scopes jsonb not null default '[]'::jsonb`.execute(db);
+      // Every legacy Google connection requested the full workspace bundle. Preserve
+      // its known grant without inferring Contacts consent from an existing token.
+      await sql`update verity_settings set google_granted_scopes = '["https://www.googleapis.com/auth/drive","https://www.googleapis.com/auth/presentations","https://www.googleapis.com/auth/documents","https://www.googleapis.com/auth/spreadsheets"]'::jsonb
+        where google_drive_refresh_token is not null and google_drive_refresh_token <> ''`.execute(
+        db,
+      );
+      await sql`update verity_settings set google_granted_scopes = google_granted_scopes ||
+        '["https://www.googleapis.com/auth/gmail.readonly","https://www.googleapis.com/auth/gmail.compose","https://www.googleapis.com/auth/gmail.settings.basic"]'::jsonb
+        where gmail_authorized = true and google_drive_refresh_token is not null and google_drive_refresh_token <> ''`.execute(
+        db,
+      );
+      await sql`update verity_settings set google_granted_scopes = google_granted_scopes ||
+        '["https://www.googleapis.com/auth/calendar.calendarlist.readonly","https://www.googleapis.com/auth/calendar.events","https://www.googleapis.com/auth/userinfo.email"]'::jsonb
+        where calendar_authorized = true and google_drive_refresh_token is not null and google_drive_refresh_token <> ''`.execute(
+        db,
+      );
+      await sql`create table session_contacts_connections (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        account_email text not null,
+        enabled_at timestamptz not null default now()
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_contacts_connections`.execute(db);
+      await sql`alter table verity_settings drop column contacts_authorized,
+        drop column google_granted_scopes`.execute(db);
+    },
+  },
+  '0124_remove_retired_knowledge_state': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The retired maintenance runner has no consumers; source data and provenance remain active.
+      await sql`drop table knowledge_wiki_jobs, knowledge_maintenance_queue`.execute(db);
+      await sql`alter table project_knowledge_spaces
+        drop column legacy_memory, drop column reconcile_due_at`.execute(db);
+      await sql`alter table verity_settings drop column knowledge_model`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      // Restore the historical schema for explicit rollback without resurrecting retired jobs.
+      await sql`alter table project_knowledge_spaces
+        add column legacy_memory text, add column reconcile_due_at timestamptz`.execute(db);
+      await sql`alter table verity_settings add column knowledge_model text`.execute(db);
+      await sql`create table knowledge_wiki_jobs (
+        id text primary key,
+        project_id text not null references projects(id) on delete cascade,
+        session_id text not null unique references sessions(session_id) on delete cascade,
+        kind text not null constraint knowledge_wiki_jobs_kind_check check(kind in ('ingest','check','reconcile')),
+        status text not null check(status in ('pending','running','completed','failed')),
+        source_revisions text not null,
+        error text,
+        created_at timestamptz not null default now(),
+        model text,
+        constraint knowledge_wiki_jobs_retired check (false)
+      )`.execute(db);
+      await sql`create table knowledge_maintenance_queue (
+        project_id text not null references projects(id) on delete cascade,
+        source_document_id text not null references knowledge_documents(id) on delete cascade,
+        due_at timestamptz not null,
+        primary key(project_id,source_document_id)
+      )`.execute(db);
+    },
+  },
+  '0125_session_event_stats': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Older server generations and direct event writers must maintain the same
+      // counters; application-only increments would silently miss their inserts.
+      await sql`lock table events in share row exclusive mode`.execute(db);
+      await sql`create table session_event_stats (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        event_count bigint not null check (event_count >= 0),
+        last_event_seq bigint not null,
+        last_activity_at timestamptz,
+        revision bigint not null
+      )`.execute(db);
+      await sql`insert into session_event_stats
+        (session_id, event_count, last_event_seq, last_activity_at, revision)
+        select session_id, count(*), max(id),
+          (select newest.created_at from events newest where newest.id = max(events.id)),
+          count(*)
+        from events group by session_id`.execute(db);
+      await sql`create function maintain_session_event_stats() returns trigger
+        language plpgsql as $$
+        begin
+          if TG_OP = 'UPDATE' then
+            -- Session moves must lock both counters in a deterministic order.
+            perform session_id from session_event_stats
+              where session_id in (OLD.session_id, NEW.session_id)
+              order by session_id for update;
+          end if;
+          if TG_OP in ('DELETE', 'UPDATE') then
+            update session_event_stats set event_count = event_count - 1,
+              revision = revision + 1 where session_id = OLD.session_id;
+            if exists (select 1 from session_event_stats
+              where session_id = OLD.session_id and last_event_seq = OLD.id) then
+              update session_event_stats set
+                last_event_seq = coalesce((select id from events
+                  where session_id = OLD.session_id order by id desc limit 1), 0),
+                last_activity_at = (select created_at from events
+                  where session_id = OLD.session_id order by id desc limit 1)
+                where session_id = OLD.session_id;
+            end if;
+          end if;
+          if TG_OP in ('INSERT', 'UPDATE') then
+            insert into session_event_stats
+              (session_id, event_count, last_event_seq, last_activity_at, revision)
+              values (NEW.session_id, 1, NEW.id, NEW.created_at, 1)
+              on conflict (session_id) do update set
+                event_count = session_event_stats.event_count + 1,
+                revision = session_event_stats.revision + 1,
+                last_event_seq = greatest(session_event_stats.last_event_seq, NEW.id),
+                last_activity_at = case
+                  when NEW.id >= session_event_stats.last_event_seq then NEW.created_at
+                  else session_event_stats.last_activity_at end;
+          end if;
+          return null;
+        end
+        $$`.execute(db);
+      await sql`create trigger events_session_stats
+        after insert or delete or update on events
+        for each row execute function maintain_session_event_stats()`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop trigger events_session_stats on events`.execute(db);
+      await sql`drop function maintain_session_event_stats()`.execute(db);
+      await sql`drop table session_event_stats`.execute(db);
+    },
+  },
+  '0126_remove_knowledge_session_invalidations': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table knowledge_invalidated_sessions`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`create table knowledge_invalidated_sessions (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        stopped_at timestamptz,
+        created_at timestamptz not null default now()
+      )`.execute(db);
+    },
+  },
+  '0127_public_preview_pin_lock': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table public_preview_pin_locks (share_id text primary key, created_at timestamptz not null default now())`.execute(
+        db,
+      );
+      await sql`alter table public_preview_shares add column pin_locked boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table public_preview_shares drop column pin_locked`.execute(db);
+      await sql`drop table public_preview_pin_locks`.execute(db);
+    },
+  },
+  '0128_project_google_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Session grants remain session-only; migration must not widen authorization.
+      await sql`create table project_google_connections (
+        project_id text not null references projects(id) on delete cascade,
+        service text not null check (service in ('gmail', 'calendar', 'contacts')),
+        account_email text not null,
+        enabled_at timestamptz not null default now(),
+        primary key (project_id, service)
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table project_google_connections`.execute(db);
+    },
+  },
+  '0129_drive_access_mode': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Existing linked folders already permit uploads; preserve that explicit setup.
+      await sql`alter table project_settings add column google_drive_access_mode text not null default 'read-write' check (google_drive_access_mode in ('read-only', 'read-write'))`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table project_settings drop column google_drive_access_mode`.execute(db);
+    },
+  },
+  '0130_session_automations': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Automations now belong to an ordinary session instead of a dedicated
+      // project-level loop with its own setup session. The retired loop tables
+      // never carried production data, so they are dropped rather than converted,
+      // and the setup sessions' proposal events go with them: the event schema no
+      // longer accepts that type, and the store refuses to read a log holding one.
+      await sql`delete from events where type = 'agent_loop_proposal'`.execute(db);
+      // Replaying forward after a migration rollback must not resurrect the removed column.
+      await sql`alter table sessions drop column if exists kind`.execute(db);
+      await sql`drop table if exists agent_loop_runs`.execute(db);
+      await sql`drop table if exists agent_loops`.execute(db);
+      await sql`create table session_automations (
+        id text primary key,
+        session_id text not null unique references sessions(session_id) on delete cascade,
+        name text not null,
+        status text not null check (status in ('enabled', 'paused')),
+        schedule jsonb not null,
+        prompt text not null,
+        script text,
+        model text,
+        consecutive_error_count integer not null default 0,
+        last_run_at timestamptz,
+        last_outcome text check (last_outcome in ('ok', 'acted', 'error', 'skipped')),
+        last_detail text,
+        next_run_at timestamptz,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )`.execute(db);
+      await sql`create index session_automations_due_idx on session_automations (next_run_at) where status = 'enabled'`.execute(
+        db,
+      );
+    },
+    // Removal is permanent; rolling back must not recreate the retired loops.
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_automations`.execute(db);
+    },
+  },
+  '0131_matrix_import_diagnostics': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table integration_sources add column import_diagnostics jsonb not null default '[]'::jsonb, add column import_diagnostics_truncated boolean not null default false, add column import_diagnostics_reported_at timestamptz`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table integration_sources drop column import_diagnostics, drop column import_diagnostics_truncated, drop column import_diagnostics_reported_at`.execute(
+        db,
+      );
+    },
+  },
+  // Versioned issuers keep older approval semantics inert without losing the insert
+  // fence: concurrent approvals must still create only one live grant per key.
+  '0132_unique_brokered_prompt_v2_grants': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`
+        CREATE UNIQUE INDEX secret_provider_permissions_brokered_v2_active_unique
+        ON secret_provider_permissions (
+          project_id,
+          binding_id,
+          secret_name,
+          tool_id,
+          scope,
+          COALESCE(session_id, '')
+        )
+        WHERE state = 'active' AND issuer = 'brokered-prompt-v2'
+      `.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropIndex('secret_provider_permissions_brokered_v2_active_unique').execute();
+    },
+  },
+  '0133_dev_servers_unread': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`lock table events in share row exclusive mode`.execute(db);
+      await sql`lock table sessions in share row exclusive mode`.execute(db);
+      // Translate the old read frontier before changing its counter. Subtracting
+      // every listener event would also subtract events the person never saw.
+      await sql`update sessions s set last_seen_event_count = greatest(0,
+        s.last_seen_event_count - (select count(*) from (
+          select type from events where session_id = s.session_id
+          order by id limit s.last_seen_event_count
+        ) seen where type = 'dev_servers_changed'))
+        where s.last_seen_event_count is not null`.execute(db);
+      await sql`update session_event_stats stats set event_count = (
+        select count(*) from events where session_id = stats.session_id
+          and type <> 'dev_servers_changed'), revision = revision + 1`.execute(db);
+      await sql`create or replace function maintain_session_event_stats() returns trigger
+        language plpgsql as $$
+        begin
+          if TG_OP = 'UPDATE' then
+            -- Session moves must lock both counters in a deterministic order.
+            perform session_id from session_event_stats
+              where session_id in (OLD.session_id, NEW.session_id)
+              order by session_id for update;
+          end if;
+          if TG_OP in ('DELETE', 'UPDATE') then
+            update session_event_stats set event_count = event_count - case when OLD.type = 'dev_servers_changed' then 0 else 1 end,
+              revision = revision + 1 where session_id = OLD.session_id;
+            if exists (select 1 from session_event_stats
+              where session_id = OLD.session_id and last_event_seq = OLD.id) then
+              update session_event_stats set
+                last_event_seq = coalesce((select id from events
+                  where session_id = OLD.session_id order by id desc limit 1), 0),
+                last_activity_at = (select created_at from events
+                  where session_id = OLD.session_id order by id desc limit 1)
+                where session_id = OLD.session_id;
+            end if;
+          end if;
+          if TG_OP in ('INSERT', 'UPDATE') then
+            insert into session_event_stats
+              (session_id, event_count, last_event_seq, last_activity_at, revision)
+              values (NEW.session_id, case when NEW.type = 'dev_servers_changed' then 0 else 1 end, NEW.id, NEW.created_at, 1)
+              on conflict (session_id) do update set
+                event_count = session_event_stats.event_count + excluded.event_count,
+                revision = session_event_stats.revision + 1,
+                last_event_seq = greatest(session_event_stats.last_event_seq, NEW.id),
+                last_activity_at = case
+                  when NEW.id >= session_event_stats.last_event_seq then NEW.created_at
+                  else session_event_stats.last_activity_at end;
+          end if;
+          return null;
+        end
+        $$`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`lock table events in share row exclusive mode`.execute(db);
+      await sql`lock table sessions in share row exclusive mode`.execute(db);
+      // Restore the same message frontier; adding all snapshots could acknowledge
+      // an unread message that appeared before a later listener snapshot.
+      await sql`update sessions s set last_seen_event_count = last_seen_event_count +
+        (select count(*) from events where session_id = s.session_id
+          and type = 'dev_servers_changed' and id <= coalesce((
+            select max(id) from (select id from events
+              where session_id = s.session_id and type <> 'dev_servers_changed'
+              order by id limit s.last_seen_event_count) seen
+          ), 0))
+        where last_seen_event_count is not null`.execute(db);
+      await sql`update session_event_stats stats set event_count = (
+        select count(*) from events where session_id = stats.session_id),
+        revision = revision + 1`.execute(db);
+      await sql`create or replace function maintain_session_event_stats() returns trigger
+        language plpgsql as $$
+        begin
+          if TG_OP = 'UPDATE' then
+            -- Session moves must lock both counters in a deterministic order.
+            perform session_id from session_event_stats
+              where session_id in (OLD.session_id, NEW.session_id)
+              order by session_id for update;
+          end if;
+          if TG_OP in ('DELETE', 'UPDATE') then
+            update session_event_stats set event_count = event_count - 1,
+              revision = revision + 1 where session_id = OLD.session_id;
+            if exists (select 1 from session_event_stats
+              where session_id = OLD.session_id and last_event_seq = OLD.id) then
+              update session_event_stats set
+                last_event_seq = coalesce((select id from events
+                  where session_id = OLD.session_id order by id desc limit 1), 0),
+                last_activity_at = (select created_at from events
+                  where session_id = OLD.session_id order by id desc limit 1)
+                where session_id = OLD.session_id;
+            end if;
+          end if;
+          if TG_OP in ('INSERT', 'UPDATE') then
+            insert into session_event_stats
+              (session_id, event_count, last_event_seq, last_activity_at, revision)
+              values (NEW.session_id, 1, NEW.id, NEW.created_at, 1)
+              on conflict (session_id) do update set
+                event_count = session_event_stats.event_count + 1,
+                revision = session_event_stats.revision + 1,
+                last_event_seq = greatest(session_event_stats.last_event_seq, NEW.id),
+                last_activity_at = case
+                  when NEW.id >= session_event_stats.last_event_seq then NEW.created_at
+                  else session_event_stats.last_activity_at end;
+          end if;
+          return null;
+        end
+        $$`.execute(db);
+    },
+  },
+  // Planning mode is session state rather than a per-turn option: it has to hold
+  // across every message the operator exchanges while refining a plan, and the
+  // turn that starts it is not the one it first restricts.
+  '0134_session_planning': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column planning text check (planning in ('active', 'implemented', 'discarded'))`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column planning`.execute(db);
+    },
+  },
+  '0135_session_planning_revision': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column planning_revision integer not null default 0 check (planning_revision >= 0), add column planning_plan text`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column planning_plan, drop column planning_revision`.execute(
+        db,
+      );
+    },
+  },
+  '0136_managed_dev_servers': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Dev servers the agent sets up and Verity runs (concept 2.6). An entry is a
+      // project-wide recipe; an instance binds it to one session's worktree with
+      // its own sandbox and network port. The approval columns hold the exact
+      // command and subdirectory the operator approved for local publishing.
+      await sql`create table managed_dev_servers (
+        id text primary key,
+        project_id text not null references projects(id) on delete cascade,
+        name text not null,
+        name_key text not null,
+        command text not null,
+        workdir text not null default '.',
+        approved_command text,
+        approved_workdir text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (project_id, name_key)
+      )`.execute(db);
+      await sql`create table managed_dev_server_instances (
+        id text primary key,
+        server_id text not null references managed_dev_servers(id) on delete cascade,
+        project_id text not null references projects(id) on delete cascade,
+        session_id text not null references sessions(session_id) on delete cascade,
+        sandbox_port integer not null check (sandbox_port between 1024 and 65535),
+        network_port integer check (network_port between 1 and 65535),
+        desired text not null default 'stopped' check (desired in ('running', 'stopped')),
+        state text not null default 'stopped' check (state in ('stopped', 'starting', 'running', 'crashed')),
+        detail text,
+        last_run_command text,
+        last_run_workdir text,
+        started_at timestamptz,
+        last_ran_at timestamptz,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (server_id, session_id),
+        unique (project_id, sandbox_port)
+      )`.execute(db);
+      await sql`create unique index managed_dev_server_instances_network_port_idx on managed_dev_server_instances (network_port) where network_port is not null`.execute(
+        db,
+      );
+      await sql`create index managed_dev_server_instances_session_idx on managed_dev_server_instances (session_id)`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table managed_dev_server_instances`.execute(db);
+      await sql`drop table managed_dev_servers`.execute(db);
+    },
+  },
+  '0137_managed_public_links': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Keep the pair identity even after deletion so reconciliation can revoke its link.
+      await sql`alter table public_preview_shares add column managed_instance_id text`.execute(db);
+      await sql`create unique index public_preview_managed_instance_idx on public_preview_shares (managed_instance_id) where managed_instance_id is not null and state in ('creating', 'active', 'revoking')`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table public_preview_shares drop column managed_instance_id`.execute(db);
+    },
+  },
+  '0138_managed_local_access': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The operator's Local switch. Starting through Shared online alone leaves
+      // it off, so the server runs without a network address.
+      await sql`alter table managed_dev_server_instances add column local_access boolean not null default true`.execute(
+        db,
+      );
+      await sql`alter table managed_dev_server_instances add column access_started_at timestamptz`.execute(
+        db,
+      );
+      await sql`update managed_dev_server_instances set access_started_at = started_at`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table managed_dev_server_instances drop column access_started_at`.execute(db);
+      await sql`alter table managed_dev_server_instances drop column local_access`.execute(db);
+    },
+  },
+  '0139_browser_sessions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table auth_tokens add column expires_at timestamptz`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table auth_tokens drop column expires_at`.execute(db);
+    },
+  },
+  '0140_tasks': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // One durable task list per user (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md).
+      // `project_id` null is the General bucket; a deleted project turns its
+      // tasks into General rather than losing them, and a deleted session only
+      // unassigns. `title`, `detail` and `result` are user content and travel
+      // through the store cipher like other secrets, so they are plain text here.
+      await sql`create table tasks (
+        id text primary key,
+        owner_user_id text not null references users(id),
+        project_id text references projects(id) on delete set null,
+        session_id text references sessions(session_id) on delete set null,
+        source_session_id text,
+        origin text not null check (origin in ('user', 'agent')),
+        title text not null,
+        detail text,
+        attachments jsonb not null default '[]'::jsonb,
+        status text not null default 'open'
+          check (status in ('open', 'in_progress', 'done', 'dropped')),
+        result text,
+        sort integer not null default 0,
+        revision integer not null default 1,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        completed_at timestamptz
+      )`.execute(db);
+      await sql`create index tasks_owner_idx on tasks (owner_user_id, status)`.execute(db);
+      await sql`create index tasks_session_idx on tasks (session_id) where session_id is not null`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table tasks`.execute(db);
+    },
+  },
+  '0141_session_automation_sponsor': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The local user who confirmed the automation (ADR 0023 §2: scheduled work
+      // has an explicit sponsoring user). Its turns run for, and notify, that user.
+      // Rows confirmed before this column existed stay unattributed (NULL).
+      await sql`alter table session_automations add column sponsor_user_id text references users(id) on delete set null`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table session_automations drop column sponsor_user_id`.execute(db);
+    },
+  },
+  '0142_session_favorite': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column favorite boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column favorite`.execute(db);
     },
   },
 };

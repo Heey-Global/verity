@@ -1,13 +1,17 @@
 import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
-  AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT,
+  AUTOMATION_SYSTEM_PROMPT,
+  BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
   MEMORY_SYSTEM_PROMPT,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
+  TASKS_RESUME_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
@@ -26,6 +30,7 @@ import {
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryEventBus } from './bus.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import {
   BackendTerminationUnconfirmedError,
   Conductor,
@@ -83,20 +88,24 @@ const ZERO_USAGE = {
 
 /**
  * The compact directive set a resumed turn carries, enumerated rather than
- * imported: `RESUME_SYSTEM_PROMPT` is module-private to the conductor, and
+ * imported: the conductor consumes `RESUME_SYSTEM_PROMPT`, and
  * restating its membership here is the point — a fragment joining or leaving the
  * set has to be a two-file change, not a silent one.
  */
 const RESUME_SET = [
   TERMINOLOGY_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
+  TASKS_RESUME_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
+  AUTOMATION_SYSTEM_PROMPT,
+  BREVITY_SYSTEM_PROMPT,
 ];
 
 /**
- * Ceiling for the assembled set, which remains under 4.2 KB with the compact
- * autonomy convergence fragment. A tripwire on the whole re-sent payload rather
+ * Ceiling for the assembled set, which includes the automation contract for existing sessions
+ * alongside the compact autonomy convergence fragment. A tripwire on the whole re-sent payload rather
  * than a target: the cost here is per operator message, not per context, so growth that
  * is cheap in a fresh turn is not cheap in this one. Membership is checked
  * exactly by {@link expectResumeSet}; this is the only instrument that notices
@@ -106,12 +115,13 @@ const RESUME_SET = [
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
  * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 5000 - 3100 = 1900 characters. If they grow past that,
+ * members sum to under 8000 - 3100 = 4900 characters. If they grow past that,
  * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
  * the fix is to raise this one after reading what actually grew, not to derive
- * either number from the other.
+ * either number from the other. Includes the communication guidance refreshed
+ * on resumed turns; the assembled payload is currently 7769 characters.
  */
-const RESUME_SET_BUDGET = 5000;
+const RESUME_SET_BUDGET = 8000;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -454,7 +464,7 @@ describe('Conductor.sendTurn', () => {
     expect(conductor.isBusy('s1')).toBe(false);
   });
 
-  it('sends compact convergence directives on resumed turns', async () => {
+  it('sends current automation and convergence directives on resumed turns', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
     const fake = scriptedBackend({ text: 'hi' });
@@ -464,7 +474,7 @@ describe('Conductor.sendTurn', () => {
       worktreeExists: async () => true,
     });
 
-    await conductor.sendTurn('s1', 'go');
+    await conductor.sendTurn('s1', 'Review my pull requests every morning');
 
     expect(fake.last().resumeSessionId).toBe('s1');
     // Membership is checked exhaustively below; only the exclusion needs its own
@@ -481,45 +491,8 @@ describe('Conductor.sendTurn', () => {
     // is checked exactly, not sampled: a `toContain` per fragment cannot see a
     // fourth one joining, which is the growth that costs here. It also pins the
     // composition claim the turn prompt does not share: the resume branch returns
-    // this set verbatim while only the fresh-turn branch composes on kind.
+    // this set verbatim.
     expectResumeSet(fake.last().appendSystemPrompt);
-  });
-
-  it('sends the same resume set for an unattended Agent Loop session', async () => {
-    // The kind-independence above is the load-bearing half of that assertion and
-    // was the half nothing exercised: the fresh-turn branch demonstrably composes
-    // on kind, so "the resume branch does not" is a claim, not a given. The kind
-    // to pin it with is this one — an Agent Loop resumes on a schedule with nobody
-    // watching, which is the case the sandbox rule is justified by.
-    await ctx.store.createSession({
-      sessionId: 'loop-resume',
-      worktree: '/wt/loop',
-      model: 'm',
-      kind: 'agent_loop',
-    });
-    // The `session` event is what marks the session Claude-origin, via its
-    // `model`; its `id` is not a backend session id — that only exists once
-    // `upsertSessionBackendState` has run, which nothing here does. So the resume
-    // handle is the STORE key, and the id here is deliberately unlike it so the
-    // assertion below cannot pass while reading the wrong one.
-    await ctx.store.appendEvent('loop-resume', {
-      t: 'session',
-      id: 'claude-loop-1',
-      model: 'm',
-      worktree: '/wt/loop',
-    });
-    const fake = scriptedBackend({ text: 'hi' });
-    const conductor = new Conductor({
-      store: ctx.store,
-      backend: fake.backend,
-      worktreeExists: async () => true,
-    });
-
-    await conductor.sendTurn('loop-resume', 'go');
-
-    expect(fake.last().resumeSessionId).toBe('loop-resume');
-    expectResumeSet(fake.last().appendSystemPrompt);
-    expect(fake.last().appendSystemPrompt).not.toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
   });
 
   it('starts the first turn of an empty precreated session without resuming a backend id', async () => {
@@ -544,7 +517,7 @@ describe('Conductor.sendTurn', () => {
     expect(captured?.resumeSessionId).toBeUndefined();
     expect(captured?.appendSystemPrompt).toContain(CHOICES_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(AUTONOMY_SYSTEM_PROMPT);
-    expect(captured?.appendSystemPrompt).not.toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
+    expect(captured?.appendSystemPrompt).toContain(AUTOMATION_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(MEMORY_SYSTEM_PROMPT);
     expect(captured?.appendSystemPrompt).toContain(VISIBLE_MEDIA_SYSTEM_PROMPT);
     expect(await ctx.store.getSessionBackendState('s-empty', 'claude')).toMatchObject({
@@ -598,18 +571,17 @@ describe('Conductor.sendTurn', () => {
     expect(captured?.transcript).toBeUndefined();
   });
 
-  it('adds Agent Loop proposal guidance only to Agent Loop sessions', async () => {
+  it('offers every fresh context the automation contract exactly once', async () => {
     await ctx.store.createSession({
-      sessionId: 'loop-session',
-      worktree: '/wt/loop',
+      sessionId: 'automation-session',
+      worktree: '/wt/a',
       model: 'm',
-      kind: 'agent_loop',
     });
     let captured: RunTurnOptions | undefined;
     const backend: Backend = {
       run: async (opts) => {
         captured = opts;
-        await opts.onSession?.('backend-loop');
+        await opts.onSession?.('backend-automation');
         return { sessionId: opts.storeSessionId, exitCode: 0, stderr: '', aborted: false };
       },
     };
@@ -619,17 +591,13 @@ describe('Conductor.sendTurn', () => {
       worktreeExists: async () => true,
     });
 
-    await conductor.sendTurn('loop-session', 'configure');
+    await conductor.sendTurn('automation-session', 'every morning, check the build');
 
-    expect(captured?.appendSystemPrompt).toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
-    // The kind-specific branch adds to the base rather than replacing it, and an
-    // Agent Loop runs turns unattended — exactly the kind that can spend a
-    // container's memory with nobody watching. This is also the only path that
-    // composes prompts, so it is where a duplicate would appear first.
-    expect(captured?.appendSystemPrompt).toContain(SANDBOX_RESOURCES_SYSTEM_PROMPT);
-    expect(
-      (captured?.appendSystemPrompt ?? '').split(SANDBOX_RESOURCES_SYSTEM_PROMPT),
-    ).toHaveLength(2);
+    // Without it the agent answers a recurring request in prose and nothing can
+    // ever be confirmed: the app only renders a proposal it can parse.
+    const appended = captured?.appendSystemPrompt ?? '';
+    expect(appended.split(AUTOMATION_SYSTEM_PROMPT)).toHaveLength(2);
+    expect(appended.split(SANDBOX_RESOURCES_SYSTEM_PROMPT)).toHaveLength(2);
   });
 
   it('settles a silent non-zero exit with a synthetic crashed marker (P0a)', async () => {
@@ -657,6 +625,56 @@ describe('Conductor.sendTurn', () => {
     );
     expect(terminal).toHaveLength(1);
     expect(terminal[0]).toMatchObject({ t: 'error', kind: 'crashed' });
+  });
+
+  it.each([
+    "You've hit your session limit · resets 7:30pm (UTC)",
+    "You've reached your Fable limit. Switch to another model to continue.",
+  ])('settles a usage-limit exit without exposing the crash stderr tail: %s', async (message) => {
+    await ctx.store.createSession({ sessionId: 's-limit', worktree: '/wt/x', model: 'm' });
+    const backend: Backend = {
+      run: async (opts) => ({
+        sessionId: opts.storeSessionId,
+        exitCode: 1,
+        stderr: `[session/load] diagnostic data\nInternal error: ${message}`,
+        aborted: false,
+      }),
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s-limit', 'go');
+    const events = await ctx.store.getEvents('s-limit');
+    expect(events).toContainEqual({
+      t: 'error',
+      kind: 'usage_limit',
+      message: 'Usage limit reached',
+    });
+    expect(events).toContainEqual({ t: 'status', state: 'completed' });
+    expect(events.some((event) => event.t === 'error' && event.kind === 'crashed')).toBe(false);
+  });
+
+  it('does not let an earlier usage refusal mask a later crash', async () => {
+    await ctx.store.createSession({ sessionId: 's-limit-crash', worktree: '/wt/x', model: 'm' });
+    const backend: Backend = {
+      run: async (opts) => ({
+        sessionId: opts.storeSessionId,
+        exitCode: 1,
+        stderr: "You've hit your session limit · resets 7:30pm (UTC)\nFatal: connection closed\n",
+        aborted: false,
+      }),
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s-limit-crash', 'go');
+    const events = await ctx.store.getEvents('s-limit-crash');
+    expect(events.some((event) => event.t === 'error' && event.kind === 'crashed')).toBe(true);
+    expect(events).not.toContainEqual({ t: 'status', state: 'completed' });
   });
 
   it('settles a SIGTERM exit without a terminal event as interrupted, not crashed', async () => {
@@ -1062,6 +1080,54 @@ describe('Conductor.sendTurn', () => {
     });
     expect(fake.last().env?.VERITY_TEST).toBe('1');
     expect(seen.length).toBeGreaterThan(0); // events fanned out to the bus
+  });
+
+  it('runs every turn of a planning session in the planning mode, whatever the turn asked for', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    const fake = scriptedBackend({ text: 'hi' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      permissionMode: 'auto',
+      worktreeExists: async () => true,
+    });
+
+    // A per-turn posture must not reopen file changes while the operator is still
+    // refining the plan; only ending planning in Verity does that.
+    await conductor.sendTurn('s1', 'go', { permissionMode: 'acceptEdits' });
+    expect(fake.last().permissionMode).toBe(PLANNING_PERMISSION_MODE);
+    expect(fake.last().planning).toBe(true);
+    expect(fake.last().appendSystemPrompt).toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+
+    await ctx.store.setSessionPlanning('s1', 'implemented');
+    await conductor.sendTurn('s1', 'go on', { permissionMode: 'acceptEdits' });
+    expect(fake.last().permissionMode).toBe('acceptEdits');
+    expect(fake.last().planning).toBeUndefined();
+    expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+  });
+
+  it('appends the assigned-tasks section on fresh and resumed turns alike', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = scriptedBackend({ sessionId: 'thread' });
+    let assigned = '# Assigned tasks (verity_tasks)\n- #t1 Rotate tokens';
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      assignedTasksPrompt: () => assigned,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.sendTurn('s1', 'first');
+    expect(fake.last().resumeSessionId).toBeUndefined();
+    expect(fake.last().appendSystemPrompt).toContain('- #t1 Rotate tokens');
+
+    // The list is rebuilt from the store each turn: a resumed context sees the
+    // current state, and an empty list leaves no stale section behind.
+    assigned = '';
+    await conductor.sendTurn('s1', 'second');
+    expect(fake.last().resumeSessionId).toBe('thread');
+    expect(fake.last().appendSystemPrompt).not.toContain('# Assigned tasks');
   });
 
   it('threads per-turn allow/deny tool lists into the turn options', async () => {
@@ -1717,6 +1783,79 @@ describe('Conductor.dispatchTurn', () => {
     expect(fake.calls).toHaveLength(1);
   });
 
+  it.each([false, true])(
+    'drains messages queued during rejected admission (throws: %s)',
+    async (throws) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const fake = scriptedBackend();
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+      });
+      let release!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const admission = conductor.dispatchTurnWhenIdle(
+        's1',
+        'stale automation',
+        {},
+        {
+          validateSession: async () => {
+            entered();
+            await gate;
+            if (throws) throw new Error('validation failed');
+            return false;
+          },
+        },
+      );
+      const settled = admission.catch(() => ({ accepted: false }));
+      await started;
+      expect(await conductor.dispatchTurn('s1', 'queued message')).toEqual({ queued: true });
+      expect(conductor.queuedCount('s1')).toBe(1);
+      release();
+      await settled;
+      // An admission rejected before launch has no turn completion to drain its queue.
+      await vi.waitFor(() => {
+        expect(fake.calls).toHaveLength(1);
+      });
+      await vi.waitFor(() => {
+        expect(conductor.isBusy('s1')).toBe(false);
+      });
+      expect(conductor.queuedCount('s1')).toBe(0);
+    },
+  );
+
+  it('validates idle dispatch under its lock and releases rejected admissions', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      bus: new InMemoryEventBus(),
+      backend: unreachableBackend().backend,
+      worktreeExists: async () => true,
+    });
+    await expect(
+      conductor.dispatchTurnWhenIdle(
+        's1',
+        'stale automation',
+        {},
+        {
+          validateSession: async () => {
+            expect(conductor.isBusy('s1')).toBe(true);
+            return false;
+          },
+        },
+      ),
+    ).resolves.toEqual({ accepted: false });
+    expect(conductor.isBusy('s1')).toBe(false);
+    expect(await ctx.store.getEvents('s1')).toEqual([]);
+  });
+
   it('dispatchTurnWhenIdle refuses busy sessions without steering or queueing', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     let release = (): void => undefined;
@@ -2039,6 +2178,64 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('reports a turn starting and stopping, which no event records', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onSessionChanged = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate).backend,
+      worktreeExists: async () => true,
+      onSessionChanged,
+    });
+    await conductor.dispatchTurn('s1', 'go');
+    expect(onSessionChanged).toHaveBeenCalledWith('s1', 'activity');
+    onSessionChanged.mockClear();
+    release();
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(onSessionChanged).toHaveBeenCalledWith('s1', 'activity');
+  });
+
+  it('stamps the initiator on the prompt, across the durable queue too', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate).backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first', undefined, { initiatedBy: { userId: 'alice' } });
+    await vi.waitFor(async () => {
+      expect((await ctx.store.getEvents('s1')).find((event) => event.t === 'prompt')).toMatchObject(
+        { text: 'first', initiatedBy: { userId: 'alice' } },
+      );
+    });
+    // Queued behind the running turn: the row carries the initiator, so a restart
+    // that recovers the queue still knows whose turn it is.
+    await conductor.dispatchTurn(
+      's1',
+      'second',
+      { attachments: [] },
+      {
+        queueBehindActiveTurn: true,
+        initiatedBy: { userId: 'bob' },
+      },
+    );
+    expect((await ctx.store.listQueuedTurns())[0]?.opts.initiatedBy).toEqual({ userId: 'bob' });
+    release();
+    await vi.waitFor(async () => {
+      expect(
+        (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt').at(-1),
+      ).toMatchObject({ text: 'second', initiatedBy: { userId: 'bob' } });
+    });
+  });
+
   it('dequeue returns undefined for an unknown/stale id', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
@@ -2290,6 +2487,40 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     await vi.waitFor(() => {
       expect(conductor.isBusy('s1')).toBe(false);
     });
+  });
+
+  it('recovers the implementation accepted before a process interruption exactly once', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    await ctx.store.enqueuePlanImplementation(
+      {
+        id: 'plan-implementation',
+        sessionId: 's1',
+        prompt: 'Implement approved work',
+        opts: { displayPrompt: 'Implement plan' },
+      },
+      revision!,
+    );
+    const seenPrompts: string[] = [];
+    const backend: Backend = {
+      run: async (opts) => {
+        expect(opts.planning).not.toBe(true);
+        seenPrompts.push(opts.prompt ?? '');
+        return { sessionId: 's1', exitCode: 0, stderr: '', aborted: false };
+      },
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.recover();
+    await vi.waitFor(() => expect(seenPrompts).toEqual(['Implement approved work']));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(await ctx.store.listQueuedTurns()).toEqual([]);
+    await conductor.recover();
+    expect(seenPrompts).toHaveLength(1);
   });
 
   it('recover is a no-op when the store has no queued turns or orphan tail prompts', async () => {
@@ -2759,6 +2990,12 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     expect(conductor.isBusy('s1')).toBe(true);
     expect(await ctx.store.listRunningTurns()).toHaveLength(1); // marker held while running
     expect((await ctx.store.getEvents('s1')).map((e) => e.t)).not.toContain('interrupted');
+
+    // Recovery cannot establish the original permissions; never steer a fresh
+    // instruction into that unknown posture, even after planning was discarded.
+    await ctx.store.setSessionPlanning('s1', 'discarded');
+    expect(await conductor.dispatchTurn('s1', 'implement it')).toEqual({ queued: true });
+    await conductor.dequeue('s1', conductor.queuedItems('s1')[0]!.id);
 
     // Control reaches the reattached turn's live handle.
     const cancellation = conductor.cancelTurn('s1');
@@ -6315,6 +6552,132 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('keeps the live planning turn restricted after a planning decision', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'plan it');
+    await waitFor(fake.ready);
+    try {
+      await ctx.store.setSessionPlanning('s1', 'discarded');
+      expect(conductor.isPlanningTurn('s1')).toBe(true);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+    expect(conductor.isPlanningTurn('s1')).toBe(false);
+  });
+
+  it('steers messages into the first turn of a fresh session', async () => {
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const { sessionId } = await conductor.startSession({ worktree: '/wt/fresh', prompt: 'first' });
+    await waitFor(fake.ready);
+    try {
+      expect(await conductor.dispatchTurn(sessionId, 'refine it')).toEqual({ queued: false });
+      expect(fake.steered.map((message) => message.text)).toEqual(['refine it']);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy(sessionId));
+    }
+  });
+
+  it('queues messages when planning starts during a writable turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first');
+    await waitFor(fake.ready);
+    await ctx.store.setSessionPlanning('s1', 'active');
+    try {
+      // Steering would let this planning instruction inherit writable permissions.
+      expect(await conductor.dispatchTurn('s1', 'refine the plan')).toEqual({ queued: true });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+    expect(fake.last().planning).toBe(true);
+  });
+
+  it('durably accepts and dispatches a plan when the session is idle', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const enqueue = vi.spyOn(ctx.store, 'enqueuePlanImplementation');
+    try {
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement approved work',
+          {},
+          { planningRevision: revision! },
+        ),
+      ).toEqual({ queued: true });
+      await waitFor(fake.ready);
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
+      expect(fake.last().planning).not.toBe(true);
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement approved work',
+          {},
+          { planningRevision: revision! },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
+  it('queues a turn behind the live one when asked, even though it could steer', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.dispatchTurn('s1', 'plan it');
+    await waitFor(fake.ready);
+
+    // The implementation of an accepted plan must start as its own turn: steered
+    // into the planning turn, it would run under the planning posture it ends.
+    const res = await conductor.dispatchTurn('s1', 'implement', undefined, {
+      queueBehindActiveTurn: true,
+    });
+
+    expect(res).toEqual({ queued: true });
+    expect(fake.steered).toEqual([]);
+    expect(conductor.queuedItems('s1').map((i) => i.text)).toEqual(['implement']);
+
+    fake.release();
+    await waitFor(() => !conductor.isBusy('s1'));
+  });
+
   it('falls back to queueing when the live turn has no writable steering channel', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     // A live turn that never surfaces an injector: the steer attempt returns false,
@@ -8375,7 +8738,7 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
     };
   }
 
-  it('injects project memory into a pre-created Agent Loop session', async () => {
+  it('injects project memory into a pre-created project session', async () => {
     await ctx.store.upsertProject({
       id: 'p-loop',
       owner: 'example-org',
@@ -8388,7 +8751,6 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
       worktree: '/wt/loop-memory',
       model: 'codex/default',
       projectId: 'p-loop',
-      kind: 'agent_loop',
     });
     await ctx.store.appendProjectMemory('p-loop', 'keep the loop deterministic');
 
@@ -8401,14 +8763,13 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
 
     await conductor.startSession({
       sessionId: 'loop-memory',
-      sessionKind: 'agent_loop',
       worktree: '/wt/loop-memory',
-      prompt: 'Configure this Agent Loop',
+      prompt: 'Set up a recurring check',
       model: 'codex/default',
     });
     await waitFor(() => !conductor.isBusy('loop-memory'));
 
-    expect(seen[0]?.appendSystemPrompt).toContain(AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT);
+    expect(seen[0]?.appendSystemPrompt).toContain(AUTOMATION_SYSTEM_PROMPT);
     expect(seen[0]?.appendSystemPrompt).toContain(MEMORY_HEADER);
     expect(seen[0]?.appendSystemPrompt).toContain('keep the loop deterministic');
   });
@@ -8499,7 +8860,7 @@ describe('Conductor — project memory injection (ADR 0008)', () => {
 });
 
 describe('brokeredGrantTarget — what a standing grant is allowed to cover', () => {
-  it('derives a reusable target only for a hash-bound trusted CLI entry script', () => {
+  it('derives exact command targets and retains hash-bound entry script targets', () => {
     expect(
       brokeredGrantTarget('verity_secret_run', {
         secrets: [
@@ -8508,7 +8869,7 @@ describe('brokeredGrantTarget — what a standing grant is allowed to cover', ()
         ],
         command: ['/usr/local/bin/fastlane', 'deliver'],
       }),
-    ).toBeUndefined();
+    ).toBeDefined();
     const input = {
       secrets: [
         { secretAlias: 'TOKEN', env: 'TOKEN' },
@@ -8552,7 +8913,7 @@ describe('brokeredGrantTarget — what a standing grant is allowed to cover', ()
         ...input,
         entryScript: { ...input.entryScript, loading: 'dynamic' },
       }),
-    ).toBeUndefined();
+    ).toBeDefined();
     // Inline and unrelated shapes remain one-time.
     expect(
       brokeredGrantTarget('verity_secret_run', {
@@ -8931,7 +9292,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     });
   });
 
-  it('executes a trusted CLI allow but refuses project scope across worktrees', async () => {
+  it('persists a trusted CLI project approval for the exact command', async () => {
     await createProjectSession('sg-cli-project');
     const fake = trustedCliPermissionBackend('toolu_cli_project', 'req-cli-project');
     const persist = vi.fn(async () => undefined);
@@ -8953,12 +9314,12 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       { behavior: 'allow' },
       { scope: 'project', onScopeSaved },
     );
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
-    expect(persist).not.toHaveBeenCalled();
+    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
     await vi.waitFor(() => expect(conductor.isBusy('sg-cli-project')).toBe(false));
   });
 
-  it('ignores standing grants for trusted CLI invocations', async () => {
+  it('auto-approves trusted CLI invocations covered by exact command grants', async () => {
     await createProjectSession('sg-cli-grant');
     const fake = trustedCliPermissionBackend('toolu_cli_grant', 'req-cli-grant');
     const check = vi.fn(async () => true);
@@ -8971,10 +9332,10 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     });
     await conductor.dispatchTurn('sg-cli-grant', 'go');
     await vi.waitFor(() => {
-      expect(conductor.pendingPermissions('sg-cli-grant')).toEqual(['toolu_cli_grant']);
+      expect(fake.decisions()).toEqual([{ behavior: 'allow' }]);
     });
-    expect(check).not.toHaveBeenCalled();
-    expect(fake.decisions()).toEqual([]);
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(conductor.pendingPermissions('sg-cli-grant')).toEqual([]);
   });
 
   it('leaves the prompt parked when no grant matches', async () => {
@@ -9124,14 +9485,15 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     });
     // The card is written to the transcript with the channel the caller stated, so the
     // app offers only the scopes that channel accepts.
-    const events = await ctx.store.getEvents('x1');
-    expect(events.at(-1)).toMatchObject({
-      t: 'permission',
-      id: 'toolu_gw',
-      tool: 'verity_http_request',
-      riskClass: 'ask',
-      grantChannel: 'acp',
-    });
+    await vi.waitFor(async () =>
+      expect((await ctx.store.getEvents('x1')).at(-1)).toMatchObject({
+        t: 'permission',
+        id: 'toolu_gw',
+        tool: 'verity_http_request',
+        riskClass: 'ask',
+        grantChannel: 'acp',
+      }),
+    );
     await expect(conductor.decidePermission('x1', 'toolu_gw', { behavior: 'allow' })).resolves.toBe(
       true,
     );
@@ -9164,6 +9526,53 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(conductor.pendingPermissions('x3')).toEqual([]);
   });
 
+  it('does not publish a permission while a standing grant lookup is pending', async () => {
+    await createProjectSession('x4-delayed');
+    let resolveCheck!: (covered: boolean) => void;
+    const check = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    const publish = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      bus: { publish, subscribe: vi.fn(), subscribeAll: vi.fn() },
+    });
+    const answered = ask(conductor, 'x4-delayed', 'toolu_delayed');
+    await vi.waitFor(() => expect(check).toHaveBeenCalled());
+    expect(await ctx.store.getEvents('x4-delayed')).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+    resolveCheck(true);
+    await expect(answered).resolves.toEqual({
+      decision: { behavior: 'allow' },
+      decidedBy: 'grant',
+    });
+    expect(await ctx.store.getEvents('x4-delayed')).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('aborts promptly while a standing grant lookup remains unresolved', async () => {
+    await createProjectSession('x4-abort-lookup');
+    const check = vi.fn(() => new Promise<boolean>(() => {}));
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+    });
+    const controller = new AbortController();
+    const answered = ask(conductor, 'x4-abort-lookup', 'toolu_abort_lookup', controller.signal);
+    await vi.waitFor(() => expect(check).toHaveBeenCalled());
+    // A stalled permission store must not hold cancellation hostage.
+    controller.abort();
+    await expect(answered).resolves.toMatchObject({ decision: { behavior: 'deny' } });
+    expect(conductor.pendingPermissions('x4-abort-lookup')).toEqual([]);
+    expect(await ctx.store.getEvents('x4-abort-lookup')).toEqual([]);
+  });
+
   it('auto-approves against ACP grants only, and records the scope on that channel', async () => {
     await createProjectSession('x4');
     const check = vi.fn(async () => true);
@@ -9178,6 +9587,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       decision: { behavior: 'allow' },
       decidedBy: 'grant',
     });
+    expect(await ctx.store.getEvents('x4')).toEqual([]);
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'x4',
@@ -9185,6 +9595,56 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
       channel: 'acp',
+    });
+  });
+
+  it('binds project CLI grants to the server-resolved execution directory', async () => {
+    await createProjectSession('cwd-first');
+    await createProjectSession('cwd-second');
+    const targets = new Set<string>();
+    const check = vi.fn(async (grant: { target: string }) => targets.has(grant.target));
+    const persist = vi.fn(async (grant: { target: string }) => {
+      targets.add(grant.target);
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      persistBrokeredHttpGrant: persist,
+    });
+    const request = (sessionId: string, toolUseId: string) =>
+      conductor.requestExternalPermission({
+        sessionId,
+        toolUseId,
+        toolName: 'verity_secret_run',
+        input: {
+          command: ['/usr/bin/example-cli', 'deploy', './config'],
+          secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN' }],
+        },
+        channel: 'acp',
+        allowStandingGrant: true,
+      });
+    const first = request('cwd-first', 'first');
+    await vi.waitFor(async () => expect((await ctx.store.getEvents('cwd-first')).length).toBe(1));
+    await conductor.decidePermission(
+      'cwd-first',
+      'first',
+      { behavior: 'allow' },
+      { scope: 'project' },
+    );
+    await first;
+    await expect(request('cwd-first', 'reuse')).resolves.toMatchObject({ decidedBy: 'grant' });
+    // Relative operands in another worktree must not inherit the first directory's consent.
+    const second = request('cwd-second', 'other');
+    await vi.waitFor(async () => expect((await ctx.store.getEvents('cwd-second')).length).toBe(1));
+    expect(check.mock.calls.at(-1)?.[0].target).not.toBe(persist.mock.calls[0]?.[0].target);
+    await conductor.decidePermission('cwd-second', 'other', {
+      behavior: 'deny',
+      message: 'different directory',
+    });
+    await expect(second).resolves.toMatchObject({
+      decidedBy: 'card',
+      decision: { behavior: 'deny' },
     });
   });
 
@@ -9222,8 +9682,8 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
-    expect(persist).not.toHaveBeenCalled();
+    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
   });
 
   it('never consults a grant for a tool that resolves no secret, flag or no flag', async () => {

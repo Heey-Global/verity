@@ -3,6 +3,7 @@ import type { EventStore, ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import type { ServerDeps } from './server.js';
+import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 
 // Capture what buildControlPlane hands to buildServer. The control plane forwards
 // its dependencies key by key rather than spreading them, so a dep the route layer
@@ -41,6 +42,11 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('keeps runtime evidence available through the production composition seam', () => {
+    const runtimeDiagnostics = createRuntimeDiagnostics({});
+    expect(forward({ runtimeDiagnostics }).runtimeDiagnostics).toBe(runtimeDiagnostics);
+  });
+
   it('passes the Knowledge data root through to the session file routes', () => {
     const got = forward({ dataRoot: '/srv/verity' });
     expect(got.dataRoot).toBe('/srv/verity');
@@ -55,6 +61,13 @@ describe('buildControlPlane dependency forwarding', () => {
     const got = forward({ https, devicePairing });
     expect(got.https).toBe(https);
     expect(got.devicePairing).toBe(devicePairing);
+  });
+
+  it('passes the browser export and authenticated public origin through', () => {
+    const browserRequestOrigin = vi.fn(() => 'https://core.local');
+    const got = forward({ webAppDir: '/srv/verity/web', browserRequestOrigin });
+    expect(got.webAppDir).toBe('/srv/verity/web');
+    expect(got.browserRequestOrigin).toBe(browserRequestOrigin);
   });
 
   it('passes the managed release-channel resolver through', () => {

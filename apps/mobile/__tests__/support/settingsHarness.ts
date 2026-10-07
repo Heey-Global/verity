@@ -78,6 +78,7 @@ export function clientMock(): Record<string, unknown> {
   return {
     createVerityClient: () => mockCreateVerityClient(),
     getVerityBaseUrl: () => VERITY_BASE_URL,
+    subscribeVerityBaseUrl: () => () => {},
   };
 }
 
@@ -210,6 +211,8 @@ export type ClientOverrides = {
   startAgentLogin?: jest.Mock;
   getAgentLogin?: jest.Mock;
   getServerUpdates?: jest.Mock;
+  getServerUpdateChannel?: jest.Mock;
+  setServerUpdateChannel?: jest.Mock;
   requestServerUpdate?: jest.Mock;
   listProjects?: jest.Mock;
   recreateProjectContainer?: jest.Mock;
@@ -219,6 +222,8 @@ export type ClientOverrides = {
   deleteHttpMcpConnection?: jest.Mock;
   completeHttpMcpOAuth?: jest.Mock;
   listIntegrations?: jest.Mock;
+  listProviderLimits?: jest.Mock;
+  disconnectAgentLogin?: jest.Mock;
 };
 
 /**
@@ -247,12 +252,18 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     startAgentLogin: opts.startAgentLogin ?? jest.fn(notImplemented('startAgentLogin')),
     getAgentLogin: opts.getAgentLogin ?? jest.fn(notImplemented('getAgentLogin')),
     submitAgentLoginCode: jest.fn(notImplemented('submitAgentLoginCode')),
-    disconnectAgentLogin: jest.fn(notImplemented('disconnectAgentLogin')),
+    disconnectAgentLogin:
+      opts.disconnectAgentLogin ?? jest.fn(notImplemented('disconnectAgentLogin')),
     listProjects: opts.listProjects ?? jest.fn(notImplemented('listProjects')),
     recreateProjectContainer:
       opts.recreateProjectContainer ?? jest.fn(notImplemented('recreateProjectContainer')),
     // Most deployments are not Verity-managed, so the self-update panel stays
     // hidden unless a test says otherwise.
+    getServerUpdateChannel:
+      opts.getServerUpdateChannel ??
+      jest.fn().mockRejectedValue(new Error('channel selection unavailable')),
+    setServerUpdateChannel:
+      opts.setServerUpdateChannel ?? jest.fn(notImplemented('setServerUpdateChannel')),
     getServerUpdates:
       opts.getServerUpdates ??
       jest.fn().mockResolvedValue({ state: 'unsupported', reason: 'not managed', operation: null }),
@@ -266,6 +277,7 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     listModels: opts.listModels ?? jest.fn(notImplemented('listModels')),
     listIntegrations:
       opts.listIntegrations ?? jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
+    listProviderLimits: opts.listProviderLimits ?? jest.fn().mockResolvedValue([]),
   };
   // `null` stands for a server too old to have the endpoint at all — the method
   // is absent, not failing, which is a case the MCP list has to tell apart.

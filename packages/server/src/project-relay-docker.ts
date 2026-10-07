@@ -27,11 +27,17 @@ const RELAY_COMPONENT = 'project-relay';
  *  {@link RELAY_COMPONENT}. */
 const LEGACY_RELAY_COMPONENT = 'project-broker-relay';
 const SUPERSEDED_RELAY_MIN_AGE_MS = 30 * 60_000;
+
+/** Leave room above V8 old space for native memory, buffers and other heap spaces.
+ * A heap cap alone does not bound the relay's resident memory. */
+export const RELAY_MEMORY_BYTES = 192 * 1024 * 1024;
+export const RELAY_HEAP_LIMIT_MIB = 96;
 const PROJECT_ID_LABEL = 'verity.project-id';
 const CONTAINER_GENERATION_LABEL = 'verity.container-generation';
 
 export interface DockerProjectRelayOptions {
   docker: DockerClient;
+  forgeProxyEnabled?: ((projectId: string) => boolean) | undefined;
   image: string;
   dataVolume: string;
   dataVolumeRoot: string;
@@ -136,8 +142,15 @@ export function createDockerProjectRelayStarter(
       capDrop: ['ALL'],
       securityOpt: ['no-new-privileges:true'],
       pidsLimit: 32,
-      memoryBytes: 64 * 1024 * 1024,
+      memoryBytes: RELAY_MEMORY_BYTES,
       nanoCpus: 250_000_000,
+      // See RELAY_MEMORY_BYTES: the heap cap is only meaningful next to the ceiling.
+      env: [
+        `NODE_OPTIONS=--max-old-space-size=${String(RELAY_HEAP_LIMIT_MIB)}`,
+        ...(options.forgeProxyEnabled?.(context.identity.projectId) === true
+          ? ['VERITY_FORGE_PROXY=github']
+          : []),
+      ],
       labels: {
         [COMPONENT_LABEL]: RELAY_COMPONENT,
         [PROJECT_ID_LABEL]: context.identity.projectId,
@@ -179,7 +192,7 @@ export function createDockerProjectRelayStarter(
         throw new Error(`refusing to adopt mismatched project relay: ${name}`);
       }
       if (!existing.running) await options.docker.startContainer(existing.id);
-      return containerRuntime(options.docker, existing.id);
+      return containerRuntime(options, context.identity, existing.id);
     }
 
     const created = await createPullingIfMissing(options.docker, spec);
@@ -190,7 +203,7 @@ export function createDockerProjectRelayStarter(
       if (cleanup.length > 0) {
         throw new ProjectRelayStartError(
           `project relay start and rollback failed: ${context.identity.projectId}; ${cleanup.length} cleanup operation(s) failed`,
-          containerRuntime(options.docker, created.id),
+          containerRuntime(options, context.identity, created.id),
           error,
         );
       }
@@ -198,7 +211,7 @@ export function createDockerProjectRelayStarter(
     }
 
     await sweepSupersededRelays(options, context.identity, created.id);
-    return containerRuntime(options.docker, created.id);
+    return containerRuntime(options, context.identity, created.id);
   };
 }
 
@@ -275,7 +288,12 @@ async function sweepSupersededRelays(
   }
 }
 
-function containerRuntime(docker: DockerClient, id: string): ProjectRelayRuntime {
+function containerRuntime(
+  options: DockerProjectRelayOptions,
+  identity: InternalConnectionIdentity,
+  id: string,
+): ProjectRelayRuntime {
+  const { docker } = options;
   return {
     async quiesce(): Promise<void> {
       await docker.stopContainer(id);
@@ -285,6 +303,28 @@ function containerRuntime(docker: DockerClient, id: string): ProjectRelayRuntime
       if (failures.length > 0) {
         throw new AggregateError(failures, `project relay teardown failed: ${id}`);
       }
+    },
+    // By id, not by name: the name may by now belong to a newer generation's
+    // container, and starting THAT would report this one healthy. A not-found
+    // error is deliberately not caught — it is the lifecycle's signal that the
+    // generation is gone and the sandbox genuinely orphaned.
+    async ensureRunning(): Promise<void> {
+      const current = await docker.inspectContainer(id);
+      if (current.running) return;
+      await docker.startContainer(id);
+      // Warned, not merely noted: the relay has no restart policy on purpose, so an
+      // exit here was never asked for. The status is what Docker knew about the
+      // exit (`exited`, `dead`); the cause (OOM kill, crash) is in the host's kernel
+      // log, which this process cannot read.
+      options.log?.warn(
+        {
+          projectId: identity.projectId,
+          containerGeneration: identity.containerGeneration,
+          relay: id,
+          status: current.status,
+        },
+        'project relay had exited and was restarted in place; its sandbox was kept',
+      );
     },
   };
 }

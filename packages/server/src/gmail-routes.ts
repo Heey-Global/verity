@@ -1,3 +1,4 @@
+import { googleAppClient } from './google-app-client.js';
 import rateLimitPlugin from '@fastify/rate-limit';
 import {
   SealedError,
@@ -8,6 +9,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
+import { hasGoogleCalendarScopes, hasGoogleContactsScopes } from './google-oauth-scopes.js';
 import { GoogleDriveError, exchangeGoogleAuthCode, type GoogleFetch } from './google-drive.js';
 
 const connectBody = z.object({
@@ -22,10 +24,6 @@ const sessionParams = z.object({
     .regex(/^[A-Za-z0-9_-]+$/),
 });
 const REQUIRED_GMAIL_SCOPES = new Set([
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/presentations',
-  'https://www.googleapis.com/auth/documents',
-  'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/gmail.settings.basic',
@@ -39,11 +37,14 @@ type GmailRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySetti
     | 'enableSessionGmail'
     | 'disableSessionGmail'
     | 'clearSessionGmailConnections'
+    | 'clearSessionCalendarConnections'
+    | 'clearSessionContactsConnections'
   >;
 
 interface GmailRouteDeps {
   eventStore: GmailRouteStore;
   googleClientId?: string;
+  stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
   fetch?: GoogleFetch;
   onCredentialsChanged?: () => void;
@@ -96,7 +97,8 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       async (request, reply) => {
         if (deps.secretCipher?.isSealed() === true) throw new SealedError();
         const body = connectBody.parse(request.body);
-        const clientId = deps.googleClientId ?? '';
+        const clientId =
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ?? '';
         if (!clientId) {
           reply.code(400);
           return { error: 'Google is not configured on this server' };
@@ -124,7 +126,7 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
           [...REQUIRED_GMAIL_SCOPES].some((scope) => !tokens.scopes?.includes(scope))
         ) {
           reply.code(400);
-          return { error: 'Google did not grant the required Workspace and Gmail permissions' };
+          return { error: 'Google did not grant the required Gmail permissions' };
         }
         let accountEmail: string;
         try {
@@ -138,18 +140,26 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
           return { error: 'Could not verify the connected Gmail account' };
         }
         const previous = await settings();
-        if (
+        const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
+        const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
+        const accountChanged =
           previous?.googleDriveAccountEmail !== null &&
           previous?.googleDriveAccountEmail !== undefined &&
-          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail.toLowerCase()
-        ) {
-          await deps.eventStore.clearSessionGmailConnections();
+          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail.toLowerCase();
+        if (!contactsAuthorized || accountChanged)
+          await deps.eventStore.clearSessionContactsConnections();
+        if (accountChanged) await deps.eventStore.clearSessionGmailConnections();
+        if (!calendarAuthorized || accountChanged) {
+          await deps.eventStore.clearSessionCalendarConnections();
         }
         await deps.eventStore.updateVeritySettings({
+          googleGrantedScopes: tokens.scopes ?? [],
+          contactsAuthorized,
           googleDriveClientId: clientId,
           googleDriveRefreshToken: tokens.refreshToken,
           googleDriveAccountEmail: accountEmail,
           gmailAuthorized: true,
+          calendarAuthorized,
         });
         deps.onCredentialsChanged?.();
         return { connected: true as const, accountEmail };
@@ -169,7 +179,12 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       return {
         enabled: connection !== undefined,
         connected,
-        clientId: deps.googleClientId ?? current?.googleDriveClientId ?? null,
+        clientId:
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined
+            ? current?.googleDriveClientId
+            : null) ??
+          null,
         accountEmail: connection === undefined ? null : (current?.googleDriveAccountEmail ?? null),
       };
     });
@@ -194,7 +209,11 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       return {
         enabled: true as const,
         connected: true as const,
-        clientId: deps.googleClientId ?? current.googleDriveClientId,
+        clientId:
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined
+            ? current.googleDriveClientId
+            : null),
         accountEmail: current.googleDriveAccountEmail,
       };
     });
@@ -206,6 +225,13 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
         return { error: `session ${id} not found` };
       }
       await deps.eventStore.disableSessionGmail(id);
+      // Older clients must not report a successful logout while project access remains.
+      if ((await deps.eventStore.getSessionGmailConnection(id)) !== undefined) {
+        return reply.code(409).send({
+          error:
+            'Google access is enabled for this project. Manage it in project settings with an updated app.',
+        });
+      }
       reply.code(204);
     });
   });

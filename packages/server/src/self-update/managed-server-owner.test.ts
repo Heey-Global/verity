@@ -10,7 +10,10 @@ import {
   type ServerDeploymentSpecBody,
   type ServerDeploymentSpecResources,
 } from './deployment-spec.js';
-import { initializeManagedDeployment } from './managed-deployment.js';
+import {
+  initializeManagedDeployment,
+  migrateManagedHostDiagnostics,
+} from './managed-deployment.js';
 import {
   describeManagedContainerMismatch,
   MANAGED_DEPLOYMENT_LABEL,
@@ -1355,5 +1358,68 @@ describe('managed Server environment drift', () => {
         }),
       ).rejects.toThrow(/deployment ID does not match/);
     });
+  });
+});
+
+describe('recorded host diagnostic mount migration', () => {
+  const migrate = async (root: string) =>
+    migrateManagedHostDiagnostics({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      hostPath: '/var/lib/verity/host-diagnostics',
+    });
+  it('keeps a running pre-migration Server serving and reports its pending mount', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(true));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      diagnosticMountPending: true,
+    });
+    expect(client.removeContainer).not.toHaveBeenCalled();
+    expect(client.createContainer).not.toHaveBeenCalled();
+  });
+  it('rebuilds a stopped pre-migration Server from complete sealed authority', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(false));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'created',
+      action: 'created',
+    });
+    expect(client.removeContainer).toHaveBeenCalledWith('existing');
+    expect(client.createContainer.mock.calls[0]?.[0].binds).toContain(
+      '/var/lib/verity/host-diagnostics:/run/verity-host-diagnostics:ro',
+    );
+  });
+  it.each([true, false])('refuses other structural drift when running is %s', async (running) => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker({ ...owned(running), readOnlyRootfs: true });
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
+    expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+  it('does not tolerate a missing mount without recorded pre-migration authority', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'managed-diagnostics-new-'));
+    await initializeManagedDeployment({
+      root,
+      deploymentId: 'deployment-1',
+      spec: {
+        ...body(),
+        mounts: [
+          ...body().mounts,
+          {
+            source: { kind: 'bind', path: '/var/lib/verity/host-diagnostics' },
+            target: '/run/verity-host-diagnostics',
+            readOnly: true,
+          },
+        ],
+      },
+    });
+    const client = docker(owned(true));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
+    expect(client.removeContainer).not.toHaveBeenCalled();
   });
 });

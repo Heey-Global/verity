@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { router, usePathname } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -32,10 +33,10 @@ export function ActiveMeetingOverlay() {
   const [pendingCommand, setPendingCommand] = useState<'pause' | 'resume' | 'stop' | null>(null);
   const [recorderOnline, setRecorderOnline] = useState(true);
   const remoteStopRequested = useRef(false);
-  const voiceNavigation = useRef<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceSending, setVoiceSending] = useState(false);
+  const [voiceRequestSent, setVoiceRequestSent] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [overlayHeight, setOverlayHeight] = useState(105);
   const pathname = usePathname();
@@ -73,28 +74,20 @@ export function ActiveMeetingOverlay() {
   }, [bottomLimit, leftLimit, position]);
 
   useEffect(() => subscribeMeeting(setLocalMeeting), []);
-  useEffect(() => {
-    if (voiceNavigation.current && pathname === `/session/${voiceNavigation.current}`)
-      voiceNavigation.current = null;
-  }, [pathname]);
+  useEffect(() => setVoiceRequestSent(false), [localMeeting?.id]);
   useEffect(
     () =>
       subscribeVoiceMeetingRequest((event) => {
         if (event.meetingId !== localMeeting?.id) return;
         setVoiceSending(event.status === 'sending');
         if (event.status === 'failed') setError(event.message ?? 'Voice request failed.');
-        if (event.status === 'sending') setError(null);
-        if (
-          event.status === 'sent' &&
-          localMeeting.state === 'active' &&
-          pathname !== `/session/${event.sessionId}` &&
-          voiceNavigation.current !== event.sessionId
-        ) {
-          voiceNavigation.current = event.sessionId;
-          router.push({ pathname: '/session/[id]', params: { id: event.sessionId } });
+        if (event.status === 'sending') {
+          setError(null);
+          setVoiceRequestSent(false);
         }
+        if (event.status === 'sent') setVoiceRequestSent(true);
       }),
-    [localMeeting?.id, localMeeting?.state, pathname],
+    [localMeeting?.id],
   );
   useEffect(() => subscribeFollowedRemoteMeeting(setFollowed), []);
   const meeting = localMeeting?.state === 'active' ? localMeeting : remoteMeeting;
@@ -105,6 +98,7 @@ export function ActiveMeetingOverlay() {
     if (!followed || pathname.startsWith('/meeting/')) return;
     let mounted = true;
     let polling = false;
+    const client = createVerityClient();
     const poll = async () => {
       if (polling) return;
       polling = true;
@@ -133,7 +127,7 @@ export function ActiveMeetingOverlay() {
           }
           return;
         }
-        const control = await createVerityClient()?.getLiveMeetingCommands(
+        const control = await client?.getLiveMeetingCommands(
           followed.sessionId,
           followed.meetingId,
         );
@@ -152,12 +146,17 @@ export function ActiveMeetingOverlay() {
       }
     };
     void poll();
-    const timer = setInterval(() => {
-      void poll();
-    }, 2000);
+    const detach = client
+      ? subscribeLiveRefresh(
+          client,
+          () => poll(),
+          (path) => path.includes('/live-meetings'),
+          [{ path: `/sessions/${encodeURIComponent(followed.sessionId)}/live-meetings` }],
+        )
+      : () => undefined;
     return () => {
       mounted = false;
-      clearInterval(timer);
+      detach();
     };
   }, [followed?.serverId, followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
   useEffect(() => {
@@ -271,6 +270,9 @@ export function ActiveMeetingOverlay() {
         {error ? <Text style={{ color: '#ffaba5', fontSize: 11 }}>{error}</Text> : null}
         {voiceSending ? (
           <Text style={{ color: '#aaa2ba', fontSize: 11 }}>Sending voice request…</Text>
+        ) : null}
+        {voiceRequestSent ? (
+          <Text style={{ color: '#aaa2ba', fontSize: 11 }}>Answer will appear in the meeting</Text>
         ) : null}
         <View style={{ flexDirection: 'row', gap: 8 }}>
           <Pressable

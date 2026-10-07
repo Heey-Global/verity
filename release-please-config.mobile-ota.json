@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "plugins": ["mobile-ota-sources"],
+  "label": "autorelease: pending-mobile-ota",
+  "release-label": "autorelease: tagged-mobile-ota",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "component": "mobile",
+      "package-name": "mobile-ota",
+      "version-file": "apps/mobile/ota/version.txt",
+      "changelog-path": "apps/mobile/ota/CHANGELOG.md",
+      "include-component-in-tag": true,
+      "tag-separator": "-",
+      "skip-github-release": true,
+      "draft-pull-request": false,
+      "pull-request-title-pattern": "chore(release): staging mobile OTA ${version}",
+      "pull-request-header": "Merge this release PR to publish this fixed version to Staging. Production requires the separate promotion PR."
+    }
+  }
+}

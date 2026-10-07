@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Message, ToolCall } from '../happy/message.js';
 import {
@@ -89,7 +90,102 @@ describe('toolCallView', () => {
       }),
     );
     expect(untitled.subtitle).toBeNull();
-    expect(untitled.headline).toBe('verity_session_handoff');
+    expect(untitled.headline).toBe('Verity Handoff');
+  });
+
+  it('labels Verity tools the same under every backend qualification', () => {
+    // Claude reports `mcp__verity__<tool>` and OpenCode `verity_<tool>`; a table keyed only by
+    // the bare name would show the doubled raw identifier for the very same call.
+    for (const name of ['verity_gmail', 'mcp__verity__verity_gmail', 'verity_verity_gmail']) {
+      const view = toolCallView(tool({ name, state: 'running', input: { action: 'search' } }));
+      expect(view.title).toBe('Gmail');
+      expect(view.headline).toBe('Gmail search');
+    }
+    const handoff = toolCallView(
+      tool({
+        name: 'mcp__verity__verity_session_handoff',
+        state: 'running',
+        input: { briefing: 'x'.repeat(200) },
+      }),
+    );
+    expect(handoff.headline).toBe('Verity Handoff');
+    expect(handoff.subtitle).toBeNull();
+  });
+
+  it('uses readable planning labels under every backend qualification', () => {
+    for (const [toolName, label] of [
+      ['verity_start_planning', 'Verity Planning Mode'],
+      ['verity_present_plan', 'Verity Plan'],
+      ['verity_end_planning', 'Verity Implement Plan'],
+    ]) {
+      for (const name of [toolName!, `mcp__verity__${toolName}`, `verity_${toolName}`]) {
+        const view = toolCallView(tool({ name, state: 'running', input: {} }));
+        expect(view.title).toBe(label);
+        expect(view.headline).toBe(label);
+      }
+    }
+  });
+
+  it('names a Verity CLI run through Bash by the CLI, not the agent-written description', () => {
+    const headline = (command: string) =>
+      toolCallView(
+        tool({ name: 'Bash', state: 'running', input: { command, description: 'Review diff' } }),
+      ).headline;
+    expect(headline('verity-code-review run 2>&1 | tail -30')).toBe('Verity Code Review run');
+    expect(headline('verity-memory append "note"')).toBe('Verity Memory append');
+    expect(headline('verity-code-review')).toBe('Verity Code Review');
+    // Only the program position counts: a mention elsewhere is an ordinary command.
+    expect(headline('echo verity-code-review')).toBe('Ran Review diff');
+  });
+
+  it('displays every tool advertised by the gateway without protocol identifiers', () => {
+    // A new gateway tool must not silently leak its protocol name into the transcript.
+    const contract = readFileSync(
+      new URL('../../../secret-contracts/src/audit.ts', import.meta.url),
+      'utf8',
+    );
+    const names = contract
+      .match(/gatewayToolNameSchema = z\.enum\(\[([\s\S]*?)\]\)/)?.[1]
+      ?.match(/verity_[a-z_]+/g);
+    expect(names?.length).toBeGreaterThan(0);
+    for (const bare of names ?? []) {
+      for (const name of [bare, `mcp__verity__${bare}`, `verity_${bare}`]) {
+        const view = toolCallView(tool({ name, state: 'running', input: {} }));
+        expect(view.title).not.toMatch(/_|\bverity\b/);
+        expect(view.headline).toBe(view.title);
+      }
+    }
+  });
+
+  it('labels platform tasks without using the project identifier as the action', () => {
+    for (const name of ['verity_tasks', 'mcp__verity__verity_tasks', 'verity_verity_tasks']) {
+      const view = toolCallView(
+        tool({ name, state: 'running', input: { project: 'verity', action: 'list' } }),
+      );
+      expect(view.title).toBe('Verity Tasks');
+      expect(view.headline).toBe('Verity Tasks list');
+    }
+  });
+
+  it('keeps newly introduced Verity tools readable under every backend qualification', () => {
+    for (const name of [
+      'verity_new_feature',
+      'mcp__verity__verity_new_feature',
+      'verity_verity_new_feature',
+    ]) {
+      const view = toolCallView(tool({ name, state: 'running', input: {} }));
+      expect(view.title).toBe('Verity New Feature');
+      expect(view.headline).toBe('Verity New Feature');
+    }
+  });
+
+  it('leaves unrelated tool names untouched', () => {
+    expect(
+      toolCallView(tool({ name: 'mcp__other__verity_gmail', state: 'running', input: {} })).title,
+    ).toBe('mcp__other__verity_gmail');
+    expect(toolCallView(tool({ name: 'constructor', state: 'running', input: {} })).title).toBe(
+      'constructor',
+    );
   });
 
   it('spells out bidi controls on the line, where they reorder what the reader compares', () => {
@@ -208,6 +304,12 @@ describe('toolCallView', () => {
       'The command was not started. No secret value was exposed.';
     expect(
       toolCallView(tool({ name: 'verity_secret_run', state: 'error', input: {}, result })).preview,
+    ).toBe(result);
+    // Claude reports the same tool qualified; truncating there would hide the cause again.
+    expect(
+      toolCallView(
+        tool({ name: 'mcp__verity__verity_secret_run', state: 'error', input: {}, result }),
+      ).preview,
     ).toBe(result);
   });
 

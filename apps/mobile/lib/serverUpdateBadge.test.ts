@@ -1,3 +1,11 @@
+const mockLive = new Set<() => void>();
+const mockBase = new Set<() => void>();
+jest.mock('./liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockLive.add(refresh);
+    return () => mockLive.delete(refresh);
+  },
+}));
 // The badge hook's two non-obvious contracts, both of which are about WHEN it
 // asks rather than what it answers: every screen in the stack renders the header
 // that calls it, and the Verity client does not exist until the operator has
@@ -5,9 +13,16 @@
 import { type VerityClient, type ServerUpdateStatus } from '@verity/mobile';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { createVerityClient, getVerityBaseUrl } from './client';
-import { SERVER_UPDATE_BADGE_POLL_MS, useServerUpdateBadge } from './serverUpdateBadge';
+import { useServerUpdateBadge } from './serverUpdateBadge';
 
-jest.mock('./client', () => ({ createVerityClient: jest.fn(), getVerityBaseUrl: jest.fn() }));
+jest.mock('./client', () => ({
+  createVerityClient: jest.fn(),
+  getVerityBaseUrl: jest.fn(),
+  subscribeVerityBaseUrl: (listener: () => void) => {
+    mockBase.add(listener);
+    return () => mockBase.delete(listener);
+  },
+}));
 
 const createClient = createVerityClient as jest.MockedFunction<typeof createVerityClient>;
 const baseUrl = getVerityBaseUrl as jest.MockedFunction<typeof getVerityBaseUrl>;
@@ -23,6 +38,8 @@ function fakeClient(getServerUpdates: jest.Mock): VerityClient {
 }
 
 beforeEach(() => {
+  mockLive.clear();
+  mockBase.clear();
   baseUrl.mockReturnValue('http://server-a');
 });
 
@@ -38,7 +55,7 @@ describe('useServerUpdateBadge', () => {
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
 
-    await waitFor(() => expect(result.current).toBe(true));
+    await waitFor(() => expect(result.current).toBe('v11.1.0'));
     expect(getServerUpdates).toHaveBeenCalledTimes(1);
   });
 
@@ -55,7 +72,7 @@ describe('useServerUpdateBadge', () => {
 
     await act(async () => undefined);
     expect(getServerUpdates).not.toHaveBeenCalled();
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
   });
 
   /**
@@ -66,16 +83,17 @@ describe('useServerUpdateBadge', () => {
   it('picks up a server configured after it mounted', async () => {
     jest.useFakeTimers();
     const getServerUpdates = jest.fn().mockResolvedValue(available);
-    createClient.mockReturnValueOnce(null).mockReturnValue(fakeClient(getServerUpdates));
+    createClient.mockReturnValue(null);
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
+    createClient.mockReturnValue(fakeClient(getServerUpdates));
 
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockBase]) listener();
     });
     expect(getServerUpdates).toHaveBeenCalledTimes(1);
-    expect(result.current).toBe(true);
+    expect(result.current).toBe('v11.1.0');
   });
 });
 
@@ -92,13 +110,13 @@ describe('when the server changes underneath it', () => {
     createClient.mockReturnValue(fakeClient(getServerUpdates));
 
     const { result, rerender } = renderHook(() => useServerUpdateBadge(true));
-    await waitFor(() => expect(result.current).toBe(true));
+    await waitFor(() => expect(result.current).toBe('v11.1.0'));
 
     // The operator points the app at a different server. Nothing has been asked
     // of it yet, so the dot must go dark rather than inherit the old answer.
     baseUrl.mockReturnValue('http://server-b');
     rerender(undefined);
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
   });
 
   /**
@@ -112,15 +130,15 @@ describe('when the server changes underneath it', () => {
 
     const { result, rerender } = renderHook(() => useServerUpdateBadge(true));
     await act(async () => undefined);
-    expect(result.current).toBe(true);
+    expect(result.current).toBe('v11.1.0');
 
     baseUrl.mockReturnValue('http://server-b');
     getServerUpdates.mockRejectedValue(new Error('unreachable'));
     rerender(undefined);
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockBase]) listener();
     });
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
   });
 
   it('clears an available answer when that server disappears for update activation', async () => {
@@ -130,13 +148,13 @@ describe('when the server changes underneath it', () => {
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
     await act(async () => undefined);
-    expect(result.current).toBe(true);
+    expect(result.current).toBe('v11.1.0');
 
     getServerUpdates.mockRejectedValue(new Error('update cutover'));
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockLive]) listener();
     });
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
   });
 
   it('goes dark when the server is unpaired', async () => {
@@ -146,15 +164,15 @@ describe('when the server changes underneath it', () => {
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
     await act(async () => undefined);
-    expect(result.current).toBe(true);
+    expect(result.current).toBe('v11.1.0');
 
     // No server configured any more: there is nothing the dot could be about.
     createClient.mockReturnValue(null);
     baseUrl.mockReturnValue(null);
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockBase]) listener();
     });
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
   });
 
   /**
@@ -169,13 +187,13 @@ describe('when the server changes underneath it', () => {
     const { result, rerender } = renderHook(({ on }: { on: boolean }) => useServerUpdateBadge(on), {
       initialProps: { on: true },
     });
-    await waitFor(() => expect(result.current).toBe(true));
+    await waitFor(() => expect(result.current).toBe('v11.1.0'));
 
     rerender({ on: false });
     // Back on the overview, with a server that now answers nothing: the dot must
     // come from a fresh answer, not from the one before the pause.
     createClient.mockReturnValue(null);
     rerender({ on: true });
-    expect(result.current).toBe(false);
+    expect(result.current).toBeNull();
   });
 });

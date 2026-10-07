@@ -97,12 +97,30 @@ export function planCandidate(
     schema: 1,
     version,
     runtime: nativeVersion,
-    channel: 'testflight',
+    channel: 'production',
     commit,
     tag: `mobile-v${version}`,
     branch: `staging-mobile-v${version}-${commit}`,
     baseline: `mobile-v${releasedVersion}`,
   };
+}
+
+/** A merged staging release owns its version even when production skips patches. */
+export function fixedCandidate(
+  runtime: string,
+  baseline: string,
+  commit: string,
+  version: string,
+): Candidate {
+  if (
+    !versionPattern.test(version) ||
+    !version.startsWith(`${runtime.split('.').slice(0, 2).join('.')}.`)
+  )
+    throw new Error('Staging version must belong to the native runtime');
+  const previous = `${version.split('.').slice(0, 2).join('.')}.${Number(version.split('.')[2]) - 1}`;
+  const candidate = planCandidate(runtime, baseline, commit, [previous]);
+  if (candidate.version !== version) throw new Error('Staging version must follow production');
+  return candidate;
 }
 
 export function validateCandidate(input: unknown): Artifact {
@@ -115,6 +133,7 @@ export function validateCandidate(input: unknown): Artifact {
     candidate.commit,
     [previousPatch],
   );
+  if (candidate.channel === 'testflight') planned.channel = 'testflight';
   for (const key of Object.keys(planned) as (keyof Candidate)[]) {
     if (candidate[key] !== planned[key]) throw new Error(`Invalid candidate ${key}`);
   }
@@ -154,11 +173,11 @@ export function singleGroup(list: UpdateList): string | undefined {
   return group;
 }
 
-export function verifyChannel(channel: Channel, branch: string) {
+export function verifyChannel(channel: Channel, branch: string, expectedChannel = 'production') {
   const value = channel.currentPage;
   const mapping = JSON.parse(value?.branchMapping ?? '{}') as Mapping;
   if (
-    value?.name !== 'testflight' ||
+    value?.name !== expectedChannel ||
     value.isPaused ||
     mapping.version !== 0 ||
     mapping.data?.length !== 1 ||
@@ -167,7 +186,7 @@ export function verifyChannel(channel: Channel, branch: string) {
       (item) => item.name === branch && item.id === mapping.data[0].branchId,
     )
   )
-    throw new Error('TestFlight channel does not exclusively target the approved branch');
+    throw new Error('Update channel does not exclusively target the approved branch');
 }
 
 export function releaseNotes(subjects: string) {
@@ -236,7 +255,10 @@ function staleApprovals(number: number, head: string): Review[] {
 
 function published(runtime: string) {
   const versions = releaseRows()
-    .filter((release) => !release.draft && !release.prerelease)
+    .filter(
+      (release) =>
+        !release.draft && (!release.prerelease || release.tag_name === `mobile-v${runtime}`),
+    )
     .map((release) => release.tag_name)
     .filter((tag) => /^mobile-v\d+\.\d+\.\d+$/.test(tag))
     .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
@@ -328,9 +350,22 @@ export function stageArtifact(
  * the earlier, authoritative boundary; read it from main, not from a checkout
  * that predates the merge.
  */
+function compatibleBaseline(candidate: Candidate, delivered: string): boolean {
+  if (delivered === candidate.baseline || delivered === candidate.tag) return true;
+  const prefix = `mobile-v${candidate.runtime.split('.').slice(0, 2).join('.')}.`;
+  if (!delivered.startsWith(prefix)) return false;
+  const patch = Number(delivered.slice(prefix.length));
+  return (
+    Number.isInteger(patch) &&
+    patch > Number(candidate.baseline.split('.').at(-1)) &&
+    patch < Number(candidate.version.split('.').at(-1))
+  );
+}
+
 function assertBaseline(candidate: Candidate) {
   const delivered = published(candidate.runtime);
-  if (delivered !== candidate.baseline) throw new Error('Published baseline changed; stage again');
+  if (!compatibleBaseline(candidate, delivered))
+    throw new Error('Published baseline changed; stage again');
   const approved = api<{ content: string }>(
     `repos/${repository()}/contents/${manifestPath}?ref=main`,
   );
@@ -339,29 +374,35 @@ function assertBaseline(candidate: Candidate) {
     throw new Error('An approved promotion is undelivered; stage again once it publishes');
 }
 
-function stage(runtime: string) {
-  const commit = process.env.GITHUB_SHA ?? '';
+function stage(runtime: string, version: string) {
+  const stagingOAuth = process.env.STAGING_GOOGLE_AUTH_ID?.trim();
+  if (!stagingOAuth || !/^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/.test(stagingOAuth))
+    throw new Error('STAGING_GOOGLE_AUTH_ID must identify the Staging app OAuth client');
+
+  const commit = process.env.OTA_SOURCE_SHA ?? process.env.GITHUB_SHA ?? '';
   if (git('rev-parse', 'HEAD') !== commit)
     throw new Error('Checkout differs from candidate source');
-  const legacyVersions = git('tag', '--list', 'mobile-v*')
-    .split('\n')
-    .map((tag) => tag.replace(/^mobile-v/, ''));
   const delivered = published(runtime);
-  for (const version of legacyVersions) {
-    if (
-      `mobile-v${version}`.localeCompare(delivered, 'en', { numeric: true }) > 0 &&
-      git('tag', '--list', `ota-artifact/mobile-v${version}/*`)
-    )
-      throw new Error(
-        'A promotion reserved its public tag but has not finalized; recover that promotion first',
-      );
+  let candidate = fixedCandidate(runtime, delivered.replace(/^mobile-v/, ''), commit, version);
+  const reservation = `ota-candidate/${candidate.tag}/${commit}`;
+  if (git('ls-remote', '--tags', 'origin', `refs/tags/${reservation}`)) {
+    git('fetch', 'origin', `refs/tags/${reservation}:refs/tags/${reservation}`);
+    const saved = JSON.parse(
+      git('for-each-ref', '--format=%(contents)', `refs/tags/${reservation}`),
+    ) as Candidate;
+    const planned = fixedCandidate(
+      runtime,
+      saved.baseline.replace(/^mobile-v/, ''),
+      commit,
+      version,
+    );
+    if (JSON.stringify(saved) !== JSON.stringify(planned))
+      throw new Error('Immutable candidate reservation changed');
+    // Production can advance while a staging upload is interrupted. Keep its
+    // original reservation so a retry reconciles the same bundle and evidence.
+    candidate = planned;
   }
-  const candidate = planCandidate(
-    runtime,
-    delivered.replace(/^mobile-v/, ''),
-    commit,
-    legacyVersions,
-  );
+  assertBaseline(candidate);
   git('merge-base', '--is-ancestor', candidate.baseline, commit);
   const group = stageArtifact(candidate, {
     reserve: (value) => reserve(`ota-candidate/${value.tag}/${commit}`, value),
@@ -392,12 +433,72 @@ function stage(runtime: string) {
       );
     },
   });
+  // The separate app has a distinct runtime; its OTA cannot reach production.
+  const stagingCandidate = {
+    ...candidate,
+    branch: `staging-${candidate.branch}`,
+    runtime: `staging-${runtime}`,
+  };
+  try {
+    eas('branch:create', stagingCandidate.branch, '--non-interactive');
+  } catch {
+    /* Read verifies existence. */
+  }
+  let stagingGroup = readGroup(stagingCandidate);
+  if (!stagingGroup) {
+    if (!reserve(`ota-staging-upload/${candidate.tag}/${commit}`, stagingCandidate))
+      throw new Error(
+        'Staging upload was attempted without recorded evidence; reconcile before retrying',
+      );
+    run(
+      'npx',
+      [
+        '--yes',
+        'eas-cli@21.0.1',
+        'update',
+        '--branch',
+        stagingCandidate.branch,
+        '--platform',
+        'ios',
+        '--message',
+        `Staging ${candidate.version}`,
+        '--non-interactive',
+      ],
+      {
+        cwd: 'apps/mobile',
+        env: {
+          ...process.env,
+          VERITY_APP_VARIANT: 'staging',
+          EXPO_UPDATE_CHANNEL: 'staging',
+          GOOGLE_AUTH_ID: stagingOAuth,
+        },
+      },
+    );
+    stagingGroup = readGroup(stagingCandidate);
+    if (!stagingGroup) throw new Error('Staging OTA evidence is missing');
+  }
+  eas('channel:edit', 'staging', '--branch', stagingCandidate.branch, '--non-interactive');
+  verifyChannel(
+    easJson('channel:view', 'staging', '--non-interactive'),
+    stagingCandidate.branch,
+    'staging',
+  );
   candidate.group = group;
   candidate.notes = releaseNotes(
     git('log', '--format=%s', `${candidate.baseline}..${commit}`, '--', ...sourcePaths),
   );
   reserve(`ota-artifact/${candidate.tag}/${commit}`, candidate);
   assertBaseline(candidate);
+  const publicTag = git('ls-remote', '--tags', 'origin', `refs/tags/${candidate.tag}`);
+  if (publicTag) {
+    git('fetch', 'origin', `refs/tags/${candidate.tag}:refs/tags/${candidate.tag}`);
+    if (git('rev-list', '-n', '1', candidate.tag) !== commit)
+      throw new Error('Staging release version already has another source');
+  } else {
+    git('tag', candidate.tag, commit);
+    git('push', 'origin', `refs/tags/${candidate.tag}`);
+  }
+  finishRelease(candidate, true);
 
   const branch = `automation/promote-mobile-ota-${runtime}`;
   const open = json<Pull[]>(
@@ -528,7 +629,7 @@ function stage(runtime: string) {
     '-f',
     `expected=${commit}`,
     '-f',
-    `message=chore(mobile): promote OTA ${candidate.version}`,
+    `message=chore(release): production mobile OTA ${candidate.version}`,
     '-f',
     `path=${manifestPath}`,
     '-f',
@@ -536,7 +637,7 @@ function stage(runtime: string) {
   );
   if (!result.data.createCommitOnBranch.commit.signature.isValid)
     throw new Error('Promotion commit is not verified');
-  const title = `chore(mobile): promote OTA ${candidate.version}`;
+  const title = `chore(release): production mobile OTA ${candidate.version}`;
   const body = `Promotes immutable EAS update group \`${group}\` for runtime \`${runtime}\`.\n\nSource: \`${commit}\`\nPublished baseline: \`${candidate.baseline}\`\n\nChanges since the delivered release:\n${candidate.notes.map((note) => `- ${note}`).join('\n') || '- Mobile application updates.'}\n\nMerging approves this exact candidate. CI validates the current PR head; an older approval cannot select an older bundle.\n`;
   const bodyFile = `${process.env.RUNNER_TEMP}/mobile-ota-pr.md`;
   writeFileSync(bodyFile, body);
@@ -661,8 +762,13 @@ function promote() {
     .sort((a, b) => b.id - a.id)[0];
   if (verdict?.conclusion !== 'success')
     throw new Error('The exact candidate PR head has no successful CI verdict');
+  const native = releaseRows().find(
+    (release) => release.tag_name === `mobile-v${candidate.runtime}` && !release.draft,
+  );
+  if (!native || native.prerelease)
+    throw new Error('Approve the native production runtime before promoting its OTA');
   const latest = published(candidate.runtime);
-  if (latest !== candidate.baseline && latest !== candidate.tag)
+  if (!compatibleBaseline(candidate, latest))
     throw new Error('Candidate is stale; stage against the delivered release');
   if (readGroup(candidate) !== candidate.group)
     throw new Error('Candidate branch no longer holds the approved group');
@@ -676,7 +782,11 @@ function promote() {
     git('push', 'origin', `refs/tags/${candidate.tag}`);
   }
   eas('channel:edit', candidate.channel, '--branch', candidate.branch, '--non-interactive');
-  verifyChannel(easJson('channel:view', candidate.channel, '--non-interactive'), candidate.branch);
+  verifyChannel(
+    easJson('channel:view', candidate.channel, '--non-interactive'),
+    candidate.branch,
+    candidate.channel,
+  );
   if (latest !== candidate.tag) finishRelease(candidate);
   restage(candidate);
 }
@@ -696,7 +806,7 @@ function restage(candidate: Artifact) {
   if (pending.length) gh('workflow', 'run', 'mobile-ota.yml', '--ref', 'main');
 }
 
-function finishRelease(candidate: Artifact) {
+function finishRelease(candidate: Artifact, staging = false) {
   const notesFile = `${process.env.RUNNER_TEMP}/mobile-ota-release.md`;
   writeFileSync(
     notesFile,
@@ -720,6 +830,7 @@ function finishRelease(candidate: Artifact) {
     'edit',
     candidate.tag,
     '--draft=false',
+    `--prerelease=${staging}`,
     '--notes-file',
     notesFile,
     '--latest=false',
@@ -727,7 +838,7 @@ function finishRelease(candidate: Artifact) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv[2] === 'stage') stage(process.argv[3] ?? '');
+  if (process.argv[2] === 'stage') stage(process.argv[3] ?? '', process.argv[4] ?? '');
   else if (process.argv[2] === 'promote') promote();
-  else throw new Error('Usage: mobile-ota-release.ts stage <runtime> | promote');
+  else throw new Error('Usage: mobile-ota-release.ts stage <runtime> <version> | promote');
 }

@@ -3,6 +3,9 @@
 **Status:** Proposed · **Date:** 2026-09-15
 **Depends on:** [ADR 0018](0018-knowledge-realms-and-namespaces.md) (realms), builds on
 [ADR 0008 — Agent Loop Scheduler](0008-agent-loop-scheduler.md)
+**Note:** Written before ADR 0008's 2026-10-04 amendment replaced project Agent Loops with
+session automations. References to `agent_loops` and the loop cockpit below need revisiting
+before this is accepted.
 
 ## Context
 

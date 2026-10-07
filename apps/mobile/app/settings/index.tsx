@@ -1,3 +1,5 @@
+import { enableTaskScreenshotSuggestions } from '../../lib/taskScreenshot';
+import { useTaskPreferences, saveTaskPreferences } from '../../lib/taskPreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -7,19 +9,13 @@
 import {
   settingsChecklist,
   settingsChecklistHeadline,
-  commitAuthorReady,
-  githubRepositoryAccessReady,
-  secretStoreManaged,
-  secretStoreReady,
-  verifiedCommitsReady,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
 import * as Application from 'expo-application';
-import { router, useLocalSearchParams, type Href } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { router, type Href } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
   SettingsGroup,
@@ -37,6 +33,7 @@ import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
+import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
 import {
   retryFailedVeritySettings,
   saveVeritySettings,
@@ -54,24 +51,14 @@ const APP_VERSION_LABEL = runningReleaseVersion(Application.nativeApplicationVer
 // without a destination — a row that explains a problem but goes nowhere is
 // worse than no row.
 const CHECKLIST_ROUTES: Readonly<Record<SettingsChecklistItemId, Href>> = {
-  secretStore: '/settings/services' as Href,
+  secretStore: '/settings/secret-store' as Href,
   githubAccess: '/settings/github' as Href,
   commitAuthor: '/settings/github' as Href,
   verifiedCommits: '/settings/github' as Href,
 };
 
 export default function SettingsIndexScreen() {
-  const { agentLogin } = useLocalSearchParams<{ agentLogin?: string | string[] }>();
   const client = useMemo(() => createVerityClient(), []);
-
-  // `/settings?agentLogin=…` used to open the AI-login panel on the one big
-  // screen. The panel now lives under Connected services; forward rather than
-  // break links held by an older notification or an un-updated client.
-  useEffect(() => {
-    if (agentLogin === 'claude' || agentLogin === 'codex') {
-      router.replace(`/settings/services?agentLogin=${agentLogin}` as Href);
-    }
-  }, [agentLogin]);
 
   if (!client) {
     return (
@@ -85,12 +72,12 @@ export default function SettingsIndexScreen() {
 }
 
 function SettingsIndexView({ client }: { client: VerityClient }) {
-  const { theme } = useUnistyles();
+  const taskPreferences = useTaskPreferences();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
-  const updateAwaits = useServerUpdateBadge(true);
+  const updateVersion = useServerUpdateBadge(true);
 
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const exportDiagnostics = async () => {
@@ -113,27 +100,14 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         if (result === 'current') Alert.alert('Verity is up to date', APP_VERSION_LABEL);
         if (result === 'busy') Alert.alert('Update check in progress');
         if (result === 'disabled') Alert.alert('Updates unavailable', 'EAS Update is disabled.');
-        if (result === 'failed') {
-          Alert.alert('Update failed', 'Could not check for an update. Try again later.');
+        if (typeof result === 'object' && result.status === 'failed') {
+          Alert.alert('Update failed', result.message);
         }
       })
       .finally(() => setCheckingForUpdate(false));
   }, [checkingForUpdate]);
 
   const checklist = settingsChecklist({ settings, secretStatus, failed });
-  const githubReady =
-    githubRepositoryAccessReady(settings) &&
-    commitAuthorReady(settings) &&
-    verifiedCommitsReady(settings);
-  const servicesNeedsUnlock = secretStoreManaged(secretStatus) && !secretStoreReady(secretStatus);
-
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
-      </View>
-    );
-  }
 
   return (
     <SettingsScaffold
@@ -144,7 +118,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         })
       }
     >
-      {checklist.kind === 'ready' && checklist.remaining > 0 ? (
+      {!loading && checklist.kind === 'ready' && checklist.remaining > 0 ? (
         <View style={styles.checklistPanel}>
           <Text style={styles.checklistHeadline} accessibilityRole="header">
             {settingsChecklistHeadline(checklist)}
@@ -177,35 +151,45 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Setup">
+      <SettingsGroup title="Connections">
         <SettingsListPanel>
           <SettingsNavRow
-            icon="github"
-            title="GitHub"
-            subtitle="Repository access, commit author, signing key"
-            status={{
-              intent: githubReady ? 'ready' : 'needsSetup',
-              label: githubReady ? 'Ready' : 'Needs setup',
-            }}
-            onPress={() => router.push('/settings/github')}
-          />
-          <SettingsNavRow
-            icon="key"
-            title="Connected services"
-            subtitle="Secret store, AI logins, transcription, MCP, Matrix"
-            status={servicesNeedsUnlock ? { intent: 'needsSetup', label: 'Locked' } : undefined}
+            icon="link"
+            title="Connections"
+            subtitle="AI, code, documents and other services"
             onPress={() => router.push('/settings/services')}
           />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Server">
+        <SettingsListPanel>
           <SettingsNavRow
-            icon="tool"
-            title="Maintenance"
-            subtitle="Server updates and reprovisioning"
-            // The header's update dot points at Settings because that is where an
-            // update can be started — which is now one screen further in. The row
-            // carries the badge on, so the dot never leads to a screen that says
-            // nothing about the update it announced.
-            status={updateAwaits ? { intent: 'needsSetup', label: 'Update available' } : undefined}
-            onPress={() => router.push('/settings/maintenance')}
+            icon="download"
+            title="Server update"
+            subtitle={updateVersion !== null ? `Version ${updateVersion} available` : undefined}
+            status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
+            onPress={() => router.push('/settings/server-update')}
+          />
+          <SettingsNavRow
+            icon="globe"
+            title="Remote access"
+            subtitle="Verity Uplink"
+            onPress={() => router.push('/settings/remote-access')}
+          />
+          <SettingsNavRow
+            icon="mic"
+            title="Meeting transcription"
+            onPress={() => router.push('/settings/transcription')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Security">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="smartphone"
+            title="Paired devices"
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage paired devices"
           />
         </SettingsListPanel>
       </SettingsGroup>
@@ -225,31 +209,77 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => void exportDiagnostics()}
           />
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="play"
+              title="Try demo"
+              subtitle="Local sample data and simulated AI; your server connection is preserved"
+              onPress={() => {
+                void enterDemoMode()
+                  .then(() => router.replace('/'))
+                  .catch((error: unknown) =>
+                    Alert.alert(
+                      'Could not start demo',
+                      error instanceof Error ? error.message : 'Please try again.',
+                    ),
+                  );
+              }}
+            />
+          ) : null}
           <SettingsNavRow
             icon="server"
-            title="Server"
-            value={getVerityBaseUrl() ?? 'Not set'}
-            onPress={() => router.push('/onboarding/server-url?reconfigure=1')}
+            title="Server address"
+            value={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            onPress={() => {
+              if (isDemoMode()) {
+                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
+              } else {
+                router.push('/onboarding/server-url?reconfigure=1');
+              }
+            }}
             accessibilityLabel="Change server address"
-          />
-          <SettingsNavRow
-            icon="smartphone"
-            title="Paired devices"
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage paired devices"
           />
         </SettingsListPanel>
       </SettingsGroup>
 
-      <SettingsGroup title="Advanced">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="mic"
-            title="Live STT test"
-            onPress={() => router.push('/settings/live-meeting-stt')}
-            accessibilityLabel="Test live meeting transcription engines"
+      <SettingsGroup title="Tasks">
+        <SettingsPanel>
+          <SettingsToggleRow
+            label="Show capture bubble"
+            value={taskPreferences.enabled}
+            onValueChange={(value) => {
+              void saveTaskPreferences({ enabled: value }).catch((error) =>
+                Alert.alert(
+                  'Could not save preference',
+                  error instanceof Error ? error.message : 'Try again',
+                ),
+              );
+            }}
           />
-        </SettingsListPanel>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              void enableTaskScreenshotSuggestions()
+                .then(() =>
+                  Alert.alert(
+                    'Screenshot suggestions enabled',
+                    'Quick capture can offer screenshots taken in the last two minutes.',
+                  ),
+                )
+                .catch((error) =>
+                  Alert.alert(
+                    'Screenshot suggestions unavailable',
+                    error instanceof Error ? error.message : 'Install the latest app build',
+                  ),
+                );
+            }}
+          >
+            <Text style={styles.disclosureTitle}>Allow screenshot suggestions</Text>
+          </Pressable>
+        </SettingsPanel>
+      </SettingsGroup>
+
+      <SettingsGroup title="Advanced">
         <SettingsPanel>
           <Text style={styles.disclosureTitle}>Verity Control</Text>
           <Text style={styles.reproSubtitle}>
@@ -258,7 +288,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsToggleRow
             label="Advanced mode"
             value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
-            disabled={pendingAdvancedMode !== undefined}
+            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
             onValueChange={(value) => {
               setPendingAdvancedMode(value);
               void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>

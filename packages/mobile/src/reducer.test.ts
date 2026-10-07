@@ -2,6 +2,7 @@ import type { AgentEvent } from '@verity/events';
 import { describe, expect, it } from 'vitest';
 import type { AgentTextMessage, ToolCallMessage, UserTextMessage } from './happy/message.js';
 import { reduceFrames, SessionReducer } from './reducer.js';
+import { groupRows } from './ui/transcriptRows.js';
 
 function agentText(messages: readonly { kind: string }[]): AgentTextMessage[] {
   return messages.filter((m): m is AgentTextMessage => m.kind === 'agent-text');
@@ -523,21 +524,20 @@ describe('SessionReducer', () => {
     }
   });
 
-  it('renders an Agent Loop proposal as its own interactive message', () => {
+  it('renders an automation proposal as its own interactive message', () => {
     const r = new SessionReducer();
     r.apply(1, {
-      t: 'agent_loop_proposal',
+      t: 'automation_proposal',
       proposal: {
-        loopId: '11111111-1111-4111-8111-111111111111',
-        name: 'Dependency audit',
-        script: 'exit 0',
-        schedule: { kind: 'daily', hour: 3, minute: 0 },
+        name: 'Morning review',
+        schedule: { kind: 'daily', hour: 9, minute: 0 },
+        prompt: 'Summarize the open pull requests.',
       },
     });
     expect(r.messages[0]).toMatchObject({
-      kind: 'agent-loop-proposal',
-      id: 'agent-loop-proposal-1',
-      proposal: { name: 'Dependency audit' },
+      kind: 'automation-proposal',
+      id: 'automation-proposal-1',
+      proposal: { name: 'Morning review' },
     });
   });
 
@@ -1171,4 +1171,160 @@ describe('SessionReducer — skill body correlation', () => {
     r.apply(2, { t: 'tool_result', id: 'sk1', output: 'no such skill', isError: true });
     expect(skillOf(r.messages)?.tool.state).toBe('error');
   });
+});
+
+describe('SessionReducer published snapshots', () => {
+  it('retains old streaming snapshots and shares untouched messages', () => {
+    const reducer = new SessionReducer();
+    reducer.apply(1, { t: 'prompt', text: 'Hello' });
+    reducer.apply(2, { t: 'text', delta: 'First' });
+    const before = reducer.state.messages;
+    reducer.apply(3, { t: 'text', delta: ' next' });
+    const after = reducer.state.messages;
+    // An old rendered snapshot changing in place defeats shallow row memoization.
+    expect(agentText(before)[0]?.text).toBe('First');
+    expect(agentText(after)[0]?.text).toBe('First next');
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).not.toBe(before[1]);
+    expect(reducer.state.messages).toBe(after);
+    reducer.apply(4, { t: 'task', id: 'background', phase: 'started' });
+    expect(reducer.state.messages).toBe(after);
+  });
+
+  it('publishes detached thinking, tool results, skill bodies and settlement', () => {
+    const reducer = new SessionReducer();
+    reducer.apply(1, { t: 'thinking', blockId: 'one', delta: 'Thinking' });
+    const thinking = reducer.state.messages[0];
+    reducer.apply(2, { t: 'thinking', blockId: 'one', delta: ' more' });
+    expect(thinking).toMatchObject({ text: 'Thinking' });
+    expect(reducer.state.messages[0]).toMatchObject({ text: 'Thinking more' });
+    reducer.apply(3, { t: 'tool_call', id: 'skill', name: 'Skill', input: {} });
+    const running = toolCalls(reducer.state.messages)[0]!;
+    reducer.apply(4, { t: 'tool_result', id: 'skill', output: 'ack', isError: false });
+    const acknowledged = toolCalls(reducer.state.messages)[0]!;
+    expect(running.tool.result).toBeUndefined();
+    expect(acknowledged.tool.result).toBe('ack');
+    reducer.apply(5, { t: 'skill', text: 'instructions' });
+    const withBody = toolCalls(reducer.state.messages)[0]!;
+    expect(acknowledged.tool.skillBody).toBeUndefined();
+    expect(withBody.tool.skillBody).toBe('instructions');
+    reducer.apply(6, { t: 'status', state: 'completed' });
+    expect(withBody.tool.state).toBe('running');
+    expect(toolCalls(reducer.state.messages)[0]?.tool.state).toBe('completed');
+    reducer.apply(7, { t: 'tool_call', id: 'read', name: 'Read', input: {} });
+    const openRead = toolCalls(reducer.state.messages)[1]!;
+    reducer.apply(8, { t: 'tool_result', id: 'read', output: 'failed', isError: true });
+    expect(openRead.tool.state).toBe('running');
+    expect(toolCalls(reducer.state.messages)[1]?.tool.state).toBe('error');
+  });
+
+  it('keeps a removed dependency message in an earlier snapshot', () => {
+    const reducer = new SessionReducer();
+    reducer.apply(1, { t: 'status', state: 'awaiting_dependency', message: 'Waiting' });
+    const before = reducer.state.messages;
+    reducer.apply(2, { t: 'status', state: 'running' });
+    expect(before).toHaveLength(1);
+    expect(reducer.state.messages).toEqual([]);
+  });
+});
+
+describe('SessionReducer replay snapshot sharing', () => {
+  const frames: readonly AgentEvent[] = [
+    { t: 'prompt', text: 'Hello' },
+    { t: 'text', delta: 'Tail' },
+    { t: 'tool_call', id: 'read', name: 'Read', input: { path: 'file' } },
+    { t: 'tool_result', id: 'read', output: { content: 'file content' }, isError: false },
+  ];
+  function replay(events: readonly AgentEvent[]): SessionReducer {
+    const reducer = new SessionReducer();
+    events.forEach((event, index) => reducer.apply(index + 10, event));
+    return reducer;
+  }
+
+  it('reuses text, tools and grouped rows after a canonical history prepend', () => {
+    const old = replay(frames);
+    const previous = old.messages;
+    const rows = groupRows(previous);
+    const next = new SessionReducer();
+    next.apply(1, { t: 'prompt', text: 'Older' });
+    frames.forEach((event, index) => next.apply(index + 10, event));
+    next.reuseMessageSnapshots(previous);
+    previous.forEach((message, index) => expect(next.messages[index + 1]).toBe(message));
+    const nextRows = groupRows(next.messages, rows);
+    rows.forEach((row, index) => expect(nextRows[index + 1]).toBe(row));
+  });
+
+  it('refreshes changed content and payload references instead of hiding them', () => {
+    const previous = replay(frames).messages;
+    const next = replay([
+      frames[0]!,
+      { t: 'text', delta: 'Changed tail' },
+      frames[2]!,
+      { t: 'tool_result', id: 'read', output: { content: 'file content' }, isError: false },
+    ]);
+    next.reuseMessageSnapshots(previous);
+    expect(next.messages[0]).toBe(previous[0]);
+    expect(next.messages[1]).not.toBe(previous[1]);
+    expect(next.messages[1]).toMatchObject({ text: 'Changed tail' });
+    // Equal-looking unknown payloads are new content, not a license for deep traversal.
+    expect(next.messages[2]).not.toBe(previous[2]);
+  });
+
+  it('invalidates reused snapshots when later live text and tool events arrive', () => {
+    const textFrames = frames.slice(0, 2);
+    const previous = replay(textFrames).messages;
+    const next = replay(textFrames);
+    next.reuseMessageSnapshots(previous);
+    expect(next.messages).toBe(previous);
+    next.apply(12, { t: 'text', delta: ' more' });
+    expect(previous[1]).toMatchObject({ text: 'Tail' });
+    expect(next.messages[1]).toMatchObject({ text: 'Tail more' });
+    expect(next.messages[1]).not.toBe(previous[1]);
+
+    const oldTools = replay(frames.slice(0, 3)).messages;
+    const tools = replay(frames.slice(0, 3));
+    tools.reuseMessageSnapshots(oldTools);
+    expect(tools.messages[2]).toBe(oldTools[2]);
+    tools.apply(13, frames[3]!);
+    expect(toolCalls(oldTools)[0]?.tool.state).toBe('running');
+    expect(toolCalls(tools.messages)[0]?.tool.state).toBe('completed');
+    expect(tools.messages[2]).not.toBe(oldTools[2]);
+  });
+});
+
+describe('listener discovery snapshots', () => {
+  it('replaces listener state and removes stopped listeners without adding transcript messages', () => {
+    const reducer = new SessionReducer();
+    const listener = {
+      port: 5173,
+      reachable: true,
+      pid: 42,
+      name: 'Vite',
+      command: 'vite',
+      workdir: '.',
+      scope: 'session' as const,
+    };
+    reducer.apply(1, { t: 'dev_servers_changed', devServers: [listener] });
+    const first = reducer.state;
+    expect(first.devServers).toEqual([listener]);
+    expect(first.messages).toEqual([]);
+    reducer.apply(2, { t: 'dev_servers_changed', devServers: [] });
+    expect(reducer.state.devServers).toEqual([]);
+    expect(first.devServers).toEqual([listener]);
+    expect(reducer.state.messages).toEqual([]);
+  });
+});
+
+it('renders durable task updates without ending the running turn', () => {
+  const reducer = new SessionReducer();
+  reducer.apply(1, { t: 'session', id: 's', model: 'm', worktree: '/work/s' });
+  reducer.apply(2, { t: 'tasks_updated', origin: 'agent', change: 'added', taskIds: ['one'] });
+  expect(reducer.running).toBe(true);
+  expect(reducer.messages.at(-1)).toMatchObject({
+    kind: 'agent-event',
+    event: { t: 'tasks_updated' },
+  });
+  // The operator ticking a task off in the panel is not transcript content.
+  reducer.apply(3, { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['one'] });
+  expect(reducer.messages).toHaveLength(1);
 });

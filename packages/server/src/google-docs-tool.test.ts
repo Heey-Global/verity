@@ -172,3 +172,23 @@ describe('Google Docs session tool', () => {
     expect(docs.update).not.toHaveBeenCalled();
   });
 });
+
+it('keeps native document reads but refuses edits in a read-only Drive project', async () => {
+  const { tool, docs } = setup({
+    getProjectSettings: vi
+      .fn()
+      .mockResolvedValue({ googleDriveFolderId: 'root', googleDriveAccessMode: 'read-only' }),
+  });
+  await tool.invoke({ ...input, request: { action: 'read_document' } });
+  await expect(
+    tool.invoke({
+      ...input,
+      request: {
+        action: 'edit',
+        revisionId: 'r1',
+        requests: [{ insertText: { text: 'new', location: { index: 1 } } }],
+      },
+    }),
+  ).rejects.toThrow('read-only');
+  expect(docs.update).not.toHaveBeenCalled();
+});

@@ -506,7 +506,7 @@ describe('sessionAttentionSignals', () => {
   });
 
   it('says nothing about a session with no project', () => {
-    // A project-less session (the Concierge) runs no sandbox, so it has no
+    // A project-less session (the Verity Control) runs no sandbox, so it has no
     // sandbox of its own to lose a connection from.
     expect(
       sessionAttentionSignals({ projectId: null, disconnectedSandboxProjects: disconnected }),

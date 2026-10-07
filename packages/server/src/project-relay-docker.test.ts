@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DockerError, type DockerClient, type DockerContainerSummary } from './docker.js';
+import {
+  DockerError,
+  type ContainerSpec,
+  type DockerClient,
+  type DockerContainerSummary,
+} from './docker.js';
 import { projectSocketBindingName } from './internal-listener.js';
 import { ProjectRelayStartError } from './project-relay-lifecycle.js';
 import {
   createDockerProjectRelayStarter,
   projectRelayContainerName,
+  RELAY_HEAP_LIMIT_MIB,
+  RELAY_MEMORY_BYTES,
 } from './project-relay-docker.js';
 
 /** One `GET /containers/json` entry, narrowed to what the relay sweep reads. */
@@ -18,9 +25,13 @@ function harness(
     containers?: DockerContainerSummary[];
     log?: { warn: (obj: unknown, msg?: string) => void };
     relayGid?: number;
+    forgeProxyEnabled?: (projectId: string) => boolean;
   } = {},
 ) {
-  const createContainer = vi.fn(async () => ({ id: 'relay-cid', warnings: [] }));
+  const createContainer = vi.fn(async (spec: ContainerSpec) => {
+    void spec;
+    return { id: 'relay-cid', warnings: [] };
+  });
   const startContainer = vi.fn(async () => {});
   const stopContainer = vi.fn(async (id: string) => void id);
   const removeContainer = vi.fn(async (id: string) => void id);
@@ -40,6 +51,7 @@ function harness(
   } satisfies DockerClient;
   const start = createDockerProjectRelayStarter({
     docker,
+    forgeProxyEnabled: options.forgeProxyEnabled,
     ...(options.log === undefined ? {} : { log: options.log }),
     image: `ghcr.io/heey-global/verity/verity-project-relay@sha256:${'a'.repeat(64)}`,
     dataVolume: 'verity-data',
@@ -72,6 +84,16 @@ const context = {
 };
 
 describe('Docker project relay adapter', () => {
+  it('enables forge CONNECT only for explicitly selected projects', async () => {
+    const selected = harness({
+      forgeProxyEnabled: (projectId) => projectId === identity.projectId,
+    });
+    await selected.start(context);
+    expect(selected.createContainer.mock.calls[0]?.[0].env).toContain('VERITY_FORGE_PROXY=github');
+    const other = harness({ forgeProxyEnabled: () => false });
+    await other.start(context);
+    expect(other.createContainer.mock.calls[0]?.[0].env).not.toContain('VERITY_FORGE_PROXY=github');
+  });
   it('creates one hardened, un-published relay on the project network', async () => {
     const h = harness();
     await h.start(context);
@@ -88,8 +110,9 @@ describe('Docker project relay adapter', () => {
       capDrop: ['ALL'],
       securityOpt: ['no-new-privileges:true'],
       pidsLimit: 32,
-      memoryBytes: 67_108_864,
+      memoryBytes: 201_326_592,
       nanoCpus: 250_000_000,
+      env: ['NODE_OPTIONS=--max-old-space-size=96'],
       labels: {
         'verity.component': 'project-relay',
         'verity.project-id': 'p1',
@@ -117,6 +140,59 @@ describe('Docker project relay adapter', () => {
       ],
     });
     expect(h.startContainer).toHaveBeenCalledWith('relay-cid');
+  });
+
+  it('caps the V8 heap at half the container memory ceiling', async () => {
+    // A cap near the container ceiling leaves no room for native allocations;
+    // derive the margin from the actual spec so either setting cannot drift alone.
+    const h = harness();
+    await h.start(context);
+    const spec = h.createContainer.mock.calls[0]![0];
+    const nodeOptions = spec.env?.find((entry) => entry.startsWith('NODE_OPTIONS='));
+    const heapMib = Number(/--max-old-space-size=(\d+)/.exec(nodeOptions ?? '')?.[1]);
+    expect(heapMib).toBe(RELAY_HEAP_LIMIT_MIB);
+    expect(spec.memoryBytes).toBe(RELAY_MEMORY_BYTES);
+    expect(heapMib * 1024 * 1024).toBeLessThanOrEqual(spec.memoryBytes! / 2);
+  });
+
+  it('restarts an exited relay in place and leaves a running one alone', async () => {
+    // The relay has no restart policy, so a crash (OOM kill at the ceiling) leaves
+    // an exited container. The lifecycle asks the runtime it holds to put it back;
+    // the alternative is recreating the sandbox, which kills the turn inside it.
+    const warn = vi.fn();
+    const h = harness({ log: { warn } });
+    const runtime = await h.start(context);
+    h.startContainer.mockClear();
+
+    vi.mocked(h.docker.inspectContainer).mockResolvedValueOnce({
+      id: 'relay-cid',
+      running: false,
+      status: 'exited',
+    });
+    await runtime.ensureRunning!();
+    expect(h.startContainer).toHaveBeenCalledWith('relay-cid');
+    expect(h.createContainer).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'p1', relay: 'relay-cid', status: 'exited' }),
+      expect.stringContaining('restarted in place'),
+    );
+
+    h.startContainer.mockClear();
+    vi.mocked(h.docker.inspectContainer).mockResolvedValueOnce({ id: 'relay-cid', running: true });
+    await runtime.ensureRunning!();
+    expect(h.startContainer).not.toHaveBeenCalled();
+  });
+
+  it('reports a removed relay as gone rather than starting whatever now holds its name', async () => {
+    // "Gone" is the one answer that justifies an orphan verdict and a sandbox
+    // recreate; it must reach the lifecycle as the adapter's not-found error.
+    const h = harness();
+    const runtime = await h.start(context);
+    vi.mocked(h.docker.inspectContainer).mockRejectedValueOnce(
+      new DockerError({ kind: 'container_not_found', id: 'relay-cid' }),
+    );
+    await expect(runtime.ensureRunning!()).rejects.toMatchObject({ kind: 'container_not_found' });
+    expect(h.startContainer).toHaveBeenCalledOnce();
   });
 
   it('adopts a running generation without creating or restarting its container', async () => {

@@ -1,9 +1,11 @@
+import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
 // Root layout: configures Unistyles (side-effect import, must run first), then
 // mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
 // Component styles use StyleSheet.create.
 import '../unistyles';
+import { installBrowserAlerts } from '../lib/browserAlerts';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -23,8 +25,11 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../components/Icon';
 import { ActiveMeetingOverlay } from '../components/ActiveMeetingOverlay';
+import { ServerUpdateBanner } from '../components/ServerUpdateBanner';
+import { DemoBanner } from '../components/DemoBanner';
 import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
+import { LiveConnectionLifecycle } from '../components/LiveConnectionLifecycle';
 import { WindowControlsProbe } from '../components/WindowControls';
 import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
@@ -32,7 +37,7 @@ import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
-import { TASKS_ENABLED } from '../lib/featureFlags';
+import { isDemoMode, useDemoRevision } from '../lib/demoMode';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
@@ -44,12 +49,15 @@ import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windo
 // regardless of the device's system setting. This takes effect immediately (no
 // native rebuild), complementing the `userInterfaceStyle: 'dark'` build-time config
 // in app.config.ts (which only applies to freshly built binaries).
-Appearance.setColorScheme('dark');
+if (Platform.OS !== 'web') Appearance.setColorScheme('dark');
+
+installBrowserAlerts();
 
 const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
 export default function RootLayout() {
   const { theme } = useUnistyles();
+  const demoRevision = useDemoRevision();
   // Learn the iPad keyboard type app-wide (see hardwareKeyboard.ts) so opening a
   // session can autofocus the composer on the first try when a hardware keyboard is
   // attached. No-op off iPad.
@@ -86,7 +94,9 @@ export default function RootLayout() {
       // the old server; keeping the app behind onboarding is the safe fallback.
       if (installationReady) {
         await hydrateVerityBaseUrl().catch(() => undefined);
-        await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
+        if (!isDemoMode() && Platform.OS !== 'web') {
+          await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
+        }
       }
       if (active) setHydrated(true);
     })();
@@ -97,7 +107,7 @@ export default function RootLayout() {
 
   if (!hydrated) {
     return (
-      <GestureHandlerRootView style={styles.root}>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <View
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking for updates"
@@ -108,11 +118,11 @@ export default function RootLayout() {
     );
   }
 
-  return <HydratedRoot />;
+  return <HydratedRoot key={demoRevision} />;
 }
 
 function HydratedRoot() {
-  useEffect(() => startLiveMeetingSync(), []);
+  useEffect(() => (isDemoMode() || Platform.OS === 'web' ? undefined : startLiveMeetingSync()), []);
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();
@@ -148,7 +158,7 @@ function HydratedRoot() {
 
   if (gate.status === 'checking') {
     return (
-      <GestureHandlerRootView style={styles.root}>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <View
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking setup"
@@ -164,16 +174,19 @@ function HydratedRoot() {
   }
 
   return (
+    // These wrappers forward styles outside the Unistyles Babel transform.
+    // Plain values keep their flex layout intact in the browser.
     <KeyCommands
-      style={styles.root}
+      style={{ flex: 1, backgroundColor: theme.colors.background }}
       onZoom={adjustFontScale}
       onSearch={handleSearchShortcut}
       onVoice={() => {
         if (pathname === '/' || pathname.startsWith('/session/')) dispatchVoiceShortcut();
       }}
     >
-      <ForegroundUpdateSync />
-      <GestureHandlerRootView style={styles.root}>
+      {!isDemoMode() ? <ForegroundUpdateSync /> : null}
+      <LiveConnectionLifecycle />
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <SafeAreaProvider>
           {/*
             Every keyboard-aware view in the app reads this provider's context,
@@ -196,14 +209,6 @@ function HydratedRoot() {
                   title: 'Verity',
                 }}
               />
-              {/* The task backlog (ADR 0007) is a top-triggered OVERLAY, not a persistent
-              bottom-tab destination: the home header's list icon opens it as a modal
-              sheet (its own close/swipe-dismiss), so it lifts over the current context
-              and gets out of the way — no footer nav competing with the chat composer. */}
-              <Stack.Screen
-                name="plan"
-                options={{ presentation: 'fullScreenModal', headerShown: false }}
-              />
               <Stack.Screen
                 name="search"
                 options={{ presentation: 'fullScreenModal', headerShown: false }}
@@ -211,8 +216,6 @@ function HydratedRoot() {
               <Stack.Screen name="session/[id]" options={{ title: 'Session' }} />
               <Stack.Screen name="meeting/[sessionId]" options={{ title: 'Live Meeting' }} />
               <Stack.Screen name="project/[id]/index" options={{ title: 'Project' }} />
-              <Stack.Screen name="project/[id]/dev-server" options={{ title: 'Dev Server' }} />
-              <Stack.Screen name="project/[id]/automations" options={{ title: 'Automations' }} />
               {/* Project settings mirror the Verity settings stack below: sibling
                 routes under one prefix, each with the shared settings scaffold. */}
               <Stack.Screen
@@ -220,11 +223,11 @@ function HydratedRoot() {
                 options={{ title: 'Project settings' }}
               />
               <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
-              <Stack.Screen name="project/[id]/settings/services" options={{ title: 'Services' }} />
               <Stack.Screen
-                name="project/[id]/settings/environment"
-                options={{ title: 'Environment' }}
+                name="project/[id]/settings/services"
+                options={{ title: 'Connections' }}
               />
+              <Stack.Screen name="project/[id]/settings/sandbox" options={{ title: 'Sandbox' }} />
               <Stack.Screen
                 name="project/[id]/settings/model"
                 options={{ title: 'Default model' }}
@@ -236,10 +239,17 @@ function HydratedRoot() {
                 it is on home by `route.name === 'index'`. */}
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
+              <Stack.Screen name="settings/remote-access" options={{ title: 'Remote access' }} />
+              <Stack.Screen name="settings/secret-store" options={{ title: 'Secret store' }} />
               <Stack.Screen
-                name="settings/services/index"
-                options={{ title: 'Connected services' }}
+                name="settings/transcription"
+                options={{ title: 'Meeting transcription' }}
               />
+              <Stack.Screen name="settings/services/claude" options={{ title: 'Claude' }} />
+              <Stack.Screen name="settings/services/codex" options={{ title: 'Codex' }} />
+              <Stack.Screen name="settings/services/doppler" options={{ title: 'Doppler' }} />
+              <Stack.Screen name="settings/services/index" options={{ title: 'Connections' }} />
               <Stack.Screen
                 name="settings/services/mcp/index"
                 options={{ title: 'MCP connections' }}
@@ -249,11 +259,11 @@ function HydratedRoot() {
                 options={{ title: 'Add MCP connection' }}
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
+              <Stack.Screen name="settings/server-update" options={{ title: 'Server update' }} />
               <Stack.Screen
-                name="settings/services/matrix/account"
-                options={{ title: 'Matrix account' }}
+                name="settings/server-update-channel"
+                options={{ title: 'Update channel' }}
               />
-              <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
               <Stack.Screen name="settings/live-meeting-stt" options={{ title: 'Live STT test' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
               <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
@@ -262,7 +272,14 @@ function HydratedRoot() {
               {/* The onboarding wizard renders its own header/progress (#320). */}
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             </Stack>
-            <ActiveMeetingOverlay />
+            {isDemoMode() ? (
+              <DemoBanner />
+            ) : (
+              <>
+                <ActiveMeetingOverlay />
+                <QuickCaptureBubble />
+              </>
+            )}
           </KeyboardProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>
@@ -331,10 +348,10 @@ function AppHeader({
     }),
     [theme.spacing.md, windowControls.left, windowControls.right],
   );
-  // Only the overview carries the settings button the dot belongs to, and every
-  // screen renders this header — so the screen tells the hook whether to poll at
-  // all rather than filtering its answer afterwards.
-  const updateAwaitsAttention = useServerUpdateBadge(isHome);
+  // Only the overview carries the update banner, and every screen renders this
+  // header — so the screen tells the hook whether to poll at all rather than
+  // filtering its answer afterwards.
+  const pendingServerUpdate = useServerUpdateBadge(isHome);
   const showMessageSearch = showsMessageSearch(route.name);
   const title = options.title ?? (isHome ? 'Verity' : route.name);
   const routeParams = route.params as { id?: unknown; selected?: unknown } | undefined;
@@ -351,17 +368,7 @@ function AppHeader({
         <View style={styles.headerSide}>
           {isHome ? (
             <>
-              {/* The dot rides the settings button rather than sitting on its own,
-                  because settings is where the update can actually be started —
-                  a badge somewhere else would announce a thing and then leave the
-                  operator to find it. */}
-              <Link
-                href="/settings"
-                accessibilityLabel={
-                  updateAwaitsAttention ? 'Verity settings, update available' : 'Verity settings'
-                }
-                asChild
-              >
+              <Link href="/settings" accessibilityLabel="Verity settings" asChild>
                 <Pressable
                   style={({ pressed }) => [
                     styles.headerIconButton,
@@ -370,7 +377,6 @@ function AppHeader({
                   accessibilityRole="button"
                 >
                   <Icon name="more-horizontal" size={19} color={theme.colors.textMuted} />
-                  {updateAwaitsAttention ? <View style={styles.headerUpdateDot} /> : null}
                 </Pressable>
               </Link>
               <Link href="/new-project" accessibilityLabel="New project" asChild>
@@ -443,29 +449,18 @@ function AppHeader({
                   <Icon name="search" size={19} color={theme.colors.textMuted} />
                 </Pressable>
               </Link>
-              {TASKS_ENABLED ? (
-                <Link href="/plan" accessibilityLabel="Tasks" asChild>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.headerIconButton,
-                      pressed ? styles.headerPressed : null,
-                    ]}
-                    accessibilityRole="button"
-                  >
-                    <Icon name="check-square" size={19} color={theme.colors.textMuted} />
-                  </Pressable>
-                </Link>
-              ) : null}
             </>
           ) : null}
         </View>
       </View>
+      {isHome && pendingServerUpdate !== null ? (
+        <ServerUpdateBanner version={pendingServerUpdate} />
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  root: { flex: 1, backgroundColor: theme.colors.background },
   gateOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
@@ -528,23 +523,5 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
-  },
-  /**
-   * A dot, not a count: there is only ever one release to point at, so a number
-   * would be noise. Absolutely positioned inside the 44pt touch target so it
-   * cannot change the header's layout when it appears — an update arriving must
-   * not shift the buttons under the operator's thumb.
-   */
-  headerUpdateDot: {
-    position: 'absolute',
-    top: 11,
-    right: 10,
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-    backgroundColor: theme.colors.accent,
-    // Reads as a badge on the icon rather than a speck floating near it.
-    borderWidth: 2,
-    borderColor: theme.colors.background,
   },
 }));

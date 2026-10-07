@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import type { DockerClient } from './docker.js';
+import type { BrokeredForgeProxy } from './brokered-forge-proxy.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import {
   startProjectInternalUnixListener,
@@ -21,6 +22,8 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 
 export interface ProjectRelayRuntimeOptions {
   app: FastifyInstance;
+  forgeProxy?: BrokeredForgeProxy | undefined;
+  forgeProxyEnabled?: ((projectId: string) => boolean) | undefined;
   docker: DockerClient;
   signingCapabilities: SigningCapabilityRegistry;
   githubCapabilities: GhTokenCapabilityRegistry;
@@ -63,6 +66,7 @@ export function createProjectRelayRuntime(
         identity,
         ownerUid: options.socketOwnerUid,
         relayGid: options.relayGid,
+        forgeProxy: options.forgeProxy,
       }));
   const startClaudeListener =
     options.startClaudeListener ??
@@ -94,6 +98,7 @@ export function createProjectRelayRuntime(
     options.startRelay ??
     createDockerProjectRelayStarter({
       docker: options.docker,
+      forgeProxyEnabled: options.forgeProxyEnabled,
       image: options.image,
       dataVolume: options.dataVolume,
       dataVolumeRoot: options.dataVolumeRoot,

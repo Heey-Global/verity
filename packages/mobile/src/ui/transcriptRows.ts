@@ -1,4 +1,7 @@
 import type { Message, ToolCallMessage } from '../happy/message.js';
+import { PRESENT_PLAN_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
+
+import { planProposal, planView, type PlanView } from './plan.js';
 
 /**
  * Transcript row grouping (pure → unit-testable). The session chat list renders
@@ -9,12 +12,20 @@ import type { Message, ToolCallMessage } from '../happy/message.js';
  *  - nest a SUB-agent's whole subtree (events tagged with `parentToolId`) under
  *    its spawning Agent/Task card as a collapsible `delegated-agent` row, instead
  *    of flattening the sub-agent's tool churn into the main transcript (#98);
- *  - collapse a run of `TaskCreate`/`TaskUpdate` calls into one `todo-group`.
+ *  - collapse a run of `TaskCreate`/`TaskUpdate` calls into one `todo-group`;
+ *  - lift a plan snapshot out of its tool run as a `plan` checklist. Snapshots
+ *    with nothing between them collapse to the newest, and only the level's last
+ *    plan is `latest` — the one the screen shows open;
+ *  - lift a plan presented for the operator's decision out of its tool run as a
+ *    `plan-proposal`. Only the newest is `latest`: the one an "Implement plan"
+ *    decision refers to.
  */
 export type Row =
   | { kind: 'message'; message: Message }
   | { kind: 'tool-group'; id: string; tools: ToolCallMessage[] }
   | { kind: 'todo-group'; id: string; tools: ToolCallMessage[] }
+  | { kind: 'plan'; message: ToolCallMessage; plan: PlanView; latest: boolean }
+  | { kind: 'plan-proposal'; message: ToolCallMessage; markdown: string; latest: boolean }
   | {
       kind: 'delegated-agent';
       id: string;
@@ -75,6 +86,8 @@ function buildRows(
   const rows: Row[] = [];
   let toolRun: ToolCallMessage[] = [];
   let todoRun: ToolCallMessage[] = [];
+  // Rows before this index belong to an earlier planning round.
+  let roundStart = 0;
   // A group's key is derived from its LAST member, not its first. History scroll-up
   // prepends an OLDER page, which extends a boundary run at its HEAD — keying by the
   // first tool would change the key of an already-rendered group (its new head is an
@@ -128,6 +141,21 @@ function buildRows(
         childRows: buildRows(kids, childrenByParent, nextVisited),
         toolCount: countTools(kids, childrenByParent, nextVisited),
       });
+      continue;
+    }
+    // A new planning round makes every earlier plan history: its decision is made.
+    if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL)
+      roundStart = rows.length;
+    const proposal = planProposal(m.tool);
+    const plan = planView(m.tool);
+    if (proposal !== null) {
+      flushAll();
+      rows.push({ kind: 'plan-proposal', message: m, markdown: proposal, latest: false });
+    } else if (plan !== null) {
+      flushAll();
+      const row: Row = { kind: 'plan', message: m, plan, latest: false };
+      if (rows[rows.length - 1]?.kind === 'plan') rows[rows.length - 1] = row;
+      else rows.push(row);
     } else if (isTodoTool(m.tool.name)) {
       flushTools();
       todoRun.push(m);
@@ -137,14 +165,26 @@ function buildRows(
     }
   }
   flushAll();
+  markLatest(rows, 'plan');
+  markLatest(rows, 'plan-proposal', roundStart);
   return rows;
+}
+
+function markLatest(rows: Row[], kind: 'plan' | 'plan-proposal', from = 0): void {
+  for (let i = rows.length - 1; i >= from; i--) {
+    const row = rows[i];
+    if (row?.kind === kind) {
+      rows[i] = { ...row, latest: true };
+      return;
+    }
+  }
 }
 
 /** Group a flat message list into renderable rows (see {@link Row}). Order is
  * preserved; sub-agent children are lifted out of the top level and nested under
  * their dispatch. A child whose parent isn't present (it hasn't streamed in yet,
  * or was dropped) falls back to the top level so it is never lost. */
-export function groupRows(messages: readonly Message[]): Row[] {
+export function groupRows(messages: readonly Message[], previousRows: readonly Row[] = []): Row[] {
   // The set of tool ids that actually exist as messages — a parent must be real
   // for its children to nest (else the child is an orphan, kept at top level).
   const toolIds = new Set<string>();
@@ -164,7 +204,71 @@ export function groupRows(messages: readonly Message[]): Row[] {
     const parent = messageParentToolId(m);
     return parent === undefined || !toolIds.has(parent);
   });
-  return buildRows(topLevel, childrenByParent, new Set());
+  let latestProposal: string | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.kind !== 'tool-call') continue;
+    if (
+      message.tool.state === 'completed' &&
+      planningToolName(message.tool.name) === START_PLANNING_TOOL
+    )
+      break;
+    if (planProposal(message.tool) !== null) {
+      latestProposal = message.id;
+      break;
+    }
+  }
+  // A delegated subtree must not independently approve an older proposal.
+  const selectProposal = (rows: Row[]): Row[] =>
+    rows.map((row) =>
+      row.kind === 'plan-proposal'
+        ? { ...row, latest: row.message.id === latestProposal }
+        : row.kind === 'delegated-agent'
+          ? { ...row, childRows: selectProposal(row.childRows) }
+          : row,
+    );
+  return reconcileTranscriptRows(
+    selectProposal(buildRows(topLevel, childrenByParent, new Set())),
+    previousRows,
+  );
+}
+
+/** Reuse unchanged rows without retaining rows from previous history pages. */
+export function reconcileTranscriptRows(rows: Row[], previousRows: readonly Row[]): Row[] {
+  const previous = new Map(previousRows.map((row) => [rowKey(row), row]));
+  const reconciled = rows.map((row): Row => {
+    const old = previous.get(rowKey(row));
+    if (old === undefined || old.kind !== row.kind) return row;
+    switch (row.kind) {
+      case 'message':
+        return old.kind === 'message' && old.message === row.message ? old : row;
+      case 'plan':
+      case 'plan-proposal':
+        return old.kind === row.kind && old.message === row.message && old.latest === row.latest
+          ? old
+          : row;
+      case 'tool-group':
+      case 'todo-group':
+        return (old.kind === 'tool-group' || old.kind === 'todo-group') &&
+          row.tools.length === old.tools.length &&
+          row.tools.every((tool, index) => tool === old.tools[index])
+          ? old
+          : row;
+      case 'delegated-agent': {
+        if (old.kind !== 'delegated-agent') return row;
+        const childRows = reconcileTranscriptRows(row.childRows, old.childRows);
+        return row.parent === old.parent &&
+          row.toolCount === old.toolCount &&
+          childRows === old.childRows
+          ? old
+          : { ...row, childRows };
+      }
+    }
+  });
+  return reconciled.length === previousRows.length &&
+    reconciled.every((row, index) => row === previousRows[index])
+    ? (previousRows as Row[])
+    : reconciled;
 }
 
 /** The stable React key for a row: the group/delegation id, else the message id. */
@@ -175,6 +279,8 @@ export function rowKey(row: Row): string {
     case 'delegated-agent':
       return row.id;
     case 'message':
+    case 'plan':
+    case 'plan-proposal':
       return row.message.id;
   }
 }
@@ -209,6 +315,10 @@ function lengthBucket(length: number): string {
  * cannot carry its tall height into a collapsed one.
  */
 export function rowRecycleType(row: Row): string {
+  // The latest plan renders open, older ones as one line.
+  if (row.kind === 'plan') return row.latest ? 'plan:open' : 'plan:closed';
+  // A proposal is Markdown of any length, bucketed like prose.
+  if (row.kind === 'plan-proposal') return `plan-proposal:${lengthBucket(row.markdown.length)}`;
   if (row.kind !== 'message') return row.kind;
   const message = row.message;
   if (message.kind === 'agent-text') {
@@ -217,4 +327,45 @@ export function rowRecycleType(row: Row): string {
   }
   if (message.kind === 'user-text') return `msg:user-text:${lengthBucket(message.text.length)}`;
   return `msg:${message.kind}`;
+}
+
+/** A persisted proposal remains reviewable when its presentation is outside the loaded history. */
+export function withPlanningSnapshot(
+  rows: Row[],
+  snapshot: { planning?: string; planningPlan?: string | null; planningRevision?: number },
+): Row[] {
+  const hasProposal = (items: readonly Row[]): boolean =>
+    items.some((row) =>
+      row.kind === 'plan-proposal'
+        ? row.latest
+        : row.kind === 'delegated-agent' && hasProposal(row.childRows),
+    );
+  const { planningPlan, planningRevision } = snapshot;
+  if (
+    snapshot.planning !== 'active' ||
+    planningPlan == null ||
+    planningRevision === undefined ||
+    !Number.isSafeInteger(planningRevision) ||
+    planningRevision <= 0 ||
+    hasProposal(rows)
+  )
+    return rows;
+  const message: ToolCallMessage = {
+    kind: 'tool-call',
+    id: `planning-snapshot:${String(planningRevision)}`,
+    localId: null,
+    createdAt: 0,
+    children: [],
+    tool: {
+      name: PRESENT_PLAN_TOOL,
+      state: 'completed',
+      input: { plan: planningPlan },
+      result: { planningRevision },
+      createdAt: 0,
+      startedAt: null,
+      completedAt: null,
+      description: null,
+    },
+  };
+  return [...rows, { kind: 'plan-proposal', message, markdown: planningPlan, latest: true }];
 }

@@ -19,7 +19,13 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
-import ServicesSettingsScreen from '../app/settings/services/index';
+import ConnectionsScreen from '../app/settings/services/index';
+import SecretScreen from '../app/settings/secret-store';
+import DopplerScreen from '../app/settings/services/doppler';
+import ClaudeScreen from '../app/settings/services/claude';
+import CodexScreen from '../app/settings/services/codex';
+import TranscriptionScreen from '../app/settings/transcription';
+let ServicesSettingsScreen = ConnectionsScreen;
 import { ATTENTION_ACTION_ROUTES } from '../components/ServerAttentionBanner';
 import {
   expectPatchClearsNothing,
@@ -38,6 +44,9 @@ afterEach(() => {
 });
 
 describe('settings/services — secret store onboarding', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = SecretScreen;
+  });
   it('renders the "set master password" UI when the store is uninitialized', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('uninitialized'));
     render(<ServicesSettingsScreen />);
@@ -127,15 +136,14 @@ describe('settings/services — secret store onboarding', () => {
   it('shows the Unlocked indicator and enables the paste boxes when unlocked', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
-
     expect(await screen.findByText('Unlocked')).toBeOnTheScreen();
     expect(screen.queryByText('Master password')).toBeNull();
-    expect(screen.getByPlaceholderText('Paste the Doppler token…')).toBeOnTheScreen();
+    expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
     expect(screen.queryByText('Unlock the secret store to change this.')).toBeNull();
   });
 
   it('keeps the credential boxes read-only while the store is sealed', async () => {
+    ServicesSettingsScreen = DopplerScreen;
     mockCreateVerityClient.mockReturnValue(makeClient('sealed'));
     render(<ServicesSettingsScreen />);
     fireEvent.press(await screen.findByLabelText('Doppler'));
@@ -154,15 +162,17 @@ describe('settings/services — secret store onboarding', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unmanaged'));
     render(<ServicesSettingsScreen />);
 
-    // The MCP row is not gated on a secret store, so it is what proves the
-    // screen rendered at all rather than merely failing to find the rest.
-    await screen.findByLabelText('MCP connections');
-    expect(screen.queryByText('Secret store')).toBeNull();
+    // The scaffold still renders when this host has no managed secret store.
+    await screen.findByText('All changes saved');
+    expect(screen.queryByText('Set a master password to protect secrets at rest.')).toBeNull();
     expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
   });
 });
 
 describe('settings/services — write-only credentials', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = DopplerScreen;
+  });
   // The sharpest form of the split's landmine: a paste box saving the whole
   // draft would clear the GitHub App identifiers in the same request.
   it('sends only the credential that was pasted', async () => {
@@ -199,7 +209,7 @@ describe('settings/services — write-only credentials', () => {
 
     // A blank box means "leave it alone". Sent as `null`, it would clear a
     // credential the operator never touched.
-    await waitFor(() => expect(screen.getByText('Unlocked')).toBeOnTheScreen());
+    await waitFor(() => expect(screen.getByText('All changes saved')).toBeOnTheScreen());
     expect(updateVeritySettings).not.toHaveBeenCalled();
   });
 
@@ -226,6 +236,9 @@ describe('settings/services — write-only credentials', () => {
 });
 
 describe('settings/services — AI backends', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = ClaudeScreen;
+  });
   const claudeSession = {
     sessionId: '22222222-2222-4222-8222-222222222222',
     provider: 'claude',
@@ -246,7 +259,6 @@ describe('settings/services — AI backends', () => {
       }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Claude'));
 
     fireEvent.press(await screen.findByLabelText('Reconnect Claude'));
 
@@ -254,6 +266,152 @@ describe('settings/services — AI backends', () => {
     expect(await screen.findByLabelText('Open Claude login page')).toBeOnTheScreen();
     expect(screen.getByLabelText('Claude returned code')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Reconnect Claude')).toBeNull();
+  });
+
+  // The provider page is the provider: its actions must be reachable without a
+  // disclosure tap, and its usage must be the provider's own — the probe answers
+  // for every connected agent at once, so a missing filter shows Codex's quota
+  // under Claude's name.
+  it.each([
+    ['claude', ClaudeScreen, { claudeCodeOauthCredentialsConfigured: true }, 'Claude', 42],
+    ['codex', CodexScreen, { codexAuthJsonConfigured: true }, 'Codex', 87],
+  ] as const)(
+    'shows %s actions and its own usage without expanding anything',
+    async (_provider, Screen, configured, title, fiveHourPercent) => {
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      const listProviderLimits = jest.fn().mockResolvedValue([
+        {
+          status: 'allowed',
+          resetsAt,
+          window: 'five_hour',
+          usedPercent: 42,
+          providerLabel: 'Claude',
+        },
+        {
+          status: 'allowed',
+          resetsAt,
+          window: 'five_hour',
+          usedPercent: 87,
+          providerLabel: 'Codex',
+        },
+        {
+          status: 'allowed',
+          resetsAt: resetsAt + 86_400,
+          window: 'weekly',
+          usedPercent: 12,
+          providerLabel: title,
+        },
+      ]);
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', { listProviderLimits, settings: makeSettings(configured) }),
+      );
+      render(<Screen />);
+
+      expect(await screen.findByLabelText('Logout ' + title)).toBeOnTheScreen();
+      expect(screen.getByLabelText('Reconnect ' + title)).toBeOnTheScreen();
+      expect(await screen.findByText(`${fiveHourPercent}% used`)).toBeOnTheScreen();
+      expect(screen.getByText('12% used')).toBeOnTheScreen();
+      expect(screen.queryByText(`${fiveHourPercent === 42 ? 87 : 42}% used`)).toBeNull();
+    },
+  );
+
+  it('names the subscription plan the server derived from the login', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({
+          codexAuthJsonConfigured: true,
+          codexSubscriptionPlan: 'Plus',
+          claudeSubscriptionPlan: 'Max 20x',
+        }),
+      }),
+    );
+    render(<CodexScreen />);
+
+    expect(
+      await screen.findByText('Codex Plus subscription, connected to this Verity server.'),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText(/Max 20x/)).toBeNull();
+  });
+
+  // The app cannot read the plan out of a login; only the server can. Without
+  // a settings reload on connect, the card says "connected" with no plan until
+  // the screen happens to remount.
+  it('picks up the plan once a login completes', async () => {
+    const getVeritySettings = jest
+      .fn()
+      .mockResolvedValueOnce(makeSettings({ codexAuthJsonConfigured: false }))
+      .mockResolvedValue(
+        makeSettings({ codexAuthJsonConfigured: true, codexSubscriptionPlan: 'Pro' }),
+      );
+    const startAgentLogin = jest.fn().mockResolvedValue({
+      sessionId: '44444444-4444-4444-8444-444444444444',
+      provider: 'codex',
+      status: 'complete',
+      verificationUri: null,
+      userCode: null,
+      needsCode: false,
+      configured: true,
+      message: null,
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { getVeritySettings, startAgentLogin }),
+    );
+    render(<CodexScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Connect Codex'));
+
+    expect(
+      await screen.findByText('Codex Pro subscription, connected to this Verity server.'),
+    ).toBeOnTheScreen();
+  });
+
+  // A disconnected account's quota is not the operator's any more; leaving it
+  // on screen after Logout reads as a login that did not take.
+  it('drops usage and plan once the provider is logged out', async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    const disconnectAgentLogin = jest.fn().mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        disconnectAgentLogin,
+        listProviderLimits: jest.fn().mockResolvedValue([
+          {
+            status: 'allowed',
+            resetsAt,
+            window: 'five_hour',
+            usedPercent: 42,
+            providerLabel: 'Claude',
+          },
+        ]),
+        settings: makeSettings({
+          claudeCodeOauthCredentialsConfigured: true,
+          claudeSubscriptionPlan: 'Pro',
+        }),
+      }),
+    );
+    render(<ClaudeScreen />);
+    expect(await screen.findByText('42% used')).toBeOnTheScreen();
+    expect(screen.getByText(/Claude Pro subscription/)).toBeOnTheScreen();
+
+    fireEvent.press(screen.getByLabelText('Logout Claude'));
+
+    expect(await screen.findByLabelText('Connect Claude')).toBeOnTheScreen();
+    expect(screen.queryByText('42% used')).toBeNull();
+    expect(screen.queryByText(/Claude Pro subscription/)).toBeNull();
+  });
+
+  it('hides usage while the provider is not connected', async () => {
+    const listProviderLimits = jest.fn().mockResolvedValue([]);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listProviderLimits,
+        settings: makeSettings({ claudeCodeOauthCredentialsConfigured: false }),
+      }),
+    );
+    render(<ClaudeScreen />);
+
+    expect(await screen.findByLabelText('Connect Claude')).toBeOnTheScreen();
+    expect(screen.queryByText('Usage')).toBeNull();
+    expect(listProviderLimits).not.toHaveBeenCalled();
   });
 
   it('starts Claude re-login automatically when opened from an expired chat session', async () => {
@@ -292,7 +450,8 @@ describe('settings/services — AI backends', () => {
     setSearchParams(Object.fromEntries(route.searchParams));
     // The banner must also point at the screen that now holds the login panel;
     // a correct parameter on the wrong route opens nothing.
-    expect(route.pathname).toBe('/settings/services');
+    expect(route.pathname).toBe('/settings/services/codex');
+    ServicesSettingsScreen = CodexScreen;
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
         startAgentLogin,
@@ -321,6 +480,7 @@ describe('settings/services — AI backends', () => {
   it('says what a sealed store is blocking when opened from the banner', async () => {
     const startAgentLogin = jest.fn();
     setSearchParams({ agentLogin: 'codex' });
+    ServicesSettingsScreen = CodexScreen;
     mockCreateVerityClient.mockReturnValue(makeClient('sealed', { startAgentLogin }));
     render(<ServicesSettingsScreen />);
 
@@ -341,19 +501,22 @@ describe('settings/services — AI backends', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { startAgentLogin }));
     render(<ServicesSettingsScreen />);
 
-    await screen.findByText('Unlocked');
+    await screen.findAllByLabelText(/^(Connect|Logout) Claude$/);
     expect(startAgentLogin).not.toHaveBeenCalled();
   });
 
   it('opens OpenCode connection and model settings on its own page', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-    render(<ServicesSettingsScreen />);
+    render(<ConnectionsScreen />);
     fireEvent.press(await screen.findByLabelText('OpenCode'));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/opencode');
   });
 });
 
 describe('settings/services — meeting transcription', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = TranscriptionScreen;
+  });
   it('persists an explicit backend choice', async () => {
     const initial = makeSettings({ transcribeBackendMode: null });
     const updateVeritySettings = jest
@@ -455,11 +618,14 @@ describe('settings/services — meeting transcription', () => {
 });
 
 describe('settings/services — tools', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = ConnectionsScreen;
+  });
   it('leads to MCP connections rather than holding the form itself', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ServicesSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText('MCP connections'));
+    fireEvent.press(await screen.findByLabelText('MCP servers'));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/mcp');
     // The add form lives on its own route; an inline one here is what made the
     // old single screen unreadable.
@@ -468,6 +634,9 @@ describe('settings/services — tools', () => {
 });
 
 describe('settings/services — knowledge sources', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = ConnectionsScreen;
+  });
   it('leads to Matrix and shows its account state', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
@@ -504,14 +673,87 @@ describe('settings/services — knowledge sources', () => {
     render(<ServicesSettingsScreen />);
 
     expect(await screen.findByLabelText('Matrix')).toBeOnTheScreen();
-    expect(screen.getByLabelText('MCP connections')).toBeOnTheScreen();
+    expect(screen.getByLabelText('MCP servers')).toBeOnTheScreen();
   });
 });
 
 describe('settings/services — not connected', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = ConnectionsScreen;
+  });
   it('renders a not-connected message when no server URL is configured', () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<ServicesSettingsScreen />);
     expect(screen.getByText('Not connected')).toBeOnTheScreen();
   });
+});
+
+describe('connections catalog', () => {
+  it('shows project usage and Google account status without requiring Drive consent', async () => {
+    const client = makeClient('unlocked');
+    Object.assign(client, {
+      getGoogleConnection: jest.fn().mockResolvedValue({
+        connected: true,
+        accountEmail: 'me@example.test',
+        scopes: ['gmail.readonly'],
+        projects: [],
+      }),
+      getConnectionUsage: jest.fn().mockResolvedValue({
+        github: 0,
+        claude: 0,
+        codex: 0,
+        opencode: 0,
+        google: 2,
+        matrix: 0,
+        doppler: 0,
+        mcp: 0,
+      }),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ConnectionsScreen />);
+    expect(await screen.findByText('me@example.test')).toBeOnTheScreen();
+    expect(
+      screen.getByText(/Drive, Docs, Sheets, Slides, mail and calendar · Used in 2 projects/),
+    ).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Google'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/google');
+    expect(screen.queryByText('Secret store')).toBeNull();
+    expect(screen.queryByText('Transcription')).toBeNull();
+  });
+});
+
+it('keeps OpenCode available when all discovered models are disabled', async () => {
+  mockCreateVerityClient.mockReturnValue(
+    makeClient('unlocked', {
+      settings: makeSettings({
+        opencodeApiKeyConfigured: true,
+        opencodeBaseUrl: 'https://provider.example.test',
+        opencodeModels: 'first,second',
+        opencodeDisabledModels: 'first,second',
+      }),
+    }),
+  );
+  render(<ConnectionsScreen />);
+  await act(async () => undefined);
+  const openCode = await screen.findByLabelText('OpenCode');
+  expect(within(openCode).getByLabelText('Connect')).toBeOnTheScreen();
+  expect(within(openCode).queryByLabelText('Connected')).toBeNull();
+});
+
+it.each([
+  ['Claude', ClaudeScreen, 'Codex', '/settings/services/claude'],
+  ['Codex', CodexScreen, 'Claude', '/settings/services/codex'],
+] as const)('keeps %s settings separate', async (title, DetailScreen, otherTitle, route) => {
+  mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  const catalog = render(<ConnectionsScreen />);
+  fireEvent.press(await screen.findByLabelText(title));
+  expect(mockPush).toHaveBeenCalledWith(route);
+  catalog.unmount();
+  render(<DetailScreen />);
+  expect(
+    (await screen.findAllByLabelText(new RegExp(`^(Connect|Logout) ${title}$`))).length,
+  ).toBeGreaterThan(0);
+  expect(screen.queryByText(otherTitle)).toBeNull();
+  expect(screen.queryByLabelText(new RegExp(otherTitle))).toBeNull();
+  expect(screen.queryByText(/OpenCode/)).toBeNull();
 });

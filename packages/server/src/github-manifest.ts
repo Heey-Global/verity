@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { HttpFetch } from './github.js';
-import { REQUIRED_GITHUB_APP_PERMISSIONS } from './github-app-token.js';
+import { PROJECT_GITHUB_TOKEN_PERMISSIONS } from './github-app-token.js';
 
 /** The GitHub App manifest Verity submits. Webhooks are DISABLED (`hook_attributes.active:false`)
  *  because Verity is pull-based (it mints installation tokens on demand, it does
@@ -30,14 +30,7 @@ import { REQUIRED_GITHUB_APP_PERMISSIONS } from './github-app-token.js';
  *    rejects any bot push that creates or updates a workflow file without it.
  *  - `issues: write` — create and manage repository issues and comments.
  *  - `metadata: read` — mandatory baseline.
- *  - `organization_projects: write` — task management (ADR 0007) creates and manages
- *    the org-owned "Verity" Projects v2 board (create board, drafts, items, reorder).
- *    Without it every `createProjectV2`/board write is FORBIDDEN, which is exactly the
- *    onboarding gap this closes: a freshly-created App can provision its board and run
- *    the `/tasks` writes out of the box. Permission changes intentionally have no
- *    compatibility fallback: installations must approve every permission in this
- *    manifest before token minting succeeds. A fresh App installation does that as
- *    part of onboarding. */
+ */
 function randomManifestNameSuffix(): string {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
   return Array.from(randomBytes(8), (byte) => alphabet[byte % alphabet.length]).join('');
@@ -60,7 +53,7 @@ export function buildManifest(base: string): Record<string, unknown> {
     setup_on_update: false,
     public: false,
     default_permissions: {
-      ...REQUIRED_GITHUB_APP_PERMISSIONS,
+      ...PROJECT_GITHUB_TOKEN_PERMISSIONS,
       packages: 'read',
       metadata: 'read',
     },

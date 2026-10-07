@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
@@ -54,4 +54,50 @@ describe('release title input', () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('Conventional Commit');
   });
+});
+
+// A missing environment in an automated title hides what merging approves.
+it.each([
+  ['backend', '.', 'server'],
+  ['mobile', 'apps/mobile', 'mobile native'],
+  ['mobile-ota', '.', 'mobile OTA'],
+])('labels the %s release approval as Staging', (file, path, product) => {
+  const config = JSON.parse(readFileSync(`release-please-config.${file}.json`, 'utf8')) as {
+    packages: Record<string, { 'pull-request-title-pattern'?: string }>;
+  };
+  expect(config.packages[path]?.['pull-request-title-pattern']).toBe(
+    `chore(release): staging ${product} \${version}`,
+  );
+});
+
+it.each([
+  ['scripts/production-promotion.ts', 'production ${product} ${candidate.version}'],
+  ['scripts/mobile-ota-release.ts', 'production mobile OTA ${candidate.version}'],
+])('labels every promotion title and commit in %s as Production', (file, suffix) => {
+  const source = readFileSync(file, 'utf8');
+  const titles = [...source.matchAll(/(?:message=|const title = `)(chore[^`]+)`/g)].map(
+    (match) => match[1],
+  );
+  const evidenceTitles = titles.filter((title) => title.startsWith('chore(release): record '));
+  expect(evidenceTitles).toEqual(
+    file === 'scripts/production-promotion.ts'
+      ? ['chore(release): record native production ${candidate.version}']
+      : [],
+  );
+  const approvalTitles = titles.filter((title) => !evidenceTitles.includes(title));
+  expect(approvalTitles).toHaveLength(2);
+  expect(approvalTitles.every((title) => title === `chore(release): ${suffix}`)).toBe(true);
+});
+
+// Title-based recovery must keep finding approvals after the naming migration.
+it('keeps workflow release lookups compatible with current and historical titles', () => {
+  const lookups = readdirSync('.github/workflows')
+    .filter((file) => /\.ya?ml$/.test(file))
+    .flatMap((file) => readFileSync(`.github/workflows/${file}`, 'utf8').split('\n'))
+    .filter((line) => line.includes('.title == "chore(main): release'));
+  expect(lookups).toHaveLength(3);
+  for (const lookup of lookups) {
+    const product = lookup.includes('release mobile') ? 'mobile native' : 'server';
+    expect(lookup).toContain('or .title == "chore(release): staging ' + product);
+  }
 });

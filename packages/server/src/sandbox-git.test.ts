@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DockerError } from './docker.js';
 import {
   containerGitArgs,
   createSandboxGit,
+  createSleepingSessionGit,
   SandboxUnavailableError,
   type SandboxExec,
 } from './sandbox-git.js';
@@ -222,4 +223,94 @@ describe('createSandboxGit', () => {
 
     await expect(git(['-C', '/clones/acme-app', 'rev-parse', 'nope'])).rejects.toBe(failure);
   });
+});
+
+it.each(['sleeping', 'absent'])(
+  'queries %s sessions in a disposable read-only container',
+  async () => {
+    const docker = {
+      inspectContainer: vi.fn(async () => ({
+        id: 'parent',
+        running: false,
+        imageId: 'sha256:pinned',
+      })),
+      createContainer: vi.fn(async (spec: import('./docker.js').ContainerSpec) => {
+        void spec;
+        return {
+          id: 'query',
+          warnings: [],
+        };
+      }),
+      startContainer: vi.fn(async () => undefined),
+      removeContainer: vi.fn(async () => undefined),
+    };
+    const { exec, calls } = fakeExec({ stdout: 'refs/heads/main' });
+    const git = createSleepingSessionGit({
+      docker,
+      templateContainer: 'parent',
+      projectId: 'project',
+      hostRoot: '/data/private',
+      dockerBaseUrl: 'http://docker',
+      exec,
+    });
+    expect(await git(['-C', '/data/private', 'show-ref'])).toBe('refs/heads/main');
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        image: 'sha256:pinned',
+        binds: ['/data/private:/work:ro'],
+        network: 'none',
+        readOnlyRootfs: true,
+        entrypoint: ['sleep'],
+      }),
+    );
+    expect(calls[0]!.args).toContain('--no-optional-locks');
+    expect(docker.startContainer).not.toHaveBeenCalledWith('parent');
+    expect(docker.removeContainer).toHaveBeenCalledOnce();
+  },
+);
+
+it('mounts sleeping session queries from the data volume in Compose deployments', async () => {
+  const docker = {
+    inspectContainer: vi.fn(async () => ({
+      id: 'parent',
+      running: false,
+      imageId: 'sha256:pinned',
+    })),
+    createContainer: vi.fn(async (spec: import('./docker.js').ContainerSpec) => {
+      void spec;
+      return {
+        id: 'query',
+        warnings: [],
+      };
+    }),
+    startContainer: vi.fn(async () => undefined),
+    removeContainer: vi.fn(async () => undefined),
+  };
+  const { exec } = fakeExec({ stdout: 'main' });
+  const git = createSleepingSessionGit({
+    docker,
+    templateContainer: 'parent',
+    projectId: 'project',
+    hostRoot: '/srv/verity/session-clones/one',
+    dataVolume: { name: 'verity-data', root: '/srv/verity' },
+    exec,
+  });
+  expect(await git(['-C', '/srv/verity/session-clones/one', 'show-ref'])).toBe('main');
+  expect(docker.createContainer.mock.calls[0]![0]).toMatchObject({
+    volumeMounts: [
+      { volume: 'verity-data', subpath: 'session-clones/one', target: '/work', readOnly: true },
+    ],
+  });
+  expect(docker.createContainer.mock.calls[0]![0]).not.toHaveProperty('binds');
+  await expect(
+    createSleepingSessionGit({
+      docker,
+      templateContainer: 'parent',
+      projectId: 'project',
+      hostRoot: '/srv/foreign',
+      dataVolume: { name: 'verity-data', root: '/srv/verity' },
+      exec,
+    })([]),
+  ).rejects.toThrow('Metadata checkout escapes data volume');
+  expect(docker.createContainer).toHaveBeenCalledOnce();
 });

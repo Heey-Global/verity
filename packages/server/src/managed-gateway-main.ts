@@ -1,3 +1,4 @@
+import { localPreviewPorts } from './local-preview-ports.js';
 import { parsePort } from './deployment-port.js';
 import { tlsFromEnvironment, managedClientIdentitySecret } from './deployment-tls.js';
 import { startManagedGateway } from './self-update/managed-gateway.js';
@@ -16,6 +17,7 @@ export async function startManagedGatewayMain(): Promise<void> {
     ...(tls === undefined ? {} : { clientIdentitySecret: managedClientIdentitySecret(tls.key) }),
     publicHost: process.env.HOST ?? '0.0.0.0',
     publicPort: parsePort(process.env.PORT),
+    localPreviewPorts: localPreviewPorts(process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE),
     internalHost: process.env.VERITY_INTERNAL_HOST ?? '0.0.0.0',
     internalPort: parsePort(process.env.VERITY_INTERNAL_PORT, DEFAULT_INTERNAL_PORT),
     backend: {

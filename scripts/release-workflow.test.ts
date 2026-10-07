@@ -782,7 +782,7 @@ describe('signed GitHub release evidence', () => {
     expect(publish?.run).toContain('--platform "linux/${ARCHITECTURE}"');
     expect(publish?.run).toContain('VERITY_RELEASE_ARCHITECTURE="$ARCHITECTURE"');
     expect(promotion.steps.map((step) => step.run ?? '').join('\n')).toContain(
-      'channel-stable-${architecture}',
+      'channel-staging-${architecture}',
     );
     expect(publish?.run).toContain('.${ARCHITECTURE}.release-channel.json');
     const promoteRun = promotion.steps.map((step) => step.run ?? '').join('\n');
@@ -815,7 +815,7 @@ describe('signed GitHub release evidence', () => {
     // GitHub authorizes against the pull-request scope for a PR: with read
     // access the move 403s after every artifact is published (run 36481465237).
     expect(finalize.permissions?.['pull-requests']).toBe('write');
-    const publish = finalize.steps.find((step) => step.name === 'Publish verified backend release');
+    const publish = { run: readFileSync('scripts/finalize-server-production.sh', 'utf8') };
     expect(publish?.run).toContain('--json isDraft');
     expect(publish?.run).toContain('--draft=false');
     expect(publish?.run).toContain('chore(main): release server');
@@ -847,7 +847,7 @@ describe('signed GitHub release evidence', () => {
       reconcile: true,
       labels: 'autorelease: pending\n',
       expectedStatus: 0,
-      expected: 'autorelease: pending\n',
+      expected: 'autorelease: tagged\n',
     },
     {
       name: 'pending-only',
@@ -875,6 +875,13 @@ describe('signed GitHub release evidence', () => {
       expected: 'autorelease: pending\n',
     },
     {
+      name: 'published staging release whose production edit failed',
+      labels: 'autorelease: tagged\n',
+      failPrerelease: true,
+      expectedStatus: 1,
+      expected: 'autorelease: tagged\n',
+    },
+    {
       name: 'post-publication lookup failure',
       labels: 'autorelease: pending\n',
       failLookup: true,
@@ -882,8 +889,7 @@ describe('signed GitHub release evidence', () => {
       expected: 'autorelease: tagged\n',
     },
   ])('keeps backend recovery retryable from $name', (scenario) => {
-    const finalize = workflow.jobs['finalize-backend-release'];
-    const publish = finalize.steps.find((step) => step.name === 'Publish verified backend release');
+    const publish = { run: readFileSync('scripts/finalize-server-production.sh', 'utf8') };
     const root = mkdtempSync(join(tmpdir(), 'verity-backend-release-label-'));
     try {
       const bin = join(root, 'bin');
@@ -893,7 +899,7 @@ describe('signed GitHub release evidence', () => {
       const gh = join(bin, 'gh');
       mkdirSync(bin);
       writeFileSync(labels, scenario.labels);
-      writeFileSync(draft, 'true\n');
+      writeFileSync(draft, scenario.failPrerelease ? 'false\n' : 'true\n');
       writeFileSync(views, '0\n');
       writeFileSync(
         gh,
@@ -904,7 +910,9 @@ if [[ "$1 $2" == "release view" ]]; then
   count=$((count + 1))
   printf '%s\\n' "$count" > "$TEST_VIEWS"
   if [[ "\${FAIL_LOOKUP:-false}" == true && "$count" -gt 1 ]]; then exit 1; fi
-  cat "$TEST_DRAFT"
+  if [[ " $* " == *" --json isPrerelease "* ]]; then
+    printf '%s\\n' "\${FAIL_PRERELEASE:-false}"
+  else cat "$TEST_DRAFT"; fi
 elif [[ "$1 $2" == "release edit" ]]; then
   if [[ "\${FAIL_PUBLISH:-false}" == true ]]; then exit 1; fi
   printf 'false\\n' > "$TEST_DRAFT"
@@ -949,7 +957,9 @@ fi
           TEST_VIEWS: views,
           FAIL_PUBLISH: scenario.failPublish ? 'true' : 'false',
           FAIL_LOOKUP: scenario.failLookup ? 'true' : 'false',
+          FAIL_PRERELEASE: scenario.failPrerelease ? 'true' : 'false',
           RECONCILE: scenario.reconcile ? 'true' : 'false',
+          ARTIFACT_ONLY: scenario.artifactOnly ? 'true' : 'false',
         },
       });
       expect(result.status, result.stderr).toBe(scenario.expectedStatus);
@@ -1283,7 +1293,10 @@ describe('release train concurrency', () => {
     // Removing the handoff must not turn every metadata invocation into a release.
     expect(backend.jobs['release-please']?.outputs?.['backend-release-created']).not.toBe('true');
     const callees = Object.values(backend.jobs).flatMap((job) => (job.uses ? [job.uses] : []));
-    expect(callees).toEqual(['./.github/workflows/self-update.yml']);
+    expect(callees).toEqual([
+      './.github/workflows/mobile-native-build.yml',
+      './.github/workflows/self-update.yml',
+    ]);
   });
 });
 
@@ -1302,31 +1315,22 @@ describe('planning resumes after publication', () => {
   const dispatch = parse(readFileSync(`.github/workflows/${dispatchFile}`, 'utf8')) as Workflow;
   // Whatever it is named, the backend publisher is the job that clears a draft
   // it identifies by the planned backend version.
-  const publishers = Object.entries(release.jobs).filter(
-    ([, job]) =>
-      job.steps?.some((step) => step.run?.includes('--draft=false')) &&
-      Object.values(job.env ?? {}).some((value) => value.includes('backend-version')),
-  );
+  const production = parse(
+    readFileSync('.github/workflows/server-production-promote.yml', 'utf8'),
+  ) as Workflow;
+  const promotionSource = readFileSync('scripts/production-promotion.ts', 'utf8');
 
   it('dispatches a planning run from the job that clears the draft', () => {
     // A push runs either planning or publication, never both, and no schedule
     // reconciles the difference. Losing this dispatch leaves every commit
     // merged before a release without a release PR until an unrelated later
     // push happens to plan one — no failed run, no draft, nothing to notice.
-    expect(publishers).toHaveLength(1);
-    const [name, job] = publishers[0]!;
-    const replan = job.steps?.filter((step) => step.run?.includes('gh workflow run')) ?? [];
-    expect(replan, `${name} must dispatch the follow-up planning run`).toHaveLength(1);
-    expect(replan[0]?.run).toContain(dispatchFile);
-    expect(replan[0]?.run).toContain('backend-replan=true');
-    // Recovery publishes an older draft; only the push lifecycle that produced
-    // this release may plan the next one against current main.
-    expect(replan[0]?.if).toContain("github.event_name == 'push'");
-    expect(job.permissions?.actions).toBe('write');
-    // Without a token the dispatch fails after the draft is already cleared:
-    // a published release, a red run, and no planning run at all.
-    const token = replan[0]?.env?.GH_TOKEN ?? job.env?.GH_TOKEN;
-    expect(token, `${name} must give the dispatch a token`).toContain('GITHUB_TOKEN');
+    expect(production.jobs.promote?.permissions?.actions).toBe('write');
+    expect(promotionSource).toContain("run('bash', 'scripts/finalize-server-production.sh')");
+    expect(promotionSource).toContain("'backend-replan=true'");
+    expect(
+      promotionSource.indexOf("run('bash', 'scripts/finalize-server-production.sh')"),
+    ).toBeLessThan(promotionSource.indexOf("'backend-replan=true'"));
   });
 
   it('prepares the workspace a dispatched planning run reads', () => {
@@ -1370,8 +1374,7 @@ describe('planning resumes after publication', () => {
         step.uses?.startsWith('googleapis/release-please-action@') &&
         step.if?.includes('backend-replan'),
     );
-    // Only the backend train may be planned this way: the mobile train decides
-    // between OTA and native from the push diff, which a manual run has not got.
+    // Backend planning must remain scoped when native planning is also available.
     expect(reachable).toHaveLength(1);
     expect(reachable[0]?.id).toBe('release-backend');
     expect(reachable[0]?.if).toContain(
@@ -1382,6 +1385,76 @@ describe('planning resumes after publication', () => {
     // An API dispatch carries inputs as strings. Forwarding one unnormalized
     // into this boolean input fails the dispatched run before it can plan.
     expect(forwarded).toContain("format('{0}', inputs['backend-replan']) == 'true'");
+  });
+
+  it('plans a requested native release without permitting manual publication', () => {
+    const steps = release.jobs['release-please']?.steps ?? [];
+    const action = steps.find((step) => step.id === 'release-mobile');
+    // A manual binary request must not publish a pending candidate implicitly.
+    expect(action?.if).toContain("inputs.mobile-replan && steps.lifecycle.outputs.mode == 'plan'");
+    expect(action?.with?.['skip-github-release']).toContain(
+      "steps.lifecycle.outputs.mode != 'release'",
+    );
+    expect(steps.find((step) => step.run?.includes('release-lifecycle.mjs'))?.if).toContain(
+      'inputs.mobile-replan',
+    );
+    expect(
+      steps.find(
+        (step) => step.uses?.startsWith('actions/checkout@') && step.with?.['fetch-depth'] === 0,
+      )?.if,
+    ).toContain('inputs.mobile-replan');
+    expect(dispatch.jobs['release-train']?.with?.['mobile-replan']).toContain(
+      "matrix.train == 'mobile'",
+    );
+    expect(dispatch.jobs['release-train']?.with?.['mobile-replan']).toContain(
+      "format('{0}', inputs['mobile-replan']) == 'true'",
+    );
+    const guard = steps.find((step) => step.name === 'Validate mobile re-plan request');
+    expect(guard?.run).toBeDefined();
+    // Matrix siblings must reject mixed recovery inputs before publishing.
+    expect(guard?.env?.REPLAN).toContain(
+      "format('{0}', github.event.inputs['mobile-replan']) == 'true'",
+    );
+    for (const overrides of [
+      {},
+      { REF: 'refs/heads/feature' },
+      { EVENT_NAME: 'push' },
+      { MOBILE_TAG: 'mobile-v1.52.0' },
+      { RECONCILE: 'true' },
+      { OTHER_REPLAN: 'true' },
+      { VERSION: '1.2.3' },
+      { SOURCE_REF: 'main' },
+      { WEBSITE_VERSION: '1.0.0' },
+      { WEBSITE_REF: 'main' },
+      { REPUBLISH: 'true' },
+      { ARTIFACT_ONLY: 'true' },
+      { ACCEPT_NO_ROLLBACK: 'true' },
+      { SCHEMA_FORWARD_MAX: '0042_x' },
+    ]) {
+      const result = spawnSync('bash', ['-c', guard!.run!], {
+        env: {
+          ...process.env,
+          REPLAN: 'true',
+          EVENT_NAME: 'workflow_dispatch',
+          REF: 'refs/heads/main',
+          OTHER_REPLAN: 'false',
+          MOBILE_TAG: '',
+          VERSION: '',
+          SOURCE_REF: '',
+          SCHEMA_FORWARD_MAX: '',
+          WEBSITE_VERSION: '',
+          WEBSITE_REF: '',
+          REPUBLISH: 'false',
+          ARTIFACT_ONLY: 'false',
+          ACCEPT_NO_ROLLBACK: 'false',
+          RECONCILE: 'false',
+          ...overrides,
+        },
+      });
+      expect(result.status === 0, JSON.stringify(overrides)).toBe(
+        Object.keys(overrides).length === 0,
+      );
+    }
   });
 
   it('refuses a re-plan that carries any recovery input', () => {
@@ -1521,19 +1594,11 @@ describe('publication reconciliation', () => {
     }
     // Planning after a reconcile publication is as necessary as after a push:
     // commits merged before the release still have no release PR.
-    const replan = release.jobs['finalize-backend-release']?.steps?.find((step) =>
-      step.run?.includes('backend-replan=true'),
+    const staging = release.jobs['finalize-backend-release']?.steps ?? [];
+    expect(staging.some((step) => step.run?.includes('production-promotion.ts propose'))).toBe(
+      true,
     );
-    expect(replan?.if).toBe("github.event_name == 'push' || inputs.reconcile");
-    // Recovery-only label moves must not run; Release Please already moved them.
-    for (const [job, name] of [
-      ['finalize-backend-release', 'Publish verified backend release'],
-      ['publish-mobile-native', 'Publish verified native GitHub release'],
-    ] as const) {
-      const step = release.jobs[job]?.steps?.find((entry) => entry.name === name);
-      expect(step?.env?.RECONCILE, job).toBe('${{ inputs.reconcile }}');
-      expect(step?.run, job).toContain('[ "${RECONCILE:-false}" != true ]');
-    }
+    expect(staging.some((step) => step.run?.includes('backend-replan=true'))).toBe(true);
   });
 
   it('forwards a normalized reconcile flag from the dispatcher', () => {
@@ -1623,7 +1688,9 @@ describe('publication reconciliation', () => {
       contents: 'write',
       'pull-requests': 'read',
     });
-    expect(job?.['timeout-minutes']).toBeLessThanOrEqual(10);
+    // Native fingerprint comparison installs dependencies for both revisions;
+    // the old publication-only budget can cancel recovery before dispatch.
+    expect(job?.['timeout-minutes']).toBe(20);
     const run = job?.steps?.find((step) => step.run?.includes('release-reconcile.mjs'));
     expect(run?.env?.GH_TOKEN).toContain('GITHUB_TOKEN');
     expect(run?.env?.GITHUB_REPOSITORY).toBe('${{ github.repository }}');
@@ -1647,8 +1714,8 @@ describe('publication reconciliation', () => {
     // run count for nothing.
     const [, title] = source.match(/const reconcileRunTitle = '([^']+)';/u) ?? [];
     expect(title).toBeDefined();
-    expect((dispatch as { 'run-name'?: string })['run-name']).toBe(
-      `\${{ format('{0}', inputs.reconcile) == 'true' && '${title}' || '' }}`,
+    expect((dispatch as { 'run-name'?: string })['run-name']).toContain(
+      `format('{0}', inputs.reconcile) == 'true' && '${title}' ||`,
     );
     // The checkout is all the sweep installs; a third-party import would fail
     // every sweep on a bare workspace.

@@ -8,7 +8,7 @@ const VISUAL_REQUEST_RE =
   /\b(image|images|icon|icons|visual|variant|variants|media)\b|bild|bilder|bildanh[aä]ng|markdown-bild|vorschl[aä]g|variante|varianten|symbol/i;
 
 const CLAIMS_VISIBLE_MEDIA_RE =
-  /sichtbar|markdown-bild|bildanh[aä]ng|direkt.*bild|verlinke|linke|h[aä]nge.*bild|send(e|e).*bild|shown|visible|attached|imagegen/i;
+  /\b(?:sichtbare[nmrs]?\s+(?:bild(?:er)?|markdown-bild(?:er)?)|bild(?:er)?\s+(?:ist|sind)\s+(?:(?:jetzt|nun|bereits)\s+)?sichtbar|markdown-bild(?:er)?|bildanh[aä]nge?|(?:verlinke|linke|zeige|sende|h[aä]nge)\b[^.!?\n]*\bbild(?:er)?\b|(?:show|shown|attach|attached)\b[^.!?\n]*\bimages?\b|(?:visible|attached)\s+images?|images?\s+(?:(?:are|is)\s+)?(?:(?:now|already)\s+)?(?:shown|visible|attached))\b/i;
 
 function textFromEvent(event: AgentEvent): string {
   if (event.t === 'text') return event.delta;
@@ -18,13 +18,11 @@ function textFromEvent(event: AgentEvent): string {
   return '';
 }
 
-function hasVisibleMedia(events: readonly AgentEvent[]): boolean {
-  return events.some((event) => event.t === 'text' && MARKDOWN_IMAGE_RE.test(event.delta));
-}
-
-function shouldRepair(prompt: string, events: readonly AgentEvent[]): boolean {
-  if (!VISUAL_REQUEST_RE.test(prompt)) return false;
-  return events.some((event) => event.t === 'text' && CLAIMS_VISIBLE_MEDIA_RE.test(event.delta));
+function responseText(events: readonly AgentEvent[]): string {
+  return events
+    .filter((event): event is Extract<AgentEvent, { t: 'text' }> => event.t === 'text')
+    .map((event) => event.delta)
+    .join('');
 }
 
 function collectImagePaths(events: readonly AgentEvent[]): string[] {
@@ -47,15 +45,15 @@ export function buildVisibleMediaRepairEvent(
   prompt: string,
   events: readonly AgentEvent[],
 ): Extract<AgentEvent, { t: 'text' }> | undefined {
-  if (hasVisibleMedia(events) || !shouldRepair(prompt, events)) return undefined;
+  const response = responseText(events);
+  if (
+    MARKDOWN_IMAGE_RE.test(response) ||
+    !VISUAL_REQUEST_RE.test(prompt) ||
+    !CLAIMS_VISIBLE_MEDIA_RE.test(response)
+  )
+    return undefined;
   const paths = collectImagePaths(events);
-  if (paths.length === 0) {
-    return {
-      t: 'text',
-      delta:
-        'Hinweis: Diese Antwort hat sichtbare Bilder angekündigt, aber keine Bildlinks oder Bildanhänge geliefert.',
-    };
-  }
+  if (paths.length === 0) return undefined;
   const links = paths.map((path, index) => `![Bild ${index + 1}](${path})`).join('\n\n');
   return {
     t: 'text',

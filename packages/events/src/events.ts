@@ -230,31 +230,43 @@ export const choicesPayloadSchema = z
   );
 export type ChoicesPayload = z.infer<typeof choicesPayloadSchema>;
 
-export const agentLoopScheduleSchema = z.discriminatedUnion('kind', [
+const automationTimeZoneSchema = z.string().refine((timeZone) => {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'invalid time zone');
+
+export const automationScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('interval'), everyMinutes: z.number().int().min(15) }),
   z.object({
     kind: z.literal('daily'),
     hour: z.number().int().min(0).max(23),
     minute: z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional(),
   }),
   z.object({
     kind: z.literal('weekly'),
     weekday: z.number().int().min(0).max(6),
     hour: z.number().int().min(0).max(23),
     minute: z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional(),
   }),
 ]);
+export type AutomationSchedule = z.infer<typeof automationScheduleSchema>;
 
-/** Structured Agent Loop configuration proposed by an agent for explicit user approval. */
-export const agentLoopProposalSchema = z.object({
-  loopId: z.string().uuid(),
+/** A recurring task an agent proposes for its own session. Nothing is scheduled
+ * until the operator confirms it in the app. */
+export const automationProposalSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  script: z.string().min(1),
-  schedule: agentLoopScheduleSchema,
-  reactionPrompt: z.string().trim().min(1).optional(),
-  reactionModel: z.string().trim().min(1).nullable().optional(),
+  schedule: automationScheduleSchema,
+  prompt: z.string().trim().min(1).max(8000),
+  script: z.string().trim().min(1).max(16000).optional(),
+  model: z.string().trim().min(1).nullable().optional(),
 });
-export type AgentLoopProposal = z.infer<typeof agentLoopProposalSchema>;
+export type AutomationProposal = z.infer<typeof automationProposalSchema>;
 
 /** Token accounting carried on a turn result (§5b `result`, §13a quota math). */
 export const usageSchema = z.object({
@@ -324,6 +336,23 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     worktree: z.string().min(1),
   }),
   z.object({
+    t: z.literal('dev_servers_changed'),
+    devServers: z.array(
+      z.object({
+        port: z.number().int().min(1).max(65535),
+        reachable: z.boolean(),
+        pid: z.number().int(),
+        name: z.string(),
+        command: z.string(),
+        workdir: z.string(),
+        scope: z.enum(['session', 'project']).optional(),
+        sessionId: z.string().optional(),
+        /** Set when the listener belongs to a managed dev server instance. */
+        managedInstanceId: z.string().optional(),
+      }),
+    ),
+  }),
+  z.object({
     t: z.literal('status'),
     state: agentStatusSchema,
     // Optional live detail for a non-terminal status. Clients may render this as
@@ -360,6 +389,12 @@ export const agentEventSchema = z.discriminatedUnion('t', [
         message: z.string(),
       })
       .optional(),
+    // The local user the turn runs for (ADR 0023 §2): the authenticated caller of
+    // the turn route, or the confirming user of the automation that started it.
+    // Durable provenance set by the server, never taken from a request body, and
+    // the recipient of the turn's notifications. Absent for turns that predate it
+    // or have no user behind them (a linked peer's message, a meeting).
+    initiatedBy: z.object({ userId: z.string().min(1) }).optional(),
     // May be empty when the turn carries only attachments (e.g. a screenshot with
     // no caption); the dispatch boundary guarantees at least one of text/attachments.
     text: z.string(),
@@ -495,8 +530,8 @@ export const agentEventSchema = z.discriminatedUnion('t', [
       path: ['options'],
     }),
   z.object({
-    t: z.literal('agent_loop_proposal'),
-    proposal: agentLoopProposalSchema,
+    t: z.literal('automation_proposal'),
+    proposal: automationProposalSchema,
   }),
   z.object({
     // A turn ended without normal completion. Emitted for an explicit cancel, an
@@ -523,12 +558,31 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     kind: z.string(),
     message: z.string(),
   }),
+  // Technical diagnostics are deliberately scalar and contain no agent, chat,
+  // tool-input, tool-output, or stderr text.
+  z.object({
+    t: z.literal('diagnostic'),
+    source: z.enum(['agent', 'tool', 'mcp']),
+    outcome: z.enum(['completed', 'failed', 'cancelled']),
+    phase: z.enum(['spawn', 'initialize', 'session_load', 'session_new', 'prompt', 'tool_call']),
+    backend: z.string().min(1).max(40).optional(),
+    code: z.number().int().optional(),
+  }),
   z.object({
     t: z.literal('session_progress'),
     summary: z.string().min(1).max(1_000),
     outcomeDelivered: z.boolean(),
     blocker: z.string().min(1).max(500).optional(),
     requiredDecision: z.string().min(1).max(500).optional(),
+  }),
+  // The user's durable task list changed for this session (tasks assigned to it,
+  // or written by its agent), so an open panel and the badge refresh live and
+  // the chat can show a compact line linking to the panel.
+  z.object({
+    t: z.literal('tasks_updated'),
+    origin: z.enum(['user', 'agent']),
+    change: z.enum(['added', 'updated', 'completed', 'dropped', 'deleted']),
+    taskIds: z.array(z.string().min(1).max(128)).min(1).max(100),
   }),
   z.object({
     t: z.literal('raw'),

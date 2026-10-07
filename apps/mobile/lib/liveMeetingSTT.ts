@@ -17,11 +17,19 @@ export type STTEvent =
       message?: string;
     }
   | { kind: 'segment'; text: string; final: boolean; start: number; end: number }
-  | { kind: 'snapshot'; text: string; final: boolean };
+  | { kind: 'snapshot'; text: string; final: boolean }
+  | { kind: 'speaker'; speaker: number; start: number; end: number }
+  | { kind: 'words'; words: Array<{ text: string; start: number; end: number }> }
+  | { kind: 'speaker-status'; state: 'loading' | 'ready' | 'unavailable'; message?: string };
 
 interface NativeLiveSTT {
   engines(): Promise<STTEngine[]>;
-  start(engine: STTEngineId, locale: string, vocabulary: string[]): Promise<void>;
+  start(
+    engine: STTEngineId,
+    locale: string,
+    vocabulary: string[],
+    participants: number,
+  ): Promise<void>;
   stop(): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;

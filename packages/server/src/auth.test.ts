@@ -234,13 +234,21 @@ describe('paired device management', () => {
         headers: { authorization: 'Bearer member-token' },
       });
       expect(sharedProject.statusCode).toBe(200);
-      const streamTicket = await app.inject({
+      // Any active user may open the live connection; what it may subscribe to
+      // is authorized per session (see live-hub.test.ts).
+      const liveTicket = await app.inject({
         method: 'POST',
-        url: '/sessions/private-session/stream-ticket',
+        url: '/live/ticket',
         headers: { authorization: 'Bearer member-token' },
       });
-      expect(streamTicket.statusCode).toBe(403);
+      expect(liveTicket.statusCode).toBe(200);
       await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
+      const disabledTicket = await app.inject({
+        method: 'POST',
+        url: '/live/ticket',
+        headers: { authorization: 'Bearer member-token' },
+      });
+      expect(disabledTicket.statusCode).toBe(403);
       const disabled = await app.inject({
         method: 'GET',
         url: '/projects/shared',
@@ -680,7 +688,7 @@ describe('global auth gate (onRequest)', () => {
       expect(limited?.headers['retry-after']).toBeDefined();
       const websocketUpgrade = await app.inject({
         method: 'GET',
-        url: '/sessions/not-found/stream',
+        url: '/live',
         headers: { upgrade: 'websocket', connection: 'upgrade' },
       });
       expect(websocketUpgrade.statusCode).not.toBe(429);
@@ -751,7 +759,7 @@ describe('global auth gate (onRequest)', () => {
 
       // A spoofed `Upgrade: websocket` header on a NON-WS route must NOT bypass the
       // gate. The WS carve-out (reply.send can't abort a real handshake) is scoped
-      // to the actual /sessions/:id/stream path, so /settings still 401s with the
+      // to the actual /live path, so /settings still 401s with the
       // gate's body — the handler never runs.
       const spoof = await app.inject({
         method: 'GET',

@@ -22,13 +22,13 @@ export interface UseModels {
 /**
  * One-shot loader for the new-session model picker (ADR 0001 / #143): fetches the
  * routable model set on mount and on explicit `refresh()`. Mirrors {@link useBranches}
- * / {@link useIssues} — a small glue hook (no headless model), StrictMode-safe via a
+ * — a small glue hook (no headless model), StrictMode-safe via a
  * mounted + request-id guard so a slow/stale response can't clobber current state.
  *
  * Ordering + default resolution are the picker UI's job (via the pure `orderModels` /
  * `defaultModel` helpers); this hook just surfaces the raw server response.
  */
-export function useModels(client: VerityClient): UseModels {
+export function useModels(client: VerityClient, enabled = true): UseModels {
   const [models, setModels] = useState<string[]>([]);
   const [modelOrder, setModelOrder] = useState<string[]>([]);
   const [moreModels, setMoreModels] = useState<string[]>([]);
@@ -68,8 +68,8 @@ export function useModels(client: VerityClient): UseModels {
   }, [client]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (enabled) void load();
+  }, [load, enabled]);
 
   const refresh = useCallback(() => {
     void load();

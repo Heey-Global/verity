@@ -616,6 +616,18 @@ describe('verity-code-review session backend', () => {
     expect(helper).toMatch(/Re-run first when a fix changed HEAD/i);
   });
 
+  it('keeps both Codex calls read-only without nested network isolation', () => {
+    const helper = readFileSync(review, 'utf8');
+    const calls = helper.match(/timeout "\$CALL_TIMEOUT" codex exec[\s\S]*?\|\| STATUS=\$\?/g);
+    expect(calls).toHaveLength(2);
+    for (const call of calls ?? []) {
+      expect(call).toContain('permissions.verity_review.extends=\'":read-only"\'');
+      expect(call).toContain('permissions.verity_review.network.enabled=true');
+      expect(call).toContain('default_permissions=\'"verity_review"\'');
+      expect(call).toContain('approval_policy=\'"never"\'');
+    }
+  });
+
   it('retains the historical Codex reviewer for an OpenCode session', () => {
     const { bin, repo } = fixture();
     executable(

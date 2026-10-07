@@ -115,7 +115,9 @@ export function createGmailTool(deps: {
       !settings.googleDriveRefreshToken?.trim() ||
       settings.googleDriveAccountEmail?.toLowerCase() !== connection.accountEmail.toLowerCase()
     ) {
-      throw new Error('Gmail is not enabled for the calling session');
+      throw new Error(
+        'Gmail is not enabled for the calling session. Enable it for this chat, or grant project-wide access in Project settings → Connections',
+      );
     }
     return {
       accountEmail: settings.googleDriveAccountEmail,

@@ -1,3 +1,4 @@
+import type { ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
 import type { Backend } from './backend.js';
 import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import {
@@ -6,8 +7,13 @@ import {
   type AcpBackendProfile,
   type AcpSessionSetup,
 } from './acp-backend.js';
-import { toolNameFromKind } from './acp-adapter.js';
+import { PLAN_TOOL_NAME, toolNameFromKind } from './acp-adapter.js';
 import { applySelectOption } from './acp-session-config.js';
+
+/** OpenCode sends todo snapshots under a lowercase title, without a tool name. */
+export function openCodeToolName(tool: ToolCall | ToolCallUpdate): string | undefined {
+  return tool.title === 'todowrite' ? PLAN_TOOL_NAME : toolNameFromKind(tool);
+}
 
 /** opencode-acp exposes BOTH the model and the session mode as ACP session config
  *  options on the `session/new` answer — it advertises no ACP `modes` block, so the
@@ -94,7 +100,7 @@ async function configureSession(setup: AcpSessionSetup, opts: RunTurnOptions): P
   // model was selected, and a posture is the wrong thing to infer from a stale read:
   // a skipped `plan` write would run an edit-free turn's tools for real. Asserting it
   // after the model also matches the order the Codex profile settled on.
-  const mode = openCodeMode(opts.permissionMode);
+  const mode = opts.planning === true ? PLAN_MODE : openCodeMode(opts.permissionMode);
   const outcome = await applySelectOption(
     setup,
     MODE_CONFIG_ID,
@@ -141,6 +147,7 @@ const OPENCODE_ACP_PROFILE: AcpBackendProfile = {
   // name that reached the multi-purpose CLI would let the caller's argv pick the
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: 'opencode-acp',
+  planningViaConfig: true,
   telemetryBackend: 'opencode-acp',
   httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the
@@ -149,7 +156,7 @@ const OPENCODE_ACP_PROFILE: AcpBackendProfile = {
   loadSessionUnsupported: 'This OpenCode version does not support persistent session loading',
   // opencode-acp sets no tool `name`, only ACP's `kind` and a `title` that is the
   // command line for an execution and the file path once a read resolves.
-  adapter: { resolveToolName: toolNameFromKind },
+  adapter: { resolveToolName: openCodeToolName },
   // No session-level options: both knobs Verity sets are session config options,
   // applied once the session has answered with what this account can serve.
   sessionMeta: () => ({}),

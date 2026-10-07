@@ -301,6 +301,116 @@ describe('EventStore — session Google Slides assignment', () => {
     await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
   });
 
+  it('enables Calendar per session idempotently and cascades the grant on session deletion', async () => {
+    await ctx.store.createSession(session);
+    const first = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    const second = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+
+    expect(second).toEqual(first);
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toEqual(first);
+
+    const rebound = await ctx.store.enableSessionCalendar('s1', 'other@example.test');
+    expect(rebound.accountEmail).toBe('other@example.test');
+
+    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.disableSessionCalendar('s1');
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await ctx.store.deleteSession('s1');
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+  });
+
+  it('clears every Calendar grant while preserving Gmail access', async () => {
+    await ctx.store.createSession(session);
+    await ctx.store.createSession({ ...session, sessionId: 's2', worktree: '/wt/agent-s2' });
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await ctx.store.enableSessionCalendar('s2', 'me@example.test');
+    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.clearSessionCalendarConnections();
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s2')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+  });
+
+  it('persists Calendar authorization independently of Gmail and preserves omitted settings', async () => {
+    await expect(
+      ctx.store.updateVeritySettings({ calendarAuthorized: true }),
+    ).resolves.toMatchObject({
+      calendarAuthorized: true,
+      gmailAuthorized: false,
+    });
+    await ctx.store.updateVeritySettings({ gmailAuthorized: true });
+    await expect(ctx.store.getVeritySettingsRaw()).resolves.toMatchObject({
+      calendarAuthorized: true,
+      gmailAuthorized: true,
+    });
+    await ctx.store.updateVeritySettings({ calendarAuthorized: false });
+    await expect(ctx.store.getVeritySettings()).resolves.toMatchObject({
+      calendarAuthorized: false,
+      gmailAuthorized: true,
+    });
+  });
+
+  it('enables Contacts per session idempotently and cascades the grant on session deletion', async () => {
+    await ctx.store.createSession(session);
+    const first = await ctx.store.enableSessionContacts('s1', 'me@example.test');
+    const second = await ctx.store.enableSessionContacts('s1', 'me@example.test');
+
+    expect(second).toEqual(first);
+    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toEqual(first);
+
+    const rebound = await ctx.store.enableSessionContacts('s1', 'other@example.test');
+    expect(rebound.accountEmail).toBe('other@example.test');
+
+    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await ctx.store.disableSessionContacts('s1');
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeDefined();
+    await ctx.store.enableSessionContacts('s1', 'me@example.test');
+    await ctx.store.deleteSession('s1');
+    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
+  });
+
+  it('clears every Contacts grant while preserving Gmail access', async () => {
+    await ctx.store.createSession(session);
+    await ctx.store.createSession({ ...session, sessionId: 's2', worktree: '/wt/agent-s2' });
+    await ctx.store.enableSessionContacts('s1', 'me@example.test');
+    await ctx.store.enableSessionContacts('s2', 'me@example.test');
+    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.clearSessionContactsConnections();
+    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionContactsConnection('s2')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+  });
+
+  it('persists Contacts authorization independently of Gmail and preserves omitted settings', async () => {
+    await expect(
+      ctx.store.updateVeritySettings({
+        contactsAuthorized: true,
+        googleGrantedScopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+      }),
+    ).resolves.toMatchObject({
+      contactsAuthorized: true,
+      googleGrantedScopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+      gmailAuthorized: false,
+    });
+    await ctx.store.updateVeritySettings({ gmailAuthorized: true });
+    await expect(ctx.store.getVeritySettingsRaw()).resolves.toMatchObject({
+      contactsAuthorized: true,
+      googleGrantedScopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+      gmailAuthorized: true,
+    });
+    await ctx.store.updateVeritySettings({ contactsAuthorized: false });
+    await expect(ctx.store.getVeritySettings()).resolves.toMatchObject({
+      contactsAuthorized: false,
+      googleGrantedScopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+      gmailAuthorized: true,
+    });
+  });
+
   it('keeps exactly one deck per session and clears it without deleting the session', async () => {
     await ctx.store.createSession(session);
     const firstAssignment = await ctx.store.setSessionSlideDeck({
@@ -409,7 +519,14 @@ describe('EventStore — session Google Slides assignment', () => {
     await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
       status: 'pending',
     });
+    await expect(ctx.store.getCompletedGoogleWorkspaceInvocation(input)).resolves.toBeUndefined();
     await ctx.store.completeGoogleSlideInvocation(input.invocationId, { revisionId: 'rev-2' });
+    await expect(ctx.store.getCompletedGoogleWorkspaceInvocation(input)).resolves.toEqual({
+      result: { revisionId: 'rev-2' },
+    });
+    await expect(
+      ctx.store.getCompletedGoogleWorkspaceInvocation({ ...input, turnId: 'other' }),
+    ).rejects.toThrow('reused across turns');
     await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
       status: 'completed',
       result: { revisionId: 'rev-2' },
@@ -802,8 +919,9 @@ describe('EventStore — sessions', () => {
       ...session,
       name: null,
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
+      planningRevision: 0,
+      planningPlan: null,
     });
   });
 
@@ -813,8 +931,9 @@ describe('EventStore — sessions', () => {
       ...session,
       name: 'Add settings',
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
+      planningRevision: 0,
+      planningPlan: null,
     });
   });
 
@@ -835,6 +954,24 @@ describe('EventStore — sessions', () => {
 
     // Unknown session id → false (the server maps this to a 404).
     expect(await ctx.store.setSessionSeen('missing', 1)).toBe(false);
+  });
+
+  it('setSessionPlanning moves planning mode only from the states it is told to expect', async () => {
+    await ctx.store.createSession(session);
+    // Never planned: the record carries no planning state at all.
+    expect(await ctx.store.getSession('s1')).not.toHaveProperty('planning');
+
+    expect(await ctx.store.setSessionPlanning('s1', 'active', [null, 'implemented'])).toBe(true);
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+
+    // The first decision wins: a second one expecting `active` finds it already gone,
+    // so a tap and an approval racing each other cannot both start an implementation.
+    expect(await ctx.store.setSessionPlanning('s1', 'implemented', ['active'])).toBe(true);
+    expect(await ctx.store.setSessionPlanning('s1', 'discarded', ['active'])).toBe(false);
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
+    expect((await ctx.store.listSessions())[0]?.planning).toBe('implemented');
+
+    expect(await ctx.store.setSessionPlanning('missing', 'active')).toBe(false);
   });
 
   it('returns undefined for an unknown session', async () => {
@@ -1107,6 +1244,29 @@ describe('EventStore — sessions', () => {
 
     it('returns false for an unknown session (no row matched)', async () => {
       expect(await ctx.store.renameSession('missing', 'x')).toBe(false);
+    });
+  });
+
+  describe('setSessionFavorite', () => {
+    it('marks and unmarks a favorite, visible through getSession and listSessions', async () => {
+      await ctx.store.createSession(session);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+
+      expect(await ctx.store.setSessionFavorite('s1', true)).toBe(true);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBe(true);
+      expect((await ctx.store.listSessions()).find((s) => s.sessionId === 's1')?.favorite).toBe(
+        true,
+      );
+
+      expect(await ctx.store.setSessionFavorite('s1', false)).toBe(true);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+      expect(
+        (await ctx.store.listSessions()).find((s) => s.sessionId === 's1')?.favorite,
+      ).toBeUndefined();
+    });
+
+    it('returns false for an unknown session (no row matched)', async () => {
+      expect(await ctx.store.setSessionFavorite('missing', true)).toBe(false);
     });
   });
 

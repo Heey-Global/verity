@@ -1,10 +1,17 @@
+import { createPreviewPinBudget } from './pin-budget.js';
 import { PreviewEdge } from './index.js';
 
 const maxBodyBytes = optionalPositiveInteger('VERITY_PREVIEW_MAX_BODY_BYTES');
 const requestTimeoutMs = optionalPositiveInteger('VERITY_PREVIEW_REQUEST_TIMEOUT_MS');
 const trustedProxyHops = optionalPositiveInteger('VERITY_PREVIEW_TRUSTED_PROXY_HOPS');
+const shareId = required('VERITY_PREVIEW_SHARE_ID');
 const edge = new PreviewEdge({
-  shareId: required('VERITY_PREVIEW_SHARE_ID'),
+  pinBudget: createPreviewPinBudget(
+    required('VERITY_PREVIEW_PIN_BUDGET_URL'),
+    required('VERITY_PREVIEW_PIN_BUDGET_TOKEN'),
+    shareId,
+  ),
+  shareId,
   pinHash: required('VERITY_PREVIEW_PIN_HASH'),
   connectorTokenHash: required('VERITY_PREVIEW_CONNECTOR_TOKEN_HASH'),
   sessionSecretHash: required('VERITY_PREVIEW_SESSION_SECRET_HASH'),

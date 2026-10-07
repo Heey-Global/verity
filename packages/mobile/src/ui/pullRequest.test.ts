@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   pullRequestStatusText,
   type PullRequestStatusView,
@@ -74,10 +75,28 @@ describe('pullRequestStatusText', () => {
       pullRequestStatusText(
         pr({
           pipeline: 'success',
+          mergeable: true,
           checks: { completed: 3, total: 3, successful: 3, failed: 0, pending: 0 },
         }),
       ),
     ).toBe('3/3 checks passed');
+  });
+
+  it("names GitHub's pending merge test instead of a bare 'checks passed'", () => {
+    // The merge button stays off while `mergeable` is null; "3/3 checks passed" next
+    // to a dead green button read as broken while github.com was still checking.
+    const green = pr({
+      pipeline: 'success',
+      mergeable: null,
+      checks: { completed: 3, total: 3, successful: 3, failed: 0, pending: 0 },
+    });
+    expect(isPullRequestCheckingMergeability(green)).toBe(true);
+    expect(pullRequestStatusText(green)).toBe('checks passed · checking mergeability');
+    expect(isPullRequestCheckingMergeability({ ...green, mergeable: true })).toBe(false);
+    expect(isPullRequestCheckingMergeability({ ...green, mergeable: false })).toBe(false);
+    expect(isPullRequestCheckingMergeability({ ...green, mergeState: 'dirty' })).toBe(false);
+    expect(isPullRequestCheckingMergeability({ ...green, phase: 'merged' })).toBe(false);
+    expect(isPullRequestCheckingMergeability({ ...green, pipeline: 'running' })).toBe(false);
   });
 
   it('waits for checks that have not appeared yet, and calls them Actions once merged', () => {
