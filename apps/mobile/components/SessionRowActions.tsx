@@ -21,9 +21,9 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from './Icon';
 
 /** Width an action rests at after a short swipe. */
-export const SWIPE_ACTION_WIDTH = 96;
+const SWIPE_ACTION_WIDTH = 96;
 /** Share of the row width past which releasing fires the action directly. */
-export const FULL_SWIPE_RATIO = 0.5;
+const FULL_SWIPE_RATIO = 0.5;
 
 type SwipeSide = 'favorite' | 'delete';
 
