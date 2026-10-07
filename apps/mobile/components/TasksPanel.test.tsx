@@ -71,3 +71,18 @@ it('shows where an assigned task went instead of offering to assign it again', (
   expect(ui.queryByText(/This Session/)).toBeNull();
   expect(ui.getAllByText('↳ Open session')).toHaveLength(1);
 });
+it('never dispatches a selection that includes assigned or done tasks', () => {
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [
+      { ...task, id: 'free', title: 'Free', projectId: 'p' },
+      { ...task, id: 'busy', title: 'Busy', projectId: 'p', sessionId: 'other' },
+    ],
+    pending: [],
+    conflicts: [],
+  });
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  fireEvent.press(ui.getByText('Free'));
+  expect(ui.getAllByText('+ New Session')).toHaveLength(2);
+  fireEvent.press(ui.getByText('Busy'));
+  expect(ui.getAllByText('+ New Session')).toHaveLength(1);
+});

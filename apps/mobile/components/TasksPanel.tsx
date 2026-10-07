@@ -172,14 +172,18 @@ export function TasksPanel({
       collapsible: true,
     })),
   ];
+  // Unassigned, not yet done, with a project to run in: the only tasks an
+  // implement action may dispatch, whether from a row or from the selection.
+  const implementable = (task: Task) =>
+    task.projectId !== null && task.sessionId === null && task.status !== 'done';
   const chip = (
     label: string,
     onPress: () => void,
-    options: { accent?: boolean; disabled?: boolean } = {},
+    options: { accent?: boolean; disabled?: boolean; whileBusy?: boolean } = {},
   ) => (
     <Pressable
       key={label}
-      disabled={busy || options.disabled}
+      disabled={(busy && !options.whileBusy) || options.disabled}
       accessibilityRole="button"
       onPress={onPress}
       style={({ pressed }) => [
@@ -216,7 +220,7 @@ export function TasksPanel({
     ].join(' · ');
     // Implement buttons belong to unassigned project tasks only: an assigned
     // task already has its session, and a General task has no project to run in.
-    const canImplement = task.projectId !== null && task.sessionId === null && !isDone;
+    const canImplement = implementable(task);
     const inThisProject = context.sessionId !== null && task.projectId === context.projectId;
     return (
       <View key={task.id} {...pan.panHandlers} style={styles.row}>
@@ -345,6 +349,13 @@ export function TasksPanel({
     );
   };
   const selectedTasks = tasks.filter((task) => selected.includes(task.id));
+  const dispatchable = selectedTasks.filter(implementable);
+  const bulkProject =
+    dispatchable.length === selectedTasks.length &&
+    dispatchable.length > 0 &&
+    dispatchable.every((task) => task.projectId === dispatchable[0]?.projectId)
+      ? dispatchable[0]!.projectId
+      : null;
   const headerButton = (label: string, icon: 'mic' | 'refresh-cw' | 'x', onPress: () => void) => (
     <Pressable
       accessibilityRole="button"
@@ -407,7 +418,7 @@ export function TasksPanel({
                   },
                   { accent: true, disabled: text.trim().length === 0 },
                 )}
-                {chip('Cancel', () => setEdit(null))}
+                {chip('Cancel', () => setEdit(null), { whileBusy: true })}
               </View>
             </View>
           ) : moving ? (
@@ -430,7 +441,9 @@ export function TasksPanel({
                   <Text style={styles.title}>{project.label}</Text>
                 </Pressable>
               ))}
-              <View style={styles.chips}>{chip('Cancel', () => setMoving(null))}</View>
+              <View style={styles.chips}>
+                {chip('Cancel', () => setMoving(null), { whileBusy: true })}
+              </View>
             </ScrollView>
           ) : (
             <ScrollView>
@@ -488,18 +501,15 @@ export function TasksPanel({
             <View style={styles.footer}>
               <Text style={styles.meta}>{String(selectedTasks.length)} selected</Text>
               <View style={styles.chips}>
-                {chip('Clear', () => setSelected([]))}
-                {selectedTasks.every(
-                  (task) =>
-                    task.projectId !== null && task.projectId === selectedTasks[0]?.projectId,
-                ) ? (
+                {chip('Clear', () => setSelected([]), { whileBusy: true })}
+                {bulkProject !== null ? (
                   <>
-                    {context.sessionId && selectedTasks[0]?.projectId === context.projectId
-                      ? chip('↳ This Session', () => implement(selectedTasks, context.sessionId!), {
+                    {context.sessionId && bulkProject === context.projectId
+                      ? chip('↳ This Session', () => implement(dispatchable, context.sessionId!), {
                           accent: true,
                         })
                       : null}
-                    {chip('+ New Session', () => implement(selectedTasks))}
+                    {chip('+ New Session', () => implement(dispatchable))}
                   </>
                 ) : null}
               </View>

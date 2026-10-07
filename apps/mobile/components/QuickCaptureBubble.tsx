@@ -274,6 +274,8 @@ export function QuickCaptureBubble() {
             accessibilityHint="Double tap to record a task; long press to open the task list"
             onPress={() => setCapture(true)}
             onLongPress={() => setPanel(true)}
+            // Only half the bubble is on screen; the slop keeps the target 44pt wide.
+            hitSlop={{ top: 4, bottom: 4, left: 12, right: 12 }}
             style={{
               width: BUBBLE,
               height: BUBBLE,
