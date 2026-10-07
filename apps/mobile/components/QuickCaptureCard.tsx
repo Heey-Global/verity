@@ -237,7 +237,11 @@ export function QuickCaptureCard({
           ) : null}
           {screenshot ? (
             <View style={styles.suggest}>
-              <Image source={{ uri: screenshot.uri }} style={styles.suggestThumb} />
+              {/* An icon rather than the asset itself: library URIs (ph://) do not
+                  render reliably in Image on every platform. */}
+              <View style={styles.suggestThumb}>
+                <Icon name="image" size={18} color={theme.colors.textMuted} />
+              </View>
               <View style={styles.suggestBody}>
                 <Text style={styles.suggestTitle}>Screenshot from just now</Text>
                 <Text style={styles.hint}>Attach it to this task?</Text>
@@ -305,7 +309,11 @@ export function QuickCaptureCard({
                 accessibilityLabel="Stop recording"
                 disabled={!recording}
                 onPress={voice.toggle}
-                style={({ pressed }) => [styles.stop, pressed ? styles.pressed : null]}
+                style={({ pressed }) => [
+                  styles.stop,
+                  !recording ? styles.saveDisabled : null,
+                  pressed ? styles.pressed : null,
+                ]}
               >
                 <View style={styles.stopSquare} />
               </Pressable>
