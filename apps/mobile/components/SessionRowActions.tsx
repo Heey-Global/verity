@@ -1,9 +1,10 @@
 // Quick actions on a session row in the overview list. Touch: swipe right to
 // reveal "favorite" on the leading edge, swipe left to reveal "edit" and
 // "delete" on the trailing edge (iOS Mail style) — a short swipe holds the
-// actions open for a tap, a long swipe fires the outermost one directly. Browser: a right-click opens a small menu with the same
-// actions plus "Edit…" (the existing session settings). Long-press stays with
-// the row itself and keeps opening the settings directly.
+// actions open for a tap, a long swipe fires the outermost one directly.
+// Browser: a right-click opens a small menu with the same actions plus "Edit…"
+// (the existing session settings). Long-press stays with the row itself and
+// keeps opening the settings directly.
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Modal, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
@@ -35,6 +36,10 @@ export function isFullSwipe(side: SwipeSide, translation: number, threshold: num
 /** `tone` laid over `base` at `alpha`, as an opaque color. The action lanes sit
  *  under the row and must not let anything else show through them. */
 export function mixColor(tone: string, base: string, alpha: number): string {
+  // Theme tokens are `#rrggbb` today; anything else would blend to `#NaNNaNNaN`
+  // and leave the lane without a background, so fall back to the opaque base.
+  const hex = /^#[0-9a-f]{6}$/i;
+  if (!hex.test(tone) || !hex.test(base)) return base;
   const channel = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
   const mixed = [0, 1, 2].map((i) =>
     Math.round(channel(tone, i) * alpha + channel(base, i) * (1 - alpha))

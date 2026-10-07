@@ -128,4 +128,9 @@ describe('mixColor', () => {
     expect(mixColor('#ff5c8a', '#0a0b16', 1)).toBe('#ff5c8a');
     expect(mixColor('#ff5c8a', '#0a0b16', 0)).toBe('#0a0b16');
   });
+
+  it('falls back to the base color for a token that is not #rrggbb', () => {
+    expect(mixColor('rgba(255, 92, 138, 1)', '#0a0b16', 0.16)).toBe('#0a0b16');
+    expect(mixColor('#f58', '#0a0b16', 0.16)).toBe('#0a0b16');
+  });
 });
