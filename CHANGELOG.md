@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.21.1](https://github.com/Heey-Global/verity/compare/v4.21.0...v4.21.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **release:** preserve native promotion evidence after staging publication ([#1258](https://github.com/Heey-Global/verity/issues/1258)) ([5426c60](https://github.com/Heey-Global/verity/commit/5426c601bec954a266410a916179373b12760718))
+* **updater:** re-drive stalled companion reconciliation ([#1259](https://github.com/Heey-Global/verity/issues/1259)) ([02af6db](https://github.com/Heey-Global/verity/commit/02af6dbe5b07945825438d50fe11d5d1c0d19d92))
+
 ## [4.21.0](https://github.com/Heey-Global/verity/compare/v4.20.1...v4.21.0) (2026-10-07)
 
 
