@@ -119,7 +119,8 @@ The self-hosted installer installs `verity-host-diagnostics` and a systemd timer
 that refreshes its snapshot every minute. It reads the previous 24 hours from
 kernel, Docker, containerd and host-runtime journals, including retained earlier
 boots. Only classified technical codes, timestamps, boot IDs and recognizable
-container IDs are exported. The script changes neither containers nor runtime
+container IDs are exported. Docker container lifecycle events additionally retain
+exit codes and signal numbers, without names, labels or other attributes. The script changes neither containers nor runtime
 registrations. Raw journal entries remain on the host.
 
 The snapshot is written atomically to
@@ -127,7 +128,18 @@ The snapshot is written atomically to
 read-only at `/run/verity-host-diagnostics` in the Server, never in project
 sandboxes. Collection reads at most 2,001 entries and 1 MiB per journal source,
 returns at most 200 classified records per source, and marks truncation. Source
-failures remain separate from healthy evidence. Journal retention limits the
+failures remain separate from healthy evidence. Docker collection reads at most
+256 KiB and retains at most 100 lifecycle events per refresh. After a successful
+Docker query, `dockerUntil` records its endpoint; the next query starts there with
+a one-minute overlap. Capped queries also advance, retaining the gap marker so
+old history cannot repeatedly consume the budget before new exits are reached. The combined
+snapshot retains at most 400 distinct records for 24 hours, merging previously
+collected evidence so journal rotation, an empty Docker history or a failed
+source cannot erase it. Current source availability remains explicit even when
+older records survive. Truncation is retained for 24 hours after a collection
+cap is reached, using `truncatedUntil`; it does not imply complete coverage when
+false. Docker history can overflow or reset between one-minute polls, so events
+not captured before a daemon restart cannot be recovered. Journal retention limits the
 available history; the exporter cannot recover already discarded records or a
 memory peak that was never measured.
 
