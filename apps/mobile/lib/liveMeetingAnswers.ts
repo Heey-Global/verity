@@ -78,11 +78,20 @@ export function sameMeetingRequest(a: MeetingAnswerCard, b: MeetingAnswerCard): 
 
 // Answers are short bullet lists; the compact card keeps whole lines so a bullet never
 // runs into the next one, and leaves inline Markdown for the card to render.
-export function compactMeetingAnswer(answer: string): string {
-  const lines = answer
+function answerLines(answer: string): string[] {
+  return answer
     .split('\n')
     .map((line) => line.replace(/^\s*#{1,6}\s+/, '').trimEnd())
     .filter((line) => line.trim());
+}
+
+/** True when the compact card leaves part of the answer out. */
+export function meetingAnswerTruncated(answer: string): boolean {
+  return compactMeetingAnswer(answer) !== answerLines(answer).join('\n');
+}
+
+export function compactMeetingAnswer(answer: string): string {
+  const lines = answerLines(answer);
   const kept: string[] = [];
   let length = 0;
   for (const line of lines) {

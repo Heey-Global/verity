@@ -50,6 +50,7 @@ import {
 } from '../../lib/liveMeetingInsights';
 import {
   compactMeetingAnswer,
+  meetingAnswerTruncated,
   meetingAnswerCards,
   meetingAnswerSource,
   meetingRequestFromPrompt,
@@ -611,7 +612,8 @@ export default function MeetingScreen() {
         // Each request needs its own reply; steering would fold it into the running one.
         queueBehindActiveTurn: true,
       });
-      if (kind === 'request') setInsightQuestion('');
+      // A retried card must not clear what is being typed in the composer.
+      if (kind === 'request' && question === insightQuestion) setInsightQuestion('');
     } catch (reason) {
       setLocalAnswers((current) => current.filter((card) => card.id !== local.id));
       setError(`Could not start meeting request: ${String(reason)}`);
@@ -948,7 +950,7 @@ export default function MeetingScreen() {
                     onPress: () =>
                       router.push({ pathname: '/session/[id]', params: { id: sessionId } }),
                   },
-                  ...(compact !== card.answer.trim()
+                  ...(meetingAnswerTruncated(card.answer)
                     ? [
                         {
                           label: expanded ? 'Show less' : 'Show full answer',
@@ -1560,7 +1562,16 @@ export default function MeetingScreen() {
         numberOfLines={2}
         style={[styles.headerStatus, liveProblem !== null && styles.statusError]}
       >
-        {liveProblem ?? (meeting.serverId === null ? 'Saved only on this device' : '')}
+        {liveProblem ??
+          (meeting.captureStatus === 'paused'
+            ? 'Ⅱ Paused'
+            : meeting.captureStatus === 'downloading'
+              ? 'Preparing language model…'
+              : meeting.captureStatus === 'preparing'
+                ? 'Preparing microphone…'
+                : meeting.serverId === null
+                  ? 'Saved only on this device'
+                  : '')}
       </Text>
       <View
         style={[styles.pill, voiceSending && { borderColor: theme.colors.accent }]}

@@ -199,7 +199,7 @@ export function MeetingAnswerText({ text }: { text: string }) {
                   </Text>
                 ) : (
                   // Single-asterisk emphasis is not parsed; drop its markers rather than show them.
-                  span.text.replace(/(^|[^*])\*(?!\s)([^*\n]+?)\*(?!\*)/g, '$1$2')
+                  span.text.replace(/(^|[^*\w])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![*\w])/g, '$1$2')
                 ),
               )}
             </Text>

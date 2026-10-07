@@ -3,6 +3,7 @@ import {
   compactMeetingAnswer,
   meetingAnswerCards,
   meetingAnswerSource,
+  meetingAnswerTruncated,
   meetingRequestFromPrompt,
   sameMeetingRequest,
   unacknowledgedMeetingAnswers,
@@ -167,4 +168,15 @@ test('never gives a steered meeting request the answer meant for another', () =>
     }),
     expect.objectContaining({ request: 'Who built it?', status: 'ready' }),
   ]);
+});
+
+// Blank lines between bullets are dropped from the compact card; that alone must not
+// offer a "Show full answer" that expands to the same content.
+test('reports truncation only when the compact answer leaves content out', () => {
+  expect(meetingAnswerTruncated('- First point\n\n- Second point\n')).toBe(false);
+  expect(
+    meetingAnswerTruncated(
+      Array.from({ length: 12 }, (_, i) => `- Point ${i} ${'x'.repeat(40)}`).join('\n'),
+    ),
+  ).toBe(true);
 });
