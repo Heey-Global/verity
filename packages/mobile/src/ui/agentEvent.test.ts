@@ -128,7 +128,7 @@ it('describes durable task updates as an actionable Tasks row', () => {
       change: 'added',
       taskIds: ['one', 'two'],
     }),
-  ).toMatchObject({ label: 'Agent added 2 tasks', action: 'tasks' });
+  ).toMatchObject({ label: 'Agent planned 2 steps', action: 'tasks' });
   expect(
     agentEventDescriptor({
       t: 'tasks_updated',
@@ -136,5 +136,5 @@ it('describes durable task updates as an actionable Tasks row', () => {
       change: 'completed',
       taskIds: ['one'],
     }),
-  ).toMatchObject({ label: 'You completed 1 task', action: 'tasks' });
+  ).toMatchObject({ label: 'You finished 1 task', action: 'tasks' });
 });

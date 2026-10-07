@@ -199,6 +199,19 @@ describe('TaskStore', () => {
     expect(await tasks().get('t1', ADMIN)).toMatchObject({ projectId: null });
   });
 
+  it('lets the owner adopt an agent step into their own list', async () => {
+    await tasks().upsert({
+      id: 't1',
+      ownerUserId: ADMIN,
+      origin: 'agent',
+      projectId: 'p1',
+      title: 'Step',
+      sessionId: 's1',
+    });
+    const adopted = await tasks().patch('t1', ADMIN, { origin: 'user', sessionId: null });
+    expect(adopted).toMatchObject({ origin: 'user', sessionId: null, revision: 2 });
+  });
+
   it('rejects empty titles and too many attachments', async () => {
     await expect(
       tasks().upsert({ id: 't1', ownerUserId: ADMIN, origin: 'user', title: '   ' }),

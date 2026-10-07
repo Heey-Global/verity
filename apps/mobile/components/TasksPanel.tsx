@@ -75,6 +75,7 @@ export function TasksPanel({
   const [busy, setBusy] = useState(false);
   const [undo, setUndo] = useState<string[]>([]);
   const [actions, setActions] = useState<string | null>(null);
+  const [agentOpen, setAgentOpen] = useState(false);
   const wide = width >= 900;
   const run = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -113,35 +114,27 @@ export function TasksPanel({
     (task) =>
       task.status !== 'dropped' && (task.status !== 'done' || showDone || undo.includes(task.id)),
   );
-  const inSession = visible.filter(
-    (task) => context.sessionId !== null && task.sessionId === context.sessionId,
-  );
-  // Everything in the current project that is not this session's own work,
-  // including tasks running in a sibling session — those show where they went.
-  const inCurrentProject = (task: Task) =>
-    task.projectId === context.projectId && !inSession.includes(task);
-  const sessionTasks = tasks.filter((t) => t.sessionId === context.sessionId);
+  // The operator's own captures are the list. The agent's steps are its working
+  // plan for a request and stay in a separate, quieter section below.
+  const mine = visible.filter((task) => task.origin === 'user');
+  const agentScope = (task: Task) =>
+    task.origin === 'agent' &&
+    (context.sessionId !== null
+      ? task.sessionId === context.sessionId
+      : context.projectId !== null
+        ? task.projectId === context.projectId
+        : true);
+  const agentSteps = visible.filter(agentScope);
+  const agentAll = tasks.filter((task) => agentScope(task) && task.status !== 'dropped');
+  const agentDone = agentAll.filter((task) => task.status === 'done').length;
   const groups: TaskGroup[] = [
-    ...(context.sessionId
-      ? [
-          {
-            key: 'session',
-            label: 'This session',
-            detail: `${String(sessionTasks.filter((t) => t.status === 'done').length)}/${String(sessionTasks.length)}`,
-            current: true,
-            items: inSession,
-            expanded: true,
-            collapsible: false,
-          },
-        ]
-      : []),
     ...(context.projectId
       ? [
           {
             key: context.projectId,
             label: projectName(context.projectId),
-            current: context.sessionId === null,
-            items: visible.filter(inCurrentProject),
+            current: true,
+            items: mine.filter((t) => t.projectId === context.projectId),
             expanded: true,
             collapsible: false,
           },
@@ -150,24 +143,22 @@ export function TasksPanel({
     {
       key: 'general',
       label: 'General',
-      current: context.projectId === null && context.sessionId === null,
-      items: visible.filter((t) => t.projectId === null && !inSession.includes(t)),
+      current: context.projectId === null,
+      items: mine.filter((t) => t.projectId === null),
       expanded: true,
       collapsible: false,
     },
     ...[
       ...new Set(
-        visible
-          .filter((t) => t.projectId !== null && !inSession.includes(t) && !inCurrentProject(t))
+        mine
+          .filter((t) => t.projectId !== null && t.projectId !== context.projectId)
           .map((t) => t.projectId!),
       ),
     ].map((id) => ({
       key: `other-${id}`,
       label: projectName(id),
       current: false,
-      items: visible.filter(
-        (t) => t.projectId === id && !inSession.includes(t) && !inCurrentProject(t),
-      ),
+      items: mine.filter((t) => t.projectId === id),
       expanded: expanded.includes(id),
       collapsible: true,
     })),
@@ -197,7 +188,7 @@ export function TasksPanel({
       </Text>
     </Pressable>
   );
-  const row = (task: Task, group: TaskGroup) => {
+  const row = (task: Task) => {
     const pan = PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 20 && Math.abs(g.dx) > Math.abs(g.dy),
       onPanResponderRelease: (_, g) => {
@@ -208,14 +199,17 @@ export function TasksPanel({
     const isSelected = selected.includes(task.id);
     const syncing = pending.some((op) => op.id === task.id);
     const meta = [
-      task.origin === 'agent' ? 'Agent' : 'You',
       taskAge(task.createdAt),
       ...(task.attachments.length
         ? [
             `${String(task.attachments.length)} attachment${task.attachments.length === 1 ? '' : 's'}`,
           ]
         : []),
-      ...(task.status === 'in_progress' ? ['in progress'] : []),
+      ...(task.sessionId !== null && task.sessionId === context.sessionId
+        ? ['in this session']
+        : task.status === 'in_progress'
+          ? ['in progress']
+          : []),
       ...(syncing ? ['waiting to sync'] : []),
     ].join(' · ');
     // Implement buttons belong to unassigned project tasks only: an assigned
@@ -302,7 +296,7 @@ export function TasksPanel({
             </Text>
           </Pressable>
         ))}
-        {task.sessionId && group.key !== 'session' ? (
+        {task.sessionId && task.sessionId !== context.sessionId ? (
           <Pressable
             style={styles.indent}
             onPress={() => {
@@ -343,6 +337,51 @@ export function TasksPanel({
                 },
               ]),
             )}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+  // An agent step: compact, muted, no implement buttons — the agent is already
+  // on it. Tap toggles a small action row; adopting moves it into the list above.
+  const agentRow = (task: Task) => {
+    const isDone = task.status === 'done';
+    const open = actions === task.id;
+    return (
+      <View key={task.id} style={styles.agentRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          onPress={() => setActions(open ? null : task.id)}
+          style={styles.agentMain}
+        >
+          <Icon
+            name={isDone ? 'check-circle' : 'circle'}
+            size={16}
+            color={isDone ? theme.colors.tone.done : theme.colors.textFaint}
+          />
+          <View style={styles.rowBody}>
+            <Text style={[styles.agentTitle, isDone ? styles.titleDone : null]}>{task.title}</Text>
+            <Text style={styles.agentMeta}>
+              {isDone
+                ? `done${task.result ? ` · ${task.result}` : ''}`
+                : task.status === 'in_progress'
+                  ? 'in progress'
+                  : 'open'}
+              {' · '}
+              {taskAge(task.createdAt)}
+            </Text>
+          </View>
+        </Pressable>
+        {open ? (
+          <View style={[styles.chips, styles.agentIndent]}>
+            {isDone ? null : chip('Done', () => complete(task))}
+            {chip('Move to my tasks', () => {
+              void run(() => patchTask(task, { origin: 'user', sessionId: null }));
+            })}
+            {chip('Drop', () => {
+              void run(() => patchTask(task, { status: 'dropped' }));
+            })}
           </View>
         ) : null}
       </View>
@@ -487,9 +526,49 @@ export function TasksPanel({
                       </Text>
                     </View>
                   </Pressable>
-                  {group.expanded ? group.items.map((task) => row(task, group)) : null}
+                  {group.expanded ? group.items.map(row) : null}
                 </View>
               ))}
+              {agentAll.length ? (
+                <View style={styles.agentSection}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: agentOpen }}
+                    accessibilityLabel={`Agent steps · ${String(agentDone)}/${String(agentAll.length)}`}
+                    onPress={() => setAgentOpen(!agentOpen)}
+                    style={styles.section}
+                  >
+                    <Icon
+                      name={agentOpen ? 'chevron-down' : 'chevron-right'}
+                      size={16}
+                      color={theme.colors.textFaint}
+                    />
+                    <Text style={styles.agentLabel}>
+                      {context.sessionId ? 'Agent’s steps in this session' : 'Agent’s steps'}
+                    </Text>
+                    <View style={styles.count}>
+                      <Text style={styles.countLabel}>
+                        {String(agentDone)}/{String(agentAll.length)}
+                      </Text>
+                    </View>
+                    <View style={styles.bar}>
+                      <View
+                        style={[
+                          styles.barFill,
+                          {
+                            width:
+                              `${String(Math.round((agentDone / agentAll.length) * 100))}%` as `${number}%`,
+                          },
+                        ]}
+                      />
+                    </View>
+                  </Pressable>
+                  {agentOpen ? agentSteps.map(agentRow) : null}
+                  {agentOpen && agentSteps.length === 0 ? (
+                    <Text style={styles.agentMeta}>Every step is done.</Text>
+                  ) : null}
+                </View>
+              ) : null}
               {!tasks.length ? (
                 <Text style={styles.empty}>
                   Capture a thought, or ask your agent to save agreed work here.
@@ -713,6 +792,52 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
+  },
+  agentSection: {
+    marginTop: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  agentLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
+  },
+  bar: {
+    flex: 1,
+    maxWidth: 56,
+    height: 3,
+    marginLeft: 'auto',
+    borderRadius: 2,
+    backgroundColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%',
+    borderRadius: 2,
+    backgroundColor: theme.colors.tone.done,
+  },
+  agentRow: {
+    paddingVertical: theme.spacing.xs,
+    gap: theme.spacing.xs,
+  },
+  agentMain: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    paddingTop: 2,
+  },
+  agentTitle: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    lineHeight: 19 * theme.fontScale,
+  },
+  agentMeta: {
+    color: theme.colors.textFaint,
+    fontSize: theme.text.micro + 1,
+  },
+  agentIndent: {
+    marginLeft: 24,
   },
   empty: {
     color: theme.colors.textMuted,

@@ -85,6 +85,7 @@ const patchBody = z
     status: taskStatus.optional(),
     result: z.string().trim().max(TASK_RESULT_MAX).nullable().optional(),
     sort: z.number().int().min(0).max(1_000_000).optional(),
+    origin: z.enum(['user', 'agent']).optional(),
     expectedRevision: z.number().int().positive().optional(),
   })
   .strict()

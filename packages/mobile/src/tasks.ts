@@ -35,6 +35,7 @@ export const taskPatchSchema = taskSchema
     status: true,
     result: true,
     sort: true,
+    origin: true,
   })
   .partial()
   .extend({ expectedRevision: z.number().int().nonnegative() });

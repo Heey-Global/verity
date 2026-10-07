@@ -42,6 +42,7 @@ import { useLiveHints } from '../lib/liveConnection';
 import { getVerityBaseUrl } from '../lib/client';
 import { useCallback } from 'react';
 import { QuickCaptureCard } from './QuickCaptureCard';
+import { QuickCaptureIntro } from './QuickCaptureIntro';
 import { TasksPanel } from './TasksPanel';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
@@ -86,6 +87,7 @@ export function QuickCaptureBubble() {
   const [hidden, setHidden] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [capture, setCapture] = useState(false);
+  const [intro, setIntro] = useState(false);
   const [panel, setPanel] = useState(false);
   const [saved, setSaved] = useState<{ id: string; label: string } | null>(null);
   const position = useRef(new Animated.ValueXY()).current;
@@ -101,8 +103,11 @@ export function QuickCaptureBubble() {
       );
     return recent(b.id) - recent(a.id);
   });
+  // Only what the operator captured counts: the agent's own steps live in
+  // their own section of the panel and must not nag from the badge.
   const count = tasks.filter(
     (task) =>
+      task.origin === 'user' &&
       (task.status === 'open' || task.status === 'in_progress') &&
       (context.sessionId
         ? task.sessionId === context.sessionId ||
@@ -290,6 +295,7 @@ export function QuickCaptureBubble() {
     !meeting &&
     !remoteMeeting &&
     !capture &&
+    !intro &&
     !panel &&
     !pathname.startsWith('/onboarding') &&
     !pathname.startsWith('/search') &&
@@ -316,7 +322,7 @@ export function QuickCaptureBubble() {
             accessibilityRole="button"
             accessibilityLabel="Capture task"
             accessibilityHint="Double tap to record a task; long press to open the task list"
-            onPress={() => setCapture(true)}
+            onPress={() => (preferences.introSeen ? setCapture(true) : setIntro(true))}
             onLongPress={() => setPanel(true)}
             // Only half the bubble is on screen; the slop keeps the target 44pt wide.
             hitSlop={{ top: 4, bottom: 4, left: 12, right: 12 }}
@@ -383,6 +389,16 @@ export function QuickCaptureBubble() {
         >
           <Text style={{ color: theme.colors.text }}>✕ Hide</Text>
         </View>
+      ) : null}
+      {intro ? (
+        <QuickCaptureIntro
+          onClose={() => setIntro(false)}
+          onStart={() => {
+            setIntro(false);
+            void saveTaskPreferences({ introSeen: true });
+            setCapture(true);
+          }}
+        />
       ) : null}
       {capture ? (
         <QuickCaptureCard
