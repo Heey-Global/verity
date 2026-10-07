@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.22.1](https://github.com/Heey-Global/verity/compare/v4.22.0...v4.22.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **diagnostics:** retain host crash evidence across collector refreshes ([#1272](https://github.com/Heey-Global/verity/issues/1272)) ([60e96ac](https://github.com/Heey-Global/verity/commit/60e96ac71fafb44be6cc9ab1770dfd0bde52a8be))
+* **session:** improve knowledge retrieval and concise progress guidance ([#1269](https://github.com/Heey-Global/verity/issues/1269)) ([2e1d901](https://github.com/Heey-Global/verity/commit/2e1d9010663405cdb463c080868ec9074361fd18))
+
 ## [4.22.0](https://github.com/Heey-Global/verity/compare/v4.21.1...v4.22.0) (2026-10-07)
 
 
