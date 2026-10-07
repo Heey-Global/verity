@@ -200,6 +200,7 @@ export function TasksPanel({
     const isSelected = selected.includes(task.id);
     const syncing = pending.some((op) => op.id === task.id);
     const meta = [
+      ...(task.origin === 'agent' ? ['from agent'] : []),
       taskAge(task.createdAt),
       ...(task.attachments.length
         ? [
