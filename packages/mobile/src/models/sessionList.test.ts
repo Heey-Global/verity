@@ -920,6 +920,27 @@ describe('SessionListModel.setFavorite', () => {
     expect(model.state.sessions[0]?.favorite).toBeUndefined();
   });
 
+  it('restores confirmed state when overlapping updates both fail', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let reject!: (error: Error) => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((_yes, no) => {
+          reject = no;
+        }),
+    );
+    setSessionFavorite.mockRejectedValueOnce(new Error('second failed'));
+    const first = model.setFavorite('a', true);
+    await model.setFavorite('a', false);
+    reject(new Error('first failed'));
+    await first;
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.error).toBe('failed to update favorite');
+  });
+
   it('reverts only that flag and surfaces the error when the update fails', async () => {
     const { client, listSessions, setSessionFavorite } = makeClient();
     listSessions.mockResolvedValue([{ ...session('a', 'idle'), favorite: true }]);
