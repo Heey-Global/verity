@@ -1019,6 +1019,12 @@ printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_ima
 heading 'Cannot scan the QR code?'
 hint 'In the app, tap "Paste pairing code", then copy the entire line below.'
 printf '  %s\n\n' "$pairing_uri"
+heading 'Keep Verity off the public internet'
+printf '  Do not open or forward port %s or the preview ports %s\n' \
+  "${VERITY_API_HOST_PORT:-8082}" "${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}"
+printf '%s\n' '  to the internet on your router or cloud firewall.'
+hint 'Connect from your local network or through a VPN such as WireGuard or Tailscale.'
+hint 'Docker-published ports can bypass ufw; verify from a network that should be denied.'
 heading "$([ "$first_install" = 1 ] && printf '✓ Installation complete' || printf '✓ Update complete')"
 printf '%s\n' '  Verity is ready.'
 hint 'Run this installer again only to repair this host or pair another device.'

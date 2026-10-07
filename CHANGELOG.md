@@ -1,5 +1,37 @@
 # Changelog
 
+## [4.21.1](https://github.com/Heey-Global/verity/compare/v4.21.0...v4.21.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **release:** preserve native promotion evidence after staging publication ([#1258](https://github.com/Heey-Global/verity/issues/1258)) ([5426c60](https://github.com/Heey-Global/verity/commit/5426c601bec954a266410a916179373b12760718))
+* **updater:** re-drive stalled companion reconciliation ([#1259](https://github.com/Heey-Global/verity/issues/1259)) ([02af6db](https://github.com/Heey-Global/verity/commit/02af6dbe5b07945825438d50fe11d5d1c0d19d92))
+
+## [4.21.0](https://github.com/Heey-Global/verity/compare/v4.20.1...v4.21.0) (2026-10-07)
+
+
+### Features
+
+* **tasks:** add offline capture and task panel ([#1238](https://github.com/Heey-Global/verity/issues/1238)) ([bb922ea](https://github.com/Heey-Global/verity/commit/bb922ead44386bf51f84ea5e7dc88106f6674685))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/websocket to v11.3.3 ([#1254](https://github.com/Heey-Global/verity/issues/1254)) ([900c1e1](https://github.com/Heey-Global/verity/commit/900c1e18a65a16f7ac65e46dcdd27312202e65d5))
+* **deps:** update dependency graphql to v17 ([#1256](https://github.com/Heey-Global/verity/issues/1256)) ([bf782be](https://github.com/Heey-Global/verity/commit/bf782be7e3422520e66ccc54a50b8d7f55ab4be3))
+* **deps:** update dependency pdfjs-dist to v6.4.299 ([#1255](https://github.com/Heey-Global/verity/issues/1255)) ([8e4ef60](https://github.com/Heey-Global/verity/commit/8e4ef60090e7e9b1b156982118671efabdc00c84))
+* **diagnostics:** explain unavailable host snapshots ([#1242](https://github.com/Heey-Global/verity/issues/1242)) ([213ec72](https://github.com/Heey-Global/verity/commit/213ec723816c4a2f6bb0c713d064cf37bc0afd76))
+* **self-update:** rediscover companions after handoff races ([#1244](https://github.com/Heey-Global/verity/issues/1244)) ([5fb2607](https://github.com/Heey-Global/verity/commit/5fb2607e9594eca9db48d8402559f5f45494c9f9))
+* **server:** avoid runner watchdog races during sandbox replacement ([#1257](https://github.com/Heey-Global/verity/issues/1257)) ([d480ac4](https://github.com/Heey-Global/verity/commit/d480ac48985431b3ed980b2b8ff6d404918fba1b))
+
+## [4.20.1](https://github.com/Heey-Global/verity/compare/v4.20.0...v4.20.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **preview:** unify detected server controls and require managed starts ([#1237](https://github.com/Heey-Global/verity/issues/1237)) ([98498d1](https://github.com/Heey-Global/verity/commit/98498d17d851cd342a4c8d69fd9796f25be8d838))
+
 ## [4.20.0](https://github.com/Heey-Global/verity/compare/v4.19.0...v4.20.0) (2026-10-06)
 
 

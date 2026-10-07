@@ -1,3 +1,4 @@
+import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
 // Root layout: configures Unistyles (side-effect import, must run first), then
 // mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
@@ -271,7 +272,14 @@ function HydratedRoot() {
               {/* The onboarding wizard renders its own header/progress (#320). */}
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             </Stack>
-            {isDemoMode() ? <DemoBanner /> : <ActiveMeetingOverlay />}
+            {isDemoMode() ? (
+              <DemoBanner />
+            ) : (
+              <>
+                <ActiveMeetingOverlay />
+                <QuickCaptureBubble />
+              </>
+            )}
           </KeyboardProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>

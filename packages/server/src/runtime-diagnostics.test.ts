@@ -368,11 +368,34 @@ describe('runtime diagnostics', () => {
     try {
       const path = join(directory, 'snapshot.json');
       const read = createRuntimeDiagnostics({ hostSnapshotPath: path, now: () => now });
-      expect((await read({})).host.state).toBe('unavailable');
+      expect((await read({})).host).toMatchObject({
+        state: 'unavailable',
+        reason: 'snapshot_missing',
+      });
       await writeFile(path, JSON.stringify(hostSnapshot));
-      expect((await read({})).host.state).toBe('available');
+      expect((await read({})).host).toMatchObject({ state: 'available', reason: null });
       await writeFile(path, 'x'.repeat(512 * 1024 + 1));
-      expect((await read({})).host.state).toBe('failed');
+      expect((await read({})).host).toMatchObject({ state: 'failed', reason: 'invalid' });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  // A managed Server created before the host bind existed has no snapshot
+  // directory at all; reporting that like a silent exporter misdirects remediation.
+  it('distinguishes a missing Server snapshot mount from a missing exporter snapshot', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'verity-diagnostics-'));
+    try {
+      const read = createRuntimeDiagnostics({
+        hostSnapshotPath: join(directory, 'absent-mount', 'snapshot.json'),
+        now: () => now,
+      });
+      expect((await read({})).host).toMatchObject({
+        state: 'unavailable',
+        reason: 'directory_missing',
+      });
+      expect((await createRuntimeDiagnostics({ now: () => now })({})).host.reason).toBe(
+        'not_configured',
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
-import { open, statfs } from 'node:fs/promises';
+import { open, stat, statfs } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { availableParallelism, freemem, loadavg, totalmem } from 'node:os';
 import { getHeapStatistics } from 'node:v8';
 import { z } from 'zod';
@@ -146,6 +147,11 @@ export const runtimeDiagnosticSnapshotSchema = z.object({
   host: z.object({
     state: sourceState,
     stale: z.boolean(),
+    // Why no snapshot was used: the Server-visible directory (normally a read-only
+    // host bind) is absent, the exporter has not written into it, or the file is invalid.
+    reason: z
+      .enum(['not_configured', 'directory_missing', 'snapshot_missing', 'invalid'])
+      .nullable(),
     snapshot: hostDiagnosticSnapshotSchema.nullable(),
   }),
   limitations: z.array(z.string().max(300)).max(12),
@@ -467,9 +473,11 @@ export function createRuntimeDiagnostics(deps: {
     const host: RuntimeDiagnosticSnapshot['host'] = {
       state: 'unavailable',
       stale: false,
+      reason: 'not_configured',
       snapshot: null,
     };
     if (deps.readHostSnapshot || deps.hostSnapshotPath) {
+      host.reason = null;
       try {
         const snapshot = hostDiagnosticSnapshotSchema.parse(
           JSON.parse(await (deps.readHostSnapshot?.() ?? readSmallFile(deps.hostSnapshotPath!))),
@@ -484,7 +492,20 @@ export function createRuntimeDiagnostics(deps: {
         host.snapshot = snapshot;
         host.state = 'available';
       } catch (error) {
-        host.state = object(error).code === 'ENOENT' ? 'unavailable' : 'failed';
+        if (object(error).code === 'ENOENT') {
+          host.state = 'unavailable';
+          host.reason = 'snapshot_missing';
+          if (deps.hostSnapshotPath) {
+            try {
+              await stat(dirname(deps.hostSnapshotPath));
+            } catch (directoryError) {
+              if (object(directoryError).code === 'ENOENT') host.reason = 'directory_missing';
+            }
+          }
+        } else {
+          host.state = 'failed';
+          host.reason = 'invalid';
+        }
       }
     }
     const docker: RuntimeDiagnosticSnapshot['docker'] = {
@@ -832,6 +853,7 @@ export function createRuntimeDiagnostics(deps: {
         'Docker retains only a bounded recent event history and may lose it on daemon restart. Missing events do not prove no failure occurred.',
         'At most 12 containers, 256 Docker events and 200 log lines per infrastructure container are inspected; project transcripts are excluded.',
         'Host records depend on the installed journal exporter, journal retention and source coverage. Stale or unavailable evidence cannot exclude OOM or runtime failure.',
+        'Host reason directory_missing means the Server lacks the snapshot mount; snapshot_missing means the host exporter has not written a snapshot.',
         'Classified log records are evidence, not a root-cause verdict. Exit code 137 alone does not establish an OOM kill.',
       ],
     });

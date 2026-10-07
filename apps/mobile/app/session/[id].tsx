@@ -1,4 +1,5 @@
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
+import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -7661,6 +7662,16 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
     <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
       <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
       {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
+      {descriptor.action === 'tasks' ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open Tasks"
+          style={styles.eventAction}
+          onPress={openTasksPanel}
+        >
+          <Text style={styles.eventActionLabel}>Open Tasks</Text>
+        </Pressable>
+      ) : null}
       {descriptor.action === 'claude-login' ? (
         <Pressable
           style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
@@ -8716,7 +8727,7 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${pending.tool}`}
+          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionDeny,
@@ -8742,7 +8753,7 @@ function PermissionPrompt({
               ? knowledgeSummary?.replacesExisting
                 ? 'Save changes to Global Knowledge'
                 : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`
+              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8779,7 +8790,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8795,7 +8806,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8811,7 +8822,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? pending.tool} for ${httpSummary?.host ?? 'this destination'}`}
+              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? view.title} for ${httpSummary?.host ?? 'this destination'}`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,

@@ -1,3 +1,4 @@
+import { taskSchema, type Task, type TaskCapture, type TaskPatch } from './tasks.js';
 import { liveResourceInterval, type LiveResource, selectedOpenCodeModels } from '@verity/events';
 import {
   agentEventSchema,
@@ -4324,6 +4325,41 @@ export class VerityClient {
       },
     );
     return permissionDecidedSchema.parse(await res.json());
+  }
+
+  async listTasks(): Promise<Task[]> {
+    const res = await this.request('/tasks', { method: 'GET' });
+    return z.object({ tasks: z.array(taskSchema) }).parse(await res.json()).tasks;
+  }
+
+  async saveTask(id: string, body: TaskCapture): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async updateTask(id: string, body: TaskPatch): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    await this.request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async readTaskAttachment(id: string, hash: string): Promise<ArrayBuffer> {
+    const res = await this.request(
+      `/tasks/${encodeURIComponent(id)}/attachments/${encodeURIComponent(hash)}`,
+      { method: 'GET' },
+    );
+    return res.arrayBuffer();
   }
 
   private async request(

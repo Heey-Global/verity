@@ -16,7 +16,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { sealDeploymentSpec, type ServerDeploymentSpecBody } from './deployment-spec.js';
-import { initializeManagedDeployment } from './managed-deployment.js';
+import {
+  advanceManagedDeploymentImage,
+  initializeManagedDeployment,
+} from './managed-deployment.js';
 import {
   createKeyHandoffReceiver,
   createKeyHandoffSenderIdentity,
@@ -24,6 +27,8 @@ import {
 } from './secret-key-handoff.js';
 import {
   advanceUpdate,
+  advanceCutover,
+  advanceCompanionReconciliation,
   archiveUpdateJournal,
   failUpdate,
   readUpdateJournal,
@@ -452,6 +457,62 @@ describe('managed Updater update action', () => {
     ).resolves.toEqual(operation);
     expect(accepted).toHaveLength(2);
     expect(accepted[1]?.updateId).toBe(accepted[0]?.updateId);
+  });
+
+  it('re-arms the same request after the target image has been committed', async () => {
+    const { socketPath, token, managedRoot, accepted } = await fixture({ managed: true });
+    const request = { socketPath, token, idempotencyKey: 'k1', targetDigest: image('b') };
+    const original = await requestUpdaterOperation(request);
+    const preparation = [
+      'requested',
+      'pulling',
+      'verifying-image',
+      'preflight',
+      'creating-standby',
+      'standby',
+    ] as const;
+    for (let i = 0; i < preparation.length - 1; i++) {
+      await advanceUpdate(managedRoot, preparation[i]!, preparation[i + 1]!, {
+        candidate: { containerId: 'b'.repeat(64), containerName: 'candidate' },
+      });
+    }
+    const cutover = [
+      'standby',
+      'quiescing-old',
+      'handing-off-key',
+      'activating-candidate',
+      'checking-candidate',
+      'draining-gateway',
+      'switching-gateway',
+      'observing-candidate',
+      'committed',
+    ] as const;
+    for (let i = 0; i < cutover.length - 1; i++) {
+      await advanceCutover(managedRoot, cutover[i]!, cutover[i + 1]!, {
+        previousContainerId: 'a'.repeat(64),
+      });
+    }
+    await advanceManagedDeploymentImage({
+      root: managedRoot,
+      deploymentId: 'managed-1',
+      fromImage: image('a'),
+      toImage: image('b'),
+    });
+    await advanceCompanionReconciliation(managedRoot, 'committed', 'reconciling-companions');
+
+    // The sealed image already moved, but the remaining companion work still needs an executor.
+    await expect(requestUpdaterOperation(request)).resolves.toMatchObject({
+      updateId: original.updateId,
+      phase: 'reconciling-companions',
+    });
+    expect(accepted).toHaveLength(2);
+    expect(accepted[1]?.updateId).toBe(accepted[0]?.updateId);
+    await advanceCompanionReconciliation(managedRoot, 'reconciling-companions', 'completed');
+    await expect(requestUpdaterOperation(request)).resolves.toMatchObject({ state: 'completed' });
+    expect(accepted).toHaveLength(2);
+    await expect(
+      requestUpdaterOperation({ ...request, idempotencyKey: 'another-key' }),
+    ).rejects.toMatchObject({ status: 409, code: 'already-current' });
   });
 
   it('does not re-arm execution for an operation that already finished', async () => {

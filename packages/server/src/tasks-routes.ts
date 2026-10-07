@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
-import type { AgentEvent, TasksRequest } from '@verity/events';
+import { attachmentUploadSchema, type AgentEvent, type TasksRequest } from '@verity/events';
 import {
   OPEN_TASK_STATUSES,
   TASK_ATTACHMENTS_MAX,
@@ -58,6 +58,17 @@ const putBody = z
     sourceSessionId: sessionIdSchema.nullable().optional(),
     title: z.string().trim().min(1).max(TASK_TITLE_MAX),
     detail: z.string().trim().max(TASK_DETAIL_MAX).nullable().optional(),
+    uploads: z
+      .array(
+        attachmentUploadSchema.refine(
+          (upload) =>
+            upload.data.length <= (upload.kind === 'image' ? 10_000_000 : 35_000_000) &&
+            /^[A-Za-z0-9+/]+={0,2}$/.test(upload.data),
+          'invalid or oversized attachment',
+        ),
+      )
+      .max(TASK_ATTACHMENTS_MAX)
+      .optional(),
     attachments: z.array(attachment).max(TASK_ATTACHMENTS_MAX).optional(),
     status: taskStatus.optional(),
     sort: z.number().int().min(0).max(1_000_000).optional(),
@@ -214,7 +225,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     return { tasks: list.filter((task) => readable.has(task.projectId)).map(taskResponse) };
   });
 
-  app.put('/tasks/:id', async (request, reply) => {
+  app.put('/tasks/:id', { bodyLimit: 48 * 1024 * 1024 }, async (request, reply) => {
     const { id } = taskParams.parse(request.params);
     const body = putBody.parse(request.body);
     const owner = ownerId(request);
@@ -249,6 +260,23 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
       return { error: 'session is not in the task project' };
     }
     try {
+      const attachments = [...(body.attachments ?? [])];
+      if (attachments.length + (body.uploads?.length ?? 0) > TASK_ATTACHMENTS_MAX)
+        return reply.code(400).send({ error: 'too many attachments' });
+      if (
+        (body.uploads ?? []).reduce((total, upload) => total + upload.data.length, 0) > 45_000_000
+      )
+        return reply.code(400).send({ error: 'attachments exceed the total size limit' });
+      for (const upload of body.uploads ?? []) {
+        attachments.push({
+          hash: await deps.eventStore.putAttachment(upload.mediaType, upload.data),
+          filename:
+            upload.kind === 'file'
+              ? upload.fileName
+              : `image.${upload.mediaType.split('/')[1] ?? 'png'}`,
+          mimeType: upload.mediaType,
+        });
+      }
       const task = await tasks.upsert(
         {
           id,
@@ -259,7 +287,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
           origin: 'user',
           title: body.title,
           detail: body.detail ?? null,
-          attachments: body.attachments,
+          attachments,
           status: body.status as TaskRecord['status'] | undefined,
           sort: body.sort,
         },

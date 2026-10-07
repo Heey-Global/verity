@@ -8,6 +8,9 @@ ready. Production builds the same immutable release source in a separate workflo
 without uploading it to Apple, so it does not hold the Mobile staging lifecycle lock or delay the next Staging
 release. Shared runner capacity can still cause scheduling waits. Production
 approval opens only after its archive and matching Staging evidence are ready.
+Native production evidence is recorded per version on the
+`automation/mobile-production-evidence` branch, independently of the immutable
+Staging release. Existing release-attached evidence remains readable for compatibility.
 The signed IPA is retained as a GitHub Actions artifact for 90 days. Promotion
 checks the reviewed artifact ID and IPA SHA-256 before uploading that exact archive
 to Apple. Retrying the Production build preserves an available archive. If it has
@@ -137,3 +140,10 @@ CI and reviews, and refuses version rollback or conflicting identities. It does
 not rebuild the approved candidate. OCI and Apple writes are not atomic, so a
 failed workflow can have completed some effects; retries verify identity before
 finishing the remaining effects.
+
+To recover a production finalizer after Staging publication, dispatch
+`mobile-production-build.yml` with `mobile-tag` and `production-run-id` set to
+the original production build run. Recovery downloads that run's native evidence
+and skips the binary build; it does not upload to TestFlight. The source run must
+be a production workflow dispatched from `main`, and its candidate must still
+match the published Staging evidence.

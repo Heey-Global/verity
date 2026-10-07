@@ -3710,3 +3710,52 @@ describe('managed dev server actions', () => {
     ]);
   });
 });
+
+describe('VerityClient tasks', () => {
+  const task = {
+    id: '11111111-1111-4111-8111-111111111111',
+    projectId: null,
+    sessionId: null,
+    sourceSessionId: null,
+    origin: 'user',
+    title: 'Captured',
+    detail: null,
+    attachments: [],
+    status: 'open',
+    result: null,
+    sort: 0,
+    revision: 1,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    completedAt: null,
+  };
+  it('uses the same client id and retains uploads on capture retries', async () => {
+    const { fetch, calls } = fakeFetchSequence(json({ task }), json({ task }));
+    const client = new VerityClient({ baseUrl: 'https://example.test', fetch });
+    const body = {
+      title: task.title,
+      projectId: null,
+      uploads: [
+        { kind: 'file' as const, fileName: 'context.txt', mediaType: 'text/plain', data: 'aGk=' },
+      ],
+    };
+    await client.saveTask(task.id, body);
+    await client.saveTask(task.id, body);
+    expect(calls.map((call) => call.url)).toEqual([
+      `https://example.test/tasks/${task.id}`,
+      `https://example.test/tasks/${task.id}`,
+    ]);
+    expect(jsonBody(calls[0])).toEqual(body);
+    expect(jsonBody(calls[1])).toEqual(body);
+  });
+  it('validates responses and sends optimistic edit revisions', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ task }),
+      json({ tasks: [{ ...task, title: 4 }] }),
+    );
+    const client = new VerityClient({ baseUrl: 'https://example.test', fetch });
+    await client.updateTask(task.id, { title: 'Edited', expectedRevision: 1 });
+    expect(jsonBody(calls[0])).toEqual({ title: 'Edited', expectedRevision: 1 });
+    await expect(client.listTasks()).rejects.toThrow();
+  });
+});

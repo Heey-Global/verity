@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.57.0](https://github.com/Heey-Global/verity/compare/mobile-v1.56.0...mobile-v1.57.0) (2026-10-07)
+
+
+### Features
+
+* **tasks:** add offline capture and task panel ([#1238](https://github.com/Heey-Global/verity/issues/1238)) ([bb922ea](https://github.com/Heey-Global/verity/commit/bb922ead44386bf51f84ea5e7dc88106f6674685))
+
+
+### Bug Fixes
+
+* **mobile:** display readable names for all Verity tools ([#1236](https://github.com/Heey-Global/verity/issues/1236)) ([3c59133](https://github.com/Heey-Global/verity/commit/3c591338826d0ba376fab95f5e52ef7c98e6118b))
+
+## [1.56.0](https://github.com/Heey-Global/verity/compare/mobile-v1.55.0...mobile-v1.56.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* **mobile:** preserve Shift+Enter in prompt composer ([#1235](https://github.com/Heey-Global/verity/issues/1235)) ([d194c38](https://github.com/Heey-Global/verity/commit/d194c3823b929e78fd3f7060784c9a61cc4eaff2))
+* **preview:** unify detected server controls and require managed starts ([#1237](https://github.com/Heey-Global/verity/issues/1237)) ([98498d1](https://github.com/Heey-Global/verity/commit/98498d17d851cd342a4c8d69fd9796f25be8d838))
+
 ## [1.55.0](https://github.com/Heey-Global/verity/compare/mobile-v1.54.0...mobile-v1.55.0) (2026-10-06)
 
 

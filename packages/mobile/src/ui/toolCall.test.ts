@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Message, ToolCall } from '../happy/message.js';
 import {
@@ -137,10 +138,48 @@ describe('toolCallView', () => {
     expect(headline('echo verity-code-review')).toBe('Ran Review diff');
   });
 
-  it('leaves unrelated tool names untouched', () => {
-    expect(toolCallView(tool({ name: 'verity_unknown', state: 'running', input: {} })).title).toBe(
-      'verity_unknown',
+  it('displays every tool advertised by the gateway without protocol identifiers', () => {
+    // A new gateway tool must not silently leak its protocol name into the transcript.
+    const contract = readFileSync(
+      new URL('../../../secret-contracts/src/audit.ts', import.meta.url),
+      'utf8',
     );
+    const names = contract
+      .match(/gatewayToolNameSchema = z\.enum\(\[([\s\S]*?)\]\)/)?.[1]
+      ?.match(/verity_[a-z_]+/g);
+    expect(names?.length).toBeGreaterThan(0);
+    for (const bare of names ?? []) {
+      for (const name of [bare, `mcp__verity__${bare}`, `verity_${bare}`]) {
+        const view = toolCallView(tool({ name, state: 'running', input: {} }));
+        expect(view.title).not.toMatch(/_|\bverity\b/);
+        expect(view.headline).toBe(view.title);
+      }
+    }
+  });
+
+  it('labels platform tasks without using the project identifier as the action', () => {
+    for (const name of ['verity_tasks', 'mcp__verity__verity_tasks', 'verity_verity_tasks']) {
+      const view = toolCallView(
+        tool({ name, state: 'running', input: { project: 'verity', action: 'list' } }),
+      );
+      expect(view.title).toBe('Verity Tasks');
+      expect(view.headline).toBe('Verity Tasks list');
+    }
+  });
+
+  it('keeps newly introduced Verity tools readable under every backend qualification', () => {
+    for (const name of [
+      'verity_new_feature',
+      'mcp__verity__verity_new_feature',
+      'verity_verity_new_feature',
+    ]) {
+      const view = toolCallView(tool({ name, state: 'running', input: {} }));
+      expect(view.title).toBe('Verity New Feature');
+      expect(view.headline).toBe('Verity New Feature');
+    }
+  });
+
+  it('leaves unrelated tool names untouched', () => {
     expect(
       toolCallView(tool({ name: 'mcp__other__verity_gmail', state: 'running', input: {} })).title,
     ).toBe('mcp__other__verity_gmail');

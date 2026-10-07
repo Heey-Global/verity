@@ -1,4 +1,5 @@
-import type { DockerClient } from '../docker.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { DockerError, type DockerClient } from '../docker.js';
 import {
   dockerStandbyPromotion,
   type DockerStandbyPromotionOptions,
@@ -56,6 +57,7 @@ const OFFICIAL_DIGEST = /^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a
 const FAILABLE: readonly UpdatePhase[] = ['requested', 'pulling', 'verifying-image', 'preflight'];
 
 const PREPARING: readonly UpdatePhase[] = [...FAILABLE, 'creating-standby'];
+const RESUME_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
 
 function isFailablePhase(
   phase: UpdatePhase,
@@ -69,8 +71,17 @@ function isPreparingPhase(
   return PREPARING.includes(phase);
 }
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+const describe = (error: unknown): string => {
+  if (error instanceof DockerError) {
+    const context = [
+      `kind=${error.kind}`,
+      ...(error.id === undefined ? [] : [`container=${error.id}`]),
+      ...(error.status === undefined ? [] : [`status=${String(error.status)}`]),
+    ];
+    return `${error.message} (${context.join(', ')})`;
+  }
+  return error instanceof Error ? error.message : String(error);
+};
 
 const defaultLog = (message: string): void => {
   console.log(`[self-update] ${message}`);
@@ -135,6 +146,8 @@ export interface UpdateRunnerOptions {
     DockerStandbyPromotionOptions,
     'managedRoot' | 'docker' | 'environment' | 'readFile'
   >;
+  /** Backoff between resumable attempts; defaults to a timer. */
+  readonly retrySleep?: (milliseconds: number) => Promise<void>;
   readonly log?: (message: string) => void;
 }
 
@@ -240,8 +253,8 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
    * Docker actions, reading the sealed authority — so the single slot does not
    * stay occupied by an operation that will never move and refuse every later
    * request with `operation-in-progress`. Phases from `standby` on are left
-   * alone deliberately: there the operation is genuinely resumable, and the next
-   * Updater start picks it up where it stopped.
+   * alone deliberately: there the operation is genuinely resumable. The runner
+   * retries it, and a later request or Updater restart can resume it again.
    */
   const recordStuckFailure = async (): Promise<void> => {
     try {
@@ -259,11 +272,34 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
   };
 
   const run = async (): Promise<void> => {
-    try {
-      await execute();
-    } catch (error) {
-      log(`update operation failed: ${describe(error)}`);
-      await recordStuckFailure();
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await execute();
+        return;
+      } catch (error) {
+        log(`update operation failed: ${describe(error)}`);
+        if (error instanceof Error && error.stack !== undefined)
+          log(`update operation failure stack: ${error.stack}`);
+        await recordStuckFailure();
+      }
+      // Read durable intent again after the failed attempt releases its lease.
+      // Backoff stays inside the queue so other Docker work cannot interleave.
+      try {
+        const current = await readUpdateJournal(options.managedRoot);
+        const delay = RESUME_RETRY_DELAYS_MS[attempt];
+        if (
+          delay === undefined ||
+          current === null ||
+          isPreparingPhase(current.phase) ||
+          isTerminalOperationState(projectUpdateOperation(current).state)
+        )
+          return;
+        log(`operation ${current.updateId} retrying ${current.phase} in ${String(delay)}ms`);
+        await (options.retrySleep ?? sleep)(delay);
+      } catch (error) {
+        log(`could not retry the operation: ${describe(error)}`);
+        return;
+      }
     }
   };
 
