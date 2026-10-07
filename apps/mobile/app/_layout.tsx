@@ -1,10 +1,8 @@
-import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
-// Root layout: configures Unistyles (side-effect import, must run first), then
-// mounts the provider stack (gesture handler + safe area) and the themed router
+// Root layout mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
 // Component styles use StyleSheet.create.
-import '../unistyles';
+import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
 import { installBrowserAlerts } from '../lib/browserAlerts';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';

@@ -1,5 +1,5 @@
 // Unistyles v3 runtime configuration. Imported once for its side effect from the
-// root layout BEFORE any styled component renders (StyleSheet.create relies on
+// app entry BEFORE Expo Router loads any styled component (StyleSheet.create relies on
 // the themes registered here). `initialTheme: 'dark'` forces dark mode (instead
 // of `adaptiveThemes` following the OS) — the dark theme uses a true-black
 // (#000000) background so OLED pixels switch off, minimizing battery draw. The
