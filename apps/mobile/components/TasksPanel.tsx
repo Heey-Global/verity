@@ -109,16 +109,19 @@ export function TasksPanel({
     const project = projects.find((p) => p.id === id);
     return project ? projectDisplayName(project) : 'Project';
   };
-  const done = tasks.filter((t) => t.status === 'done');
+  // An agent step belongs to a session; a step whose session is gone is backlog.
+  const isStep = (task: Task) => task.origin === 'agent' && task.sessionId !== null;
+  const done = tasks.filter((t) => t.status === 'done' && !isStep(t));
   const visible = tasks.filter(
     (task) =>
       task.status !== 'dropped' && (task.status !== 'done' || showDone || undo.includes(task.id)),
   );
   // The operator's own captures are the list. The agent's steps are its working
-  // plan for a request and stay in a separate, quieter section below.
-  const mine = visible.filter((task) => task.origin === 'user');
+  // plan for a request and stay in a separate, quieter section below — but only
+  // while they belong to a session; a step whose session is gone is backlog.
+  const mine = visible.filter((task) => !isStep(task));
   const agentScope = (task: Task) =>
-    task.origin === 'agent' &&
+    isStep(task) &&
     (context.sessionId !== null
       ? task.sessionId === context.sessionId
       : context.projectId !== null
@@ -379,9 +382,18 @@ export function TasksPanel({
             {chip('Move to my tasks', () => {
               void run(() => patchTask(task, { origin: 'user', sessionId: null }));
             })}
-            {chip('Drop', () => {
-              void run(() => patchTask(task, { status: 'dropped' }));
-            })}
+            {chip('Drop', () =>
+              Alert.alert('Drop this step?', task.title, [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Drop',
+                  style: 'destructive',
+                  onPress: () => {
+                    void run(() => patchTask(task, { status: 'dropped' }));
+                  },
+                },
+              ]),
+            )}
           </View>
         ) : null}
       </View>
@@ -569,9 +581,11 @@ export function TasksPanel({
                   ) : null}
                 </View>
               ) : null}
-              {!tasks.length ? (
+              {!mine.length ? (
                 <Text style={styles.empty}>
-                  Capture a thought, or ask your agent to save agreed work here.
+                  {agentAll.length
+                    ? 'Nothing captured yet. Tap the bubble to add a task.'
+                    : 'Nothing here yet. Tap the bubble and say what needs doing.'}
                 </Text>
               ) : null}
             </ScrollView>

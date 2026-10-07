@@ -107,7 +107,7 @@ export function QuickCaptureBubble() {
   // their own section of the panel and must not nag from the badge.
   const count = tasks.filter(
     (task) =>
-      task.origin === 'user' &&
+      (task.origin === 'user' || task.sessionId === null) &&
       (task.status === 'open' || task.status === 'in_progress') &&
       (context.sessionId
         ? task.sessionId === context.sessionId ||
@@ -117,10 +117,15 @@ export function QuickCaptureBubble() {
   const top = insets.top + 52;
   const bottom = height - insets.bottom - 100;
   useEffect(() => {
-    origin.current = {
+    const next = {
       x: preferences.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
       y: Math.max(top, Math.min(bottom, height * preferences.fraction)),
     };
+    // A release saves its own resting place, which re-runs this effect while
+    // the spring is still flying; jumping to the same spot would cut it short.
+    if (Math.abs(next.x - origin.current.x) < 0.5 && Math.abs(next.y - origin.current.y) < 0.5)
+      return;
+    origin.current = next;
     position.setValue(origin.current);
   }, [preferences.side, preferences.fraction, width, height, top, bottom, position]);
   const pan = useMemo(
