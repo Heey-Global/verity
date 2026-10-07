@@ -6,6 +6,7 @@ import {
   MANAGED_DEPLOYMENT_ROOT,
   advanceManagedDeploymentImage,
   initializeManagedDeployment,
+  migrateManagedHostDiagnostics,
   readManagedDeployment,
 } from './managed-deployment.js';
 import {
@@ -38,6 +39,7 @@ export interface ManagedBootstrapEnvironment {
   readonly VERITY_RUNNER_RUNTIME_GID?: string;
   readonly VERITY_HOST_ARCHITECTURE?: string;
   readonly VERITY_PAIRING_STATE_HOST_PATH?: string;
+  readonly VERITY_HOST_DIAGNOSTIC_DIR?: string;
   readonly VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM?: string;
 }
 
@@ -119,6 +121,14 @@ export async function runManagedBootstrap(
   ) {
     throw new Error('VERITY_PAIRING_STATE_HOST_PATH must be a normalized absolute directory');
   }
+  const hostDiagnosticPath = env.VERITY_HOST_DIAGNOSTIC_DIR ?? '/var/lib/verity/host-diagnostics';
+  if (
+    !isAbsolute(hostDiagnosticPath) ||
+    normalize(hostDiagnosticPath) !== hostDiagnosticPath ||
+    hostDiagnosticPath === '/' ||
+    hostDiagnosticPath.includes(':')
+  )
+    throw new Error('VERITY_HOST_DIAGNOSTIC_DIR must be a normalized absolute directory');
   const forwardedEnvironment = Object.keys(env)
     .filter(
       (name) =>
@@ -154,6 +164,7 @@ export async function runManagedBootstrap(
             'VERITY_DOCKER_SOCKET_GID',
             'VERITY_HOST_ARCHITECTURE',
             'VERITY_PAIRING_STATE_HOST_PATH',
+            'VERITY_HOST_DIAGNOSTIC_DIR',
             'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM',
           ].includes(name)),
     )
@@ -190,6 +201,11 @@ export async function runManagedBootstrap(
       {
         source: { kind: 'bind', path: pairingStatePath },
         target: '/run/verity-pairing',
+        readOnly: true,
+      },
+      {
+        source: { kind: 'bind', path: hostDiagnosticPath },
+        target: '/run/verity-host-diagnostics',
         readOnly: true,
       },
       ...(env.VERITY_RUNNER_SUPERVISOR === '1'
@@ -248,4 +264,10 @@ export async function runManagedBootstrap(
   if (!state.managed) throw new Error(state.reason);
   if (state.spec.image !== image)
     throw new Error('VERITY_SERVER_IMAGE does not match the sealed managed deployment image');
+  await migrateManagedHostDiagnostics({
+    root,
+    deploymentId: state.spec.deploymentId,
+    image,
+    hostPath: hostDiagnosticPath,
+  });
 }

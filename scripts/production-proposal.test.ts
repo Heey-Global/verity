@@ -13,6 +13,11 @@ const fixture = vi.hoisted(() => ({
     releasePr: 42,
   },
   recorded: undefined as Record<string, unknown> | undefined,
+  evidenceMissing: false,
+  evidenceBranchMissing: false,
+  evidenceWriteFailure: false,
+  evidenceFailure: false,
+  legacyEvidence: true,
   expired: false,
   missing: false,
   replacementExpired: false,
@@ -53,7 +58,7 @@ vi.mock('node:child_process', () => ({
     if (args[0] === 'release')
       return args[1] === 'view'
         ? JSON.stringify({
-            assets: [{ name: 'production-candidate.json' }],
+            assets: fixture.legacyEvidence ? [{ name: 'production-candidate.json' }] : [],
             isPrerelease: fixture.prerelease,
           })
         : JSON.stringify(fixture.recorded ?? fixture.candidate);
@@ -101,12 +106,32 @@ vi.mock('node:child_process', () => ({
       );
       return '';
     }
+    if (endpoint?.includes('/contents/releases/native-production/')) {
+      if (args.includes('PUT') && fixture.evidenceWriteFailure)
+        throw new Error('Evidence write conflict');
+      if (!args.includes('PUT') && (fixture.evidenceMissing || fixture.evidenceFailure))
+        throw Object.assign(new Error('Evidence unavailable'), {
+          stderr: fixture.evidenceFailure ? 'HTTP 403' : 'HTTP 404',
+        });
+      return JSON.stringify({
+        content: Buffer.from(JSON.stringify(fixture.recorded ?? fixture.candidate)).toString(
+          'base64',
+        ),
+        sha: 'e'.repeat(40),
+      });
+    }
     if (endpoint?.includes('/contents/'))
       return JSON.stringify({
         content: Buffer.from(JSON.stringify(fixture.recorded ?? fixture.candidate)).toString(
           'base64',
         ),
       });
+    if (endpoint?.endsWith('/git/refs') && args.includes('POST')) return '{}';
+    if (
+      endpoint?.endsWith('/heads/automation/mobile-production-evidence') &&
+      fixture.evidenceBranchMissing
+    )
+      throw Object.assign(new Error('Missing branch'), { stderr: 'HTTP 404' });
     if (endpoint?.endsWith('/heads/main'))
       return JSON.stringify({ object: { sha: 'c'.repeat(40) } });
     if (endpoint?.includes('/git/ref/heads/'))
@@ -131,6 +156,11 @@ afterEach(() => {
   fixture.candidate.artifact = undefined;
   fixture.candidate.buildNumber = '12';
   fixture.recorded = undefined;
+  fixture.evidenceMissing = false;
+  fixture.evidenceBranchMissing = false;
+  fixture.evidenceWriteFailure = false;
+  fixture.evidenceFailure = false;
+  fixture.legacyEvidence = true;
   fixture.expired = false;
   fixture.missing = false;
   fixture.replacementExpired = false;
@@ -223,10 +253,12 @@ describe('archive expiry recovery', () => {
       fixture.merged = true;
       propose('candidate.json');
       const upload = fixture.calls.findIndex(
-        (call) => call.args[0] === 'release' && call.args[1] === 'upload',
+        (call) =>
+          call.args.includes('PUT') &&
+          call.args.some((arg) => arg.includes('/contents/releases/native-production/')),
       );
       expect(upload).toBeGreaterThanOrEqual(0);
-      expect(fixture.calls[upload]!.args).toContain('--clobber');
+      expect(fixture.calls[upload]!.args).toContain('sha=' + 'e'.repeat(40));
       const commit = fixture.calls.findIndex((call) => call.args.includes('graphql'));
       expect(commit).toBeGreaterThan(upload);
       expect(writeFileSync).toHaveBeenCalledWith(
@@ -254,4 +286,63 @@ describe('archive expiry recovery', () => {
       expect(fixture.calls.some((call) => call.args.includes('graphql'))).toBe(false);
     },
   );
+});
+
+// Publishing Staging locks its assets before the independent production finalizer runs.
+describe('immutable staging release evidence', () => {
+  it.each([false, true])(
+    'records native evidence without modifying release assets (legacy: %s)',
+    (legacy) => {
+      vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+      fixture.evidenceMissing = true;
+      fixture.legacyEvidence = legacy;
+      propose('candidate.json');
+      const record = fixture.calls.findIndex(
+        (call) =>
+          call.args.includes('PUT') &&
+          call.args.some((arg) => arg.includes('/contents/releases/native-production/')),
+      );
+      expect(record).toBeGreaterThanOrEqual(0);
+      expect(fixture.calls[record]!.args).toContain('branch=automation/mobile-production-evidence');
+      expect(
+        fixture.calls.some((call) => call.args[0] === 'release' && call.args[1] === 'upload'),
+      ).toBe(false);
+      expect(fixture.calls.findIndex((call) => call.args.includes('graphql'))).toBeGreaterThan(
+        record,
+      );
+    },
+  );
+  it('creates the evidence branch before its first record', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+    fixture.evidenceMissing = true;
+    fixture.evidenceBranchMissing = true;
+    fixture.legacyEvidence = false;
+    propose('candidate.json');
+    const created = fixture.calls.findIndex((call) =>
+      call.args.includes('ref=refs/heads/automation/mobile-production-evidence'),
+    );
+    const recorded = fixture.calls.findIndex((call) => call.args.includes('PUT'));
+    expect(created).toBeGreaterThanOrEqual(0);
+    expect(recorded).toBeGreaterThan(created);
+  });
+  it('does not change the promotion when recording evidence conflicts', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+    fixture.evidenceMissing = true;
+    fixture.evidenceWriteFailure = true;
+    expect(() => propose('candidate.json')).toThrow('Evidence write conflict');
+    expect(
+      fixture.calls.some(
+        (call) =>
+          call.args.includes('graphql') || (call.command === 'git' && call.args[0] === 'push'),
+      ),
+    ).toBe(false);
+  });
+  it('fails closed when evidence cannot be read', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+    fixture.evidenceFailure = true;
+    expect(() => propose('candidate.json')).toThrow();
+    expect(
+      fixture.calls.some((call) => call.args.includes('PUT') || call.args.includes('graphql')),
+    ).toBe(false);
+  });
 });

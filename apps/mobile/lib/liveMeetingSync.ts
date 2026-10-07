@@ -1,6 +1,14 @@
+import { type VerityClient } from '@verity/mobile';
+import { subscribeLiveRefresh } from './liveConnection';
 import { AppState } from 'react-native';
-import { createVerityClient, getActiveMeetingServerId } from './client';
-import { currentMeeting, endMeeting, pauseMeeting, resumeMeeting } from './liveMeetingSession';
+import { createVerityClient, getActiveMeetingServerId, subscribeVerityBaseUrl } from './client';
+import {
+  currentMeeting,
+  endMeeting,
+  pauseMeeting,
+  resumeMeeting,
+  subscribeMeeting,
+} from './liveMeetingSession';
 import {
   acknowledgeMeeting,
   acknowledgeNote,
@@ -73,7 +81,10 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
   return run;
 }
 
-export async function syncMeetingSession(sessionId: string): Promise<{ pending: boolean }> {
+export async function syncMeetingSession(
+  sessionId: string,
+  suppliedClient?: VerityClient,
+): Promise<{ pending: boolean }> {
   const serverId = getActiveMeetingServerId();
   if (!serverId) return { pending: true };
   let pending = false;
@@ -82,7 +93,7 @@ export async function syncMeetingSession(sessionId: string): Promise<{ pending: 
   } catch {
     pending = true;
   }
-  const client = createVerityClient();
+  const client = suppliedClient ?? createVerityClient();
   if (!client) return { pending: true };
   if (getActiveMeetingServerId() !== serverId) return { pending: true };
   const after = await getSyncCursor(serverId, sessionId);
@@ -101,7 +112,7 @@ async function flushOwnerMeeting(serverId: string, id: string): Promise<void> {
   }
 }
 
-async function handleOwnerCommands(): Promise<void> {
+async function handleOwnerCommands(suppliedClient?: VerityClient): Promise<void> {
   if (handlingCommand) return;
   const meeting = currentMeeting();
   if (
@@ -111,7 +122,7 @@ async function handleOwnerCommands(): Promise<void> {
     meeting.serverId !== getActiveMeetingServerId()
   )
     return;
-  const client = createVerityClient();
+  const client = suppliedClient ?? createVerityClient();
   if (!client) return;
   handlingCommand = true;
   try {
@@ -155,22 +166,63 @@ async function handleOwnerCommands(): Promise<void> {
 export function startLiveMeetingSync(): () => void {
   let running = true;
   let ticking = false;
+  let client = createVerityClient();
   const tick = async () => {
     if (!running || ticking || AppState.currentState !== 'active') return;
     ticking = true;
     try {
       const serverId = getActiveMeetingServerId();
       if (serverId) await flushMeetingOutbox(serverId).catch(() => undefined);
-      await handleOwnerCommands();
+      await handleOwnerCommands(client ?? undefined);
     } catch {
       // Local SQLite remains the source of truth until the server can be reached again.
     } finally {
       ticking = false;
     }
   };
+  // This timer retries local durable writes, rather than polling server state.
   const timer = setInterval(() => {
-    void tick();
+    const serverId = getActiveMeetingServerId();
+    if (serverId && AppState.currentState === 'active')
+      void Promise.all([pendingMeetings(serverId), pendingNotes(serverId)])
+        .then(([meetings, notes]) => {
+          if (running && (meetings.length > 0 || notes.length > 0))
+            void flushMeetingOutbox(serverId).catch(() => undefined);
+        })
+        .catch(() => undefined);
   }, 2000);
+  let detach = () => {};
+  let watchedKey = '';
+  const bindMeeting = (): void => {
+    const meeting = currentMeeting();
+    const key = JSON.stringify([
+      client?.liveBaseUrl?.(),
+      meeting?.serverId,
+      meeting?.sessionId,
+      meeting?.id,
+      meeting?.ownerToken,
+    ]);
+    if (key !== watchedKey) {
+      watchedKey = key;
+      detach();
+      detach = () => {};
+      if (client && meeting?.ownerToken && meeting.serverId === getActiveMeetingServerId()) {
+        const path = `/sessions/${encodeURIComponent(meeting.sessionId)}/live-meetings/${encodeURIComponent(meeting.id)}/commands`;
+        detach = subscribeLiveRefresh(client, tick, (value) => value === path, [
+          { path, ownerToken: meeting.ownerToken },
+        ]);
+      }
+    }
+    const serverId = getActiveMeetingServerId();
+    if (serverId) void flushMeetingOutbox(serverId).catch(() => undefined);
+  };
+  const detachMeeting = subscribeMeeting(bindMeeting);
+  const detachBase = subscribeVerityBaseUrl(() => {
+    client = createVerityClient();
+    watchedKey = '';
+    bindMeeting();
+    void tick();
+  });
   const appState = AppState.addEventListener('change', (state) => {
     if (state === 'active') void tick();
   });
@@ -178,6 +230,9 @@ export function startLiveMeetingSync(): () => void {
   return () => {
     running = false;
     clearInterval(timer);
+    detach();
+    detachMeeting();
+    detachBase();
     appState.remove();
   };
 }

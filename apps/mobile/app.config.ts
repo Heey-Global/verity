@@ -37,7 +37,7 @@ const config: ExpoConfig = {
   // The Google scheme must be registered in the native binary before its OAuth
   // redirect can return from the system browser.
   scheme: [staging ? 'verity-staging' : 'verity', googleOAuthScheme],
-  version: '1.54.0', // x-release-please-version
+  version: '1.57.0', // x-release-please-version
   // iPad and iPad-on-Mac should adapt to the user's current window/device
   // orientation, especially with Magic Keyboard or Stage Manager. Phone layouts
   // still render portrait-first through the app's responsive UI constraints.
@@ -158,6 +158,14 @@ const config: ExpoConfig = {
     // Hermes' Intl returns a UI-language + region combo (e.g. en-DE) that isn't a
     // valid recognition locale.
     'expo-localization',
+    [
+      'expo-media-library',
+      {
+        photosPermission: 'Allow Verity to offer your recent screenshot when capturing a task.',
+        savePhotosPermission: false,
+        granularPermissions: ['photo'],
+      },
+    ],
     // Live voice dictation (§6) via the OS speech recognizer. Sets the iOS
     // NSMicrophoneUsageDescription + NSSpeechRecognitionUsageDescription, and
     // declares Google's recognition service so Android can bind to it.

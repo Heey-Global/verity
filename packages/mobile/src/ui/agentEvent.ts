@@ -20,7 +20,7 @@ export interface AgentEventDescriptor {
   detail?: string;
   tone: AgentEventTone;
   /** Optional recovery action rendered by the native transcript row. */
-  action?: 'claude-login';
+  action?: 'claude-login' | 'tasks';
 }
 
 const CLAUDE_OAUTH_FAILURE = /failed to authenticate:.*oauth.*(?:expired|refresh)/i;
@@ -35,6 +35,22 @@ const LIMIT_REACHED =
  */
 export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
   switch (event.t) {
+    case 'tasks_updated': {
+      const count = event.taskIds.length;
+      const verb = {
+        added: 'added',
+        updated: 'updated',
+        completed: 'completed',
+        dropped: 'dropped',
+        deleted: 'deleted',
+      }[event.change];
+      return {
+        kind: 'tasks',
+        label: `${event.origin === 'agent' ? 'Agent' : 'You'} ${verb} ${count} ${count === 1 ? 'task' : 'tasks'}`,
+        tone: 'neutral',
+        action: 'tasks',
+      };
+    }
     case 'compaction':
       return { kind: 'compaction', label: 'Context compacted', tone: 'neutral' };
     case 'interrupted':

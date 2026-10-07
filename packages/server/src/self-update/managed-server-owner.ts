@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, ContainerSpec, DockerClient } from '../docker.js';
-import { MANAGED_SERVER_DEFAULT_RESOURCES, type ServerDeploymentSpec } from './deployment-spec.js';
-import { readManagedDeployment } from './managed-deployment.js';
+import {
+  MANAGED_SERVER_DEFAULT_RESOURCES,
+  sealDeploymentSpec,
+  type ServerDeploymentSpec,
+} from './deployment-spec.js';
+import { readManagedDeployment, readManagedHostDiagnosticBackup } from './managed-deployment.js';
 
 export const MANAGED_SERVER_NAME = 'verity-managed-server';
 export const MANAGED_DEPLOYMENT_LABEL = 'verity.managed-deployment-id';
@@ -24,6 +28,8 @@ export interface ReconcileManagedServerOptions {
   readonly docker: ManagedServerDocker;
   readonly environment?: NodeJS.ProcessEnv;
   readonly readFile?: (path: string) => Promise<string>;
+  /** Allow only the recorded install migration on an already promoted Server. */
+  readonly allowDiagnosticMountMigration?: boolean;
   readonly identity?: {
     readonly name: string;
     readonly operationId: string;
@@ -43,6 +49,8 @@ export interface ManagedServerReconcileResult {
    * these are secrets. Absent when the container matched.
    */
   readonly drift?: readonly string[];
+  /** The running Server keeps serving until its next guarded replacement. */
+  readonly diagnosticMountPending?: true;
 }
 
 /**
@@ -59,7 +67,11 @@ export interface ManagedServerReconcileResult {
  */
 export type ManagedServerReconcileVerdict =
   | { readonly status: 'ok' }
-  | { readonly status: 'drift'; readonly environment: readonly string[] }
+  | {
+      readonly status: 'drift';
+      readonly environment: readonly string[];
+      readonly diagnosticMountPending?: true;
+    }
   | { readonly status: 'unknown' };
 
 function ownedBy(inspect: ContainerInspect, deploymentId: string): boolean {
@@ -809,7 +821,7 @@ export async function reconcileManagedServer(
     const imageEnv = await specImageEnvironment(options.docker, desired.image);
     // Without `identity` this is the steady-state reconcile of whatever the last
     // cutover promoted; with it, a candidate mid-update, which stays exact.
-    const verdict = judgeManagedContainer(
+    let verdict = judgeManagedContainer(
       inspect,
       desired,
       imageEnv,
@@ -817,6 +829,44 @@ export async function reconcileManagedServer(
       sealedHostLimitsMode(spec),
       sealedNames,
     );
+    let diagnosticMountPending = false;
+    if (
+      verdict.kind === 'structural' &&
+      (identity === undefined || options.allowDiagnosticMountMigration === true) &&
+      !inspect.mounts?.some((mount) => mount.destination === '/run/verity-host-diagnostics')
+    ) {
+      const backup = await readManagedHostDiagnosticBackup(options.managedRoot);
+      const diagnosticMount = spec.mounts.find(
+        (mount) => mount.target === '/run/verity-host-diagnostics',
+      );
+      const previousSeal = sealDeploymentSpec({
+        schemaVersion: spec.schemaVersion,
+        deploymentId: spec.deploymentId,
+        image: spec.image,
+        environment: spec.environment,
+        mounts: spec.mounts.filter((mount) => mount.target !== '/run/verity-host-diagnostics'),
+        user: spec.user,
+        restart: spec.restart,
+        network: spec.network,
+        platform: spec.platform,
+        security: spec.security,
+        ...(spec.resources === undefined ? {} : { resources: spec.resources }),
+      });
+      if (diagnosticMount !== undefined && backup?.checksum === previousSeal.checksum) {
+        const previousVerdict = judgeManagedContainer(
+          inspect,
+          withIdentity(containerSpecFrom(backup, resolution.env)),
+          imageEnv,
+          identity === undefined,
+          sealedHostLimitsMode(spec),
+          sealedNames,
+        );
+        if (previousVerdict.kind !== 'structural') {
+          verdict = previousVerdict;
+          diagnosticMountPending = true;
+        }
+      }
+    }
     if (verdict.kind === 'structural')
       throw new Error('managed Server container conflicts with the sealed deployment spec');
     if (inspect.running) {
@@ -837,6 +887,13 @@ export async function reconcileManagedServer(
       // that name, and the environment built without it therefore differs on
       // exactly that name. Adding the unresolved names separately would be a
       // second path to the same list that no test could tell apart from this one.
+      if (diagnosticMountPending)
+        return {
+          containerId: inspect.id,
+          action: 'unchanged',
+          diagnosticMountPending: true,
+          ...(verdict.environment.length === 0 ? {} : { drift: verdict.environment }),
+        };
       return verdict.environment.length === 0
         ? { containerId: inspect.id, action: 'unchanged' }
         : { containerId: inspect.id, action: 'unchanged', drift: verdict.environment };
@@ -845,7 +902,7 @@ export async function reconcileManagedServer(
     // and there is no honest Server to produce here — by rebuilding or by
     // starting one that lacks a sealed variable.
     requireBuildable();
-    if (verdict.kind === 'environment') {
+    if (verdict.kind === 'environment' || diagnosticMountPending) {
       if (!recreatable) {
         // The create-conflict path: something else put this container here while
         // we were creating one, and it is stopped and drifted. Replacing it is

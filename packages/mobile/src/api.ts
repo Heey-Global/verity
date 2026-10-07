@@ -1,4 +1,5 @@
-import { selectedOpenCodeModels } from '@verity/events';
+import { taskSchema, type Task, type TaskCapture, type TaskPatch } from './tasks.js';
+import { liveResourceInterval, type LiveResource, selectedOpenCodeModels } from '@verity/events';
 import {
   agentEventSchema,
   attachmentSchema,
@@ -1875,6 +1876,19 @@ export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
 export class VerityClient {
+  private readonly observedReads = new Map<string, LiveResource>();
+  private readonly readListeners = new Set<(resource: LiveResource) => void>();
+
+  liveBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  observeReads(listener: (resource: LiveResource) => void): () => void {
+    this.readListeners.add(listener);
+    for (const resource of this.observedReads.values()) listener(resource);
+    return () => this.readListeners.delete(listener);
+  }
+
   async getLiveMeetingInsights(
     sessionId: string,
     meetingId: string,
@@ -4313,6 +4327,41 @@ export class VerityClient {
     return permissionDecidedSchema.parse(await res.json());
   }
 
+  async listTasks(): Promise<Task[]> {
+    const res = await this.request('/tasks', { method: 'GET' });
+    return z.object({ tasks: z.array(taskSchema) }).parse(await res.json()).tasks;
+  }
+
+  async saveTask(id: string, body: TaskCapture): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async updateTask(id: string, body: TaskPatch): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    await this.request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async readTaskAttachment(id: string, hash: string): Promise<ArrayBuffer> {
+    const res = await this.request(
+      `/tasks/${encodeURIComponent(id)}/attachments/${encodeURIComponent(hash)}`,
+      { method: 'GET' },
+    );
+    return res.arrayBuffer();
+  }
+
   private async request(
     path: string,
     init: RequestInit,
@@ -4336,6 +4385,20 @@ export class VerityClient {
         ...init,
         headers: { authorization: `Bearer ${token}`, ...(init.headers as Record<string, string>) },
       };
+    }
+    if ((init.method ?? 'GET') === 'GET' && liveResourceInterval(path) !== undefined) {
+      const url = new URL(path, 'http://verity.invalid');
+      url.searchParams.delete('force');
+      url.searchParams.delete('after');
+      const resource: LiveResource = { path: url.pathname + url.search };
+      const ownerToken = (init.headers as Record<string, string> | undefined)?.[
+        'x-meeting-owner-token'
+      ];
+      if (ownerToken) resource.ownerToken = ownerToken;
+      this.observedReads.set(url.pathname, resource);
+      if (this.observedReads.size > 64)
+        this.observedReads.delete(this.observedReads.keys().next().value!);
+      for (const listener of this.readListeners) listener(resource);
     }
     const res = await fetchImpl(`${this.baseUrl}${path}`, init);
     if (!res.ok) {

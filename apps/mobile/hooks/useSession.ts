@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
   type PermissionDecision,
@@ -83,6 +84,7 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
       client,
       sessionId,
       transport: liveConnectionFor(baseUrl),
+      activityPollMs: 0,
       onChange: publish,
       onPermissionSettled: (toolUseId, accepted) => {
         if (accepted) publishSessionStatusMutation(sessionId, 'running');
@@ -158,6 +160,15 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     [model],
   );
   useLiveHints(baseUrl, onHints, sessionId);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => model.refreshActivity(),
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/activity`,
+      ),
+    [client, model, sessionId],
+  );
 
   const sendTurn = useCallback(
     (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => {

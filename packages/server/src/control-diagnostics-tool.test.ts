@@ -170,3 +170,48 @@ it('requires an explicit project for an event receipt and omits persisted messag
   expect(result.matrix?.event?.stored).toBe(true);
   expect(JSON.stringify(result)).not.toMatch(/private message|private sender/);
 });
+
+it('checks project authority before reading runtime evidence and rechecks after reading', async () => {
+  const authorizeDiagnosticProject = vi.fn(async () => {});
+  const readRuntimeDiagnostics = vi.fn(async () => ({}));
+  const tool = createControlDiagnosticsTool({
+    ...setup(),
+    authorizeDiagnosticProject,
+    readRuntimeDiagnostics,
+  });
+  await tool({ ...input, request: { projectId: 'project' } });
+  expect(authorizeDiagnosticProject).toHaveBeenCalledTimes(2);
+  expect(readRuntimeDiagnostics).toHaveBeenCalledWith('project', undefined);
+  expect(authorizeDiagnosticProject.mock.invocationCallOrder[0]).toBeLessThan(
+    readRuntimeDiagnostics.mock.invocationCallOrder[0]!,
+  );
+  authorizeDiagnosticProject.mockRejectedValueOnce(new Error('hidden project'));
+  readRuntimeDiagnostics.mockClear();
+  await expect(tool({ ...input, request: { projectId: 'hidden' } })).rejects.toThrow(
+    'hidden project',
+  );
+  expect(readRuntimeDiagnostics).not.toHaveBeenCalled();
+});
+
+it('rejects broad or arbitrary runtime requests before invoking diagnostic sources', async () => {
+  const readRuntimeDiagnostics = vi.fn(async () => ({}));
+  const tool = createControlDiagnosticsTool({ ...setup(), readRuntimeDiagnostics });
+  await expect(
+    tool({ ...input, request: { runtime: { command: 'journalctl' } } }),
+  ).rejects.toThrow();
+  await expect(
+    tool({ ...input, request: { runtime: { since: '2000-01-01T00:00:00Z' } } }),
+  ).rejects.toThrow('24 hours');
+  expect(readRuntimeDiagnostics).not.toHaveBeenCalled();
+});
+
+it('contains runtime source failures without exposing exceptions or invalid source payloads', async () => {
+  const result = await createControlDiagnosticsTool({
+    ...setup(),
+    readRuntimeDiagnostics: async () => {
+      throw new Error('credential');
+    },
+  })(input);
+  expect(result.infrastructure).toEqual({ state: 'failed' });
+  expect(JSON.stringify(result)).not.toContain('credential');
+});

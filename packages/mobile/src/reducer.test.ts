@@ -1314,3 +1314,14 @@ describe('listener discovery snapshots', () => {
     expect(reducer.state.messages).toEqual([]);
   });
 });
+
+it('renders durable task updates without ending the running turn', () => {
+  const reducer = new SessionReducer();
+  reducer.apply(1, { t: 'session', id: 's', model: 'm', worktree: '/work/s' });
+  reducer.apply(2, { t: 'tasks_updated', origin: 'agent', change: 'added', taskIds: ['one'] });
+  expect(reducer.running).toBe(true);
+  expect(reducer.messages.at(-1)).toMatchObject({
+    kind: 'agent-event',
+    event: { t: 'tasks_updated' },
+  });
+});

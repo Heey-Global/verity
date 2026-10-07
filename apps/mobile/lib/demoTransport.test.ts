@@ -183,7 +183,7 @@ it('supports stream lifecycle and resumes without duplicating old events', async
   live.subscribe(id, seq);
   jest.advanceTimersByTime(0);
   expect(live.frames).toEqual([
-    { k: 'ready', v: 1, maxSessions: 8 },
+    { k: 'ready', v: 1, maxSessions: 8, resources: true },
     { k: 'caught_up', id, seq },
   ]);
   live.socket.close();
@@ -360,4 +360,18 @@ it('walks through proposing, confirming, pausing, and deleting an automation', a
   await api.deleteSessionAutomation(id);
   expect(await api.getSessionAutomation(id)).toBeNull();
   expect((await api.listSessionOverview()).sessions[0]?.automation).toBeUndefined();
+});
+
+it('invalidates watched project data when its fold state changes', async () => {
+  jest.useFakeTimers();
+  const api = new VerityClient({ baseUrl: DEMO_BASE_URL, fetch: demoFetch });
+  const projects = await api.listProjects();
+  const live = openDemoLive();
+  live.socket.send(JSON.stringify({ k: 'watch', resource: { path: '/projects' } }));
+  jest.advanceTimersByTime(0);
+  live.frames.length = 0;
+  await api.setProjectCollapsed(projects[0]!.id, true);
+  expect(live.frames).toContainEqual({ k: 'invalidate', path: '/projects' });
+  expect((await api.listProjects())[0]?.collapsed).toBe(true);
+  live.socket.close();
 });

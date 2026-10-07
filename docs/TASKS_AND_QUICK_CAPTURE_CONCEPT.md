@@ -1,6 +1,6 @@
 # Tasks and quick capture
 
-**Status:** Proposed — concept and mockups, no implementation yet
+**Status:** Durable task foundation implemented; mobile capture and panel implementation
 **Scope:** Verity store, server, MCP gateway, session conductor, and mobile client
 
 ## 1. Outcome
@@ -99,7 +99,7 @@ The fast path is tap, speak, carry on. No further tap is required.
 2. Recording ends after **1.5 s of silence** or on stop. The transcript remains
    editable.
 3. If a screenshot was taken in the **last two minutes**, the card offers it with
-   one tap ("+ Attach"). "Photo / File" opens the system picker for anything
+   one tap when photo-library access is already granted ("+ Attach"). "Photo / File" opens the system picker for anything
    else. Attachments show as thumbnails; ✕ removes, + adds more.
 
 ![Confirm](assets/tasks/04-capture-confirm.png)
@@ -201,9 +201,10 @@ New table `tasks` in `packages/store` (migration after the current latest,
 | `created_at`, `updated_at`, `completed_at` | timestamps |
 
 Attachments are stored through the existing `putAttachment` path
-(`packages/store/src/store.ts`) and read through `GET /attachments/:hash`. That
-route's existence check (`sessionHasAttachment`) must also accept hashes
-referenced by one of the caller's tasks.
+(`packages/store/src/store.ts`) and read through
+`GET /tasks/:id/attachments/:hash`. This route checks task ownership, current
+project read access and the attachment reference before returning bytes. The
+generic session attachment route retains its existing authorization.
 
 ## 6. Agent integration
 
@@ -285,9 +286,10 @@ Work on task #4: Badge cut off on iPad when sidebar collapsed
 <detail, if any>
 ```
 
-plus the task's attachments as prompt attachments. The server marks the task
-`in_progress` and sets `session_id` in the same request (`PATCH /tasks/:id`
-before the turn). The agent sees the task in the injected section from that turn
+plus the task's attachments as prompt attachments. The client marks the task
+`in_progress` and sets `session_id` through `PATCH /tasks/:id` before posting
+the turn. Session and turn idempotency keys are stored locally before network
+requests, so a retry reuses the same session and first turn. The agent sees the task in the injected section from that turn
 on.
 
 ### 6.5 Events
@@ -307,9 +309,10 @@ line ("Agent added 5 tasks", "#3 done ✓") linking to the panel.
 | Route | Purpose |
 |---|---|
 | `GET /tasks?projectId=&sessionId=&status=` | list, owner-scoped |
-| `PUT /tasks/:id` | create or replace (idempotent by client id) |
+| `PUT /tasks/:id` | create with optional image/file `uploads`; a repeated client id returns the existing task without uploading replacements or overwriting edits or completion |
 | `PATCH /tasks/:id` | partial update with `expectedRevision` |
 | `DELETE /tasks/:id` | delete |
+| `GET /tasks/:id/attachments/:hash` | read a referenced attachment with task-owner and project-read checks |
 
 ### 7.2 Authorization
 
@@ -320,10 +323,16 @@ Every route checks ownership. When `projectId` is set, the caller also needs
 on the session's project, because it leads to a turn. The route-scope guard test
 (`route-scopes.test.ts`) must list the new routes.
 
+Task assignment and status writes lock the session row and validate its project
+inside the write transaction. A session project move removes its assignments in
+the same transaction and increments task revisions. Tasks retain their original
+project, context and status in that project's backlog; moving a session never
+transfers task content into another project.
+
 ### 7.3 Client API
 
 `packages/mobile/src/api.ts`: `listTasks`, `saveTask`, `updateTask`,
-`deleteTask`, with zod schemas shared with the server.
+`deleteTask`, with validated task responses and task-scoped attachment reads.
 
 ### 7.4 Mobile modules
 
@@ -341,12 +350,18 @@ on the session's project, because it leads to a turn. The route-scope guard test
 
 ### 7.5 Offline
 
-A capture is written to the local store first and queued. The queue retries with
+A capture and its attachment bytes are written to a device SQLite outbox first
+and queued. The cache and outbox are isolated by server URL and authenticated
+credential identity; signing out hides that identity's data and stops its sync.
+A capture is acknowledged only after the local write succeeds. The queue retries with
 backoff and uses the client-minted id, so a retry after a timeout cannot create a
 duplicate. Server-side changes (agent updates, other devices) are merged by
 `revision`; the higher revision wins, and a local pending write on an older
 revision is re-applied as a PATCH with `expectedRevision` or surfaced as a
-conflict in the row.
+conflict in the row. Conflicts offer an explicit choice to keep the local edit
+or use the server version. Session creation and sending work require a connection.
+Offline dictation requires an installed on-device language model; otherwise the
+card identifies network recognition and remains editable.
 
 ## 8. Delivery
 

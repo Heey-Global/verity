@@ -996,6 +996,38 @@ describe('VerityClient meeting transcripts', () => {
   });
 });
 
+describe('live read observations', () => {
+  it('records eligible reads, replays them to a later subscriber and detaches', async () => {
+    const { fetch } = fakeFetchSequence(json([]), json([]));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.listProjects();
+    const observed = vi.fn();
+    const detach = client.observeReads(observed);
+    expect(observed).toHaveBeenCalledWith({ path: '/projects' });
+    detach();
+    await client.listProjects();
+    expect(observed).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a resource subscription after an initial read fails', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('offline'));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.listProjects()).rejects.toThrow('offline');
+    const observed = vi.fn();
+    client.observeReads(observed);
+    expect(observed).toHaveBeenCalledWith({ path: '/projects' });
+  });
+
+  it('watches a meeting feed independently of its incremental read cursor', async () => {
+    const { fetch } = fakeFetch(json({ cursor: 1, meetings: [], notes: [] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const observed = vi.fn();
+    client.observeReads(observed);
+    await client.getLiveMeetingChanges('s', 123);
+    expect(observed).toHaveBeenCalledWith({ path: '/sessions/s/live-meetings' });
+  });
+});
+
 describe('VerityClient.listProjects (#174)', () => {
   const project = {
     id: 'p1',
@@ -3676,5 +3708,54 @@ describe('managed dev server actions', () => {
       ['http://host/sessions/s%2F1/managed-dev-server-instances/instance%2F2/stop', 'POST'],
       ['http://host/sessions/s%2F1/managed-dev-servers/entry%2F1', 'DELETE'],
     ]);
+  });
+});
+
+describe('VerityClient tasks', () => {
+  const task = {
+    id: '11111111-1111-4111-8111-111111111111',
+    projectId: null,
+    sessionId: null,
+    sourceSessionId: null,
+    origin: 'user',
+    title: 'Captured',
+    detail: null,
+    attachments: [],
+    status: 'open',
+    result: null,
+    sort: 0,
+    revision: 1,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    completedAt: null,
+  };
+  it('uses the same client id and retains uploads on capture retries', async () => {
+    const { fetch, calls } = fakeFetchSequence(json({ task }), json({ task }));
+    const client = new VerityClient({ baseUrl: 'https://example.test', fetch });
+    const body = {
+      title: task.title,
+      projectId: null,
+      uploads: [
+        { kind: 'file' as const, fileName: 'context.txt', mediaType: 'text/plain', data: 'aGk=' },
+      ],
+    };
+    await client.saveTask(task.id, body);
+    await client.saveTask(task.id, body);
+    expect(calls.map((call) => call.url)).toEqual([
+      `https://example.test/tasks/${task.id}`,
+      `https://example.test/tasks/${task.id}`,
+    ]);
+    expect(jsonBody(calls[0])).toEqual(body);
+    expect(jsonBody(calls[1])).toEqual(body);
+  });
+  it('validates responses and sends optimistic edit revisions', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ task }),
+      json({ tasks: [{ ...task, title: 4 }] }),
+    );
+    const client = new VerityClient({ baseUrl: 'https://example.test', fetch });
+    await client.updateTask(task.id, { title: 'Edited', expectedRevision: 1 });
+    expect(jsonBody(calls[0])).toEqual({ title: 'Edited', expectedRevision: 1 });
+    await expect(client.listTasks()).rejects.toThrow();
   });
 });

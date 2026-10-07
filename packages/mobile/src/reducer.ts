@@ -449,6 +449,9 @@ export class SessionReducer {
         this._pendingPermission = undefined;
         this.emitAgentEvent(seq, ts, event);
         break;
+      case 'tasks_updated':
+        this.emitAgentEvent(seq, ts, event);
+        break;
       case 'merged':
         // The operator merged the session's PR: a transcript-only "Merged PR #N"
         // marker (no turn, no agent reply). Render it as an `agent-event` row. Does

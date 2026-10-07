@@ -1,3 +1,16 @@
+const mockWatch = jest.fn();
+const mockLive = new Set<() => void>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockWatch();
+    mockLive.add(refresh);
+    return () => mockLive.delete(refresh);
+  },
+}));
+beforeEach(() => {
+  mockLive.clear();
+  mockWatch.mockClear();
+});
 import { type AgentLogin, type VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
@@ -15,7 +28,7 @@ const waitingLogin = {
   message: null,
 } as AgentLogin;
 
-describe('AgentLoginPanel polling', () => {
+describe('AgentLoginPanel live updates', () => {
   it('uses the shared primary palette for agent login actions', () => {
     const client = {} as VerityClient;
     render(<AgentLoginPanel client={client} configured={{ claude: false, codex: false }} />);
@@ -58,7 +71,7 @@ describe('AgentLoginPanel polling', () => {
     expect(screen.queryByLabelText('Logout ' + otherTitle)).toBeNull();
   });
 
-  it('does not overlap polls for the same login session', async () => {
+  it('does not overlap refreshes for the same login session', async () => {
     jest.useFakeTimers();
     let resolvePoll!: (login: AgentLogin) => void;
     const getAgentLogin = jest.fn(
@@ -75,11 +88,20 @@ describe('AgentLoginPanel polling', () => {
 
     fireEvent.press(screen.getByLabelText('Connect Claude'));
     await act(async () => undefined);
-    await act(async () => jest.advanceTimersByTime(7_500));
+    await act(async () => {
+      for (const refresh of mockLive) {
+        refresh();
+        refresh();
+      }
+    });
     expect(getAgentLogin).toHaveBeenCalledTimes(1);
 
-    await act(async () => resolvePoll(waitingLogin));
-    await act(async () => jest.advanceTimersByTime(2_500));
+    const watchCount = mockWatch.mock.calls.length;
+    await act(async () => resolvePoll({ ...waitingLogin }));
+    expect(mockWatch).toHaveBeenCalledTimes(watchCount);
+    await act(async () => {
+      for (const refresh of mockLive) refresh();
+    });
     expect(getAgentLogin).toHaveBeenCalledTimes(2);
     jest.useRealTimers();
   });

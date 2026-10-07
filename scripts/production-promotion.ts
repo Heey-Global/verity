@@ -66,6 +66,57 @@ const repo = () => {
 const manifest = 'releases/server-production.json';
 const branch = 'automation/promote-server-production';
 
+const nativeEvidenceBranch = 'automation/mobile-production-evidence';
+const nativeEvidencePath = (version: string) => `releases/native-production/${version}.json`;
+
+function optionalApi<T>(endpoint: string): T | undefined {
+  try {
+    return JSON.parse(
+      execFileSync('gh', ['api', endpoint], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    ) as T;
+  } catch (error) {
+    const stderr = (error as { stderr?: string | Buffer }).stderr?.toString();
+    if (stderr && /HTTP 404/.test(stderr)) return undefined;
+    throw error;
+  }
+}
+function readNativeEvidence(version: string) {
+  return optionalApi<{ content: string; sha: string }>(
+    `repos/${repo()}/contents/${nativeEvidencePath(version)}?ref=${nativeEvidenceBranch}`,
+  );
+}
+function writeNativeEvidence(candidate: NativePromotion, previousSha?: string) {
+  const repository = repo();
+  if (!optionalApi(`repos/${repository}/git/ref/heads/${nativeEvidenceBranch}`)) {
+    const main = api<{ object: { sha: string } }>(`repos/${repository}/git/ref/heads/main`);
+    api(
+      `repos/${repository}/git/refs`,
+      '--method',
+      'POST',
+      '-f',
+      `ref=refs/heads/${nativeEvidenceBranch}`,
+      '-f',
+      `sha=${main.object.sha}`,
+    );
+  }
+  // The file SHA makes a concurrent replacement fail instead of overwriting evidence.
+  api(
+    `repos/${repository}/contents/${nativeEvidencePath(candidate.version)}`,
+    '--method',
+    'PUT',
+    '-f',
+    `branch=${nativeEvidenceBranch}`,
+    '-f',
+    `message=chore(release): record native production ${candidate.version}`,
+    '-f',
+    `content=${Buffer.from(JSON.stringify(candidate, null, 2) + '\n').toString('base64')}`,
+    ...(previousSha ? ['-f', `sha=${previousSha}`] : []),
+  );
+}
+
 function nativeArtifactExpired(id: number): boolean {
   try {
     const metadata = JSON.parse(
@@ -107,16 +158,13 @@ export function propose(inputPath = process.argv[3] ?? '') {
     assets: { name: string }[];
     isPrerelease: boolean;
   };
-  if (release.assets.some((asset) => asset.name === 'production-candidate.json')) {
-    const recorded = gh(
-      'release',
-      'download',
-      tag,
-      '--pattern',
-      'production-candidate.json',
-      '--output',
-      '-',
-    );
+  const evidence =
+    candidate.product === 'mobile-native' ? readNativeEvidence(candidate.version) : undefined;
+  let needsNativeRecord = candidate.product === 'mobile-native' && !evidence;
+  if (evidence || release.assets.some((asset) => asset.name === 'production-candidate.json')) {
+    const recorded = evidence
+      ? Buffer.from(evidence.content, 'base64').toString('utf8')
+      : gh('release', 'download', tag, '--pattern', 'production-candidate.json', '--output', '-');
     const previous = JSON.parse(recorded) as ServerPromotion | NativePromotion;
     if (JSON.stringify(previous) !== JSON.stringify(candidate)) {
       if (candidate.product !== 'mobile-native' || previous.product !== 'mobile-native')
@@ -140,13 +188,16 @@ export function propose(inputPath = process.argv[3] ?? '') {
           throw new Error('Replacement archive is unavailable');
         // Recorded evidence changes first: old merged approvals cannot upload it.
         writeFileSync(recordPath, JSON.stringify(candidate, null, 2) + '\n');
-        gh('release', 'upload', tag, recordPath, '--clobber');
+        needsNativeRecord = true;
       }
     }
   } else {
     writeFileSync(recordPath, JSON.stringify(candidate, null, 2) + '\n');
-    gh('release', 'upload', tag, recordPath);
+    if (candidate.product === 'server') gh('release', 'upload', tag, recordPath);
   }
+
+  if (needsNativeRecord && candidate.product === 'mobile-native')
+    writeNativeEvidence(candidate, evidence?.sha);
 
   const repository = repo();
   const approvals = JSON.parse(
@@ -660,20 +711,16 @@ export function assertPromotionOrder(
     throw new Error('Production version already has another revision');
 }
 
-function assertRecorded(tag: string, candidate: unknown): void {
+function assertRecorded(tag: string, candidate: ServerPromotion | NativePromotion): void {
   // A quickly merged approval must not race the finalizer's draft publication.
   if (gh('release', 'view', tag, '--json', 'isDraft', '--jq', '.isDraft').trim() !== 'false')
     throw new Error('Staging finalization is not complete; retry promotion after publication');
 
-  const record = gh(
-    'release',
-    'download',
-    tag,
-    '--pattern',
-    'production-candidate.json',
-    '--output',
-    '-',
-  );
+  const evidence =
+    candidate.product === 'mobile-native' ? readNativeEvidence(candidate.version) : undefined;
+  const record = evidence
+    ? Buffer.from(evidence.content, 'base64').toString('utf8')
+    : gh('release', 'download', tag, '--pattern', 'production-candidate.json', '--output', '-');
   if (JSON.stringify(JSON.parse(record)) !== JSON.stringify(candidate))
     throw new Error('Production approval differs from recorded release evidence');
 }

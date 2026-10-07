@@ -33,7 +33,17 @@ const seq = z.number().int().nonnegative();
 
 /** Frames the app sends. A plain union: `sub` and `unsub` each come in two
  * shapes, distinguished by their channel, which a single discriminator cannot. */
+/** Read-only resources observed through the live connection. Credentials remain
+ * server-side; the optional meeting owner token scopes recorder commands. */
+export const liveResourceSchema = z.object({
+  path: z.string().min(1).max(1000),
+  ownerToken: z.string().min(1).max(512).optional(),
+});
+export type LiveResource = z.infer<typeof liveResourceSchema>;
+
 export const liveClientFrameSchema = z.union([
+  z.object({ k: z.literal('watch'), resource: liveResourceSchema }),
+  z.object({ k: z.literal('unwatch'), resource: liveResourceSchema }),
   /** Whether the app is in front of the user: an active iOS app, a visible and
    * focused browser tab. Only a foreground connection receives in-app alerts in
    * place of a push. */
@@ -101,6 +111,7 @@ export const liveServerFrameSchema = z.discriminatedUnion('k', [
     k: z.literal('ready'),
     v: z.number().int().positive(),
     maxSessions: z.number().int().positive(),
+    resources: z.boolean().optional(),
   }),
   z.object({
     k: z.literal('event'),
@@ -113,6 +124,7 @@ export const liveServerFrameSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('ended'), id: sessionId, reason: z.enum(LIVE_ENDED_REASONS) }),
   z.object({ k: z.literal('hint'), hints: z.array(liveHintSchema).min(1) }),
   z.object({ k: z.literal('alert'), alert: liveAlertSchema }),
+  z.object({ k: z.literal('invalidate'), path: z.string() }),
   z.object({ k: z.literal('pong'), n: z.number().int().nonnegative() }),
   z.object({ k: z.literal('error'), message: z.string() }),
 ]);

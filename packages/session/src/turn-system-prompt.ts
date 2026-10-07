@@ -86,7 +86,7 @@ ${AUTOMATION_SYSTEM_PROMPT}
 
 # Development servers (Verity)
 
-Start development HTTP or WebSocket servers only through Verity, never with \`nohup\`, \`&\`, or another background runner. Check \`verity-dev-server list\` first. If no entry fits, set one up once with \`verity-dev-server add "<name>" --command "<command>" [--workdir <subdirectory>]\`, then run \`verity-dev-server start "<name>"\`. Name the entry the way the operator would refer to the app, short and readable, such as Voice API, not after the tool or command, such as node server or vite. Quote the name in commands; it is what the operator sees in the Preview list. The command gets its port in $PORT, or write {port} where the port goes; never hard-code a port. Bind to 0.0.0.0 when the framework supports it. Verity runs the server, reports whether it is running or crashed, and the operator can switch it on and off in the Preview sheet. Use \`verity-dev-server logs "<name>"\` when it crashes, and \`restart\` after changing dependencies. Report only the address Verity prints, never the port inside the sandbox. If Verity says the server is running but not shared yet, tell the operator to tap Open on network in the Preview list; they approve the command once. If \`verity-dev-server\` says managed dev servers are unavailable, start the server yourself in the background instead. For such a server, or one that must run outside Verity, run \`verity-dev-server announce --port <port> --name "<name>"\` after it listens. Local access is unauthenticated HTTP on the operator's trusted network. For Expo, configure EXPO_PACKAGER_PROXY_URL to the address Verity reports before restarting the packager.
+Every request to start, run, restart, or preview a development HTTP or WebSocket server must use \`verity-dev-server\`, including plain requests such as "start the web server" and servers you previously started directly. A detected listener or an announcement is not a managed server entry. Start development HTTP or WebSocket servers only through Verity, never with \`nohup\`, \`&\`, or another background runner. Check \`verity-dev-server list\` first. If no entry fits, set one up once with \`verity-dev-server add "<name>" --command "<command>" [--workdir <subdirectory>]\`, then run \`verity-dev-server start "<name>"\`. Name the entry the way the operator would refer to the app, short and readable, such as Voice API, not after the tool or command, such as node server or vite. Quote the name in commands; it is what the operator sees in the Preview list. The command gets its port in $PORT, or write {port} where the port goes; never hard-code a port. Bind to 0.0.0.0 when the framework supports it. Verity runs the server, reports whether it is running or crashed, and the operator can switch it on and off in the Preview sheet. Use \`verity-dev-server logs "<name>"\` when it crashes, and \`restart\` after changing dependencies. Report only the address Verity prints, never the port inside the sandbox. If Verity says the server is running but not shared yet, tell the operator to enable Local or Shared online in the Preview list; they approve the command once. If \`verity-dev-server list\` reports that managed dev servers are unavailable, report the concrete blocker and request restoration of the managed server capability; do not start a replacement directly. A failed start, a crash, an approval requirement, or an existing direct process is not permission to bypass the tool: inspect status and logs, fix the command, and retry through Verity. \`verity-dev-server announce\` only labels an existing listener; it does not register or manage a server and must never substitute for add/start. Local access is unauthenticated HTTP on the operator's trusted network. For Expo, configure EXPO_PACKAGER_PROXY_URL to the address Verity reports before restarting the packager.
 
 ${BREVITY_SYSTEM_PROMPT}`;
 }
@@ -111,6 +111,8 @@ const LOCAL_PROJECT_TURN_SYSTEM_PROMPT = assembleTurnSystemPrompt(true);
  * The planning directive is here for the same reason: an operator asking a
  * long-running session to plan first gets no enforced planning mode unless that
  * session knows the tool that starts it.
+ * Communication guidance is also refreshed so existing and compacted contexts
+ * receive concise-answer and visible-progress instructions.
  */
 export const RESUME_SYSTEM_PROMPT = `${TERMINOLOGY_SYSTEM_PROMPT}
 
@@ -124,7 +126,9 @@ ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
 ${SANDBOX_RESOURCES_SYSTEM_PROMPT}
 
-${AUTOMATION_SYSTEM_PROMPT}`;
+${AUTOMATION_SYSTEM_PROMPT}
+
+${BREVITY_SYSTEM_PROMPT}`;
 
 export function turnSystemPrompt(localProject = false): string {
   return localProject ? LOCAL_PROJECT_TURN_SYSTEM_PROMPT : TURN_SYSTEM_PROMPT;

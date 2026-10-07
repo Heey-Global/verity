@@ -1,4 +1,6 @@
 import { shouldSendWebKey } from '../../lib/composerWebKey';
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
+import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -147,7 +149,6 @@ import {
   type StyleProp,
   Text,
   TextInput,
-  type TextInputKeyPressEventData,
   type TextStyle,
   useWindowDimensions,
   View,
@@ -191,6 +192,7 @@ import {
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
 import { ImageLightbox } from '../../components/ImageLightbox';
+import { PromptComposerInput } from '../../components/PromptComposerInput';
 import { WorkingDot } from '../../components/WorkingDot';
 import {
   hardwareKeyboardDetection,
@@ -314,8 +316,6 @@ const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(Keyboard
 // (Cross-app-restart persistence would need AsyncStorage — a follow-up.)
 const draftStore = new Map<string, string>();
 
-const MEETING_FOLLOW_UP_IDLE_POLL_MS = 1200;
-const MEETING_FOLLOW_UP_IDLE_ATTEMPTS = 100;
 const MAX_ATTACHMENTS_PER_TURN = 8;
 // Points at 72 PPI (~18 mm). iOS takes page margins only from this option; the
 // document's own `@page` rule covers Android.
@@ -329,19 +329,57 @@ const HISTORY_APPEND_SETTLE_FALLBACK_MS = 2000;
 /** Upper bound on the jump cover; the passes themselves finish in about two seconds. */
 const JUMP_FAIL_SAFE_MS = 4000;
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function waitForSessionIdle(client: VerityClient, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < MEETING_FOLLOW_UP_IDLE_ATTEMPTS; attempt += 1) {
-    const activity = await client.getActivity(sessionId);
-    if (!activity.busy && activity.queued.length === 0) return;
-    await delay(MEETING_FOLLOW_UP_IDLE_POLL_MS);
-  }
-  throw new Error(
-    'The session is still busy. The meeting prompt will retry when this chat opens again.',
-  );
+  await new Promise<void>((resolve, reject) => {
+    let finished = false;
+    let reading = false;
+    let again = false;
+    let detach = () => {};
+    const timeout = setTimeout(
+      () =>
+        finish(
+          new Error(
+            'The session is still busy. The meeting prompt will retry when this chat opens again.',
+          ),
+        ),
+      120_000,
+    );
+    const finish = (error?: unknown): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      detach();
+      if (error) reject(error);
+      else resolve();
+    };
+    const read = async (): Promise<void> => {
+      if (finished) return;
+      if (reading) {
+        again = true;
+        return;
+      }
+      reading = true;
+      try {
+        const activity = await client.getActivity(sessionId);
+        if (!activity.busy && activity.queued.length === 0) finish();
+      } catch (error) {
+        finish(error);
+      } finally {
+        reading = false;
+        if (again && !finished) {
+          again = false;
+          void read();
+        }
+      }
+    };
+    detach = subscribeLiveRefresh(
+      client,
+      read,
+      (path) => path === `/sessions/${encodeURIComponent(sessionId)}/activity`,
+      [{ path: `/sessions/${encodeURIComponent(sessionId)}/activity` }],
+    );
+    void read();
+  });
 }
 
 interface LocalMeetingUploadActivity {
@@ -415,16 +453,6 @@ function shouldAlertMeetingUploadApiError(error: VerityApiError): boolean {
 // its `offsetY` measures something else, so it is repositioned by row identity alone
 // (`migratedAnchorOffset`).
 const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequests.v1');
-
-function isSingleInsertedNewline(previous: string, next: string): boolean {
-  if (next.length !== previous.length + 1) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (next[index] !== previous[index]) {
-      return next[index] === '\n' && next.slice(index + 1) === previous.slice(index);
-    }
-  }
-  return false;
-}
 
 // Half-height of the 3-item message-nav stack, incl. the backdrop's vertical padding:
 // 3 btns·(icon 22 + 6·2) + 2 gaps·8 + container 6·2 = 130; half = 65. Used to
@@ -685,10 +713,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 15_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -706,10 +738,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 5_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -985,9 +1021,17 @@ export function SessionChat({
   useEffect(() => {
     if (!loaded) return;
     refreshStaticPreview();
-    const timer = setInterval(refreshStaticPreview, 20_000);
-    return () => clearInterval(timer);
-  }, [refreshStaticPreview, loaded]);
+    const detach = subscribeLiveRefresh(
+      client,
+      refreshStaticPreview,
+      (path) =>
+        (projectId != null &&
+          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
+        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
+          /preview|share|dev-server/u.test(path)),
+    );
+    return () => detach();
+  }, [refreshStaticPreview, loaded, client, projectId, sessionId]);
 
   useEffect(() => {
     if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
@@ -7622,6 +7666,16 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
     <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
       <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
       {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
+      {descriptor.action === 'tasks' ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open Tasks"
+          style={styles.eventAction}
+          onPress={openTasksPanel}
+        >
+          <Text style={styles.eventActionLabel}>Open Tasks</Text>
+        </Pressable>
+      ) : null}
       {descriptor.action === 'claude-login' ? (
         <Pressable
           style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
@@ -8677,7 +8731,7 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${pending.tool}`}
+          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionDeny,
@@ -8703,7 +8757,7 @@ function PermissionPrompt({
               ? knowledgeSummary?.replacesExisting
                 ? 'Save changes to Global Knowledge'
                 : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`
+              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8740,7 +8794,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8756,7 +8810,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8772,7 +8826,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? pending.tool} for ${httpSummary?.host ?? 'this destination'}`}
+              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? view.title} for ${httpSummary?.host ?? 'this destination'}`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -9247,35 +9301,14 @@ function InputBar({
   const [inputFocused, setInputFocused] = useState(false);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
-  const suppressReturnChangeRef = useRef(false);
-  const returnSubmitValueRef = useRef('');
-  const onComposerChangeText = useCallback(
-    (next: string) => {
-      if (suppressReturnChangeRef.current) {
-        suppressReturnChangeRef.current = false;
-        if (isSingleInsertedNewline(returnSubmitValueRef.current, next)) return;
-      }
-      onChangeText(next);
-    },
-    [onChangeText],
-  );
   const onComposerKeyPress = useCallback(
-    (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
-      if (Platform.OS === 'web') {
-        if (!dead && shouldSendWebKey(event.nativeEvent)) {
-          event.preventDefault();
-          onSend();
-        }
-        return;
+    (event: Parameters<NonNullable<React.ComponentProps<typeof TextInput>['onKeyPress']>>[0]) => {
+      if (Platform.OS === 'web' && !dead && shouldSendWebKey(event.nativeEvent)) {
+        event.preventDefault();
+        onSend();
       }
-      if (dead || Platform.OS !== 'ios' || !Platform.isPad || event.nativeEvent.key !== 'Enter')
-        return;
-      if (!shouldSubmitOnReturn(keyboardHeight)) return;
-      suppressReturnChangeRef.current = true;
-      returnSubmitValueRef.current = value;
-      onSend();
     },
-    [dead, keyboardHeight, onSend, value],
+    [dead, onSend],
   );
   // Auto-grow: let the native multiline TextInput size to its content (it grows up
   // to `maxHeight`, then scrolls). We deliberately do NOT set an explicit `height`
@@ -9341,7 +9374,7 @@ function InputBar({
             Platform.OS === 'web' && inputFocused ? { borderColor: theme.colors.accent } : null,
           ]}
         >
-          <TextInput
+          <PromptComposerInput
             key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
             ref={inputRef}
             style={[
@@ -9350,7 +9383,10 @@ function InputBar({
               Platform.OS === 'web' ? { outlineWidth: 0 } : null,
             ]}
             value={value}
-            onChangeText={onComposerChangeText}
+            onChangeText={onChangeText}
+            containerStyle={compact ? styles.inputContainerCompact : undefined}
+            submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
+            onSend={onSend}
             onKeyPress={onComposerKeyPress}
             onFocus={() => {
               setInputFocused(true);
@@ -9369,13 +9405,12 @@ function InputBar({
             }
             placeholderTextColor={theme.colors.textFaint}
             editable={!dead}
-            multiline
             keyboardAppearance="dark"
             accessibilityLabel="Message input"
           />
           <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
             {/* Left: attach + the engine/model chip (moved here from the header, like
-              the Claude app — it sits with the composer instead of the nav bar). */}
+the Claude app — it sits with the composer instead of the nav bar). */}
             <View style={styles.actionRowLeft}>
               <Pressable
                 ref={attachBtnRef}
@@ -11749,9 +11784,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 2,
     textAlignVertical: 'top',
   },
-  inputCompact: {
+  inputContainerCompact: {
     flex: 1,
     minWidth: 80,
+  },
+  inputCompact: {
     maxHeight: 21 * 3,
   },
   // Action-slot + attach buttons share one clear circular footprint; the visible

@@ -132,12 +132,23 @@ function makeHost({
       `exit ${String(hostRuntimeStatus)}\n`,
     { mode: 0o755 },
   );
-  for (const unit of ['verity-host-runtime.path', 'verity-host-runtime.service']) {
+  writeFileSync(
+    join(checkout, 'deploy', 'host', 'verity-host-diagnostics'),
+    '#!/usr/bin/env bash\nexit 0\n',
+    { mode: 0o755 },
+  );
+  for (const unit of [
+    'verity-host-runtime.path',
+    'verity-host-runtime.service',
+    'verity-host-diagnostics.service',
+    'verity-host-diagnostics.timer',
+  ]) {
     writeFileSync(join(checkout, 'deploy', 'host', unit), `# ${unit}\n`);
   }
   const hostRuntime = {
     VERITY_HOST_RUNTIME_LIBEXEC: join(root, 'libexec'),
     VERITY_HOST_RUNTIME_DIR: join(root, 'host-runtime'),
+    VERITY_HOST_DIAGNOSTIC_DIR: join(root, 'host-diagnostics'),
     VERITY_SYSTEMD_UNIT_DIR: join(root, 'systemd'),
     VERITY_SYSTEMD_RUN_DIR: systemd ? join(root, 'run-systemd') : join(root, 'no-systemd'),
   };
@@ -410,6 +421,10 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.match(result.output, /━━ Starting Verity ━━/);
     assert.match(result.output, /━━ Pair your device ━━/);
     assert.match(result.output, /━━ Cannot scan the QR code\? ━━/);
+    // Dropping the exposure warning would leave a public-facing host
+    // without any notice during setup.
+    assert.match(result.output, /━━ Keep Verity off the public internet ━━/);
+    assert.match(result.output, /Do not open or forward port 8082 or the preview ports 8100-8119/);
     assert.doesNotMatch(result.output, /Control token|Compose project|Deployment ID/);
     assert.match(result.output, /verity:\/\/pair\?payload=test/);
     assert.match(
@@ -474,6 +489,12 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         0o100,
     );
     assert.equal(statSync(host.hostRuntime.VERITY_HOST_RUNTIME_DIR).mode & 0o777, 0o700);
+    assert.equal(statSync(host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR).mode & 0o777, 0o755);
+    assert.ok(
+      statSync(
+        join(host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC, 'verity-host-diagnostics'),
+      ).isFile(),
+    );
     // Without systemd the Updater must be told nothing can answer a request, rather than wait.
     assert.deepEqual(
       JSON.parse(
@@ -491,7 +512,41 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const calls = readFileSync(host.hostRuntimeLog, 'utf8');
     assert.match(calls, /^systemctl daemon-reload$/m);
     assert.match(calls, /^systemctl enable --now verity-host-runtime\.path$/m);
-    for (const unit of ['verity-host-runtime.path', 'verity-host-runtime.service']) {
+    assert.match(calls, /^systemctl enable --now verity-host-diagnostics\.timer$/m);
+    const override = readFileSync(
+      join(
+        host.hostRuntime.VERITY_SYSTEMD_UNIT_DIR,
+        'verity-host-diagnostics.service.d',
+        'paths.conf',
+      ),
+      'utf8',
+    );
+    assert.ok(
+      override.includes(
+        `Environment="VERITY_HOST_DIAGNOSTIC_DIR=${host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `Environment="VERITY_HOST_RUNTIME_DIR=${host.hostRuntime.VERITY_HOST_RUNTIME_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `ReadWritePaths="${host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR}" "${host.hostRuntime.VERITY_HOST_RUNTIME_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `ExecStart="${host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC}/verity-host-diagnostics"`,
+      ),
+    );
+    for (const unit of [
+      'verity-host-runtime.path',
+      'verity-host-runtime.service',
+      'verity-host-diagnostics.service',
+      'verity-host-diagnostics.timer',
+    ]) {
       assert.ok(statSync(join(host.hostRuntime.VERITY_SYSTEMD_UNIT_DIR, unit)).isFile());
     }
     assert.deepEqual(

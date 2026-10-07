@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -30,6 +31,8 @@ import {
   managedStatus,
 } from './ManagedServers';
 import { Icon } from '../Icon';
+import { Toggle } from '../Toggle';
+import { StatusPill } from '../StatusPill';
 import { FileBreadcrumb } from '../files/FileBreadcrumb';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
@@ -262,8 +265,11 @@ export function StaticPreviewSheet({
   // move from starting to running without the user pulling.
   useEffect(() => {
     void loadManaged();
-    const timer = setInterval(() => void loadManaged(), 3_000);
-    return () => clearInterval(timer);
+    return subscribeLiveRefresh(
+      client,
+      () => loadManaged(),
+      (path) => path.endsWith('/managed-dev-servers'),
+    );
   }, [loadManaged, detectedServers]);
   const selectedManaged = managed?.find((server) => server.id === managedId);
   useEffect(() => {
@@ -277,10 +283,10 @@ export function StaticPreviewSheet({
         })
         .catch(() => undefined);
     load();
-    const timer = setInterval(load, 3_000);
+    const detach = subscribeLiveRefresh(client, load, (path) => path.endsWith('/logs'));
     return () => {
       active = false;
-      clearInterval(timer);
+      detach();
     };
   }, [client, managedId, sessionId]);
 
@@ -677,10 +683,12 @@ export function StaticPreviewSheet({
         });
     };
     loadShares();
-    const timer = setInterval(loadShares, 4_000);
+    const detach = subscribeLiveRefresh(client, loadShares, (path) =>
+      /shares|dev-servers/u.test(path),
+    );
     return () => {
       active = false;
-      clearInterval(timer);
+      detach();
     };
   }, [capabilitiesLoaded, client, projectId, publicSharing, sessionId]);
 
@@ -751,7 +759,7 @@ export function StaticPreviewSheet({
     return share;
   };
 
-  const createPublic = async (selection: PreviewTarget) => {
+  const createPublic = async (selection: PreviewTarget, ttlSeconds = duration) => {
     if (busy || publicSharing !== 'available') return;
     if (conflictingFolderShare(selection)) {
       setError('Stop the existing public folder link before sharing another folder.');
@@ -770,12 +778,12 @@ export function StaticPreviewSheet({
                 ? { managedInstanceId: selection.server.managedInstanceId }
                 : {}),
               pin,
-              ttlSeconds: duration,
+              ttlSeconds,
             })
           : await client.createSessionStaticPreviewShare(sessionId, {
               staticPath: normalizeFolder(selection.path),
               pin,
-              ttlSeconds: duration,
+              ttlSeconds,
             });
       createdShareIds.current.add(share.id);
       setShares((current) => [share, ...current]);
@@ -1176,13 +1184,13 @@ export function StaticPreviewSheet({
         <>
           <Text style={[styles.label, styles.sectionLabel]}>NOT MANAGED</Text>
           <Text style={styles.caption}>
-            Started outside Verity. Saving one lets you switch it on and off here.
+            Detected processes. Save one as a Verity server to control when it runs.
           </Text>
         </>
       ) : null}
       {sessionServers.map((server) => (
         <View key={`unmanaged:${String(server.port)}`} style={styles.unmanaged}>
-          {renderServerRow(server)}
+          {renderDetectedAccess({ kind: 'port', server }, true)}
           {onAskAgent && managed !== null ? (
             <Pressable
               onPress={() => {
@@ -1734,6 +1742,239 @@ export function StaticPreviewSheet({
     </>
   );
 
+  const renderDetectedAccess = (
+    selection: Extract<PreviewTarget, { kind: 'port' }>,
+    overview = false,
+  ) => {
+    const local = localShareFor(selection);
+    const online = publicShareFor(selection);
+    const disabled =
+      busy !== undefined || managedPending !== undefined || managedSwitch !== undefined;
+    const toggleLocal = async () => {
+      if (local) return stopLocal(local);
+      if (busy) return;
+      setBusy('local');
+      setError(undefined);
+      try {
+        await ensureLocalShare(selection);
+      } catch (caught) {
+        setError(previewError(caught));
+      } finally {
+        setBusy(undefined);
+      }
+    };
+    const toggleOnline = async () => {
+      if (online) return stopPublic(online);
+      if (busy) return;
+      setBusy('public');
+      try {
+        const lifetime = await askLinkLifetime();
+        if (lifetime !== undefined && sheetOpen.current) await createPublic(selection, lifetime);
+      } finally {
+        setBusy(undefined);
+      }
+    };
+    return (
+      <View style={styles.card}>
+        {overview ? (
+          <Pressable
+            onPress={() => pick(selection)}
+            accessibilityRole="button"
+            accessibilityLabel={`${selection.server.name} on port ${String(selection.server.port)}`}
+          >
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.cardTitle}>{selection.server.name}</Text>
+              <StatusPill intent="ready" label="Running" />
+            </View>
+            <Text style={styles.rowDetail} numberOfLines={1}>
+              {serverDetail(selection.server)}
+            </Text>
+            {local ? <Text style={styles.caption}>On network</Text> : null}
+            {online ? (
+              <Text style={styles.caption}>Online {expiryLabel(online.expiresAt)}</Text>
+            ) : null}
+          </Pressable>
+        ) : (
+          <>
+            <StatusPill
+              intent={
+                devServers.some((server) => server.port === selection.server.port)
+                  ? 'ready'
+                  : 'optional'
+              }
+              label={
+                devServers.some((server) => server.port === selection.server.port)
+                  ? 'Running'
+                  : 'Not detected'
+              }
+            />
+            <Text style={styles.caption}>
+              These switches control access to the detected process. Turning both off leaves it
+              running. Save it as a Verity server to control its lifetime here.
+            </Text>
+          </>
+        )}
+        <View style={styles.accessRow}>
+          <Icon name="wifi" size={20} color={theme.colors.textMuted} />
+          <View style={styles.rowText}>
+            <Text style={styles.cardTitle}>Local</Text>
+            {local ? (
+              <Pressable
+                onPress={() => void openLocal(selection)}
+                onLongPress={() => void copyLocal(selection)}
+                disabled={disabled}
+                accessibilityRole="link"
+                accessibilityLabel="Open in browser"
+              >
+                <Text style={styles.accessLink} numberOfLines={1} ellipsizeMode="middle">
+                  {local.url}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.caption}>Anyone on your network · no PIN</Text>
+            )}
+          </View>
+          {local ? (
+            <Pressable
+              onPress={() => void copyLocal(selection)}
+              disabled={disabled}
+              accessibilityRole="button"
+              accessibilityLabel="Copy local link"
+              hitSlop={12}
+            >
+              <Icon
+                name={copied === 'local-link' ? 'check' : 'copy'}
+                size={20}
+                color={theme.colors.primary}
+              />
+            </Pressable>
+          ) : null}
+          <Pressable
+            onPress={() => void toggleLocal()}
+            disabled={disabled}
+            accessibilityRole="switch"
+            accessibilityLabel={
+              overview
+                ? `Local for ${selection.server.name} on port ${String(selection.server.port)}`
+                : 'Local'
+            }
+            accessibilityState={{ checked: !!local, disabled }}
+            style={styles.accessSwitch}
+          >
+            <Toggle value={!!local} disabled={disabled} />
+          </Pressable>
+        </View>
+        <View style={styles.accessRow}>
+          <Icon name="globe" size={20} color={theme.colors.textMuted} />
+          <View style={styles.rowText}>
+            <Text style={styles.cardTitle}>Shared online</Text>
+            {online?.publicOrigin ? (
+              <Pressable
+                onPress={() => {
+                  const url = new URL(online.publicOrigin!);
+                  if (!online.pinLocked) url.searchParams.set('pin', online.pin);
+                  void Linking.openURL(url.toString()).catch((caught: unknown) =>
+                    setError(previewError(caught)),
+                  );
+                }}
+                onLongPress={() =>
+                  void Clipboard.setStringAsync(online.publicOrigin!).then(() =>
+                    setCopied('public-link'),
+                  )
+                }
+                accessibilityRole="link"
+                accessibilityLabel={`Open preview link ${online.publicOrigin}`}
+                disabled={disabled}
+              >
+                <Text style={styles.accessLink} numberOfLines={1} ellipsizeMode="middle">
+                  {online.publicOrigin}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.caption}>
+                {online || busy === 'public'
+                  ? 'Creating link…'
+                  : publicSharing === 'unavailable'
+                    ? 'Temporarily unavailable'
+                    : 'Public link with PIN'}
+              </Text>
+            )}
+            {online ? (
+              <>
+                <Text style={styles.caption}>{expiryLabel(online.expiresAt)}</Text>
+                {online.pinLocked ? (
+                  <Text style={styles.error}>PIN locked. Turn off and on for a new link.</Text>
+                ) : (
+                  <Pressable
+                    onPress={() =>
+                      void Clipboard.setStringAsync(online.pin).then(() => setCopied('pin'))
+                    }
+                    disabled={disabled}
+                    accessibilityRole="button"
+                    accessibilityLabel={copied === 'pin' ? 'PIN copied' : 'Copy PIN'}
+                  >
+                    <Text style={styles.accessLink}>
+                      PIN {pinLabel(online.pin)}{' '}
+                      <Icon
+                        name={copied === 'pin' ? 'check' : 'copy'}
+                        size={14}
+                        color={theme.colors.primary}
+                      />
+                    </Text>
+                  </Pressable>
+                )}
+              </>
+            ) : null}
+          </View>
+          {online?.publicOrigin && !online.pinLocked ? (
+            <Pressable
+              onPress={() =>
+                void Share.share({ message: shareMessage(online) }).catch(() => undefined)
+              }
+              disabled={disabled}
+              accessibilityRole="button"
+              accessibilityLabel="Share link and PIN"
+              hitSlop={12}
+            >
+              <Icon name="share" size={20} color={theme.colors.primary} />
+            </Pressable>
+          ) : null}
+          {publicSharing === 'premium-required' && !online ? (
+            <Pressable
+              onPress={onOpenSettings}
+              disabled={!onOpenSettings}
+              accessibilityRole="button"
+              accessibilityLabel="Open Premium settings"
+            >
+              <Text style={styles.accessLink}>Premium</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => void toggleOnline()}
+              disabled={disabled || (!online && publicSharing !== 'available')}
+              accessibilityRole="switch"
+              accessibilityLabel={
+                overview
+                  ? `Shared online for ${selection.server.name} on port ${String(selection.server.port)}`
+                  : 'Shared online'
+              }
+              accessibilityState={{
+                checked: !!online,
+                disabled: disabled || (!online && publicSharing !== 'available'),
+              }}
+              style={styles.accessSwitch}
+            >
+              <Toggle
+                value={!!online}
+                disabled={disabled || (!online && publicSharing !== 'available')}
+              />
+            </Pressable>
+          )}
+        </View>
+      </View>
+    );
+  };
+
   const renderAccess = (selection: PreviewTarget) => (
     <ScrollView
       style={styles.scroll}
@@ -1741,8 +1982,14 @@ export function StaticPreviewSheet({
       accessibilityLabel="Preview access"
     >
       <Text style={styles.caption}>How do you want to open it?</Text>
-      {renderLocalCard(selection)}
-      {renderPublicCard(selection)}
+      {selection.kind === 'port' ? (
+        renderDetectedAccess(selection)
+      ) : (
+        <>
+          {renderLocalCard(selection)}
+          {renderPublicCard(selection)}
+        </>
+      )}
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </ScrollView>
   );
@@ -2002,6 +2249,15 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
+  accessRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    minHeight: 64,
+  },
+  accessSwitch: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
+  accessLink: { color: theme.colors.primary, fontSize: theme.text.sm },
   cardHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
   cardIcon: {
     width: 36,

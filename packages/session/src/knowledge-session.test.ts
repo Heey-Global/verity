@@ -97,6 +97,12 @@ describe('knowledge discovery context', () => {
       expect(seen[1]).toContain('## Project knowledge');
       expect(seen[1]).toContain('`/knowledge/.text`');
       expect(seen[1]).toContain('`verity-memory append`');
+      for (const prompt of seen) {
+        // Mount announcements alone allow answers that never consult either scope.
+        expect(prompt).toContain('search both project knowledge and shared general knowledge');
+        expect(prompt).toContain('`/knowledge/shared/.text`');
+        expect(prompt).toContain('surface relevant conflicts');
+      }
     },
   );
 });
