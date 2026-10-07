@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { turnSystemPrompt } from './turn-system-prompt.js';
+import { BREVITY_SYSTEM_PROMPT } from '@verity/events';
+import { RESUME_SYSTEM_PROMPT, turnSystemPrompt } from './turn-system-prompt.js';
+
+describe('communication instructions', () => {
+  it.each([turnSystemPrompt(false), turnSystemPrompt(true), RESUME_SYSTEM_PROMPT])(
+    'keeps concise replies and visible progress in every context',
+    (prompt) => {
+      // Existing sessions otherwise keep the old communication policy indefinitely.
+      expect(prompt).toContain(BREVITY_SYSTEM_PROMPT);
+      expect(prompt).toContain('a few sentences or short bullets');
+      expect(prompt).toContain('60 seconds');
+      expect(prompt).toContain('affected file paths');
+      expect(prompt).toContain('analysis or explanation');
+    },
+  );
+});
 
 // A local project must receive the same managed-start contract as a GitHub project.
 describe('development server instructions', () => {

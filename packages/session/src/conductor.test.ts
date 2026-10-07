@@ -2,6 +2,7 @@ import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
+  BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
@@ -87,7 +88,7 @@ const ZERO_USAGE = {
 
 /**
  * The compact directive set a resumed turn carries, enumerated rather than
- * imported: `RESUME_SYSTEM_PROMPT` is module-private to the conductor, and
+ * imported: the conductor consumes `RESUME_SYSTEM_PROMPT`, and
  * restating its membership here is the point — a fragment joining or leaving the
  * set has to be a two-file change, not a silent one.
  */
@@ -99,6 +100,7 @@ const RESUME_SET = [
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
+  BREVITY_SYSTEM_PROMPT,
 ];
 
 /**
@@ -113,13 +115,13 @@ const RESUME_SET = [
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
  * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 6800 - 3100 = 3700 characters. If they grow past that,
+ * members sum to under 8000 - 3100 = 4900 characters. If they grow past that,
  * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
  * the fix is to raise this one after reading what actually grew, not to derive
- * either number from the other. Last raised for the compact tasks reminder
- * (`TASKS_RESUME_SYSTEM_PROMPT`, about 260 characters).
+ * either number from the other. Includes the communication guidance refreshed
+ * on resumed turns; the assembled payload is currently 7769 characters.
  */
-const RESUME_SET_BUDGET = 6800;
+const RESUME_SET_BUDGET = 8000;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present

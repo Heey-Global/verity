@@ -111,6 +111,8 @@ const LOCAL_PROJECT_TURN_SYSTEM_PROMPT = assembleTurnSystemPrompt(true);
  * The planning directive is here for the same reason: an operator asking a
  * long-running session to plan first gets no enforced planning mode unless that
  * session knows the tool that starts it.
+ * Communication guidance is also refreshed so existing and compacted contexts
+ * receive concise-answer and visible-progress instructions.
  */
 export const RESUME_SYSTEM_PROMPT = `${TERMINOLOGY_SYSTEM_PROMPT}
 
@@ -124,7 +126,9 @@ ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
 ${SANDBOX_RESOURCES_SYSTEM_PROMPT}
 
-${AUTOMATION_SYSTEM_PROMPT}`;
+${AUTOMATION_SYSTEM_PROMPT}
+
+${BREVITY_SYSTEM_PROMPT}`;
 
 export function turnSystemPrompt(localProject = false): string {
   return localProject ? LOCAL_PROJECT_TURN_SYSTEM_PROMPT : TURN_SYSTEM_PROMPT;
